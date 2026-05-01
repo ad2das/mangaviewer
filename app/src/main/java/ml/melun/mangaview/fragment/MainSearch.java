@@ -30,6 +30,7 @@ import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.adapter.TitleAdapter;
+import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
@@ -210,6 +211,7 @@ public class MainSearch extends Fragment {
 
     private class SearchManga extends LifecycleTask<Void, Void, Integer>{
         private final Search targetSearch;
+        private CustomHttpClient.RequestGroup requestGroup;
 
         SearchManga(Search targetSearch) {
             this.targetSearch = targetSearch;
@@ -219,7 +221,14 @@ public class MainSearch extends Fragment {
             super.onPreExecute();
         }
         protected Integer doInBackground(Void... params){
-            return targetSearch.fetch(httpClient);
+            requestGroup = new CustomHttpClient.RequestGroup();
+            try {
+                return httpClient.runWithRequestGroup(requestGroup, () -> targetSearch.fetch(httpClient));
+            } catch (Exception e) {
+                if(!isCancelled())
+                    e.printStackTrace();
+                return 1;
+            }
         }
         @Override
         protected void onPostExecute(Integer res){
@@ -291,6 +300,13 @@ public class MainSearch extends Fragment {
                 if(swipe != null)
                     swipe.setRefreshing(false);
             }
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            if(requestGroup != null)
+                requestGroup.cancel();
+            return super.cancel(mayInterruptIfRunning);
         }
     }
 }

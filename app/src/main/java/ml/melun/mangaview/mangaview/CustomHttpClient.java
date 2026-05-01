@@ -29,6 +29,7 @@ import javax.net.ssl.X509TrustManager;
 import okhttp3.CipherSuite;
 import okhttp3.Call;
 import okhttp3.ConnectionSpec;
+import okhttp3.Dispatcher;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.RequestBody;
@@ -45,6 +46,8 @@ public class CustomHttpClient {
     private static final long WFWF_DOMAIN_WAIT_TIMEOUT_MS = 6 * 1000L;
     private static final long COOKIE_SYNC_INTERVAL_MS = 30 * 1000L;
     private static final int PAGE_CACHE_MAX_ENTRIES = 80;
+    private static final int MAX_HTTP_REQUESTS = 8;
+    private static final int MAX_HTTP_REQUESTS_PER_HOST = 4;
     public OkHttpClient client;
     Map<String, String> cookies;
     Map<String, Long> cookieSyncAt;
@@ -85,7 +88,7 @@ public class CustomHttpClient {
                     .cipherSuites(cipherSuites.toArray(new CipherSuite[0]))
                     .build();
 
-            this.client = getUnsafeOkHttpClient()
+            this.client = configureDispatcher(getUnsafeOkHttpClient())
                     .connectionSpecs(Arrays.asList(legacyTls, ConnectionSpec.CLEARTEXT))
                     .followRedirects(false)
                     .followSslRedirects(false)
@@ -93,7 +96,7 @@ public class CustomHttpClient {
                     .readTimeout(20, TimeUnit.SECONDS)
                     .build();
         }else {
-            this.client = getUnsafeOkHttpClient()
+            this.client = configureDispatcher(getUnsafeOkHttpClient())
                     .followRedirects(false)
                     .followSslRedirects(false)
                     .connectTimeout(20, TimeUnit.SECONDS)
@@ -370,16 +373,18 @@ public class CustomHttpClient {
         String cacheKey = getBaseUrl(normalized) + normalized;
         long now = System.currentTimeMillis();
         PageLoadState activeLoad = null;
+        CachedPage staleCached = null;
         synchronized (this) {
             CachedPage cached = pageCache.get(cacheKey);
             if(cached != null && now - cached.time < ttlMillis)
                 return new PageResponse(cached.code, cached.body, true);
+            staleCached = cached;
             activeLoad = pageLoads.get(cacheKey);
             if(activeLoad == null)
                 pageLoads.put(cacheKey, new PageLoadState());
         }
         if(activeLoad != null)
-            return waitForCachedPage(cacheKey, activeLoad, ttlMillis);
+            return waitForCachedPage(cacheKey, activeLoad, ttlMillis, staleCached);
         String loadKey = cacheKey;
 
         PageLoadState loadState;
@@ -392,6 +397,8 @@ public class CustomHttpClient {
                 throw new Exception("Request failed: " + normalized);
             int code = response.code();
             String body = readBody(response);
+            if(code >= 500 && staleCached != null)
+                return new PageResponse(staleCached.code, staleCached.body, true);
             if(code >= 200 && code < 400 && body.length() > 0 && looksCacheable(body)) {
                 cacheKey = getBaseUrl(normalized) + normalized;
                 synchronized (this) {
@@ -399,6 +406,10 @@ public class CustomHttpClient {
                 }
             }
             return new PageResponse(code, body, false);
+        } catch (Exception e) {
+            if(staleCached != null)
+                return new PageResponse(staleCached.code, staleCached.body, true);
+            throw e;
         } finally {
             synchronized (this) {
                 pageLoads.remove(loadKey);
@@ -408,7 +419,7 @@ public class CustomHttpClient {
         }
     }
 
-    private PageResponse waitForCachedPage(String cacheKey, PageLoadState loadState, long ttlMillis) throws Exception {
+    private PageResponse waitForCachedPage(String cacheKey, PageLoadState loadState, long ttlMillis, CachedPage staleCached) throws Exception {
         try {
             loadState.done.await(10, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
@@ -421,6 +432,8 @@ public class CustomHttpClient {
             if(cached != null && now - cached.time < ttlMillis)
                 return new PageResponse(cached.code, cached.body, true);
         }
+        if(staleCached != null)
+            return new PageResponse(staleCached.code, staleCached.body, true);
         throw new Exception("Request failed: " + cacheKey);
     }
 
@@ -738,6 +751,13 @@ public class CustomHttpClient {
             throw new RuntimeException(e);
         }
 
+    }
+
+    private static OkHttpClient.Builder configureDispatcher(OkHttpClient.Builder builder) {
+        Dispatcher dispatcher = new Dispatcher();
+        dispatcher.setMaxRequests(MAX_HTTP_REQUESTS);
+        dispatcher.setMaxRequestsPerHost(MAX_HTTP_REQUESTS_PER_HOST);
+        return builder.dispatcher(dispatcher);
     }
 
 }

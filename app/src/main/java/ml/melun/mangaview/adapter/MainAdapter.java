@@ -19,6 +19,7 @@ import java.util.List;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MainPage;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
@@ -423,6 +424,8 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     }
 
     private class MainFetcher extends LifecycleTask<Void, Integer, MainPage> {
+        private CustomHttpClient.RequestGroup requestGroup;
+
         @Override
         protected void onPreExecute() {
             super.onPreExecute();
@@ -430,7 +433,14 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
         @Override
         protected MainPage doInBackground(Void... params) {
-            return new MainPage(httpClient);
+            requestGroup = new CustomHttpClient.RequestGroup();
+            try {
+                return httpClient.runWithRequestGroup(requestGroup, () -> new MainPage(httpClient));
+            } catch (Exception e) {
+                if(!isCancelled())
+                    e.printStackTrace();
+                return null;
+            }
         }
 
         @Override
@@ -460,6 +470,13 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             super.onCancelled(result);
             if(fetcher == this)
                 fetcher = null;
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            if(requestGroup != null)
+                requestGroup.cancel();
+            return super.cancel(mayInterruptIfRunning);
         }
     }
 

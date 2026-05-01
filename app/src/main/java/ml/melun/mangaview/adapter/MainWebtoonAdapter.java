@@ -35,6 +35,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MainPageWebtoon;
 import ml.melun.mangaview.mangaview.Ranking;
 import ml.melun.mangaview.mangaview.Title;
@@ -62,6 +63,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     Fetcher fetcher;
     private final Set<String> preloadedThumbs = new LinkedHashSet<>();
     private static final int PRELOADED_THUMB_LIMIT = 120;
+    private static final int PRELOAD_THUMB_MAX_PER_FETCH = 36;
+    private static final int SECTION_BATCH_SIZE = 4;
+    private int preloadCount = 0;
 
     public MainWebtoonAdapter(Context context){
         this(context, base_webtoon);
@@ -197,6 +201,14 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         SectionResult(int index, Ranking<?> ranking) {
             this.index = index;
             this.ranking = ranking;
+        }
+    }
+
+    private static class SectionBatch {
+        final List<SectionResult> results;
+
+        SectionBatch(List<SectionResult> results) {
+            this.results = results;
         }
     }
 
@@ -441,7 +453,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private void preloadThumbnails(List<Ranking<?>> sections) {
         if(save || sections == null)
             return;
-        int count = 0;
+        if(preloadCount >= PRELOAD_THUMB_MAX_PER_FETCH)
+            return;
         for(Ranking<?> section : sections) {
             if(section == null)
                 continue;
@@ -460,7 +473,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                         .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
                         .override(dp(180), dp(220))
                         .preload();
-                if(++count >= 24)
+                if(++preloadCount >= PRELOAD_THUMB_MAX_PER_FETCH)
                     return;
             }
         }
@@ -531,30 +544,39 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         return rowKey(row);
     }
 
-    private class Fetcher extends LifecycleTask<Void, SectionResult, Boolean> {
+    private class Fetcher extends LifecycleTask<Void, SectionBatch, Boolean> {
+        private CustomHttpClient.RequestGroup requestGroup;
+
         @Override
         protected void onPreExecute() {
             super.onPreExecute();
             dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
             preloadedThumbs.clear();
+            preloadCount = 0;
             updateRows(buildRows(dataSet, false));
         }
 
         @Override
         protected Boolean doInBackground(Void... params) {
+            requestGroup = new CustomHttpClient.RequestGroup();
+            return fetchSections(requestGroup);
+        }
+
+        private Boolean fetchSections(CustomHttpClient.RequestGroup requestGroup) {
             String[][] sections = MainPageWebtoon.getSections(baseMode);
             ExecutorService executor = Executors.newFixedThreadPool(Math.min(4, sections.length));
             ExecutorCompletionService<SectionResult> completion = new ExecutorCompletionService<>(executor);
             MainPageWebtoon parser = new MainPageWebtoon(baseMode);
             int submitted = 0;
             int loaded = 0;
+            List<SectionResult> pendingResults = new ArrayList<>();
 
             try {
                 for(int i = 0; i < sections.length; i++) {
                     final int index = i;
                     final String[] section = sections[i];
-                    completion.submit(() -> new SectionResult(index,
-                            parser.parseWolfTitle(httpClient, section[0], section[1], baseMode)));
+                    completion.submit(() -> httpClient.runWithRequestGroup(requestGroup, () ->
+                            new SectionResult(index, parser.parseWolfTitle(httpClient, section[0], section[1], baseMode))));
                     submitted++;
                 }
 
@@ -564,9 +586,15 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     if(result != null && result.ranking != null) {
                         if(result.ranking.size() > 0)
                             loaded++;
-                        publishProgress(result);
+                        pendingResults.add(result);
+                        if(pendingResults.size() >= SECTION_BATCH_SIZE) {
+                            publishProgress(new SectionBatch(new ArrayList<>(pendingResults)));
+                            pendingResults.clear();
+                        }
                     }
                 }
+                if(pendingResults.size() > 0)
+                    publishProgress(new SectionBatch(new ArrayList<>(pendingResults)));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } catch (Exception e) {
@@ -579,22 +607,29 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         @Override
-        protected void onProgressUpdate(SectionResult... values) {
+        protected void onProgressUpdate(SectionBatch... values) {
             super.onProgressUpdate(values);
             if(values == null || values.length == 0 || values[0] == null || isCancelled())
                 return;
-            SectionResult result = values[0];
-            if(result.index < 0)
+            SectionBatch batch = values[0];
+            if(batch.results == null || batch.results.size() == 0)
                 return;
             if(dataSet == null)
                 dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
-            if(result.index < dataSet.size())
-                dataSet.set(result.index, result.ranking);
-            else
-                dataSet.add(result.ranking);
-            if(result.ranking == null || result.ranking.size() == 0)
+            List<Ranking<?>> loadedSections = new ArrayList<>();
+            for(SectionResult result : batch.results) {
+                if(result == null || result.index < 0)
+                    continue;
+                if(result.index < dataSet.size())
+                    dataSet.set(result.index, result.ranking);
+                else
+                    dataSet.add(result.ranking);
+                if(result.ranking != null && result.ranking.size() > 0)
+                    loadedSections.add(result.ranking);
+            }
+            if(loadedSections.size() == 0)
                 return;
-            preloadThumbnails(Collections.singletonList(result.ranking));
+            preloadThumbnails(loadedSections);
             updateRows(buildRows(dataSet, false));
         }
 
@@ -616,6 +651,13 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             super.onCancelled(result);
             if(fetcher == this)
                 fetcher = null;
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            if(requestGroup != null)
+                requestGroup.cancel();
+            return super.cancel(mayInterruptIfRunning);
         }
     }
 }

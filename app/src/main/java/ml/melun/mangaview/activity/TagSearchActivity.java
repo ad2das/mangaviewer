@@ -25,6 +25,7 @@ import ml.melun.mangaview.R;
 import ml.melun.mangaview.adapter.TitleAdapter;
 import ml.melun.mangaview.adapter.UpdatedAdapter;
 import ml.melun.mangaview.mangaview.Bookmark;
+import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
@@ -172,6 +173,8 @@ public class TagSearchActivity extends AppCompatActivity {
 
 
     private class getBookmarks extends LifecycleTask<Void, Void, Integer>{
+        private CustomHttpClient.RequestGroup requestGroup;
+
         @Override
         protected void onPreExecute() {
             super.onPreExecute();
@@ -230,17 +233,40 @@ public class TagSearchActivity extends AppCompatActivity {
 
         @Override
         protected Integer doInBackground(Void... voids) {
-            return bookmark.fetch(httpClient);
+            requestGroup = new CustomHttpClient.RequestGroup();
+            try {
+                return httpClient.runWithRequestGroup(requestGroup, () -> bookmark.fetch(httpClient));
+            } catch (Exception e) {
+                if(!isCancelled())
+                    e.printStackTrace();
+                return 1;
+            }
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            if(requestGroup != null)
+                requestGroup.cancel();
+            return super.cancel(mayInterruptIfRunning);
         }
     }
 
 
     private class searchManga extends LifecycleTask<Void, Void, Integer> {
+        private CustomHttpClient.RequestGroup requestGroup;
+
         protected void onPreExecute(){
             super.onPreExecute();
         }
         protected Integer doInBackground(Void... params){
-            return search.fetch(httpClient);
+            requestGroup = new CustomHttpClient.RequestGroup();
+            try {
+                return httpClient.runWithRequestGroup(requestGroup, () -> search.fetch(httpClient));
+            } catch (Exception e) {
+                if(!isCancelled())
+                    e.printStackTrace();
+                return 1;
+            }
         }
         @Override
         protected void onPostExecute(Integer res){
@@ -294,15 +320,33 @@ public class TagSearchActivity extends AppCompatActivity {
             super.onCancelled(res);
             clearLoad(this);
         }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            if(requestGroup != null)
+                requestGroup.cancel();
+            return super.cancel(mayInterruptIfRunning);
+        }
     }
 
     private class getUpdated extends LifecycleTask<Void, Void, String> {
+        private CustomHttpClient.RequestGroup requestGroup;
+
         protected void onPreExecute(){
             super.onPreExecute();
         }
         protected String doInBackground(Void... params){
-            updated.fetch(httpClient);
-            return null;
+            requestGroup = new CustomHttpClient.RequestGroup();
+            try {
+                return httpClient.runWithRequestGroup(requestGroup, () -> {
+                    updated.fetch(httpClient);
+                    return null;
+                });
+            } catch (Exception e) {
+                if(!isCancelled())
+                    e.printStackTrace();
+                return null;
+            }
         }
         @Override
         protected void onPostExecute(String res){
@@ -351,6 +395,13 @@ public class TagSearchActivity extends AppCompatActivity {
         protected void onCancelled(String res) {
             super.onCancelled(res);
             clearLoad(this);
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            if(requestGroup != null)
+                requestGroup.cancel();
+            return super.cancel(mayInterruptIfRunning);
         }
     }
     void popup(View view, final int position, final Title title, final int m){
