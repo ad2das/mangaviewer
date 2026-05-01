@@ -46,6 +46,7 @@ public abstract class LifecycleTask<Params, Progress, Result> implements Default
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
     private final AtomicBoolean lifecycleDestroyed = new AtomicBoolean(false);
     private final AtomicBoolean completed = new AtomicBoolean(false);
+    private final AtomicBoolean backgroundStarted = new AtomicBoolean(false);
     private Lifecycle lifecycle;
     private volatile Status status = Status.PENDING;
     private Future<?> future;
@@ -69,7 +70,7 @@ public abstract class LifecycleTask<Params, Progress, Result> implements Default
     public boolean cancel(boolean mayInterruptIfRunning) {
         cancelled.set(true);
         boolean result = future == null || future.cancel(mayInterruptIfRunning);
-        if(status == Status.RUNNING)
+        if(status == Status.RUNNING && !backgroundStarted.get())
             MAIN.post(() -> finish(null));
         return result;
     }
@@ -88,8 +89,9 @@ public abstract class LifecycleTask<Params, Progress, Result> implements Default
                 onPreExecute();
         });
         future = submit(executor, () -> {
+            backgroundStarted.set(true);
             Result result = null;
-            if(!isCancelled() && isActive())
+            if(isActive())
                 result = doInBackground(params);
             Result finalResult = result;
             MAIN.post(() -> finish(finalResult));
