@@ -424,7 +424,7 @@ public class Preference {
     public void setViewerBookmark(Manga m,int index){
         if(m.getId()>-1) {
             if (index > 0) {
-                String key = m.getBaseMode() + "."+m.getId();
+                String key = viewerBookmarkKey(m);
                 try {
                     if(pagebookmark.has(key) && pagebookmark.getInt(key) == index)
                         return;
@@ -439,7 +439,7 @@ public class Preference {
     public int getViewerBookmark(Manga m){
         if(m.getId()>-1) {
             try {
-                return pagebookmark.getInt(m.getBaseMode()+"."+m.getId());
+                return pagebookmark.getInt(viewerBookmarkKey(m));
             } catch (Exception e) {
                 //
             }
@@ -447,11 +447,18 @@ public class Preference {
         return 0;
     }
     public void removeViewerBookmark(Manga m){
-        String key = m.getBaseMode()+"."+m.getId();
+        String key = viewerBookmarkKey(m);
         if(!pagebookmark.has(key))
             return;
         pagebookmark.remove(key);
         writeViewerBookmark();
+    }
+
+    private String viewerBookmarkKey(Manga m) {
+        int titleId = m.getTitleId();
+        if(titleId > 0)
+            return m.getBaseMode() + "." + titleId + "." + m.getId();
+        return m.getBaseMode() + "." + m.getId();
     }
     public void resetViewerBookmark(){
         try {

@@ -193,6 +193,8 @@ public class ViewerActivity2 extends AppCompatActivity {
             spinner.setSelection(m);
             index = i;
             manga = m;
+            if(title != null)
+                manga.setTitle(title);
             hideSpinnerDropDown(spinner);
             loadManga(m);
         });
@@ -231,6 +233,8 @@ public class ViewerActivity2 extends AppCompatActivity {
                 }.getType());
             dirty = true;
         }
+        if(title != null)
+            manga.setTitle(title);
 
         name = manga.getName();
         id = manga.getId();
@@ -309,6 +313,8 @@ public class ViewerActivity2 extends AppCompatActivity {
                 lockUi(true);
                 index--;
                 manga = eps.get(index);
+                if(title != null)
+                    manga.setTitle(title);
                 id = manga.getId();
                 name = manga.getName();
                 loadManga(manga);
@@ -321,6 +327,8 @@ public class ViewerActivity2 extends AppCompatActivity {
                 lockUi(true);
                 index++;
                 manga = eps.get(index);
+                if(title != null)
+                    manga.setTitle(title);
                 id = manga.getId();
                 name = manga.getName();
                 loadManga(manga);
@@ -861,6 +869,8 @@ public class ViewerActivity2 extends AppCompatActivity {
 
     public void loadManga(Manga m){
         if(m!=null) {
+            if(title != null)
+                m.setTitle(title);
             manga = m;
             id = manga.getId();
             if (m.isOnline())

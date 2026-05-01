@@ -152,6 +152,8 @@ public class ViewerActivity3 extends AppCompatActivity {
             lockUi(true);
             spinner.setSelection(m);
             manga = m;
+            if(title != null)
+                manga.setTitle(title);
             id = m.getId();
             index = i;
             hideSpinnerDropDown(spinner);
@@ -213,6 +215,8 @@ public class ViewerActivity3 extends AppCompatActivity {
 
             if(title == null)
                 title = manga.getTitle();
+            if(title != null)
+                manga.setTitle(title);
 
             name = manga.getName();
             id = manga.getId();
@@ -276,6 +280,8 @@ public class ViewerActivity3 extends AppCompatActivity {
                 lockUi(true);
                 index--;
                 manga = eps.get(index);
+                if(title != null)
+                    manga.setTitle(title);
                 id = manga.getId();
                 name = manga.getName();
                 if(manga.isOnline())
@@ -289,6 +295,8 @@ public class ViewerActivity3 extends AppCompatActivity {
                 lockUi(true);
                 index++;
                 manga = eps.get(index);
+                if(title != null)
+                    manga.setTitle(title);
                 id = manga.getId();
                 name = manga.getName();
                 if(manga.isOnline())

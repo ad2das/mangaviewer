@@ -409,6 +409,12 @@ public class Manga {
         return title;
     }
 
+    public int getTitleId() {
+        if(titleId > 0)
+            return titleId;
+        return title == null ? -1 : title.getId();
+    }
+
     public List<String> getImgs(Context context) {
         if (mode != 0) {
             if (imgs == null) {
