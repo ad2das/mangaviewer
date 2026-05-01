@@ -145,7 +145,7 @@ public class TagSearchActivity extends AppCompatActivity {
         }
         loadTask = task;
         swipe.setRefreshing(true);
-        task.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+        task.executeOnExecutor(LifecycleTask.USER_ACTION_EXECUTOR);
     }
 
     private boolean prepareLoadResult(LifecycleTask<?, ?, ?> task) {
@@ -235,11 +235,11 @@ public class TagSearchActivity extends AppCompatActivity {
     }
 
 
-    private class searchManga extends LifecycleTask<String,String,Integer> {
+    private class searchManga extends LifecycleTask<Void, Void, Integer> {
         protected void onPreExecute(){
             super.onPreExecute();
         }
-        protected Integer doInBackground(String... params){
+        protected Integer doInBackground(Void... params){
             return search.fetch(httpClient);
         }
         @Override
@@ -247,6 +247,8 @@ public class TagSearchActivity extends AppCompatActivity {
             super.onPostExecute(res);
             if(!prepareLoadResult(this))
                 return;
+            if(res == null)
+                res = 1;
             if(res != 0){
                 showCaptchaPopup(context, p);
             }
@@ -294,11 +296,11 @@ public class TagSearchActivity extends AppCompatActivity {
         }
     }
 
-    private class getUpdated extends LifecycleTask<String,String,String> {
+    private class getUpdated extends LifecycleTask<Void, Void, String> {
         protected void onPreExecute(){
             super.onPreExecute();
         }
-        protected String doInBackground(String... params){
+        protected String doInBackground(Void... params){
             updated.fetch(httpClient);
             return null;
         }

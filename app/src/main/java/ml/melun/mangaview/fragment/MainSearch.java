@@ -130,7 +130,7 @@ public class MainSearch extends Fragment {
                     if(searchTask == null) {
                         activeSearchKey = null;
                         searchTask = new SearchManga(search);
-                        searchTask.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+                        searchTask.executeOnExecutor(LifecycleTask.USER_ACTION_EXECUTOR);
                     }
                 } else swipe.setRefreshing(false);
             }
@@ -184,7 +184,7 @@ public class MainSearch extends Fragment {
                 searchTask.cancel(true);
             activeSearchKey = key;
             searchTask = new SearchManga(search);
-            searchTask.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+            searchTask.executeOnExecutor(LifecycleTask.USER_ACTION_EXECUTOR);
         }
     }
 
@@ -208,7 +208,7 @@ public class MainSearch extends Fragment {
         super.onDestroyView();
     }
 
-    private class SearchManga extends LifecycleTask<String,String,Integer>{
+    private class SearchManga extends LifecycleTask<Void, Void, Integer>{
         private final Search targetSearch;
 
         SearchManga(Search targetSearch) {
@@ -218,7 +218,7 @@ public class MainSearch extends Fragment {
         protected void onPreExecute(){
             super.onPreExecute();
         }
-        protected Integer doInBackground(String... params){
+        protected Integer doInBackground(Void... params){
             return targetSearch.fetch(httpClient);
         }
         @Override
@@ -230,6 +230,8 @@ public class MainSearch extends Fragment {
             }
             if(isCancelled() || targetSearch != search || getContext() == null)
                 return;
+            if(res == null)
+                res = 1;
             if(res != 0){
                 // error
                 Utils.showCaptchaPopup(getContext(), 4, fragment, p);

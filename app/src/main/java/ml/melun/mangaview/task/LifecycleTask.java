@@ -40,6 +40,14 @@ public abstract class LifecycleTask<Params, Progress, Result> implements Default
             new LinkedBlockingQueue<>(),
             runnable -> new Thread(runnable, "LifecycleTask-" + THREAD_ID.getAndIncrement())
     );
+    public static final ExecutorService USER_ACTION_EXECUTOR = new ThreadPoolExecutor(
+            3,
+            3,
+            KEEP_ALIVE_SECONDS,
+            TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(),
+            runnable -> new Thread(runnable, "LifecycleUserTask-" + THREAD_ID.getAndIncrement())
+    );
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     private final Object lifecycleCandidate;
@@ -91,8 +99,13 @@ public abstract class LifecycleTask<Params, Progress, Result> implements Default
         future = submit(executor, () -> {
             backgroundStarted.set(true);
             Result result = null;
-            if(isActive())
-                result = doInBackground(params);
+            try {
+                if(isActive())
+                    result = doInBackground(params == null || params.length == 0 ? null : params);
+            } catch (Throwable e) {
+                if(!isCancelled())
+                    e.printStackTrace();
+            }
             Result finalResult = result;
             MAIN.post(() -> finish(finalResult));
         });

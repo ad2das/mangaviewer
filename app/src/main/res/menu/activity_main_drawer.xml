@@ -6,21 +6,27 @@
     <group android:checkableBehavior="single">
         <item
             android:id="@+id/nav_main"
+            android:orderInCategory="0"
             android:title="메인" />
         <item
             android:id="@+id/nav_search"
+            android:orderInCategory="1"
             android:title="검색" />
         <item
             android:id="@+id/nav_recent"
+            android:orderInCategory="2"
             android:title="최근에 본 만화" />
         <item
             android:id="@+id/nav_favorite"
+            android:orderInCategory="3"
             android:title="좋아요 한 만화" />
         <item
             android:id="@+id/nav_download"
+            android:orderInCategory="4"
             android:title="저장된 만화" />
         <item
             android:id="@+id/nav_settings"
+            android:orderInCategory="5"
             android:title="설정" />
     </group>
 
