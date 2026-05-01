@@ -8,6 +8,7 @@ import android.view.LayoutInflater;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.inputmethod.EditorInfo;
 import android.widget.AdapterView;
 import android.widget.EditText;
 import android.widget.Spinner;
@@ -92,8 +93,12 @@ public class MainSearch extends Fragment {
 //                startActivity(advSearch);
         });
 
-        searchBox.setOnKeyListener((v, keyCode, event) -> {
-            if(event.getAction()==KeyEvent.ACTION_DOWN && keyCode ==KeyEvent.KEYCODE_ENTER){
+        searchBox.setSingleLine(true);
+        searchBox.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
+        searchBox.setOnEditorActionListener((v, actionId, event) -> {
+            if(actionId == EditorInfo.IME_ACTION_SEARCH
+                    || actionId == EditorInfo.IME_ACTION_DONE
+                    || event != null && event.getAction()==KeyEvent.ACTION_DOWN && keyCodeIsEnter(event)){
                 searchSubmit();
                 return true;
             }
@@ -137,8 +142,7 @@ public class MainSearch extends Fragment {
     public void onResume() {
         super.onResume();
         if(prequery != null){
-            searchBox.setText(prequery);
-            prequery = null;
+            applyPendingSearch();
         }
     }
 
@@ -149,6 +153,21 @@ public class MainSearch extends Fragment {
 
     public void setSearch(String prequery){
         this.prequery = prequery;
+        if(searchBox != null)
+            applyPendingSearch();
+    }
+
+    private boolean keyCodeIsEnter(KeyEvent event) {
+        return event.getKeyCode() == KeyEvent.KEYCODE_ENTER;
+    }
+
+    private void applyPendingSearch() {
+        if(prequery == null || searchBox == null)
+            return;
+        searchBox.setText(prequery);
+        searchBox.setSelection(searchBox.getText().length());
+        prequery = null;
+        searchSubmit();
     }
 
     void searchSubmit(){

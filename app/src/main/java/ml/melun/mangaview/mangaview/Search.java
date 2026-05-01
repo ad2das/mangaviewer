@@ -154,8 +154,12 @@ public class Search {
             if(mode == 8) {
                 appendWebtoonResults(client, webtoonResults, query, 0);
             } else if(mode == 2) {
-                appendWebtoonResults(client, webtoonResults, "/ing?type1=genre&type2=" + percentEncode(query, Charset.forName("EUC-KR")) + "&o=n", 80);
-                appendWebtoonResults(client, webtoonResults, "/end?type1=genre&type2=" + percentEncode(query, Charset.forName("EUC-KR")) + "&o=n", 80);
+                appendWebtoonResults(client, webtoonResults, webtoonGenrePath("ing", query), 80);
+                appendWebtoonResults(client, webtoonResults, webtoonGenrePath("end", query), 80);
+            } else if(mode == 3) {
+                String alphabet = percentEncode(alphabetValue(query), Charset.forName("EUC-KR"));
+                appendWebtoonResults(client, webtoonResults, "/ing?type1=alphabet&type2=" + alphabet + "&o=n", 80);
+                appendWebtoonResults(client, webtoonResults, "/end?type1=alphabet&type2=" + alphabet + "&o=n", 80);
             } else if(mode == 4) {
                 String status = webtoonStatus(query);
                 if(status.length() > 0) {
@@ -192,6 +196,8 @@ public class Search {
                 appendWebtoonResults(client, comicResults, query, 0);
             } else if(mode == 2) {
                 appendWebtoonResults(client, comicResults, "/cm?type1=genre&type2=" + percentEncode(query, Charset.forName("EUC-KR")) + "&o=n", 120);
+            } else if(mode == 3) {
+                appendWebtoonResults(client, comicResults, "/cm?type1=alphabet&type2=" + percentEncode(alphabetValue(query), Charset.forName("EUC-KR")) + "&o=n", 120);
             } else if(mode == 4) {
                 String type = comicType(query);
                 if(type.length() > 0)
@@ -245,23 +251,39 @@ public class Search {
     private static String webtoonStatus(String value) {
         if(value == null) return "";
         String q = value.trim().toLowerCase(Locale.ROOT);
-        if(q.equals("연재") || q.equals("연재중") || q.equals("ing") || q.equals("ongoing")) return "/ing";
+        if(q.equals("연재") || q.equals("연재중") || q.equals("연재웹툰") || q.equals("ing") || q.equals("ongoing")) return "/ing";
         if(q.equals("완결") || q.equals("완결웹툰") || q.equals("end") || q.equals("completed") || q.equals("complete")) return "/end";
         return "";
+    }
+
+    private static String webtoonGenrePath(String status, String genre) {
+        if(genre != null && genre.trim().equals("성인"))
+            return "/" + status + "?type1=genre&o=n";
+        return "/" + status + "?type1=genre&type2=" + percentEncode(genre, Charset.forName("EUC-KR")) + "&o=n";
     }
 
     private static String webtoonDay(String value) {
         if(value == null) return "";
         String q = value.trim().toLowerCase(Locale.ROOT);
-        if(q.equals("월") || q.equals("월요") || q.equals("월요일") || q.equals("mon") || q.equals("monday")) return "mon";
-        if(q.equals("화") || q.equals("화요") || q.equals("화요일") || q.equals("tue") || q.equals("tuesday")) return "tue";
-        if(q.equals("수") || q.equals("수요") || q.equals("수요일") || q.equals("wed") || q.equals("wednesday")) return "wed";
-        if(q.equals("목") || q.equals("목요") || q.equals("목요일") || q.equals("thu") || q.equals("thursday")) return "thu";
-        if(q.equals("금") || q.equals("금요") || q.equals("금요일") || q.equals("fri") || q.equals("friday")) return "fri";
-        if(q.equals("토") || q.equals("토요") || q.equals("토요일") || q.equals("sat") || q.equals("saturday")) return "sat";
-        if(q.equals("일") || q.equals("일요") || q.equals("일요일") || q.equals("sun") || q.equals("sunday")) return "sun";
+        if(q.equals("월") || q.equals("월요") || q.equals("월요일") || q.equals("mon") || q.equals("monday")) return "1";
+        if(q.equals("화") || q.equals("화요") || q.equals("화요일") || q.equals("tue") || q.equals("tuesday")) return "2";
+        if(q.equals("수") || q.equals("수요") || q.equals("수요일") || q.equals("wed") || q.equals("wednesday")) return "3";
+        if(q.equals("목") || q.equals("목요") || q.equals("목요일") || q.equals("thu") || q.equals("thursday")) return "4";
+        if(q.equals("금") || q.equals("금요") || q.equals("금요일") || q.equals("fri") || q.equals("friday")) return "5";
+        if(q.equals("토") || q.equals("토요") || q.equals("토요일") || q.equals("sat") || q.equals("saturday")) return "6";
+        if(q.equals("일") || q.equals("일요") || q.equals("일요일") || q.equals("sun") || q.equals("sunday")) return "7";
+        if(q.equals("열흘") || q.equals("10")) return "10";
+        if(q.equals("신작") || q.equals("new")) return "new";
         if(q.equals("최신") || q.equals("recent")) return "recent";
         return "";
+    }
+
+    private static String alphabetValue(String value) {
+        if(value == null) return "";
+        String q = value.trim().toLowerCase(Locale.ROOT);
+        if(q.equals("a-z") || q.equals("az")) return "a";
+        if(q.equals("0-9") || q.equals("09")) return "0";
+        return value.trim();
     }
 
     private static String comicType(String value) {
@@ -271,7 +293,9 @@ public class Search {
         if(q.equals("weekly") || q.equals("주간")) return "10";
         if(q.equals("biweekly") || q.equals("격주")) return "11";
         if(q.equals("monthly") || q.equals("월간")) return "12";
+        if(q.equals("irregular") || q.equals("비정기") || q.equals("격월/비정기")) return "13";
         if(q.equals("oneshot") || q.equals("단편")) return "14";
+        if(q.equals("uncategorized") || q.equals("미분류")) return "20";
         if(q.equals("completed") || q.equals("complete") || q.equals("완결")) return "16";
         if(q.equals("book") || q.equals("단행본")) return "15";
         return "";

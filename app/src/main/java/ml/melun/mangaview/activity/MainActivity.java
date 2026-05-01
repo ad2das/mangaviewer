@@ -314,7 +314,7 @@ public class MainActivity extends AppCompatActivity
     public int getTabId(int i){
         switch(i){
             case 0:
-                return 0;
+                return(R.id.nav_main);
             case 1:
                 return(R.id.nav_search);
             case 2:
@@ -329,6 +329,8 @@ public class MainActivity extends AppCompatActivity
 
     public int getFragmentIndex(int i){
         switch(i){
+            case R.id.nav_main:
+                return 0;
             case R.id.nav_search:
                 return 1;
             case R.id.nav_recent:
