@@ -50,6 +50,7 @@ public class MainSearch extends Fragment {
     TitleAdapter searchAdapter;
     Search search;
     SearchManga searchTask;
+    String activeSearchKey = null;
     Fragment fragment;
     LinearLayoutCompat optionsPanel;
     String prequery = null;
@@ -64,6 +65,8 @@ public class MainSearch extends Fragment {
         searchBox = rootView.findViewById(R.id.searchBox);
         searchResult = rootView.findViewById(R.id.searchResult);
         searchResult.setLayoutManager(new NpaLinearLayoutManager(getContext()));
+        searchResult.setHasFixedSize(true);
+        searchResult.setItemViewCacheSize(12);
         searchMode = rootView.findViewById(R.id.searchMode);
         baseMode = rootView.findViewById(R.id.searchBaseMode);
         advSearchBtn = rootView.findViewById(R.id.advSearchBtn);
@@ -120,6 +123,7 @@ public class MainSearch extends Fragment {
             else {
                 if (!search.isLast()) {
                     if(searchTask == null) {
+                        activeSearchKey = null;
                         searchTask = new SearchManga(search);
                         searchTask.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
                     }
@@ -148,17 +152,25 @@ public class MainSearch extends Fragment {
     }
 
     void searchSubmit(){
-        String query = searchBox.getText().toString();
+        String query = searchBox.getText().toString().trim();
         if(query.length()>0) {
             swipe.setRefreshing(true);
+            String key = searchKey(query);
+            if(searchTask != null && key.equals(activeSearchKey))
+                return;
             if(searchAdapter != null) searchAdapter.removeAll();
             else searchAdapter = new TitleAdapter(getContext());
             search = new Search(query,searchMode.getSelectedItemPosition(), baseMode.getSelectedItemPosition()+1);
             if(searchTask != null)
                 searchTask.cancel(true);
+            activeSearchKey = key;
             searchTask = new SearchManga(search);
             searchTask.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
         }
+    }
+
+    private String searchKey(String query) {
+        return query + "\u001f" + searchMode.getSelectedItemPosition() + "\u001f" + (baseMode.getSelectedItemPosition() + 1);
     }
 
 
@@ -173,6 +185,7 @@ public class MainSearch extends Fragment {
     public void onDestroyView() {
         if(searchTask != null)
             searchTask.cancel(true);
+        activeSearchKey = null;
         super.onDestroyView();
     }
 
@@ -192,8 +205,10 @@ public class MainSearch extends Fragment {
         @Override
         protected void onPostExecute(Integer res){
             super.onPostExecute(res);
-            if(searchTask == this)
+            if(searchTask == this) {
                 searchTask = null;
+                activeSearchKey = null;
+            }
             if(isCancelled() || targetSearch != search || getContext() == null)
                 return;
             if(res != 0){
@@ -251,6 +266,7 @@ public class MainSearch extends Fragment {
             super.onCancelled(res);
             if(searchTask == this) {
                 searchTask = null;
+                activeSearchKey = null;
                 if(swipe != null)
                     swipe.setRefreshing(false);
             }

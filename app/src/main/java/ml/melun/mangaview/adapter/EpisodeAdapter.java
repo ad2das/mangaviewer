@@ -72,7 +72,17 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
 
     @Override
     public long getItemId(int position) {
-        return position;
+        if(position == 0)
+            return Long.MIN_VALUE;
+        if(mData == null || position < 1 || position > mData.size())
+            return RecyclerView.NO_ID;
+        Manga manga = mData.get(position - 1);
+        if(manga.getId() >= 0)
+            return (((long) manga.getBaseMode()) << 32) ^ (manga.getId() & 0xffffffffL);
+        String key = manga.getOfflinePath();
+        if(key == null || key.length() == 0)
+            key = manga.getName();
+        return (((long) manga.getBaseMode()) << 32) ^ (key == null ? position : key.hashCode());
     }
 
     @Override
@@ -246,7 +256,8 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     }
 
     public void setTagClickListener(TagAdapter.tagOnclick t){
-        ta.setClickListener(t);
+        if(ta != null)
+            ta.setClickListener(t);
     }
 
     // parent activity will implement this method to respond to click events

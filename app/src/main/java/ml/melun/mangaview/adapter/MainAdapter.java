@@ -103,9 +103,10 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     @Override
     public long getItemId(int position) {
         if(data == null || position < 0 || position >= data.size())
-            return -1;
-        if(data.get(position) == null) return -1;
-        return data.get(position).hashCode();
+            return RecyclerView.NO_ID;
+        if(data.get(position) == null)
+            return -1000003L - position;
+        return (((long) position) << 32) ^ data.get(position).hashCode();
     }
 
 
@@ -378,6 +379,32 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         }
     }
 
+    private void replaceSection(Header header, List<?> items) {
+        int headerPosition = data.indexOf(header);
+        if(headerPosition < 0)
+            return;
+        int insertPosition = headerPosition + 1;
+        int endPosition = insertPosition;
+        while(endPosition < data.size() && !(data.get(endPosition) instanceof Header))
+            endPosition++;
+        int removeCount = endPosition - insertPosition;
+        if(removeCount > 0) {
+            data.subList(insertPosition, endPosition).clear();
+            notifyItemRangeRemoved(insertPosition, removeCount);
+        }
+
+        List<Object> replacement = new ArrayList<>();
+        if(items != null) {
+            for(Object item : items)
+                if(item != null)
+                    replacement.add(item);
+        }
+        if(replacement.size() == 0)
+            replacement.add(new NoResultManga());
+        data.addAll(insertPosition, replacement);
+        notifyItemRangeInserted(insertPosition, replacement.size());
+    }
+
     public void setMainClickListener(onItemClick main) {
         this.mainClickListener = main;
     }
@@ -422,68 +449,10 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             }
             uadapter.setData(u.getRecent());
 
-            for(int i=data.size()-1; i>=0; i--){
-                if(data.get(i) instanceof NoResultManga) {
-                    data.remove(i);
-                    notifyItemRemoved(i);
-                }
-            }
-
-            int i = data.indexOf(weekh);
-            if(i>-1) {
-                boolean alreadyHasNoResult = i + 1 < data.size() && data.get(i + 1) instanceof NoResultManga;
-                if (u.getWeeklyRanking().size() == 0 && !alreadyHasNoResult){
-                    data.add(++i, new NoResultManga());
-                    notifyItemInserted(i);
-                }
-                else {
-                    for (MainPage.RankingManga m : u.getWeeklyRanking()) {
-                        data.add(++i, m);
-                        notifyItemInserted(i);
-                    }
-                }
-            }
-
-            i = data.indexOf(besth);
-            if(i>-1) {
-                if (u.getRanking().size() == 0){
-                    data.add(++i, new NoResultManga());
-                    notifyItemInserted(i);
-                }
-                else {
-                    for (MainPage.RankingTitle t : u.getRanking()) {
-                        data.add(++i, t);
-                        notifyItemInserted(i);
-                    }
-                }
-            }
-
-            i = data.indexOf(hish);
-            if(i>-1) {
-                if (u.getOnlineRecent().size() == 0){
-                    data.add(++i, new NoResultManga());
-                    notifyItemInserted(i);
-                }
-                else {
-                    for (Manga m : u.getOnlineRecent()) {
-                        data.add(++i, m);
-                        notifyItemInserted(i);
-                    }
-                }
-            }
-
-            i = data.indexOf(updh);
-            if(i>-1){
-                if(u.getFavUpdate().size() == 0){
-                    data.add(++i, new NoResultManga());
-                    notifyItemInserted(i);
-                } else{
-                    for(Manga m : u.getFavUpdate()){
-                        data.add(++i, m);
-                        notifyItemInserted(i);
-                    }
-                }
-            }
+            replaceSection(weekh, u.getWeeklyRanking());
+            replaceSection(besth, u.getRanking());
+            replaceSection(hish, u.getOnlineRecent());
+            replaceSection(updh, u.getFavUpdate());
         }
 
         @Override

@@ -99,7 +99,8 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         int originSize = mData.size();
         mData.clear();
         mDataFiltered.clear();
-        notifyItemRangeRemoved(0,originSize);
+        if(originSize > 0)
+            notifyItemRangeRemoved(0,originSize);
     }
 
     @Override

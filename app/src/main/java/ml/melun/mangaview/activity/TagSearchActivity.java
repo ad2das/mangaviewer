@@ -18,6 +18,8 @@ import android.widget.TextView;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayoutDirection;
 
+import java.util.ArrayList;
+
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.adapter.TitleAdapter;
@@ -27,6 +29,7 @@ import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.mangaview.UpdatedList;
+import ml.melun.mangaview.mangaview.UpdatedManga;
 
 import static ml.melun.mangaview.MainApplication.httpClient;
 import static ml.melun.mangaview.MainApplication.p;
@@ -49,6 +52,8 @@ public class TagSearchActivity extends AppCompatActivity {
     SwipyRefreshLayout swipe;
     Bookmark bookmark;
     int baseMode;
+    LifecycleTask<?, ?, ?> loadTask;
+    boolean destroyed = false;
 
 
     @Override
@@ -61,6 +66,8 @@ public class TagSearchActivity extends AppCompatActivity {
         noresult = this.findViewById(R.id.tagSearchNoResult);
         LinearLayoutManager lm = new NpaLinearLayoutManager(context);
         searchResult.setLayoutManager(lm);
+        searchResult.setHasFixedSize(true);
+        searchResult.setItemViewCacheSize(12);
         Intent i = getIntent();
         query = i.getStringExtra("query");
         mode = i.getIntExtra("mode",0);
@@ -101,40 +108,60 @@ public class TagSearchActivity extends AppCompatActivity {
         if(mode == 5) {
             uadapter = new UpdatedAdapter(context);
             updated = new UpdatedList(p.getBaseMode());
-            getUpdated gu = new getUpdated();
-            gu.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+            startLoad(new getUpdated());
             swipe.setOnRefreshListener(direction -> {
                  if (!updated.isLast()) {
-                    getUpdated gu1 = new getUpdated();
-                    gu1.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+                    startLoad(new getUpdated());
                 } else swipe.setRefreshing(false);
             });
 
         }else if(mode == 7){
             adapter = new TitleAdapter(context);
             bookmark = new Bookmark();
-            getBookmarks gb = new getBookmarks();
-            gb.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+            startLoad(new getBookmarks());
             swipe.setOnRefreshListener(direction -> {
                 if (bookmark.isLast()) {
-                    getBookmarks gb1 = new getBookmarks();
-                    gb1.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+                    startLoad(new getBookmarks());
                 } else swipe.setRefreshing(false);
             });
 
         }else {
             adapter = new TitleAdapter(context);
             search = new Search(query,mode,baseMode);
-            searchManga sm = new searchManga();
-            sm.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+            startLoad(new searchManga());
             swipe.setOnRefreshListener(direction -> {
                 if (!search.isLast()) {
-                    searchManga sm1 = new searchManga();
-                    sm1.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+                    startLoad(new searchManga());
                 } else swipe.setRefreshing(false);
             });
         }
     }
+
+    @SuppressWarnings("unchecked")
+    private void startLoad(LifecycleTask<?, ?, ?> task) {
+        if(loadTask != null) {
+            swipe.setRefreshing(true);
+            return;
+        }
+        loadTask = task;
+        swipe.setRefreshing(true);
+        task.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+    }
+
+    private boolean prepareLoadResult(LifecycleTask<?, ?, ?> task) {
+        if(loadTask != task || destroyed || isFinishing())
+            return false;
+        loadTask = null;
+        return true;
+    }
+
+    private void clearLoad(LifecycleTask<?, ?, ?> task) {
+        if(loadTask == task)
+            loadTask = null;
+        if(swipe != null)
+            swipe.setRefreshing(false);
+    }
+
     public boolean onOptionsItemSelected(MenuItem item){
         if (item.getItemId() == android.R.id.home) {
             finish();
@@ -153,6 +180,8 @@ public class TagSearchActivity extends AppCompatActivity {
         @Override
         protected void onPostExecute(Integer integer) {
             super.onPostExecute(integer);
+            if(!prepareLoadResult(this))
+                return;
             if(integer != 0){
                 showCaptchaPopup(context, p);
             }
@@ -194,6 +223,12 @@ public class TagSearchActivity extends AppCompatActivity {
         }
 
         @Override
+        protected void onCancelled(Integer integer) {
+            super.onCancelled(integer);
+            clearLoad(this);
+        }
+
+        @Override
         protected Integer doInBackground(Void... voids) {
             return bookmark.fetch(httpClient);
         }
@@ -210,6 +245,8 @@ public class TagSearchActivity extends AppCompatActivity {
         @Override
         protected void onPostExecute(Integer res){
             super.onPostExecute(res);
+            if(!prepareLoadResult(this))
+                return;
             if(res != 0){
                 showCaptchaPopup(context, p);
             }
@@ -249,6 +286,12 @@ public class TagSearchActivity extends AppCompatActivity {
             }
             swipe.setRefreshing(false);
         }
+
+        @Override
+        protected void onCancelled(Integer res) {
+            super.onCancelled(res);
+            clearLoad(this);
+        }
     }
 
     private class getUpdated extends LifecycleTask<String,String,String> {
@@ -262,12 +305,17 @@ public class TagSearchActivity extends AppCompatActivity {
         @Override
         protected void onPostExecute(String res){
             super.onPostExecute(res);
-            if(updated.getResult().size() == 0 && uadapter.getItemCount() == 0){
+            if(!prepareLoadResult(this))
+                return;
+            ArrayList<UpdatedManga> result = updated.getResult();
+            if(result == null)
+                result = new ArrayList<>();
+            if(result.size() == 0 && uadapter.getItemCount() == 0){
                 //error
                 showCaptchaPopup(context, p);
             }
             if(uadapter.getItemCount()==0) {
-                uadapter.addData(updated.getResult());
+                uadapter.addData(result);
                 searchResult.setAdapter(uadapter);
                 uadapter.setOnClickListener(new UpdatedAdapter.onclickListener() {
                     @Override
@@ -286,7 +334,7 @@ public class TagSearchActivity extends AppCompatActivity {
                     }
                 });
             }else{
-                uadapter.addData(updated.getResult());
+                uadapter.addData(result);
             }
 
             if(uadapter.getItemCount()>0) {
@@ -295,6 +343,12 @@ public class TagSearchActivity extends AppCompatActivity {
                 noresult.setVisibility(View.VISIBLE);
             }
             swipe.setRefreshing(false);
+        }
+
+        @Override
+        protected void onCancelled(String res) {
+            super.onCancelled(res);
+            clearLoad(this);
         }
     }
     void popup(View view, final int position, final Title title, final int m){
@@ -333,5 +387,15 @@ public class TagSearchActivity extends AppCompatActivity {
             finish();
             startActivity(getIntent());
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        destroyed = true;
+        if(loadTask != null) {
+            loadTask.cancel(true);
+            loadTask = null;
+        }
+        super.onDestroy();
     }
 }

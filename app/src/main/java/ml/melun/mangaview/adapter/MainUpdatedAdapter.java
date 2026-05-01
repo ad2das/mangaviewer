@@ -60,7 +60,8 @@ public class MainUpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             int size = mData.size();
             mData.clear();
             loaded = false;
-            notifyItemRangeRemoved(0,size);
+            if(size > 0)
+                notifyItemRangeRemoved(0,size);
         }
         else
             mData = new ArrayList<>();
@@ -151,18 +152,26 @@ public class MainUpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     public void setData(List<Manga> data){
-        mData = data;
-        if(mData.size()==0){
+        List<Manga> replacement = new ArrayList<>();
+        if(data != null)
+            replacement.addAll(data);
+        if(replacement.size()==0){
             Manga none = new Manga(0,"결과 없음","", base_auto);
             none.addThumb("reload");
-            mData.add(none);
-            notifyItemChanged(0);
+            replacement.add(none);
             loaded = false;
         }else {
-            notifyItemChanged(0);
-            notifyItemRangeInserted(1, mData.size() - 1);
             loaded = true;
         }
+        if(mData == null)
+            mData = new ArrayList<>();
+        int oldSize = mData.size();
+        mData.clear();
+        if(oldSize > 0)
+            notifyItemRangeRemoved(0, oldSize);
+        mData.addAll(replacement);
+        if(mData.size() > 0)
+            notifyItemRangeInserted(0, mData.size());
 
     }
 }

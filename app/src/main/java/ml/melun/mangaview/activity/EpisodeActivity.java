@@ -68,6 +68,7 @@ public class EpisodeActivity extends AppCompatActivity {
     ProgressBar progress;
     boolean loaded = false;
     LinearLayoutCompat fab_container;
+    getEpisodes episodeTask;
 
 
     public boolean onOptionsItemSelected(MenuItem item){
@@ -94,11 +95,12 @@ public class EpisodeActivity extends AppCompatActivity {
                 //find index of bookmark;
                 if(episodes != null)
                     for(int i=0; i< episodes.size(); i++){
-                        if(episodes.get(i).getId()==bookmarkId){
-                            bookmarkIndex = i+1;
-                            episodeAdapter.setBookmark(bookmarkIndex);
-                            break;
-                        }
+                            if(episodes.get(i).getId()==bookmarkId){
+                                bookmarkIndex = i+1;
+                                if(episodeAdapter != null)
+                                    episodeAdapter.setBookmark(bookmarkIndex);
+                                break;
+                            }
                     }
             }
             if(bookmarkId>-1)
@@ -129,6 +131,8 @@ public class EpisodeActivity extends AppCompatActivity {
         episodeList = this.findViewById(R.id.EpisodeList);
         progress = this.findViewById(R.id.progress);
         episodeList.setLayoutManager(new NpaLinearLayoutManager(this));
+        episodeList.setHasFixedSize(true);
+        episodeList.setItemViewCacheSize(20);
         homeDir = p.getHomeDir();
         resumefab = this.findViewById(R.id.resumefab);
         fab_container = findViewById(R.id.fab_container);
@@ -151,8 +155,8 @@ public class EpisodeActivity extends AppCompatActivity {
         if(online) {
             mode = 0;
             fab_container.setVisibility(View.GONE);
-            getEpisodes g = new getEpisodes();
-            g.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+            episodeTask = new getEpisodes();
+            episodeTask.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
         }else{
             //offline title
             //initialize eps list
@@ -348,13 +352,15 @@ public class EpisodeActivity extends AppCompatActivity {
         protected Integer doInBackground(Void... params) {
             int code = title.fetchEps(httpClient);
             episodes = title.getEps();
-            episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
             return code;
         }
 
         @Override
         protected void onPostExecute(Integer res) {
             super.onPostExecute(res);
+            if(episodeTask != this)
+                return;
+            episodeTask = null;
             if(res == LOAD_CAPTCHA){
                 //캡차 처리 팝업
                 showTokiCaptchaPopup(context, p);
@@ -363,6 +369,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 showCaptchaPopup(title.getUrl(), context, p);
                 return;
             }else {
+                episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
                 afterLoad();
                 p.addRecent(title);
                 p.updateRecentData(title);
@@ -371,6 +378,15 @@ public class EpisodeActivity extends AppCompatActivity {
                 fab_container.setVisibility(View.VISIBLE);
                 invalidateOptionsMenu();
             }
+        }
+
+        @Override
+        protected void onCancelled(Integer res) {
+            super.onCancelled(res);
+            if(episodeTask == this)
+                episodeTask = null;
+            if(progress != null)
+                progress.setVisibility(View.GONE);
         }
     }
 
@@ -403,5 +419,13 @@ public class EpisodeActivity extends AppCompatActivity {
         return true;
     }
 
+    @Override
+    protected void onDestroy() {
+        if(episodeTask != null) {
+            episodeTask.cancel(true);
+            episodeTask = null;
+        }
+        super.onDestroy();
+    }
 
 }

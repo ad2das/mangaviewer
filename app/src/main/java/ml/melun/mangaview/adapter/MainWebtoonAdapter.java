@@ -16,6 +16,7 @@ import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.cardview.widget.CardView;
 import androidx.core.content.ContextCompat;
+import androidx.recyclerview.widget.DiffUtil;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -24,7 +25,10 @@ import com.bumptech.glide.load.engine.DiskCacheStrategy;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -56,6 +60,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     MainAdapter.onItemClick listener;
     int baseMode;
     Fetcher fetcher;
+    private final Set<String> preloadedThumbs = new LinkedHashSet<>();
+    private static final int PRELOADED_THUMB_LIMIT = 120;
 
     public MainWebtoonAdapter(Context context){
         this(context, base_webtoon);
@@ -69,7 +75,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         inflater = LayoutInflater.from(context);
         dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
         rows = buildRows(dataSet, true);
-        setHasStableIds(false);
+        setHasStableIds(true);
     }
 
     public void fetch(){
@@ -131,7 +137,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     @Override
     public long getItemId(int position) {
-        return position;
+        if(rows == null || position < 0 || position >= rows.size())
+            return RecyclerView.NO_ID;
+        return rowKey(rows.get(position)).hashCode();
     }
 
     private List<Object> buildRows(List<Ranking<?>> sections, boolean includeEmpty) {
@@ -344,8 +352,15 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         void setItems(List<?> items) {
+            int oldSize = this.items == null ? 0 : this.items.size();
             this.items = items;
-            notifyDataSetChanged();
+            int newSize = this.items == null ? 0 : this.items.size();
+            if(oldSize == newSize) {
+                if(newSize > 0)
+                    notifyItemRangeChanged(0, newSize);
+            } else {
+                notifyDataSetChanged();
+            }
         }
 
         @NonNull
@@ -436,6 +451,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 String thumb = ((Title) item).getThumb();
                 if(thumb == null || thumb.length() == 0)
                     continue;
+                String key = ((Title) item).getBaseMode() + ":" + thumb;
+                if(!preloadedThumbs.add(key))
+                    continue;
+                trimPreloadedThumbs();
                 Glide.with(context)
                         .load(getGlideUrl(thumb, ((Title) item).getBaseMode()))
                         .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
@@ -447,13 +466,78 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
     }
 
+    private void trimPreloadedThumbs() {
+        while(preloadedThumbs.size() > PRELOADED_THUMB_LIMIT) {
+            Iterator<String> iterator = preloadedThumbs.iterator();
+            if(!iterator.hasNext())
+                return;
+            iterator.next();
+            iterator.remove();
+        }
+    }
+
+    private void updateRows(List<Object> newRows) {
+        final List<Object> oldRows = rows == null ? Collections.emptyList() : new ArrayList<>(rows);
+        final List<Object> nextRows = newRows == null ? new ArrayList<>() : new ArrayList<>(newRows);
+        DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
+            @Override
+            public int getOldListSize() {
+                return oldRows.size();
+            }
+
+            @Override
+            public int getNewListSize() {
+                return nextRows.size();
+            }
+
+            @Override
+            public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
+                return rowKey(oldRows.get(oldItemPosition)).equals(rowKey(nextRows.get(newItemPosition)));
+            }
+
+            @Override
+            public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
+                return rowContentKey(oldRows.get(oldItemPosition)).equals(rowContentKey(nextRows.get(newItemPosition)));
+            }
+        }, false);
+        rows = nextRows;
+        diff.dispatchUpdatesTo(this);
+    }
+
+    private String rowKey(Object row) {
+        if(row instanceof CategoryPanel)
+            return "category";
+        if(row instanceof String)
+            return "group:" + row;
+        if(row instanceof Ranking)
+            return "section:" + ((Ranking<?>) row).getName();
+        return String.valueOf(row);
+    }
+
+    private String rowContentKey(Object row) {
+        if(row instanceof Ranking) {
+            Ranking<?> ranking = (Ranking<?>) row;
+            StringBuilder builder = new StringBuilder(rowKey(row)).append(':').append(ranking.size());
+            for(Object item : ranking) {
+                if(item instanceof Title) {
+                    Title title = (Title) item;
+                    builder.append(':').append(title.getBaseMode()).append('/').append(title.getId());
+                } else if(item != null) {
+                    builder.append(':').append(item.hashCode());
+                }
+            }
+            return builder.toString();
+        }
+        return rowKey(row);
+    }
+
     private class Fetcher extends LifecycleTask<Void, SectionResult, Boolean> {
         @Override
         protected void onPreExecute() {
             super.onPreExecute();
             dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
-            rows = buildRows(dataSet, false);
-            notifyDataSetChanged();
+            preloadedThumbs.clear();
+            updateRows(buildRows(dataSet, false));
         }
 
         @Override
@@ -511,8 +595,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(result.ranking == null || result.ranking.size() == 0)
                 return;
             preloadThumbnails(Collections.singletonList(result.ranking));
-            rows = buildRows(dataSet, false);
-            notifyDataSetChanged();
+            updateRows(buildRows(dataSet, false));
         }
 
         @Override
@@ -525,8 +608,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     listener.captchaCallback();
                 return;
             }
-            rows = buildRows(dataSet, false);
-            notifyDataSetChanged();
+            updateRows(buildRows(dataSet, false));
         }
 
         @Override
