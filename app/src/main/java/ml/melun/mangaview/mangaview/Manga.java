@@ -4,9 +4,10 @@ import java.io.File;
 import java.net.URLDecoder;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.json.JSONObject;
 import org.jsoup.*;
@@ -97,6 +98,7 @@ public class Manga {
 
         mode = 0;
         imgs = new ArrayList<>();
+        Set<String> seenImages = new LinkedHashSet<>();
         eps = new ArrayList<>();
         comments = new ArrayList<>();
         bcomments = new ArrayList<>();
@@ -171,13 +173,13 @@ public class Manga {
                             if (style.length() == 0) {
                                 boolean flag = false;
                                 for (Attribute a : e.attributes()) {
-                                    if (a.getKey().contains("data") && addImageIfValid(client, a.getValue())) {
+                                    if (a.getKey().contains("data") && addImageIfValid(client, seenImages, a.getValue())) {
                                         flag = true;
                                         break;
                                     }
                                 }
                                 if (!flag) {
-                                    addImageIfValid(client, e.attr("src"));
+                                    addImageIfValid(client, seenImages, e.attr("src"));
                                 }
                             }
                         }
@@ -243,6 +245,7 @@ public class Manga {
     private int fetchWolf(CustomHttpClient client, String viewPath, String epPath) {
         mode = 0;
         imgs = new ArrayList<>();
+        Set<String> seenImages = new LinkedHashSet<>();
         eps = new ArrayList<>();
         comments = new ArrayList<>();
         bcomments = new ArrayList<>();
@@ -269,7 +272,7 @@ public class Manga {
                 if(src == null || src.length() == 0)
                     src = img.attr("src");
                 if(src.length() > 0 && !src.contains("sprite.png"))
-                    addImageIfValid(client, src);
+                    addImageIfValid(client, seenImages, src);
             }
 
             if(title != null && title.getEps() != null && title.getEps().size() > 0) {
@@ -290,6 +293,7 @@ public class Manga {
             }
             if(imgs.size() == 0 && attempt == 0 && client.resolveWfwfDomainNow()) {
                 imgs.clear();
+                seenImages.clear();
                 eps.clear();
                 continue;
             }
@@ -302,18 +306,43 @@ public class Manga {
         return LOAD_OK;
     }
 
-    private boolean addImageIfValid(CustomHttpClient client, String img) {
+    private boolean addImageIfValid(CustomHttpClient client, Set<String> seenImages, String img) {
         if(img == null)
             return false;
         img = img.trim();
-        if(img.length() == 0 || img.contains("blank") || img.contains("loading"))
+        if(!isImageSourceCandidate(img))
             return false;
-        if(img.startsWith("/"))
+        if(img.startsWith("//"))
+            img = "https:" + img;
+        else if(img.startsWith("/"))
             img = client.getUrl(baseMode) + img;
-        if(imgs.contains(img))
+        if(!seenImages.add(img))
             return false;
         imgs.add(img);
         return true;
+    }
+
+    private boolean isImageSourceCandidate(String img) {
+        if(img == null)
+            return false;
+        String lower = img.toLowerCase();
+        if(lower.length() == 0
+                || lower.contains("blank")
+                || lower.contains("loading")
+                || lower.startsWith("data:")
+                || lower.startsWith("javascript:")
+                || lower.startsWith("about:"))
+            return false;
+        return lower.startsWith("http://")
+                || lower.startsWith("https://")
+                || lower.startsWith("//")
+                || lower.startsWith("/")
+                || lower.contains("/")
+                || lower.contains(".jpg")
+                || lower.contains(".jpeg")
+                || lower.contains(".png")
+                || lower.contains(".webp")
+                || lower.contains(".gif");
     }
 
     private Manga wolfEpisode(Element link, int titleId) {
@@ -386,13 +415,18 @@ public class Manga {
                 imgs = new ArrayList<>();
                 //is offline : read image list
                 if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
-                    DocumentFile[] offimgs = DocumentFile.fromTreeUri(context, Uri.parse(offlinePath)).listFiles();
-                    Arrays.sort(offimgs, (documentFile, t1) -> documentFile.getName().compareTo(t1.getName()));
+                    DocumentFile root = DocumentFile.fromTreeUri(context, Uri.parse(offlinePath));
+                    DocumentFile[] offimgs = root == null ? null : root.listFiles();
+                    if(offimgs == null)
+                        return imgs;
+                    Arrays.sort(offimgs, (documentFile, t1) -> String.valueOf(documentFile.getName()).compareTo(String.valueOf(t1.getName())));
                     for (DocumentFile f : offimgs) {
                         imgs.add(f.getUri().toString());
                     }
                 } else {
                     File[] offimgs = new File(offlinePath).listFiles();
+                    if(offimgs == null)
+                        return imgs;
                     Arrays.sort(offimgs);
                     for (File img : offimgs) {
                         imgs.add(img.getAbsolutePath());

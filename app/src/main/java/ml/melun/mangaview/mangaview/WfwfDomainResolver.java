@@ -15,6 +15,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import okhttp3.Call;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
@@ -27,6 +28,10 @@ public class WfwfDomainResolver {
     private static final int PARALLEL_PROBES = 10;
 
     public static String resolve(OkHttpClient client, String currentUrl, Map<String, String> headers) {
+        return resolve(client, currentUrl, headers, null);
+    }
+
+    public static String resolve(OkHttpClient client, String currentUrl, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup) {
         int current = getNumber(currentUrl);
         if(current <= 0)
             current = DEFAULT_NUMBER;
@@ -38,10 +43,10 @@ public class WfwfDomainResolver {
                 .build();
 
         String currentRoot = "https://wfwf" + current + ".com";
-        if(isAlive(probeClient, currentRoot, headers))
+        if(isAlive(probeClient, currentRoot, headers, requestGroup))
             return currentRoot;
 
-        return findAliveCandidate(probeClient, candidates(current), headers);
+        return findAliveCandidate(probeClient, candidates(current), headers, requestGroup);
     }
 
     public static boolean isWfwfUrl(String url) {
@@ -83,10 +88,12 @@ public class WfwfDomainResolver {
         return numbers;
     }
 
-    private static String findAliveCandidate(OkHttpClient client, List<Integer> candidates, Map<String, String> headers) {
+    private static String findAliveCandidate(OkHttpClient client, List<Integer> candidates, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup) {
         ExecutorService executor = Executors.newFixedThreadPool(PARALLEL_PROBES);
         try {
             for(int start = 0; start < candidates.size(); start += PARALLEL_PROBES) {
+                if(requestGroup != null && requestGroup.isCancelled())
+                    return null;
                 int end = Math.min(start + PARALLEL_PROBES, candidates.size());
                 ArrayList<Future<String>> futures = new ArrayList<>();
                 ExecutorCompletionService<String> completionService = new ExecutorCompletionService<>(executor);
@@ -96,7 +103,7 @@ public class WfwfDomainResolver {
                         @Override
                         public String call() {
                             String root = "https://wfwf" + number + ".com";
-                            return isAlive(client, root, headers) ? root : null;
+                            return isAlive(client, root, headers, requestGroup) ? root : null;
                         }
                     }));
                 }
@@ -129,24 +136,30 @@ public class WfwfDomainResolver {
             numbers.add(number);
     }
 
-    private static boolean isAlive(OkHttpClient client, String root, Map<String, String> headers) {
-        return probe(client, root + "/ing", headers) || probe(client, root + "/cm", headers);
+    private static boolean isAlive(OkHttpClient client, String root, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup) {
+        return probe(client, root + "/ing", headers, requestGroup) || probe(client, root + "/cm", headers, requestGroup);
     }
 
-    private static boolean probe(OkHttpClient client, String url, Map<String, String> headers) {
+    private static boolean probe(OkHttpClient client, String url, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup) {
         Response response = null;
+        Call call = null;
         try {
             Request.Builder builder = new Request.Builder().url(url).get();
             if(headers != null)
                 for(String key : headers.keySet())
                     builder.addHeader(key, headers.get(key));
-            response = client.newCall(builder.build()).execute();
+            call = client.newCall(builder.build());
+            if(requestGroup != null)
+                requestGroup.add(call);
+            response = call.execute();
             int code = response.code();
             String body = response.body() == null ? "" : response.body().string();
             return code >= 200 && code < 500 && looksLikeWfwf(body);
         } catch (Exception e) {
             return false;
         } finally {
+            if(requestGroup != null && call != null)
+                requestGroup.remove(call);
             if(response != null)
                 response.close();
         }

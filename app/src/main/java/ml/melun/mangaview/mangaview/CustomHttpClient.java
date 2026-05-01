@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -26,6 +27,7 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
 import okhttp3.CipherSuite;
+import okhttp3.Call;
 import okhttp3.ConnectionSpec;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -48,6 +50,7 @@ public class CustomHttpClient {
     Map<String, Long> cookieSyncAt;
     Map<String, CachedPage> pageCache;
     Map<String, PageLoadState> pageLoads;
+    private final ThreadLocal<RequestGroup> currentRequestGroup = new ThreadLocal<>();
     private final Object wfwfDomainLock = new Object();
     private DomainResolveState wfwfDomainResolveState;
     private long wfwfDomainLastForcedRetry = 0;
@@ -209,9 +212,24 @@ public class CustomHttpClient {
         return cookies.get(k);
     }
 
+    public <T> T runWithRequestGroup(RequestGroup requestGroup, RequestWork<T> work) throws Exception {
+        RequestGroup previous = currentRequestGroup.get();
+        currentRequestGroup.set(requestGroup);
+        try {
+            return work.run();
+        } finally {
+            if(previous == null)
+                currentRequestGroup.remove();
+            else
+                currentRequestGroup.set(previous);
+        }
+    }
+
     public Response get(String url, Map<String, String> headers){
 //        System.out.println(url);
         Response response;
+        Call call = null;
+        RequestGroup requestGroup = currentRequestGroup.get();
         try {
             Request.Builder builder = new Request.Builder()
                     .url(url)
@@ -222,12 +240,18 @@ public class CustomHttpClient {
                 }
 
             Request request = builder.build();
-            response = this.client.newCall(request).execute();
+            call = this.client.newCall(request);
+            if(requestGroup != null)
+                requestGroup.add(call);
+            response = call.execute();
             storeResponseCookies(response);
         } catch (Exception e){
-            if(!isInterruptedRequest(e))
+            if(!isInterruptedRequest(e) && (requestGroup == null || !requestGroup.isCancelled()))
                 e.printStackTrace();
             return null;
+        } finally {
+            if(requestGroup != null && call != null)
+                requestGroup.remove(call);
         }
         return response;
     }
@@ -297,7 +321,7 @@ public class CustomHttpClient {
                 Map<String, String> headers = new HashMap<>();
                 headers.put("User-Agent", agent);
                 headers.put("Referer", root);
-                String resolved = WfwfDomainResolver.resolve(client, root, headers);
+                String resolved = WfwfDomainResolver.resolve(client, root, headers, currentRequestGroup.get());
                 if(resolved != null && !resolved.equals(root)) {
                     p.setWebtoonUrl(resolved);
                     p.setUrl(resolved + "/cm");
@@ -594,6 +618,8 @@ public class CustomHttpClient {
         headers.put("Cookie", cs.toString());
 
         Response response = null;
+        Call call = null;
+        RequestGroup requestGroup = currentRequestGroup.get();
         try {
             Request.Builder builder = new Request.Builder()
                     .addHeader("User-Agent", agent)
@@ -605,18 +631,62 @@ public class CustomHttpClient {
             }
 
             Request request = builder.build();
-            response = this.client.newCall(request).execute();
+            call = this.client.newCall(request);
+            if(requestGroup != null)
+                requestGroup.add(call);
+            response = call.execute();
             storeResponseCookies(response);
         }catch (Exception e){
-            if(!isInterruptedRequest(e))
+            if(!isInterruptedRequest(e) && (requestGroup == null || !requestGroup.isCancelled()))
                 e.printStackTrace();
+        } finally {
+            if(requestGroup != null && call != null)
+                requestGroup.remove(call);
         }
         return response;
 
     }
 
     private static boolean isInterruptedRequest(Exception e) {
-        return e instanceof InterruptedIOException || Thread.currentThread().isInterrupted();
+        return e instanceof InterruptedIOException
+                || Thread.currentThread().isInterrupted()
+                || "Canceled".equals(e.getMessage());
+    }
+
+    public interface RequestWork<T> {
+        T run() throws Exception;
+    }
+
+    public static class RequestGroup {
+        private final Set<Call> calls = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+        private volatile boolean cancelled = false;
+
+        void add(Call call) {
+            synchronized (calls) {
+                if(cancelled) {
+                    call.cancel();
+                    return;
+                }
+                calls.add(call);
+            }
+        }
+
+        void remove(Call call) {
+            calls.remove(call);
+        }
+
+        public boolean isCancelled() {
+            return cancelled;
+        }
+
+        public void cancel() {
+            cancelled = true;
+            synchronized (calls) {
+                for(Call call : calls)
+                    call.cancel();
+                calls.clear();
+            }
+        }
     }
 
 

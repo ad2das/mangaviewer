@@ -4,7 +4,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
-import android.os.AsyncTask;
+import android.os.Handler;
+import android.os.Looper;
 
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
@@ -36,6 +37,10 @@ import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.interfaces.StringCallback;
@@ -44,6 +49,7 @@ import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.adapter.CustomSpinnerAdapter;
 import ml.melun.mangaview.adapter.StripAdapter;
 import ml.melun.mangaview.ui.CustomSpinner;
+import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.model.PageItem;
@@ -86,8 +92,10 @@ public class ViewerActivity extends AppCompatActivity {
     CustomSpinner spinner;
     CustomSpinnerAdapter spinnerAdapter;
     InfiniteScrollCallback infiniteScrollCallback;
-    loadImages loader;
-    prefetchImages nextPrefetcher;
+    LoadImagesJob loader;
+    PrefetchImagesJob nextPrefetcher;
+    final Handler mainHandler = new Handler(Looper.getMainLooper());
+    final ExecutorService imageLoadExecutor = Executors.newFixedThreadPool(2);
     int episodeLoaderGeneration = 0;
     int nextPrefetchEpisodeId = -1;
     int nextPrefetchBaseMode = -1;
@@ -156,7 +164,7 @@ public class ViewerActivity extends AppCompatActivity {
                     cancelActiveEpisodeLoader();
                     previousEpisodeBoundaryLoading = true;
                     int generation = episodeLoaderGeneration;
-                    loader = new loadImages(target, m -> {
+                    loader = new LoadImagesJob(target, m -> {
                         if(!isActiveEpisodeLoader(generation) || m == null || !isPreviousTargetStillExpected(m)) {
                             if(isActiveEpisodeLoader(generation)) {
                                 previousEpisodeBoundaryLoading = false;
@@ -170,7 +178,7 @@ public class ViewerActivity extends AppCompatActivity {
                             callback.prevLoaded(m);
                         }
                     },false);
-                    loader.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+                    loader.start();
                     return target;
                 }else{
                     callback.prevLoaded(null);
@@ -194,7 +202,7 @@ public class ViewerActivity extends AppCompatActivity {
                     cancelActiveEpisodeLoader();
                     nextEpisodeBoundaryLoading = true;
                     int generation = episodeLoaderGeneration;
-                    loader = new loadImages(target, m -> {
+                    loader = new LoadImagesJob(target, m -> {
                         if(!isActiveEpisodeLoader(generation) || m == null || !isNextTargetStillExpected(m)) {
                             if(isActiveEpisodeLoader(generation)) {
                                 nextEpisodeBoundaryLoading = false;
@@ -212,7 +220,7 @@ public class ViewerActivity extends AppCompatActivity {
                             prefetchNextEpisode(m);
                         }
                     },false);
-                    loader.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+                    loader.start();
                     return target;
                 }else{
                     callback.nextLoaded(null);
@@ -357,9 +365,9 @@ public class ViewerActivity extends AppCompatActivity {
             m.setTitle(title);
         this.manga = m;
         if(loader != null)
-            loader.cancel(true);
-        loader = new loadImages(m, callback,true);
-        loader.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+            loader.cancel();
+        loader = new LoadImagesJob(m, callback,true);
+        loader.start();
     }
 
     void loadManga(Manga m){
@@ -367,6 +375,8 @@ public class ViewerActivity extends AppCompatActivity {
             showPopup(context, "오류", "만화를 불러 오던중 오류가 발생했습니다.", (dialog, which) -> ViewerActivity.this.finish(), dialog -> ViewerActivity.this.finish());
             return;
         }
+        cancelActiveEpisodeLoader();
+        cancelNextPrefetcher();
         if(stripAdapter!=null) stripAdapter.removeAll();
         if(m.isOnline()) {
             if(hasLoadedImages(m)) {
@@ -528,40 +538,54 @@ public class ViewerActivity extends AppCompatActivity {
 
 
 
-    private class loadImages extends AsyncTask<Void,String,Integer> {
+    private class LoadImagesJob {
         boolean lockui;
         LoadMangaCallback callback;
         Manga m;
+        CustomHttpClient.RequestGroup requestGroup = new CustomHttpClient.RequestGroup();
+        Future<?> future;
+        volatile boolean cancelled = false;
 
-        public loadImages(Manga m, LoadMangaCallback callback, boolean lockui){
+        public LoadImagesJob(Manga m, LoadMangaCallback callback, boolean lockui){
             this.lockui = lockui;
             this.m = m;
             this.callback = callback;
         }
 
-        protected void onPreExecute() {
-            super.onPreExecute();
+        void start() {
             if(lockui) lockUi(true);
-            setOnBackPressed(() -> {
-                loadImages.super.cancel(true);
-                finish();
-            });
-        }
-
-        protected Integer doInBackground(Void... params) {
-            if(m.isOnline()) {
-                return m.fetch(httpClient);
-            }else{
-                return LOAD_OK;
+            if(lockui) {
+                setOnBackPressed(() -> {
+                    cancel();
+                    ViewerActivity.this.finish();
+                });
+            }
+            try {
+                future = imageLoadExecutor.submit(() -> {
+                    int result = LOAD_OK;
+                    try {
+                        if(m.isOnline())
+                            result = httpClient.runWithRequestGroup(requestGroup, () -> m.fetch(httpClient));
+                    } catch (Exception e) {
+                        if(!cancelled && !isFinishing())
+                            e.printStackTrace();
+                    }
+                    int finalResult = result;
+                    mainHandler.post(() -> finish(finalResult));
+                });
+            } catch (RejectedExecutionException e) {
+                if(!cancelled && !isFinishing())
+                    e.printStackTrace();
+                finish(LOAD_OK);
             }
         }
 
-        @Override
-        protected void onPostExecute(Integer res) {
-            if(isCancelled() || isFinishing())
+        void finish(Integer res) {
+            if(cancelled || isFinishing())
                 return;
-            if(loader == this)
-                loader = null;
+            if(loader != this)
+                return;
+            loader = null;
             if(res == LOAD_CAPTCHA){
                 //캡차 처리 팝업
                 if(lockui) lockUi(false);
@@ -573,14 +597,15 @@ public class ViewerActivity extends AppCompatActivity {
             if(lockui) lockUi(false);
             if (title == null)
                 title = m.getTitle();
-            super.onPostExecute(res);
             resetOnBackPressed();
             callback.post(m);
         }
 
-        @Override
-        protected void onCancelled(Integer res) {
-            super.onCancelled(res);
+        void cancel() {
+            cancelled = true;
+            requestGroup.cancel();
+            if(future != null)
+                future.cancel(true);
             if(loader == this) {
                 loader = null;
                 if(lockui) lockUi(false);
@@ -589,34 +614,53 @@ public class ViewerActivity extends AppCompatActivity {
         }
     }
 
-    private class prefetchImages extends AsyncTask<Void, Void, Integer> {
+    private class PrefetchImagesJob {
         Manga target;
+        CustomHttpClient.RequestGroup requestGroup = new CustomHttpClient.RequestGroup();
+        Future<?> future;
+        volatile boolean cancelled = false;
 
-        prefetchImages(Manga target) {
+        PrefetchImagesJob(Manga target) {
             this.target = target;
         }
 
-        @Override
-        protected Integer doInBackground(Void... voids) {
-            if(target == null || !target.isOnline() || hasLoadedImages(target))
-                return LOAD_OK;
-            return target.fetch(httpClient);
+        void start() {
+            try {
+                future = imageLoadExecutor.submit(() -> {
+                    int result = LOAD_OK;
+                    try {
+                        if(target != null && target.isOnline() && !hasLoadedImages(target))
+                            result = httpClient.runWithRequestGroup(requestGroup, () -> target.fetch(httpClient));
+                    } catch (Exception e) {
+                        if(!cancelled && !isFinishing())
+                            e.printStackTrace();
+                    }
+                    int finalResult = result;
+                    mainHandler.post(() -> finish(finalResult));
+                });
+            } catch (RejectedExecutionException e) {
+                if(!cancelled && !isFinishing())
+                    e.printStackTrace();
+                finish(LOAD_OK);
+            }
         }
 
-        @Override
-        protected void onPostExecute(Integer result) {
-            if(nextPrefetcher == this)
-                nextPrefetcher = null;
-            if(isCancelled() || isFinishing() || result == LOAD_CAPTCHA || !hasLoadedImages(target))
+        void finish(Integer result) {
+            if(nextPrefetcher != this)
+                return;
+            nextPrefetcher = null;
+            if(cancelled || isFinishing() || result == LOAD_CAPTCHA || !hasLoadedImages(target))
                 return;
             preloadFirstPages(target);
             if(stripAdapter != null && manager != null && manager.findLastVisibleItemPosition() >= manager.getItemCount() - 12)
                 attachNextEpisode(false);
         }
 
-        @Override
-        protected void onCancelled(Integer result) {
-            super.onCancelled(result);
+        void cancel() {
+            cancelled = true;
+            requestGroup.cancel();
+            if(future != null)
+                future.cancel(true);
             if(nextPrefetcher == this)
                 nextPrefetcher = null;
         }
@@ -954,16 +998,25 @@ public class ViewerActivity extends AppCompatActivity {
         Manga target = current.nextEp();
         if(target == null)
             return;
-        if(nextPrefetchEpisodeId == target.getId() && nextPrefetchBaseMode == target.getBaseMode())
+        if(nextPrefetcher != null
+                && nextPrefetchEpisodeId == target.getId()
+                && nextPrefetchBaseMode == target.getBaseMode())
             return;
         if(hasLoadedImages(target))
             return;
         if(nextPrefetcher != null)
-            nextPrefetcher.cancel(true);
+            nextPrefetcher.cancel();
         nextPrefetchEpisodeId = target.getId();
         nextPrefetchBaseMode = target.getBaseMode();
-        nextPrefetcher = new prefetchImages(target);
-        nextPrefetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        nextPrefetcher = new PrefetchImagesJob(target);
+        nextPrefetcher.start();
+    }
+
+    private void cancelNextPrefetcher() {
+        if(nextPrefetcher != null)
+            nextPrefetcher.cancel();
+        nextPrefetchEpisodeId = -1;
+        nextPrefetchBaseMode = -1;
     }
 
     private boolean hasLoadedImages(Manga target) {
@@ -1038,7 +1091,7 @@ public class ViewerActivity extends AppCompatActivity {
     private void cancelActiveEpisodeLoader() {
         episodeLoaderGeneration++;
         if(loader != null)
-            loader.cancel(true);
+            loader.cancel();
         previousEpisodeBoundaryLoading = false;
         nextEpisodeBoundaryLoading = false;
         previousEpisodeBoundaryJumpPending = false;
@@ -1091,9 +1144,9 @@ public class ViewerActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         if(loader != null)
-            loader.cancel(true);
-        if(nextPrefetcher != null)
-            nextPrefetcher.cancel(true);
+            loader.cancel();
+        cancelNextPrefetcher();
+        imageLoadExecutor.shutdownNow();
         super.onDestroy();
     }
 

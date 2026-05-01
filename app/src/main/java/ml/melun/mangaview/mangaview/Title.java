@@ -79,7 +79,8 @@ public class Title extends MTitle {
                 if(r == null)
                     return LOAD_OK;
                 //웹툰의 경우 캡차 있을 수 있음.
-                if(r.code() == 302 && r.header("location").contains("captcha.php")){
+                String location = r.header("location");
+                if(r.code() == 302 && location != null && location.contains("captcha.php")){
                     r.close();
                     return LOAD_CAPTCHA;
                 }
