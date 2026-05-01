@@ -171,25 +171,13 @@ public class Manga {
                             if (style.length() == 0) {
                                 boolean flag = false;
                                 for (Attribute a : e.attributes()) {
-                                    if (a.getKey().contains("data")) {
-                                        String img = a.getValue();
-                                        if (!img.isEmpty() && !img.contains("blank") && !img.contains("loading")) {
-                                            flag = true;
-                                            if (img.startsWith("/"))
-                                                imgs.add(client.getUrl(baseMode) + img);
-                                            else
-                                                imgs.add(img);
-                                        }
+                                    if (a.getKey().contains("data") && addImageIfValid(client, a.getValue())) {
+                                        flag = true;
+                                        break;
                                     }
                                 }
                                 if (!flag) {
-                                    String img = e.attr("src");
-                                    if (!img.isEmpty() && !img.contains("blank") && !img.contains("loading")) {
-                                        if (img.startsWith("/"))
-                                            imgs.add(client.getUrl(baseMode) + img);
-                                        else
-                                            imgs.add(img);
-                                    }
+                                    addImageIfValid(client, e.attr("src"));
                                 }
                             }
                         }
@@ -280,8 +268,8 @@ public class Manga {
                 String src = img.attr("data-original");
                 if(src == null || src.length() == 0)
                     src = img.attr("src");
-                if(src.length() > 0 && !src.contains("sprite.png") && !src.contains("loading"))
-                    imgs.add(src);
+                if(src.length() > 0 && !src.contains("sprite.png"))
+                    addImageIfValid(client, src);
             }
 
             if(title != null && title.getEps() != null && title.getEps().size() > 0) {
@@ -312,6 +300,20 @@ public class Manga {
             }
         }
         return LOAD_OK;
+    }
+
+    private boolean addImageIfValid(CustomHttpClient client, String img) {
+        if(img == null)
+            return false;
+        img = img.trim();
+        if(img.length() == 0 || img.contains("blank") || img.contains("loading"))
+            return false;
+        if(img.startsWith("/"))
+            img = client.getUrl(baseMode) + img;
+        if(imgs.contains(img))
+            return false;
+        imgs.add(img);
+        return true;
     }
 
     private Manga wolfEpisode(Element link, int titleId) {

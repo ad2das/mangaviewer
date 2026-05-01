@@ -109,6 +109,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     public void appendManga(Manga m){
         if(items == null)
             items = new ArrayList<>();
+        if(hasMangaLoaded(m))
+            return;
         int prevsize = items.size();
         if(items.size() == 0)
             items.add(new InfoItem(m.prevEp(), m));
@@ -131,6 +133,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             appendManga(m);
             return 0;
         }
+        if(hasMangaLoaded(m))
+            return 0;
         int prevsize = items.size();
         List<String> imgs = m.getImgs(mainContext);
         for(int i=imgs.size()-1; i>=0; i--){
