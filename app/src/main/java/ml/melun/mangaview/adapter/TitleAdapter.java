@@ -110,6 +110,8 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     }
 
     public void addData(List<?> t){
+        if(t == null)
+            return;
         int oSize = mData.size();
         int inserted = 0;
         for(Object d:t){
