@@ -21,6 +21,7 @@ import android.net.NetworkInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.text.InputType;
 import android.util.DisplayMetrics;
 import android.view.Display;
@@ -562,7 +563,7 @@ public class Utils {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q){
             return context.getExternalFilesDir("");
         } else {
-            return new File("/sdcard/MangaView/saved/");
+            return new File(Environment.getExternalStorageDirectory(), "MangaView/saved/");
         }
     }
 
