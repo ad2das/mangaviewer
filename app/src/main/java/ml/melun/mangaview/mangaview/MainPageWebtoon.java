@@ -57,16 +57,16 @@ public class MainPageWebtoon {
     private static boolean inferredTagCacheLoaded = false;
     private static int inferredTagCacheWrites = 0;
     private static final String[] CLASSIFICATION_DB_URLS = {
-            "https://raw.githubusercontent.com/ad2das/mangaviewer/main/webtoon-classification.json",
-            "https://raw.githubusercontent.com/ad2das/mangaviewer/test/webtoon-classification-db/webtoon-classification.json"
+            "https://raw.githubusercontent.com/ad2das/mangaviewer/main/webtoon-classification.json"
     };
     private static final String CLASSIFICATION_DB_CACHE_KEY = "webtoonClassificationDbV2";
     private static final String CLASSIFICATION_DB_FETCHED_AT_KEY = "webtoonClassificationDbFetchedAt";
-    private static final long CLASSIFICATION_DB_TTL_MS = 24 * 60 * 60 * 1000L;
+    private static final long CLASSIFICATION_DB_TTL_MS = 6 * 60 * 60 * 1000L;
     private static final Map<Integer, List<String>> classificationDb = new LinkedHashMap<>();
     private static final Map<String, List<String>> classificationNameDb = new LinkedHashMap<>();
     private static final Map<Integer, DbTitle> classificationTitleDb = new LinkedHashMap<>();
     private static boolean classificationDbLoaded = false;
+    private static long classificationDbLoadedAt = 0;
 
     public static final String[][] WEBTOON_FILTER_GROUPS = buildWebtoonFilterGroups();
     public static final String[][] COMIC_FILTER_GROUPS = buildComicFilterGroups();
@@ -478,16 +478,17 @@ public class MainPageWebtoon {
     }
 
     private static synchronized void loadClassificationDb() {
-        if(classificationDbLoaded)
+        long now = System.currentTimeMillis();
+        if(classificationDbLoaded && now - classificationDbLoadedAt <= CLASSIFICATION_DB_TTL_MS)
             return;
         classificationDbLoaded = true;
+        classificationDbLoadedAt = now;
         String cached = "";
         try {
             if(p == null)
                 return;
             cached = p.getSharedPref().getString(CLASSIFICATION_DB_CACHE_KEY, "");
             long fetchedAt = p.getSharedPref().getLong(CLASSIFICATION_DB_FETCHED_AT_KEY, 0);
-            long now = System.currentTimeMillis();
             if(cached.length() == 0 || now - fetchedAt > CLASSIFICATION_DB_TTL_MS) {
                 String fetched = fetchClassificationDb();
                 if(fetched.length() > 0) {

@@ -4,8 +4,9 @@ Audit and apply high-confidence webtoon classification overrides.
 
 This does not try to classify every title by title keywords. It only applies
 overrides when the existing DB is missing a genre that is explicitly indicated
-by source title text. The goal is to catch source-site genre omissions without
-turning broad keyword guesses into runtime classification.
+by source detail text, or by explicit labels such as 19+ and BL in the title.
+The goal is to catch source-site genre omissions without turning broad keyword
+guesses into runtime classification.
 """
 
 from __future__ import annotations
@@ -37,6 +38,15 @@ ADULT_RULES: List[Tuple[re.Pattern[str], str]] = [
     ]
 ]
 
+ADULT_DETAIL_RULES: List[Tuple[re.Pattern[str], str]] = [
+    (re.compile(pattern, re.IGNORECASE), reason)
+    for pattern, reason in [
+        (r"19세|19금|완전판", "source detail contains rating wording"),
+        (r"섹스|SEX|섹스토이|섹스리스|정자|삽입|자위|성기|딜도", "source detail contains explicit sexual wording"),
+        (r"노팬티|노브라|알몸|러브호텔|쾌락|욕구\s*불만|불륜", "source detail contains adult situation wording"),
+    ]
+]
+
 BL_RULES: List[Tuple[re.Pattern[str], str]] = [
     (re.compile(pattern, re.IGNORECASE), reason)
     for pattern, reason in [
@@ -54,12 +64,33 @@ MARTIAL_RULES: List[Tuple[re.Pattern[str], str]] = [
     ]
 ]
 
+MARTIAL_DETAIL_RULES: List[Tuple[re.Pattern[str], str]] = [
+    (re.compile(pattern), reason)
+    for pattern, reason in [
+        (r"무림|무협|마교|화산파|남궁세가|천마", "source detail contains martial-world wording"),
+        (r"검왕|검신|마검왕|강호|협객|무공|절대고수", "source detail contains martial-arts wording"),
+    ]
+]
+
 HORROR_RULES: List[Tuple[re.Pattern[str], str]] = [
     (re.compile(pattern), reason)
     for pattern, reason in [
         (r"괴담|흉가|공포게임|괴담학교", "explicit horror title wording"),
         (r"살인마|살인자와의\s*인터뷰|살인마의\s*인터뷰", "explicit thriller title wording"),
     ]
+]
+
+HORROR_DETAIL_RULES: List[Tuple[re.Pattern[str], str]] = [
+    (re.compile(pattern), reason)
+    for pattern, reason in [
+        (r"시체|살인|연쇄\s*살인|살인범|탈출|갇혀|감금|공포게임|괴담", "source detail contains horror/thriller wording"),
+    ]
+]
+
+SAFE_TITLE_ONLY_RULES: List[Tuple[re.Pattern[str], List[str], str]] = [
+    (re.compile(r"19금|19세\s*완전판"), ["성인"], "explicit title rating wording"),
+    (re.compile(r"\bBL\b|비엘", re.IGNORECASE), ["BL"], "explicit title BL label"),
+    (re.compile(r"오메가버스|감금\s*BL|BL단편선", re.IGNORECASE), ["BL"], "explicit title BL subgenre label"),
 ]
 
 
@@ -107,12 +138,19 @@ def matching_reasons(title: str, rules: List[Tuple[re.Pattern[str], str]]) -> Li
     return unique(reasons)
 
 
-def audit_title(title: str, tags: List[str]) -> List[Tuple[List[str], str, bool]]:
+def audit_title(title: str, detail_text: str, tags: List[str], allow_title_only: bool) -> List[Tuple[List[str], str, bool]]:
     changes: List[Tuple[List[str], str, bool]] = []
+
+    for pattern, required, reason in SAFE_TITLE_ONLY_RULES:
+        if pattern.search(title) and not all(tag in tags for tag in required):
+            changes.append((required, reason, True))
 
     adult_reasons = matching_reasons(title, ADULT_RULES)
     if adult_reasons and "성인" not in tags:
-        changes.append((["성인"], "; ".join(adult_reasons), True))
+        detail_reasons = matching_reasons(detail_text, ADULT_DETAIL_RULES)
+        if allow_title_only or detail_reasons:
+            reason = "; ".join(unique(adult_reasons + detail_reasons))
+            changes.append((["성인"], reason, True))
 
     bl_reasons = matching_reasons(title, BL_RULES)
     if bl_reasons and "BL" not in tags:
@@ -120,18 +158,47 @@ def audit_title(title: str, tags: List[str]) -> List[Tuple[List[str], str, bool]
 
     martial_reasons = matching_reasons(title, MARTIAL_RULES)
     if martial_reasons and "무협" not in tags:
-        changes.append((["무협"], "; ".join(martial_reasons), True))
+        detail_reasons = matching_reasons(detail_text, MARTIAL_DETAIL_RULES)
+        if allow_title_only or detail_reasons:
+            reason = "; ".join(unique(martial_reasons + detail_reasons))
+            changes.append((["무협"], reason, True))
 
     horror_reasons = matching_reasons(title, HORROR_RULES)
     if horror_reasons and not any(tag in tags for tag in ("공포", "스릴러", "미스터리")):
-        first_reason = horror_reasons[0]
-        genre = "스릴러" if "thriller" in first_reason or "살인" in title else "공포"
-        changes.append(([genre], "; ".join(horror_reasons), True))
+        detail_reasons = matching_reasons(detail_text, HORROR_DETAIL_RULES)
+        if allow_title_only or detail_reasons:
+            first_reason = horror_reasons[0]
+            genre = "스릴러" if "thriller" in first_reason or "살인" in title else "공포"
+            reason = "; ".join(unique(horror_reasons + detail_reasons))
+            changes.append(([genre], reason, True))
 
     return changes
 
 
-def audit(data: Dict[str, object], apply: bool) -> List[Dict[str, object]]:
+def load_detail_cache(path: Path) -> Dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        entries = data.get("entries", data)
+        return entries if isinstance(entries, dict) else {}
+    except Exception:
+        return {}
+
+
+def detail_text_for(title_id: int, detail_cache: Dict[str, object]) -> str:
+    cached = detail_cache.get(str(title_id))
+    if not isinstance(cached, dict):
+        return ""
+    parts = []
+    for key in ("name", "description"):
+        value = cached.get(key)
+        if isinstance(value, str):
+            parts.append(value)
+    return " ".join(parts)
+
+
+def audit(data: Dict[str, object], apply: bool, detail_cache: Dict[str, object], allow_title_only: bool) -> List[Dict[str, object]]:
     titles = data.get("titles", {})
     if not isinstance(titles, dict):
         return []
@@ -147,8 +214,9 @@ def audit(data: Dict[str, object], apply: bool) -> List[Dict[str, object]]:
         if title_id in AUDIT_FALSE_POSITIVE_IDS:
             continue
         title = str(item.get("name", ""))
+        detail_text = detail_text_for(title_id, detail_cache)
         tags = current_tags(item)
-        changes = audit_title(title, tags)
+        changes = audit_title(title, detail_text, tags, allow_title_only)
         if not changes:
             continue
 
@@ -191,12 +259,15 @@ def main() -> int:
     parser.add_argument("--db", default="webtoon-classification.json")
     parser.add_argument("--asset-db", default="app/src/main/assets/webtoon-classification.json")
     parser.add_argument("--report", default="webtoon-classification-audit.json")
+    parser.add_argument("--detail-cache", default=".webtoon-source-detail-cache.json")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--allow-title-only", action="store_true")
     args = parser.parse_args()
 
     db_path = Path(args.db)
     data = load_json(db_path)
-    report = audit(data, apply=args.apply)
+    detail_cache = load_detail_cache(Path(args.detail_cache))
+    report = audit(data, apply=args.apply, detail_cache=detail_cache, allow_title_only=args.allow_title_only)
     Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     if args.apply:

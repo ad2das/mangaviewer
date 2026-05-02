@@ -1,0 +1,100 @@
+name: Update webtoon classification DB
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-webtoon-classification
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore source detail cache
+        uses: actions/cache@v4
+        with:
+          path: .webtoon-source-detail-cache.json
+          key: webtoon-source-detail-cache-${{ github.run_id }}
+          restore-keys: |
+            webtoon-source-detail-cache-
+
+      - name: Rebuild classification DB
+        run: |
+          python -X utf8 tools/build_webtoon_classification.py \
+            --max-naver-pages 20 \
+            --delay 0.05 \
+            --naver-workers 16 \
+            --source-workers 16 \
+            --source-detail-workers 16 \
+            --source-detail-mode all \
+            --review-output webtoon-classification-review.json \
+            --unclassified-output webtoon-classification-unclassified.json
+
+      - name: Apply source-detail audit
+        run: |
+          python -X utf8 tools/audit_webtoon_classification.py \
+            --apply \
+            --detail-cache .webtoon-source-detail-cache.json \
+            --report webtoon-classification-audit.json
+          python -X utf8 tools/audit_webtoon_classification.py \
+            --detail-cache .webtoon-source-detail-cache.json \
+            --report webtoon-classification-audit.json
+
+      - name: Validate classification DB
+        run: |
+          python -X utf8 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path("webtoon-classification.json")
+          asset = Path("app/src/main/assets/webtoon-classification.json")
+          root_data = json.loads(root.read_text(encoding="utf-8"))
+          asset_data = json.loads(asset.read_text(encoding="utf-8"))
+          assert root_data == asset_data, "root DB and APK asset DB differ"
+
+          titles = root_data.get("titles", {})
+          assert isinstance(titles, dict) and titles, "titles must be a non-empty object"
+          unclassified = [
+              key
+              for key, item in titles.items()
+              if not any(item.get(field) for field in ("manualTags", "externalTags", "sourceTags", "tags"))
+          ]
+          assert not unclassified, f"unclassified titles remain: {unclassified[:20]}"
+
+          audit = json.loads(Path("webtoon-classification-audit.json").read_text(encoding="utf-8"))
+          assert audit == [], f"audit candidates remain: {len(audit)}"
+
+          print("titles", len(titles))
+          print("manual", sum(1 for item in titles.values() if item.get("manual")))
+          print("sha256", hashlib.sha256(root.read_bytes()).hexdigest())
+          PY
+
+      - name: Commit DB changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add webtoon-classification.json app/src/main/assets/webtoon-classification.json webtoon-classification-unclassified.json
+          if git diff --cached --quiet; then
+            echo "No classification DB changes."
+          else
+            git commit -m "Update webtoon classification DB"
+            git push
+          fi
