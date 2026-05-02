@@ -134,7 +134,7 @@
                     app:layout_constraintStart_toStartOf="parent"
                     app:layout_constraintTop_toTopOf="parent" />
 
-                <Switch
+                <androidx.appcompat.widget.SwitchCompat
                     android:id="@+id/setting_dark_switch"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="8dp"
@@ -252,7 +252,7 @@
                     app:layout_constraintStart_toStartOf="parent"
                     app:layout_constraintTop_toTopOf="parent" />
 
-                <Switch
+                <androidx.appcompat.widget.SwitchCompat
                     android:id="@+id/setting_reverse_switch"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="8dp"
@@ -320,7 +320,7 @@
                     app:layout_constraintStart_toStartOf="parent"
                     app:layout_constraintTop_toTopOf="parent" />
 
-                <Switch
+                <androidx.appcompat.widget.SwitchCompat
                     android:id="@+id/setting_double_switch"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="8dp"
@@ -354,7 +354,7 @@
                     app:layout_constraintStart_toStartOf="parent"
                     app:layout_constraintTop_toTopOf="parent" />
 
-                <Switch
+                <androidx.appcompat.widget.SwitchCompat
                     android:id="@+id/setting_double_leftright_switch"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="8dp"
@@ -388,7 +388,7 @@
                     app:layout_constraintStart_toStartOf="parent"
                     app:layout_constraintTop_toTopOf="parent" />
 
-                <Switch
+                <androidx.appcompat.widget.SwitchCompat
                     android:id="@+id/setting_stretch_switch"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="8dp"
@@ -434,7 +434,7 @@
                     app:layout_constraintStart_toStartOf="parent"
                     app:layout_constraintTop_toTopOf="parent" />
 
-                <Switch
+                <androidx.appcompat.widget.SwitchCompat
                     android:id="@+id/setting_pageRtl_switch"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
@@ -560,7 +560,7 @@
                     app:layout_constraintStart_toStartOf="parent"
                     app:layout_constraintTop_toTopOf="parent" />
 
-                <Switch
+                <androidx.appcompat.widget.SwitchCompat
                     android:id="@+id/setting_dataSave_switch"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="8dp"

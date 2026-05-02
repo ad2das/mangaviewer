@@ -10,6 +10,7 @@ import androidx.annotation.Nullable;
 import androidx.constraintlayout.widget.ConstraintLayout;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.SwitchCompat;
 import androidx.documentfile.provider.DocumentFile;
 
 import android.os.Build;
@@ -25,7 +26,6 @@ import android.widget.CompoundButton;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.Spinner;
-import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -55,7 +55,7 @@ public class SettingsActivity extends AppCompatActivity {
     Context context;
     ConstraintLayout s_setHomeDir, s_resetHistory, s_dark, s_viewer, s_reverse, s_pageRtl, s_dataSave, s_tab, s_stretch, s_double, s_double_reverse;
     Spinner s_tab_spinner, s_viewer_spinner;
-    Switch s_dark_switch, s_reverse_switch, s_pageRtl_switch, s_dataSave_switch, s_stretch_switch, s_double_switch, s_double_reverse_switch;
+    SwitchCompat s_dark_switch, s_reverse_switch, s_pageRtl_switch, s_dataSave_switch, s_stretch_switch, s_double_switch, s_double_reverse_switch;
     Boolean dark;
     public static final String prefExtension = ".mvpref";
     public static final int RESULT_NEED_RESTART = 7;
