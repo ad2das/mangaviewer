@@ -9,7 +9,6 @@ import android.webkit.WebSettings;
 import org.json.JSONObject;
 
 import java.io.InterruptedIOException;
-import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -20,11 +19,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLSocketFactory;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
 
 import okhttp3.CipherSuite;
 import okhttp3.Call;
@@ -88,7 +82,7 @@ public class CustomHttpClient {
                     .cipherSuites(cipherSuites.toArray(new CipherSuite[0]))
                     .build();
 
-            this.client = configureDispatcher(getUnsafeOkHttpClient())
+            this.client = configureDispatcher(new OkHttpClient.Builder())
                     .connectionSpecs(Arrays.asList(legacyTls, ConnectionSpec.CLEARTEXT))
                     .followRedirects(false)
                     .followSslRedirects(false)
@@ -96,7 +90,7 @@ public class CustomHttpClient {
                     .readTimeout(20, TimeUnit.SECONDS)
                     .build();
         }else {
-            this.client = configureDispatcher(getUnsafeOkHttpClient())
+            this.client = configureDispatcher(new OkHttpClient.Builder())
                     .followRedirects(false)
                     .followSslRedirects(false)
                     .connectTimeout(20, TimeUnit.SECONDS)
@@ -709,48 +703,6 @@ public class CustomHttpClient {
 //            isloaded = true;
 //        }
         return post(url, body, new HashMap<>());
-    }
-
-    /*
-    code source : https://gist.github.com/chalup/8706740
-     */
-
-    private static OkHttpClient.Builder getUnsafeOkHttpClient() {
-        try {
-            // Create a trust manager that does not validate certificate chains
-            final TrustManager[] trustAllCerts = new TrustManager[]{
-                    new X509TrustManager() {
-                        @Override
-                        public void checkClientTrusted(java.security.cert.X509Certificate[] chain,
-                                                       String authType){
-                        }
-
-                        @Override
-                        public void checkServerTrusted(java.security.cert.X509Certificate[] chain,
-                                                       String authType){
-                        }
-
-                        @Override
-                        public java.security.cert.X509Certificate[] getAcceptedIssuers() {
-                            return new X509Certificate[0];
-                        }
-                    }
-            };
-
-            // Install the all-trusting trust manager
-            final SSLContext sslContext = SSLContext.getInstance("SSL");
-            sslContext.init(null, trustAllCerts, new java.security.SecureRandom());
-            // Create an ssl socket factory with our all-trusting manager
-            final SSLSocketFactory sslSocketFactory = sslContext.getSocketFactory();
-
-            return new OkHttpClient.Builder()
-                    .sslSocketFactory(sslSocketFactory, (X509TrustManager) trustAllCerts[0])
-                    .hostnameVerifier((hostname, session) -> true);
-
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-
     }
 
     private static OkHttpClient.Builder configureDispatcher(OkHttpClient.Builder builder) {
