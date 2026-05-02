@@ -25,9 +25,11 @@ import com.bumptech.glide.request.target.Target;
 import com.bumptech.glide.request.transition.Transition;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -49,8 +51,6 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private StripAdapter.ItemClickListener mClickListener;
     boolean autoCut;
     boolean reverse;
-    int __seed;
-    Decoder d;
     int width;
     int count = 0;
     final static int MaxStackSize = 3;
@@ -62,6 +62,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     List<Object> items;
     private final Set<String> preloadedImages = new LinkedHashSet<>();
+    private final Map<String, Decoder> decoders = new HashMap<>();
     private final LruCache<String, Bitmap> decodedBitmapCache;
 
     public List<Object> getItems(){
@@ -275,8 +276,6 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         this.mInflater = LayoutInflater.from(context);
         mainContext = context;
         reverse = p.getReverse();
-        __seed = manga.getSeed();
-        d = new Decoder(manga.getSeed(), manga.getId());
         this.width = width;
         this.title = title;
         this.decodedBitmapCache = new LruCache<String, Bitmap>(decodedCacheSizeKb()) {
@@ -391,7 +390,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this))
                         return;
                     holder.frame.setMinimumHeight(0);
-                    bitmap = d.decode(bitmap, width);
+                    bitmap = decoderFor(item).decode(bitmap, width);
                     Bitmap displayBitmap;
                     int width = bitmap.getWidth();
                     int height = bitmap.getHeight();
@@ -452,7 +451,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this))
                         return;
                     holder.frame.setMinimumHeight(0);
-                    resource = d.decode(resource, width);
+                    resource = decoderFor(item).decode(resource, width);
                     decodedBitmapCache.put(cacheKey, resource);
                     holder.frame.setImageBitmap(resource);
                     holder.refresh.setVisibility(View.GONE);
@@ -548,7 +547,24 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private String decodedCacheKey(PageItem page) {
         if(page == null || page.manga == null)
             return "";
-        return page.manga.getBaseMode() + ":" + page.manga.getId() + ":" + width + ":" + page.side + ":" + page.img;
+        return page.manga.getBaseMode() + ":" + page.manga.getId() + ":" + page.manga.getSeed() + ":" + width + ":" + page.side + ":" + page.img;
+    }
+
+    private Decoder decoderFor(PageItem page) {
+        String key = decoderKey(page == null ? null : page.manga);
+        Decoder decoder = decoders.get(key);
+        if(decoder == null) {
+            Manga manga = page == null ? null : page.manga;
+            decoder = new Decoder(manga == null ? 0 : manga.getSeed(), manga == null ? 0 : manga.getId());
+            decoders.put(key, decoder);
+        }
+        return decoder;
+    }
+
+    private String decoderKey(Manga manga) {
+        if(manga == null)
+            return "0:0:0";
+        return manga.getBaseMode() + ":" + manga.getId() + ":" + manga.getSeed();
     }
 
     private int decodedCacheSizeKb() {
