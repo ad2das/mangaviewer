@@ -177,7 +177,7 @@ public class ViewerActivity extends AppCompatActivity {
                             return;
                         }
                         if (m.getImgs(context).size() > 0) {
-                            insertMangaWhenIdle(m, () -> callback.prevLoaded(m));
+                            insertMangaWhenIdle(m, ViewerActivity.this::isPreviousTargetStillExpected, () -> callback.prevLoaded(m));
                         } else {
                             callback.prevLoaded(m);
                         }
@@ -197,7 +197,7 @@ public class ViewerActivity extends AppCompatActivity {
                 if(target != null) {
                     if(hasLoadedImages(target)) {
                         preloadFirstPages(target);
-                        appendMangaWhenIdle(target, () -> {
+                        appendMangaWhenIdle(target, ViewerActivity.this::isNextTargetStillExpected, () -> {
                             callback.nextLoaded(target);
                             prefetchNextEpisode(target);
                         });
@@ -215,7 +215,7 @@ public class ViewerActivity extends AppCompatActivity {
                             return;
                         }
                         if (m.getImgs(context).size() > 0) {
-                            appendMangaWhenIdle(m, () -> {
+                            appendMangaWhenIdle(m, ViewerActivity.this::isNextTargetStillExpected, () -> {
                                 callback.nextLoaded(m);
                                 prefetchNextEpisode(m);
                             });
@@ -708,9 +708,9 @@ public class ViewerActivity extends AppCompatActivity {
         int total = manager.getItemCount();
         if(first <= 0 && !previousEpisodeBoundaryLoading)
             attachPreviousEpisode(false);
-        if(last >= total - 12)
+        if(last != RecyclerView.NO_POSITION && last >= total - 12)
             attachNextEpisode(false);
-        if(last >= total - 2 || !strip.canScrollVertically(1))
+        if(last != RecyclerView.NO_POSITION && (last >= total - 2 || !strip.canScrollVertically(1)))
             attachNextEpisode(true);
     }
 
@@ -1055,34 +1055,54 @@ public class ViewerActivity extends AppCompatActivity {
                 .override(Math.max(width, 1), Target.SIZE_ORIGINAL);
     }
 
-    private void appendMangaWhenIdle(Manga target, Runnable afterAppend) {
+    private interface EpisodeExpectation {
+        boolean isStillExpected(Manga target);
+    }
+
+    private void appendMangaWhenIdle(Manga target, EpisodeExpectation expectation, Runnable afterAppend) {
         if(target == null || strip == null)
             return;
         strip.post(() -> {
             runStripMutationWhenReady(() -> {
                 if(stripAdapter == null || isFinishing())
                     return;
+                if(expectation != null && !expectation.isStillExpected(target)) {
+                    if(afterAppend != null)
+                        afterAppend.run();
+                    return;
+                }
                 if(!stripAdapter.hasMangaLoaded(target))
                     stripAdapter.appendManga(target);
-                if(!stripAdapter.hasMangaLoaded(target))
+                if(!stripAdapter.hasMangaLoaded(target)) {
+                    if(afterAppend != null)
+                        afterAppend.run();
                     return;
+                }
                 if(afterAppend != null)
                     afterAppend.run();
             }, 0);
         });
     }
 
-    private void insertMangaWhenIdle(Manga target, Runnable afterInsert) {
+    private void insertMangaWhenIdle(Manga target, EpisodeExpectation expectation, Runnable afterInsert) {
         if(target == null || strip == null)
             return;
         strip.post(() -> {
             runStripMutationWhenReady(() -> {
                 if(stripAdapter == null || isFinishing())
                     return;
+                if(expectation != null && !expectation.isStillExpected(target)) {
+                    if(afterInsert != null)
+                        afterInsert.run();
+                    return;
+                }
                 if(!stripAdapter.hasMangaLoaded(target))
                     stripAdapter.insertManga(target);
-                if(!stripAdapter.hasMangaLoaded(target))
+                if(!stripAdapter.hasMangaLoaded(target)) {
+                    if(afterInsert != null)
+                        afterInsert.run();
                     return;
+                }
                 if(afterInsert != null)
                     afterInsert.run();
             }, 0);

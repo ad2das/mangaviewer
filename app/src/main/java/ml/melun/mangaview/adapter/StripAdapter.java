@@ -71,11 +71,11 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     public static class InfoItem{
         public InfoItem(Manga prev, Manga next) {
-            if(next == null)
+            if(next == null && prev != null)
                 this.next = prev.nextEp();
             else
                 this.next = next;
-            if(prev == null)
+            if(prev == null && next != null)
                 this.prev = next.prevEp();
             else
                 this.prev = prev;
@@ -87,6 +87,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     @Override
     public long getItemId(int position) {
+        if(items == null || position < 0 || position >= items.size())
+            return RecyclerView.NO_ID;
         Object o = items.get(position);
         if(o instanceof PageItem)
             return pageStableId((PageItem)o);
@@ -118,9 +120,11 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(hasMangaLoaded(m))
             return;
         int prevsize = items.size();
+        List<String> imgs = m.getImgs(mainContext);
+        if(imgs == null || imgs.size() == 0)
+            return;
         if(items.size() == 0)
             items.add(new InfoItem(m.prevEp(), m));
-        List<String> imgs = m.getImgs(mainContext);
         for(int i=0; i<imgs.size(); i++){
             items.add(new PageItem(i,imgs.get(i),m));
             if(autoCut)
@@ -143,6 +147,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             return 0;
         int prevsize = items.size();
         List<String> imgs = m.getImgs(mainContext);
+        if(imgs == null || imgs.size() == 0)
+            return 0;
         for(int i=imgs.size()-1; i>=0; i--){
             if(autoCut)
                 items.add(0, new PageItem(i,imgs.get(i),m,PageItem.SECOND));
@@ -298,6 +304,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     @Override
     public int getItemViewType(int position) {
+        if(items == null || position < 0 || position >= items.size())
+            return INFO;
         if(items.get(position) instanceof PageItem)
             return IMG;
         else if(items.get(position) instanceof InfoItem)
@@ -307,6 +315,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     public void removeAll(){
+        if(items == null || items.size() == 0)
+            return;
         int size = items.size();
         items.clear();
         preloadedImages.clear();
@@ -330,6 +340,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     @Override
     public void onBindViewHolder(@NonNull final RecyclerView.ViewHolder holder, final int pos) {
+        if(items == null || pos < 0 || pos >= items.size())
+            return;
         int type = getItemViewType(pos);
         if(type == IMG) {
             ((ImgViewHolder)holder).frame.setImageResource(R.drawable.placeholder);
@@ -342,9 +354,9 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             Manga prev = info.prev;
             Manga next = info.next;
 
-            if(prev == null){
+            if(prev == null && next != null){
                 prev = next.prevEp();
-            }else if(next == null){
+            }else if(next == null && prev != null){
                 next = prev.nextEp();
             }
 
@@ -560,7 +572,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     // total number of rows
     @Override
     public int getItemCount() {
-        return items.size();
+        return items == null ? 0 : items.size();
     }
 
     public PageItem getCurrentVisiblePage(){
@@ -579,7 +591,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     public void onViewAttachedToWindow(@NonNull RecyclerView.ViewHolder holder) {
         //handle bookmark
         int layoutPos = holder.getLayoutPosition();
-        if(layoutPos == RecyclerView.NO_POSITION || layoutPos >= items.size())
+        if(items == null || layoutPos == RecyclerView.NO_POSITION || layoutPos >= items.size())
             return;
         int type = getItemViewType(layoutPos);
         if(type == IMG) {

@@ -40,7 +40,11 @@ public class StripLayoutManager extends NpaLinearLayoutManager {
     }
     
     public void scrollToPage(PageItem page){
+        if(adapter == null || page == null)
+            return;
         List<Object> items = adapter.getItems();
+        if(items == null)
+            return;
         for(int i=0; i<items.size(); i++){
             Object item = items.get(i);
             if(item instanceof PageItem){
