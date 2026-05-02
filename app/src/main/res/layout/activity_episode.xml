@@ -64,6 +64,8 @@
         <com.google.android.material.floatingactionbutton.FloatingActionButton
             android:layout_marginBottom="4dp"
             android:clickable="true"
+            android:contentDescription="@string/episode_scroll_top"
+            android:focusable="true"
             android:id="@+id/upfab"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -72,6 +74,8 @@
         <com.google.android.material.floatingactionbutton.FloatingActionButton
             android:layout_marginBottom="4dp"
             android:clickable="true"
+            android:contentDescription="@string/episode_resume"
+            android:focusable="true"
             android:id="@+id/resumefab"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -81,6 +85,8 @@
             android:layout_marginBottom="4dp"
             android:id="@+id/downfab"
             android:clickable="true"
+            android:contentDescription="@string/episode_scroll_bottom"
+            android:focusable="true"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             app:fabSize="mini"
