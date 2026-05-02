@@ -42219,10 +42219,22 @@
       "name": "무진",
       "thumb": "https://i6.bacloud2.com/4685/6a9b68db7147981973f9331785ca3f8d1cc5e179d11b1ded94ea2bda2361d459.jpg",
       "release": "",
+      "externalTags": [
+        "액션"
+      ],
       "sourceTags": [
         "성인",
         "드라마"
-      ]
+      ],
+      "tags": [
+        "액션",
+        "성인",
+        "드라마"
+      ],
+      "naverTitleId": 805691,
+      "naverName": "무진",
+      "match": "normalized-title",
+      "matchScore": 1.0
     },
     "4686": {
       "name": "마담 팅커벨",
@@ -83469,10 +83481,21 @@
       "name": "무진",
       "thumb": "https://w11cloud.com/9403/e3aa5bf1f351699e6e27a3e877398a32a053f9a85586aaae5e6c111f19ef3bde.jpg",
       "release": "",
+      "externalTags": [
+        "액션"
+      ],
       "sourceTags": [
         "액션",
         "드라마"
-      ]
+      ],
+      "tags": [
+        "액션",
+        "드라마"
+      ],
+      "naverTitleId": 805691,
+      "naverName": "무진",
+      "match": "normalized-title",
+      "matchScore": 1.0
     },
     "9404": {
       "name": "신혼부부 생활 백서",
@@ -85761,10 +85784,23 @@
       "name": "신의 재래",
       "thumb": "https://w11cloud.com/9659/16b2651446490d2981c3d6c6a99d17e66be3952a3f35e232bf05eacfd78f4e5b.jpg",
       "release": "",
+      "externalTags": [
+        "스토리",
+        "판타지"
+      ],
       "sourceTags": [
         "판타지",
         "드라마"
-      ]
+      ],
+      "tags": [
+        "스토리",
+        "판타지",
+        "드라마"
+      ],
+      "naverTitleId": 807206,
+      "naverName": "신의 재래",
+      "match": "normalized-title",
+      "matchScore": 1.0
     },
     "9660": {
       "name": "재벌가의 아내가 되었다",
@@ -95047,10 +95083,24 @@
       "name": "팔문의 옥",
       "thumb": "https://v13st.com/70749/1fb20ed597ba938729ecd5ac1ecb2cd96bad198e70060f87abb4e0860a5b7ec2.jpg",
       "release": "",
+      "externalTags": [
+        "스토리",
+        "무협"
+      ],
       "sourceTags": [
         "액션",
         "드라마"
-      ]
+      ],
+      "tags": [
+        "스토리",
+        "무협",
+        "액션",
+        "드라마"
+      ],
+      "naverTitleId": 816852,
+      "naverName": "팔문의 옥",
+      "match": "normalized-title",
+      "matchScore": 1.0
     },
     "70750": {
       "name": "급발진 로맨스",
@@ -100837,10 +100887,23 @@
       "name": "환생좌",
       "thumb": "https://v13st.com/71411/30c725a957088821c7445de2eaff78bcc26a8c815e0b532a3a2ccd479e2bd37f.jpg",
       "release": "",
+      "externalTags": [
+        "스토리",
+        "액션"
+      ],
       "sourceTags": [
         "판타지",
         "액션"
-      ]
+      ],
+      "tags": [
+        "스토리",
+        "액션",
+        "판타지"
+      ],
+      "naverTitleId": 819912,
+      "naverName": "환생좌",
+      "match": "normalized-title",
+      "matchScore": 1.0
     },
     "71412": {
       "name": "마귀 [리디]",
@@ -102793,6 +102856,14 @@
       "sourceTags": [
         "드라마",
         "스토리"
+      ]
+    },
+    "71635": {
+      "name": "헌터 세상의 정원사",
+      "thumb": "https://v13st.com/71635/ddbc4b0adccbbafa10b7faeef93f9906e132a96d90a48002f5639bf631c12ded.jpg",
+      "release": "",
+      "sourceTags": [
+        "판타지"
       ]
     },
     "71636": {
@@ -105775,10 +105846,23 @@
       "name": "최후의 모험가",
       "thumb": "https://v12st.com/71972/aeae92ca659ff5a0554b00c8f347f470a87a6ce0c35733be7a575232a590df2b.jpg?v=1",
       "release": "",
+      "externalTags": [
+        "스토리",
+        "판타지"
+      ],
       "sourceTags": [
         "판타지",
         "액션"
-      ]
+      ],
+      "tags": [
+        "스토리",
+        "판타지",
+        "액션"
+      ],
+      "naverTitleId": 822570,
+      "naverName": "최후의 모험가",
+      "match": "normalized-title",
+      "matchScore": 1.0
     },
     "71973": {
       "name": "로봇소녀 노이도",
@@ -108467,6 +108551,24 @@
         "드라마"
       ]
     },
+    "72267": {
+      "name": "천재의 신들린 게임방송",
+      "thumb": "https://vv14cloud.com/72267/sow7rbf24bad84uvxn9wfekzatmxr6g8fn.jpg?v=1",
+      "release": "",
+      "externalTags": [
+        "판타지"
+      ],
+      "sourceTags": [
+        "판타지"
+      ],
+      "tags": [
+        "판타지"
+      ],
+      "naverTitleId": 826534,
+      "naverName": "천재의 신들린 게임방송",
+      "match": "normalized-title",
+      "matchScore": 1.0
+    },
     "72268": {
       "name": "동족연애",
       "thumb": "https://vv14cloud.com/72268/esgiqgzyz2owk1znj0qxdiu1v862ixpkr8.jpg",
@@ -110620,9 +110722,20 @@
       "name": "마피아 내니",
       "thumb": "https://vv14cloud.com/72502/1j4yqmkw4zx0esllfopjsxoylmuitzfr4b.jpg",
       "release": "",
+      "externalTags": [
+        "스토리"
+      ],
       "sourceTags": [
         "로맨스"
-      ]
+      ],
+      "tags": [
+        "스토리",
+        "로맨스"
+      ],
+      "naverTitleId": 826666,
+      "naverName": "마피아 내니",
+      "match": "normalized-title",
+      "matchScore": 1.0
     },
     "72503": {
       "name": "마법학교 앞점멸 천재가 되었",
@@ -114949,10 +115062,23 @@
       "name": "솔플의 제왕",
       "thumb": "https://y17stm.com/72970/feh6ldzrylwvvudfhcf8r7mvranuo2m783.jpg",
       "release": "",
+      "externalTags": [
+        "스토리",
+        "판타지"
+      ],
       "sourceTags": [
         "판타지",
         "드라마"
-      ]
+      ],
+      "tags": [
+        "스토리",
+        "판타지",
+        "드라마"
+      ],
+      "naverTitleId": 837506,
+      "naverName": "솔플의 제왕",
+      "match": "normalized-title",
+      "matchScore": 1.0
     },
     "72971": {
       "name": "월화수목금토일 여자친구",
@@ -116014,6 +116140,14 @@
       "sourceTags": [
         "판타지",
         "드라마"
+      ]
+    },
+    "73089": {
+      "name": "신입사원은 마왕",
+      "thumb": "https://z14cloud.com/73089/kmesysaclouecpdssybnizkbg8cdlfzksl.jpg",
+      "release": "",
+      "sourceTags": [
+        "판타지"
       ]
     },
     "73090": {
@@ -117265,10 +117399,24 @@
       "name": "공정거래위원회",
       "thumb": "https://y17stm.com/73230/nd4gqecv69pzm3hikzrucfcr1g1ntehuls.jpg",
       "release": "",
+      "externalTags": [
+        "스토리",
+        "일상"
+      ],
       "sourceTags": [
         "판타지",
         "드라마"
-      ]
+      ],
+      "tags": [
+        "스토리",
+        "일상",
+        "판타지",
+        "드라마"
+      ],
+      "naverTitleId": 837139,
+      "naverName": "공정거래위원회",
+      "match": "normalized-title",
+      "matchScore": 1.0
     },
     "73231": {
       "name": "TRIPLE IN LOVE(",
@@ -122169,6 +122317,15 @@
       "release": "",
       "sourceTags": [
         "로맨스"
+      ]
+    },
+    "73753": {
+      "name": "시프트",
+      "thumb": "https://vv14cloud.com/73753/enwe4xc1e7sqlqyv1tqd3j3czdopacyeif.jpg",
+      "release": "",
+      "sourceTags": [
+        "미스터리",
+        "공포"
       ]
     },
     "73754": {
@@ -134041,10 +134198,22 @@
       "name": "우아한 오브리",
       "thumb": "https://y17stm.com/75041/8yqotgpafqyyb3fydzdechojwsiwdn8zp7.jpg",
       "release": "",
+      "externalTags": [
+        "스토리"
+      ],
       "sourceTags": [
         "판타지",
         "로맨스"
-      ]
+      ],
+      "tags": [
+        "스토리",
+        "판타지",
+        "로맨스"
+      ],
+      "naverTitleId": 836632,
+      "naverName": "우아한 오브리",
+      "match": "normalized-title",
+      "matchScore": 1.0
     },
     "75042": {
       "name": "데드 코어",
@@ -135540,10 +135709,25 @@
       "name": "덤벙덤벙 내인생",
       "thumb": "https://y17stm.com/75200/qz2fz0tluzseqz443wya1bcabfbxtqibhl.jpg",
       "release": "",
+      "externalTags": [
+        "스토리",
+        "일상",
+        "로맨스"
+      ],
       "sourceTags": [
         "드라마",
         "일상"
-      ]
+      ],
+      "tags": [
+        "스토리",
+        "일상",
+        "로맨스",
+        "드라마"
+      ],
+      "naverTitleId": 841876,
+      "naverName": "덤벙덤벙 내인생",
+      "match": "normalized-title",
+      "matchScore": 1.0
     },
     "75201": {
       "name": "흑막을 가정부로 들여 버렸다",
@@ -137373,10 +137557,22 @@
       "name": "사랑 안 해!",
       "thumb": "https://y17stm.com/75384/wlomfgjrtldnsminbt1vvbzm31fz0vjq6v.jpg",
       "release": "",
+      "externalTags": [
+        "스토리"
+      ],
       "sourceTags": [
         "드라마",
         "로맨스"
-      ]
+      ],
+      "tags": [
+        "스토리",
+        "드라마",
+        "로맨스"
+      ],
+      "naverTitleId": 843128,
+      "naverName": "사랑 안 해!",
+      "match": "normalized-title",
+      "matchScore": 1.0
     },
     "75385": {
       "name": "장편단편선",
@@ -141851,10 +142047,23 @@
       "name": "미스테리 쇼크",
       "thumb": "https://y17stm.com/75877/opcwrjyqo8vcjcw0g38t90nen7kwqrsbbc.jpg",
       "release": "",
+      "externalTags": [
+        "스토리",
+        "스릴러"
+      ],
       "sourceTags": [
         "미스터리",
         "스릴러"
-      ]
+      ],
+      "tags": [
+        "스토리",
+        "스릴러",
+        "미스터리"
+      ],
+      "naverTitleId": 848103,
+      "naverName": "미스테리 쇼크",
+      "match": "normalized-title",
+      "matchScore": 1.0
     },
     "75878": {
       "name": "범죄도시0",
@@ -142977,8 +143186,8 @@
         "스포츠"
       ],
       "tags": [
-        "스포츠",
-        "스토리"
+        "스토리",
+        "스포츠"
       ],
       "naverTitleId": 848732,
       "naverName": "7m",
@@ -143515,8 +143724,8 @@
         "학원"
       ],
       "tags": [
-        "드라마",
         "스토리",
+        "드라마",
         "개그",
         "학원"
       ],
@@ -143538,8 +143747,8 @@
         "판타지"
       ],
       "tags": [
-        "개그",
         "스토리",
+        "개그",
         "판타지"
       ],
       "naverTitleId": 849730,
@@ -143752,8 +143961,8 @@
         "액션"
       ],
       "tags": [
-        "무협",
         "스토리",
+        "무협",
         "판타지",
         "액션"
       ],
