@@ -107,6 +107,7 @@ public class ViewerActivity2 extends AppCompatActivity {
     boolean split = false;
     boolean dirty = false;
     TextView info;
+    int imageLoadGeneration = 0;
 
     @Override
     protected void onResume() {
@@ -612,6 +613,8 @@ public class ViewerActivity2 extends AppCompatActivity {
 
 
     void refreshImage(){
+        int generation = nextImageLoadGeneration();
+        int targetBookmark = viewerBookmark;
         frame.setVisibility(View.VISIBLE);
         frame2.setVisibility(View.GONE);
         frame.setImageResource(R.drawable.placeholder);
@@ -633,6 +636,8 @@ public class ViewerActivity2 extends AppCompatActivity {
 
                         @Override
                         public void onResourceReady(Bitmap bitmap, Transition<? super Bitmap> transition) {
+                            if(!isActiveImageLoad(generation, targetBookmark))
+                                return;
                             //refreshbtn.setVisibility(View.INVISIBLE);
                             bitmap = d.decode(bitmap, swidth);
                             int width = bitmap.getWidth();
@@ -670,6 +675,8 @@ public class ViewerActivity2 extends AppCompatActivity {
                                                 .into(new CustomTarget<Bitmap>() {
                                                     @Override
                                                     public void onResourceReady(@NonNull Bitmap bitmap1, @Nullable Transition<? super Bitmap> transition) {
+                                                        if(!isActiveImageLoad(generation, targetBookmark))
+                                                            return;
                                                         bitmap1 = d.decode(bitmap1, swidth);
                                                         int width = bitmap1.getWidth();
                                                         int height = bitmap1.getHeight();
@@ -692,6 +699,8 @@ public class ViewerActivity2 extends AppCompatActivity {
                         }
                         @Override
                         public void onLoadFailed(@Nullable Drawable errorDrawable) {
+                            if(!isActiveImageLoad(generation, targetBookmark))
+                                return;
                             frame.setImageResource(R.drawable.placeholder);
                         }
                     });
@@ -856,6 +865,16 @@ public class ViewerActivity2 extends AppCompatActivity {
             if (pd != null && pd.isShowing())
                 pd.dismiss();
         }
+    }
+
+    private int nextImageLoadGeneration() {
+        return ++imageLoadGeneration;
+    }
+
+    private boolean isActiveImageLoad(int generation, int targetBookmark) {
+        return !isFinishing()
+                && generation == imageLoadGeneration
+                && viewerBookmark == targetBookmark;
     }
 
     public void reloadManga(){
