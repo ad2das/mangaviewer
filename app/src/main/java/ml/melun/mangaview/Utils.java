@@ -607,11 +607,12 @@ public class Utils {
 
     public static Bitmap getSample(Bitmap input, int width){
         //scale down bitmap to avoid outofmem exception
+        if(input == null || width <= 0) return input;
         if(input.getWidth()<=width) return input;
         else{
             //ratio
             float ratio = (float)input.getHeight()/(float)input.getWidth();
-            int height = Math.round(ratio*width);
+            int height = Math.max(1, Math.round(ratio*width));
             return Bitmap.createScaledBitmap(input, width, height,false);
         }
     }

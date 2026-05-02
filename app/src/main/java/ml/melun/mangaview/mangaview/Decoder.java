@@ -43,8 +43,9 @@ public class Decoder {
         return input;
     }
     public Bitmap downSize(final Bitmap input, Float ratio) {
-        Bitmap bitmap = Bitmap.createScaledBitmap(input, ((Float)(input.getWidth()*ratio)).intValue(), ((Float)(input.getHeight()*ratio)).intValue(), true);
-        return bitmap;
+        int width = Math.max(1, Math.round(input.getWidth() * ratio));
+        int height = Math.max(1, Math.round(input.getHeight() * ratio));
+        return Bitmap.createScaledBitmap(input, width, height, true);
     }
 
     public Bitmap decode(Bitmap input){
