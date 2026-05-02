@@ -19,6 +19,7 @@
         app:layout_constraintTop_toTopOf="parent" >
         <ImageView
             android:id="@+id/viewer_image"
+            android:contentDescription="@string/viewer_page_image"
             android:layout_height="match_parent"
             android:layout_width="0dp"
             android:layout_weight="1"
@@ -26,6 +27,7 @@
         <ImageView
             android:visibility="gone"
             android:id="@+id/viewer_image2"
+            android:contentDescription="@string/viewer_page_image"
             android:layout_height="match_parent"
             android:layout_width="0dp"
             android:layout_weight="1"
@@ -130,6 +132,7 @@
 
     <ImageButton
         android:background="?android:attr/selectableItemBackground"
+        android:contentDescription="@string/viewer_toggle_toolbar"
         android:elevation="2dp"
         android:id="@+id/toolbar_toggleBtn"
         android:layout_height="45dp"

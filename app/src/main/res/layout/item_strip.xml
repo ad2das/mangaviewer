@@ -8,6 +8,7 @@
     <ImageView
         android:adjustViewBounds="true"
         android:id="@+id/frame"
+        android:contentDescription="@string/viewer_page_image"
         android:layout_height="wrap_content"
         android:layout_width="match_parent"
         android:scaleType="fitCenter"
@@ -19,6 +20,7 @@
 
     <ImageButton
         android:background="?android:attr/selectableItemBackground"
+        android:contentDescription="@string/viewer_refresh_image"
         android:id="@+id/refreshButton"
         android:layout_height="wrap_content"
         android:layout_marginTop="30dp"

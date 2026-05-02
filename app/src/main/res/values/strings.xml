@@ -3,6 +3,13 @@
     <string name="episode_scroll_top">첫 회차로 이동</string>
     <string name="episode_resume">이어보기</string>
     <string name="episode_scroll_bottom">마지막 회차로 이동</string>
+    <string name="viewer_page_image">만화 페이지</string>
+    <string name="viewer_refresh_image">이미지 새로고침</string>
+    <string name="viewer_back">뷰어 닫기</string>
+    <string name="viewer_comments">댓글 보기</string>
+    <string name="viewer_next_episode">다음 회차</string>
+    <string name="viewer_previous_episode">이전 회차</string>
+    <string name="viewer_toggle_toolbar">툴바 표시 전환</string>
     <string name="navigation_drawer_open">Open navigation drawer</string>
     <string name="navigation_drawer_close">Close navigation drawer</string>
     <string name="nav_header_title">Android Studio</string>
