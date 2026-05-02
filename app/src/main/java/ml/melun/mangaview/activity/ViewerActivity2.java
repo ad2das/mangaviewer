@@ -411,6 +411,8 @@ public class ViewerActivity2 extends AppCompatActivity {
             //has to check if twopage
             viewerBookmark++;
             try {
+                int generation = nextImageLoadGeneration();
+                int targetBookmark = viewerBookmark;
                 Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark), manga.getBaseMode()) : imgs.get(viewerBookmark);
 
                 //placeholder
@@ -428,6 +430,8 @@ public class ViewerActivity2 extends AppCompatActivity {
                             @Override
                             public void onResourceReady(Bitmap bitmap,
                                                         Transition<? super Bitmap> transition) {
+                                if(!isActiveImageLoad(generation, targetBookmark))
+                                    return;
                                 //refreshbtn.setVisibility(View.INVISIBLE);
                                 bitmap = d.decode(bitmap, swidth);
                                 int width = bitmap.getWidth();
@@ -445,6 +449,8 @@ public class ViewerActivity2 extends AppCompatActivity {
                             }
                             @Override
                             public void onLoadFailed(@Nullable Drawable errorDrawable) {
+                                if(!isActiveImageLoad(generation, targetBookmark))
+                                    return;
                                 viewerBookmark = Math.max(0, viewerBookmark - 1);
                                 frame.setImageResource(R.drawable.placeholder);
                                 updatePageIndex();
@@ -477,6 +483,8 @@ public class ViewerActivity2 extends AppCompatActivity {
                 frame2.setImageResource(R.drawable.placeholder);
                 //오른쪽 부터 로드
                 try {
+                    int generation = nextImageLoadGeneration();
+                    int targetBookmark = viewerBookmark;
                     Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark), manga.getBaseMode()) : imgs.get(viewerBookmark);
                     //placeholder
                     Glide.with(context)
@@ -491,6 +499,8 @@ public class ViewerActivity2 extends AppCompatActivity {
 
                                 @Override
                                 public void onResourceReady(Bitmap bitmap, Transition<? super Bitmap> transition) {
+                                    if(!isActiveImageLoad(generation, targetBookmark))
+                                        return;
                                     bitmap = d.decode(bitmap, swidth);
                                     int width = bitmap.getWidth();
                                     int height = bitmap.getHeight();
@@ -509,6 +519,8 @@ public class ViewerActivity2 extends AppCompatActivity {
                                                     .into(new CustomTarget<Bitmap>() {
                                                         @Override
                                                         public void onResourceReady(@NonNull Bitmap bitmap1, @Nullable Transition<? super Bitmap> transition) {
+                                                            if(!isActiveImageLoad(generation, targetBookmark))
+                                                                return;
                                                             bitmap1 = d.decode(bitmap1, swidth);
                                                             int width = bitmap1.getWidth();
                                                             int height = bitmap1.getHeight();
@@ -533,6 +545,8 @@ public class ViewerActivity2 extends AppCompatActivity {
                                 }
                                 @Override
                                 public void onLoadFailed(@Nullable Drawable errorDrawable) {
+                                    if(!isActiveImageLoad(generation, targetBookmark))
+                                        return;
                                     frame.setImageResource(R.drawable.placeholder);
                                 }
                             });
@@ -559,6 +573,8 @@ public class ViewerActivity2 extends AppCompatActivity {
             //has to check if twopage
             viewerBookmark--;
             try {
+                int generation = nextImageLoadGeneration();
+                int targetBookmark = viewerBookmark;
                 Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark), manga.getBaseMode()) : imgs.get(viewerBookmark);
 
                 //placeholder
@@ -570,6 +586,8 @@ public class ViewerActivity2 extends AppCompatActivity {
                         .into(new CustomTarget<Bitmap>() {
                             @Override
                             public void onResourceReady(Bitmap bitmap, Transition<? super Bitmap> transition) {
+                                if(!isActiveImageLoad(generation, targetBookmark))
+                                    return;
                                 bitmap = d.decode(bitmap, swidth);
                                 //refreshbtn.setVisibility(View.INVISIBLE);
                                 int width = bitmap.getWidth();
@@ -592,6 +610,8 @@ public class ViewerActivity2 extends AppCompatActivity {
 
                             @Override
                             public void onLoadFailed(@Nullable Drawable errorDrawable) {
+                                if(!isActiveImageLoad(generation, targetBookmark))
+                                    return;
                                 viewerBookmark = Math.min(imgs.size() - 1, viewerBookmark + 1);
                                 frame.setImageResource(R.drawable.placeholder);
                                 updatePageIndex();
