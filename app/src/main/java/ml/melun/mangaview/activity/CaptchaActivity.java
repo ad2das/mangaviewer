@@ -78,8 +78,7 @@ public class CaptchaActivity extends AppCompatActivity {
         settings.setDomStorageEnabled(true);
         CookieManager cookiem = CookieManager.getInstance();
         cookiem.setAcceptCookie(true);
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP)
-            cookiem.setAcceptThirdPartyCookies(webView, true);
+        cookiem.setAcceptThirdPartyCookies(webView, true);
         cookiem.removeAllCookies(null);
 
         WebViewClient client = new WebViewClient() {
