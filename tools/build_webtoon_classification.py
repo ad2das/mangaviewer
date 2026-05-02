@@ -16,6 +16,7 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
+from difflib import SequenceMatcher
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -220,6 +221,11 @@ def normalize_space(value: str) -> str:
 def normalize_title(value: str) -> str:
     value = unicodedata.normalize("NFKC", value or "").lower()
     value = re.sub(r"[\[(（]?네이버[\])）]?", "", value)
+    value = re.sub(r"[\[(（]?(시즌|season)\s*\d+[\])）]?", "", value)
+    value = re.sub(r"[\[(（]?(외전|완전판|개정판|리마스터|리메이크|컬러판|소장판)[\])）]?", "", value)
+    value = re.sub(r"\b\d+\s*(부|기|시즌)\b", "", value)
+    value = re.sub(r"(시즌|season)\s*\d+", "", value)
+    value = re.split(r"[:：\-–—]", value, maxsplit=1)[0]
     value = re.sub(r"\s+", "", value)
     value = re.sub(r"[\[\]\(\){}<>〈〉《》「」『』:：,，.!?~ㆍ·'\"“”‘’_-]", "", value)
     value = re.sub(r"(완결|휴재|신작|new|up)$", "", value)
@@ -238,6 +244,7 @@ def clean_source_name(value: str) -> str:
     value = normalize_space(value)
     value = re.sub(r"\s*/[가-힣A-Za-z0-9]{1,6}$", "", value)
     value = re.sub(r"\s*/[가-힣A-Za-z0-9]{1,6}\s+", " ", value)
+    value = re.sub(r"\s*[\[(（]네이버[\])）]\s*", "", value)
     return normalize_space(value)
 
 
@@ -373,13 +380,15 @@ def fetch_source_titles(root: str, delay: float, max_paths: int) -> Dict[int, So
 
 def match_titles(
     source_titles: Dict[int, SourceTitle], naver_titles: Dict[int, NaverTitle]
-) -> Tuple[Dict[int, Tuple[SourceTitle, NaverTitle]], List[SourceTitle]]:
+) -> Tuple[Dict[int, Tuple[SourceTitle, NaverTitle]], List[SourceTitle], List[Dict[str, object]]]:
     naver_by_name: Dict[str, NaverTitle] = {}
     ambiguous_names = set()
+    naver_candidates: List[Tuple[str, NaverTitle]] = []
     for title in naver_titles.values():
         key = normalize_title(title.name)
         if not key:
             continue
+        naver_candidates.append((key, title))
         if key in naver_by_name:
             ambiguous_names.add(key)
         else:
@@ -389,13 +398,59 @@ def match_titles(
 
     matched: Dict[int, Tuple[SourceTitle, NaverTitle]] = {}
     unmatched: List[SourceTitle] = []
+    review: List[Dict[str, object]] = []
     for source in source_titles.values():
-        naver = naver_by_name.get(normalize_title(source.name))
+        source_key = normalize_title(source.name)
+        naver = naver_by_name.get(source_key)
         if naver is None:
+            candidate = best_fuzzy_candidate(source_key, naver_candidates)
+            if candidate is not None:
+                score, fuzzy = candidate
+                review.append(
+                    {
+                        "sourceId": source.toon_id,
+                        "sourceName": source.name,
+                        "sourceThumb": source.thumb,
+                        "naverTitleId": fuzzy.title_id,
+                        "naverName": fuzzy.name,
+                        "tags": fuzzy.tags,
+                        "score": round(score, 4),
+                    }
+                )
             unmatched.append(source)
             continue
         matched[source.toon_id] = (source, naver)
-    return matched, unmatched
+    review.sort(key=lambda item: item["score"], reverse=True)
+    return matched, unmatched, review
+
+
+def best_fuzzy_candidate(
+    source_key: str, naver_candidates: List[Tuple[str, NaverTitle]]
+) -> Optional[Tuple[float, NaverTitle]]:
+    if len(source_key) < 3:
+        return None
+    best_score = 0.0
+    best_title: Optional[NaverTitle] = None
+    second_score = 0.0
+    for naver_key, title in naver_candidates:
+        if len(naver_key) < 3:
+            continue
+        if source_key[0] != naver_key[0]:
+            continue
+        score = SequenceMatcher(None, source_key, naver_key).ratio()
+        if source_key in naver_key or naver_key in source_key:
+            score = max(score, min(len(source_key), len(naver_key)) / max(len(source_key), len(naver_key)))
+        if score > best_score:
+            second_score = best_score
+            best_score = score
+            best_title = title
+        elif score > second_score:
+            second_score = score
+    if best_title is None:
+        return None
+    if best_score < 0.92 or best_score - second_score < 0.03:
+        return None
+    return best_score, best_title
 
 
 def merge_existing(path: Path) -> Dict[str, object]:
@@ -445,16 +500,21 @@ def write_unmatched(path: Path, unmatched: List[SourceTitle]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def write_review(path: Path, review: List[Dict[str, object]]) -> None:
+    path.write_text(json.dumps(review, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build webtoon-classification.json from Naver genres.")
     parser.add_argument("--output", default="webtoon-classification.json")
     parser.add_argument("--source-root", default=DEFAULT_SOURCE_ROOT)
-    parser.add_argument("--max-naver-pages", type=int, default=3)
+    parser.add_argument("--max-naver-pages", type=int, default=10)
     parser.add_argument("--max-source-paths", type=int, default=0, help="0 means all configured source paths")
     parser.add_argument("--sort", default="UPDATE", choices=["UPDATE", "HIT", "NEW"])
     parser.add_argument("--delay", type=float, default=0.35)
     parser.add_argument("--no-detail-fetch", action="store_true")
     parser.add_argument("--unmatched-output", default="")
+    parser.add_argument("--review-output", default="")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -474,8 +534,8 @@ def main() -> int:
     source_titles = fetch_source_titles(args.source_root, args.delay, args.max_source_paths)
     print(f"source titles: {len(source_titles)}", file=sys.stderr)
 
-    matched, unmatched = match_titles(source_titles, naver_titles)
-    print(f"matched: {len(matched)} unmatched: {len(unmatched)}", file=sys.stderr)
+    matched, unmatched, review = match_titles(source_titles, naver_titles)
+    print(f"matched: {len(matched)} unmatched: {len(unmatched)} review: {len(review)}", file=sys.stderr)
 
     data = build_output(existing, matched, args.source_root)
     text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
@@ -485,6 +545,8 @@ def main() -> int:
         output.write_text(text, encoding="utf-8")
         if args.unmatched_output:
             write_unmatched(Path(args.unmatched_output), unmatched)
+        if args.review_output:
+            write_review(Path(args.review_output), review)
         print(f"wrote {output}", file=sys.stderr)
     return 0
 
