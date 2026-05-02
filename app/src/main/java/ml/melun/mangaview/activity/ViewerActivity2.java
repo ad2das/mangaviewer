@@ -122,15 +122,6 @@ public class ViewerActivity2 extends AppCompatActivity {
         super.onSaveInstanceState(outState);
     }
 
-    public int getStatusBarHeight() {
-        int result = 0;
-        int resourceId = getResources().getIdentifier("status_bar_height", "dimen", "android");
-        if (resourceId > 0) {
-            result = getResources().getDimensionPixelSize(resourceId);
-        }
-        return result;
-    }
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         dark = p.getDarkTheme();
@@ -166,7 +157,7 @@ public class ViewerActivity2 extends AppCompatActivity {
         nextEpisode.setVisibility(View.GONE);
 
         //initial padding setup
-        appbar.setPadding(0, getStatusBarHeight(),0,0);
+        appbar.setPadding(0, 0,0,0);
         getWindow().getDecorView().setBackgroundColor(Color.BLACK);
 
 //        Display display  = getWindowManager().getDefaultDisplay();
@@ -179,7 +170,7 @@ public class ViewerActivity2 extends AppCompatActivity {
 
         ViewCompat.setOnApplyWindowInsetsListener(getWindow().getDecorView(), (view, windowInsetsCompat) -> {
             //This is where you get DisplayCutoutCompat
-            int statusBarHeight = getStatusBarHeight();
+            int statusBarHeight = windowInsetsCompat.getStableInsetTop();
             int ci;
             if(windowInsetsCompat.getDisplayCutout() == null) ci = 0;
             else ci = windowInsetsCompat.getDisplayCutout().getSafeInsetTop();
@@ -189,6 +180,7 @@ public class ViewerActivity2 extends AppCompatActivity {
             view.setPadding(windowInsetsCompat.getStableInsetLeft(),0,windowInsetsCompat.getStableInsetRight(),windowInsetsCompat.getStableInsetBottom());
             return windowInsetsCompat;
         });
+        ViewCompat.requestApplyInsets(getWindow().getDecorView());
 
         this.findViewById(R.id.backButton).setOnClickListener(view -> finish());
         spinnerAdapter = new CustomSpinnerAdapter(context);

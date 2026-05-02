@@ -143,13 +143,13 @@ public class ViewerActivity extends AppCompatActivity {
         width = getScreenSize(getWindowManager().getDefaultDisplay());
 
         //initial padding setup
-        appbar.setPadding(0, getStatusBarHeight(),0,0);
+        appbar.setPadding(0, 0,0,0);
         getWindow().getDecorView().setBackgroundColor(Color.BLACK);
 
 
         ViewCompat.setOnApplyWindowInsetsListener(getWindow().getDecorView(), (view, windowInsetsCompat) -> {
             //This is where you get DisplayCutoutCompat
-            int statusBarHeight = getStatusBarHeight();
+            int statusBarHeight = windowInsetsCompat.getStableInsetTop();
             int ci;
             if(windowInsetsCompat.getDisplayCutout() == null) ci = 0;
             else ci = windowInsetsCompat.getDisplayCutout().getSafeInsetTop();
@@ -158,6 +158,7 @@ public class ViewerActivity extends AppCompatActivity {
             view.setPadding(windowInsetsCompat.getStableInsetLeft(),0,windowInsetsCompat.getStableInsetRight(),windowInsetsCompat.getStableInsetBottom());
             return windowInsetsCompat;
         });
+        ViewCompat.requestApplyInsets(getWindow().getDecorView());
 
         infiniteScrollCallback = new InfiniteScrollCallback() {
             @Override
@@ -441,16 +442,6 @@ public class ViewerActivity extends AppCompatActivity {
         }
         return super.dispatchKeyEvent(event);
     }
-    public int getStatusBarHeight() {
-        int result = 0;
-        int resourceId = getResources().getIdentifier("status_bar_height", "dimen", "android");
-        if (resourceId > 0) {
-            result = getResources().getDimensionPixelSize(resourceId);
-        }
-        return result;
-    }
-
-
     @Override
     protected void onResume() {
         super.onResume();
