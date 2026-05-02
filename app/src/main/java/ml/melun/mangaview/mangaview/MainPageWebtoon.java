@@ -52,7 +52,10 @@ public class MainPageWebtoon {
     private static final LinkedHashMap<String, List<String>> inferredTagCache = new LinkedHashMap<>();
     private static boolean inferredTagCacheLoaded = false;
     private static int inferredTagCacheWrites = 0;
-    private static final String CLASSIFICATION_DB_URL = "https://junheah.github.io/MangaViewAndroid/webtoon-classification.json";
+    private static final String[] CLASSIFICATION_DB_URLS = {
+            "https://raw.githubusercontent.com/ad2das/mangaviewer/main/webtoon-classification.json",
+            "https://raw.githubusercontent.com/ad2das/mangaviewer/test/webtoon-classification-db/webtoon-classification.json"
+    };
     private static final String CLASSIFICATION_DB_CACHE_KEY = "webtoonClassificationDbV1";
     private static final String CLASSIFICATION_DB_FETCHED_AT_KEY = "webtoonClassificationDbFetchedAt";
     private static final long CLASSIFICATION_DB_TTL_MS = 24 * 60 * 60 * 1000L;
@@ -495,23 +498,25 @@ public class MainPageWebtoon {
     }
 
     private static String fetchClassificationDb() {
-        Response response = null;
-        try {
-            if(httpClient == null)
-                return "";
-            response = httpClient.get(CLASSIFICATION_DB_URL, null);
-            if(response == null)
-                return "";
-            if(response.code() >= 400) {
-                response.close();
-                return "";
-            }
-            return CustomHttpClient.readBody(response);
-        } catch (Exception e) {
-            if(response != null)
-                response.close();
+        if(httpClient == null)
             return "";
+        for(String url : CLASSIFICATION_DB_URLS) {
+            Response response = null;
+            try {
+                response = httpClient.get(url, null);
+                if(response == null)
+                    continue;
+                if(response.code() >= 400) {
+                    response.close();
+                    continue;
+                }
+                return CustomHttpClient.readBody(response);
+            } catch (Exception e) {
+                if(response != null)
+                    response.close();
+            }
         }
+        return "";
     }
 
     private static void parseClassificationDb(String json) {
