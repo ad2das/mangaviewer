@@ -8,6 +8,7 @@
     <ImageView
         android:layout_width="match_parent"
         android:layout_height="70dp"
+        android:contentDescription="@string/captcha_image"
         android:id="@+id/toki_captcha_image"/>
     <EditText
         android:layout_width="match_parent"

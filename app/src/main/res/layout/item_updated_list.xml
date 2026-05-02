@@ -24,6 +24,7 @@
 
             <ImageView
                 android:id="@+id/Thumb"
+                android:contentDescription="@string/title_cover"
                 android:layout_height="0dp"
                 android:layout_width="80dp"
                 android:scaleType="centerCrop"
@@ -32,6 +33,7 @@
                 app:layout_constraintTop_toTopOf="parent" />
             <ImageView
                 android:id="@+id/seenIcon"
+                android:contentDescription="@string/title_seen"
                 android:layout_width="20dp"
                 android:layout_height="20dp"
                 android:layout_margin="5dp"
@@ -43,6 +45,7 @@
                 android:visibility="visible"/>
             <ImageView
                 android:id="@+id/favIcon"
+                android:contentDescription="@string/title_favorite"
                 android:layout_width="20dp"
                 android:layout_height="20dp"
                 android:layout_margin="5dp"
@@ -101,6 +104,7 @@
 
             <androidx.appcompat.widget.AppCompatImageButton
                 android:background="@android:color/darker_gray"
+                android:contentDescription="@string/title_episode_list"
                 android:foreground="?android:attr/selectableItemBackground"
                 android:id="@+id/epsButton"
                 android:layout_height="0dp"
@@ -127,6 +131,7 @@
                 app:layout_constraintStart_toEndOf="@+id/Thumb">
 
                 <ImageView
+                    android:contentDescription="@null"
                     android:layout_width="wrap_content"
                     android:layout_height="match_parent"
                     app:srcCompat="@drawable/ic_tag" />

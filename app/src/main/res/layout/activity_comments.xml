@@ -81,6 +81,7 @@
 
         <ImageButton
             android:background="?android:attr/selectableItemBackground"
+            android:contentDescription="@string/comment_send"
             android:id="@+id/commentButton"
             android:layout_height="wrap_content"
             android:layout_marginBottom="8dp"

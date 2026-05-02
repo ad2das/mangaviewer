@@ -14,6 +14,7 @@
 
         <ImageView
             android:id="@+id/HeaderThumb"
+            android:contentDescription="@string/title_cover"
             android:layout_height="match_parent"
             android:layout_width="170dp"
             android:scaleType="centerCrop"
@@ -82,6 +83,7 @@
 
             <ImageView
                 android:id="@+id/recommendIcon"
+                android:contentDescription="@null"
                 android:layout_height="match_parent"
                 android:layout_width="wrap_content"
                 android:paddingBottom="10dp"
@@ -110,6 +112,7 @@
 
             <ImageView
                 android:id="@+id/bookmarkIcon"
+                android:contentDescription="@string/title_bookmark"
                 android:layout_height="match_parent"
                 android:layout_width="wrap_content"
                 android:paddingBottom="10dp"
@@ -129,6 +132,7 @@
 
             <ImageView
                 android:id="@+id/favoriteIcon"
+                android:contentDescription="@string/title_favorite"
                 android:layout_height="match_parent"
                 android:layout_marginEnd="9dp"
                 android:layout_marginStart="9dp"

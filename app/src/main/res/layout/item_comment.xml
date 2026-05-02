@@ -24,6 +24,7 @@
     <ImageView
         android:foreground="@drawable/button_bg"
         android:id="@+id/comment_icon"
+        android:contentDescription="@string/comment_author_image"
         android:layout_height="60dp"
         android:layout_marginBottom="8dp"
         android:layout_marginStart="8dp"

@@ -26,6 +26,7 @@
 
             <ImageView
                 android:id="@+id/webtoon_thumb"
+                android:contentDescription="@string/title_cover"
                 android:layout_width="match_parent"
                 android:layout_height="156dp"
                 android:scaleType="centerCrop"

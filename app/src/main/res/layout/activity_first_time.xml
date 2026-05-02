@@ -20,6 +20,7 @@
             android:orientation="vertical">
 
             <ImageView
+                android:contentDescription="@string/app_logo"
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"
                 app:srcCompat="@drawable/ic_logo" />
