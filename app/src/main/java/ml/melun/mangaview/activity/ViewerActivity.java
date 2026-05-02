@@ -340,10 +340,7 @@ public class ViewerActivity extends AppCompatActivity {
             alert.setPositiveButton("이동", (dialog, button) -> {
                 //이동 시
                 if (input.getText().length() > 0) {
-                    int page = Integer.parseInt(input.getText().toString());
-                    if (page < 1) page = 1;
-                    if (page > current.manga.getImgs(context).size())
-                        page = current.manga.getImgs(context).size();
+                    int page = parsePageInput(input.getText().toString(), current.manga.getImgs(context).size());
                     manager.scrollToPage(new PageItem(page - 1, "", current.manga));
                     pageBtn.setText(getString(R.string.viewer_page_counter, page, current.manga.getImgs(context).size()));
                 }
@@ -355,6 +352,16 @@ public class ViewerActivity extends AppCompatActivity {
             alert.show();
         });
 
+    }
+
+    private int parsePageInput(String value, int maxPage) {
+        try {
+            int page = Integer.parseInt(value);
+            if (page < 1) return 1;
+            return Math.min(page, Math.max(1, maxPage));
+        } catch (NumberFormatException e) {
+            return Math.max(1, maxPage);
+        }
     }
 
     void refresh(){
