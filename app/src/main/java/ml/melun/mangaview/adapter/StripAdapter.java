@@ -2,6 +2,7 @@ package ml.melun.mangaview.adapter;
 
 import android.content.Context;
 import android.graphics.drawable.Drawable;
+import android.util.LruCache;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.recyclerview.widget.RecyclerView;
@@ -16,8 +17,11 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 
 import com.bumptech.glide.Glide;
+import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
+import com.bumptech.glide.request.RequestOptions;
 import com.bumptech.glide.request.target.CustomTarget;
+import com.bumptech.glide.request.target.Target;
 import com.bumptech.glide.request.transition.Transition;
 
 import java.util.ArrayList;
@@ -50,13 +54,15 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     int width;
     int count = 0;
     final static int MaxStackSize = 3;
-    private static final int PRELOAD_AHEAD_COUNT = 3;
+    private static final int PRELOAD_AHEAD_COUNT = 6;
+    private static final int DATA_SAVE_PRELOAD_AHEAD_COUNT = 2;
     private static final int PRELOAD_TRACK_LIMIT = 200;
     ViewerActivity.InfiniteScrollCallback callback;
     Title title;
 
     List<Object> items;
     private final Set<String> preloadedImages = new LinkedHashSet<>();
+    private final LruCache<String, Bitmap> decodedBitmapCache;
 
     public List<Object> getItems(){
         return items;
@@ -267,6 +273,12 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         d = new Decoder(manga.getSeed(), manga.getId());
         this.width = width;
         this.title = title;
+        this.decodedBitmapCache = new LruCache<String, Bitmap>(decodedCacheSizeKb()) {
+            @Override
+            protected int sizeOf(@NonNull String key, @NonNull Bitmap value) {
+                return Math.max(1, value.getByteCount() / 1024);
+            }
+        };
         setHasStableIds(true);
         appendManga(manga);
     }
@@ -352,6 +364,14 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         PageItem item = ((PageItem)items.get(pos));
         Object url = getImageModel(item);
         holder.frame.setMinimumHeight(Math.max(width, 1));
+        String cacheKey = decodedCacheKey(item);
+        Bitmap cached = decodedBitmapCache.get(cacheKey);
+        if(cached != null && !cached.isRecycled()) {
+            holder.frame.setMinimumHeight(0);
+            holder.frame.setImageBitmap(cached);
+            holder.refresh.setVisibility(View.GONE);
+            return;
+        }
         if (autoCut) {
             CustomTarget<Bitmap> imageTarget = new CustomTarget<Bitmap>() {
                 @Override
@@ -360,27 +380,30 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                         return;
                     holder.frame.setMinimumHeight(0);
                     bitmap = d.decode(bitmap, width);
+                    Bitmap displayBitmap;
                     int width = bitmap.getWidth();
                     int height = bitmap.getHeight();
                     if (width > height) {
                         if (item.side == PageItem.FIRST) {
                             if (reverse)
-                                holder.frame.setImageBitmap(Bitmap.createBitmap(bitmap, 0, 0, width / 2, height));
+                                displayBitmap = Bitmap.createBitmap(bitmap, 0, 0, width / 2, height);
                             else
-                                holder.frame.setImageBitmap(Bitmap.createBitmap(bitmap, width / 2, 0, width / 2, height));
+                                displayBitmap = Bitmap.createBitmap(bitmap, width / 2, 0, width / 2, height);
                         } else {
                             if (reverse)
-                                holder.frame.setImageBitmap(Bitmap.createBitmap(bitmap, width / 2, 0, width / 2, height));
+                                displayBitmap = Bitmap.createBitmap(bitmap, width / 2, 0, width / 2, height);
                             else
-                                holder.frame.setImageBitmap(Bitmap.createBitmap(bitmap, 0, 0, width / 2, height));
+                                displayBitmap = Bitmap.createBitmap(bitmap, 0, 0, width / 2, height);
                         }
                     } else {
                         if (item.side == PageItem.FIRST) {
-                            holder.frame.setImageBitmap(bitmap);
+                            displayBitmap = bitmap;
                         } else {
-                            holder.frame.setImageBitmap(Bitmap.createBitmap(bitmap.getWidth(), 1, Bitmap.Config.ARGB_8888));
+                            displayBitmap = Bitmap.createBitmap(bitmap.getWidth(), 1, Bitmap.Config.ARGB_8888);
                         }
                     }
+                    decodedBitmapCache.put(cacheKey, displayBitmap);
+                    holder.frame.setImageBitmap(displayBitmap);
                     holder.refresh.setVisibility(View.GONE);
                 }
 
@@ -406,7 +429,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             //set image to holder view
             Glide.with(holder.frame)
                     .asBitmap()
-                    .diskCacheStrategy(DiskCacheStrategy.DATA)
+                    .apply(viewerImageOptions())
                     .load(url)
                     .placeholder(R.drawable.placeholder)
                     .into(imageTarget);
@@ -418,6 +441,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                         return;
                     holder.frame.setMinimumHeight(0);
                     resource = d.decode(resource, width);
+                    decodedBitmapCache.put(cacheKey, resource);
                     holder.frame.setImageBitmap(resource);
                     holder.refresh.setVisibility(View.GONE);
                 }
@@ -443,10 +467,17 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             holder.imageTarget = imageTarget;
             Glide.with(holder.frame)
                     .asBitmap()
-                    .diskCacheStrategy(DiskCacheStrategy.DATA)
+                    .apply(viewerImageOptions())
                     .load(url)
                     .into(imageTarget);
         }
+    }
+
+    private RequestOptions viewerImageOptions() {
+        return new RequestOptions()
+                .diskCacheStrategy(DiskCacheStrategy.DATA)
+                .downsample(DownsampleStrategy.AT_MOST)
+                .override(Math.max(width, 1), Target.SIZE_ORIGINAL);
     }
 
     private Object getImageModel(PageItem item) {
@@ -474,7 +505,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     private void preloadAhead(int adapterPosition) {
         int preloaded = 0;
-        for(int i = adapterPosition + 1; i < items.size() && preloaded < PRELOAD_AHEAD_COUNT; i++) {
+        int preloadLimit = p.getDataSave() ? DATA_SAVE_PRELOAD_AHEAD_COUNT : PRELOAD_AHEAD_COUNT;
+        for(int i = adapterPosition + 1; i < items.size() && preloaded < preloadLimit; i++) {
             Object next = items.get(i);
             if(next instanceof PageItem) {
                 preloadPage((PageItem) next);
@@ -489,6 +521,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             return;
         trimPreloadTracker();
         Glide.with(mainContext)
+                .asBitmap()
+                .apply(viewerImageOptions())
                 .load(getImageModel(page))
                 .preload();
     }
@@ -497,6 +531,20 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(page == null || page.manga == null)
             return "";
         return page.manga.getBaseMode() + ":" + page.img;
+    }
+
+    private String decodedCacheKey(PageItem page) {
+        if(page == null || page.manga == null)
+            return "";
+        return page.manga.getBaseMode() + ":" + page.manga.getId() + ":" + width + ":" + page.side + ":" + page.img;
+    }
+
+    private int decodedCacheSizeKb() {
+        int maxMemoryKb = (int)(Runtime.getRuntime().maxMemory() / 1024);
+        int targetKb = maxMemoryKb / (p.getDataSave() ? 16 : 8);
+        int minKb = p.getDataSave() ? 4 * 1024 : 8 * 1024;
+        int maxKb = p.getDataSave() ? 12 * 1024 : 32 * 1024;
+        return Math.max(minKb, Math.min(targetKb, maxKb));
     }
 
     private void trimPreloadTracker() {

@@ -16,8 +16,12 @@ import android.widget.ImageButton;
 import android.widget.ImageView;
 
 import com.bumptech.glide.Glide;
+import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import com.bumptech.glide.load.model.GlideUrl;
+import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy;
+import com.bumptech.glide.request.RequestOptions;
 import com.bumptech.glide.request.target.CustomTarget;
+import com.bumptech.glide.request.target.Target;
 import com.bumptech.glide.request.transition.Transition;
 
 import ml.melun.mangaview.R;
@@ -76,6 +80,7 @@ public class ViewerPageFragment extends Fragment {
         Object target = image.startsWith("http") ? getGlideUrl(image) : image;
         Glide.with(frame)
                 .asBitmap()
+                .apply(viewerImageOptions())
                 .load(target)
                 .into(new CustomTarget<Bitmap>() {
                     @Override
@@ -98,6 +103,13 @@ public class ViewerPageFragment extends Fragment {
                         }
                     }
                 });
+    }
+
+    private RequestOptions viewerImageOptions() {
+        return new RequestOptions()
+                .diskCacheStrategy(DiskCacheStrategy.DATA)
+                .downsample(DownsampleStrategy.AT_MOST)
+                .override(Math.max(width, 1), Target.SIZE_ORIGINAL);
     }
 
     public void setOnClick(PageInterface i){

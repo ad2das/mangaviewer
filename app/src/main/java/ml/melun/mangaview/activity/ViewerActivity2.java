@@ -40,7 +40,10 @@ import android.widget.Toast;
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.load.DataSource;
 import com.bumptech.glide.load.engine.GlideException;
+import com.bumptech.glide.load.engine.DiskCacheStrategy;
+import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy;
 import com.bumptech.glide.request.RequestListener;
+import com.bumptech.glide.request.RequestOptions;
 import com.bumptech.glide.request.target.CustomTarget;
 import com.bumptech.glide.request.target.Target;
 import com.bumptech.glide.request.transition.Transition;
@@ -413,6 +416,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                 frame.setImageResource(R.drawable.placeholder);
                 Glide.with(context)
                         .asBitmap()
+                        .apply(viewerImageOptions())
                         .load(image)
                         .into(new CustomTarget<Bitmap>() {
                             @Override
@@ -476,6 +480,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                     //placeholder
                     Glide.with(context)
                             .asBitmap()
+                            .apply(viewerImageOptions())
                             .load(image)
                             .into(new CustomTarget<Bitmap>() {
                                 @Override
@@ -498,6 +503,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                                             Object image2 = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark-1), manga.getBaseMode()) : imgs.get(viewerBookmark-1);
                                             Glide.with(context)
                                                     .asBitmap()
+                                                    .apply(viewerImageOptions())
                                                     .load(image2)
                                                     .into(new CustomTarget<Bitmap>() {
                                                         @Override
@@ -558,6 +564,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                 frame.setImageResource(R.drawable.placeholder);
                 Glide.with(context)
                         .asBitmap()
+                        .apply(viewerImageOptions())
                         .load(image)
                         .into(new CustomTarget<Bitmap>() {
                             @Override
@@ -616,6 +623,7 @@ public class ViewerActivity2 extends AppCompatActivity {
             //frame.setImageResource(R.drawable.placeholder);
             Glide.with(context)
                     .asBitmap()
+                    .apply(viewerImageOptions())
                     .load(image)
                     .into(new CustomTarget<Bitmap>() {
                         @Override
@@ -657,6 +665,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                                         frame2.setImageResource(R.drawable.placeholder);
                                         Glide.with(context)
                                                 .asBitmap()
+                                                .apply(viewerImageOptions())
                                                 .load(image2)
                                                 .into(new CustomTarget<Bitmap>() {
                                                     @Override
@@ -697,6 +706,7 @@ public class ViewerActivity2 extends AppCompatActivity {
             Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark+1), manga.getBaseMode()) : imgs.get(viewerBookmark+1);
             Glide.with(context)
                     .asBitmap()
+                    .apply(viewerImageOptions())
                     .load(image)
                     .addListener(new RequestListener<Bitmap>() {
                         @Override
@@ -711,6 +721,12 @@ public class ViewerActivity2 extends AppCompatActivity {
                     })
                     .preload();
         }
+    }
+    private RequestOptions viewerImageOptions() {
+        return new RequestOptions()
+                .diskCacheStrategy(DiskCacheStrategy.DATA)
+                .downsample(DownsampleStrategy.AT_MOST)
+                .override(Math.max(swidth, 1), Target.SIZE_ORIGINAL);
     }
     void updatePageIndex(){
         pageBtn.setText(viewerBookmark+1+"/"+imgs.size());
