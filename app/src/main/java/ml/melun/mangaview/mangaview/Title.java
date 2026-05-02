@@ -74,17 +74,20 @@ public class Title extends MTitle {
             return fetchWolfEps(client);
 
         for(int attempt = 0; attempt <= MAX_TIMEOUT_RETRIES; attempt++) {
+            Response r = null;
             try {
-                Response r = client.mget('/'+baseModeStr(baseMode)+'/'+ id);
+                r = client.mget('/'+baseModeStr(baseMode)+'/'+ id);
                 if(r == null)
                     return LOAD_OK;
                 //웹툰의 경우 캡차 있을 수 있음.
                 String location = r.header("location");
                 if(r.code() == 302 && location != null && location.contains("captcha.php")){
                     r.close();
+                    r = null;
                     return LOAD_CAPTCHA;
                 }
                 String body = CustomHttpClient.readBody(r);
+                r = null;
                 if(body.contains("Connect Error: Connection timed out"))
                     continue;
                 Document d = Jsoup.parse(body);
@@ -168,6 +171,9 @@ public class Title extends MTitle {
             }catch(Exception e) {
                 e.printStackTrace();
                 break;
+            } finally {
+                if(r != null)
+                    r.close();
             }
         }
         return LOAD_OK;
