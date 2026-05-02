@@ -1414,6 +1414,18 @@
       "sourceTags": [
         "판타지",
         "액션"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "판타지",
+        "액션"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
+        "판타지",
+        "액션"
       ]
     },
     "163": {
@@ -1576,6 +1588,16 @@
       "thumb": "https://i2.vcloud17.com/l0g/c1f13b6e0e9ec7c2285ef3b7b693d325e75c4562a9d9ca0b934c5e4134a74892.jpg",
       "release": "",
       "sourceTags": [
+        "로맨스"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "로맨스"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "로맨스"
       ]
     },
@@ -1942,6 +1964,16 @@
       "release": "",
       "sourceTags": [
         "드라마"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "드라마"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
+        "드라마"
       ]
     },
     "223": {
@@ -2020,6 +2052,18 @@
       "sourceTags": [
         "드라마",
         "BL"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "BL",
+        "드라마"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
+        "BL",
+        "드라마"
       ]
     },
     "232": {
@@ -2037,6 +2081,16 @@
       "release": "",
       "sourceTags": [
         "개그"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "개그"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
+        "개그"
       ]
     },
     "234": {
@@ -2044,6 +2098,16 @@
       "thumb": "https://i2.vcloud17.com/ll2/25ba0dc04340106c33306160041606bb8b3f55bdf4a43f468c1e0f7e7e6d4add.jpg",
       "release": "",
       "sourceTags": [
+        "드라마"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "드라마"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "드라마"
       ]
     },
@@ -2602,6 +2666,16 @@
       "release": "",
       "sourceTags": [
         "드라마"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "드라마"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
+        "드라마"
       ]
     },
     "300": {
@@ -2959,6 +3033,16 @@
       "thumb": "https://i2.vcloud17.com/l1r/0f2b5347b51447609775024e11ad35da8d03169406f098aaf0a076371cd7eb8d.jpg",
       "release": "",
       "sourceTags": [
+        "드라마"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "드라마"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
         "드라마"
       ]
     },
@@ -3535,6 +3619,16 @@
       "thumb": "https://i2.vcloud17.com/lj0/e0ca8a15d93dffb77a0d11e4eed0b8dad6ff0e14e000c0f243896d628abe2f65.jpg",
       "release": "",
       "sourceTags": [
+        "판타지"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "판타지"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "판타지"
       ]
     },
@@ -4383,6 +4477,16 @@
       "release": "",
       "sourceTags": [
         "드라마"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "드라마"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
+        "드라마"
       ]
     },
     "511": {
@@ -4525,6 +4629,16 @@
       "thumb": "https://i2.vcloud17.com/ll2/4541022cb4860677592c3570e51de7a7517fdf0b7c159339540aa3932c6d1cfa.jpg",
       "release": "",
       "sourceTags": [
+        "로맨스"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "로맨스"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "로맨스"
       ]
     },
@@ -6851,6 +6965,18 @@
       "sourceTags": [
         "BL",
         "드라마"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "BL",
+        "드라마"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
+        "BL",
+        "드라마"
       ]
     },
     "874": {
@@ -7809,6 +7935,16 @@
       "release": "",
       "sourceTags": [
         "드라마"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "드라마"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
+        "드라마"
       ]
     },
     "983": {
@@ -8226,6 +8362,16 @@
       "thumb": "https://i2.vcloud17.com/1029/714011c513a02de9de3bf8fc6a87f4281f827793be98ee643955d94952a3b750.jpg",
       "release": "",
       "sourceTags": [
+        "액션"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "액션"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
         "액션"
       ]
     },
@@ -9479,6 +9625,16 @@
       "thumb": "https://i2.vcloud17.com/1173/23480ecdf58c1683b23526fe9cc8c5519cc03bd18f88c7a09d8d4dbce817de5f.jpg",
       "release": "",
       "sourceTags": [
+        "일상"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "일상"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "일상"
       ]
     },
@@ -10808,6 +10964,16 @@
       "thumb": "https://i2.vcloud17.com/1330/3441490ff3d5aadce05c2f6b63052e0b40467676717c1345c7467144851f6107.jpg",
       "release": "",
       "sourceTags": [
+        "드라마"
+      ],
+      "manual": true,
+      "manualTags": [
+        "스릴러",
+        "드라마"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "스릴러",
         "드라마"
       ]
     },
@@ -14283,6 +14449,16 @@
       "release": "",
       "sourceTags": [
         "드라마"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "드라마"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
+        "드라마"
       ]
     },
     "1742": {
@@ -14620,6 +14796,16 @@
       "thumb": "https://i2.vcloud17.com/1777/4a5cd6c09f52551d75ca523239a3addd2fc54f58d3e2ba4ba081b90936988400.jpg",
       "release": "",
       "sourceTags": [
+        "개그"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "개그"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "개그"
       ]
     },
@@ -15520,6 +15706,16 @@
       "release": "",
       "sourceTags": [
         "스릴러"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "스릴러"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
+        "스릴러"
       ]
     },
     "1882": {
@@ -16244,6 +16440,16 @@
       "thumb": "https://i2.vcloud17.com/1965/1484362eea54668646c0467e0109611606eee0a17b18c203bb1d3dd99894c28e.jpg",
       "release": "",
       "sourceTags": [
+        "개그"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "개그"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "개그"
       ]
     },
@@ -18745,6 +18951,20 @@
         "공포",
         "스토리",
         "판타지"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "판타지",
+        "공포",
+        "스토리"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
+        "판타지",
+        "공포",
+        "스토리"
       ]
     },
     "2253": {
@@ -19825,6 +20045,18 @@
       "thumb": "https://i2.vcloud17.com/2377/b46eab5c22e6d03cbbfaedd46495eec5724018b131f7f50144ffb947d7040418.jpg",
       "release": "",
       "sourceTags": [
+        "일상",
+        "개그"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "일상",
+        "개그"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "일상",
         "개그"
       ]
@@ -21304,6 +21536,16 @@
       "release": "",
       "sourceTags": [
         "개그"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "개그"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
+        "개그"
       ]
     },
     "2547": {
@@ -22729,6 +22971,18 @@
       "thumb": "https://i2.vcloud17.com/2709/96ee1f1cbde90d76d5074c966c63452361939d83681f3b78d9faa5c17817443d.jpg",
       "release": "",
       "sourceTags": [
+        "일상",
+        "판타지"
+      ],
+      "manual": true,
+      "manualTags": [
+        "공포",
+        "일상",
+        "판타지"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "공포",
         "일상",
         "판타지"
       ]
@@ -24562,6 +24816,18 @@
       "sourceTags": [
         "드라마",
         "판타지"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "드라마",
+        "판타지"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
+        "드라마",
+        "판타지"
       ]
     },
     "2921": {
@@ -25259,6 +25525,16 @@
       "release": "",
       "sourceTags": [
         "일상"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "일상"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
+        "일상"
       ]
     },
     "2997": {
@@ -25367,6 +25643,16 @@
       "thumb": "https://i3.vcloud17.com/3009/925643d5b1c0b79ded5f018fe178e657ef4dc6ea697c4efed152120d53a09f3d.jpg",
       "release": "",
       "sourceTags": [
+        "일상"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "일상"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "일상"
       ]
     },
@@ -28489,6 +28775,16 @@
       "release": "",
       "sourceTags": [
         "드라마"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "드라마"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
+        "드라마"
       ]
     },
     "3363": {
@@ -28996,6 +29292,16 @@
       "thumb": "https://i3.vcloud17.com/3421/42a4651a999c5fbc729a76ec63518221a1091454869b5852c039495646618906.jpg",
       "release": "",
       "sourceTags": [
+        "드라마"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "드라마"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "드라마"
       ]
     },
@@ -30272,6 +30578,18 @@
       "thumb": "https://i4.vcloud17.com/3564/f225b184e58ea76931f9ff8da5d2ab983106d97680ee68c617ec5158114c9589.jpg",
       "release": "",
       "sourceTags": [
+        "드라마",
+        "개그"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "드라마",
+        "개그"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "드라마",
         "개그"
       ]
@@ -32973,6 +33291,16 @@
       "release": "",
       "sourceTags": [
         "드라마"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "드라마"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
+        "드라마"
       ]
     },
     "3868": {
@@ -33906,6 +34234,18 @@
       "thumb": "https://i5.bacloud2.com/3974/a537a859b5fe41f573c5d73a7cef14abd6aab1eaa28f2d7dbeb0525249b03004.jpg",
       "release": "",
       "sourceTags": [
+        "BL",
+        "로맨스"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "BL",
+        "로맨스"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "BL",
         "로맨스"
       ]
@@ -35124,6 +35464,16 @@
       "thumb": "https://i5.bacloud2.com/4111/5e281eb124b781108f838e309539211f5faa75dfa93ebee080b6401c7c7b21d6.jpg",
       "release": "",
       "sourceTags": [
+        "드라마"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "드라마"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "드라마"
       ]
     },
@@ -38085,6 +38435,18 @@
       "sourceTags": [
         "판타지",
         "액션"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "판타지",
+        "액션"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
+        "판타지",
+        "액션"
       ]
     },
     "4451": {
@@ -38577,6 +38939,16 @@
       "thumb": "https://i5.bacloud2.com/4502/849fded6e695ec942dc6159ba292435385ad48a93fd1352f1395973d4072337a.jpg",
       "release": "",
       "sourceTags": [
+        "일상"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "일상"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "일상"
       ]
     },
@@ -39612,6 +39984,16 @@
       "thumb": "https://i5.bacloud2.com/4619/0611fa8d7b080c822a7010957498e5e99caa65db8ec68a9172e1730d5ffb543e.jpg",
       "release": "",
       "sourceTags": [
+        "일상"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "일상"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "일상"
       ]
     },
@@ -43888,6 +44270,16 @@
       "thumb": "https://i6.bacloud2.com/5120/e49d3e2f6aa8db5725d0a0cf83bfcefd9a758ca05cbb5ffc63e5d4df24590f95.jpg",
       "release": "",
       "sourceTags": [
+        "일상"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "일상"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "일상"
       ]
     },
@@ -48167,6 +48559,16 @@
       "release": "",
       "sourceTags": [
         "로맨스"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "로맨스"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
+        "로맨스"
       ]
     },
     "5623": {
@@ -49357,6 +49759,16 @@
       "thumb": "https://i0.scloud17.com/5765/b6cea0b852cdcb0f761da5c4618a3796b06647d2c5f44b4b4c82c7042238e43e.jpg",
       "release": "",
       "sourceTags": [
+        "개그"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "개그"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "개그"
       ]
     },
@@ -52645,6 +53057,16 @@
       "thumb": "https://i0.scloud17.com/6153/bc4f4da7be1c3d87ee4b0d94ceb6ba7bc3aff3a6e62ba82dd4e401a672e77790.jpg",
       "release": "",
       "sourceTags": [
+        "BL"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "BL"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "BL"
       ]
     },
@@ -56509,6 +56931,16 @@
       "thumb": "https://i0.scloud17.com/6609/a4392537ea069f0bbdfb894a74cb889f921700a88f90e021d4cde9576885890d.jpg",
       "release": "",
       "sourceTags": [
+        "BL"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "BL"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "BL"
       ]
     },
@@ -61577,6 +62009,16 @@
       "release": "",
       "sourceTags": [
         "BL"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "BL"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
+        "BL"
       ]
     },
     "7200": {
@@ -61993,6 +62435,18 @@
       "thumb": "https://i8.ba7cloud.com/7248/73d95162227325d901ab9a056fecf744dcd1d4c189c96f6d6c189b55f657d2fe.jpg",
       "release": "",
       "sourceTags": [
+        "판타지",
+        "액션"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "판타지",
+        "액션"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
         "판타지",
         "액션"
       ]
@@ -63367,6 +63821,16 @@
       "thumb": "https://i8.ba7cloud.com/7412/ab1b707037030447186b015481df7e0ee4b31400ba3e4ccf0ca74d04343001b8.jpg",
       "release": "",
       "sourceTags": [
+        "액션"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "액션"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
         "액션"
       ]
     },
@@ -67452,6 +67916,16 @@
       "release": "",
       "sourceTags": [
         "판타지"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "판타지"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
+        "판타지"
       ]
     },
     "7875": {
@@ -68665,6 +69139,16 @@
       "thumb": "https://i9.ao9cloud.com/8010/06637a79013332c23defa25c93124038e4e4b96b29decde6c3d09f96d748ad43.jpg",
       "release": "",
       "sourceTags": [
+        "판타지"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "판타지"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "판타지"
       ]
     },
@@ -73092,6 +73576,18 @@
       "sourceTags": [
         "드라마",
         "액션"
+      ],
+      "manual": true,
+      "manualTags": [
+        "스릴러",
+        "드라마",
+        "액션"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "스릴러",
+        "드라마",
+        "액션"
       ]
     },
     "8519": {
@@ -74548,6 +75044,16 @@
       "thumb": "https://g10img.com/8686/4f960618363060f24b7be651f394bf463a7d2e8448c4fb92ffc39737e45f7d93.jpg",
       "release": "",
       "sourceTags": [
+        "무협"
+      ],
+      "manual": true,
+      "manualTags": [
+        "공포",
+        "무협"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "공포",
         "무협"
       ]
     },
@@ -79830,6 +80336,16 @@
       "release": "",
       "sourceTags": [
         "BL"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "BL"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
+        "BL"
       ]
     },
     "9298": {
@@ -79969,6 +80485,16 @@
       "thumb": "https://g10img.com/9314/39c84ea3b37f4e3d4cb4a4c4cab494628c8e29d4c38e5c97a864378cff81fb84.jpg",
       "release": "",
       "sourceTags": [
+        "BL"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "BL"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
         "BL"
       ]
     },
@@ -80359,6 +80885,16 @@
       "release": "",
       "sourceTags": [
         "BL"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "BL"
+      ],
+      "manualSource": "manual audit: explicit adult wording in source title/metadata; source genre omitted 성인",
+      "tags": [
+        "성인",
+        "BL"
       ]
     },
     "9360": {
@@ -80654,6 +81190,16 @@
       "thumb": "https://g10img.com/9393/31f66446f361d8cd5d409db04e113c5f5b8a9812be8dd855b6e88333ad91465d.jpg",
       "release": "",
       "sourceTags": [
+        "BL"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "BL"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "성인",
         "BL"
       ]
     },
@@ -81000,6 +81546,16 @@
       "release": "",
       "sourceTags": [
         "BL"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "BL"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "성인",
+        "BL"
       ]
     },
     "9433": {
@@ -81143,6 +81699,18 @@
       "thumb": "https://w11cloud.com/9449/579afc7d34c6a9d1b0a235e9381723ceb6b5f07bcf715624e77561c754145ba0.jpg",
       "release": "",
       "sourceTags": [
+        "판타지",
+        "로맨스"
+      ],
+      "manual": true,
+      "manualTags": [
+        "공포",
+        "판타지",
+        "로맨스"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "공포",
         "판타지",
         "로맨스"
       ]
@@ -83326,6 +83894,16 @@
       "release": "",
       "sourceTags": [
         "BL"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "BL"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "성인",
+        "BL"
       ]
     },
     "9697": {
@@ -83375,6 +83953,16 @@
       "thumb": "https://w11cloud.com/9702/57713d7aaf80905db05c8f7ca9a3277ecea25bb29dc0a7de5b81aa041a4c3f19.jpg",
       "release": "",
       "sourceTags": [
+        "판타지"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "판타지"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
         "판타지"
       ]
     },
@@ -88198,6 +88786,18 @@
       "sourceTags": [
         "판타지",
         "로맨스"
+      ],
+      "manual": true,
+      "manualTags": [
+        "공포",
+        "판타지",
+        "로맨스"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "공포",
+        "판타지",
+        "로맨스"
       ]
     },
     "70293": {
@@ -89372,6 +89972,18 @@
       "sourceTags": [
         "판타지",
         "로맨스"
+      ],
+      "manual": true,
+      "manualTags": [
+        "공포",
+        "판타지",
+        "로맨스"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "공포",
+        "판타지",
+        "로맨스"
       ]
     },
     "70427": {
@@ -89711,6 +90323,16 @@
       "thumb": "https://w11cloud.com/70464/b0b79d480cf750fb4caa39203236759e10da5940f5c9e2bb02bcf3fe5aa97286.jpg",
       "release": "",
       "sourceTags": [
+        "BL"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "BL"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
         "BL"
       ]
     },
@@ -92468,13 +93090,21 @@
         "액션"
       ],
       "tags": [
+        "무협",
         "판타지",
         "액션"
       ],
       "naverTitleId": 817637,
       "naverName": "천마의 후손이 되었다",
       "match": "normalized-title",
-      "matchScore": 1.0
+      "matchScore": 1.0,
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "판타지",
+        "액션"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete"
     },
     "70781": {
       "name": "주파수",
@@ -93422,6 +94052,16 @@
       "release": "",
       "sourceTags": [
         "BL"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "BL"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "성인",
+        "BL"
       ]
     },
     "70890": {
@@ -93923,6 +94563,16 @@
       "release": "",
       "sourceTags": [
         "판타지"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "판타지"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
+        "판타지"
       ]
     },
     "70948": {
@@ -94167,6 +94817,16 @@
       "thumb": "https://v13st.com/70975/b080e397a4131e563ed7363c3ceee3591c5d1dd0e0a78f08dd76e6219b78d9e8.jpg",
       "release": "",
       "sourceTags": [
+        "판타지"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "판타지"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
         "판타지"
       ]
     },
@@ -94726,6 +95386,16 @@
       "thumb": "https://v12st.com/71038/06d5fae50c9eb7c57d1f3d79f6a4f39ba0e6178dfa3e3981df7bdef633efe9c7.jpg",
       "release": "",
       "sourceTags": [
+        "BL"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "BL"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "성인",
         "BL"
       ]
     },
@@ -101967,6 +102637,16 @@
       "release": "",
       "sourceTags": [
         "BL"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "BL"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
+        "BL"
       ]
     },
     "71870": {
@@ -103812,13 +104492,21 @@
         "개그"
       ],
       "tags": [
+        "무협",
         "판타지",
         "개그"
       ],
       "naverTitleId": 823536,
       "naverName": "요리사가 되고 싶은 천마님",
       "match": "normalized-title",
-      "matchScore": 1.0
+      "matchScore": 1.0,
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "판타지",
+        "개그"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete"
     },
     "72079": {
       "name": "내가 쓴 소설 속 주인공들이",
@@ -104284,6 +104972,18 @@
       "sourceTags": [
         "판타지",
         "개그"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "판타지",
+        "개그"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
+        "판타지",
+        "개그"
       ]
     },
     "72130": {
@@ -104376,6 +105076,18 @@
       "thumb": "https://v12st.com/72140/cfp0uebq7z2v5bicnxp3gp96powanu1ec1.jpg",
       "release": "",
       "sourceTags": [
+        "판타지",
+        "개그"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "판타지",
+        "개그"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
         "판타지",
         "개그"
       ]
@@ -106196,6 +106908,18 @@
       "thumb": "https://y17stm.com/72340/hscvvphycd2i5xyzsf81fhs7nigceumo0j.jpg",
       "release": "",
       "sourceTags": [
+        "판타지",
+        "액션"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "판타지",
+        "액션"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
         "판타지",
         "액션"
       ]
@@ -108294,6 +109018,18 @@
       "thumb": "https://vv14cloud.com/72567/hww4lgsjqgd0jwysixsit4f0or5ovjyidb.jpg?v=1",
       "release": "",
       "sourceTags": [
+        "판타지",
+        "드라마"
+      ],
+      "manual": true,
+      "manualTags": [
+        "공포",
+        "판타지",
+        "드라마"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "공포",
         "판타지",
         "드라마"
       ]
@@ -112612,6 +113348,16 @@
       "release": "",
       "sourceTags": [
         "드라마"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "드라마"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
+        "드라마"
       ]
     },
     "73043": {
@@ -115669,6 +116415,18 @@
       "sourceTags": [
         "판타지",
         "액션"
+      ],
+      "manual": true,
+      "manualTags": [
+        "공포",
+        "판타지",
+        "액션"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "공포",
+        "판타지",
+        "액션"
       ]
     },
     "73384": {
@@ -117050,6 +117808,18 @@
       "sourceTags": [
         "판타지",
         "로맨스"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "판타지",
+        "로맨스"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
+        "판타지",
+        "로맨스"
       ]
     },
     "73531": {
@@ -117561,6 +118331,18 @@
       "thumb": "https://y17stm.com/73584/thwob0vbp1tlpncsuevogfs0teg0qjgfpu.jpg",
       "release": "",
       "sourceTags": [
+        "판타지",
+        "액션"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "판타지",
+        "액션"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
         "판타지",
         "액션"
       ]
@@ -121396,6 +122178,18 @@
       "sourceTags": [
         "판타지",
         "액션"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "판타지",
+        "액션"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
+        "판타지",
+        "액션"
       ]
     },
     "73998": {
@@ -123201,6 +123995,18 @@
       "sourceTags": [
         "판타지",
         "로맨스"
+      ],
+      "manual": true,
+      "manualTags": [
+        "공포",
+        "판타지",
+        "로맨스"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "공포",
+        "판타지",
+        "로맨스"
       ]
     },
     "74199": {
@@ -124948,6 +125754,16 @@
       "release": "",
       "sourceTags": [
         "판타지"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "판타지"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
+        "판타지"
       ]
     },
     "74391": {
@@ -125893,6 +126709,18 @@
       "thumb": "https://vv14cloud.com/74491/czqtgqtgbnscltotsn2bigq06wz9e2vebu.jpg",
       "release": "",
       "sourceTags": [
+        "판타지",
+        "로맨스"
+      ],
+      "manual": true,
+      "manualTags": [
+        "무협",
+        "판타지",
+        "로맨스"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "무협",
         "판타지",
         "로맨스"
       ]
@@ -127891,6 +128719,16 @@
       "thumb": "https://vv14cloud.com/74712/e85p68d5xtzapgwyjcv9t6kizrgpayvzrs.jpg",
       "release": "",
       "sourceTags": [
+        "BL"
+      ],
+      "manual": true,
+      "manualTags": [
+        "성인",
+        "BL"
+      ],
+      "manualSource": "manual audit: explicit genre/rating wording in source title; source genre was incomplete",
+      "tags": [
+        "성인",
         "BL"
       ]
     },
