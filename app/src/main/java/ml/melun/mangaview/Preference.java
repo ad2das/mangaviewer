@@ -8,6 +8,7 @@ import com.google.gson.reflect.TypeToken;
 
 import org.json.JSONObject;
 
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -117,7 +118,7 @@ public class Preference {
     private String normalizeComicUrl(String sourceUrl) {
         if(sourceUrl == null || sourceUrl.trim().length() == 0)
             return DEFAULT_COMIC_URL;
-        String normalized = sourceUrl.trim();
+        String normalized = normalizeHttpUrl(sourceUrl.trim(), DEFAULT_COMIC_URL);
         while(normalized.endsWith("/"))
             normalized = normalized.substring(0, normalized.length() - 1);
         if(normalized.contains("manatoki"))
@@ -130,7 +131,7 @@ public class Preference {
     private String normalizeWebtoonUrl(String sourceUrl) {
         if(sourceUrl == null || sourceUrl.trim().length() == 0)
             return WEBTOON_URL;
-        String normalized = sourceUrl.trim();
+        String normalized = normalizeHttpUrl(sourceUrl.trim(), WEBTOON_URL);
         while(normalized.endsWith("/"))
             normalized = normalized.substring(0, normalized.length() - 1);
         if(normalized.contains("manatoki"))
@@ -138,6 +139,20 @@ public class Preference {
         if(normalized.endsWith("/cm"))
             return normalized.substring(0, normalized.length() - 3);
         return normalized;
+    }
+
+    private String normalizeHttpUrl(String sourceUrl, String fallback) {
+        try {
+            String normalized = sourceUrl;
+            if(!normalized.startsWith("http://") && !normalized.startsWith("https://"))
+                normalized = "https://" + normalized;
+            URI uri = URI.create(normalized);
+            if(uri.getHost() == null || uri.getHost().length() == 0)
+                return fallback;
+            return normalized;
+        } catch (Exception e) {
+            return fallback;
+        }
     }
 
     public int getBaseMode(){

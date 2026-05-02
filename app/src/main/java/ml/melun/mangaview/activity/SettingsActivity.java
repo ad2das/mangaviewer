@@ -404,6 +404,10 @@ public class SettingsActivity extends AppCompatActivity {
                     case MODE_FILE_SAVE:
                         showStringInputPopup(context, "백업 파일 이름", s -> {
                             DocumentFile d = DocumentFile.fromTreeUri(context, uri);
+                            if(d == null) {
+                                Toast.makeText(context, "내보내기 실패", Toast.LENGTH_LONG).show();
+                                return;
+                            }
                             if(!s.endsWith(".mvpref")) s += ".mvpref";
 
                             final DocumentFile target = d.findFile(s);
@@ -411,13 +415,15 @@ public class SettingsActivity extends AppCompatActivity {
                                 String finalS = s;
                                 showYesNoPopup(context, "파일이 이미 존재합니다.", "덮어 쓸까요?", (dialogInterface, i) -> {
                                     target.delete();
-                                    if (writePreferenceToFile(context, d.createFile("application", finalS).getUri()))
+                                    DocumentFile output = d.createFile("application", finalS);
+                                    if (output != null && writePreferenceToFile(context, output.getUri()))
                                         Toast.makeText(context, "내보내기 완료!", Toast.LENGTH_LONG).show();
                                     else
                                         Toast.makeText(context, "내보내기 실패", Toast.LENGTH_LONG).show();
                                 }, null, null);
                             } else {
-                                if (writePreferenceToFile(context, d.createFile("application", s).getUri()))
+                                DocumentFile output = d.createFile("application", s);
+                                if (output != null && writePreferenceToFile(context, output.getUri()))
                                     Toast.makeText(context, "내보내기 완료!", Toast.LENGTH_LONG).show();
                                 else
                                     Toast.makeText(context, "내보내기 실패", Toast.LENGTH_LONG).show();
