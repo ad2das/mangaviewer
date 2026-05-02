@@ -98,7 +98,9 @@ public class ViewerPageFragment extends Fragment {
                 if(!isActiveTarget(this))
                     return;
                 refresh.setVisibility(View.GONE);
+                Bitmap glideBitmap = bitmap;
                 bitmap = decoder.decode(bitmap,width);
+                bitmap = retainIfGlideOwned(bitmap, glideBitmap);
                 frame.setImageBitmap(bitmap);
             }
 
@@ -131,8 +133,21 @@ public class ViewerPageFragment extends Fragment {
         if(frame == null || imageTarget == null)
             return;
         CustomTarget<Bitmap> target = imageTarget;
+        frame.setImageResource(R.drawable.placeholder);
+        if(refresh != null)
+            refresh.setVisibility(View.VISIBLE);
         imageTarget = null;
         Glide.with(frame).clear(target);
+    }
+
+    private Bitmap retainIfGlideOwned(Bitmap displayBitmap, Bitmap glideBitmap) {
+        if(displayBitmap == null || displayBitmap.isRecycled() || displayBitmap != glideBitmap)
+            return displayBitmap;
+        try {
+            return displayBitmap.copy(Bitmap.Config.ARGB_8888, false);
+        } catch (OutOfMemoryError e) {
+            return displayBitmap;
+        }
     }
 
     private boolean isActiveTarget(CustomTarget<Bitmap> target) {

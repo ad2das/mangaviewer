@@ -427,7 +427,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                                 if(!isActiveImageLoad(generation, targetBookmark))
                                     return;
                                 //refreshbtn.setVisibility(View.INVISIBLE);
-                                bitmap = d.decode(bitmap, swidth);
+                                bitmap = decodeForDisplay(bitmap);
                                 int width = bitmap.getWidth();
                                 int height = bitmap.getHeight();
                                 if(width>height){
@@ -495,7 +495,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                                 public void onResourceReady(Bitmap bitmap, Transition<? super Bitmap> transition) {
                                     if(!isActiveImageLoad(generation, targetBookmark))
                                         return;
-                                    bitmap = d.decode(bitmap, swidth);
+                                    bitmap = decodeForDisplay(bitmap);
                                     int width = bitmap.getWidth();
                                     int height = bitmap.getHeight();
                                     frame2.setImageBitmap(bitmap);
@@ -515,7 +515,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                                                         public void onResourceReady(@NonNull Bitmap bitmap1, @Nullable Transition<? super Bitmap> transition) {
                                                             if(!isActiveImageLoad(generation, targetBookmark))
                                                                 return;
-                                                            bitmap1 = d.decode(bitmap1, swidth);
+                                                            bitmap1 = decodeForDisplay(bitmap1);
                                                             int width = bitmap1.getWidth();
                                                             int height = bitmap1.getHeight();
                                                             if(width<height){
@@ -585,7 +585,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                             public void onResourceReady(Bitmap bitmap, Transition<? super Bitmap> transition) {
                                 if(!isActiveImageLoad(generation, targetBookmark))
                                     return;
-                                bitmap = d.decode(bitmap, swidth);
+                                bitmap = decodeForDisplay(bitmap);
                                 //refreshbtn.setVisibility(View.INVISIBLE);
                                 int width = bitmap.getWidth();
                                 int height = bitmap.getHeight();
@@ -656,7 +656,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                             if(!isActiveImageLoad(generation, targetBookmark))
                                 return;
                             //refreshbtn.setVisibility(View.INVISIBLE);
-                            bitmap = d.decode(bitmap, swidth);
+                            bitmap = decodeForDisplay(bitmap);
                             int width = bitmap.getWidth();
                             int height = bitmap.getHeight();
                             if (width > height) {
@@ -694,7 +694,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                                                     public void onResourceReady(@NonNull Bitmap bitmap1, @Nullable Transition<? super Bitmap> transition) {
                                                         if(!isActiveImageLoad(generation, targetBookmark))
                                                             return;
-                                                        bitmap1 = d.decode(bitmap1, swidth);
+                                                        bitmap1 = decodeForDisplay(bitmap1);
                                                         int width = bitmap1.getWidth();
                                                         int height = bitmap1.getHeight();
                                                         if (width < height) {
@@ -908,6 +908,22 @@ public class ViewerActivity2 extends AppCompatActivity {
 
     private boolean hasSplittableImageCache() {
         return imgCache != null && !imgCache.isRecycled() && imgCache.getWidth() >= 2 && imgCache.getHeight() > 0;
+    }
+
+    private Bitmap decodeForDisplay(Bitmap bitmap) {
+        Bitmap glideBitmap = bitmap;
+        Bitmap displayBitmap = d.decode(bitmap, swidth);
+        return retainIfGlideOwned(displayBitmap, glideBitmap);
+    }
+
+    private Bitmap retainIfGlideOwned(Bitmap displayBitmap, Bitmap glideBitmap) {
+        if(displayBitmap == null || displayBitmap.isRecycled() || displayBitmap != glideBitmap)
+            return displayBitmap;
+        try {
+            return displayBitmap.copy(Bitmap.Config.ARGB_8888, false);
+        } catch (OutOfMemoryError e) {
+            return displayBitmap;
+        }
     }
 
     private Bitmap createSplitBitmap(Bitmap bitmap, boolean leftSide) {
