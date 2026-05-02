@@ -213,12 +213,16 @@ public class FolderSelectActivity extends AppCompatActivity {
             dirs[0] = getDefHomeDir(context); //기본 내부 저장소로 설정
             PopupMenu popup = new PopupMenu(FolderSelectActivity.this, storageSelectBtn);
             for(int i=0;i<dirs.length;i++){
+                if(dirs[i] == null)
+                    continue;
                 if(i==0) popup.getMenu().add(i+".내부 저장소");
                 else popup.getMenu().add(i+".외부 저장소 ");
             }
             //registering popup with OnMenuItemClickListener
             popup.setOnMenuItemClickListener(item -> {
-                int index = Integer.parseInt(item.getTitle().toString().split("\\.")[0]);
+                int index = parseStorageIndex(item.getTitle().toString(), dirs.length);
+                if(index < 0 || dirs[index] == null)
+                    return true;
                 currentDir = dirs[index];
                 if(!currentDir.exists()) currentDir.mkdirs();
                 populate();
@@ -267,6 +271,8 @@ public class FolderSelectActivity extends AppCompatActivity {
         File[] files = currentDir.listFiles();
         ArrayList<String> tmp = new ArrayList<>();
         try {
+            if(files == null)
+                return tmp;
             for (File f : files) {
                 if (f.isDirectory()) {
                     tmp.add(f.getName() + '/');
@@ -311,12 +317,22 @@ public class FolderSelectActivity extends AppCompatActivity {
             arrayAdapter.notifyDataSetChanged();
         }catch (Exception e){
             showPopup(context,"알림","접근이 불가능한 디렉토리 입니다.");
-            currentDir = currentDir.getParentFile();
+            File parent = currentDir == null ? null : currentDir.getParentFile();
+            currentDir = parent == null ? getDefHomeDir(context) : parent;
             listContent.clear();
             arrayAdapter.notifyDataSetChanged();
             listContent.addAll(refresh());
             arrayAdapter.notifyDataSetChanged();
         }
         dirList.setSelection(0);
+    }
+
+    private int parseStorageIndex(String title, int max) {
+        try {
+            int index = Integer.parseInt(title.split("\\.")[0]);
+            return index >= 0 && index < max ? index : -1;
+        } catch (Exception e) {
+            return -1;
+        }
     }
 }

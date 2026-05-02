@@ -505,7 +505,7 @@ public class Downloader extends Service {
         try {
             URL url = resolveUrl(urlStr);
             if(url == null) return outputFile;
-            String fileType = url.toString().substring(url.toString().lastIndexOf('.') + 1);
+            String fileType = getFileExtension(url);
             URLConnection connection = openDownloadConnection(url);
             filesize = connection.getContentLength();
 
@@ -538,7 +538,7 @@ public class Downloader extends Service {
         try {
             URL url = resolveUrl(urlStr);
             if(url == null) return null;
-            String fileType = url.toString().substring(url.toString().lastIndexOf('.') + 1);
+            String fileType = getFileExtension(url);
             URLConnection connection = openDownloadConnection(url);
             filesize = connection.getContentLength();
 
@@ -599,6 +599,21 @@ public class Downloader extends Service {
         connection.setReadTimeout(READ_TIMEOUT_MS);
         connection.setRequestProperty("Referer", p.getUrl());
         return connection;
+    }
+
+    private String getFileExtension(URL url) {
+        if(url == null)
+            return "jpg";
+        String path = url.getPath();
+        if(path == null)
+            return "jpg";
+        int dot = path.lastIndexOf('.');
+        if(dot < 0 || dot == path.length() - 1)
+            return "jpg";
+        String extension = path.substring(dot + 1).toLowerCase(java.util.Locale.ROOT);
+        if(extension.length() > 5 || !extension.matches("[a-z0-9]+"))
+            return "jpg";
+        return extension;
     }
 
     private void publishDownloadProgress(ProgressInterface publisher, int currentSize, int fileSize) {
