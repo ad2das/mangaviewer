@@ -154,13 +154,18 @@ public class Title extends MTitle {
                 try{
                     for(Element e : d.selectFirst("ul.list-body").select("li.list-item")) {
                         Element titlee = e.selectFirst("a.item-subject");
-                        id = getNumberFromString(titlee.attr("href").split(baseModeStr(baseMode)+'/')[1]);
+                        if(titlee == null)
+                            continue;
+                        id = parseEpisodeId(titlee.attr("href"));
+                        if(id <= 0)
+                            continue;
                         if(!seenEpisodeIds.add(id)) continue;
 
                         title = titlee.ownText();
 
-                        Elements infoe = e.selectFirst("div.item-details").select("span");
-                        date = infoe.get(0).ownText();
+                        Element details = e.selectFirst("div.item-details");
+                        Elements infoe = details == null ? new Elements() : details.select("span");
+                        date = infoe.size() > 0 ? infoe.get(0).ownText() : "";
                         //has view-count, thumb-count and other extra info, implement later
                         tmp = new Manga(id, title, date, baseMode);
                         tmp.setMode(0);
@@ -177,6 +182,17 @@ public class Title extends MTitle {
             }
         }
         return LOAD_OK;
+    }
+
+    private int parseEpisodeId(String href) {
+        try {
+            String marker = baseModeStr(baseMode) + '/';
+            if(href == null || !href.contains(marker))
+                return -1;
+            return getNumberFromString(href.split(marker)[1]);
+        } catch (Exception e) {
+            return -1;
+        }
     }
 
     private int fetchWolfEps(CustomHttpClient client) {

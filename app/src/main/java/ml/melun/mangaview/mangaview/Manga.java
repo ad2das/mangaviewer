@@ -146,8 +146,9 @@ public class Manga {
                     if(select != null) {
                         for (Element e : select.select("option")) {
                             String idstr = e.attr("value");
-                            if (idstr.length() > 0)
-                                eps.add(new Manga(Integer.parseInt(idstr), e.ownText(), "", baseMode));
+                            int episodeId = parseIntOrDefault(idstr, -1);
+                            if (episodeId > 0)
+                                eps.add(new Manga(episodeId, e.ownText(), "", baseMode));
                         }
                     }
                 }
@@ -230,6 +231,16 @@ public class Manga {
             return Integer.parseInt(href.split(marker)[1].split("\\?")[0]);
         } catch (Exception e) {
             return -1;
+        }
+    }
+
+    private int parseIntOrDefault(String value, int fallback) {
+        try {
+            if(value == null)
+                return fallback;
+            return Integer.parseInt(value.trim());
+        } catch (NumberFormatException e) {
+            return fallback;
         }
     }
 
