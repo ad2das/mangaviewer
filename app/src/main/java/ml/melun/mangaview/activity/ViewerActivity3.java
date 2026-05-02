@@ -166,7 +166,7 @@ public class ViewerActivity3 extends AppCompatActivity {
                 int pos = p.getPageRtl() ? pageSize - position - 1 : position;
                 if(viewerBookmark != pos) {
                     viewerBookmark = pos;
-                    pageBtn.setText(viewerBookmark + 1 + "/" + imgs.size());
+                    pageBtn.setText(getString(R.string.viewer_page_counter, viewerBookmark + 1, imgs.size()));
                     if(manga.useBookmark()) {
                         if (viewerBookmark == pageSize - 1 || viewerBookmark == 0) {
                             p.removeViewerBookmark(manga);
@@ -261,7 +261,7 @@ public class ViewerActivity3 extends AppCompatActivity {
                     if (page > imgs.size()) page = imgs.size();
                     viewerBookmark = page - 1;
                     goPage(viewerBookmark, false);
-                    pageBtn.setText(viewerBookmark + 1 + "/" + imgs.size());
+                    pageBtn.setText(getString(R.string.viewer_page_counter, viewerBookmark + 1, imgs.size()));
                 }
             });
             alert.setNegativeButton("취소", (dialog, button) -> {
@@ -335,7 +335,7 @@ public class ViewerActivity3 extends AppCompatActivity {
             getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN);
         }
         else {
-            pageBtn.setText(viewerBookmark+1+"/"+imgs.size());
+            pageBtn.setText(getString(R.string.viewer_page_counter, viewerBookmark + 1, imgs.size()));
             appbar.animate().translationY(0);
             appbarBottom.animate().translationY(0);
             toolbarshow=true;
@@ -509,7 +509,7 @@ public class ViewerActivity3 extends AppCompatActivity {
             prev.setColorFilter(null);
             prev.setColorFilter(null);
         }
-        pageBtn.setText(viewerBookmark+1+"/"+imgs.size());
+        pageBtn.setText(getString(R.string.viewer_page_counter, viewerBookmark + 1, imgs.size()));
     }
 
     void lockUi(boolean lock){

@@ -345,14 +345,12 @@ public class SettingsActivity extends AppCompatActivity {
         final TextView inputtext = new TextView(context);
         final TextView webtoonText = new TextView(context);
 
-        inputtext.setText("사이트 URL:");
-
-        inputtext.setText("만화책 URL:");
+        inputtext.setText(R.string.settings_comic_url_label);
         layout.addView(inputtext);
         definput.setText(p.getDefUrl());
         definput.setHint(p.getDefUrl());
         layout.addView(definput);
-        webtoonText.setText("웹툰 URL:");
+        webtoonText.setText(R.string.settings_webtoon_url_label);
         layout.addView(webtoonText);
         webtoonInput.setText(p.getWebtoonUrl());
         webtoonInput.setHint(p.getWebtoonUrl());

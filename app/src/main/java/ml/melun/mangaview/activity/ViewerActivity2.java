@@ -755,7 +755,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                 .override(Math.max(swidth, 1), Target.SIZE_ORIGINAL);
     }
     void updatePageIndex(){
-        pageBtn.setText(viewerBookmark+1+"/"+imgs.size());
+        pageBtn.setText(getString(R.string.viewer_page_counter, viewerBookmark + 1, imgs.size()));
         boolean lastPage = viewerBookmark == imgs.size()-1;
         boolean firstPage = viewerBookmark == 0;
         if(toolbarshow && !lastPage)
@@ -1023,7 +1023,7 @@ public class ViewerActivity2 extends AppCompatActivity {
             prev.setColorFilter(null);
         }
 
-        pageBtn.setText(viewerBookmark+1+"/"+imgs.size());
+        pageBtn.setText(getString(R.string.viewer_page_counter, viewerBookmark + 1, imgs.size()));
     }
 
     @Override

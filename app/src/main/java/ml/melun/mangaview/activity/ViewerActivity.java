@@ -343,7 +343,7 @@ public class ViewerActivity extends AppCompatActivity {
                     if (page > current.manga.getImgs(context).size())
                         page = current.manga.getImgs(context).size();
                     manager.scrollToPage(new PageItem(page - 1, "", current.manga));
-                    pageBtn.setText(page + "/" + current.manga.getImgs(context).size());
+                    pageBtn.setText(getString(R.string.viewer_page_counter, page, current.manga.getImgs(context).size()));
                 }
             });
 
@@ -460,7 +460,7 @@ public class ViewerActivity extends AppCompatActivity {
         else {
             PageItem item = getFocusedVisiblePage();
             if(item != null) {
-                pageBtn.setText(item.index+1 + "/" + item.manga.getImgs(context).size());
+                pageBtn.setText(getString(R.string.viewer_page_counter, item.index + 1, item.manga.getImgs(context).size()));
                 toolbarTitle.setText(item.manga.getName());
                 commentBtn.setOnClickListener(v -> {
                     Intent commentActivity = new Intent(context, CommentsActivity.class);
@@ -978,7 +978,7 @@ public class ViewerActivity extends AppCompatActivity {
         }
         PageItem page = getFocusedVisiblePage();
         if(page!=null)
-            pageBtn.setText(page.index+1+"/"+page.manga.getImgs(context).size());
+            pageBtn.setText(getString(R.string.viewer_page_counter, page.index + 1, page.manga.getImgs(context).size()));
     }
 
     private void prefetchNextEpisode(Manga current) {
