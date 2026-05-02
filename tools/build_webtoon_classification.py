@@ -97,6 +97,7 @@ class SourceTitle:
     name: str
     thumb: str = ""
     release: str = ""
+    source_tags: List[str] = field(default_factory=list)
 
 
 class AnchorParser(HTMLParser):
@@ -346,18 +347,18 @@ def webtoon_genre_path(status: str, genre: str, order: str) -> str:
     return f"/{status}?type1=genre&type2={quote(genre, encoding='euc-kr')}&o={order}"
 
 
-def source_paths() -> List[str]:
-    paths: List[str] = []
+def source_paths() -> List[Tuple[str, Optional[str]]]:
+    paths: List[Tuple[str, Optional[str]]] = []
     for status in ("ing", "end"):
         paths.extend(
             [
-                webtoon_day_path(status, "recent", "n"),
-                webtoon_day_path(status, "new", "n"),
-                f"/{status}?type1=genre&type2=&o=f" if status == "end" else f"/{status}?type1=day&type2=recent&o=f",
+                (webtoon_day_path(status, "recent", "n"), None),
+                (webtoon_day_path(status, "new", "n"), None),
+                (f"/{status}?type1=genre&type2=&o=f" if status == "end" else f"/{status}?type1=day&type2=recent&o=f", None),
             ]
         )
         for genre in WEBTOON_GENRES:
-            paths.append(webtoon_genre_path(status, genre, "n"))
+            paths.append((webtoon_genre_path(status, genre, "n"), genre))
     return list(dict.fromkeys(paths))
 
 
@@ -366,7 +367,7 @@ def fetch_source_titles(root: str, delay: float, max_paths: int) -> Dict[int, So
     paths = source_paths()
     if max_paths > 0:
         paths = paths[:max_paths]
-    for path in paths:
+    for path, genre in paths:
         try:
             html = http_get(urljoin(root.rstrip("/") + "/", path.lstrip("/")), delay)
         except Exception as exc:
@@ -374,7 +375,13 @@ def fetch_source_titles(root: str, delay: float, max_paths: int) -> Dict[int, So
             continue
         parser = SourceParser(root)
         parser.feed(html)
-        titles.update(parser.titles)
+        for toon_id, title in parser.titles.items():
+            existing = titles.get(toon_id)
+            if existing is None:
+                existing = title
+                titles[toon_id] = existing
+            if genre and genre not in existing.source_tags:
+                existing.source_tags.append(genre)
     return titles
 
 
@@ -465,19 +472,46 @@ def merge_existing(path: Path) -> Dict[str, object]:
 def build_output(
     existing: Dict[str, object],
     matched: Dict[int, Tuple[SourceTitle, NaverTitle]],
+    source_titles: Dict[int, SourceTitle],
     source_root: str,
 ) -> Dict[str, object]:
     titles = dict(existing.get("titles", {})) if isinstance(existing.get("titles"), dict) else {}
+    for toon_id, source in source_titles.items():
+        previous = titles.get(str(toon_id), {})
+        if not isinstance(previous, dict):
+            previous = {}
+        if previous.get("manual", False):
+            continue
+        source_tags = previous.get("sourceTags") if isinstance(previous.get("sourceTags"), list) else []
+        merged_source_tags = merge_tags(source_tags, source.source_tags)
+        if not merged_source_tags and str(toon_id) not in titles:
+            continue
+        next_item = dict(previous)
+        next_item.update(
+            {
+                "name": source.name,
+                "thumb": source.thumb or previous.get("thumb", ""),
+                "release": source.release or previous.get("release", ""),
+            }
+        )
+        if merged_source_tags:
+            next_item["sourceTags"] = merged_source_tags
+        titles[str(toon_id)] = next_item
+
     for toon_id, (source, naver) in matched.items():
         previous = titles.get(str(toon_id), {})
         manual = previous.get("manual", False) if isinstance(previous, dict) else False
         if manual:
             continue
+        existing_external = previous.get("externalTags") if isinstance(previous, dict) and isinstance(previous.get("externalTags"), list) else []
+        source_tags = previous.get("sourceTags") if isinstance(previous, dict) and isinstance(previous.get("sourceTags"), list) else source.source_tags
         titles[str(toon_id)] = {
             "name": source.name,
             "thumb": source.thumb,
             "release": source.release,
-            "tags": naver.tags,
+            "externalTags": merge_tags(existing_external, naver.tags),
+            "sourceTags": source_tags,
+            "tags": merge_tags(naver.tags, source_tags),
             "naverTitleId": naver.title_id,
             "naverName": naver.name,
             "match": "normalized-title",
@@ -490,6 +524,15 @@ def build_output(
         "sources": ["naver-webtoon-genre", "source-title-match"],
         "titles": dict(sorted(titles.items(), key=lambda item: int(item[0]))),
     }
+
+
+def merge_tags(*groups: Iterable[str]) -> List[str]:
+    result: List[str] = []
+    for group in groups:
+        for tag in group or []:
+            if tag and tag not in result:
+                result.append(tag)
+    return result
 
 
 def write_unmatched(path: Path, unmatched: List[SourceTitle]) -> None:
@@ -537,7 +580,7 @@ def main() -> int:
     matched, unmatched, review = match_titles(source_titles, naver_titles)
     print(f"matched: {len(matched)} unmatched: {len(unmatched)} review: {len(review)}", file=sys.stderr)
 
-    data = build_output(existing, matched, args.source_root)
+    data = build_output(existing, matched, source_titles, args.source_root)
     text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     if args.dry_run:
         print(text)

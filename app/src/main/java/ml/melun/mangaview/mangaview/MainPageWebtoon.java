@@ -536,15 +536,7 @@ public class MainPageWebtoon {
                 JSONObject item = titles.optJSONObject(key);
                 if(item == null)
                     continue;
-                JSONArray array = item.optJSONArray("tags");
-                if(array == null)
-                    continue;
-                ArrayList<String> tags = new ArrayList<>();
-                for(int i = 0; i < array.length(); i++) {
-                    String tag = array.optString(i).trim();
-                    if(tag.length() > 0)
-                        tags.add(tag);
-                }
+                ArrayList<String> tags = readClassificationTags(item);
                 if(tags.size() > 0)
                     classificationDb.put(titleId, tags);
                 String name = item.optString("name", "");
@@ -556,6 +548,34 @@ public class MainPageWebtoon {
         } catch (Exception e) {
             classificationDb.clear();
             classificationTitleDb.clear();
+        }
+    }
+
+    private static ArrayList<String> readClassificationTags(JSONObject item) {
+        ArrayList<String> tags = new ArrayList<>();
+        appendJsonTags(tags, item.optJSONArray("manualTags"));
+        appendJsonTags(tags, item.optJSONArray("externalTags"));
+        appendJsonTags(tags, item.optJSONArray("sourceTags"));
+        appendJsonTags(tags, item.optJSONArray("inferredTags"));
+        appendJsonTags(tags, item.optJSONArray("tags"));
+        return tags;
+    }
+
+    private static void appendJsonTags(List<String> target, JSONArray array) {
+        if(array == null)
+            return;
+        for(int i = 0; i < array.length(); i++) {
+            String tag = array.optString(i).trim();
+            if(tag.length() == 0)
+                continue;
+            boolean exists = false;
+            for(String current : target)
+                if(current.equalsIgnoreCase(tag)) {
+                    exists = true;
+                    break;
+                }
+            if(!exists)
+                target.add(tag);
         }
     }
 
