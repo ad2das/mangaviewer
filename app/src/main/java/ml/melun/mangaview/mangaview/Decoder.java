@@ -12,6 +12,7 @@ public class Decoder {
     int id=0;
     int view_cnt;
     int cx=5, cy=5;
+    private volatile int[][] cachedOrder;
 
     public int getCnt(){
         return view_cnt;
@@ -51,16 +52,7 @@ public class Decoder {
     public Bitmap decode(Bitmap input){
         input = downSample(input, 100000000);
         if(view_cnt==0) return input;
-        int[][] order = new int[cx*cy][2];
-        for (int i = 0; i < cx*cy; i++) {
-            order[i][0] = i;
-            if (id < 554714) order[i][1] = _random(i);
-            else order[i][1] = newRandom(i);
-        }
-        java.util.Arrays.sort(order, (a, b) -> {
-            //return Double.compare(a[1], b[1]);
-            return a[1] != b[1] ? a[1] - b[1] : a[0] - b[0];
-        });
+        int[][] order = getOrder();
         //create new bitmap
         Bitmap output = Bitmap.createBitmap(input.getWidth(), input.getHeight(), Bitmap.Config.ARGB_8888);
 
@@ -82,6 +74,22 @@ public class Decoder {
                 canvas.drawBitmap(input, src, dst, null);
         }
         return output;
+    }
+
+    private int[][] getOrder() {
+        if(cachedOrder != null)
+            return cachedOrder;
+        int[][] order = new int[cx*cy][2];
+        for (int i = 0; i < cx*cy; i++) {
+            order[i][0] = i;
+            if (id < 554714) order[i][1] = _random(i);
+            else order[i][1] = newRandom(i);
+        }
+        java.util.Arrays.sort(order, (a, b) -> {
+            return a[1] != b[1] ? Integer.compare(a[1], b[1]) : Integer.compare(a[0], b[0]);
+        });
+        cachedOrder = order;
+        return cachedOrder;
     }
 
     private void setCellRect(Rect rect, int width, int height, int x, int y) {
