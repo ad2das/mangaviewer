@@ -405,10 +405,8 @@ public class ViewerActivity2 extends AppCompatActivity {
                 return;
             }
             type = 1;
-            int width = imgCache.getWidth();
-            int height = imgCache.getHeight();
-            if(reverse) frame.setImageBitmap(Bitmap.createBitmap(imgCache, width/2, 0, width / 2, height));
-            else frame.setImageBitmap(Bitmap.createBitmap(imgCache, 0, 0, width / 2, height));
+            if(reverse) frame.setImageBitmap(createSplitBitmap(imgCache, false));
+            else frame.setImageBitmap(createSplitBitmap(imgCache, true));
 
         }else{
             //is single page OR unidentified
@@ -444,8 +442,8 @@ public class ViewerActivity2 extends AppCompatActivity {
                                 if(width>height){
                                     imgCache = bitmap;
                                     type=0;
-                                    if(reverse) frame.setImageBitmap(Bitmap.createBitmap(imgCache,0,0,width/2,height));
-                                    else frame.setImageBitmap(Bitmap.createBitmap(imgCache,width/2,0,width/2,height));
+                                    if(reverse) frame.setImageBitmap(createSplitBitmap(imgCache, true));
+                                    else frame.setImageBitmap(createSplitBitmap(imgCache, false));
                                 }else{
                                     type=-1;
                                     frame.setImageBitmap(bitmap);
@@ -573,10 +571,8 @@ public class ViewerActivity2 extends AppCompatActivity {
                 return;
             }
             type = 0;
-            int width = imgCache.getWidth();
-            int height = imgCache.getHeight();
-            if(reverse) frame.setImageBitmap(Bitmap.createBitmap(imgCache, 0, 0, width / 2, height));
-            else frame.setImageBitmap(Bitmap.createBitmap(imgCache, width/2, 0, width / 2, height));
+            if(reverse) frame.setImageBitmap(createSplitBitmap(imgCache, true));
+            else frame.setImageBitmap(createSplitBitmap(imgCache, false));
         }else{
             //is single page OR unidentified
             //decrease page
@@ -605,8 +601,8 @@ public class ViewerActivity2 extends AppCompatActivity {
                                 if(width>height){
                                     imgCache = bitmap;
                                     type=1;
-                                    if(reverse) frame.setImageBitmap(Bitmap.createBitmap(imgCache, width/2, 0, width / 2, height));
-                                    else frame.setImageBitmap(Bitmap.createBitmap(imgCache,0,0,width/2,height));
+                                    if(reverse) frame.setImageBitmap(createSplitBitmap(imgCache, false));
+                                    else frame.setImageBitmap(createSplitBitmap(imgCache, true));
                                 }else{
                                     type=-1;
                                     frame.setImageBitmap(bitmap);
@@ -682,9 +678,9 @@ public class ViewerActivity2 extends AppCompatActivity {
                                     imgCache = bitmap;
                                     type = 0;
                                     if (reverse) {
-                                        frame.setImageBitmap(Bitmap.createBitmap(imgCache, 0, 0, width / 2, height));
+                                        frame.setImageBitmap(createSplitBitmap(imgCache, true));
                                     } else {
-                                        frame.setImageBitmap(Bitmap.createBitmap(imgCache, width / 2, 0, width / 2, height));
+                                        frame.setImageBitmap(createSplitBitmap(imgCache, false));
                                     }
                                 }
 
@@ -909,6 +905,16 @@ public class ViewerActivity2 extends AppCompatActivity {
 
     private boolean hasSplittableImageCache() {
         return imgCache != null && !imgCache.isRecycled() && imgCache.getWidth() >= 2 && imgCache.getHeight() > 0;
+    }
+
+    private Bitmap createSplitBitmap(Bitmap bitmap, boolean leftSide) {
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        int leftWidth = width / 2;
+        int rightWidth = width - leftWidth;
+        if(leftSide)
+            return Bitmap.createBitmap(bitmap, 0, 0, leftWidth, height);
+        return Bitmap.createBitmap(bitmap, leftWidth, 0, rightWidth, height);
     }
 
     public void reloadManga(){
