@@ -20,7 +20,7 @@ import ml.melun.mangaview.R;
 import ml.melun.mangaview.report.CrashReporter;
 
 public class CrashReportActivity extends Activity {
-    private static final String ISSUE_URL = "https://github.com/yerusalom93/MangaViewAndroid/issues/new";
+    private static final String ISSUE_URL = "https://github.com/ad2das/mangaviewer/issues/new";
     private static final int MAX_BODY_LENGTH = 7500;
 
     @Override

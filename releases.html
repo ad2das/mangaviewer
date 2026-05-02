@@ -1,22 +1,12 @@
 ﻿<html>
     <head>
-        <title>Manga View Android</title>
+        <title>MangaView</title>
         <meta name="description" content="마나토끼 안드로이드 뷰어 - 릴리즈">
-        <meta name="author" content="junheah">
+        <meta name="author" content="ad2das">
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <link rel="icon" href="web/favicon.png">
         <link rel="stylesheet" type="text/css" href="web/style.css">
-        <!-- Global site tag (gtag.js) - Google Analytics -->
-        <script async src="https://www.googletagmanager.com/gtag/js?id=UA-48545626-3"></script>
-        <script data-ad-client="ca-pub-1967308958954015" async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
-        <script>
-          window.dataLayer = window.dataLayer || [];
-          function gtag(){dataLayer.push(arguments);}
-          gtag('js', new Date());
-
-          gtag('config', 'UA-48545626-3');
-        </script>
         <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/gh/moonspam/NanumSquare@1.0/nanumsquare.css">
         <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
         <script src="https://momentjs.com/downloads/moment.js"></script>
@@ -29,7 +19,7 @@
         function GetReleases() {
             if(!last){
                 ++page;
-                $.getJSON("https://api.github.com/repos/junheah/MangaViewAndroid/releases?page="+page).done(function (json) {
+                $.getJSON("https://api.github.com/repos/ad2das/mangaviewer/releases?page="+page).done(function (json) {
                     previousUpdatedAt = moment();
                     if(json.length<30) last = true;
                     for (var i = 0; i < json.length; i++) {
@@ -104,7 +94,7 @@
             <img style="width:100%;max-width:31.5em;padding-top:120px;padding-bottom:80px" src="web/logo.svg"/>
             <br>
             <div class="title" style="display:none;">
-                <h1> Manga View Android </h1>
+                <h1> MangaView </h1>
                 <p> 마나토끼 안드로이드 뷰어 </p>
             </div>
             <br>

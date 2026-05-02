@@ -504,9 +504,6 @@ public class MainActivity extends AppCompatActivity
                 Intent settingIntent = new Intent(context, SettingsActivity.class);
                 startActivityForResult(settingIntent, 0);
                 return true;
-            }else if(id==R.id.nav_donate){
-                Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://junheah.github.io/donate"));
-                startActivity(browserIntent);
             }
             DrawerLayout drawer = (DrawerLayout) findViewById(R.id.drawer_layout);
             drawer.closeDrawer(GravityCompat.START);
