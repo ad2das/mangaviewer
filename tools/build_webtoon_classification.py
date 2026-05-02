@@ -29,6 +29,11 @@ from urllib.request import Request, urlopen
 
 NAVER_ROOT = "https://m.comic.naver.com"
 DEFAULT_SOURCE_ROOT = "https://wfwf449.com"
+WFWF_PATTERN = re.compile(r"^https?://wfwf(\d+)\.com(?:/cm)?/?$")
+WFWF_DEFAULT_NUMBER = 449
+WFWF_FORWARD_SCAN_LIMIT = 300
+WFWF_BACKWARD_SCAN_LIMIT = 5
+WFWF_PARALLEL_PROBES = 10
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0 Safari/537.36"
@@ -291,6 +296,99 @@ def http_get(url: str, delay: float, timeout: int = 20) -> str:
             fallback = "utf-8" if charset.lower() != "utf-8" else "euc-kr"
             text = raw.decode(fallback, errors="replace")
         return text
+
+
+def normalize_source_root(root: str) -> str:
+    root = (root or DEFAULT_SOURCE_ROOT).strip()
+    while root.endswith("/"):
+        root = root[:-1]
+    if root.endswith("/cm"):
+        root = root[:-3]
+    return root or DEFAULT_SOURCE_ROOT
+
+
+def source_root_number(root: str) -> int:
+    match = WFWF_PATTERN.match(normalize_source_root(root))
+    if not match:
+        return -1
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return -1
+
+
+def is_wfwf_source_root(root: str) -> bool:
+    return source_root_number(root) > 0
+
+
+def source_root_candidates(current: int) -> List[int]:
+    numbers: List[int] = []
+    seen = set()
+
+    def add(number: int) -> None:
+        if number > 0 and number not in seen:
+            seen.add(number)
+            numbers.append(number)
+
+    for offset in range(1, WFWF_FORWARD_SCAN_LIMIT + 1):
+        add(current + offset)
+    add(WFWF_DEFAULT_NUMBER)
+    for offset in range(1, WFWF_FORWARD_SCAN_LIMIT + 1):
+        add(WFWF_DEFAULT_NUMBER + offset)
+    for offset in range(1, WFWF_BACKWARD_SCAN_LIMIT + 1):
+        add(current - offset)
+    return numbers
+
+
+def looks_like_source_root(html: str) -> bool:
+    lower = (html or "").lower()
+    return any(
+        marker in lower
+        for marker in (
+            "webtoon-list",
+            "toon=",
+            "/view?toon=",
+            "/list?toon=",
+            "/cv?toon=",
+            "/cl?toon=",
+        )
+    )
+
+
+def probe_source_root(root: str) -> bool:
+    root = normalize_source_root(root)
+    for path in ("/ing", "/cm"):
+        try:
+            html = http_get(urljoin(root.rstrip("/") + "/", path.lstrip("/")), delay=0, timeout=6)
+            if looks_like_source_root(html):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def resolve_source_root(root: str, auto_resolve: bool) -> str:
+    root = normalize_source_root(root)
+    if not auto_resolve or not is_wfwf_source_root(root):
+        return root
+    if probe_source_root(root):
+        return root
+
+    current = source_root_number(root)
+    if current <= 0:
+        current = WFWF_DEFAULT_NUMBER
+    candidates = source_root_candidates(current)
+    for start in range(0, len(candidates), WFWF_PARALLEL_PROBES):
+        chunk = candidates[start : start + WFWF_PARALLEL_PROBES]
+        with ThreadPoolExecutor(max_workers=WFWF_PARALLEL_PROBES) as executor:
+            futures = {
+                executor.submit(probe_source_root, f"https://wfwf{number}.com"): number
+                for number in chunk
+            }
+            for future in as_completed(futures):
+                if future.result():
+                    return f"https://wfwf{futures[future]}.com"
+    return root
 
 
 def naver_genre_url(genre: str, sort: str, page: int) -> str:
@@ -827,6 +925,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Build webtoon-classification.json from Naver genres.")
     parser.add_argument("--output", default="webtoon-classification.json")
     parser.add_argument("--source-root", default=DEFAULT_SOURCE_ROOT)
+    parser.add_argument("--no-source-root-resolve", action="store_true")
     parser.add_argument("--max-naver-pages", type=int, default=10)
     parser.add_argument("--max-source-paths", type=int, default=0, help="0 means all configured source paths")
     parser.add_argument("--sorts", default="UPDATE,HIT,NEW", help="Comma-separated Naver sort modes: UPDATE,HIT,NEW")
@@ -850,6 +949,9 @@ def main() -> int:
     output = Path(args.output)
     existing = merge_existing(output)
     sorts = parse_sorts(args.sorts)
+    source_root = resolve_source_root(args.source_root, auto_resolve=not args.no_source_root_resolve)
+    if source_root != normalize_source_root(args.source_root):
+        print(f"resolved source root: {args.source_root} -> {source_root}", file=sys.stderr)
 
     print(f"fetching naver genre data ({','.join(sorts)})...", file=sys.stderr)
     naver_titles = fetch_naver_titles(
@@ -862,13 +964,13 @@ def main() -> int:
     print(f"naver titles: {len(naver_titles)}", file=sys.stderr)
 
     print("fetching source titles...", file=sys.stderr)
-    source_titles = fetch_source_titles(args.source_root, args.delay, args.max_source_paths, args.source_workers)
+    source_titles = fetch_source_titles(source_root, args.delay, args.max_source_paths, args.source_workers)
     print(f"source titles: {len(source_titles)}", file=sys.stderr)
     if not args.no_source_detail_fetch:
         detail_targets = len(source_titles) if args.source_detail_mode == "all" else sum(1 for title in source_titles.values() if not title.source_tags)
         print(f"fetching source detail genres ({args.source_detail_mode}): {detail_targets}", file=sys.stderr)
         enrich_source_details(
-            args.source_root,
+            source_root,
             source_titles,
             args.delay,
             args.source_detail_workers,
@@ -884,7 +986,7 @@ def main() -> int:
     )
     print(f"matched: {len(matched)} unmatched: {len(unmatched)} review: {len(review)}", file=sys.stderr)
 
-    data = build_output(existing, matched, source_titles, args.source_root)
+    data = build_output(existing, matched, source_titles, source_root)
     text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     if args.dry_run:
         print(text)
