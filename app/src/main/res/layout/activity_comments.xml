@@ -66,8 +66,9 @@
 
         <EditText
             android:ems="10"
-            android:hint="댓글을 입력해 주세요"
+            android:hint="@string/comment_input_hint"
             android:id="@+id/comment_editText"
+            android:importantForAutofill="no"
             android:inputType="textMultiLine"
             android:layout_height="wrap_content"
             android:layout_marginBottom="8dp"

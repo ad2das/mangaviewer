@@ -20,8 +20,9 @@
             android:orientation="vertical">
 
             <EditText
-                android:hint="검색어"
+                android:hint="@string/search_query"
                 android:id="@+id/searchInput"
+                android:importantForAutofill="no"
                 android:inputType="text"
                 android:layout_height="wrap_content"
                 android:layout_margin="12dp"

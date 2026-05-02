@@ -98,7 +98,9 @@
                 android:textIsSelectable="true" />
 
             <EditText
+                android:hint="@string/debug_input"
                 android:id="@+id/debug_edit"
+                android:importantForAutofill="no"
                 android:inputType="text|textMultiLine"
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"

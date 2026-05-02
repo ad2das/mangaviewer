@@ -67,8 +67,9 @@
 
     <EditText
         android:ems="10"
-        android:hint="검색어"
+        android:hint="@string/search_query"
         android:id="@+id/searchBox"
+        android:importantForAutofill="no"
         android:inputType="textPersonName"
         android:layout_height="wrap_content"
         android:layout_marginEnd="8dp"

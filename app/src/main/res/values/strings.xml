@@ -14,7 +14,13 @@
     <string name="comment_send">댓글 보내기</string>
     <string name="app_logo">MangaView 로고</string>
     <string name="captcha_image">캡차 이미지</string>
+    <string name="captcha_answer">캡차 답변</string>
     <string name="comment_author_image">댓글 작성자 이미지</string>
+    <string name="comment_input_hint">댓글을 입력해 주세요</string>
+    <string name="debug_input">디버그 입력</string>
+    <string name="default_url_hint">기본 주소 입력 (숫자없는 주소)</string>
+    <string name="file_name_hint">파일명</string>
+    <string name="search_query">검색어</string>
     <string name="title_cover">작품 표지</string>
     <string name="title_resume">이어보기</string>
     <string name="title_episode_list">회차 목록</string>
