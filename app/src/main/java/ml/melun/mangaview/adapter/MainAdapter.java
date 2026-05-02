@@ -88,7 +88,6 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         }
 
         setHasStableIds(true);
-        notifyDataSetChanged();
         uadapter.setLoad("URL 업데이트중...");
     }
 

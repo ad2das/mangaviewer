@@ -98,8 +98,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     public void setLoading(){
         dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
-        rows = buildRows(dataSet, true);
-        notifyDataSetChanged();
+        updateRows(buildRows(dataSet, true));
     }
 
     public void setListener(MainAdapter.onItemClick listener){
@@ -367,12 +366,13 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             int oldSize = this.items == null ? 0 : this.items.size();
             this.items = items;
             int newSize = this.items == null ? 0 : this.items.size();
-            if(oldSize == newSize) {
-                if(newSize > 0)
-                    notifyItemRangeChanged(0, newSize);
-            } else {
-                notifyDataSetChanged();
-            }
+            int commonSize = Math.min(oldSize, newSize);
+            if(commonSize > 0)
+                notifyItemRangeChanged(0, commonSize);
+            if(newSize > oldSize)
+                notifyItemRangeInserted(oldSize, newSize - oldSize);
+            else if(oldSize > newSize)
+                notifyItemRangeRemoved(newSize, oldSize - newSize);
         }
 
         @NonNull
