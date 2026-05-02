@@ -1,5 +1,6 @@
 package ml.melun.mangaview.activity;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.Intent;
 
@@ -8,6 +9,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.constraintlayout.widget.ConstraintLayout;
 
 import android.os.Bundle;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.MotionEvent;
@@ -41,6 +43,7 @@ public class CaptchaActivity extends AppCompatActivity {
     String domain;
 
     @Override
+    @SuppressLint("SetJavaScriptEnabled")
     protected void onCreate(Bundle savedInstanceState) {
         this.overridePendingTransition(R.anim.fade_in, R.anim.fade_out);
         super.onCreate(savedInstanceState);
@@ -74,8 +77,15 @@ public class CaptchaActivity extends AppCompatActivity {
         webView = this.findViewById(R.id.captchaWebView);
 
         WebSettings settings = webView.getSettings();
+        // Captcha challenges require JavaScript, so keep the WebView isolated from local app data.
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
+        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+            settings.setAllowFileAccessFromFileURLs(false);
+            settings.setAllowUniversalAccessFromFileURLs(false);
+        }
         CookieManager cookiem = CookieManager.getInstance();
         cookiem.setAcceptCookie(true);
         cookiem.setAcceptThirdPartyCookies(webView, true);
