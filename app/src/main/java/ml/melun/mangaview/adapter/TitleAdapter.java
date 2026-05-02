@@ -127,11 +127,16 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         int inserted = 0;
         for(Object d:t){
             if(d instanceof Title){
-                ((Title) d).setBookmark(p.getBookmark((Title)d));
-                mData.add((Title)d);
+                Title title = (Title)d;
+                if(containsTitle(title))
+                    continue;
+                title.setBookmark(p.getBookmark(title));
+                mData.add(title);
                 inserted++;
             } else if(d instanceof MTitle){
                 Title d2 = new Title((MTitle)d);
+                if(containsTitle(d2))
+                    continue;
                 d2.setBookmark(p.getBookmark((MTitle) d));
                 mData.add(d2);
                 inserted++;
@@ -150,6 +155,18 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             mDataFiltered = mData;
             searching = false;
         }
+    }
+
+    private boolean containsTitle(Title title) {
+        if(title == null)
+            return false;
+        for(Title current : mData) {
+            if(current != null
+                    && current.getId() == title.getId()
+                    && current.getBaseMode() == title.getBaseMode())
+                return true;
+        }
+        return false;
     }
 
     public void setData(List<?> t){
