@@ -244,7 +244,7 @@ public class Search {
     }
 
     private static String comicSearchPath(String query) {
-        return "/cm/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR"));
+        return webtoonSearchPath(query);
     }
 
     private static String percentEncode(String value, Charset charset) {

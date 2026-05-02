@@ -291,6 +291,8 @@ public class MainPageWebtoon {
                 Element link = e.selectFirst("a[href*=toon=]");
                 if(link == null) continue;
                 String href = link.attr("href");
+                if(!matchesBaseModeHref(href, baseMode))
+                    continue;
                 int id = getQueryInt(href, "toon");
                 if(id <= 0) continue;
 
@@ -331,6 +333,17 @@ public class MainPageWebtoon {
             }
         }
         return titles;
+    }
+
+    private static boolean matchesBaseModeHref(String href, int baseMode) {
+        if(href == null)
+            return false;
+        String lower = href.toLowerCase(Locale.ROOT);
+        if(baseMode == base_comic)
+            return lower.startsWith("/cl") || lower.contains("/cl?");
+        if(baseMode == base_webtoon)
+            return lower.startsWith("/list") || lower.contains("/list?");
+        return true;
     }
 
     public static void applyInferredWebtoonTags(Title title) {
