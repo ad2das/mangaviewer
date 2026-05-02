@@ -73,11 +73,11 @@ public class Search {
                         break;
                 }
 
-                Response response = client.mget('/'+baseModeStr(baseMode)+"/p" + page++ + searchUrl + URLEncoder.encode(query,"UTF-8"), true, null);
+                int requestedPage = page;
+                Response response = client.mget('/'+baseModeStr(baseMode)+"/p" + requestedPage + searchUrl + URLEncoder.encode(query,"UTF-8"), true, null);
                 int code = response == null ? 500 : response.code();
                 String body = CustomHttpClient.readBody(response);
                 if(body.contains("Connect Error: Connection timed out")){
-                    page--;
                     timeoutRetries = attempt + 1;
                     continue;
                 }
@@ -130,13 +130,12 @@ public class Search {
                 if (result.size() < 35)
                     last = true;
 
-                if(result.size()==0)
-                    page--;
+                if(result.size() > 0)
+                    page = requestedPage + 1;
                 timeoutRetries = 0;
                 return 0;
 
                 } catch (Exception e) {
-                    page--;
                     timeoutRetries = 0;
                     e.printStackTrace();
                     return 1;
