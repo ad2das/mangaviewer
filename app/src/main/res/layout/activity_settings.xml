@@ -24,7 +24,8 @@
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"
                 android:paddingBottom="5dp"
-                android:paddingLeft="10dp"
+                android:paddingEnd="10dp"
+                android:paddingStart="10dp"
                 android:paddingTop="5dp"
                 android:text="기본 설정"
                 android:textColor="@android:color/white" />
@@ -151,7 +152,8 @@
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"
                 android:paddingBottom="5dp"
-                android:paddingLeft="10dp"
+                android:paddingEnd="10dp"
+                android:paddingStart="10dp"
                 android:paddingTop="5dp"
                 android:text="뷰어 설정"
                 android:textColor="@android:color/white" />
@@ -161,7 +163,8 @@
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"
                 android:paddingBottom="5dp"
-                android:paddingLeft="10dp"
+                android:paddingEnd="10dp"
+                android:paddingStart="10dp"
                 android:paddingTop="5dp"
                 android:text="공통"
                 android:textColor="@android:color/white" />
@@ -267,7 +270,8 @@
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"
                 android:paddingBottom="5dp"
-                android:paddingLeft="10dp"
+                android:paddingEnd="10dp"
+                android:paddingStart="10dp"
                 android:paddingTop="5dp"
                 android:text="터치 뷰어"
                 android:textColor="@android:color/white" />
@@ -402,7 +406,8 @@
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"
                 android:paddingBottom="5dp"
-                android:paddingLeft="10dp"
+                android:paddingEnd="10dp"
+                android:paddingStart="10dp"
                 android:paddingTop="5dp"
                 android:text="컷툰 뷰어"
                 android:textColor="@android:color/white" />
@@ -447,7 +452,8 @@
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"
                 android:paddingBottom="5dp"
-                android:paddingLeft="10dp"
+                android:paddingEnd="10dp"
+                android:paddingStart="10dp"
                 android:paddingTop="5dp"
                 android:text="데이터 관리"
                 android:textColor="@android:color/white" />
@@ -526,7 +532,8 @@
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"
                 android:paddingBottom="5dp"
-                android:paddingLeft="10dp"
+                android:paddingEnd="10dp"
+                android:paddingStart="10dp"
                 android:paddingTop="5dp"
                 android:text="기타"
                 android:textColor="@android:color/white" />

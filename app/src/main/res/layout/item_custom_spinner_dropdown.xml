@@ -8,7 +8,7 @@
     <TextView
         android:ellipsize="marquee"
         android:focusable="true"
-        android:gravity="left"
+        android:gravity="start"
         android:id="@+id/spinner_text"
         android:layout_height="wrap_content"
         android:layout_width="match_parent"

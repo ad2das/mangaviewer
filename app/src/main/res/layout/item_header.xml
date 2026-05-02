@@ -79,7 +79,8 @@
             android:id="@+id/HeaderRecommend"
             android:layout_height="match_parent"
             android:layout_width="wrap_content"
-            android:paddingEnd="6dp">
+            android:paddingEnd="6dp"
+            android:paddingStart="0dp">
 
             <ImageView
                 android:id="@+id/recommendIcon"
@@ -161,7 +162,7 @@
     <androidx.recyclerview.widget.RecyclerView
         android:background="#282828"
         android:id="@+id/tagsContainer"
-        android:layout_gravity="left"
+        android:layout_gravity="start"
         android:layout_height="wrap_content"
         android:layout_width="match_parent"
         app:layout_constraintBottom_toBottomOf="parent"
