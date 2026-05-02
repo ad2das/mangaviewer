@@ -292,28 +292,44 @@ def clean_naver_anchor_title(title_attr: str, text: str) -> str:
     return normalize_space(text)
 
 
-def fetch_naver_titles(max_pages: int, sort: str, delay: float, fetch_details: bool) -> Dict[int, NaverTitle]:
+def parse_sorts(value: str) -> List[str]:
+    result: List[str] = []
+    for item in re.split(r"[, ]+", value.upper().strip()):
+        if not item:
+            continue
+        if item not in {"UPDATE", "HIT", "NEW"}:
+            raise ValueError(f"unsupported sort: {item}")
+        if item not in result:
+            result.append(item)
+    return result or ["UPDATE"]
+
+
+def fetch_naver_titles(
+    max_pages: int, sorts: Iterable[str], delay: float, fetch_details: bool
+) -> Dict[int, NaverTitle]:
     titles: Dict[int, NaverTitle] = {}
-    for genre, mapped_tags in NAVER_GENRES.items():
-        for page in range(1, max_pages + 1):
-            url = naver_genre_url(genre, sort, page)
-            html = http_get(url, delay)
-            parser = AnchorParser()
-            parser.feed(html)
-            page_ids = 0
-            for href, title_attr, text in parser.anchors:
-                title_id = title_id_from_href(href)
-                if title_id <= 0:
-                    continue
-                page_ids += 1
-                item = titles.setdefault(title_id, NaverTitle(title_id))
-                for tag in mapped_tags:
-                    if tag not in item.tags:
-                        item.tags.append(tag)
-                if not item.name:
-                    item.name = clean_naver_anchor_title(title_attr, text)
-            if page_ids == 0:
-                break
+    for sort in sorts:
+        for genre, mapped_tags in NAVER_GENRES.items():
+            for page in range(1, max_pages + 1):
+                url = naver_genre_url(genre, sort, page)
+                html = http_get(url, delay)
+                parser = AnchorParser()
+                parser.feed(html)
+                page_ids = 0
+                for href, title_attr, text in parser.anchors:
+                    title_id = title_id_from_href(href)
+                    if title_id <= 0:
+                        continue
+                    page_ids += 1
+                    item = titles.setdefault(title_id, NaverTitle(title_id))
+                    for tag in mapped_tags:
+                        if tag not in item.tags:
+                            item.tags.append(tag)
+                    name = clean_naver_anchor_title(title_attr, text)
+                    if name and (not item.name or len(name) < len(item.name)):
+                        item.name = name
+                if page_ids == 0:
+                    break
 
     if fetch_details:
         for item in titles.values():
@@ -386,8 +402,11 @@ def fetch_source_titles(root: str, delay: float, max_paths: int) -> Dict[int, So
 
 
 def match_titles(
-    source_titles: Dict[int, SourceTitle], naver_titles: Dict[int, NaverTitle]
-) -> Tuple[Dict[int, Tuple[SourceTitle, NaverTitle]], List[SourceTitle], List[Dict[str, object]]]:
+    source_titles: Dict[int, SourceTitle],
+    naver_titles: Dict[int, NaverTitle],
+    auto_fuzzy_score: float,
+    review_fuzzy_score: float,
+) -> Tuple[Dict[int, Tuple[SourceTitle, NaverTitle, str, float]], List[SourceTitle], List[Dict[str, object]]]:
     naver_by_name: Dict[str, NaverTitle] = {}
     ambiguous_names = set()
     naver_candidates: List[Tuple[str, NaverTitle]] = []
@@ -403,16 +422,22 @@ def match_titles(
     for key in ambiguous_names:
         naver_by_name.pop(key, None)
 
-    matched: Dict[int, Tuple[SourceTitle, NaverTitle]] = {}
+    matched: Dict[int, Tuple[SourceTitle, NaverTitle, str, float]] = {}
     unmatched: List[SourceTitle] = []
     review: List[Dict[str, object]] = []
     for source in source_titles.values():
         source_key = normalize_title(source.name)
         naver = naver_by_name.get(source_key)
-        if naver is None:
-            candidate = best_fuzzy_candidate(source_key, naver_candidates)
-            if candidate is not None:
-                score, fuzzy = candidate
+        if naver is not None:
+            matched[source.toon_id] = (source, naver, "normalized-title", 1.0)
+            continue
+
+        candidate = best_fuzzy_candidate(source_key, naver_candidates, review_fuzzy_score)
+        if candidate is not None:
+            score, fuzzy = candidate
+            if score >= auto_fuzzy_score:
+                matched[source.toon_id] = (source, fuzzy, "high-confidence-title", score)
+            else:
                 review.append(
                     {
                         "sourceId": source.toon_id,
@@ -424,15 +449,13 @@ def match_titles(
                         "score": round(score, 4),
                     }
                 )
-            unmatched.append(source)
-            continue
-        matched[source.toon_id] = (source, naver)
+        unmatched.append(source)
     review.sort(key=lambda item: item["score"], reverse=True)
     return matched, unmatched, review
 
 
 def best_fuzzy_candidate(
-    source_key: str, naver_candidates: List[Tuple[str, NaverTitle]]
+    source_key: str, naver_candidates: List[Tuple[str, NaverTitle]], min_score: float
 ) -> Optional[Tuple[float, NaverTitle]]:
     if len(source_key) < 3:
         return None
@@ -455,7 +478,7 @@ def best_fuzzy_candidate(
             second_score = score
     if best_title is None:
         return None
-    if best_score < 0.92 or best_score - second_score < 0.03:
+    if best_score < min_score or best_score - second_score < 0.03:
         return None
     return best_score, best_title
 
@@ -471,7 +494,7 @@ def merge_existing(path: Path) -> Dict[str, object]:
 
 def build_output(
     existing: Dict[str, object],
-    matched: Dict[int, Tuple[SourceTitle, NaverTitle]],
+    matched: Dict[int, Tuple[SourceTitle, NaverTitle, str, float]],
     source_titles: Dict[int, SourceTitle],
     source_root: str,
 ) -> Dict[str, object]:
@@ -498,7 +521,7 @@ def build_output(
             next_item["sourceTags"] = merged_source_tags
         titles[str(toon_id)] = next_item
 
-    for toon_id, (source, naver) in matched.items():
+    for toon_id, (source, naver, match_type, match_score) in matched.items():
         previous = titles.get(str(toon_id), {})
         manual = previous.get("manual", False) if isinstance(previous, dict) else False
         if manual:
@@ -514,7 +537,8 @@ def build_output(
             "tags": merge_tags(naver.tags, source_tags),
             "naverTitleId": naver.title_id,
             "naverName": naver.name,
-            "match": "normalized-title",
+            "match": match_type,
+            "matchScore": round(match_score, 4),
         }
 
     return {
@@ -553,21 +577,24 @@ def main() -> int:
     parser.add_argument("--source-root", default=DEFAULT_SOURCE_ROOT)
     parser.add_argument("--max-naver-pages", type=int, default=10)
     parser.add_argument("--max-source-paths", type=int, default=0, help="0 means all configured source paths")
-    parser.add_argument("--sort", default="UPDATE", choices=["UPDATE", "HIT", "NEW"])
+    parser.add_argument("--sorts", default="UPDATE,HIT,NEW", help="Comma-separated Naver sort modes: UPDATE,HIT,NEW")
     parser.add_argument("--delay", type=float, default=0.35)
     parser.add_argument("--no-detail-fetch", action="store_true")
     parser.add_argument("--unmatched-output", default="")
     parser.add_argument("--review-output", default="")
+    parser.add_argument("--auto-fuzzy-score", type=float, default=0.955)
+    parser.add_argument("--review-fuzzy-score", type=float, default=0.90)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     output = Path(args.output)
     existing = merge_existing(output)
+    sorts = parse_sorts(args.sorts)
 
-    print("fetching naver genre data...", file=sys.stderr)
+    print(f"fetching naver genre data ({','.join(sorts)})...", file=sys.stderr)
     naver_titles = fetch_naver_titles(
         max_pages=args.max_naver_pages,
-        sort=args.sort,
+        sorts=sorts,
         delay=args.delay,
         fetch_details=not args.no_detail_fetch,
     )
@@ -577,7 +604,12 @@ def main() -> int:
     source_titles = fetch_source_titles(args.source_root, args.delay, args.max_source_paths)
     print(f"source titles: {len(source_titles)}", file=sys.stderr)
 
-    matched, unmatched, review = match_titles(source_titles, naver_titles)
+    matched, unmatched, review = match_titles(
+        source_titles,
+        naver_titles,
+        auto_fuzzy_score=args.auto_fuzzy_score,
+        review_fuzzy_score=args.review_fuzzy_score,
+    )
     print(f"matched: {len(matched)} unmatched: {len(unmatched)} review: {len(review)}", file=sys.stderr)
 
     data = build_output(existing, matched, source_titles, args.source_root)
