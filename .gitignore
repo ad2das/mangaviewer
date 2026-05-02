@@ -32,3 +32,6 @@ app/release/
 
 *.iml
 *.p12
+.webtoon-source-detail-cache.json
+webtoon-classification-audit.json
+webtoon-classification-audit-details.json

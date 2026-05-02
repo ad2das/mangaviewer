@@ -9,6 +9,7 @@ maintenance tool so genre lookup does not happen on user devices.
 from __future__ import annotations
 
 import argparse
+import html as html_lib
 import json
 import re
 import sys
@@ -120,6 +121,7 @@ class SourceTitle:
     thumb: str = ""
     release: str = ""
     source_tags: List[str] = field(default_factory=list)
+    description: str = ""
 
 
 class AnchorParser(HTMLParser):
@@ -327,31 +329,32 @@ def parse_sorts(value: str) -> List[str]:
 
 
 def fetch_naver_titles(
-    max_pages: int, sorts: Iterable[str], delay: float, fetch_details: bool
+    max_pages: int, sorts: Iterable[str], delay: float, fetch_details: bool, workers: int
 ) -> Dict[int, NaverTitle]:
     titles: Dict[int, NaverTitle] = {}
-    for sort in sorts:
-        for genre, mapped_tags in NAVER_GENRES.items():
-            for page in range(1, max_pages + 1):
-                url = naver_genre_url(genre, sort, page)
-                html = http_get(url, delay)
-                parser = AnchorParser()
-                parser.feed(html)
-                page_ids = 0
-                for href, title_attr, text in parser.anchors:
-                    title_id = title_id_from_href(href)
-                    if title_id <= 0:
-                        continue
-                    page_ids += 1
-                    item = titles.setdefault(title_id, NaverTitle(title_id))
-                    for tag in mapped_tags:
-                        if tag not in item.tags:
-                            item.tags.append(tag)
-                    name = clean_naver_anchor_title(title_attr, text)
-                    if name and (not item.name or len(name) < len(item.name)):
-                        item.name = name
-                if page_ids == 0:
-                    break
+    tasks = [
+        (sort, genre, mapped_tags, page)
+        for sort in sorts
+        for genre, mapped_tags in NAVER_GENRES.items()
+        for page in range(1, max_pages + 1)
+    ]
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        futures = {
+            executor.submit(fetch_naver_genre_page, genre, mapped_tags, sort, page, delay): (genre, page)
+            for sort, genre, mapped_tags, page in tasks
+        }
+        for future in as_completed(futures):
+            try:
+                page_titles = future.result()
+            except Exception:
+                continue
+            for title_id, name, mapped_tags in page_titles:
+                item = titles.setdefault(title_id, NaverTitle(title_id))
+                for tag in mapped_tags:
+                    if tag not in item.tags:
+                        item.tags.append(tag)
+                if name and (not item.name or len(name) < len(item.name)):
+                    item.name = name
 
     if fetch_details:
         for item in titles.values():
@@ -361,6 +364,21 @@ def fetch_naver_titles(
             if name:
                 item.name = name
     return {k: v for k, v in titles.items() if v.name and v.tags}
+
+
+def fetch_naver_genre_page(
+    genre: str, mapped_tags: List[str], sort: str, page: int, delay: float
+) -> List[Tuple[int, str, List[str]]]:
+    html = http_get(naver_genre_url(genre, sort, page), delay)
+    parser = AnchorParser()
+    parser.feed(html)
+    result: List[Tuple[int, str, List[str]]] = []
+    for href, title_attr, text in parser.anchors:
+        title_id = title_id_from_href(href)
+        if title_id <= 0:
+            continue
+        result.append((title_id, clean_naver_anchor_title(title_attr, text), mapped_tags))
+    return result
 
 
 def fetch_naver_detail_name(title_id: int, delay: float) -> str:
@@ -406,20 +424,49 @@ def source_paths() -> List[Tuple[str, Optional[str]]]:
     return list(dict.fromkeys(paths))
 
 
-def fetch_source_titles(root: str, delay: float, max_paths: int) -> Dict[int, SourceTitle]:
+def fetch_source_titles(root: str, delay: float, max_paths: int, workers: int) -> Dict[int, SourceTitle]:
+    titles: Dict[int, SourceTitle] = {}
+    paths = source_paths()
+    if max_paths > 0:
+        paths = paths[:max_paths]
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        futures = {executor.submit(fetch_source_path_titles, root, path, delay): (path, genre) for path, genre in paths}
+        for future in as_completed(futures):
+            path, genre = futures[future]
+            try:
+                parsed = future.result()
+            except Exception as exc:
+                print(f"warn: source fetch failed: {path}: {exc}", file=sys.stderr)
+                continue
+            for toon_id, title in parsed.items():
+                existing = titles.get(toon_id)
+                if existing is None:
+                    existing = title
+                    titles[toon_id] = existing
+                if genre and genre not in existing.source_tags:
+                    existing.source_tags.append(genre)
+    return titles
+
+
+def fetch_source_path_titles(root: str, path: str, delay: float) -> Dict[int, SourceTitle]:
+    html = http_get(urljoin(root.rstrip("/") + "/", path.lstrip("/")), delay)
+    parser = SourceParser(root)
+    parser.feed(html)
+    return parser.titles
+
+
+def fetch_source_titles_sequential(root: str, delay: float, max_paths: int) -> Dict[int, SourceTitle]:
     titles: Dict[int, SourceTitle] = {}
     paths = source_paths()
     if max_paths > 0:
         paths = paths[:max_paths]
     for path, genre in paths:
         try:
-            html = http_get(urljoin(root.rstrip("/") + "/", path.lstrip("/")), delay)
+            parsed = fetch_source_path_titles(root, path, delay)
         except Exception as exc:
             print(f"warn: source fetch failed: {path}: {exc}", file=sys.stderr)
             continue
-        parser = SourceParser(root)
-        parser.feed(html)
-        for toon_id, title in parser.titles.items():
+        for toon_id, title in parsed.items():
             existing = titles.get(toon_id)
             if existing is None:
                 existing = title
@@ -429,8 +476,23 @@ def fetch_source_titles(root: str, delay: float, max_paths: int) -> Dict[int, So
     return titles
 
 
-def enrich_source_details(root: str, titles: Dict[int, SourceTitle], delay: float, workers: int) -> None:
-    targets = [title for title in titles.values() if not title.source_tags]
+def enrich_source_details(
+    root: str,
+    titles: Dict[int, SourceTitle],
+    delay: float,
+    workers: int,
+    mode: str,
+    cache_path: Optional[Path],
+) -> None:
+    detail_cache = load_detail_cache(cache_path)
+    candidates = list(titles.values()) if mode == "all" else [title for title in titles.values() if not title.source_tags]
+    targets: List[SourceTitle] = []
+    for title in candidates:
+        cached = detail_cache.get(str(title.toon_id))
+        if cached and apply_cached_detail(title, cached):
+            continue
+        targets.append(title)
+    print(f"detail cache hits: {len(candidates) - len(targets)} fetches: {len(targets)}", file=sys.stderr)
     total = len(targets)
     if total == 0:
         return
@@ -443,12 +505,57 @@ def enrich_source_details(root: str, titles: Dict[int, SourceTitle], delay: floa
                 detail_tags, description = future.result()
             except Exception:
                 detail_tags, description = [], ""
-            for tag in detail_tags:
-                if tag not in title.source_tags:
-                    title.source_tags.append(tag)
+            if detail_tags:
+                title.source_tags = detail_tags
+            if description:
+                title.description = description
+            detail_cache[str(title.toon_id)] = {
+                "name": title.name,
+                "tags": detail_tags,
+                "description": description,
+            }
             completed += 1
             if completed % 100 == 0 or completed == total:
                 print(f"detail progress: {completed}/{total}", file=sys.stderr)
+                save_detail_cache(cache_path, detail_cache)
+    save_detail_cache(cache_path, detail_cache)
+
+
+def load_detail_cache(path: Optional[Path]) -> Dict[str, object]:
+    if path is None or not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        entries = data.get("entries", data)
+        return entries if isinstance(entries, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_detail_cache(path: Optional[Path], cache: Dict[str, object]) -> None:
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = {"version": 1, "entries": cache}
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def apply_cached_detail(title: SourceTitle, cached: object) -> bool:
+    if not isinstance(cached, dict):
+        return False
+    tags = cached.get("tags")
+    if not isinstance(tags, list):
+        return False
+    clean_tags = [str(tag) for tag in tags if str(tag)]
+    if clean_tags:
+        title.source_tags = clean_tags
+    description = cached.get("description")
+    if isinstance(description, str) and description:
+        title.description = description
+    return bool(clean_tags)
 
 
 def fetch_source_detail_tags(root: str, title: SourceTitle, delay: float) -> Tuple[List[str], str]:
@@ -475,7 +582,7 @@ def parse_source_detail(html: str) -> Tuple[List[str], str]:
         flags=re.IGNORECASE,
     )
     if desc_match:
-        desc = normalize_space(desc_match.group(1))
+        desc = normalize_space(html_lib.unescape(desc_match.group(1)))
     return tags, desc
 
 
@@ -619,8 +726,8 @@ def build_output(
         if previous.get("manual", False):
             titles[str(toon_id)] = previous
             continue
-        source_tags = previous.get("sourceTags") if isinstance(previous.get("sourceTags"), list) else []
-        merged_source_tags = merge_tags(source_tags, source.source_tags)
+        previous_source_tags = previous.get("sourceTags") if isinstance(previous.get("sourceTags"), list) else []
+        merged_source_tags = source.source_tags if source.source_tags else previous_source_tags
         external_tags = previous.get("externalTags") if isinstance(previous.get("externalTags"), list) else []
         manual_tags = previous.get("manualTags") if isinstance(previous.get("manualTags"), list) else []
         if not merged_source_tags and str(toon_id) not in titles:
@@ -647,7 +754,8 @@ def build_output(
         if manual:
             continue
         existing_external = previous.get("externalTags") if isinstance(previous, dict) and isinstance(previous.get("externalTags"), list) else []
-        source_tags = previous.get("sourceTags") if isinstance(previous, dict) and isinstance(previous.get("sourceTags"), list) else source.source_tags
+        previous_source_tags = previous.get("sourceTags") if isinstance(previous, dict) and isinstance(previous.get("sourceTags"), list) else []
+        source_tags = source.source_tags if source.source_tags else previous_source_tags
         source_tags = [tag for tag in source_tags if tag != "미분류"]
         titles[str(toon_id)] = {
             "name": source.name,
@@ -723,12 +831,17 @@ def main() -> int:
     parser.add_argument("--max-source-paths", type=int, default=0, help="0 means all configured source paths")
     parser.add_argument("--sorts", default="UPDATE,HIT,NEW", help="Comma-separated Naver sort modes: UPDATE,HIT,NEW")
     parser.add_argument("--delay", type=float, default=0.35)
+    parser.add_argument("--naver-workers", type=int, default=16)
+    parser.add_argument("--source-workers", type=int, default=16)
     parser.add_argument("--no-detail-fetch", action="store_true")
     parser.add_argument("--unmatched-output", default="")
     parser.add_argument("--review-output", default="")
     parser.add_argument("--unclassified-output", default="")
     parser.add_argument("--no-source-detail-fetch", action="store_true")
     parser.add_argument("--source-detail-workers", type=int, default=12)
+    parser.add_argument("--source-detail-mode", choices=("missing", "all"), default="all")
+    parser.add_argument("--source-detail-cache", default=".webtoon-source-detail-cache.json")
+    parser.add_argument("--no-source-detail-cache", action="store_true")
     parser.add_argument("--auto-fuzzy-score", type=float, default=0.955)
     parser.add_argument("--review-fuzzy-score", type=float, default=0.90)
     parser.add_argument("--dry-run", action="store_true")
@@ -744,16 +857,24 @@ def main() -> int:
         sorts=sorts,
         delay=args.delay,
         fetch_details=not args.no_detail_fetch,
+        workers=args.naver_workers,
     )
     print(f"naver titles: {len(naver_titles)}", file=sys.stderr)
 
     print("fetching source titles...", file=sys.stderr)
-    source_titles = fetch_source_titles(args.source_root, args.delay, args.max_source_paths)
+    source_titles = fetch_source_titles(args.source_root, args.delay, args.max_source_paths, args.source_workers)
     print(f"source titles: {len(source_titles)}", file=sys.stderr)
     if not args.no_source_detail_fetch:
-        missing_source_tags = sum(1 for title in source_titles.values() if not title.source_tags)
-        print(f"fetching source detail genres: {missing_source_tags}", file=sys.stderr)
-        enrich_source_details(args.source_root, source_titles, args.delay, args.source_detail_workers)
+        detail_targets = len(source_titles) if args.source_detail_mode == "all" else sum(1 for title in source_titles.values() if not title.source_tags)
+        print(f"fetching source detail genres ({args.source_detail_mode}): {detail_targets}", file=sys.stderr)
+        enrich_source_details(
+            args.source_root,
+            source_titles,
+            args.delay,
+            args.source_detail_workers,
+            args.source_detail_mode,
+            None if args.no_source_detail_cache else Path(args.source_detail_cache),
+        )
 
     matched, unmatched, review = match_titles(
         source_titles,
