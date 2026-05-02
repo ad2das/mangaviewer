@@ -92,6 +92,7 @@ public class EpisodeActivity extends AppCompatActivity {
             int newid = data.getIntExtra("id", -1);
             if(newid>0 && newid!=bookmarkId){
                 bookmarkId = newid;
+                bookmarkIndex = -1;
                 //find index of bookmark;
                 if(episodes != null)
                     for(int i=0; i< episodes.size(); i++){
@@ -103,7 +104,7 @@ public class EpisodeActivity extends AppCompatActivity {
                             }
                     }
             }
-            if(bookmarkId>-1)
+            if(canResumeBookmark())
                 resumefab.show();
             else
                 resumefab.hide();
@@ -273,6 +274,7 @@ public class EpisodeActivity extends AppCompatActivity {
             actionBar.setDisplayHomeAsUpEnabled(true);
         }
         if(bookmarkId>-1){
+            bookmarkIndex = -1;
             if(episodes != null)
                 for(int i=0; i< episodes.size(); i++){
                     if(episodes.get(i).getId()==bookmarkId){
@@ -284,18 +286,23 @@ public class EpisodeActivity extends AppCompatActivity {
         }
         episodeAdapter.setFavorite(p.findFavorite(title)>-1);
         episodeList.setAdapter(episodeAdapter);
-        if(bookmarkIndex>8) {
+        if(canResumeBookmark() && bookmarkIndex>8) {
             episodeList.scrollToPosition(bookmarkIndex);
         }
         findViewById(R.id.upfab).setOnClickListener(v -> episodeList.scrollToPosition(0));
         findViewById(R.id.downfab).setOnClickListener(v -> {
             episodeList.scrollToPosition(episodes.size()); //헤더가 0이기 때문
         });
-        if(bookmarkIndex>-1)
+        if(canResumeBookmark())
             resumefab.show();
         else
             resumefab.hide();
-        resumefab.setOnClickListener(v -> openViewer(episodes.get(bookmarkIndex-1),0));
+        resumefab.setOnClickListener(v -> {
+            if(canResumeBookmark())
+                openViewer(episodes.get(bookmarkIndex-1),0);
+            else
+                resumefab.hide();
+        });
 
         episodeAdapter.setClickListener(new EpisodeAdapter.ItemClickListener() {
 
@@ -337,6 +344,12 @@ public class EpisodeActivity extends AppCompatActivity {
             i.putExtra("mode",2);
             startActivity(i);
         });
+    }
+
+    private boolean canResumeBookmark() {
+        return episodes != null
+                && bookmarkIndex > 0
+                && bookmarkIndex <= episodes.size();
     }
 
     private class getEpisodes extends LifecycleTask<Void,Void,Integer> {
