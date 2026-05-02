@@ -383,13 +383,24 @@ public class ViewerActivity3 extends AppCompatActivity {
         @Override
         protected void onPostExecute(Integer res) {
             super.onPostExecute(res);
+            dismissLoadingDialog();
             if(res == LOAD_CAPTCHA){
                 //캡차 처리 팝업
                 showTokiCaptchaPopup(context, p);
                 return;
             }
             reloadManga();
-            if(pd.isShowing()) pd.dismiss();
+        }
+
+        @Override
+        protected void onCancelled(Integer res) {
+            super.onCancelled(res);
+            dismissLoadingDialog();
+        }
+
+        private void dismissLoadingDialog() {
+            if(pd != null && pd.isShowing())
+                pd.dismiss();
         }
     }
 
