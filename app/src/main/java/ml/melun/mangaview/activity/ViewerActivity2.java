@@ -399,6 +399,11 @@ public class ViewerActivity2 extends AppCompatActivity {
             //dont add page
             //only change type
             //refreshbtn.setVisibility(View.INVISIBLE);
+            if(!hasSplittableImageCache()) {
+                type = -1;
+                refreshImage();
+                return;
+            }
             type = 1;
             int width = imgCache.getWidth();
             int height = imgCache.getHeight();
@@ -562,6 +567,11 @@ public class ViewerActivity2 extends AppCompatActivity {
         } else if(type==1){
             //is two page, current pos: left
             //refreshbtn.setVisibility(View.INVISIBLE);
+            if(!hasSplittableImageCache()) {
+                type = -1;
+                refreshImage();
+                return;
+            }
             type = 0;
             int width = imgCache.getWidth();
             int height = imgCache.getHeight();
@@ -895,6 +905,10 @@ public class ViewerActivity2 extends AppCompatActivity {
         return !isFinishing()
                 && generation == imageLoadGeneration
                 && viewerBookmark == targetBookmark;
+    }
+
+    private boolean hasSplittableImageCache() {
+        return imgCache != null && !imgCache.isRecycled() && imgCache.getWidth() >= 2 && imgCache.getHeight() > 0;
     }
 
     public void reloadManga(){
