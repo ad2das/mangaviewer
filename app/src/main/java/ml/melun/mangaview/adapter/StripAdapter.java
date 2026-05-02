@@ -291,6 +291,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
 
     public void preloadAll(){
+        if(items == null)
+            return;
         for(Object o : items) {
             if(o instanceof PageItem) {
                 preloadPage((PageItem) o);
@@ -327,6 +329,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         int size = items.size();
         items.clear();
         preloadedImages.clear();
+        decoders.clear();
+        decodedBitmapCache.evictAll();
         clearCurrentPage();
         count = 0;
         notifyItemRangeRemoved(0, size);
