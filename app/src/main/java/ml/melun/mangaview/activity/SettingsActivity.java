@@ -76,7 +76,7 @@ public class SettingsActivity extends AppCompatActivity {
                 // Choose a directory using the system's file picker.
                 Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
                 Uri uri = Uri.parse(p.getHomeDir());
-                intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri);
+                putInitialUri(intent, uri);
                 Toast.makeText(context, "다운로드 위치를 선택해 주세요", Toast.LENGTH_SHORT).show();
                 startActivityForResult(intent, MODE_FOLDER_SELECT);
             }else{
@@ -295,7 +295,7 @@ public class SettingsActivity extends AppCompatActivity {
             if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
                 Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
                 Uri uri = Uri.parse(p.getHomeDir());
-                intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri);
+                putInitialUri(intent, uri);
                 Toast.makeText(context, "백업 파일을 저장할 폴더를 선택해 주세요", Toast.LENGTH_SHORT).show();
                 startActivityForResult(intent, MODE_FILE_SAVE);
             }else{
@@ -312,7 +312,7 @@ public class SettingsActivity extends AppCompatActivity {
                 Uri uri = Uri.parse(p.getHomeDir());
                 intent.addCategory(Intent.CATEGORY_OPENABLE);
                 intent.setType("application/*");
-                intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri);
+                putInitialUri(intent, uri);
                 Toast.makeText(context, "백업 파일 선택", Toast.LENGTH_SHORT).show();
                 startActivityForResult(intent, MODE_FILE_SELECT);
             }else {
@@ -382,6 +382,11 @@ public class SettingsActivity extends AppCompatActivity {
             return true;
         }
         return super.onOptionsItemSelected(item);
+    }
+
+    private static void putInitialUri(Intent intent, Uri uri) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri);
     }
 
     @Override

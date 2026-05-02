@@ -103,11 +103,17 @@ public class Downloader extends Service {
             notificationManager.createNotificationChannel(mchannel);
         }
         Intent notificationIntent = new Intent(this, MainActivity.class);
-        pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE);
+        pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, immutablePendingIntentFlags());
         Intent previousIntent = new Intent(this, Downloader.class);
         previousIntent.setAction(ACTION_STOP);
-        stopIntent = PendingIntent.getService(this, 0, previousIntent, PendingIntent.FLAG_IMMUTABLE);
+        stopIntent = PendingIntent.getService(this, 0, previousIntent, immutablePendingIntentFlags());
         startNotification();
+    }
+
+    private static int immutablePendingIntentFlags() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
+            return PendingIntent.FLAG_IMMUTABLE;
+        return 0;
     }
 
     @Override
