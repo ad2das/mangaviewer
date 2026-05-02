@@ -308,11 +308,11 @@ public class Preference {
         if(title == null)
             return;
         MTitle tmp = title.clone();
-        if(recent.size() == 0)
-            recent.add(tmp);
-        else
-            recent.set(0, tmp);
-        writeRecent();
+        int recentIndex = getIndexOf(tmp);
+        if(recentIndex > -1) {
+            recent.set(recentIndex, tmp);
+            writeRecent();
+        }
         int index = findFavorite(tmp);
         if(index>-1){
             favorite.set(index,tmp);
@@ -326,11 +326,11 @@ public class Preference {
         if(title == null)
             return;
         MTitle tmp = title.minimize();
-        if(recent.size() == 0)
-            recent.add(tmp);
-        else
-            recent.set(0, tmp);
-        writeRecent();
+        int recentIndex = getIndexOf(tmp);
+        if(recentIndex > -1) {
+            recent.set(recentIndex, tmp);
+            writeRecent();
+        }
         int index = findFavorite(tmp);
         if(index>-1){
             favorite.set(index, tmp);
@@ -527,7 +527,23 @@ public class Preference {
     }
 
     public List<MTitle> getRecent(){
+        pruneUnviewedRecents();
         return recent;
+    }
+
+    private void pruneUnviewedRecents() {
+        if(recent == null)
+            return;
+        boolean changed = false;
+        for(int i = recent.size() - 1; i >= 0; i--) {
+            MTitle title = recent.get(i);
+            if(title == null || title.getId() <= 0 || getBookmark(title) < 0) {
+                recent.remove(i);
+                changed = true;
+            }
+        }
+        if(changed)
+            writeRecent();
     }
 
 

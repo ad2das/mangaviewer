@@ -172,8 +172,6 @@ public class EpisodeActivity extends AppCompatActivity {
                     if (!title.useBookmark()) {
                         // is migrated
                         mode = 4;
-                    } else {
-                        p.addRecent(title);
                     }
 
                     episodes = title.getEps();
@@ -214,8 +212,6 @@ public class EpisodeActivity extends AppCompatActivity {
                     if (!title.useBookmark()) {
                         // is migrated
                         mode = 4;
-                    } else {
-                        p.addRecent(title);
                     }
 
                     episodes = title.getEps();
@@ -371,8 +367,6 @@ public class EpisodeActivity extends AppCompatActivity {
             }else {
                 episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
                 afterLoad();
-                p.addRecent(title);
-                p.updateRecentData(title);
                 progress.setVisibility(View.GONE);
                 loaded = true;
                 fab_container.setVisibility(View.VISIBLE);
