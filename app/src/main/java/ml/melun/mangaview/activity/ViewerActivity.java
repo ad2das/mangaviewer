@@ -496,6 +496,8 @@ public class ViewerActivity extends AppCompatActivity {
 
     public void toggleAutoCut(){
         PageItem page = getFocusedVisiblePage();
+        if(page == null || page.manga == null)
+            return;
         if(autoCut){
             autoCut = false;
             cut.setBackgroundResource(R.drawable.button_bg);
@@ -507,13 +509,9 @@ public class ViewerActivity extends AppCompatActivity {
         }
         stripAdapter.removeAll();
         stripAdapter = new StripAdapter(context, page.manga, autoCut, width,title, infiniteScrollCallback);
-        stripAdapter.preloadAll();
-        strip.setAdapter(stripAdapter);
-        stripAdapter.setClickListener(() -> {
-            // show/hide toolbar
-            toggleToolbar();
-        });
+        refreshAdapter();
         manager.scrollToPage(page);
+        stripAdapter.preloadAround(page);
     }
 
 

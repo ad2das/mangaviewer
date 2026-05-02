@@ -298,6 +298,14 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         }
     }
 
+    public void preloadAround(PageItem page) {
+        int position = findPagePosition(page);
+        if(position == RecyclerView.NO_POSITION)
+            return;
+        preloadPage((PageItem) items.get(position));
+        preloadAhead(position);
+    }
+
     final static int IMG = 0;
     final static int INFO = 1;
 
@@ -510,6 +518,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private boolean isHolderStillBound(ImgViewHolder holder, PageItem item) {
         int position = holder.getAdapterPosition();
         return position != RecyclerView.NO_POSITION
+                && items != null
                 && position < items.size()
                 && items.get(position) == item;
     }
@@ -517,6 +526,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private void preloadAhead(int adapterPosition) {
         int preloaded = 0;
         int preloadLimit = p.getDataSave() ? DATA_SAVE_PRELOAD_AHEAD_COUNT : PRELOAD_AHEAD_COUNT;
+        if(items == null)
+            return;
         for(int i = adapterPosition + 1; i < items.size() && preloaded < preloadLimit; i++) {
             Object next = items.get(i);
             if(next instanceof PageItem) {
@@ -575,6 +586,33 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(manga == null)
             return "0:0:0";
         return manga.getBaseMode() + ":" + manga.getId() + ":" + manga.getSeed();
+    }
+
+    private int findPagePosition(PageItem page) {
+        if(page == null || items == null)
+            return RecyclerView.NO_POSITION;
+        int fallbackPosition = RecyclerView.NO_POSITION;
+        for(int i = 0; i < items.size(); i++) {
+            Object item = items.get(i);
+            if(item instanceof PageItem && samePage((PageItem)item, page))
+                return i;
+            if(item instanceof PageItem && fallbackPosition == RecyclerView.NO_POSITION && samePageIgnoringSide((PageItem)item, page))
+                fallbackPosition = i;
+        }
+        return fallbackPosition;
+    }
+
+    private boolean samePage(PageItem a, PageItem b) {
+        return a != null && b != null
+                && a.index == b.index
+                && a.side == b.side
+                && sameManga(a.manga, b.manga);
+    }
+
+    private boolean samePageIgnoringSide(PageItem a, PageItem b) {
+        return a != null && b != null
+                && a.index == b.index
+                && sameManga(a.manga, b.manga);
     }
 
     private int decodedCacheSizeKb() {
