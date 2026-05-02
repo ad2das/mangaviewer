@@ -9,6 +9,9 @@ import android.os.Looper;
 
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
+import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy;
+import com.bumptech.glide.request.RequestOptions;
+import com.bumptech.glide.request.target.Target;
 import com.google.android.material.appbar.AppBarLayout;
 
 import androidx.annotation.Nullable;
@@ -103,7 +106,8 @@ public class ViewerActivity extends AppCompatActivity {
     boolean nextEpisodeBoundaryLoading = false;
     boolean previousEpisodeBoundaryJumpPending = false;
     boolean nextEpisodeBoundaryJumpPending = false;
-    private static final int NEXT_EPISODE_PRELOAD_LIMIT = 12;
+    private static final int NEXT_EPISODE_PRELOAD_LIMIT = 8;
+    private static final int DATA_SAVE_NEXT_EPISODE_PRELOAD_LIMIT = 3;
     private static final int PREVIOUS_EPISODE_PULL_THRESHOLD_DP = 36;
     float topPullStartY = 0;
     boolean topPullTriggered = false;
@@ -1034,13 +1038,21 @@ public class ViewerActivity extends AppCompatActivity {
         if(target == null || !target.isOnline())
             return;
         List<String> images = target.getImgs(context);
-        int limit = Math.min(NEXT_EPISODE_PRELOAD_LIMIT, images.size());
+        int preloadLimit = p.getDataSave() ? DATA_SAVE_NEXT_EPISODE_PRELOAD_LIMIT : NEXT_EPISODE_PRELOAD_LIMIT;
+        int limit = Math.min(preloadLimit, images.size());
         for(int i = 0; i < limit; i++)
             Glide.with(context)
                     .asBitmap()
-                    .diskCacheStrategy(DiskCacheStrategy.DATA)
+                    .apply(viewerPreloadOptions())
                     .load(Utils.getGlideUrl(images.get(i), target.getBaseMode()))
                     .preload();
+    }
+
+    private RequestOptions viewerPreloadOptions() {
+        return new RequestOptions()
+                .diskCacheStrategy(DiskCacheStrategy.DATA)
+                .downsample(DownsampleStrategy.AT_MOST)
+                .override(Math.max(width, 1), Target.SIZE_ORIGINAL);
     }
 
     private void appendMangaWhenIdle(Manga target, Runnable afterAppend) {

@@ -145,6 +145,7 @@ public class ViewerActivity3 extends AppCompatActivity {
         commentBtn = this.findViewById(R.id.commentButton);
         width = getScreenSize(getWindowManager().getDefaultDisplay());
         viewPager = this.findViewById(R.id.viewerPager);
+        viewPager.setOffscreenPageLimit(p.getDataSave() ? 1 : 2);
         spinner = this.findViewById(R.id.toolbar_spinner);
 
         spinnerAdapter = new CustomSpinnerAdapter(context);
