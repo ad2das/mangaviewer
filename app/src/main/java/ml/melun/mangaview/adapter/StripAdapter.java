@@ -397,14 +397,14 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if (width > height) {
                         if (item.side == PageItem.FIRST) {
                             if (reverse)
-                                displayBitmap = Bitmap.createBitmap(bitmap, 0, 0, width / 2, height);
+                                displayBitmap = createSplitBitmap(bitmap, true);
                             else
-                                displayBitmap = Bitmap.createBitmap(bitmap, width / 2, 0, width / 2, height);
+                                displayBitmap = createSplitBitmap(bitmap, false);
                         } else {
                             if (reverse)
-                                displayBitmap = Bitmap.createBitmap(bitmap, width / 2, 0, width / 2, height);
+                                displayBitmap = createSplitBitmap(bitmap, false);
                             else
-                                displayBitmap = Bitmap.createBitmap(bitmap, 0, 0, width / 2, height);
+                                displayBitmap = createSplitBitmap(bitmap, true);
                         }
                     } else {
                         if (item.side == PageItem.FIRST) {
@@ -548,6 +548,16 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(page == null || page.manga == null)
             return "";
         return page.manga.getBaseMode() + ":" + page.manga.getId() + ":" + page.manga.getSeed() + ":" + width + ":" + page.side + ":" + page.img;
+    }
+
+    private Bitmap createSplitBitmap(Bitmap bitmap, boolean leftSide) {
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        int leftWidth = width / 2;
+        int rightWidth = width - leftWidth;
+        if(leftSide)
+            return Bitmap.createBitmap(bitmap, 0, 0, leftWidth, height);
+        return Bitmap.createBitmap(bitmap, leftWidth, 0, rightWidth, height);
     }
 
     private Decoder decoderFor(PageItem page) {
