@@ -255,12 +255,10 @@ public class MainSearch extends Fragment {
                         //none
                         Title title = searchAdapter.getItem(position);
                         popup(getContext(),view, position, title, 0, item -> {
-                            switch(item.getItemId()){
-                                case R.id.favAdd:
-                                case R.id.favDel:
-                                    //toggle favorite
-                                    p.toggleFavorite(title,0);
-                                    break;
+                            int itemId = item.getItemId();
+                            if(itemId == R.id.favAdd || itemId == R.id.favDel) {
+                                //toggle favorite
+                                p.toggleFavorite(title,0);
                             }
                             return false;
                         }, p);

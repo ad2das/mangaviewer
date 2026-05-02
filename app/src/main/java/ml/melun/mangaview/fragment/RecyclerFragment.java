@@ -346,47 +346,43 @@ public class RecyclerFragment extends Fragment {
 
         //registering popup with OnMenuItemClickListener
         popup.setOnMenuItemClickListener(item -> {
-            switch(item.getItemId()){
-                case R.id.del:
-                    //delete (only in recent)
+            int itemId = item.getItemId();
+            if(itemId == R.id.del) {
+                //delete (only in recent)
+                titleAdapter.remove(position);
+                p.removeRecent(position);
+            } else if(itemId == R.id.favAdd || itemId == R.id.favDel) {
+                //toggle favorite
+                p.toggleFavorite(title,0);
+                if(m==2){
                     titleAdapter.remove(position);
-                    p.removeRecent(position);
-                    break;
-                case R.id.favAdd:
-                case R.id.favDel:
-                    //toggle favorite
-                    p.toggleFavorite(title,0);
-                    if(m==2){
-                        titleAdapter.remove(position);
-                    }
-                    break;
-                case R.id.remove:
-                    //저장된 만화에서 삭제
-                    DialogInterface.OnClickListener dialogClickListener = (dialog, which) -> {
-                        if (which == DialogInterface.BUTTON_POSITIVE) {
-                            //Yes button clicked
-                            if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
-                                DocumentFile f = DocumentFile.fromTreeUri(getContext(), Uri.parse(p.getHomeDir()));
-                                DocumentFile target = f.findFile(title.getName());
-                                if (target != null && target.delete()) {
-                                    titleAdapter.remove(position);
-                                    Toast.makeText(getContext(), "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
-                                } else showPopup(getContext(), "알림", "삭제를 실패했습니다");
-                            } else {
-                                File folder = new File(p.getHomeDir(), filterFolder(title.getName()));
-                                if (deleteRecursive(folder)) {
-                                    titleAdapter.remove(position);
-                                    Toast.makeText(getContext(), "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
-                                } else showPopup(getContext(), "알림", "삭제를 실패했습니다");
-                            }
+                }
+            } else if(itemId == R.id.remove) {
+                //저장된 만화에서 삭제
+                DialogInterface.OnClickListener dialogClickListener = (dialog, which) -> {
+                    if (which == DialogInterface.BUTTON_POSITIVE) {
+                        //Yes button clicked
+                        if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
+                            DocumentFile f = DocumentFile.fromTreeUri(getContext(), Uri.parse(p.getHomeDir()));
+                            DocumentFile target = f.findFile(title.getName());
+                            if (target != null && target.delete()) {
+                                titleAdapter.remove(position);
+                                Toast.makeText(getContext(), "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
+                            } else showPopup(getContext(), "알림", "삭제를 실패했습니다");
+                        } else {
+                            File folder = new File(p.getHomeDir(), filterFolder(title.getName()));
+                            if (deleteRecursive(folder)) {
+                                titleAdapter.remove(position);
+                                Toast.makeText(getContext(), "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
+                            } else showPopup(getContext(), "알림", "삭제를 실패했습니다");
                         }
-                    };
-                    AlertDialog.Builder builder;
-                    if(p.getDarkTheme()) builder = new AlertDialog.Builder(getContext(),R.style.darkDialog);
-                    else builder = new AlertDialog.Builder(getContext());
-                    builder.setMessage("정말로 삭제 하시겠습니까?").setPositiveButton("네", dialogClickListener)
-                            .setNegativeButton("아니오", dialogClickListener).show();
-                    break;
+                    }
+                };
+                AlertDialog.Builder builder;
+                if(p.getDarkTheme()) builder = new AlertDialog.Builder(getContext(),R.style.darkDialog);
+                else builder = new AlertDialog.Builder(getContext());
+                builder.setMessage("정말로 삭제 하시겠습니까?").setPositiveButton("네", dialogClickListener)
+                        .setNegativeButton("아니오", dialogClickListener).show();
             }
             return false;
         });

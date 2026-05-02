@@ -418,14 +418,10 @@ public class TagSearchActivity extends AppCompatActivity {
 
         //registering popup with OnMenuItemClickListener
         popup.setOnMenuItemClickListener(item -> {
-            switch(item.getItemId()){
-                case R.id.del:
-                    break;
-                case R.id.favAdd:
-                case R.id.favDel:
-                    //toggle favorite
-                    p.toggleFavorite(title,0);
-                    break;
+            int itemId = item.getItemId();
+            if(itemId == R.id.favAdd || itemId == R.id.favDel) {
+                //toggle favorite
+                p.toggleFavorite(title,0);
             }
             return true;
         });

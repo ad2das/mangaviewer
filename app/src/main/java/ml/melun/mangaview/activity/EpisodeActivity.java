@@ -72,15 +72,15 @@ public class EpisodeActivity extends AppCompatActivity {
 
 
     public boolean onOptionsItemSelected(MenuItem item){
-        switch (item.getItemId()) {
-            case android.R.id.home:
-                finish();
-                return true;
-            case R.id.episode_download:
-                Intent download = new Intent(context, DownloadActivity.class);
-                download.putExtra("title", new Gson().toJson(title));
-                startActivity(download);
-                return true;
+        int itemId = item.getItemId();
+        if(itemId == android.R.id.home) {
+            finish();
+            return true;
+        } else if(itemId == R.id.episode_download) {
+            Intent download = new Intent(context, DownloadActivity.class);
+            download.putExtra("title", new Gson().toJson(title));
+            startActivity(download);
+            return true;
         }
         return super.onOptionsItemSelected(item);
     }

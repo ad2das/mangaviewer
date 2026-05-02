@@ -328,18 +328,16 @@ public class MainActivity extends AppCompatActivity
     }
 
     public int getFragmentIndex(int i){
-        switch(i){
-            case R.id.nav_main:
-                return 0;
-            case R.id.nav_search:
-                return 1;
-            case R.id.nav_recent:
-                return 2;
-            case R.id.nav_favorite:
-                return 3;
-            case R.id.nav_download:
-                return 4;
-        }
+        if(i == R.id.nav_main)
+            return 0;
+        if(i == R.id.nav_search)
+            return 1;
+        if(i == R.id.nav_recent)
+            return 2;
+        if(i == R.id.nav_favorite)
+            return 3;
+        if(i == R.id.nav_download)
+            return 4;
         return -1;
     }
 
