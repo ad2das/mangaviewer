@@ -32,6 +32,7 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
+                android:focusable="true"
                 android:id="@+id/setting_url"
                 android:layout_height="70dp"
                 android:layout_width="match_parent">
@@ -54,6 +55,7 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
+                android:focusable="true"
                 android:id="@+id/setting_dir"
                 android:layout_height="70dp"
                 android:layout_width="match_parent">
@@ -76,6 +78,7 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
+                android:focusable="true"
                 android:id="@+id/setting_startTab"
                 android:layout_height="70dp"
                 android:layout_width="match_parent">
@@ -111,6 +114,7 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
+                android:focusable="true"
                 android:id="@+id/setting_dark"
                 android:layout_height="70dp"
                 android:layout_width="match_parent">
@@ -165,6 +169,7 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
+                android:focusable="true"
                 android:id="@+id/setting_viewer"
                 android:layout_height="70dp"
                 android:layout_width="match_parent">
@@ -199,6 +204,7 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
+                android:focusable="true"
                 android:id="@+id/setting_key"
                 android:layout_height="70dp"
                 android:layout_width="match_parent">
@@ -224,6 +230,7 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
+                android:focusable="true"
                 android:id="@+id/setting_reverse"
                 android:layout_height="70dp"
                 android:layout_width="match_parent">
@@ -268,6 +275,7 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
+                android:focusable="true"
                 android:id="@+id/setting_buttonLayout"
                 android:layout_height="70dp"
                 android:layout_width="match_parent">
@@ -290,6 +298,7 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
+                android:focusable="true"
                 android:id="@+id/setting_double"
                 android:layout_height="70dp"
                 android:layout_width="match_parent">
@@ -323,6 +332,7 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
+                android:focusable="true"
                 android:id="@+id/setting_double_leftright"
                 android:layout_height="70dp"
                 android:layout_width="match_parent">
@@ -356,6 +366,7 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
+                android:focusable="true"
                 android:id="@+id/setting_stretch"
                 android:layout_height="70dp"
                 android:layout_width="match_parent">
@@ -401,7 +412,8 @@
                 android:layout_width="match_parent"
                 android:layout_height="70dp"
                 android:background="?android:attr/selectableItemBackground"
-                android:clickable="true">
+                android:clickable="true"
+                android:focusable="true">
 
                 <TextView
                     android:id="@+id/textView10"
@@ -443,6 +455,7 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
+                android:focusable="true"
                 android:id="@+id/setting_dataExport"
                 android:layout_height="70dp"
                 android:layout_width="match_parent">
@@ -465,6 +478,7 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
+                android:focusable="true"
                 android:id="@+id/setting_dataImport"
                 android:layout_height="70dp"
                 android:layout_width="match_parent">
@@ -487,6 +501,7 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
+                android:focusable="true"
                 android:id="@+id/setting_reset"
                 android:layout_height="70dp"
                 android:layout_width="match_parent">
@@ -519,6 +534,7 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
+                android:focusable="true"
                 android:id="@+id/setting_dataSave"
                 android:layout_height="70dp"
                 android:layout_width="match_parent">
@@ -553,6 +569,7 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
+                android:focusable="true"
                 android:id="@+id/setting_license"
                 android:layout_height="70dp"
                 android:layout_width="match_parent">
