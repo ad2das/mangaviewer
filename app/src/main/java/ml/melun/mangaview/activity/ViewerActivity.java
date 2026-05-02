@@ -204,6 +204,8 @@ public class ViewerActivity extends AppCompatActivity {
                         });
                         return target;
                     }
+                    if(isPrefetching(target))
+                        cancelNextPrefetcher();
                     cancelActiveEpisodeLoader();
                     nextEpisodeBoundaryLoading = true;
                     int generation = episodeLoaderGeneration;
@@ -1006,6 +1008,13 @@ public class ViewerActivity extends AppCompatActivity {
             nextPrefetcher.cancel();
         nextPrefetchEpisodeId = -1;
         nextPrefetchBaseMode = -1;
+    }
+
+    private boolean isPrefetching(Manga target) {
+        return nextPrefetcher != null
+                && target != null
+                && nextPrefetchEpisodeId == target.getId()
+                && nextPrefetchBaseMode == target.getBaseMode();
     }
 
     private boolean hasLoadedImages(Manga target) {
