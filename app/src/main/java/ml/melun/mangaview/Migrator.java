@@ -47,6 +47,7 @@ public class Migrator extends Service {
     public static final String MIGRATE_FAIL = "ml.melun.mangaview.migrator.FAIL";
     public static final String MIGRATE_PROGRESS = "ml.melun.mangaview.migrator.PROGRESS";
     public static final String MIGRATE_RESULT = "ml.melun.mangaview.migrator.RESULT";
+    private static final int NOTIFICATION_INTENT_FLAGS = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
 
     @Override
     public void onCreate() {
@@ -65,7 +66,7 @@ public class Migrator extends Service {
             notificationManager.createNotificationChannel(mchannel);
         }
         Intent notificationIntent = new Intent(this, MainActivity.class);
-        pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, 0);
+        pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, NOTIFICATION_INTENT_FLAGS);
         resultIntent = new Intent(this, MainActivity.class);
         serviceContext = this;
         startNotification();
@@ -123,7 +124,7 @@ public class Migrator extends Service {
 
 
     private void endNotification(){
-        PendingIntent resultPendingIntent = PendingIntent.getActivity(serviceContext, 0, resultIntent, 0);
+        PendingIntent resultPendingIntent = PendingIntent.getActivity(serviceContext, 0, resultIntent, NOTIFICATION_INTENT_FLAGS);
         notification = new NotificationCompat.Builder(this, channeld)
                 .setContentIntent(resultPendingIntent)
                 .setContentTitle("기록 업데이트 완료")
