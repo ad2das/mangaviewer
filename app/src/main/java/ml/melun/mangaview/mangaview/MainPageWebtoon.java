@@ -8,9 +8,12 @@ import org.jsoup.select.Elements;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.io.InterruptedIOException;
 import java.net.URLDecoder;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -24,6 +27,7 @@ import java.util.concurrent.Future;
 
 import okhttp3.Response;
 
+import static ml.melun.mangaview.MainApplication.appContext;
 import static ml.melun.mangaview.MainApplication.httpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
@@ -56,10 +60,11 @@ public class MainPageWebtoon {
             "https://raw.githubusercontent.com/ad2das/mangaviewer/main/webtoon-classification.json",
             "https://raw.githubusercontent.com/ad2das/mangaviewer/test/webtoon-classification-db/webtoon-classification.json"
     };
-    private static final String CLASSIFICATION_DB_CACHE_KEY = "webtoonClassificationDbV1";
+    private static final String CLASSIFICATION_DB_CACHE_KEY = "webtoonClassificationDbV2";
     private static final String CLASSIFICATION_DB_FETCHED_AT_KEY = "webtoonClassificationDbFetchedAt";
     private static final long CLASSIFICATION_DB_TTL_MS = 24 * 60 * 60 * 1000L;
     private static final Map<Integer, List<String>> classificationDb = new LinkedHashMap<>();
+    private static final Map<String, List<String>> classificationNameDb = new LinkedHashMap<>();
     private static final Map<Integer, DbTitle> classificationTitleDb = new LinkedHashMap<>();
     private static boolean classificationDbLoaded = false;
 
@@ -333,21 +338,14 @@ public class MainPageWebtoon {
             return;
         List<String> tags = new ArrayList<>(title.getTags());
         List<String> dbTags = getClassificationDbTags(title.getId());
+        if(dbTags == null)
+            dbTags = getClassificationDbTags(title.getName());
         if(dbTags != null) {
             for(String dbTag : dbTags)
                 addUnique(tags, dbTag);
             title.setTags(tags);
             return;
         }
-
-        String cacheKey = inferredTagCacheKey(title);
-        List<String> inferred = getCachedInferredTags(cacheKey);
-        if(inferred == null) {
-            inferred = inferWebtoonTags(title);
-            putCachedInferredTags(cacheKey, inferred);
-        }
-        for(String inferredTag : inferred)
-            addUnique(tags, inferredTag);
         title.setTags(tags);
     }
 
@@ -464,6 +462,21 @@ public class MainPageWebtoon {
         return tags == null ? null : new ArrayList<>(tags);
     }
 
+    private static synchronized List<String> getClassificationDbTags(String titleName) {
+        loadClassificationDb();
+        String key = normalizeClassificationName(titleName);
+        if(key.length() == 0)
+            return null;
+        List<String> tags = classificationNameDb.get(key);
+        return tags == null ? null : new ArrayList<>(tags);
+    }
+
+    private static String normalizeClassificationName(String value) {
+        if(value == null)
+            return "";
+        return value.replaceAll("[\\s\\p{Punct}·・…]+", "").toLowerCase(Locale.ROOT);
+    }
+
     private static synchronized void loadClassificationDb() {
         if(classificationDbLoaded)
             return;
@@ -490,10 +503,15 @@ public class MainPageWebtoon {
                 }
             }
             parseClassificationDb(cached);
+            if(classificationDb.size() == 0)
+                parseClassificationDb(readBundledClassificationDb());
         } catch (Exception e) {
             classificationDb.clear();
+            classificationNameDb.clear();
             classificationTitleDb.clear();
             parseClassificationDb(cached);
+            if(classificationDb.size() == 0)
+                parseClassificationDb(readBundledClassificationDb());
         }
     }
 
@@ -524,6 +542,7 @@ public class MainPageWebtoon {
             if(json == null || json.length() == 0)
                 return;
             classificationDb.clear();
+            classificationNameDb.clear();
             classificationTitleDb.clear();
             JSONObject root = new JSONObject(json);
             JSONObject titles = root.optJSONObject("titles");
@@ -540,6 +559,9 @@ public class MainPageWebtoon {
                 if(tags.size() > 0)
                     classificationDb.put(titleId, tags);
                 String name = item.optString("name", "");
+                String nameKey = normalizeClassificationName(name);
+                if(tags.size() > 0 && nameKey.length() > 0)
+                    classificationNameDb.put(nameKey, tags);
                 String thumb = item.optString("thumb", "");
                 String release = item.optString("release", "");
                 if(tags.size() > 0 && name.length() > 0)
@@ -547,7 +569,26 @@ public class MainPageWebtoon {
             }
         } catch (Exception e) {
             classificationDb.clear();
+            classificationNameDb.clear();
             classificationTitleDb.clear();
+        }
+    }
+
+    private static String readBundledClassificationDb() {
+        if(appContext == null)
+            return "";
+        try(InputStream input = appContext.getAssets().open("webtoon-classification.json")) {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            byte[] buffer = new byte[8192];
+            while(true) {
+                int read = input.read(buffer);
+                if(read < 0)
+                    break;
+                output.write(buffer, 0, read);
+            }
+            return output.toString(StandardCharsets.UTF_8.name());
+        } catch (Exception e) {
+            return "";
         }
     }
 

@@ -16,6 +16,7 @@ import ml.melun.mangaview.report.CrashReporter;
 public class MainApplication extends MultiDexApplication {
     public static CustomHttpClient httpClient;
     public static Preference p;
+    public static Context appContext;
     @Override
     protected void attachBaseContext(Context base) {
         super.attachBaseContext(base);
@@ -23,6 +24,7 @@ public class MainApplication extends MultiDexApplication {
 
     @Override
     public void onCreate() {
+        appContext = this;
         CrashReporter.install(this);
         AppCompatDelegate.setCompatVectorFromResourcesEnabled(true);
         p = new Preference(this);
