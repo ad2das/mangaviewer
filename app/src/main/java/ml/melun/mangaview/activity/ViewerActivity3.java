@@ -79,6 +79,7 @@ public class ViewerActivity3 extends AppCompatActivity {
     ViewPager.OnPageChangeListener listener;
     CustomSpinner spinner;
     CustomSpinnerAdapter spinnerAdapter;
+    LoadImages imageLoadTask;
 
 
     @Override
@@ -310,7 +311,10 @@ public class ViewerActivity3 extends AppCompatActivity {
 
     void refresh(){
         captchaChecked = false;
-        new LoadImages().executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+        if(imageLoadTask != null)
+            imageLoadTask.cancel(true);
+        imageLoadTask = new LoadImages(manga);
+        imageLoadTask.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
     }
 
 
@@ -349,41 +353,50 @@ public class ViewerActivity3 extends AppCompatActivity {
     }
 
     private class LoadImages extends LifecycleTask<Void, String, Integer>{
-        ProgressDialog pd;
+        final Manga target;
+        ProgressDialog dialog;
+
+        LoadImages(Manga target) {
+            this.target = target;
+        }
+
         protected void onProgressUpdate(String... values) {
-            pd.setMessage(values[0]);
+            if(dialog != null)
+                dialog.setMessage(values[0]);
         }
         @Override
         protected void onPreExecute() {
             super.onPreExecute();
-            if(dark) pd = new ProgressDialog(context, R.style.darkDialog);
-            else pd = new ProgressDialog(context);
-            pd.setMessage("로드중");
-            pd.setCancelable(false);
-            pd.setOnKeyListener((dialog, keyCode, event) -> {
+            if(dark) dialog = new ProgressDialog(context, R.style.darkDialog);
+            else dialog = new ProgressDialog(context);
+            dialog.setMessage("로드중");
+            dialog.setCancelable(false);
+            dialog.setOnKeyListener((dialogInterface, keyCode, event) -> {
                 if(keyCode == KeyEvent.KEYCODE_BACK){
                     LoadImages.super.cancel(true);
-                    pd.dismiss();
+                    dismissLoadingDialog();
                     finish();
                 }
                 return true;
             });
-            pd.show();
+            dialog.show();
         }
 
         @Override
         protected Integer doInBackground(Void... voids) {
-            manga.setListener(msg -> publishProgress(msg));
-            int res = manga.fetch(httpClient);
-            if(title == null)
-                title = manga.getTitle();
-            return res;
+            target.setListener(msg -> publishProgress(msg));
+            return target.fetch(httpClient);
         }
 
         @Override
         protected void onPostExecute(Integer res) {
             super.onPostExecute(res);
             dismissLoadingDialog();
+            if(!isActiveLoadTask(this))
+                return;
+            imageLoadTask = null;
+            if(title == null)
+                title = target.getTitle();
             if(res == LOAD_CAPTCHA){
                 //캡차 처리 팝업
                 showTokiCaptchaPopup(context, p);
@@ -396,12 +409,24 @@ public class ViewerActivity3 extends AppCompatActivity {
         protected void onCancelled(Integer res) {
             super.onCancelled(res);
             dismissLoadingDialog();
+            if(imageLoadTask == this)
+                imageLoadTask = null;
         }
 
         private void dismissLoadingDialog() {
-            if(pd != null && pd.isShowing())
-                pd.dismiss();
+            if(dialog != null && dialog.isShowing())
+                dialog.dismiss();
         }
+    }
+
+    private boolean isActiveLoadTask(LoadImages task) {
+        return imageLoadTask == task
+                && task != null
+                && task.target != null
+                && manga != null
+                && task.target.getId() == manga.getId()
+                && task.target.getBaseMode() == manga.getBaseMode()
+                && !isFinishing();
     }
 
     public void goPage(int item, boolean smoothScroll) {
@@ -510,5 +535,12 @@ public class ViewerActivity3 extends AppCompatActivity {
         if (resultCode == RESULT_CAPTCHA) {
             refresh();
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        if(imageLoadTask != null)
+            imageLoadTask.cancel(true);
+        super.onDestroy();
     }
 }
