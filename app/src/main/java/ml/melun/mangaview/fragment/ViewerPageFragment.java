@@ -34,6 +34,10 @@ public class ViewerPageFragment extends Fragment {
     Context context;
     PageInterface i;
     int width;
+    ImageView frame;
+    ImageButton refresh;
+    CustomTarget<Bitmap> imageTarget;
+    String activeImage;
 
     public ViewerPageFragment(){
 
@@ -57,8 +61,8 @@ public class ViewerPageFragment extends Fragment {
     @Override
     public View onCreateView(LayoutInflater inflater, @Nullable ViewGroup container, Bundle savedInstanceState) {
         View rootView = inflater.inflate(R.layout.fragment_viewer, container, false);
-        ImageView frame = rootView.findViewById(R.id.page);
-        ImageButton refresh = rootView.findViewById(R.id.refreshButton);
+        frame = rootView.findViewById(R.id.page);
+        refresh = rootView.findViewById(R.id.refreshButton);
         //glide
         frame.setImageResource(R.drawable.placeholder);
         refresh.setVisibility(View.VISIBLE);
@@ -71,38 +75,68 @@ public class ViewerPageFragment extends Fragment {
                 loadImage(frame, refresh);
             }
         });
-        rootView.setOnClickListener(v -> i.onPageClick());
+        rootView.setOnClickListener(v -> {
+            if(i != null)
+                i.onPageClick();
+        });
 
         return rootView;
     }
 
     void loadImage(ImageView frame, ImageButton refresh){
+        clearImageTarget();
+        if(image == null) {
+            frame.setImageResource(R.drawable.placeholder);
+            refresh.setVisibility(View.VISIBLE);
+            return;
+        }
+        activeImage = image;
         Object target = image.startsWith("http") ? getGlideUrl(image) : image;
+        CustomTarget<Bitmap> targetView = new CustomTarget<Bitmap>() {
+            @Override
+            public void onResourceReady(Bitmap bitmap, Transition<? super Bitmap> transition) {
+                if(!isActiveTarget(this))
+                    return;
+                refresh.setVisibility(View.GONE);
+                bitmap = decoder.decode(bitmap,width);
+                frame.setImageBitmap(bitmap);
+            }
+
+            @Override
+            public void onLoadCleared(@Nullable Drawable placeholder) {
+                if(imageTarget != this)
+                    return;
+                frame.setImageDrawable(placeholder);
+            }
+
+            @Override
+            public void onLoadFailed(@Nullable Drawable errorDrawable) {
+                if(!isActiveTarget(this))
+                    return;
+                if(image.length()>0) {
+                    frame.setImageResource(R.drawable.placeholder);
+                    refresh.setVisibility(View.VISIBLE);
+                }
+            }
+        };
+        imageTarget = targetView;
         Glide.with(frame)
                 .asBitmap()
                 .apply(viewerImageOptions())
                 .load(target)
-                .into(new CustomTarget<Bitmap>() {
-                    @Override
-                    public void onResourceReady(Bitmap bitmap, Transition<? super Bitmap> transition) {
-                        refresh.setVisibility(View.GONE);
-                        bitmap = decoder.decode(bitmap,width);
-                        frame.setImageBitmap(bitmap);
-                    }
+                .into(targetView);
+    }
 
-                    @Override
-                    public void onLoadCleared(@Nullable Drawable placeholder) {
-                        //
-                    }
+    private void clearImageTarget() {
+        if(frame == null || imageTarget == null)
+            return;
+        CustomTarget<Bitmap> target = imageTarget;
+        imageTarget = null;
+        Glide.with(frame).clear(target);
+    }
 
-                    @Override
-                    public void onLoadFailed(@Nullable Drawable errorDrawable) {
-                        if(image.length()>0) {
-                            frame.setImageResource(R.drawable.placeholder);
-                            refresh.setVisibility(View.VISIBLE);
-                        }
-                    }
-                });
+    private boolean isActiveTarget(CustomTarget<Bitmap> target) {
+        return imageTarget == target && getView() != null && image != null && image.equals(activeImage);
     }
 
     private RequestOptions viewerImageOptions() {
@@ -114,5 +148,14 @@ public class ViewerPageFragment extends Fragment {
 
     public void setOnClick(PageInterface i){
         this.i = i;
+    }
+
+    @Override
+    public void onDestroyView() {
+        clearImageTarget();
+        frame = null;
+        refresh = null;
+        activeImage = null;
+        super.onDestroyView();
     }
 }
