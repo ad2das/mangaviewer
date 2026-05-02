@@ -402,6 +402,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this))
                         return;
                     holder.frame.setMinimumHeight(0);
+                    Bitmap glideBitmap = bitmap;
                     bitmap = decoderFor(item).decode(bitmap, width);
                     Bitmap displayBitmap;
                     int width = bitmap.getWidth();
@@ -425,6 +426,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                             displayBitmap = Bitmap.createBitmap(bitmap.getWidth(), 1, Bitmap.Config.ARGB_8888);
                         }
                     }
+                    displayBitmap = retainIfGlideOwned(displayBitmap, glideBitmap);
                     decodedBitmapCache.put(cacheKey, displayBitmap);
                     holder.frame.setImageBitmap(displayBitmap);
                     holder.refresh.setVisibility(View.GONE);
@@ -463,7 +465,9 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this))
                         return;
                     holder.frame.setMinimumHeight(0);
+                    Bitmap glideBitmap = resource;
                     resource = decoderFor(item).decode(resource, width);
+                    resource = retainIfGlideOwned(resource, glideBitmap);
                     decodedBitmapCache.put(cacheKey, resource);
                     holder.frame.setImageBitmap(resource);
                     holder.refresh.setVisibility(View.GONE);
@@ -511,8 +515,21 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(holder.imageTarget == null)
             return;
         CustomTarget<Bitmap> target = holder.imageTarget;
+        holder.frame.setMinimumHeight(Math.max(width, 1));
+        holder.frame.setImageResource(R.drawable.placeholder);
+        holder.refresh.setVisibility(View.VISIBLE);
         holder.imageTarget = null;
         Glide.with(holder.frame).clear(target);
+    }
+
+    private Bitmap retainIfGlideOwned(Bitmap displayBitmap, Bitmap glideBitmap) {
+        if(displayBitmap == null || displayBitmap.isRecycled() || displayBitmap != glideBitmap)
+            return displayBitmap;
+        try {
+            return displayBitmap.copy(Bitmap.Config.ARGB_8888, false);
+        } catch (OutOfMemoryError e) {
+            return displayBitmap;
+        }
     }
 
     private boolean isActiveHolder(ImgViewHolder holder, PageItem item, CustomTarget<Bitmap> target) {
