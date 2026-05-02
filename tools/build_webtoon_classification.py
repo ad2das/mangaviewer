@@ -20,6 +20,7 @@ from difflib import SequenceMatcher
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.error import URLError
 from urllib.parse import quote, urlencode, urljoin, urlparse, parse_qs
 from urllib.request import Request, urlopen
@@ -66,6 +67,7 @@ WEBTOON_GENRES = [
     "공포",
     "스토리",
 ]
+WEBTOON_GENRE_SET = set(WEBTOON_GENRES)
 
 WEBTOON_ALPHABETS = [
     "ㄱ",
@@ -269,31 +271,6 @@ def clean_source_name(value: str) -> str:
     return normalize_space(value)
 
 
-def infer_tags_from_title(name: str) -> List[str]:
-    text = normalize_space(name).lower()
-    result: List[str] = []
-    keyword_groups = [
-        ("BL", ["bl", "비엘", "보이즈러브"]),
-        ("무협", ["무협", "무림", "강호", "천마", "마교", "화산", "소림", "검신", "검왕", "세가"]),
-        ("판타지", ["판타지", "마법", "마왕", "용사", "던전", "이세계", "회귀", "전생", "환생", "빙의", "헌터", "몬스터", "드래곤", "레벨업", "시스템"]),
-        ("액션", ["액션", "격투", "전투", "킬러", "암살", "전쟁", "히어로", "느와르", "조폭"]),
-        ("로맨스", ["로맨스", "연애", "첫사랑", "결혼", "신부", "남편", "아내", "남친", "여친"]),
-        ("학원", ["학원", "학교", "고교", "고등학교", "학생", "교실", "캠퍼스"]),
-        ("스포츠", ["스포츠", "축구", "야구", "농구", "배구", "골프", "테니스", "복싱"]),
-        ("공포", ["공포", "귀신", "괴담", "좀비", "악령", "유령", "저주", "흉가"]),
-        ("스릴러", ["스릴러", "범죄", "살인", "사이코", "추적", "납치", "미스터리"]),
-        ("미스터리", ["미스터리", "추리"]),
-        ("개그", ["개그", "코미디", "병맛"]),
-        ("순정", ["순정"]),
-        ("일상", ["일상", "힐링", "직장", "회사", "육아", "가족"]),
-        ("드라마", ["드라마", "휴먼", "성장"]),
-    ]
-    for tag, keywords in keyword_groups:
-        if any(keyword in text for keyword in keywords):
-            result.append(tag)
-    return result
-
-
 def http_get(url: str, delay: float, timeout: int = 20) -> str:
     if delay > 0:
         time.sleep(delay)
@@ -452,6 +429,87 @@ def fetch_source_titles(root: str, delay: float, max_paths: int) -> Dict[int, So
     return titles
 
 
+def enrich_source_details(root: str, titles: Dict[int, SourceTitle], delay: float, workers: int) -> None:
+    targets = [title for title in titles.values() if not title.source_tags]
+    total = len(targets)
+    if total == 0:
+        return
+    completed = 0
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        futures = {executor.submit(fetch_source_detail_tags, root, title, delay): title for title in targets}
+        for future in as_completed(futures):
+            title = futures[future]
+            try:
+                detail_tags, description = future.result()
+            except Exception:
+                detail_tags, description = [], ""
+            for tag in detail_tags:
+                if tag not in title.source_tags:
+                    title.source_tags.append(tag)
+            completed += 1
+            if completed % 100 == 0 or completed == total:
+                print(f"detail progress: {completed}/{total}", file=sys.stderr)
+
+
+def fetch_source_detail_tags(root: str, title: SourceTitle, delay: float) -> Tuple[List[str], str]:
+    html = http_get(urljoin(root.rstrip("/") + "/", f"list?toon={title.toon_id}"), delay, timeout=12)
+    return parse_source_detail(html)
+
+
+def parse_source_detail(html: str) -> Tuple[List[str], str]:
+    tags: List[str] = []
+    match = re.search(
+        r"<strong>\s*장르\s*:\s*</strong>\s*([^<]+)",
+        html,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        for raw in re.split(r"[/,·ㆍ| ]+", match.group(1)):
+            for tag in normalize_source_genres(raw):
+                if tag and tag not in tags:
+                    tags.append(tag)
+    desc = ""
+    desc_match = re.search(
+        r'<meta\s+name=["\']description["\']\s+content=["\']([^"\']*)',
+        html,
+        flags=re.IGNORECASE,
+    )
+    if desc_match:
+        desc = normalize_space(desc_match.group(1))
+    return tags, desc
+
+
+def normalize_source_genres(value: str) -> List[str]:
+    value = normalize_space(value)
+    if not value:
+        return []
+    lower = value.lower()
+    results: List[str] = []
+    checks = [
+        ("BL", ["비엘", "bl"]),
+        ("성인", ["19", "19금", "어른", "성인", "고수위", "야한"]),
+        ("로맨스", ["순정", "백합", "로맨스"]),
+        ("무협", ["무협", "사극", "역사", "시대극"]),
+        ("스토리", ["스토리", "에피소드", "옴니버스"]),
+        ("일상", ["일상"]),
+        ("개그", ["코믹", "코미디", "개그"]),
+        ("드라마", ["드라마", "성장", "연예계", "아이돌"]),
+        ("액션", ["액션", "배틀"]),
+        ("스릴러", ["스릴러", "범죄"]),
+        ("미스터리", ["미스터리", "추리"]),
+        ("공포", ["공포", "호러"]),
+        ("판타지", ["판타지"]),
+        ("스포츠", ["스포츠"]),
+        ("학원", ["학원"]),
+    ]
+    for tag, needles in checks:
+        if any(needle.lower() in lower for needle in needles):
+            results.append(tag)
+    if value in WEBTOON_GENRE_SET and value not in results:
+        results.append(value)
+    return results
+
+
 def match_titles(
     source_titles: Dict[int, SourceTitle],
     naver_titles: Dict[int, NaverTitle],
@@ -549,25 +607,27 @@ def build_output(
     source_titles: Dict[int, SourceTitle],
     source_root: str,
 ) -> Dict[str, object]:
-    titles = dict(existing.get("titles", {})) if isinstance(existing.get("titles"), dict) else {}
+    existing_titles = existing.get("titles", {}) if isinstance(existing.get("titles"), dict) else {}
+    titles: Dict[str, object] = {}
+    for key, item in existing_titles.items():
+        if isinstance(item, dict) and item.get("manual", False):
+            titles[key] = item
     for toon_id, source in source_titles.items():
-        previous = titles.get(str(toon_id), {})
+        previous = existing_titles.get(str(toon_id), {})
         if not isinstance(previous, dict):
             previous = {}
         if previous.get("manual", False):
+            titles[str(toon_id)] = previous
             continue
         source_tags = previous.get("sourceTags") if isinstance(previous.get("sourceTags"), list) else []
         merged_source_tags = merge_tags(source_tags, source.source_tags)
-        inferred_tags: List[str] = []
-        if not merged_source_tags and not previous.get("externalTags") and not previous.get("manualTags"):
-            previous_inferred = previous.get("inferredTags") if isinstance(previous.get("inferredTags"), list) else []
-            inferred_tags = previous_inferred
-            inferred_tags = merge_tags(inferred_tags, infer_tags_from_title(source.name))
+        external_tags = previous.get("externalTags") if isinstance(previous.get("externalTags"), list) else []
+        manual_tags = previous.get("manualTags") if isinstance(previous.get("manualTags"), list) else []
         if not merged_source_tags and str(toon_id) not in titles:
-            if inferred_tags:
+            if external_tags or manual_tags:
                 pass
             else:
-                inferred_tags = ["미분류"]
+                merged_source_tags = ["미분류"]
         next_item = dict(previous)
         next_item.update(
             {
@@ -578,8 +638,7 @@ def build_output(
         )
         if merged_source_tags:
             next_item["sourceTags"] = merged_source_tags
-        if inferred_tags:
-            next_item["inferredTags"] = inferred_tags
+        next_item.pop("inferredTags", None)
         titles[str(toon_id)] = next_item
 
     for toon_id, (source, naver, match_type, match_score) in matched.items():
@@ -589,6 +648,7 @@ def build_output(
             continue
         existing_external = previous.get("externalTags") if isinstance(previous, dict) and isinstance(previous.get("externalTags"), list) else []
         source_tags = previous.get("sourceTags") if isinstance(previous, dict) and isinstance(previous.get("sourceTags"), list) else source.source_tags
+        source_tags = [tag for tag in source_tags if tag != "미분류"]
         titles[str(toon_id)] = {
             "name": source.name,
             "thumb": source.thumb,
@@ -638,8 +698,13 @@ def write_unclassified(path: Path, data: Dict[str, object]) -> None:
     for key, item in titles.items():
         if not isinstance(item, dict):
             continue
-        inferred = item.get("inferredTags")
-        if inferred == ["미분류"]:
+        has_tags = False
+        for field in ("manualTags", "externalTags", "sourceTags", "inferredTags", "tags"):
+            values = item.get(field)
+            if isinstance(values, list) and any(tag and tag != "미분류" for tag in values):
+                has_tags = True
+                break
+        if not has_tags:
             unclassified.append(
                 {
                     "id": int(key),
@@ -662,6 +727,8 @@ def main() -> int:
     parser.add_argument("--unmatched-output", default="")
     parser.add_argument("--review-output", default="")
     parser.add_argument("--unclassified-output", default="")
+    parser.add_argument("--no-source-detail-fetch", action="store_true")
+    parser.add_argument("--source-detail-workers", type=int, default=12)
     parser.add_argument("--auto-fuzzy-score", type=float, default=0.955)
     parser.add_argument("--review-fuzzy-score", type=float, default=0.90)
     parser.add_argument("--dry-run", action="store_true")
@@ -683,6 +750,10 @@ def main() -> int:
     print("fetching source titles...", file=sys.stderr)
     source_titles = fetch_source_titles(args.source_root, args.delay, args.max_source_paths)
     print(f"source titles: {len(source_titles)}", file=sys.stderr)
+    if not args.no_source_detail_fetch:
+        missing_source_tags = sum(1 for title in source_titles.values() if not title.source_tags)
+        print(f"fetching source detail genres: {missing_source_tags}", file=sys.stderr)
+        enrich_source_details(args.source_root, source_titles, args.delay, args.source_detail_workers)
 
     matched, unmatched, review = match_titles(
         source_titles,
