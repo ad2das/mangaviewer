@@ -37,7 +37,7 @@
                 android:paddingStart="8dp"
                 android:paddingTop="12dp"
                 android:text="이름"
-                android:textSize="16dp" />
+                android:textSize="16sp" />
 
             <androidx.recyclerview.widget.RecyclerView
                 android:id="@+id/search_name"
@@ -52,7 +52,7 @@
                 android:paddingStart="8dp"
                 android:paddingTop="12dp"
                 android:text="발행"
-                android:textSize="16dp" />
+                android:textSize="16sp" />
 
             <androidx.recyclerview.widget.RecyclerView
                 android:id="@+id/search_release"
@@ -67,7 +67,7 @@
                 android:paddingStart="8dp"
                 android:paddingTop="12dp"
                 android:text="장르"
-                android:textSize="16dp" />
+                android:textSize="16sp" />
 
             <androidx.recyclerview.widget.RecyclerView
                 android:id="@+id/search_tags"
@@ -84,7 +84,7 @@
                 android:paddingStart="8dp"
                 android:paddingTop="12dp"
                 android:text="정렬"
-                android:textSize="16dp" />
+                android:textSize="16sp" />
 
             <Spinner
                 android:entries="@array/searchSortMethod"
@@ -101,7 +101,7 @@
                 android:paddingStart="8dp"
                 android:paddingTop="12dp"
                 android:text="검색 방법"
-                android:textSize="16dp" />
+                android:textSize="16sp" />
 
             <Spinner
                 android:entries="@array/searchMethods"
