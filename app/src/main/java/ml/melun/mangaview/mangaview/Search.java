@@ -156,6 +156,7 @@ public class Search {
             } else if(mode == 2) {
                 appendWebtoonResults(client, webtoonResults, webtoonGenrePath("ing", query), 80);
                 appendWebtoonResults(client, webtoonResults, webtoonGenrePath("end", query), 80);
+                appendClassificationDbGenreResults(webtoonResults, query);
             } else if(mode == 3) {
                 String alphabet = percentEncode(alphabetValue(query), Charset.forName("EUC-KR"));
                 appendWebtoonResults(client, webtoonResults, "/ing?type1=alphabet&type2=" + alphabet + "&o=n", 80);
@@ -233,6 +234,10 @@ public class Search {
             parsed = MainPageWebtoon.parseWolfTitles(Jsoup.parse(page.body), baseMode, limit);
         }
         target.addAll(parsed);
+    }
+
+    private void appendClassificationDbGenreResults(ArrayList<Title> target, String genre) {
+        target.addAll(MainPageWebtoon.getClassificationDbTitlesByGenre(genre, 120));
     }
 
     private static String percentEncode(String value, Charset charset) {

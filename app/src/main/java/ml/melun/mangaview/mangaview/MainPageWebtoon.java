@@ -5,12 +5,18 @@ import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.nodes.TextNode;
 import org.jsoup.select.Elements;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 import java.io.InterruptedIOException;
 import java.net.URLDecoder;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -18,6 +24,8 @@ import java.util.concurrent.Future;
 
 import okhttp3.Response;
 
+import static ml.melun.mangaview.MainApplication.httpClient;
+import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
 
@@ -39,6 +47,18 @@ public class MainPageWebtoon {
     private static final String[] COMIC_DAY_LABELS = {"최신", "주간", "격주", "월간", "단편", "완결", "단행본", "비정기", "미분류"};
     private static final String[] COMIC_DAY_VALUES = {"recent", "10", "11", "12", "14", "16", "15", "13", "20"};
     private static final String[] COMIC_GENRES = {"17", "드라마", "액션", "SF", "TS", "개그", "게임", "공포", "도박", "호러", "라노벨", "러브코미디", "로맨스", "먹방", "미스터리", "백합", "붕탁", "성인", "순정", "스릴러", "스포츠", "시대", "학원", "BL", "여장", "역사", "요리", "음악", "이세계", "일상", "전생", "추리"};
+    private static final String INFERRED_TAG_CACHE_KEY = "webtoonInferredTagCacheV1";
+    private static final int INFERRED_TAG_CACHE_LIMIT = 800;
+    private static final LinkedHashMap<String, List<String>> inferredTagCache = new LinkedHashMap<>();
+    private static boolean inferredTagCacheLoaded = false;
+    private static int inferredTagCacheWrites = 0;
+    private static final String CLASSIFICATION_DB_URL = "https://junheah.github.io/MangaViewAndroid/webtoon-classification.json";
+    private static final String CLASSIFICATION_DB_CACHE_KEY = "webtoonClassificationDbV1";
+    private static final String CLASSIFICATION_DB_FETCHED_AT_KEY = "webtoonClassificationDbFetchedAt";
+    private static final long CLASSIFICATION_DB_TTL_MS = 24 * 60 * 60 * 1000L;
+    private static final Map<Integer, List<String>> classificationDb = new LinkedHashMap<>();
+    private static final Map<Integer, DbTitle> classificationTitleDb = new LinkedHashMap<>();
+    private static boolean classificationDbLoaded = false;
 
     public static final String[][] WEBTOON_FILTER_GROUPS = buildWebtoonFilterGroups();
     public static final String[][] COMIC_FILTER_GROUPS = buildComicFilterGroups();
@@ -297,11 +317,412 @@ public class MainPageWebtoon {
                     release = cleanTextWithoutChildren(infos.get(2));
 
                 titles.add(new Title(name, thumb, "", tags, release, id, baseMode));
+                applyInferredWebtoonTags(titles.get(titles.size() - 1));
                 if(limit > 0 && titles.size() >= limit) break;
             }catch (Exception ignored){
             }
         }
         return titles;
+    }
+
+    public static void applyInferredWebtoonTags(Title title) {
+        if(title == null || title.getBaseMode() != base_webtoon)
+            return;
+        List<String> tags = new ArrayList<>(title.getTags());
+        List<String> dbTags = getClassificationDbTags(title.getId());
+        if(dbTags != null) {
+            for(String dbTag : dbTags)
+                addUnique(tags, dbTag);
+            title.setTags(tags);
+            return;
+        }
+
+        String cacheKey = inferredTagCacheKey(title);
+        List<String> inferred = getCachedInferredTags(cacheKey);
+        if(inferred == null) {
+            inferred = inferWebtoonTags(title);
+            putCachedInferredTags(cacheKey, inferred);
+        }
+        for(String inferredTag : inferred)
+            addUnique(tags, inferredTag);
+        title.setTags(tags);
+    }
+
+    public static void enhanceWebtoonClassification(List<Ranking<?>> sections) {
+        if(sections == null)
+            return;
+
+        Map<String, LinkedHashMap<Integer, Title>> pools = new LinkedHashMap<>();
+        for(Ranking<?> section : sections) {
+            if(section == null)
+                continue;
+            SectionInfo info = parseSectionInfo(section.getName());
+            if(info.path.length() == 0)
+                continue;
+            String status = webtoonStatusFromPath(info.path);
+            if(status.length() == 0)
+                continue;
+
+            LinkedHashMap<Integer, Title> pool = pools.get(status);
+            if(pool == null) {
+                pool = new LinkedHashMap<>();
+                pools.put(status, pool);
+            }
+
+            for(Object item : section) {
+                if(!(item instanceof Title))
+                    continue;
+                Title title = (Title) item;
+                applyInferredWebtoonTags(title);
+                if(!pool.containsKey(title.getId()))
+                    pool.put(title.getId(), title);
+            }
+        }
+
+        for(Ranking<?> section : sections) {
+            if(section == null)
+                continue;
+            SectionInfo info = parseSectionInfo(section.getName());
+            if(!isWebtoonGenre(info.label))
+                continue;
+            String status = webtoonStatusFromPath(info.path);
+            LinkedHashMap<Integer, Title> pool = pools.get(status);
+            if(pool == null)
+                continue;
+
+            for(Title title : pool.values()) {
+                if(section.size() >= MAIN_SECTION_LIMIT)
+                    break;
+                if(!hasTag(title, info.label) || containsTitle(section, title))
+                    continue;
+                ((Ranking<Object>) section).add(title);
+            }
+        }
+    }
+
+    public static ArrayList<Title> filterInferredWebtoonGenre(List<Title> source, String genre, int limit) {
+        ArrayList<Title> result = new ArrayList<>();
+        if(source == null || genre == null)
+            return result;
+        for(Title title : source) {
+            applyInferredWebtoonTags(title);
+            if(!hasTag(title, genre))
+                continue;
+            result.add(title);
+            if(limit > 0 && result.size() >= limit)
+                break;
+        }
+        return result;
+    }
+
+    public static ArrayList<Title> getClassificationDbTitlesByGenre(String genre, int limit) {
+        ArrayList<Title> result = new ArrayList<>();
+        if(genre == null)
+            return result;
+        loadClassificationDb();
+        for(DbTitle dbTitle : classificationTitleDb.values()) {
+            if(!dbTitle.hasTag(genre))
+                continue;
+            result.add(new Title(dbTitle.name, dbTitle.thumb, "", dbTitle.tags, dbTitle.release, dbTitle.id, base_webtoon));
+            if(limit > 0 && result.size() >= limit)
+                break;
+        }
+        return result;
+    }
+
+    private static List<String> inferWebtoonTags(Title title) {
+        ArrayList<String> result = new ArrayList<>();
+        String text = ((title.getName() == null ? "" : title.getName()) + " " +
+                (title.getRelease() == null ? "" : title.getRelease()) + " " +
+                join(title.getTags())).toLowerCase(Locale.ROOT);
+
+        if(hasAny(text, "bl", "비엘", "보이즈러브")) result.add("BL");
+        if(hasAny(text, "무협", "무림", "강호", "천마", "마교", "화산", "소림", "검신", "검왕")) result.add("무협");
+        if(hasAny(text, "판타지", "마법", "마왕", "용사", "던전", "이세계", "회귀", "전생", "환생", "빙의", "헌터", "몬스터", "드래곤", "레벨업", "시스템")) result.add("판타지");
+        if(hasAny(text, "액션", "격투", "전투", "킬러", "암살", "전쟁", "히어로", "느와르", "조폭")) result.add("액션");
+        if(hasAny(text, "로맨스", "연애", "첫사랑", "결혼", "신부", "남편", "아내")) result.add("로맨스");
+        if(hasAny(text, "학원", "학교", "고교", "고등학교", "학생", "교실", "캠퍼스")) result.add("학원");
+        if(hasAny(text, "스포츠", "축구", "야구", "농구", "배구", "골프", "테니스", "복싱")) result.add("스포츠");
+        if(hasAny(text, "공포", "귀신", "괴담", "좀비", "악령", "유령", "저주")) result.add("공포");
+        if(hasAny(text, "미스터리", "추리")) result.add("미스터리");
+        if(hasAny(text, "스릴러", "범죄", "살인", "사이코", "추적", "납치", "미스터리")) result.add("스릴러");
+        if(hasAny(text, "개그", "코미디", "병맛")) result.add("개그");
+        if(hasAny(text, "순정")) result.add("순정");
+        if(hasAny(text, "일상", "힐링", "직장", "회사", "육아", "가족")) result.add("일상");
+        if(hasAny(text, "드라마", "휴먼", "성장")) result.add("드라마");
+        if(hasAny(text, "스토리")) result.add("스토리");
+
+        return result;
+    }
+
+    private static synchronized List<String> getClassificationDbTags(int titleId) {
+        loadClassificationDb();
+        List<String> tags = classificationDb.get(titleId);
+        return tags == null ? null : new ArrayList<>(tags);
+    }
+
+    private static synchronized void loadClassificationDb() {
+        if(classificationDbLoaded)
+            return;
+        classificationDbLoaded = true;
+        String cached = "";
+        try {
+            if(p == null)
+                return;
+            cached = p.getSharedPref().getString(CLASSIFICATION_DB_CACHE_KEY, "");
+            long fetchedAt = p.getSharedPref().getLong(CLASSIFICATION_DB_FETCHED_AT_KEY, 0);
+            long now = System.currentTimeMillis();
+            if(cached.length() == 0 || now - fetchedAt > CLASSIFICATION_DB_TTL_MS) {
+                String fetched = fetchClassificationDb();
+                if(fetched.length() > 0) {
+                    cached = fetched;
+                    p.getSharedPref().edit()
+                            .putString(CLASSIFICATION_DB_CACHE_KEY, cached)
+                            .putLong(CLASSIFICATION_DB_FETCHED_AT_KEY, now)
+                            .apply();
+                } else if(cached.length() == 0) {
+                    p.getSharedPref().edit()
+                            .putLong(CLASSIFICATION_DB_FETCHED_AT_KEY, now)
+                            .apply();
+                }
+            }
+            parseClassificationDb(cached);
+        } catch (Exception e) {
+            classificationDb.clear();
+            classificationTitleDb.clear();
+            parseClassificationDb(cached);
+        }
+    }
+
+    private static String fetchClassificationDb() {
+        Response response = null;
+        try {
+            if(httpClient == null)
+                return "";
+            response = httpClient.get(CLASSIFICATION_DB_URL, null);
+            if(response == null)
+                return "";
+            if(response.code() >= 400) {
+                response.close();
+                return "";
+            }
+            return CustomHttpClient.readBody(response);
+        } catch (Exception e) {
+            if(response != null)
+                response.close();
+            return "";
+        }
+    }
+
+    private static void parseClassificationDb(String json) {
+        try {
+            if(json == null || json.length() == 0)
+                return;
+            classificationDb.clear();
+            classificationTitleDb.clear();
+            JSONObject root = new JSONObject(json);
+            JSONObject titles = root.optJSONObject("titles");
+            if(titles == null)
+                return;
+            Iterator<String> keys = titles.keys();
+            while(keys.hasNext()) {
+                String key = keys.next();
+                int titleId = Integer.parseInt(key);
+                JSONObject item = titles.optJSONObject(key);
+                if(item == null)
+                    continue;
+                JSONArray array = item.optJSONArray("tags");
+                if(array == null)
+                    continue;
+                ArrayList<String> tags = new ArrayList<>();
+                for(int i = 0; i < array.length(); i++) {
+                    String tag = array.optString(i).trim();
+                    if(tag.length() > 0)
+                        tags.add(tag);
+                }
+                if(tags.size() > 0)
+                    classificationDb.put(titleId, tags);
+                String name = item.optString("name", "");
+                String thumb = item.optString("thumb", "");
+                String release = item.optString("release", "");
+                if(tags.size() > 0 && name.length() > 0)
+                    classificationTitleDb.put(titleId, new DbTitle(titleId, name, thumb, release, tags));
+            }
+        } catch (Exception e) {
+            classificationDb.clear();
+            classificationTitleDb.clear();
+        }
+    }
+
+    private static class DbTitle {
+        int id;
+        String name;
+        String thumb;
+        String release;
+        List<String> tags;
+
+        DbTitle(int id, String name, String thumb, String release, List<String> tags) {
+            this.id = id;
+            this.name = name;
+            this.thumb = thumb;
+            this.release = release;
+            this.tags = new ArrayList<>(tags);
+        }
+
+        boolean hasTag(String tag) {
+            for(String existing : tags)
+                if(existing.equalsIgnoreCase(tag))
+                    return true;
+            return false;
+        }
+    }
+
+    private static synchronized List<String> getCachedInferredTags(String key) {
+        loadInferredTagCache();
+        List<String> cached = inferredTagCache.get(key);
+        return cached == null ? null : new ArrayList<>(cached);
+    }
+
+    private static synchronized void putCachedInferredTags(String key, List<String> tags) {
+        loadInferredTagCache();
+        inferredTagCache.put(key, tags == null ? new ArrayList<>() : new ArrayList<>(tags));
+        while(inferredTagCache.size() > INFERRED_TAG_CACHE_LIMIT) {
+            String firstKey = inferredTagCache.keySet().iterator().next();
+            inferredTagCache.remove(firstKey);
+        }
+        if(++inferredTagCacheWrites >= 12 || tags == null || tags.size() > 0) {
+            inferredTagCacheWrites = 0;
+            saveInferredTagCache();
+        }
+    }
+
+    private static synchronized void loadInferredTagCache() {
+        if(inferredTagCacheLoaded)
+            return;
+        inferredTagCacheLoaded = true;
+        try {
+            if(p == null)
+                return;
+            JSONObject object = new JSONObject(p.getSharedPref().getString(INFERRED_TAG_CACHE_KEY, "{}"));
+            Iterator<String> keys = object.keys();
+            while(keys.hasNext()) {
+                String key = keys.next();
+                JSONArray array = object.optJSONArray(key);
+                ArrayList<String> tags = new ArrayList<>();
+                if(array != null)
+                    for(int i = 0; i < array.length(); i++)
+                        tags.add(array.optString(i));
+                inferredTagCache.put(key, tags);
+            }
+        } catch (Exception e) {
+            inferredTagCache.clear();
+        }
+    }
+
+    private static synchronized void saveInferredTagCache() {
+        try {
+            if(p == null)
+                return;
+            JSONObject object = new JSONObject();
+            for(Map.Entry<String, List<String>> entry : inferredTagCache.entrySet()) {
+                JSONArray array = new JSONArray();
+                for(String tag : entry.getValue())
+                    array.put(tag);
+                object.put(entry.getKey(), array);
+            }
+            p.getSharedPref().edit().putString(INFERRED_TAG_CACHE_KEY, object.toString()).apply();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static String inferredTagCacheKey(Title title) {
+        if(title.getId() > 0)
+            return String.valueOf(title.getId());
+        String source = (title.getName() == null ? "" : title.getName()) + "|" +
+                (title.getRelease() == null ? "" : title.getRelease());
+        return "local:" + Integer.toHexString(source.hashCode());
+    }
+
+    private static boolean hasAny(String text, String... needles) {
+        if(text == null || text.length() == 0)
+            return false;
+        for(String needle : needles)
+            if(text.contains(needle.toLowerCase(Locale.ROOT)))
+                return true;
+        return false;
+    }
+
+    private static String join(List<String> values) {
+        StringBuilder builder = new StringBuilder();
+        if(values != null)
+            for(String value : values)
+                builder.append(value).append(' ');
+        return builder.toString();
+    }
+
+    private static void addUnique(List<String> tags, String tag) {
+        if(tag == null || tag.length() == 0)
+            return;
+        for(String existing : tags)
+            if(existing != null && existing.equalsIgnoreCase(tag))
+                return;
+        tags.add(tag);
+    }
+
+    private static boolean hasTag(Title title, String tag) {
+        if(title == null || tag == null)
+            return false;
+        for(String existing : title.getTags())
+            if(existing != null && existing.equalsIgnoreCase(tag))
+                return true;
+        return false;
+    }
+
+    private static boolean containsTitle(Ranking<?> section, Title title) {
+        if(section == null || title == null)
+            return false;
+        for(Object item : section)
+            if(item instanceof Title && ((Title) item).getId() == title.getId())
+                return true;
+        return false;
+    }
+
+    private static boolean isWebtoonGenre(String label) {
+        if(label == null)
+            return false;
+        for(String genre : WEBTOON_GENRES)
+            if(genre.equals(label))
+                return true;
+        return false;
+    }
+
+    private static String webtoonStatusFromPath(String path) {
+        if(path == null)
+            return "";
+        if(path.startsWith("/ing"))
+            return "ing";
+        if(path.startsWith("/end"))
+            return "end";
+        return "";
+    }
+
+    private static SectionInfo parseSectionInfo(String raw) {
+        if(raw == null)
+            return new SectionInfo("", "", "");
+        String[] parts = raw.split("\\|", 3);
+        return new SectionInfo(parts.length > 0 ? parts[0] : "", parts.length > 1 ? parts[1] : raw, parts.length > 2 ? parts[2] : "");
+    }
+
+    private static class SectionInfo {
+        String group;
+        String label;
+        String path;
+
+        SectionInfo(String group, String label, String path) {
+            this.group = group;
+            this.label = label;
+            this.path = path;
+        }
     }
 
     static int getQueryInt(String href, String key){
