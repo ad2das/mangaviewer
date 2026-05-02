@@ -28200,6 +28200,15 @@
         "드라마"
       ]
     },
+    "3162": {
+      "name": "사이드킥 1",
+      "thumb": "https://i3.vcloud17.com/3162/3a00b0617edd2d9be129807d967119260062e65935b658c5789fbda736fee41d.jpg",
+      "release": "",
+      "sourceTags": [
+        "판타지",
+        "액션"
+      ]
+    },
     "3163": {
       "name": "심연의 하늘(시즌1-3)",
       "thumb": "https://i3.vcloud17.com/3163/ccfa3010ad285317a8f05fb669c208aea91a97646097efe87a782f3e4e467f46.jpg",
@@ -36443,6 +36452,15 @@
       "release": "",
       "sourceTags": [
         "개그"
+      ]
+    },
+    "4060": {
+      "name": "사이드킥 2~3",
+      "thumb": "https://i5.bacloud2.com/4060/607f292f40e41f8d642086ca7ee77670ba2ca42a79c1e916daa3b07ba12650f3.jpg",
+      "release": "",
+      "sourceTags": [
+        "판타지",
+        "액션"
       ]
     },
     "4061": {
@@ -52008,8 +52026,8 @@
       ],
       "tags": [
         "스토리",
-        "로맨스",
-        "드라마"
+        "드라마",
+        "로맨스"
       ],
       "naverTitleId": 761102,
       "naverName": "바른탕진 프로젝트",
@@ -95674,8 +95692,8 @@
       ],
       "tags": [
         "스토리",
-        "로맨스",
-        "드라마"
+        "드라마",
+        "로맨스"
       ],
       "naverTitleId": 816636,
       "naverName": "2023 루키 단편선",
@@ -102777,14 +102795,6 @@
         "스토리"
       ]
     },
-    "71635": {
-      "name": "헌터 세상의 정원사",
-      "thumb": "https://v13st.com/71635/ddbc4b0adccbbafa10b7faeef93f9906e132a96d90a48002f5639bf631c12ded.jpg",
-      "release": "",
-      "sourceTags": [
-        "판타지"
-      ]
-    },
     "71636": {
       "name": "오감도 [완전판]",
       "thumb": "https://v12st.com/71636/7a8452a6be4bb0c73942dc794545786fef81ae7bc9f3e46dc185aa24b5aec59c.jpg",
@@ -108456,24 +108466,6 @@
         "판타지",
         "드라마"
       ]
-    },
-    "72267": {
-      "name": "천재의 신들린 게임방송",
-      "thumb": "https://vv14cloud.com/72267/sow7rbf24bad84uvxn9wfekzatmxr6g8fn.jpg?v=1",
-      "release": "",
-      "externalTags": [
-        "판타지"
-      ],
-      "sourceTags": [
-        "판타지"
-      ],
-      "tags": [
-        "판타지"
-      ],
-      "naverTitleId": 826534,
-      "naverName": "천재의 신들린 게임방송",
-      "match": "normalized-title",
-      "matchScore": 1.0
     },
     "72268": {
       "name": "동족연애",
@@ -116024,14 +116016,6 @@
         "드라마"
       ]
     },
-    "73089": {
-      "name": "신입사원은 마왕",
-      "thumb": "https://z14cloud.com/73089/kmesysaclouecpdssybnizkbg8cdlfzksl.jpg",
-      "release": "",
-      "sourceTags": [
-        "판타지"
-      ]
-    },
     "73090": {
       "name": "수상한 남편을 주우면",
       "thumb": "https://y17stm.com/73090/nz7cd2hseplo0jmh08enmwmynvdetquduk.jpg",
@@ -122185,15 +122169,6 @@
       "release": "",
       "sourceTags": [
         "로맨스"
-      ]
-    },
-    "73753": {
-      "name": "시프트",
-      "thumb": "https://vv14cloud.com/73753/enwe4xc1e7sqlqyv1tqd3j3czdopacyeif.jpg",
-      "release": "",
-      "sourceTags": [
-        "미스터리",
-        "공포"
       ]
     },
     "73754": {
