@@ -629,6 +629,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
             if(loadedSections.size() == 0)
                 return;
+            if(baseMode == base_webtoon)
+                MainPageWebtoon.enhanceWebtoonClassification(dataSet);
             preloadThumbnails(loadedSections);
             updateRows(buildRows(dataSet, false));
         }
@@ -643,6 +645,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     listener.captchaCallback();
                 return;
             }
+            if(baseMode == base_webtoon)
+                MainPageWebtoon.enhanceWebtoonClassification(dataSet);
             updateRows(buildRows(dataSet, false));
         }
 
