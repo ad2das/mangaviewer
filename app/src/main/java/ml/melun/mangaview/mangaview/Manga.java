@@ -381,35 +381,56 @@ public class Manga {
         String indentstr;
         //indent
         indentstr = e.attr("style");
-        if (indentstr.length() > 0)
-            indent = Integer.parseInt(indentstr.substring(indentstr.lastIndexOf(':') + 1, indentstr.lastIndexOf('p'))) / 64;
-        else
-            indent = 0;
+        indent = parseIndent(indentstr);
 
         //icon
         Element icone = e.selectFirst(".media-object");
-        if (icone.is("img"))
+        if (icone != null && icone.is("img"))
             icon = icone.attr("src");
         else
             icon = "";
 
         Element header = e.selectFirst("div.media-heading");
-        Element userSpan = header.selectFirst("span.member");
-        user = userSpan.ownText();
-        if (userSpan.hasClass("guest"))
+        Element userSpan = header == null ? null : header.selectFirst("span.member");
+        user = userSpan == null ? "" : userSpan.ownText();
+        if (userSpan == null || userSpan.hasClass("guest"))
             level = 0;
         else {
-            lvlstr = userSpan.selectFirst("img").attr("src");
-            level = Integer.parseInt(lvlstr.substring(lvlstr.lastIndexOf('/') + 1, lvlstr.lastIndexOf('.')));
+            Element levelImage = userSpan.selectFirst("img");
+            lvlstr = levelImage == null ? "" : levelImage.attr("src");
+            level = parseLevel(lvlstr);
         }
-        timestamp = header.selectFirst("span.media-info").ownText();
+        Element timestampElement = header == null ? null : header.selectFirst("span.media-info");
+        timestamp = timestampElement == null ? "" : timestampElement.ownText();
 
         Element cbody = e.selectFirst("div.media-content");
-        content = cbody.selectFirst("div:not([class])").ownText();
+        Element contentElement = cbody == null ? null : cbody.selectFirst("div:not([class])");
+        content = contentElement == null ? "" : contentElement.ownText();
 
-        Elements cspans = cbody.selectFirst("div.cmt-good-btn").select("span");
-        likes = Integer.parseInt(cspans.get(cspans.size() - 1).ownText());
+        Element goodButton = cbody == null ? null : cbody.selectFirst("div.cmt-good-btn");
+        Elements cspans = goodButton == null ? new Elements() : goodButton.select("span");
+        likes = cspans.size() == 0 ? 0 : parseIntOrDefault(cspans.get(cspans.size() - 1).ownText(), 0);
         return new Comment(user, timestamp, icon, content, indent, likes, level);
+    }
+
+    private int parseIndent(String value) {
+        try {
+            if(value == null || value.length() == 0 || value.lastIndexOf(':') < 0 || value.lastIndexOf('p') <= value.lastIndexOf(':'))
+                return 0;
+            return Integer.parseInt(value.substring(value.lastIndexOf(':') + 1, value.lastIndexOf('p')).trim()) / 64;
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    private int parseLevel(String value) {
+        try {
+            if(value == null || value.length() == 0 || value.lastIndexOf('/') < 0 || value.lastIndexOf('.') <= value.lastIndexOf('/'))
+                return 0;
+            return Integer.parseInt(value.substring(value.lastIndexOf('/') + 1, value.lastIndexOf('.')));
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
 
