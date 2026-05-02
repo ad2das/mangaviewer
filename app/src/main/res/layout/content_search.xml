@@ -25,7 +25,7 @@
         android:layout_height="wrap_content"
         android:paddingEnd="8dp"
         android:paddingStart="0dp"
-        android:visibility="gone"
+        android:visibility="visible"
         android:orientation="horizontal"
         android:id="@+id/searchOptionPanel"
         app:layout_constraintTop_toBottomOf="@+id/searchBox">

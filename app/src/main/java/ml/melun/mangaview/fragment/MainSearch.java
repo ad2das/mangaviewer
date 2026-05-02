@@ -80,14 +80,6 @@ public class MainSearch extends Fragment {
             baseMode.setPopupBackgroundResource(R.color.colorDarkWindowBackground);
         }
 
-        searchBox.setOnFocusChangeListener((view, b) -> {
-            if(b){
-                optionsPanel.setVisibility(View.VISIBLE);
-            }else{
-                optionsPanel.setVisibility(View.GONE);
-            }
-        });
-
         advSearchBtn.setOnClickListener(v -> {
             Toast.makeText(getContext(), "고급검색 기능 사용 불가", Toast.LENGTH_LONG).show();
 //                Intent advSearch = new Intent(getContext(), AdvSearchActivity.class);
@@ -148,8 +140,8 @@ public class MainSearch extends Fragment {
     }
 
     void optionUpdate(){
-        //shows or hides options
-        //p.setBaseMode(baseMode.getSelectedItemPosition()+1);
+        if(baseMode != null)
+            p.setBaseMode(baseMode.getSelectedItemPosition()+1);
     }
 
     public void setSearch(String prequery){

@@ -170,11 +170,11 @@ public class Search {
                         appendWebtoonResults(client, webtoonResults, "/ing?type1=day&type2=" + day + "&o=n", 80);
                         appendWebtoonResults(client, webtoonResults, "/end?type1=day&type2=" + day + "&o=n", 80);
                     } else {
-                        appendWebtoonResults(client, webtoonResults, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), 80);
+                        appendWebtoonResults(client, webtoonResults, webtoonSearchPath(query), 80);
                     }
                 }
             } else {
-                appendWebtoonResults(client, webtoonResults, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), 80);
+                appendWebtoonResults(client, webtoonResults, webtoonSearchPath(query), 80);
             }
 
             Set<Integer> seen = new HashSet<>();
@@ -203,9 +203,9 @@ public class Search {
                 if(type.length() > 0)
                     appendWebtoonResults(client, comicResults, "/cm?type1=complete&type2=" + type + "&o=n", 120);
                 else
-                    appendWebtoonResults(client, comicResults, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), 120);
+                    appendWebtoonResults(client, comicResults, comicSearchPath(query), 120);
             } else {
-                appendWebtoonResults(client, comicResults, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), 120);
+                appendWebtoonResults(client, comicResults, comicSearchPath(query), 120);
             }
 
             Set<Integer> seen = new HashSet<>();
@@ -237,6 +237,14 @@ public class Search {
 
     private void appendClassificationDbGenreResults(ArrayList<Title> target, String genre) {
         target.addAll(MainPageWebtoon.getClassificationDbTitlesByGenre(genre, 120));
+    }
+
+    private static String webtoonSearchPath(String query) {
+        return "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR"));
+    }
+
+    private static String comicSearchPath(String query) {
+        return "/cm/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR"));
     }
 
     private static String percentEncode(String value, Charset charset) {
