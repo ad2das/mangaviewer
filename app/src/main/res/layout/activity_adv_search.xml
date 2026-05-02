@@ -26,8 +26,7 @@
                 android:inputType="text"
                 android:layout_height="wrap_content"
                 android:layout_margin="12dp"
-                android:layout_width="match_parent"
-                android:text="" />
+                android:layout_width="match_parent" />
 
             <TextView
                 android:layout_height="wrap_content"
@@ -36,7 +35,7 @@
                 android:paddingEnd="8dp"
                 android:paddingStart="8dp"
                 android:paddingTop="12dp"
-                android:text="이름"
+                android:text="@string/search_section_name"
                 android:textSize="16sp" />
 
             <androidx.recyclerview.widget.RecyclerView
@@ -51,7 +50,7 @@
                 android:paddingEnd="8dp"
                 android:paddingStart="8dp"
                 android:paddingTop="12dp"
-                android:text="발행"
+                android:text="@string/search_section_release"
                 android:textSize="16sp" />
 
             <androidx.recyclerview.widget.RecyclerView
@@ -66,7 +65,7 @@
                 android:paddingEnd="8dp"
                 android:paddingStart="8dp"
                 android:paddingTop="12dp"
-                android:text="장르"
+                android:text="@string/search_section_genre"
                 android:textSize="16sp" />
 
             <androidx.recyclerview.widget.RecyclerView
@@ -83,7 +82,7 @@
                 android:paddingEnd="8dp"
                 android:paddingStart="8dp"
                 android:paddingTop="12dp"
-                android:text="정렬"
+                android:text="@string/search_section_sort"
                 android:textSize="16sp" />
 
             <Spinner
@@ -100,7 +99,7 @@
                 android:paddingEnd="8dp"
                 android:paddingStart="8dp"
                 android:paddingTop="12dp"
-                android:text="검색 방법"
+                android:text="@string/search_section_method"
                 android:textSize="16sp" />
 
             <Spinner
@@ -117,7 +116,7 @@
                 android:layout_height="match_parent"
                 android:layout_margin="16dp"
                 android:layout_width="match_parent"
-                android:text="검색" />
+                android:text="@string/search_action" />
 
         </LinearLayout>
 

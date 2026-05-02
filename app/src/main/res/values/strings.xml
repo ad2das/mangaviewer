@@ -21,7 +21,14 @@
     <string name="debug_input">디버그 입력</string>
     <string name="default_url_hint">기본 주소 입력 (숫자없는 주소)</string>
     <string name="file_name_hint">파일명</string>
+    <string name="search_action">검색</string>
     <string name="search_query">검색어</string>
+    <string name="search_no_results">검색 결과가 없습니다</string>
+    <string name="search_section_name">이름</string>
+    <string name="search_section_release">발행</string>
+    <string name="search_section_genre">장르</string>
+    <string name="search_section_sort">정렬</string>
+    <string name="search_section_method">검색 방법</string>
     <string name="settings_comic_url_label">만화책 URL:</string>
     <string name="settings_webtoon_url_label">웹툰 URL:</string>
     <string name="title_cover">작품 표지</string>
