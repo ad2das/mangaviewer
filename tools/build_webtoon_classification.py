@@ -49,6 +49,7 @@ NAVER_GENRES: Dict[str, List[str]] = {
 }
 
 WEBTOON_GENRES = [
+    "성인",
     "드라마",
     "판타지",
     "액션",
@@ -64,6 +65,25 @@ WEBTOON_GENRES = [
     "학원",
     "공포",
     "스토리",
+]
+
+WEBTOON_ALPHABETS = [
+    "ㄱ",
+    "ㄴ",
+    "ㄷ",
+    "ㄹ",
+    "ㅁ",
+    "ㅂ",
+    "ㅅ",
+    "ㅇ",
+    "ㅈ",
+    "ㅊ",
+    "ㅋ",
+    "ㅌ",
+    "ㅍ",
+    "ㅎ",
+    "a",
+    "0",
 ]
 
 VOID_TAGS = {
@@ -249,6 +269,31 @@ def clean_source_name(value: str) -> str:
     return normalize_space(value)
 
 
+def infer_tags_from_title(name: str) -> List[str]:
+    text = normalize_space(name).lower()
+    result: List[str] = []
+    keyword_groups = [
+        ("BL", ["bl", "비엘", "보이즈러브"]),
+        ("무협", ["무협", "무림", "강호", "천마", "마교", "화산", "소림", "검신", "검왕", "세가"]),
+        ("판타지", ["판타지", "마법", "마왕", "용사", "던전", "이세계", "회귀", "전생", "환생", "빙의", "헌터", "몬스터", "드래곤", "레벨업", "시스템"]),
+        ("액션", ["액션", "격투", "전투", "킬러", "암살", "전쟁", "히어로", "느와르", "조폭"]),
+        ("로맨스", ["로맨스", "연애", "첫사랑", "결혼", "신부", "남편", "아내", "남친", "여친"]),
+        ("학원", ["학원", "학교", "고교", "고등학교", "학생", "교실", "캠퍼스"]),
+        ("스포츠", ["스포츠", "축구", "야구", "농구", "배구", "골프", "테니스", "복싱"]),
+        ("공포", ["공포", "귀신", "괴담", "좀비", "악령", "유령", "저주", "흉가"]),
+        ("스릴러", ["스릴러", "범죄", "살인", "사이코", "추적", "납치", "미스터리"]),
+        ("미스터리", ["미스터리", "추리"]),
+        ("개그", ["개그", "코미디", "병맛"]),
+        ("순정", ["순정"]),
+        ("일상", ["일상", "힐링", "직장", "회사", "육아", "가족"]),
+        ("드라마", ["드라마", "휴먼", "성장"]),
+    ]
+    for tag, keywords in keyword_groups:
+        if any(keyword in text for keyword in keywords):
+            result.append(tag)
+    return result
+
+
 def http_get(url: str, delay: float, timeout: int = 20) -> str:
     if delay > 0:
         time.sleep(delay)
@@ -363,6 +408,10 @@ def webtoon_genre_path(status: str, genre: str, order: str) -> str:
     return f"/{status}?type1=genre&type2={quote(genre, encoding='euc-kr')}&o={order}"
 
 
+def webtoon_alphabet_path(status: str, value: str, order: str) -> str:
+    return f"/{status}?type1=alphabet&type2={quote(value, encoding='euc-kr')}&o={order}"
+
+
 def source_paths() -> List[Tuple[str, Optional[str]]]:
     paths: List[Tuple[str, Optional[str]]] = []
     for status in ("ing", "end"):
@@ -375,6 +424,8 @@ def source_paths() -> List[Tuple[str, Optional[str]]]:
         )
         for genre in WEBTOON_GENRES:
             paths.append((webtoon_genre_path(status, genre, "n"), genre))
+        for alphabet in WEBTOON_ALPHABETS:
+            paths.append((webtoon_alphabet_path(status, alphabet, "n"), None))
     return list(dict.fromkeys(paths))
 
 
@@ -507,8 +558,16 @@ def build_output(
             continue
         source_tags = previous.get("sourceTags") if isinstance(previous.get("sourceTags"), list) else []
         merged_source_tags = merge_tags(source_tags, source.source_tags)
+        inferred_tags: List[str] = []
+        if not merged_source_tags and not previous.get("externalTags") and not previous.get("manualTags"):
+            previous_inferred = previous.get("inferredTags") if isinstance(previous.get("inferredTags"), list) else []
+            inferred_tags = previous_inferred
+            inferred_tags = merge_tags(inferred_tags, infer_tags_from_title(source.name))
         if not merged_source_tags and str(toon_id) not in titles:
-            continue
+            if inferred_tags:
+                pass
+            else:
+                inferred_tags = ["미분류"]
         next_item = dict(previous)
         next_item.update(
             {
@@ -519,6 +578,8 @@ def build_output(
         )
         if merged_source_tags:
             next_item["sourceTags"] = merged_source_tags
+        if inferred_tags:
+            next_item["inferredTags"] = inferred_tags
         titles[str(toon_id)] = next_item
 
     for toon_id, (source, naver, match_type, match_score) in matched.items():
@@ -571,6 +632,24 @@ def write_review(path: Path, review: List[Dict[str, object]]) -> None:
     path.write_text(json.dumps(review, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def write_unclassified(path: Path, data: Dict[str, object]) -> None:
+    titles = data.get("titles", {}) if isinstance(data.get("titles"), dict) else {}
+    unclassified = []
+    for key, item in titles.items():
+        if not isinstance(item, dict):
+            continue
+        inferred = item.get("inferredTags")
+        if inferred == ["미분류"]:
+            unclassified.append(
+                {
+                    "id": int(key),
+                    "name": item.get("name", ""),
+                    "thumb": item.get("thumb", ""),
+                }
+            )
+    path.write_text(json.dumps(unclassified, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build webtoon-classification.json from Naver genres.")
     parser.add_argument("--output", default="webtoon-classification.json")
@@ -582,6 +661,7 @@ def main() -> int:
     parser.add_argument("--no-detail-fetch", action="store_true")
     parser.add_argument("--unmatched-output", default="")
     parser.add_argument("--review-output", default="")
+    parser.add_argument("--unclassified-output", default="")
     parser.add_argument("--auto-fuzzy-score", type=float, default=0.955)
     parser.add_argument("--review-fuzzy-score", type=float, default=0.90)
     parser.add_argument("--dry-run", action="store_true")
@@ -622,6 +702,8 @@ def main() -> int:
             write_unmatched(Path(args.unmatched_output), unmatched)
         if args.review_output:
             write_review(Path(args.review_output), review)
+        if args.unclassified_output:
+            write_unclassified(Path(args.unclassified_output), data)
         print(f"wrote {output}", file=sys.stderr)
     return 0
 
