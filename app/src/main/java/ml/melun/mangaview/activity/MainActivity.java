@@ -90,6 +90,8 @@ public class MainActivity extends AppCompatActivity
     Toolbar toolbar;
     View progressView;
     private static final int FIRST_TIME_ACTIVITY = 9;
+    private BroadcastReceiver migratorStatusReceiver;
+    private BroadcastReceiver downloaderStopReceiver;
 
 
     Fragment[] fragments = new Fragment[3];
@@ -144,7 +146,7 @@ public class MainActivity extends AppCompatActivity
             mpd.setCancelable(false);
             mpd.show();
 
-            BroadcastReceiver migratorStatusReceiver = new BroadcastReceiver() {
+            migratorStatusReceiver = new BroadcastReceiver() {
                 @Override
                 public void onReceive(Context context, Intent intent) {
                     switch (intent.getAction()) {
@@ -387,11 +389,13 @@ public class MainActivity extends AppCompatActivity
                                 }
 
                                 //broadcast receiver
-                                BroadcastReceiver statusReceiver = new BroadcastReceiver() {
+                                unregisterDownloaderStopReceiver();
+                                downloaderStopReceiver = new BroadcastReceiver() {
                                     @Override
                                     public void onReceive(Context context, Intent intent) {
                                         if(intent.getAction().matches(BROADCAST_STOP)){
                                             //service stopped
+                                            unregisterDownloaderStopReceiver();
                                             finishAffinity();
                                             System.runFinalization();
                                             System.exit(0);
@@ -400,7 +404,7 @@ public class MainActivity extends AppCompatActivity
                                 };
                                 IntentFilter infil = new IntentFilter();
                                 infil.addAction(BROADCAST_STOP);
-                                registerReceiver(statusReceiver, infil);
+                                registerReceiver(downloaderStopReceiver, infil);
 
                             }else{
                                 //kill application
@@ -585,5 +589,32 @@ public class MainActivity extends AppCompatActivity
         }
         else if(resCode == 1)
             showPopup(context, "연결 오류", "연결을 확인하고 다시 시도해 주세요.", (dialogInterface, i) -> finish(), dialogInterface -> finish());
+    }
+
+    @Override
+    protected void onDestroy() {
+        unregisterMigratorStatusReceiver();
+        unregisterDownloaderStopReceiver();
+        super.onDestroy();
+    }
+
+    private void unregisterMigratorStatusReceiver() {
+        if(migratorStatusReceiver == null)
+            return;
+        try {
+            unregisterReceiver(migratorStatusReceiver);
+        } catch (Exception ignored) {
+        }
+        migratorStatusReceiver = null;
+    }
+
+    private void unregisterDownloaderStopReceiver() {
+        if(downloaderStopReceiver == null)
+            return;
+        try {
+            unregisterReceiver(downloaderStopReceiver);
+        } catch (Exception ignored) {
+        }
+        downloaderStopReceiver = null;
     }
 }
