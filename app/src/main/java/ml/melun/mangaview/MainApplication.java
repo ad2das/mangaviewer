@@ -17,6 +17,8 @@ public class MainApplication extends MultiDexApplication {
     public static CustomHttpClient httpClient;
     public static Preference p;
     public static Context appContext;
+    public static FirebaseAccountManager firebaseAccountManager;
+    public static FirebaseSyncManager firebaseSyncManager;
     @Override
     protected void attachBaseContext(Context base) {
         super.attachBaseContext(base);
@@ -28,6 +30,8 @@ public class MainApplication extends MultiDexApplication {
         CrashReporter.install(this);
         AppCompatDelegate.setCompatVectorFromResourcesEnabled(true);
         p = new Preference(this);
+        firebaseAccountManager = new FirebaseAccountManager(this);
+        firebaseSyncManager = new FirebaseSyncManager(this, p);
         httpClient = new CustomHttpClient(this);
         super.onCreate();
     }

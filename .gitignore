@@ -29,6 +29,7 @@ build/
 app/build/
 release/
 app/release/
+app/google-services.json
 
 *.iml
 *.p12

@@ -10,8 +10,10 @@ import org.json.JSONObject;
 
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
@@ -49,9 +51,30 @@ public class Preference {
     int baseMode;
     boolean doublep;
     boolean doublepReverse;
+    FirebaseSyncManager syncManager;
+    boolean syncSuppressed;
 
     public SharedPreferences getSharedPref(){
         return this.sharedPref;
+    }
+
+    public void setFirebaseSyncManager(FirebaseSyncManager syncManager) {
+        this.syncManager = syncManager;
+    }
+
+    public void runWithoutSync(Runnable runnable) {
+        boolean previous = syncSuppressed;
+        syncSuppressed = true;
+        try {
+            runnable.run();
+        } finally {
+            syncSuppressed = previous;
+        }
+    }
+
+    private void notifySync(String scope) {
+        if(!syncSuppressed && syncManager != null)
+            syncManager.onLocalPreferencesChanged(scope);
     }
 
     public void reset(){
@@ -195,12 +218,14 @@ public class Preference {
         this.baseMode = baseMode;
         prefsEditor.putInt("baseMode", baseMode);
         prefsEditor.apply();
+        notifySync("settings");
     }
 
     public void setDefUrl(String defUrl){
         this.defUrl = normalizeComicUrl(defUrl);
         prefsEditor.putString("defUrl", this.defUrl);
         prefsEditor.apply();
+        notifySync("settings");
     }
 
     public String getDefUrl() {
@@ -215,6 +240,7 @@ public class Preference {
         this.leftRight = leftRight;
         prefsEditor.putBoolean("leftRight", leftRight);
         prefsEditor.apply();
+        notifySync("settings");
     }
 
     public int getViewerType() {
@@ -225,6 +251,7 @@ public class Preference {
         this.viewerType = viewerType;
         prefsEditor.putInt("viewerType", viewerType);
         prefsEditor.apply();
+        notifySync("settings");
     }
 
     public boolean getStretch() {
@@ -235,6 +262,7 @@ public class Preference {
         this.stretch = stretch;
         prefsEditor.putBoolean("stretch", stretch);
         prefsEditor.apply();
+        notifySync("settings");
     }
 
     public String getUrl() {
@@ -245,6 +273,7 @@ public class Preference {
         this.url = normalizeComicUrl(url);
         prefsEditor.putString("url", this.url);
         prefsEditor.apply();
+        notifySync("settings");
     }
 
     public String getWebtoonUrl() {
@@ -255,6 +284,7 @@ public class Preference {
         this.webtoonUrl = normalizeWebtoonUrl(webtoonUrl);
         prefsEditor.putString("webtoonUrl", this.webtoonUrl);
         prefsEditor.apply();
+        notifySync("settings");
     }
 
     public int getStartTab() {
@@ -265,6 +295,7 @@ public class Preference {
         this.startTab = startTab;
         prefsEditor.putInt("startTab", startTab);
         prefsEditor.apply();
+        notifySync("settings");
     }
 
     public boolean getDataSave() {
@@ -275,6 +306,7 @@ public class Preference {
         this.dataSave = dataSave;
         prefsEditor.putBoolean("dataSave", dataSave);
         prefsEditor.apply();
+        notifySync("settings");
     }
 
     public boolean getReverse() {
@@ -285,6 +317,7 @@ public class Preference {
         this.reverse = reverse;
         prefsEditor.putBoolean("pageReverse", reverse);
         prefsEditor.apply();
+        notifySync("settings");
     }
 
     public boolean getPageRtl() {
@@ -295,6 +328,7 @@ public class Preference {
         this.pageRtl = pageRtl;
         prefsEditor.putBoolean("pageRtl", pageRtl);
         prefsEditor.apply();
+        notifySync("settings");
     }
 
 
@@ -306,6 +340,7 @@ public class Preference {
         this.darkTheme = darkTheme;
         prefsEditor.putBoolean("darkTheme", darkTheme);
         prefsEditor.apply();
+        notifySync("settings");
     }
 
 
@@ -445,6 +480,7 @@ public class Preference {
     public void writeBookmark(){
         prefsEditor.putString("bookmark2", bookmark.toString());
         prefsEditor.apply();
+        notifySync("bookmark");
     }
 
     public void resetBookmark(){
@@ -462,6 +498,7 @@ public class Preference {
         favorite = new ArrayList<>();
         prefsEditor.putString("favorite", new Gson().toJson(favorite));
         prefsEditor.apply();
+        notifySync("favorite");
 
     }
 
@@ -469,6 +506,7 @@ public class Preference {
         Gson gson = new Gson();
         prefsEditor.putString("recent", gson.toJson(recent));
         prefsEditor.apply();
+        notifySync("recent");
     }
 
 
@@ -526,6 +564,7 @@ public class Preference {
     private void writeViewerBookmark(){
         prefsEditor.putString("bookmark", pagebookmark.toString());
         prefsEditor.apply();
+        notifySync("pageBookmark");
     }
 
     public boolean toggleFavorite(Title tmp, int position){
@@ -545,12 +584,14 @@ public class Preference {
             Gson gson = new Gson();
             prefsEditor.putString("favorite", gson.toJson(favorite));
             prefsEditor.apply();
+            notifySync("favorite");
             return true;
         }else{
             favorite.remove(index);
             Gson gson = new Gson();
             prefsEditor.putString("favorite", gson.toJson(favorite));
             prefsEditor.apply();
+            notifySync("favorite");
             return false;
         }
     }
@@ -571,6 +612,7 @@ public class Preference {
         Gson gson = new Gson();
         prefsEditor.putString("favorite", gson.toJson(favorite));
         prefsEditor.apply();
+        notifySync("favorite");
     }
 
     public void setRecents(List<MTitle> rec){
@@ -581,6 +623,15 @@ public class Preference {
     public void setBookmarks(JSONObject book){
         this.bookmark = book == null ? new JSONObject() : book;
         writeBookmark();
+    }
+
+    public void setViewerBookmarks(JSONObject book){
+        this.pagebookmark = book == null ? new JSONObject() : book;
+        writeViewerBookmark();
+    }
+
+    public JSONObject getViewerBookmarkObject() {
+        return pagebookmark;
     }
 
     public List<MTitle> getRecent(){
@@ -690,6 +741,93 @@ public class Preference {
         return bookmark;
     }
 
+    public Map<String, Object> exportSyncSettings() {
+        Map<String, Object> settings = new HashMap<>();
+        settings.put("darkTheme", darkTheme);
+        settings.put("viewerType", viewerType);
+        settings.put("pageReverse", reverse);
+        settings.put("pageRtl", pageRtl);
+        settings.put("dataSave", dataSave);
+        settings.put("startTab", startTab);
+        settings.put("url", url);
+        settings.put("webtoonUrl", webtoonUrl);
+        settings.put("defUrl", defUrl);
+        settings.put("stretch", stretch);
+        settings.put("leftRight", leftRight);
+        settings.put("pageControlButtonOffset", pageControlButtonOffset);
+        settings.put("prevPageKey", prevPageKey);
+        settings.put("nextPageKey", nextPageKey);
+        settings.put("baseMode", baseMode);
+        settings.put("doublep", doublep);
+        settings.put("doublepReverse", doublepReverse);
+        return settings;
+    }
+
+    public void importSyncSettings(Map<String, Object> settings) {
+        if(settings == null)
+            return;
+        darkTheme = readBoolean(settings, "darkTheme", darkTheme);
+        viewerType = readInt(settings, "viewerType", viewerType);
+        reverse = readBoolean(settings, "pageReverse", reverse);
+        pageRtl = readBoolean(settings, "pageRtl", pageRtl);
+        dataSave = readBoolean(settings, "dataSave", dataSave);
+        startTab = readInt(settings, "startTab", startTab);
+        url = normalizeComicUrl(readString(settings, "url", url));
+        webtoonUrl = normalizeWebtoonUrl(readString(settings, "webtoonUrl", webtoonUrl));
+        defUrl = normalizeComicUrl(readString(settings, "defUrl", defUrl));
+        stretch = readBoolean(settings, "stretch", stretch);
+        leftRight = readBoolean(settings, "leftRight", leftRight);
+        pageControlButtonOffset = readFloat(settings, "pageControlButtonOffset", pageControlButtonOffset);
+        prevPageKey = readInt(settings, "prevPageKey", prevPageKey);
+        nextPageKey = readInt(settings, "nextPageKey", nextPageKey);
+        baseMode = readInt(settings, "baseMode", baseMode);
+        doublep = readBoolean(settings, "doublep", doublep);
+        doublepReverse = readBoolean(settings, "doublepReverse", doublepReverse);
+        prefsEditor.putBoolean("darkTheme", darkTheme)
+                .putInt("viewerType", viewerType)
+                .putBoolean("pageReverse", reverse)
+                .putBoolean("pageRtl", pageRtl)
+                .putBoolean("dataSave", dataSave)
+                .putInt("startTab", startTab)
+                .putString("url", url)
+                .putString("webtoonUrl", webtoonUrl)
+                .putString("defUrl", defUrl)
+                .putBoolean("stretch", stretch)
+                .putBoolean("leftRight", leftRight)
+                .putFloat("pageControlButtonOffset", pageControlButtonOffset)
+                .putInt("prevPageKey", prevPageKey)
+                .putInt("nextPageKey", nextPageKey)
+                .putInt("baseMode", baseMode)
+                .putBoolean("doublep", doublep)
+                .putBoolean("doublepReverse", doublepReverse)
+                .apply();
+        notifySync("settings");
+    }
+
+    private String readString(Map<String, Object> data, String key, String fallback) {
+        Object value = data.get(key);
+        return value instanceof String ? (String)value : fallback;
+    }
+
+    private boolean readBoolean(Map<String, Object> data, String key, boolean fallback) {
+        Object value = data.get(key);
+        return value instanceof Boolean ? (Boolean)value : fallback;
+    }
+
+    private int readInt(Map<String, Object> data, String key, int fallback) {
+        Object value = data.get(key);
+        if(value instanceof Number)
+            return ((Number)value).intValue();
+        return fallback;
+    }
+
+    private float readFloat(Map<String, Object> data, String key, float fallback) {
+        Object value = data.get(key);
+        if(value instanceof Number)
+            return ((Number)value).floatValue();
+        return fallback;
+    }
+
 //    public String getSession() {
 //        return session;
 //    }
@@ -719,6 +857,7 @@ public class Preference {
         this.prevPageKey = prevPageKey;
         prefsEditor.putInt("prevPageKey", prevPageKey);
         prefsEditor.apply();
+        notifySync("settings");
     }
 
     public int getNextPageKey() {
@@ -729,6 +868,7 @@ public class Preference {
         this.nextPageKey = nextPageKey;
         prefsEditor.putInt("nextPageKey", nextPageKey);
         prefsEditor.apply();
+        notifySync("settings");
     }
 
     public float getPageControlButtonOffset() {
@@ -739,6 +879,7 @@ public class Preference {
         this.pageControlButtonOffset = pageControlButtonOffset;
         prefsEditor.putFloat("pageControlButtonOffset", pageControlButtonOffset);
         prefsEditor.apply();
+        notifySync("settings");
     }
 
     public boolean getDoublep(){
@@ -753,11 +894,13 @@ public class Preference {
         this.doublep = doublep;
         prefsEditor.putBoolean("doublep", doublep);
         prefsEditor.apply();
+        notifySync("settings");
     }
 
     public void setDoublepReverse(boolean doublepReverse){
         this.doublepReverse = doublepReverse;
         prefsEditor.putBoolean("doublepReverse", doublepReverse);
         prefsEditor.apply();
+        notifySync("settings");
     }
 }

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="default_web_client_id" translatable="false">232584244723-f993l3jcv7ovrcr4k6he2fjverlf1psn.apps.googleusercontent.com</string>
+    <string name="gcm_defaultSenderId" translatable="false">232584244723</string>
+    <string name="google_api_key" translatable="false">AIzaSyDO4kSmqFQGNyN0yT6qbbG31jE_eEyFiX0</string>
+    <string name="google_app_id" translatable="false">1:232584244723:android:cd0b7ed512c19fc8ecf686</string>
+    <string name="google_crash_reporting_api_key" translatable="false">AIzaSyDO4kSmqFQGNyN0yT6qbbG31jE_eEyFiX0</string>
+    <string name="google_storage_bucket" translatable="false">mangaviewer-d627e.firebasestorage.app</string>
+    <string name="project_id" translatable="false">mangaviewer-d627e</string>
+</resources>

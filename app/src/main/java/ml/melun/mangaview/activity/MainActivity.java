@@ -40,9 +40,12 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.google.firebase.auth.FirebaseUser;
+
 import java.io.File;
 
 import ml.melun.mangaview.Downloader;
+import ml.melun.mangaview.FirebaseAccountManager;
 import ml.melun.mangaview.Migrator;
 import ml.melun.mangaview.Preference;
 import ml.melun.mangaview.R;
@@ -56,6 +59,8 @@ import ml.melun.mangaview.interfaces.MainActivityCallback;
 import static android.Manifest.permission.READ_EXTERNAL_STORAGE;
 import static android.Manifest.permission.WRITE_EXTERNAL_STORAGE;
 import static ml.melun.mangaview.Downloader.BROADCAST_STOP;
+import static ml.melun.mangaview.MainApplication.firebaseAccountManager;
+import static ml.melun.mangaview.MainApplication.firebaseSyncManager;
 import static ml.melun.mangaview.MainApplication.httpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Migrator.MIGRATE_FAIL;
@@ -89,6 +94,7 @@ public class MainActivity extends AppCompatActivity
     NavigationView navigationView;
     Toolbar toolbar;
     View progressView;
+    boolean accountInitialSyncStarted = false;
     private static final int FIRST_TIME_ACTIVITY = 9;
     private BroadcastReceiver migratorStatusReceiver;
     private BroadcastReceiver downloaderStopReceiver;
@@ -263,6 +269,7 @@ public class MainActivity extends AppCompatActivity
         //nav_drawer color scheme
         navigationView = (NavigationView) findViewById(R.id.nav_view);
         navigationView.setNavigationItemSelectedListener(this);
+        setupAccountHeader();
         if(dark) {
             int[][] states = new int[][]{
                     new int[]{-android.R.attr.state_enabled}, // disabled
@@ -311,6 +318,54 @@ public class MainActivity extends AppCompatActivity
 
         // First launch should go straight into the app without notice/update popups.
 
+    }
+
+    private void setupAccountHeader() {
+        if(navigationView == null || navigationView.getHeaderCount() == 0)
+            return;
+        View header = navigationView.getHeaderView(0);
+        TextView name = header.findViewById(R.id.nav_account_name);
+        TextView email = header.findViewById(R.id.nav_account_email);
+        View button = header.findViewById(R.id.nav_account_button);
+        if(button == null || name == null || email == null)
+            return;
+        FirebaseUser user = firebaseAccountManager == null ? null : firebaseAccountManager.getUser();
+        if(user != null) {
+            name.setText(user.getDisplayName() == null || user.getDisplayName().length() == 0 ? "MangaView" : user.getDisplayName());
+            email.setText(user.getEmail() == null ? "" : user.getEmail());
+            button.setContentDescription(getString(R.string.account_sign_out));
+            button.setOnClickListener(v -> firebaseAccountManager.signOut(() -> runOnUiThread(this::setupAccountHeader)));
+            if(!accountInitialSyncStarted && firebaseSyncManager != null) {
+                accountInitialSyncStarted = true;
+                firebaseSyncManager.syncAfterSignIn(null);
+            }
+        } else {
+            name.setText("MangaView");
+            email.setText(R.string.account_signed_out);
+            button.setContentDescription(getString(R.string.account_sign_in));
+            button.setOnClickListener(v -> startGoogleSignIn());
+            accountInitialSyncStarted = false;
+        }
+    }
+
+    private void startGoogleSignIn() {
+        if(firebaseAccountManager == null || !firebaseAccountManager.hasFirebaseConfig()) {
+            Toast.makeText(context, R.string.account_firebase_missing, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if(!firebaseAccountManager.isAvailable()) {
+            Toast.makeText(context, R.string.account_google_oauth_missing, Toast.LENGTH_LONG).show();
+            return;
+        }
+        firebaseAccountManager.signIn(this);
+    }
+
+    private void toggleAccountSignIn() {
+        if(firebaseAccountManager != null && firebaseAccountManager.getUser() != null) {
+            firebaseAccountManager.signOut(() -> runOnUiThread(this::setupAccountHeader));
+            return;
+        }
+        startGoogleSignIn();
     }
 
     public int getTabId(int i){
@@ -521,6 +576,23 @@ public class MainActivity extends AppCompatActivity
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if(requestCode == FirebaseAccountManager.RC_GOOGLE_SIGN_IN) {
+            if(resultCode == RESULT_OK && data != null && firebaseAccountManager != null) {
+                firebaseAccountManager.handleActivityResult(data, (success, message) -> runOnUiThread(() -> {
+                    if(success) {
+                        Toast.makeText(context, R.string.account_syncing, Toast.LENGTH_SHORT).show();
+                        setupAccountHeader();
+                        if(firebaseSyncManager != null)
+                            firebaseSyncManager.syncAfterSignIn(() -> runOnUiThread(() -> Toast.makeText(context, R.string.account_sync_complete, Toast.LENGTH_SHORT).show()));
+                    } else {
+                        Toast.makeText(context, message == null ? getString(R.string.account_sign_in_failed) : message, Toast.LENGTH_LONG).show();
+                    }
+                }));
+            } else {
+                Toast.makeText(context, R.string.account_sign_in_failed, Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
         if(requestCode == FIRST_TIME_ACTIVITY){
             if(resultCode == RESULT_EULA_AGREE) {
                 activityInit(null);

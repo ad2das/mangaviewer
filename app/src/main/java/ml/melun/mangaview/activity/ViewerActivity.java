@@ -110,6 +110,9 @@ public class ViewerActivity extends AppCompatActivity {
     boolean topPullInProgress = false;
     int pendingPreviousJumpPosition = RecyclerView.NO_POSITION;
     Manga pendingPreviousJumpManga = null;
+    int lastSavedPageIndex = -1;
+    int lastSavedEpisodeId = -1;
+    final Runnable saveFocusedPageRunnable = this::saveFocusedPageBookmark;
 
 
     @Override
@@ -289,14 +292,17 @@ public class ViewerActivity extends AppCompatActivity {
                     if(strip.getLayoutManager().getItemCount()>0 && newState == RecyclerView.SCROLL_STATE_DRAGGING && toolbarshow) {
                         toggleToolbar();
                     }
-                    if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                    if(newState == RecyclerView.SCROLL_STATE_IDLE) {
                         loadEpisodeAtBoundaryIfNeeded();
+                        scheduleFocusedPageSave(0);
+                    }
                 }
 
                 @Override
                 public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
                     super.onScrolled(recyclerView, dx, dy);
                     loadEpisodeAtBoundaryIfNeeded();
+                    scheduleFocusedPageSave(700);
                 }
             });
             strip.addOnItemTouchListener(new RecyclerView.SimpleOnItemTouchListener() {
@@ -683,6 +689,33 @@ public class ViewerActivity extends AppCompatActivity {
         result = new Intent();
         result.putExtra("id", m.getId());
         setResult(RESULT_OK, result);
+    }
+
+    private void scheduleFocusedPageSave(long delayMs) {
+        mainHandler.removeCallbacks(saveFocusedPageRunnable);
+        mainHandler.postDelayed(saveFocusedPageRunnable, delayMs);
+    }
+
+    private void saveFocusedPageBookmark() {
+        PageItem page = getFocusedVisiblePage();
+        if(page == null || page.manga == null || !page.manga.useBookmark())
+            return;
+        List<String> images = page.manga.getImgs(context);
+        int pageCount = images == null ? 0 : images.size();
+        if(page.index == lastSavedPageIndex && page.manga.getId() == lastSavedEpisodeId)
+            return;
+        lastSavedPageIndex = page.index;
+        lastSavedEpisodeId = page.manga.getId();
+        if(page.index <= 0 || (pageCount > 0 && page.index >= pageCount - 1))
+            p.removeViewerBookmark(page.manga);
+        else
+            p.setViewerBookmark(page.manga, page.index);
+        if(title == null)
+            title = page.manga.getTitle();
+        if(title != null) {
+            p.addRecent(title);
+            p.setBookmark(title, page.manga.getId());
+        }
     }
 
     public void refreshAdapter(){
@@ -1187,6 +1220,7 @@ public class ViewerActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        mainHandler.removeCallbacks(saveFocusedPageRunnable);
         if(loader != null)
             loader.cancel();
         cancelNextPrefetcher();
