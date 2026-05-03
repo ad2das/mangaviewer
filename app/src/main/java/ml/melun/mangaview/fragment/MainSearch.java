@@ -22,6 +22,7 @@ import androidx.appcompat.widget.PopupMenu;
 import androidx.fragment.app.Fragment;
 import androidx.recyclerview.widget.RecyclerView;
 
+import com.google.gson.Gson;
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayoutDirection;
@@ -260,8 +261,15 @@ public class MainSearch extends Fragment {
 
                     @Override
                     public void onResumeClick(int position, int id) {
-                        if(getContext() != null)
-                            openViewer(getContext(),new Manga(id,"","", targetSearch.getBaseMode()),-1);
+                        Title selected = searchAdapter.getItem(position);
+                        if(getContext() == null || selected == null || id <= 0)
+                            return;
+                        Intent viewer = Utils.viewerIntent(getContext(), new Manga(id, "", "", selected.getBaseMode()));
+                        if(viewer == null)
+                            return;
+                        viewer.putExtra("title", new Gson().toJson(selected));
+                        viewer.putExtra("online", true);
+                        startActivityForResult(viewer, -1);
                     }
 
                     @Override

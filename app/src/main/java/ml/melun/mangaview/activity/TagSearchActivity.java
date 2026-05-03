@@ -17,6 +17,7 @@ import android.widget.TextView;
 
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.integration.recyclerview.RecyclerViewPreloader;
+import com.google.gson.Gson;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayoutDirection;
 
@@ -205,11 +206,9 @@ public class TagSearchActivity extends AppCompatActivity {
                     @Override
                     public void onResumeClick(int position, int id) {
                         Title selected = adapter.getItem(position);
-                        if(selected == null)
+                        if(selected == null || id <= 0)
                             return;
-                        Intent viewer = viewerIntent(context, new Manga(id,"","",selected.getBaseMode()));
-                        viewer.putExtra("online",true);
-                        startActivity(viewer);
+                        openResumeViewer(selected, id);
                     }
 
                     @Override
@@ -301,9 +300,10 @@ public class TagSearchActivity extends AppCompatActivity {
                 adapter.setClickListener(new TitleAdapter.ItemClickListener() {
                     @Override
                     public void onResumeClick(int position, int id) {
-                        Intent viewer = viewerIntent(context, new Manga(id,"","", search.getBaseMode()));
-                        viewer.putExtra("online",true);
-                        startActivity(viewer);
+                        Title selected = adapter.getItem(position);
+                        if(selected == null || id <= 0)
+                            return;
+                        openResumeViewer(selected, id);
                     }
 
                     @Override
@@ -348,6 +348,15 @@ public class TagSearchActivity extends AppCompatActivity {
                 requestGroup.cancel();
             return super.cancel(mayInterruptIfRunning);
         }
+    }
+
+    private void openResumeViewer(Title selected, int episodeId) {
+        Intent viewer = viewerIntent(context, new Manga(episodeId, "", "", selected.getBaseMode()));
+        if(viewer == null)
+            return;
+        viewer.putExtra("title", new Gson().toJson(selected));
+        viewer.putExtra("online", true);
+        startActivity(viewer);
     }
 
     private class getUpdated extends LifecycleTask<Void, Void, String> {
