@@ -69,12 +69,33 @@ public class Preference {
     public void init(Context mcontext){
         sharedPref = mcontext.getSharedPreferences("mangaView",Context.MODE_PRIVATE);
         prefsEditor = sharedPref.edit();
+        recent = new ArrayList<>();
+        favorite = new ArrayList<>();
+        pagebookmark = new JSONObject();
+        bookmark = new JSONObject();
+        homeDir = "";
+        darkTheme = false;
+        viewerType = 0;
+        reverse = false;
+        pageRtl = false;
+        dataSave = false;
+        startTab = 0;
+        defUrl = DEFAULT_COMIC_URL;
+        url = DEFAULT_COMIC_URL;
+        webtoonUrl = WEBTOON_URL;
+        stretch = false;
+        leftRight = false;
+        autoUrl = false;
+        doublep = false;
+        doublepReverse = false;
+        pageControlButtonOffset = -1;
+        prevPageKey = -1;
+        nextPageKey = -1;
+        baseMode = base_comic;
         try {
             Gson gson = new Gson();
-            recent = gson.fromJson(sharedPref.getString("recent", ""),new TypeToken<ArrayList<MTitle>>(){}.getType());
-            if(recent==null) recent = new ArrayList<>();
-            favorite = gson.fromJson(sharedPref.getString("favorite", ""),new TypeToken<ArrayList<MTitle>>(){}.getType());
-            if(favorite==null) favorite = new ArrayList<>();
+            recent = safeTitleList(gson.fromJson(sharedPref.getString("recent", ""),new TypeToken<ArrayList<MTitle>>(){}.getType()));
+            favorite = safeTitleList(gson.fromJson(sharedPref.getString("favorite", ""),new TypeToken<ArrayList<MTitle>>(){}.getType()));
             homeDir = sharedPref.getString("homeDir", "");
             prevPageKey = sharedPref.getInt("prevPageKey", -1);
             nextPageKey = sharedPref.getInt("nextPageKey", -1);
@@ -108,6 +129,17 @@ public class Preference {
         }catch(Exception e){
             e.printStackTrace();
         }
+    }
+
+    private List<MTitle> safeTitleList(List<MTitle> source) {
+        List<MTitle> result = new ArrayList<>();
+        if(source == null)
+            return result;
+        for(MTitle title : source) {
+            if(title != null && title.getId() > 0)
+                result.add(title);
+        }
+        return result;
     }
 
 
@@ -283,8 +315,8 @@ public class Preference {
     }
 
     public void setHomeDir(String homeDir) {
-        this.homeDir = homeDir;
-        prefsEditor.putString("homeDir", homeDir);
+        this.homeDir = homeDir == null ? "" : homeDir;
+        prefsEditor.putString("homeDir", this.homeDir);
         prefsEditor.apply();
     }
     public void removeRecent(int position){
@@ -356,7 +388,7 @@ public class Preference {
     }
 
     private int getIndexOf(MTitle title){
-        if(title.getId()>0) {
+        if(title != null && title.getId()>0) {
             return recent.indexOf(title);
         }
         return -1;
@@ -380,6 +412,8 @@ public class Preference {
     }
     public int getBookmark(MTitle title){
         //return recent.mget(0).getBookmark();
+        if(title == null)
+            return -1;
         int titleId = title.getId();
         if(titleId>0) {
             try {
@@ -392,6 +426,8 @@ public class Preference {
     }
 
     private void removeBookmark(MTitle title){
+        if(title == null)
+            return;
         int titleId = title.getId();
         if(titleId>0) {
             try {
@@ -437,6 +473,8 @@ public class Preference {
 
 
     public void setViewerBookmark(Manga m,int index){
+        if(m == null)
+            return;
         if(m.getId()>-1) {
             if (index > 0) {
                 String key = viewerBookmarkKey(m);
@@ -452,6 +490,8 @@ public class Preference {
         }
     }
     public int getViewerBookmark(Manga m){
+        if(m == null)
+            return 0;
         if(m.getId()>-1) {
             try {
                 return pagebookmark.getInt(viewerBookmarkKey(m));
@@ -462,6 +502,8 @@ public class Preference {
         return 0;
     }
     public void removeViewerBookmark(Manga m){
+        if(m == null)
+            return;
         String key = viewerBookmarkKey(m);
         if(!pagebookmark.has(key))
             return;
@@ -525,19 +567,19 @@ public class Preference {
     }
 
     public void setFavorites(List<MTitle> fav){
-        this.favorite = (List<MTitle>)(List<?>)fav;
+        this.favorite = safeTitleList(fav);
         Gson gson = new Gson();
         prefsEditor.putString("favorite", gson.toJson(favorite));
         prefsEditor.apply();
     }
 
     public void setRecents(List<MTitle> rec){
-        this.recent = (List<MTitle>)(List<?>)rec;
+        this.recent = safeTitleList(rec);
         writeRecent();
     }
 
     public void setBookmarks(JSONObject book){
-        this.bookmark = book;
+        this.bookmark = book == null ? new JSONObject() : book;
         writeBookmark();
     }
 
@@ -595,10 +637,10 @@ public class Preference {
     public boolean check(){
         //returns false if needs update
         for(MTitle t: recent){
-            if(isInteger(t.getRelease())) return false;
+            if(t != null && isInteger(t.getRelease())) return false;
         }
         for(MTitle t: favorite){
-            if(isInteger(t.getRelease())) return false;
+            if(t != null && isInteger(t.getRelease())) return false;
         }
         return true;
     }
@@ -610,7 +652,7 @@ public class Preference {
         List<String> fix = new ArrayList<>();
         while(keys.hasNext()){
             String key = keys.next();
-            if(key.toCharArray()[1] != '.'){
+            if(key.length() < 2 || key.toCharArray()[1] != '.'){
                 fix.add(key);
             }
         }
@@ -629,7 +671,7 @@ public class Preference {
         keys = pagebookmark.keys();
         while(keys.hasNext()){
             String key = keys.next();
-            if(key.toCharArray()[1] != '.'){
+            if(key.length() < 2 || key.toCharArray()[1] != '.'){
                 fix.add(key);
             }
         }
