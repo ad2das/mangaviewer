@@ -38,11 +38,8 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.bumptech.glide.Glide;
-import com.bumptech.glide.load.DataSource;
-import com.bumptech.glide.load.engine.GlideException;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy;
-import com.bumptech.glide.request.RequestListener;
 import com.bumptech.glide.request.RequestOptions;
 import com.bumptech.glide.request.target.CustomTarget;
 import com.bumptech.glide.request.target.Target;
@@ -736,25 +733,19 @@ public class ViewerActivity2 extends AppCompatActivity {
     }
 
     void preload(){
-        if(viewerBookmark<imgs.size()-1) {
-            Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark+1), manga.getBaseMode()) : imgs.get(viewerBookmark+1);
-            Glide.with(context)
-                    .asBitmap()
-                    .apply(viewerImageOptions())
-                    .load(image)
-                    .addListener(new RequestListener<Bitmap>() {
-                        @Override
-                        public boolean onLoadFailed(@Nullable GlideException e, Object model, Target<Bitmap> target, boolean isFirstResource) {
-                            return false;
-                        }
+        preloadImageAt(viewerBookmark + 1);
+        preloadImageAt(viewerBookmark - 1);
+    }
 
-                        @Override
-                        public boolean onResourceReady(Bitmap resource, Object model, Target<Bitmap> target, DataSource dataSource, boolean isFirstResource) {
-                            return false;
-                        }
-                    })
-                    .preload();
-        }
+    private void preloadImageAt(int index) {
+        if(index < 0 || imgs == null || index >= imgs.size())
+            return;
+        Object image = manga.isOnline() ? getGlideUrl(imgs.get(index), manga.getBaseMode()) : imgs.get(index);
+        Glide.with(context)
+                .asBitmap()
+                .apply(viewerImageOptions())
+                .load(image)
+                .preload();
     }
     private RequestOptions viewerImageOptions() {
         return new RequestOptions()
