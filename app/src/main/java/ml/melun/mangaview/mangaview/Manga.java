@@ -107,17 +107,27 @@ public class Manga {
         int timeoutRetries = 0;
 
         while (imgs.size() == 0 && tries < 2) {
-            Response r = client.mget(  baseModeStr(baseMode) + '/' + id, false, cookies);
+            Response r = null;
             try {
-                if(r == null)
-                    break;
-                String location = r.header("location");
-                if (r.code() == 302 && location != null && location.contains("captcha.php")) {
-                    r.close();
-                    return LOAD_CAPTCHA;
+                String body;
+                if(cookies == null || cookies.size() == 0) {
+                    CustomHttpClient.PageResponse page = client.mgetCachedPage(baseModeStr(baseMode) + '/' + id, PAGE_CACHE_TTL_MS);
+                    if(page.code == 302)
+                        return LOAD_CAPTCHA;
+                    body = page.body;
+                } else {
+                    r = client.mget(  baseModeStr(baseMode) + '/' + id, false, cookies);
+                    if(r == null)
+                        break;
+                    String location = r.header("location");
+                    if (r.code() == 302 && location != null && location.contains("captcha.php")) {
+                        r.close();
+                        r = null;
+                        return LOAD_CAPTCHA;
+                    }
+                    body = CustomHttpClient.readBody(r);
+                    r = null;
                 }
-                String body = CustomHttpClient.readBody(r);
-                r = null;
                 if (body.contains("Connect Error: Connection timed out")) {
                     if(++timeoutRetries > MAX_TIMEOUT_RETRIES)
                         break;
@@ -226,9 +236,10 @@ public class Manga {
 
             } catch (Exception e2) {
                 e2.printStackTrace();
-            }
-            if (r != null) {
-                r.close();
+            } finally {
+                if (r != null) {
+                    r.close();
+                }
             }
             tries++;
         }

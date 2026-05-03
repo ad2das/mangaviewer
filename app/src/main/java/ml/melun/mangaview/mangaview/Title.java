@@ -11,8 +11,6 @@ import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 
-import okhttp3.Response;
-
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getNumberFromString;
 
@@ -74,20 +72,11 @@ public class Title extends MTitle {
             return fetchWolfEps(client);
 
         for(int attempt = 0; attempt <= MAX_TIMEOUT_RETRIES; attempt++) {
-            Response r = null;
             try {
-                r = client.mget('/'+baseModeStr(baseMode)+'/'+ id);
-                if(r == null)
-                    return LOAD_OK;
-                //웹툰의 경우 캡차 있을 수 있음.
-                String location = r.header("location");
-                if(r.code() == 302 && location != null && location.contains("captcha.php")){
-                    r.close();
-                    r = null;
+                CustomHttpClient.PageResponse page = client.mgetCachedPage('/'+baseModeStr(baseMode)+'/'+ id, PAGE_CACHE_TTL_MS);
+                if(page.code == 302)
                     return LOAD_CAPTCHA;
-                }
-                String body = CustomHttpClient.readBody(r);
-                r = null;
+                String body = page.body;
                 if(body.contains("Connect Error: Connection timed out"))
                     continue;
                 Document d = Jsoup.parse(body);
@@ -184,9 +173,6 @@ public class Title extends MTitle {
             }catch(Exception e) {
                 e.printStackTrace();
                 break;
-            } finally {
-                if(r != null)
-                    r.close();
             }
         }
         return LOAD_OK;
