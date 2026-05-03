@@ -173,12 +173,16 @@ public class Utils {
 //        return httpsGet(urlin, "");
 //    }
     public static Intent episodeIntent(Context context,Title title){
+        if(context == null || title == null)
+            return null;
         Intent episodeView = new Intent(context, EpisodeActivity.class);
         episodeView.putExtra("title", new Gson().toJson(title));
         return episodeView;
     }
 
     public static Intent viewerIntent(Context context, Manga manga){
+        if(context == null || manga == null)
+            return null;
         Intent viewer = null;
         switch (new Preference(context).getViewerType()){
             case 0:
@@ -191,6 +195,8 @@ public class Utils {
                 viewer = new Intent(context, ViewerActivity2.class);
                 break;
         }
+        if(viewer == null)
+            viewer = new Intent(context, ViewerActivity.class);
         viewer.putExtra("manga",new Gson().toJson(manga));
         return viewer;
     }
@@ -299,6 +305,8 @@ public class Utils {
     }
 
     public static void showErrorPopup(Context context, String message, Exception e, boolean force_close){
+        if(context == null)
+            return;
         AlertDialog.Builder builder;
         String title = "오류";
         if (new Preference(context).getDarkTheme()) builder = new AlertDialog.Builder(context, R.style.darkDialog);
@@ -306,10 +314,10 @@ public class Utils {
         builder.setTitle(title)
                 .setMessage(message)
                 .setPositiveButton("확인", (dialog, which) -> {
-                    if(force_close) ((Activity)context).finish();
+                    if(force_close && context instanceof Activity) ((Activity)context).finish();
                 })
                 .setOnCancelListener(dialogInterface -> {
-                    if(force_close) ((Activity)context).finish();
+                    if(force_close && context instanceof Activity) ((Activity)context).finish();
                 });
         if(e != null) {
             builder.setNeutralButton("자세히", (dialog, which) -> showStackTrace(context, e));
@@ -558,10 +566,17 @@ public class Utils {
                     ClipData clip = ClipData.newPlainText("stack_trace", error);
                     clipboard.setPrimaryClip(clip);
                     Toast.makeText(context,"클립보드에 복사되었습니다.", Toast.LENGTH_SHORT).show();
-                    ((Activity)context).finish();
+                    if(context instanceof Activity)
+                        ((Activity)context).finish();
                 })
-                .setPositiveButton("확인", (dialog, which) -> ((Activity)context).finish())
-                .setOnCancelListener(dialog -> ((Activity)context).finish())
+                .setPositiveButton("확인", (dialog, which) -> {
+                    if(context instanceof Activity)
+                        ((Activity)context).finish();
+                })
+                .setOnCancelListener(dialog -> {
+                    if(context instanceof Activity)
+                        ((Activity)context).finish();
+                })
                 .show();
     }
 
@@ -723,7 +738,9 @@ public class Utils {
     }
 
     public static String readPref(Context context){
-        SharedPreferences sharedPref = ((Activity)context).getSharedPreferences("mangaView", Context.MODE_PRIVATE);
+        if(context == null)
+            return "{}";
+        SharedPreferences sharedPref = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE);
         JSONObject data = new JSONObject();
         try {
             data.put("recent",new JSONArray(sharedPref.getString("recent", "[]")));
@@ -766,7 +783,11 @@ public class Utils {
     }
 
     public static void openViewer(Context context, Manga manga, int code){
+        if(!(context instanceof Activity) || manga == null)
+            return;
         Intent viewer = viewerIntent(context,manga);
+        if(viewer == null)
+            return;
         viewer.putExtra("online",true);
         ((Activity)context).startActivityForResult(viewer, code);
     }
@@ -862,15 +883,27 @@ public class Utils {
     }
 
     public static List<File> getOfflineEpisodes(String path){
+        if(path == null)
+            return new ArrayList<>();
         File[] episodeFiles = new File(path).listFiles(pathname -> pathname.isDirectory());
+        if(episodeFiles == null)
+            return new ArrayList<>();
         //sort
         Arrays.sort(episodeFiles);
         //add as manga
         return Arrays.asList(episodeFiles);
     }
     public static List<DocumentFile> getOfflineEpisodes(DocumentFile home){
+        if(home == null)
+            return new ArrayList<>();
         DocumentFile[] files = home.listFiles();
-        Arrays.sort(files, (documentFile, t1) -> documentFile.getName().compareTo(t1.getName()));
+        if(files == null)
+            return new ArrayList<>();
+        Arrays.sort(files, (documentFile, t1) -> {
+            String left = documentFile == null || documentFile.getName() == null ? "" : documentFile.getName();
+            String right = t1 == null || t1.getName() == null ? "" : t1.getName();
+            return left.compareTo(right);
+        });
         List<DocumentFile> res = new ArrayList<>();
         for(DocumentFile f : files){
             if(f.isDirectory()) res.add(f);
@@ -879,6 +912,8 @@ public class Utils {
     }
 
     public static String readUriToString(Context context, Uri uri){
+        if(context == null || uri == null)
+            return "";
         try {
             InputStream in = context.getContentResolver().openInputStream(uri);
             BufferedReader r = new BufferedReader(new InputStreamReader(in));
