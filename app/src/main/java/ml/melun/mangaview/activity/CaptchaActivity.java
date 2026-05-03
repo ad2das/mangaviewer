@@ -101,7 +101,11 @@ public class CaptchaActivity extends AppCompatActivity {
             @Nullable
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                httpClient.agent = request.getRequestHeaders().get("User-Agent");
+                if(request != null && request.getRequestHeaders() != null) {
+                    String userAgent = request.getRequestHeaders().get("User-Agent");
+                    if(userAgent != null && userAgent.length() > 0)
+                        httpClient.agent = userAgent;
+                }
                 return super.shouldInterceptRequest(view, request);
             }
 
@@ -184,10 +188,15 @@ public class CaptchaActivity extends AppCompatActivity {
     protected void onDestroy() {
         super.onDestroy();
         //destroy webview
-        ((ConstraintLayout) findViewById(R.id.captchaContainer)).removeAllViews();
-        webView.clearHistory();
-        webView.clearCache(true);
-        webView.destroy();
+        ConstraintLayout container = findViewById(R.id.captchaContainer);
+        if(container != null)
+            container.removeAllViews();
+        if(webView != null) {
+            webView.clearHistory();
+            webView.clearCache(true);
+            webView.destroy();
+            webView = null;
+        }
     }
 
     @Override
