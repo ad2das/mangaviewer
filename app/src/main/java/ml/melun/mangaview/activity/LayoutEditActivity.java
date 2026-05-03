@@ -59,7 +59,8 @@ public class LayoutEditActivity extends AppCompatActivity {
         });
 
         this.findViewById(R.id.layout_save).setOnClickListener(view -> {
-            p.setPageControlButtonOffset((float)seekBar.getProgress() / (float)seekBar.getMax());
+            int max = seekBar.getMax();
+            p.setPageControlButtonOffset(max <= 0 ? -1 : (float)seekBar.getProgress() / (float)max);
             p.setLeftRight(leftRight);
             Toast.makeText(context, "설정 완료", Toast.LENGTH_SHORT).show();
             finish();
@@ -83,6 +84,8 @@ public class LayoutEditActivity extends AppCompatActivity {
     private void refreshSeekbar(){
         // set seekbar max to current screen width
         int max = getScreenWidth(getWindowManager().getDefaultDisplay());
+        if(max <= 0)
+            max = 1;
         seekBar.setMax(max);
 
         // set button width to saved value

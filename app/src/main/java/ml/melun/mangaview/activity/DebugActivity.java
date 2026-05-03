@@ -113,6 +113,8 @@ public class DebugActivity extends AppCompatActivity {
             //show popup
             showIntegerInputPopup(context, "input manga id", i -> {
                 Intent viewer = viewerIntent(context, new Manga(i, "", "", base_auto));
+                if(viewer == null)
+                    return;
                 viewer.putExtra("online", true);
                 ((Activity) context).startActivity(viewer);
             },false);
