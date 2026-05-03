@@ -2,6 +2,8 @@ package ml.melun.mangaview;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.os.Handler;
 import android.os.Looper;
 
@@ -120,21 +122,32 @@ public class FirebaseSyncManager {
                 afterSync.onComplete(false, "로그인이 필요합니다");
             return;
         }
-        stateDoc(user.getUid()).get()
-                .addOnSuccessListener(snapshot -> {
-                    syncing = true;
-                    try {
-                        if(snapshot != null && snapshot.exists())
-                            mergeRemote(snapshot.getData());
-                    } finally {
-                        syncing = false;
-                    }
-                    uploadCurrentState(afterSync);
-                })
+        if(!isDeviceOnline()) {
+            if(afterSync != null)
+                afterSync.onComplete(false, "인터넷 연결이 필요합니다");
+            return;
+        }
+        firestore.enableNetwork()
+                .addOnSuccessListener(unused -> stateDoc(user.getUid()).get()
+                        .addOnSuccessListener(snapshot -> {
+                            syncing = true;
+                            try {
+                                if(snapshot != null && snapshot.exists())
+                                    mergeRemote(snapshot.getData());
+                            } finally {
+                                syncing = false;
+                            }
+                            uploadCurrentState(afterSync);
+                        })
+                        .addOnFailureListener(e -> {
+                            if(afterSync != null)
+                                afterSync.onComplete(false, errorMessage("다운로드 실패", e));
+                        }))
                 .addOnFailureListener(e -> {
                     if(afterSync != null)
-                        afterSync.onComplete(false, errorMessage("다운로드 실패", e));
-                });
+                        afterSync.onComplete(false, errorMessage("Firestore 네트워크 연결 실패", e));
+                })
+        ;
     }
 
     private Map<String, Object> exportState() {
@@ -240,7 +253,17 @@ public class FirebaseSyncManager {
 
     private String errorMessage(String prefix, Exception e) {
         String detail = e == null ? "" : e.getMessage();
+        if(detail != null && detail.contains("client is offline"))
+            return prefix + ": 인터넷 연결을 확인해 주세요";
         return detail == null || detail.length() == 0 ? prefix : prefix + ": " + detail;
+    }
+
+    private boolean isDeviceOnline() {
+        ConnectivityManager manager = (ConnectivityManager)appContext.getSystemService(Context.CONNECTIVITY_SERVICE);
+        if(manager == null)
+            return true;
+        NetworkInfo info = manager.getActiveNetworkInfo();
+        return info != null && info.isConnected();
     }
 
     private FirebaseUser currentUser() {
