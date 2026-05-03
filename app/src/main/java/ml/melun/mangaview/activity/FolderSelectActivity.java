@@ -75,6 +75,8 @@ public class FolderSelectActivity extends AppCompatActivity {
         context = this;
         currentDir = new File(p.getHomeDir());
         defDir = getDefHomeDir(context);
+        if(defDir == null)
+            defDir = getFilesDir();
         if(!currentDir.exists()){
             p.setHomeDir(defDir.getAbsolutePath());
             showPopup(context, "알림","설정된 폴더를 찾을 수 없습니다. 기본 폴더로 이동 합니다.");
@@ -87,8 +89,10 @@ public class FolderSelectActivity extends AppCompatActivity {
         input = this.findViewById(R.id.fileNameInput);
 
         actionBar = getSupportActionBar();
-        actionBar.setTitle(title);
-        actionBar.setDisplayHomeAsUpEnabled(true);
+        if(actionBar != null) {
+            actionBar.setTitle(title);
+            actionBar.setDisplayHomeAsUpEnabled(true);
+        }
         path = this.findViewById(R.id.path);
         //adapter create
         listContent = refresh();
@@ -128,7 +132,7 @@ public class FolderSelectActivity extends AppCompatActivity {
             input.setVisibility(View.GONE);
         }
         select.setOnClickListener(v -> {
-            if(checkWriteable(currentDir)) {
+            if(currentDir != null && checkWriteable(currentDir)) {
                 Intent resultIntent = new Intent();
                 String path;
                 if(mode == MODE_FILE_SAVE){
@@ -155,7 +159,7 @@ public class FolderSelectActivity extends AppCompatActivity {
                 }
 
                 resultIntent.putExtra("path", path);
-                setResult(0, resultIntent);
+                setResult(RESULT_OK, resultIntent);
                 finish();
             }else{
                 showPopup(context, "알림","쓰기가 불가능한 위치 입니다. 다른 위치를 선택해 주세요.");
@@ -176,7 +180,9 @@ public class FolderSelectActivity extends AppCompatActivity {
                 }
             }else{
                 //parent
-                if(currentDir.getAbsolutePath().length()>1) currentDir = currentDir.getParentFile();
+                if(currentDir != null && currentDir.getAbsolutePath().length()>1) currentDir = currentDir.getParentFile();
+                if(currentDir == null)
+                    currentDir = defDir;
                 populate();
             }
         });
@@ -268,9 +274,11 @@ public class FolderSelectActivity extends AppCompatActivity {
     }
 
     public ArrayList<String> refresh(){
-        File[] files = currentDir.listFiles();
         ArrayList<String> tmp = new ArrayList<>();
         try {
+            if(currentDir == null)
+                currentDir = defDir == null ? getFilesDir() : defDir;
+            File[] files = currentDir.listFiles();
             if(files == null)
                 return tmp;
             for (File f : files) {
@@ -301,11 +309,13 @@ public class FolderSelectActivity extends AppCompatActivity {
             e.printStackTrace();
         }
         //change actionbar text
-        path.setText(currentDir.getAbsolutePath());
-        path.setEllipsize(TextUtils.TruncateAt.MARQUEE);
-        path.setMarqueeRepeatLimit(-1);
-        path.setSingleLine(true);
-        path.setSelected(true);
+        if(path != null) {
+            path.setText(currentDir.getAbsolutePath());
+            path.setEllipsize(TextUtils.TruncateAt.MARQUEE);
+            path.setMarqueeRepeatLimit(-1);
+            path.setSingleLine(true);
+            path.setSelected(true);
+        }
         return tmp;
     }
 

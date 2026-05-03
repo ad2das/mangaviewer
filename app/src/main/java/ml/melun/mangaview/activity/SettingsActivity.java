@@ -84,7 +84,8 @@ public class SettingsActivity extends AppCompatActivity {
                 startActivityForResult(intent, MODE_FOLDER_SELECT);
             }
         });
-        getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+        if(getSupportActionBar() != null)
+            getSupportActionBar().setDisplayHomeAsUpEnabled(true);
 //        s_getSd = this.findViewById(R.id.setting_externalSd);
 //        s_getSd.setOnClickListener(new View.OnClickListener() {
 //            @Override
@@ -396,9 +397,14 @@ public class SettingsActivity extends AppCompatActivity {
         if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
             if (resultCode == Activity.RESULT_OK && data != null) {
                 final Uri uri = data.getData();
+                if(uri == null)
+                    return;
                 switch (requestCode) {
                     case MODE_FOLDER_SELECT:
-                        getContentResolver().takePersistableUriPermission(uri, (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION));
+                        try {
+                            getContentResolver().takePersistableUriPermission(uri, (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION));
+                        } catch (SecurityException ignored) {
+                        }
                         p.setHomeDir(uri.toString());
                         break;
                     case MODE_FILE_SAVE:
