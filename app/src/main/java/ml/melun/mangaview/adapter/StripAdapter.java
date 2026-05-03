@@ -712,13 +712,13 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         holder.itemView.setMinimumHeight(safeHeight);
         holder.frame.setMinimumHeight(safeHeight);
         ViewGroup.LayoutParams itemParams = holder.itemView.getLayoutParams();
-        if(itemParams != null && itemParams.height != safeHeight) {
-            itemParams.height = safeHeight;
+        if(itemParams != null && itemParams.height != ViewGroup.LayoutParams.WRAP_CONTENT) {
+            itemParams.height = ViewGroup.LayoutParams.WRAP_CONTENT;
             holder.itemView.setLayoutParams(itemParams);
         }
         ViewGroup.LayoutParams frameParams = holder.frame.getLayoutParams();
-        if(frameParams != null && frameParams.height != safeHeight) {
-            frameParams.height = safeHeight;
+        if(frameParams != null && frameParams.height != ViewGroup.LayoutParams.WRAP_CONTENT) {
+            frameParams.height = ViewGroup.LayoutParams.WRAP_CONTENT;
             holder.frame.setLayoutParams(frameParams);
         }
     }
