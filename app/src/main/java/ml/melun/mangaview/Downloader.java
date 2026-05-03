@@ -118,7 +118,7 @@ public class Downloader extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if(intent!=null) {
+        if(intent!=null && intent.getAction() != null) {
             switch (intent.getAction()) {
                 case ACTION_START:
                     break;
@@ -128,7 +128,8 @@ public class Downloader extends Service {
                     try {
                         DownloadTitle target = new Gson().fromJson(intent.getStringExtra("title"), new TypeToken<DownloadTitle>() {}.getType());
                         JSONArray selection = new JSONArray(intent.getStringExtra("selected"));
-                        queueTitle(target, selection);
+                        if(target != null && selection.length() > 0)
+                            queueTitle(target, selection);
                     } catch (Exception e) {
                         e.printStackTrace();
                     }
@@ -208,6 +209,11 @@ public class Downloader extends Service {
 
                     //if (title.getEps() == null) title.fetchEps(httpClient);
                     List<Manga> mangas = title.getEps();
+                    if(mangas == null || mangas.size() == 0 || selectedEps.length() == 0) {
+                        titles.remove(0);
+                        selected.remove(0);
+                        continue;
+                    }
                     //todo: minimize eps object(remove 'mode')
 
                     float stepSize = maxProgress / selectedEps.length();
@@ -218,19 +224,25 @@ public class Downloader extends Service {
                             //scoped storage
                             DocumentFile titleDir = homed.findFile(filterFolder(title.getName()));
                             if(titleDir == null) titleDir = homed.createDirectory(filterFolder(title.getName()));
+                            if(titleDir == null)
+                                return 1;
 
                             //if first manga, save title data
                             if (queueIndex == selectedEps.length() - 1) {
                                 try {
                                     //save thumbnail
                                     DocumentFile thumb = downloadFile(title.getThumb(), titleDir, "thumb", null);
-                                    title.setThumb(thumb.getName());
+                                    if(thumb != null)
+                                        title.setThumb(thumb.getName());
 
                                     //save the whole title as gson
                                     DocumentFile dataf = titleDir.findFile("title.gson");
                                     if(dataf != null)
                                         dataf.delete();
-                                    Uri data = titleDir.createFile("application", "title.gson").getUri();
+                                    DocumentFile dataFile = titleDir.createFile("application", "title.gson");
+                                    if(dataFile == null)
+                                        return 1;
+                                    Uri data = dataFile.getUri();
 
                                     try (OutputStream stream = serviceContext.getContentResolver().openOutputStream(data)) {
                                         stream.write(new Gson().toJson(title).getBytes());
@@ -249,6 +261,8 @@ public class Downloader extends Service {
                                 this.cancel(true);
                                 return 2;
                             }
+                            if(listIndex < 0 || listIndex >= mangas.size())
+                                continue;
 
                             Manga target = mangas.get(listIndex);
                             //error
@@ -261,6 +275,10 @@ public class Downloader extends Service {
 
                             Decoder d = new Decoder(target.getSeed(), target.getId());
                             List<String> urls = target.getImgs(getApplicationContext());
+                            if(urls == null || urls.size() == 0) {
+                                failures++;
+                                continue;
+                            }
 
                             //set stepsize
                             float imgStepSize = stepSize / urls.size();
@@ -272,6 +290,8 @@ public class Downloader extends Service {
                             if(dir != null)
                                 dir.delete();
                             dir = titleDir.createDirectory(name);
+                            if(dir == null)
+                                return 1;
 
                             //create download flag
                             DocumentFile downloadFlag = dir.findFile("downloading");
@@ -297,23 +317,27 @@ public class Downloader extends Service {
                                 updateNotification((selectedEps.length() - queueIndex) + "/" + selectedEps.length());
                             }
                             // check for download failures
-                            if (dir.listFiles().length == 0 || dir.listFiles().length < urls.size())
+                            int downloaded = dir.listFiles() == null ? 0 : dir.listFiles().length;
+                            if (downloaded == 0 || downloaded < urls.size())
                                 failures++;
 
-                            downloadFlag.delete();
+                            if(downloadFlag != null)
+                                downloadFlag.delete();
 
                         }else {
 
                             //create dir for title
                             File titleDir = new File(homeDir, filterFolder(title.getName()));
-                            if (!titleDir.exists()) titleDir.mkdirs();
+                            if (!titleDir.exists() && !titleDir.mkdirs())
+                                return 1;
 
                             //if first manga, save title data
                             if (queueIndex == selectedEps.length() - 1) {
                                 try {
                                     //save thumbnail
-                                    String thumb = downloadFile(title.getThumb(), new File(titleDir, "thumb")).getName();
-                                    title.setThumb(thumb);
+                                    File thumbFile = downloadFile(title.getThumb(), new File(titleDir, "thumb"));
+                                    if(thumbFile != null)
+                                        title.setThumb(thumbFile.getName());
 
                                     //if old title.data exist, remove file
                                     File old = new File(titleDir, "title.data");
@@ -340,6 +364,8 @@ public class Downloader extends Service {
                                 this.cancel(true);
                                 return 2;
                             }
+                            if(listIndex < 0 || listIndex >= mangas.size())
+                                continue;
 
                             Manga target = mangas.get(listIndex);
                             //error
@@ -351,6 +377,10 @@ public class Downloader extends Service {
 
                             Decoder d = new Decoder(target.getSeed(), target.getId());
                             List<String> urls = target.getImgs(getApplicationContext());
+                            if(urls == null || urls.size() == 0) {
+                                failures++;
+                                continue;
+                            }
 
                             //set stepsize
                             float imgStepSize = stepSize / urls.size();
@@ -358,7 +388,8 @@ public class Downloader extends Service {
                             //create dir for manga
                             int realIndex = mangas.size() - mangas.indexOf(target);
                             File dir = new File(titleDir, filterFolder(new DecimalFormat("0000").format(realIndex) + "." + target.getName()) + "." + target.getId());
-                            if (!dir.exists()) dir.mkdirs();
+                            if (!dir.exists() && !dir.mkdirs())
+                                return 1;
 
                             //create download flag
                             File downloadFlag = new File(dir, "downloading");
@@ -381,7 +412,8 @@ public class Downloader extends Service {
                                 updateNotification((selectedEps.length() - queueIndex) + "/" + selectedEps.length());
                             }
                             // check for download failures
-                            if (dir.listFiles().length == 0 || dir.listFiles().length < urls.size())
+                            File[] downloaded = dir.listFiles();
+                            if (downloaded == null || downloaded.length == 0 || downloaded.length < urls.size())
                                 failures++;
 
                             downloadFlag.delete();
@@ -413,6 +445,8 @@ public class Downloader extends Service {
             super.onCancelled();
             running = false;
             String why = "";
+            if(mode == null)
+                mode = 0;
             switch(mode){
                 case 0:
                     why = "유저 취소";
