@@ -279,7 +279,12 @@ public class Title extends MTitle {
 
     @Override
     public Title clone(){
-        return new Title(name, thumb, author, tags, release, id, baseMode);
+        Title copy = new Title(name, thumb, author, tags, release, id, baseMode);
+        copy.bookmark = bookmark;
+        copy.bookmarked = bookmarked;
+        copy.bookmarkLink = bookmarkLink;
+        copy.rc = rc;
+        return copy;
     }
 
     public int getRecommend_c() {

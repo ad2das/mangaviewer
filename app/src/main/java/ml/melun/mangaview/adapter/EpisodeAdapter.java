@@ -22,6 +22,7 @@ import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import com.bumptech.glide.request.RequestOptions;
 
 
+import java.util.ArrayList;
 import java.util.List;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
@@ -35,7 +36,7 @@ import static ml.melun.mangaview.Utils.getGlideUrl;
 
 public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
-    private final List<Manga> mData;
+    private List<Manga> mData;
     private final LayoutInflater mInflater;
     private ItemClickListener mClickListener;
     private final Context mainContext;
@@ -54,7 +55,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     public EpisodeAdapter(Context context, List<Manga> data, Title title, int mode) {
         this.mInflater = LayoutInflater.from(context);
         mainContext = context;
-        this.mData = data;
+        this.mData = data == null ? new ArrayList<>() : data;
         this.title = title;
         this.mode = mode;
         outValue = new TypedValue();
@@ -170,6 +171,20 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     @Override
     public int getItemCount() {
         return mData.size()+1;
+    }
+
+    public void setData(List<Manga> data, Title title) {
+        this.mData = data == null ? new ArrayList<>() : data;
+        this.title = title;
+        if(title.getTags()!=null) {
+            ta = new TagAdapter(mainContext, title.getTags());
+            lm = new NpaLinearLayoutManager(mainContext);
+            lm.setOrientation(LinearLayoutManager.HORIZONTAL);
+        } else {
+            ta = null;
+            lm = null;
+        }
+        notifyDataSetChanged();
     }
 
     public class ViewHolder extends RecyclerView.ViewHolder{

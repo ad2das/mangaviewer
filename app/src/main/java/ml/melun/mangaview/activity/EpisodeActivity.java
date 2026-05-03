@@ -28,7 +28,9 @@ import com.google.gson.reflect.TypeToken;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.R;
@@ -48,6 +50,16 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
 
 
 public class EpisodeActivity extends AppCompatActivity {
+    private static final long EPISODE_CACHE_TTL_MS = 10 * 60 * 1000L;
+    private static final int EPISODE_CACHE_LIMIT = 24;
+    private static final Map<String, CachedEpisodes> EPISODE_CACHE =
+            new LinkedHashMap<String, CachedEpisodes>(EPISODE_CACHE_LIMIT, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, CachedEpisodes> eldest) {
+                    return size() > EPISODE_CACHE_LIMIT;
+                }
+            };
+
     //global variables
     Title title;
     EpisodeAdapter episodeAdapter;
@@ -69,6 +81,7 @@ public class EpisodeActivity extends AppCompatActivity {
     boolean loaded = false;
     LinearLayoutCompat fab_container;
     getEpisodes episodeTask;
+    boolean hasCachedEpisodes = false;
 
 
     public boolean onOptionsItemSelected(MenuItem item){
@@ -160,6 +173,23 @@ public class EpisodeActivity extends AppCompatActivity {
         if(online) {
             mode = 0;
             fab_container.setVisibility(View.GONE);
+            CachedEpisodes cached = getCachedEpisodes(title);
+            if(cached != null) {
+                hasCachedEpisodes = true;
+                applyCachedTitle(cached.title);
+                episodes = cloneEpisodes(cached.episodes);
+                title.setEps(episodes);
+                episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
+                afterLoad();
+                progress.setVisibility(View.GONE);
+                loaded = true;
+                fab_container.setVisibility(View.VISIBLE);
+                invalidateOptionsMenu();
+            } else {
+                episodes = new ArrayList<>();
+                episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
+                afterLoad();
+            }
             episodeTask = new getEpisodes();
             episodeTask.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
         }else{
@@ -299,7 +329,8 @@ public class EpisodeActivity extends AppCompatActivity {
                 }
         }
         episodeAdapter.setFavorite(p.findFavorite(title)>-1);
-        episodeList.setAdapter(episodeAdapter);
+        if(episodeList.getAdapter() != episodeAdapter)
+            episodeList.setAdapter(episodeAdapter);
         if(canResumeBookmark() && bookmarkIndex>8) {
             episodeList.scrollToPosition(bookmarkIndex);
         }
@@ -368,6 +399,73 @@ public class EpisodeActivity extends AppCompatActivity {
                 && bookmarkIndex <= episodes.size();
     }
 
+    private void updateLoadedEpisodes() {
+        if(episodeAdapter == null) {
+            episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
+            afterLoad();
+        } else {
+            episodeAdapter.setData(episodes, title);
+            afterLoad();
+        }
+        progress.setVisibility(View.GONE);
+        loaded = true;
+        fab_container.setVisibility(View.VISIBLE);
+        invalidateOptionsMenu();
+    }
+
+    private String episodeCacheKey(Title target) {
+        if(target == null)
+            return "";
+        return target.getBaseMode() + ":" + target.getId();
+    }
+
+    private CachedEpisodes getCachedEpisodes(Title target) {
+        String key = episodeCacheKey(target);
+        if(key.length() == 0)
+            return null;
+        synchronized (EPISODE_CACHE) {
+            CachedEpisodes cached = EPISODE_CACHE.get(key);
+            if(cached == null)
+                return null;
+            if(System.currentTimeMillis() - cached.createdAt > EPISODE_CACHE_TTL_MS) {
+                EPISODE_CACHE.remove(key);
+                return null;
+            }
+            return cached;
+        }
+    }
+
+    private void putCachedEpisodes(Title target, List<Manga> data) {
+        if(target == null || data == null || data.size() == 0)
+            return;
+        synchronized (EPISODE_CACHE) {
+            EPISODE_CACHE.put(episodeCacheKey(target), new CachedEpisodes(target.clone(), cloneEpisodes(data)));
+        }
+    }
+
+    private void applyCachedTitle(Title cachedTitle) {
+        if(cachedTitle == null)
+            return;
+        title = cachedTitle;
+    }
+
+    private List<Manga> cloneEpisodes(List<Manga> source) {
+        ArrayList<Manga> copy = new ArrayList<>();
+        if(source == null)
+            return copy;
+        for(Manga manga : source) {
+            if(manga == null)
+                continue;
+            Manga cloned = new Manga(manga.getId(), manga.getName(), manga.getDate(), manga.getBaseMode());
+            cloned.setMode(manga.getMode());
+            cloned.setTitle(title);
+            cloned.setTitleId(manga.getTitleId());
+            cloned.setOfflinePath(manga.getOfflinePath());
+            copy.add(cloned);
+        }
+        return copy;
+    }
+
     private class getEpisodes extends LifecycleTask<Void,Void,Integer> {
         getEpisodes() {
             super(EpisodeActivity.this);
@@ -375,7 +473,7 @@ public class EpisodeActivity extends AppCompatActivity {
 
         protected void onPreExecute() {
             super.onPreExecute();
-            if(progress != null)
+            if(progress != null && !hasCachedEpisodes)
                 progress.setVisibility(View.VISIBLE);
         }
 
@@ -394,19 +492,19 @@ public class EpisodeActivity extends AppCompatActivity {
                 return;
             episodeTask = null;
             if(res == LOAD_CAPTCHA){
+                if(hasCachedEpisodes)
+                    return;
                 //캡차 처리 팝업
                 showTokiCaptchaPopup(context, p);
                 return;
             }else if(episodes == null || episodes.size()==0){
+                if(hasCachedEpisodes)
+                    return;
                 showCaptchaPopup(title.getUrl(), context, p);
                 return;
             }else {
-                episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
-                afterLoad();
-                progress.setVisibility(View.GONE);
-                loaded = true;
-                fab_container.setVisibility(View.VISIBLE);
-                invalidateOptionsMenu();
+                putCachedEpisodes(title, episodes);
+                updateLoadedEpisodes();
             }
         }
 
@@ -417,6 +515,18 @@ public class EpisodeActivity extends AppCompatActivity {
                 episodeTask = null;
             if(progress != null)
                 progress.setVisibility(View.GONE);
+        }
+    }
+
+    private static class CachedEpisodes {
+        final Title title;
+        final List<Manga> episodes;
+        final long createdAt;
+
+        CachedEpisodes(Title title, List<Manga> episodes) {
+            this.title = title;
+            this.episodes = episodes;
+            this.createdAt = System.currentTimeMillis();
         }
     }
 
