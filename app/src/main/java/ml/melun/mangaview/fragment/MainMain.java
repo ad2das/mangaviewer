@@ -12,6 +12,7 @@ import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
 import androidx.recyclerview.widget.RecyclerView;
 
+import com.bumptech.glide.Glide;
 import com.google.android.material.tabs.TabLayout;
 
 import ml.melun.mangaview.interfaces.MainActivityCallback;
@@ -38,6 +39,7 @@ public class MainMain extends Fragment{
     RecyclerView mainRecycler;
     MainWebtoonAdapter mainComicAdapter;
     MainWebtoonAdapter mainWebtoonAdapter;
+    MainAdapter.onItemClick mainListener;
     Fragment fragment;
     boolean wait = false;
     UrlUpdater.UrlUpdaterCallback callback;
@@ -108,12 +110,12 @@ public class MainMain extends Fragment{
             @Override
             public void onTabSelected(TabLayout.Tab tab) {
                 if(tab.getPosition() == COMIC_TAB){
-                    mainRecycler.setAdapter(mainComicAdapter);
                     p.setBaseMode(base_comic);
+                    mainRecycler.setAdapter(ensureComicAdapter());
                     fetchComic();
                 }else if(tab.getPosition() == WEBTOON_TAB){
-                    mainRecycler.setAdapter(mainWebtoonAdapter);
                     p.setBaseMode(base_webtoon);
+                    mainRecycler.setAdapter(ensureWebtoonAdapter());
                     fetchWebtoon();
                 }
             }
@@ -137,9 +139,23 @@ public class MainMain extends Fragment{
         mainRecycler.setLayoutManager(lm);
         mainRecycler.setHasFixedSize(true);
         mainRecycler.setItemViewCacheSize(12);
+        mainRecycler.setItemAnimator(null);
+        mainRecycler.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        mainRecycler.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
+                super.onScrollStateChanged(recyclerView, newState);
+                if(getContext() == null)
+                    return;
+                if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                    Glide.with(MainMain.this).resumeRequests();
+                else
+                    Glide.with(MainMain.this).pauseRequests();
+            }
+        });
 
 
-        MainAdapter.onItemClick listener = new MainAdapter.onItemClick() {
+        mainListener = new MainAdapter.onItemClick() {
 
             @Override
             public void clickedTitle(Title t) {
@@ -217,7 +233,7 @@ public class MainMain extends Fragment{
 
             @Override
             public void clickedRetry() {
-                mainWebtoonAdapter.fetch();
+                fetchSelected();
             }
 
             @Override
@@ -234,20 +250,30 @@ public class MainMain extends Fragment{
             }
         };
 
-        mainComicAdapter = new MainWebtoonAdapter(getContext(), base_comic);
-        mainComicAdapter.setListener(listener);
-
-        mainWebtoonAdapter = new MainWebtoonAdapter(getContext());
-        mainWebtoonAdapter.setListener(listener);
-
         if(p.getBaseMode() == base_comic)
-            mainRecycler.setAdapter(mainComicAdapter);
+            mainRecycler.setAdapter(ensureComicAdapter());
         else
-            mainRecycler.setAdapter(mainWebtoonAdapter);
+            mainRecycler.setAdapter(ensureWebtoonAdapter());
 
         if(!wait)
             fetchSelected();
         return rootView;
+    }
+
+    private MainWebtoonAdapter ensureComicAdapter() {
+        if(mainComicAdapter == null) {
+            mainComicAdapter = new MainWebtoonAdapter(getContext(), base_comic);
+            mainComicAdapter.setListener(mainListener);
+        }
+        return mainComicAdapter;
+    }
+
+    private MainWebtoonAdapter ensureWebtoonAdapter() {
+        if(mainWebtoonAdapter == null) {
+            mainWebtoonAdapter = new MainWebtoonAdapter(getContext(), base_webtoon);
+            mainWebtoonAdapter.setListener(mainListener);
+        }
+        return mainWebtoonAdapter;
     }
 
     private void fetchSelected() {
@@ -258,16 +284,16 @@ public class MainMain extends Fragment{
     }
 
     private void fetchComic() {
-        if(mainComicAdapter != null && !comicFetched) {
+        if(!comicFetched) {
             comicFetched = true;
-            mainComicAdapter.fetch();
+            ensureComicAdapter().fetch();
         }
     }
 
     private void fetchWebtoon() {
-        if(mainWebtoonAdapter != null && !webtoonFetched) {
+        if(!webtoonFetched) {
             webtoonFetched = true;
-            mainWebtoonAdapter.fetch();
+            ensureWebtoonAdapter().fetch();
         }
     }
 

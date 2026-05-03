@@ -25,6 +25,8 @@ import androidx.documentfile.provider.DocumentFile;
 import androidx.fragment.app.Fragment;
 import androidx.recyclerview.widget.RecyclerView;
 
+import com.bumptech.glide.Glide;
+import com.bumptech.glide.integration.recyclerview.RecyclerViewPreloader;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
@@ -80,7 +82,10 @@ public class RecyclerFragment extends Fragment {
         recyclerView.setLayoutManager(new NpaLinearLayoutManager(getContext()));
         recyclerView.setHasFixedSize(true);
         recyclerView.setItemViewCacheSize(16);
+        recyclerView.setItemAnimator(null);
+        recyclerView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         recyclerView.setAdapter(titleAdapter);
+        recyclerView.addOnScrollListener(new RecyclerViewPreloader<>(Glide.with(this), titleAdapter, titleAdapter, 24));
         titleAdapter.setClickListener(new TitleAdapter.ItemClickListener() {
             @Override
             public void onResumeClick(int position, int id) {

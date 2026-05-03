@@ -15,6 +15,8 @@ import android.view.MenuItem;
 import android.view.View;
 import android.widget.TextView;
 
+import com.bumptech.glide.Glide;
+import com.bumptech.glide.integration.recyclerview.RecyclerViewPreloader;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayoutDirection;
 
@@ -69,6 +71,8 @@ public class TagSearchActivity extends AppCompatActivity {
         searchResult.setLayoutManager(lm);
         searchResult.setHasFixedSize(true);
         searchResult.setItemViewCacheSize(12);
+        searchResult.setItemAnimator(null);
+        searchResult.setOverScrollMode(View.OVER_SCROLL_NEVER);
         Intent i = getIntent();
         query = i.getStringExtra("query");
         mode = i.getIntExtra("mode",0);
@@ -118,6 +122,7 @@ public class TagSearchActivity extends AppCompatActivity {
 
         }else if(mode == 7){
             adapter = new TitleAdapter(context);
+            attachTitlePreloader(adapter);
             bookmark = new Bookmark();
             startLoad(new getBookmarks());
             swipe.setOnRefreshListener(direction -> {
@@ -128,6 +133,7 @@ public class TagSearchActivity extends AppCompatActivity {
 
         }else {
             adapter = new TitleAdapter(context);
+            attachTitlePreloader(adapter);
             search = new Search(query,mode,baseMode);
             startLoad(new searchManga());
             swipe.setOnRefreshListener(direction -> {
@@ -136,6 +142,10 @@ public class TagSearchActivity extends AppCompatActivity {
                 } else swipe.setRefreshing(false);
             });
         }
+    }
+
+    private void attachTitlePreloader(TitleAdapter adapter) {
+        searchResult.addOnScrollListener(new RecyclerViewPreloader<>(Glide.with(this), adapter, adapter, 24));
     }
 
     @SuppressWarnings("unchecked")

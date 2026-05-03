@@ -67,6 +67,7 @@ public class MainPageWebtoon {
     private static final Map<Integer, DbTitle> classificationTitleDb = new LinkedHashMap<>();
     private static boolean classificationDbLoaded = false;
     private static long classificationDbLoadedAt = 0;
+    private static boolean classificationDbRefreshStarted = false;
 
     public static final String[][] WEBTOON_FILTER_GROUPS = buildWebtoonFilterGroups();
     public static final String[][] COMIC_FILTER_GROUPS = buildComicFilterGroups();
@@ -502,23 +503,11 @@ public class MainPageWebtoon {
                 return;
             cached = p.getSharedPref().getString(CLASSIFICATION_DB_CACHE_KEY, "");
             long fetchedAt = p.getSharedPref().getLong(CLASSIFICATION_DB_FETCHED_AT_KEY, 0);
-            if(cached.length() == 0 || now - fetchedAt > CLASSIFICATION_DB_TTL_MS) {
-                String fetched = fetchClassificationDb();
-                if(fetched.length() > 0) {
-                    cached = fetched;
-                    p.getSharedPref().edit()
-                            .putString(CLASSIFICATION_DB_CACHE_KEY, cached)
-                            .putLong(CLASSIFICATION_DB_FETCHED_AT_KEY, now)
-                            .apply();
-                } else if(cached.length() == 0) {
-                    p.getSharedPref().edit()
-                            .putLong(CLASSIFICATION_DB_FETCHED_AT_KEY, now)
-                            .apply();
-                }
-            }
             parseClassificationDb(cached);
             if(classificationDb.size() == 0)
                 parseClassificationDb(readBundledClassificationDb());
+            if(cached.length() == 0 || now - fetchedAt > CLASSIFICATION_DB_TTL_MS)
+                refreshClassificationDbAsync(now);
         } catch (Exception e) {
             classificationDb.clear();
             classificationNameDb.clear();
@@ -526,7 +515,41 @@ public class MainPageWebtoon {
             parseClassificationDb(cached);
             if(classificationDb.size() == 0)
                 parseClassificationDb(readBundledClassificationDb());
+            refreshClassificationDbAsync(now);
         }
+    }
+
+    private static synchronized void refreshClassificationDbAsync(long requestedAt) {
+        if(classificationDbRefreshStarted)
+            return;
+        classificationDbRefreshStarted = true;
+        Thread thread = new Thread(() -> {
+            try {
+                String fetched = fetchClassificationDb();
+                synchronized (MainPageWebtoon.class) {
+                    if(fetched.length() > 0) {
+                        if(p != null)
+                            p.getSharedPref().edit()
+                                    .putString(CLASSIFICATION_DB_CACHE_KEY, fetched)
+                                    .putLong(CLASSIFICATION_DB_FETCHED_AT_KEY, requestedAt)
+                                    .apply();
+                        parseClassificationDb(fetched);
+                        classificationDbLoadedAt = System.currentTimeMillis();
+                    } else if(p != null) {
+                        p.getSharedPref().edit()
+                                .putLong(CLASSIFICATION_DB_FETCHED_AT_KEY, requestedAt)
+                                .apply();
+                    }
+                    classificationDbRefreshStarted = false;
+                }
+            } catch (Exception ignored) {
+                synchronized (MainPageWebtoon.class) {
+                    classificationDbRefreshStarted = false;
+                }
+            }
+        }, "ClassificationDbRefresh");
+        thread.setDaemon(true);
+        thread.start();
     }
 
     private static String fetchClassificationDb() {

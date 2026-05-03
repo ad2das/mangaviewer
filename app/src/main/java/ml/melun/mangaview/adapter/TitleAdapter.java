@@ -1,7 +1,6 @@
 package ml.melun.mangaview.adapter;
 import android.content.Context;
 import androidx.core.content.ContextCompat;
-import androidx.cardview.widget.CardView;
 import androidx.recyclerview.widget.DiffUtil;
 import androidx.recyclerview.widget.RecyclerView;
 import android.view.LayoutInflater;
@@ -14,9 +13,12 @@ import android.widget.ImageView;
 import android.widget.TextView;
 
 import com.bumptech.glide.Glide;
+import com.bumptech.glide.ListPreloader;
+import com.bumptech.glide.RequestBuilder;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
@@ -27,7 +29,9 @@ import ml.melun.mangaview.mangaview.Title;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getGlideUrl;
 
-public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> implements Filterable {
+public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder>
+        implements Filterable, ListPreloader.PreloadModelProvider<Title>, ListPreloader.PreloadSizeProvider<Title> {
+    private static final int TITLE_PRELOAD_LIMIT = 24;
 
     private ArrayList<Title> mData;
     private ArrayList<Title> mDataFiltered;
@@ -154,6 +158,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                 searching = false;
                 updateFilteredData(mData);
             }
+            preloadThumbnails(Math.max(0, oSize - 2), TITLE_PRELOAD_LIMIT);
         } else {
             mDataFiltered = mData;
             searching = false;
@@ -257,7 +262,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(thumb.length()>1 && (!save || forceThumbnail)) Glide.with(holder.thumb)
                 .load(getGlideUrl(thumb, data.getBaseMode()))
                 .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                .override(dp(120), dp(170))
+                .override(dp(92), dp(130))
                 .dontAnimate()
                 .into(holder.thumb);
         else holder.thumb.setImageBitmap(null);
@@ -267,8 +272,60 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
 
     }
 
+    @Override
+    public List<Title> getPreloadItems(int position) {
+        if(save && !forceThumbnail)
+            return Collections.emptyList();
+        if(!isValidPosition(position))
+            return Collections.emptyList();
+        Title title = mDataFiltered.get(position);
+        String thumb = title == null ? null : title.getThumb();
+        if(thumb == null || thumb.length() <= 1)
+            return Collections.emptyList();
+        return Collections.singletonList(title);
+    }
+
+    @Override
+    public RequestBuilder<?> getPreloadRequestBuilder(Title title) {
+        if(title == null)
+            return null;
+        String thumb = title.getThumb();
+        if(thumb == null || thumb.length() <= 1)
+            return null;
+        return Glide.with(mainContext)
+                .load(getGlideUrl(thumb, title.getBaseMode()))
+                .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                .override(dp(92), dp(130))
+                .dontAnimate();
+    }
+
+    @Override
+    public int[] getPreloadSize(Title item, int adapterPosition, int perItemPosition) {
+        return new int[] {dp(92), dp(130)};
+    }
+
+    @Override
+    public void onViewRecycled(ViewHolder holder) {
+        super.onViewRecycled(holder);
+        Glide.with(holder.thumb).clear(holder.thumb);
+        holder.thumb.setImageBitmap(null);
+    }
+
     private int dp(int value) {
         return (int) (value * mainContext.getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private void preloadThumbnails(int start, int count) {
+        if(save && !forceThumbnail)
+            return;
+        if(mDataFiltered == null || count <= 0)
+            return;
+        int end = Math.min(mDataFiltered.size(), start + count);
+        for(int i = Math.max(0, start); i < end; i++) {
+            RequestBuilder<?> request = getPreloadRequestBuilder(mDataFiltered.get(i));
+            if(request != null)
+                request.preload(dp(92), dp(130));
+        }
     }
 
     @Override
@@ -286,7 +343,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         TextView recommend_c, battery_c, comment_c, bookmark_c;
         TextView baseModeStr;
         ImageButton resume;
-        CardView card;
+        View card;
 
         View tagContainer;
         View counterContainer;
@@ -312,6 +369,8 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             if(dark){
                 card.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.colorDarkBackground));
                 resume.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.resumeDark));
+                name.setTextColor(ContextCompat.getColor(mainContext, android.R.color.white));
+                author.setTextColor(0xffcccccc);
             }
             card.setOnClickListener(v -> {
                 int position = getAdapterPosition();
@@ -380,6 +439,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         }, false);
         mDataFiltered = nextItems;
         diff.dispatchUpdatesTo(this);
+        preloadThumbnails(0, TITLE_PRELOAD_LIMIT);
     }
 
     private boolean sameTitle(Title a, Title b) {

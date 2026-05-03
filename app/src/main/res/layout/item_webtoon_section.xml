@@ -40,7 +40,7 @@
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/webtoon_section_list"
         android:layout_width="match_parent"
-        android:layout_height="228dp"
+        android:layout_height="210dp"
         android:clipToPadding="false"
         android:paddingStart="8dp"
         android:paddingEnd="8dp"

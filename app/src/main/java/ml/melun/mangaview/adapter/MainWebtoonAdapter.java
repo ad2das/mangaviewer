@@ -14,7 +14,6 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
-import androidx.cardview.widget.CardView;
 import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.DiffUtil;
 import androidx.recyclerview.widget.LinearLayoutManager;
@@ -61,9 +60,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     MainAdapter.onItemClick listener;
     int baseMode;
     Fetcher fetcher;
+    RecyclerView attachedRecycler;
+    RecyclerView.OnScrollListener parentScrollListener;
+    List<Object> pendingRows;
     private final Set<String> preloadedThumbs = new LinkedHashSet<>();
-    private static final int PRELOADED_THUMB_LIMIT = 120;
-    private static final int PRELOAD_THUMB_MAX_PER_FETCH = 36;
+    private static final int PRELOADED_THUMB_LIMIT = 60;
+    private static final int PRELOAD_THUMB_MAX_PER_FETCH = 12;
     private static final int SECTION_BATCH_SIZE = 4;
     private int preloadCount = 0;
 
@@ -341,6 +343,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             list.setNestedScrollingEnabled(false);
             list.setHasFixedSize(true);
             list.setItemViewCacheSize(12);
+            list.setItemAnimator(null);
+            list.setOverScrollMode(View.OVER_SCROLL_NEVER);
         }
 
         void bind(Ranking<?> section) {
@@ -409,7 +413,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 Glide.with(holder.thumb)
                         .load(getGlideUrl(thumb, title.getBaseMode()))
                         .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                        .override(dp(180), dp(220))
+                        .override(dp(128), dp(138))
                         .thumbnail(0.25f)
                         .dontAnimate()
                         .placeholder(R.mipmap.ic_launcher)
@@ -439,8 +443,15 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return item.hashCode();
         }
 
+        @Override
+        public void onViewRecycled(@NonNull CardHolder holder) {
+            super.onViewRecycled(holder);
+            Glide.with(holder.thumb).clear(holder.thumb);
+            holder.thumb.setImageResource(R.mipmap.ic_launcher);
+        }
+
         class CardHolder extends RecyclerView.ViewHolder {
-            CardView card;
+            View card;
             ImageView thumb;
             TextView name;
             TextView meta;
@@ -451,8 +462,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 thumb = itemView.findViewById(R.id.webtoon_thumb);
                 name = itemView.findViewById(R.id.webtoon_name);
                 meta = itemView.findViewById(R.id.webtoon_meta);
-                if(dark)
-                    card.setCardBackgroundColor(ContextCompat.getColor(context, R.color.colorDarkBackground));
+                card.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+                if(dark) {
+                    card.setBackgroundColor(ContextCompat.getColor(context, R.color.colorDarkBackground));
+                    name.setTextColor(ContextCompat.getColor(context, android.R.color.white));
+                    meta.setTextColor(0xffcccccc);
+                }
             }
         }
     }
@@ -478,7 +493,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 Glide.with(context)
                         .load(getGlideUrl(thumb, ((Title) item).getBaseMode()))
                         .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                        .override(dp(180), dp(220))
+                        .override(dp(128), dp(138))
                         .preload();
                 if(++preloadCount >= PRELOAD_THUMB_MAX_PER_FETCH)
                     return;
@@ -497,6 +512,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private void updateRows(List<Object> newRows) {
+        if(attachedRecycler != null && attachedRecycler.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
+            pendingRows = newRows == null ? new ArrayList<>() : new ArrayList<>(newRows);
+            return;
+        }
         final List<Object> oldRows = rows == null ? Collections.emptyList() : new ArrayList<>(rows);
         final List<Object> nextRows = newRows == null ? new ArrayList<>() : new ArrayList<>(newRows);
         DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
@@ -522,6 +541,39 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }, false);
         rows = nextRows;
         diff.dispatchUpdatesTo(this);
+    }
+
+    private void flushPendingRows() {
+        if(pendingRows == null)
+            return;
+        List<Object> rowsToApply = pendingRows;
+        pendingRows = null;
+        updateRows(rowsToApply);
+    }
+
+    @Override
+    public void onAttachedToRecyclerView(@NonNull RecyclerView recyclerView) {
+        super.onAttachedToRecyclerView(recyclerView);
+        attachedRecycler = recyclerView;
+        parentScrollListener = new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrollStateChanged(@NonNull RecyclerView rv, int newState) {
+                super.onScrollStateChanged(rv, newState);
+                if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                    flushPendingRows();
+            }
+        };
+        recyclerView.addOnScrollListener(parentScrollListener);
+    }
+
+    @Override
+    public void onDetachedFromRecyclerView(@NonNull RecyclerView recyclerView) {
+        if(parentScrollListener != null)
+            recyclerView.removeOnScrollListener(parentScrollListener);
+        parentScrollListener = null;
+        attachedRecycler = null;
+        pendingRows = null;
+        super.onDetachedFromRecyclerView(recyclerView);
     }
 
     private String rowKey(Object row) {
@@ -636,8 +688,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
             if(loadedSections.size() == 0)
                 return;
-            if(baseMode == base_webtoon)
-                MainPageWebtoon.enhanceWebtoonClassification(dataSet);
             preloadThumbnails(loadedSections);
             updateRows(buildRows(dataSet, false));
         }

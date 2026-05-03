@@ -137,7 +137,7 @@ public class EpisodeActivity extends AppCompatActivity {
         progress = this.findViewById(R.id.progress);
         episodeList.setLayoutManager(new NpaLinearLayoutManager(this));
         episodeList.setHasFixedSize(true);
-        episodeList.setItemViewCacheSize(20);
+        episodeList.setItemViewCacheSize(10);
         homeDir = p.getHomeDir();
         resumefab = this.findViewById(R.id.resumefab);
         fab_container = findViewById(R.id.fab_container);

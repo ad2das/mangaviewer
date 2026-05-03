@@ -529,7 +529,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         holder.frame.setImageResource(R.drawable.placeholder);
         holder.refresh.setVisibility(View.VISIBLE);
         holder.imageTarget = null;
-        Glide.with(holder.frame).clear(target);
+        Glide.with(mainContext.getApplicationContext()).clear(target);
     }
 
     private Bitmap retainIfGlideOwned(Bitmap displayBitmap, Bitmap glideBitmap) {
@@ -573,7 +573,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(!preloadedImages.add(key))
             return;
         trimPreloadTracker();
-        Glide.with(mainContext)
+        Glide.with(mainContext.getApplicationContext())
                 .asBitmap()
                 .apply(viewerImageOptions())
                 .load(getImageModel(page))
