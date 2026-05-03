@@ -19,6 +19,7 @@
     <string name="account_google_oauth_missing">Google 로그인 설정이 없습니다. Firebase Authentication에서 Google 제공자를 켜고 google-services.json을 다시 받아 주세요.</string>
     <string name="account_sign_in_failed">로그인 실패</string>
     <string name="account_sync_complete">동기화 완료</string>
+    <string name="account_sync_failed">동기화 실패</string>
     <string name="advanced_search">상세 검색</string>
     <string name="comment_send">댓글 보내기</string>
     <string name="app_logo">MangaView 로고</string>

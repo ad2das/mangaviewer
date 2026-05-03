@@ -639,17 +639,17 @@ public class Preference {
     }
 
     public List<MTitle> getRecent(){
-        pruneUnviewedRecents();
+        pruneInvalidRecents();
         return recent;
     }
 
-    private void pruneUnviewedRecents() {
+    private void pruneInvalidRecents() {
         if(recent == null)
             return;
         boolean changed = false;
         for(int i = recent.size() - 1; i >= 0; i--) {
             MTitle title = recent.get(i);
-            if(title == null || title.getId() <= 0 || getBookmark(title) < 0) {
+            if(title == null || title.getId() <= 0) {
                 recent.remove(i);
                 changed = true;
             }

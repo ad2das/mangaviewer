@@ -36,6 +36,10 @@ public class FirebaseSyncManager {
 
     private final Runnable uploadRunnable = this::uploadCurrentState;
 
+    public interface SyncCallback {
+        void onComplete(boolean success, String message);
+    }
+
     public FirebaseSyncManager(Context context, Preference preference) {
         appContext = context.getApplicationContext();
         this.preference = preference;
@@ -67,23 +71,37 @@ public class FirebaseSyncManager {
     }
 
     public void syncAfterSignIn(Runnable afterSync) {
-        if(!isSignedIn()) {
+        syncAfterSignIn((success, message) -> {
             if(afterSync != null)
                 afterSync.run();
+        });
+    }
+
+    public void syncAfterSignIn(SyncCallback afterSync) {
+        if(!isSignedIn()) {
+            if(afterSync != null)
+                afterSync.onComplete(false, "로그인이 필요합니다");
             return;
         }
         downloadAndMerge(afterSync);
     }
 
     public void uploadCurrentState() {
-        uploadCurrentState(null);
+        uploadCurrentState((SyncCallback)null);
     }
 
     private void uploadCurrentState(Runnable afterUpload) {
+        uploadCurrentState((success, message) -> {
+            if(afterUpload != null)
+                afterUpload.run();
+        });
+    }
+
+    private void uploadCurrentState(SyncCallback afterUpload) {
         FirebaseUser user = currentUser();
         if(user == null) {
             if(afterUpload != null)
-                afterUpload.run();
+                afterUpload.onComplete(false, "로그인이 필요합니다");
             return;
         }
         DocumentReference doc = stateDoc(user.getUid());
@@ -91,15 +109,15 @@ public class FirebaseSyncManager {
         doc.set(data)
                 .addOnCompleteListener(task -> {
                     if(afterUpload != null)
-                        afterUpload.run();
+                        afterUpload.onComplete(task.isSuccessful(), task.isSuccessful() ? null : errorMessage("업로드 실패", task.getException()));
                 });
     }
 
-    private void downloadAndMerge(Runnable afterSync) {
+    private void downloadAndMerge(SyncCallback afterSync) {
         FirebaseUser user = currentUser();
         if(user == null) {
             if(afterSync != null)
-                afterSync.run();
+                afterSync.onComplete(false, "로그인이 필요합니다");
             return;
         }
         stateDoc(user.getUid()).get()
@@ -114,7 +132,8 @@ public class FirebaseSyncManager {
                     uploadCurrentState(afterSync);
                 })
                 .addOnFailureListener(e -> {
-                    uploadCurrentState(afterSync);
+                    if(afterSync != null)
+                        afterSync.onComplete(false, errorMessage("다운로드 실패", e));
                 });
     }
 
@@ -217,6 +236,11 @@ public class FirebaseSyncManager {
 
     private void setLocalUpdatedAt(String scope, long timestamp) {
         metaPref.edit().putLong(scope + "UpdatedAt", timestamp).apply();
+    }
+
+    private String errorMessage(String prefix, Exception e) {
+        String detail = e == null ? "" : e.getMessage();
+        return detail == null || detail.length() == 0 ? prefix : prefix + ": " + detail;
     }
 
     private FirebaseUser currentUser() {

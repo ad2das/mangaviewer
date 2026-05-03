@@ -337,7 +337,11 @@ public class MainActivity extends AppCompatActivity
             button.setOnClickListener(v -> firebaseAccountManager.signOut(() -> runOnUiThread(this::setupAccountHeader)));
             if(!accountInitialSyncStarted && firebaseSyncManager != null) {
                 accountInitialSyncStarted = true;
-                firebaseSyncManager.syncAfterSignIn(() -> runOnUiThread(this::refreshSyncedListIfVisible));
+                firebaseSyncManager.syncAfterSignIn((syncSuccess, syncMessage) -> runOnUiThread(() -> {
+                    refreshSyncedListIfVisible();
+                    if(!syncSuccess)
+                        Toast.makeText(context, syncMessage == null ? getString(R.string.account_sync_failed) : syncMessage, Toast.LENGTH_LONG).show();
+                }));
             }
         } else {
             name.setText("MangaView");
@@ -586,11 +590,12 @@ public class MainActivity extends AppCompatActivity
                 firebaseAccountManager.handleActivityResult(data, (success, message) -> runOnUiThread(() -> {
                     if(success) {
                         Toast.makeText(context, R.string.account_syncing, Toast.LENGTH_SHORT).show();
+                        accountInitialSyncStarted = true;
                         setupAccountHeader();
                         if(firebaseSyncManager != null)
-                            firebaseSyncManager.syncAfterSignIn(() -> runOnUiThread(() -> {
+                            firebaseSyncManager.syncAfterSignIn((syncSuccess, syncMessage) -> runOnUiThread(() -> {
                                 refreshSyncedListIfVisible();
-                                Toast.makeText(context, R.string.account_sync_complete, Toast.LENGTH_SHORT).show();
+                                Toast.makeText(context, syncSuccess ? getString(R.string.account_sync_complete) : (syncMessage == null ? getString(R.string.account_sync_failed) : syncMessage), syncSuccess ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
                             }));
                     } else {
                         Toast.makeText(context, message == null ? getString(R.string.account_sign_in_failed) : message, Toast.LENGTH_LONG).show();
