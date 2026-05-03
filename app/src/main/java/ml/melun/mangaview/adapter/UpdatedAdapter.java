@@ -13,6 +13,7 @@ import android.widget.ImageView;
 import android.widget.TextView;
 
 import com.bumptech.glide.Glide;
+import com.bumptech.glide.load.engine.DiskCacheStrategy;
 
 import java.util.ArrayList;
 
@@ -76,7 +77,12 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         if(thumb == null)
             thumb = "";
         Glide.with(h.thumb).clear(h.thumb);
-        if(thumb.length()>1 && !save) Glide.with(h.thumb).load(getGlideUrl(thumb, m.getBaseMode())).into(h.thumb);
+        if(thumb.length()>1 && !save) Glide.with(h.thumb)
+                .load(getGlideUrl(thumb, m.getBaseMode()))
+                .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                .override(dp(110), dp(150))
+                .dontAnimate()
+                .into(h.thumb);
         else h.thumb.setImageBitmap(null);
         if(save) h.thumb.setVisibility(View.GONE);
         if(p.getBookmark(m.getTitle())>0)
@@ -96,6 +102,10 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         }
         h.tags.setText(tags.toString());
         h.author.setText(m.getAuthor());
+    }
+
+    private int dp(int value) {
+        return (int) (value * context.getResources().getDisplayMetrics().density + 0.5f);
     }
 
     @Override

@@ -189,6 +189,7 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             updatedList = itemView.findViewById(R.id.main_tag);
             LinearLayoutManager lm = new NpaLinearLayoutManager(mainContext);
             lm.setOrientation(RecyclerView.HORIZONTAL);
+            lm.setInitialPrefetchItemCount(8);
             updatedList.setLayoutManager(lm);
             updatedList.setHasFixedSize(true);
             updatedList.setItemViewCacheSize(12);

@@ -336,6 +336,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             list = itemView.findViewById(R.id.webtoon_section_list);
             LinearLayoutManager manager = new NpaLinearLayoutManager(context);
             manager.setOrientation(RecyclerView.HORIZONTAL);
+            manager.setInitialPrefetchItemCount(6);
             list.setLayoutManager(manager);
             list.setNestedScrollingEnabled(false);
             list.setHasFixedSize(true);
