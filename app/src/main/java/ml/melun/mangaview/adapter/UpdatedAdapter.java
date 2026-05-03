@@ -47,6 +47,8 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     }
 
     public void addData(ArrayList<UpdatedManga> data){
+        if(data == null || data.size() == 0)
+            return;
         int oSize = mData.size();
         mData.addAll(data);
         notifyItemRangeInserted(oSize,data.size());
@@ -65,10 +67,14 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     @Override
     public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position) {
         viewHolder h = (viewHolder) holder;
+        if(mData == null || position < 0 || position >= mData.size())
+            return;
         UpdatedManga m = mData.get(position);
         h.text.setText(m.getName());
         h.date.setText(m.getDate());
         String thumb = m.getThumb();
+        if(thumb == null)
+            thumb = "";
         Glide.with(h.thumb).clear(h.thumb);
         if(thumb.length()>1 && !save) Glide.with(h.thumb).load(getGlideUrl(thumb, m.getBaseMode())).into(h.thumb);
         else h.thumb.setImageBitmap(null);
@@ -83,8 +89,10 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             h.fav.setVisibility(View.GONE);
 
         StringBuilder tags = new StringBuilder();
-        for (String s :m.getTag()) {
-            tags.append(s).append(" ");
+        if(m.getTag() != null) {
+            for (String s :m.getTag()) {
+                tags.append(s).append(" ");
+            }
         }
         h.tags.setText(tags.toString());
         h.author.setText(m.getAuthor());
@@ -92,7 +100,7 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
 
     @Override
     public int getItemCount() {
-        return mData.size();
+        return mData == null ? 0 : mData.size();
     }
 
     class viewHolder extends RecyclerView.ViewHolder{
@@ -123,15 +131,17 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             }
             card.setOnClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || olisten == null)
+                if(position == RecyclerView.NO_POSITION || olisten == null || mData == null || position >= mData.size())
                     return;
                 olisten.onClick(mData.get(position));
             });
             viewEps.setOnClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || olisten == null)
+                if(position == RecyclerView.NO_POSITION || olisten == null || mData == null || position >= mData.size())
                     return;
-                olisten.onEpsClick(mData.get(position).getTitle());
+                Title title = mData.get(position).getTitle();
+                if(title != null)
+                    olisten.onEpsClick(title);
             });
         }
     }

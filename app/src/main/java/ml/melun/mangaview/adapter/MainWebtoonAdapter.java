@@ -117,6 +117,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     @Override
     public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position) {
+        if(rows == null || position < 0 || position >= rows.size())
+            return;
         Object row = rows.get(position);
         if(holder instanceof CategoryHolder)
             ((CategoryHolder) holder).bind();
@@ -128,6 +130,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     @Override
     public int getItemViewType(int position) {
+        if(rows == null || position < 0 || position >= rows.size())
+            return SECTION;
         if(rows.get(position) instanceof CategoryPanel)
             return CATEGORY;
         return rows.get(position) instanceof String ? GROUP : SECTION;
@@ -383,6 +387,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
         @Override
         public void onBindViewHolder(@NonNull CardHolder holder, int position) {
+            if(items == null || position < 0 || position >= items.size())
+                return;
             Object item = items.get(position);
             if(!(item instanceof Title))
                 return;

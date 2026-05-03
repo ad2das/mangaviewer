@@ -179,7 +179,7 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
     @Override
     public int getItemCount() {
-        return data.size();
+        return data == null ? 0 : data.size();
     }
 
     class AddedHolder extends RecyclerView.ViewHolder{
@@ -196,13 +196,15 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             uadapter.setClickListener(new MainUpdatedAdapter.OnClickCallback() {
                 @Override
                 public void onclick(Manga m) {
-                    mainClickListener.clickedManga(m);
+                    if(mainClickListener != null)
+                        mainClickListener.clickedManga(m);
                 }
 
                 @Override
                 public void refresh() {
                     fetch();
-                    mainClickListener.clickedRetry();
+                    if(mainClickListener != null)
+                        mainClickListener.clickedRetry();
                 }
             });
         }
@@ -230,7 +232,7 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         public void setManga(Manga m, int r){
             text.setText(m.getName());
             card.setOnClickListener(v -> {
-                if(m!=null && m.getId()>0)
+                if(mainClickListener != null && m!=null && m.getId()>0)
                     mainClickListener.clickedManga(m);
             });
 
@@ -263,7 +265,10 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             if(h instanceof ButtonHeader){
                 this.container.setClickable(true);
                 this.button.setVisibility(View.VISIBLE);
-                this.container.setOnClickListener(view -> ((ButtonHeader)h).callback());
+                this.container.setOnClickListener(view -> {
+                    if(mainClickListener != null)
+                        ((ButtonHeader)h).callback();
+                });
             }else{
                 this.container.setClickable(false);
                 this.button.setVisibility(View.GONE);
@@ -291,7 +296,7 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         public void setTitle(Title t, int r){
             text.setText(t.getName());
             card.setOnClickListener(v -> {
-                if(t!=null && t.getId()>0)
+                if(mainClickListener != null && t!=null && t.getId()>0)
                     mainClickListener.clickedTitle(t);
             });
 
@@ -318,9 +323,12 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
             card.setOnClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || mainClickListener == null)
+                if(position == RecyclerView.NO_POSITION || mainClickListener == null || data == null || position >= data.size())
                     return;
-                Tag t = (Tag) data.get(position);
+                Object item = data.get(position);
+                if(!(item instanceof Tag))
+                    return;
+                Tag t = (Tag) item;
                 if(t instanceof NameTag) mainClickListener.clickedName(t.tag);
                 else if(t instanceof GenreTag) mainClickListener.clickedGenre(t.tag);
                 else if(t instanceof ReleaseTag) mainClickListener.clickedRelease(t.tag);
@@ -370,7 +378,8 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         }
 
         public void callback() {
-            callback.run();
+            if(callback != null)
+                callback.run();
         }
     }
     static class NoResultManga extends Manga{

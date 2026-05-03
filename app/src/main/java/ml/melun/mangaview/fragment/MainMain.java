@@ -1,6 +1,7 @@
 package ml.melun.mangaview.fragment;
 
 import android.content.Intent;
+import android.content.Context;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -67,7 +68,8 @@ public class MainMain extends Fragment{
     @Override
     public void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        this.mainActivityCallback = (MainActivity)getActivity();
+        if(getActivity() instanceof MainActivity)
+            this.mainActivityCallback = (MainActivity)getActivity();
     }
 
     public void initializeCallback(){
@@ -139,7 +141,9 @@ public class MainMain extends Fragment{
 
             @Override
             public void clickedTitle(Title t) {
-                startActivity(episodeIntent(getContext(), t));
+                Context context = getContext();
+                if(context != null && t != null)
+                    startActivity(episodeIntent(context, t));
             }
 
             @Override
@@ -147,12 +151,17 @@ public class MainMain extends Fragment{
                 //mget title from manga m and start intent for manga m
                 //getTitleFromManga intentStarter = new getTitleFromManga();
                 //intentStarter.execute(m);
-                openViewer(getContext(), m,-1);
+                Context context = getContext();
+                if(context != null && m != null)
+                    openViewer(context, m,-1);
             }
 
             @Override
             public void clickedGenre(String t) {
-                Intent i = new Intent(getContext(), TagSearchActivity.class);
+                Context context = getContext();
+                if(context == null)
+                    return;
+                Intent i = new Intent(context, TagSearchActivity.class);
                 i.putExtra("query",t);
                 i.putExtra("mode",2);
                 i.putExtra("baseMode", p.getBaseMode());
@@ -161,7 +170,10 @@ public class MainMain extends Fragment{
 
             @Override
             public void clickedName(String t) {
-                Intent i = new Intent(getContext(), TagSearchActivity.class);
+                Context context = getContext();
+                if(context == null)
+                    return;
+                Intent i = new Intent(context, TagSearchActivity.class);
                 i.putExtra("query",t);
                 i.putExtra("mode",3);
                 i.putExtra("baseMode", p.getBaseMode());
@@ -170,7 +182,10 @@ public class MainMain extends Fragment{
 
             @Override
             public void clickedRelease(String t) {
-                Intent i = new Intent(getContext(), TagSearchActivity.class);
+                Context context = getContext();
+                if(context == null)
+                    return;
+                Intent i = new Intent(context, TagSearchActivity.class);
                 i.putExtra("query",t);
                 i.putExtra("mode",4);
                 i.putExtra("baseMode", p.getBaseMode());
@@ -179,7 +194,10 @@ public class MainMain extends Fragment{
 
             @Override
             public void clickedMoreUpdated() {
-                Intent i = new Intent(getContext(), TagSearchActivity.class);
+                Context context = getContext();
+                if(context == null)
+                    return;
+                Intent i = new Intent(context, TagSearchActivity.class);
                 i.putExtra("mode",5);
                 startActivity(i);
             }
@@ -191,7 +209,8 @@ public class MainMain extends Fragment{
 
             @Override
             public void clickedSearch(String query) {
-                mainActivityCallback.search(query);
+                if(mainActivityCallback != null)
+                    mainActivityCallback.search(query);
             }
 
             @Override
@@ -201,7 +220,10 @@ public class MainMain extends Fragment{
 
             @Override
             public void clickedCategoryPath(String title, String path) {
-                Intent i = new Intent(getContext(), TagSearchActivity.class);
+                Context context = getContext();
+                if(context == null)
+                    return;
+                Intent i = new Intent(context, TagSearchActivity.class);
                 i.putExtra("query", path);
                 i.putExtra("title", title);
                 i.putExtra("mode", 8);

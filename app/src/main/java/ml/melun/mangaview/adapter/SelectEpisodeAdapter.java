@@ -13,6 +13,7 @@ import android.widget.TextView;
 import org.json.JSONArray;
 
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -38,9 +39,9 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
     public SelectEpisodeAdapter(Context context, List<Manga> list) {
         this.mInflater = LayoutInflater.from(context);
         mainContext = context;
-        this.data = list;
+        this.data = list == null ? new ArrayList<>() : list;
         outValue = new TypedValue();
-        selected = new boolean[list.size()];
+        selected = new boolean[this.data.size()];
         Arrays.fill(selected,Boolean.FALSE);
         dark = p.getDarkTheme();
         mainContext.getTheme().resolveAttribute(android.R.attr.selectableItemBackground, outValue, true);
@@ -85,10 +86,12 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
     // total number of rows
     @Override
     public int getItemCount() {
-        return data.size();
+        return data == null ? 0 : data.size();
     }
 
     public void select(int position){
+        if(!isValidPosition(position))
+            return;
         if(single) {
             selected[position] = !selected[position];
             notifyItemChanged(position);
@@ -99,8 +102,12 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
             }
             //selected pos = range start
             else if(position == rs){
+                int oldStart = rs;
+                int oldEnd = re;
                 rs = -1;
                 re = -1;
+                notifyIfValid(oldStart);
+                notifyIfValid(oldEnd);
             }
             //range end
             else if(rs != -1 && re == -1){
@@ -118,9 +125,9 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
                 rs = -1;
                 re = -1;
             }
-            notifyItemChanged(rs);
-            notifyItemChanged(re);
-            notifyItemChanged(position);
+            notifyIfValid(rs);
+            notifyIfValid(re);
+            notifyIfValid(position);
         }
     }
 
@@ -130,8 +137,8 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
         int tmpe = re;
         rs = -1;
         re = -1;
-        notifyItemChanged(tmps);
-        notifyItemChanged(tmpe);
+        notifyIfValid(tmps);
+        notifyIfValid(tmpe);
     }
 
     // stores and recycles views as they are scrolled off screen
@@ -151,7 +158,7 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
             }
             itemView.setOnClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || mClickListener == null)
+                if(position == RecyclerView.NO_POSITION || mClickListener == null || !isValidPosition(position))
                     return;
                 mClickListener.onItemClick(v, position);
             });
@@ -171,5 +178,14 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
 
     public interface ItemClickListener {
         void onItemClick(View view, int position);
+    }
+
+    private boolean isValidPosition(int position) {
+        return data != null && selected != null && position >= 0 && position < data.size() && position < selected.length;
+    }
+
+    private void notifyIfValid(int position) {
+        if(isValidPosition(position))
+            notifyItemChanged(position);
     }
 }
