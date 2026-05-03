@@ -269,7 +269,7 @@ public class ViewerActivity extends AppCompatActivity {
             });
             spinner.setAdapter(spinnerAdapter);
             strip.setLayoutManager(manager);
-            strip.setItemViewCacheSize(0);
+            strip.setItemViewCacheSize(4);
 
             if(intent.getBooleanExtra("recent",false)){
                 Intent resultIntent = new Intent();
@@ -1094,8 +1094,18 @@ public class ViewerActivity extends AppCompatActivity {
                         afterInsert.run();
                     return;
                 }
-                if(!stripAdapter.hasMangaLoaded(target))
+                PageItem anchorPage = getFirstVisiblePage();
+                int anchorOffset = 0;
+                if(anchorPage != null) {
+                    int anchorPosition = stripAdapter.findPagePosition(anchorPage);
+                    View anchorView = anchorPosition == RecyclerView.NO_POSITION ? null : manager.findViewByPosition(anchorPosition);
+                    if(anchorView != null)
+                        anchorOffset = anchorView.getTop();
+                }
+                if(!stripAdapter.hasMangaLoaded(target)) {
                     stripAdapter.insertManga(target);
+                    restorePreviousInsertAnchor(anchorPage, anchorOffset);
+                }
                 if(!stripAdapter.hasMangaLoaded(target)) {
                     if(afterInsert != null)
                         afterInsert.run();
@@ -1104,6 +1114,18 @@ public class ViewerActivity extends AppCompatActivity {
                 if(afterInsert != null)
                     afterInsert.run();
             }, 0);
+        });
+    }
+
+    private void restorePreviousInsertAnchor(PageItem anchorPage, int anchorOffset) {
+        if(anchorPage == null || strip == null || manager == null || stripAdapter == null)
+            return;
+        strip.post(() -> {
+            if(strip == null || manager == null || stripAdapter == null || isFinishing())
+                return;
+            int anchorPosition = stripAdapter.findPagePosition(anchorPage);
+            if(anchorPosition != RecyclerView.NO_POSITION)
+                manager.scrollToPositionWithOffset(anchorPosition, anchorOffset);
         });
     }
 
