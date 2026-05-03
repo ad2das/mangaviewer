@@ -21,6 +21,7 @@ import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import com.bumptech.glide.request.RequestOptions;
 import com.bumptech.glide.request.target.CustomTarget;
+import com.bumptech.glide.request.FutureTarget;
 import com.bumptech.glide.request.target.Target;
 import com.bumptech.glide.request.transition.Transition;
 
@@ -30,6 +31,10 @@ import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.Set;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -63,7 +68,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     List<Object> items;
     private final Set<String> preloadedImages = new LinkedHashSet<>();
     private final Set<String> decodedPreloads = new LinkedHashSet<>();
-    private final List<CustomTarget<Bitmap>> decodedPreloadTargets = new ArrayList<>();
+    private final List<Future<?>> decodedPreloadTasks = new ArrayList<>();
+    private final ExecutorService decodedPreloadExecutor = Executors.newSingleThreadExecutor();
     private final Map<String, Decoder> decoders = new HashMap<>();
     private final LruCache<String, Bitmap> decodedBitmapCache;
 
@@ -352,7 +358,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         items.clear();
         preloadedImages.clear();
         decodedPreloads.clear();
-        clearDecodedPreloadTargets();
+        clearDecodedPreloadTasks();
         decoders.clear();
         decodedBitmapCache.evictAll();
         clearCurrentPage();
@@ -365,7 +371,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             items.clear();
         preloadedImages.clear();
         decodedPreloads.clear();
-        clearDecodedPreloadTargets();
+        clearDecodedPreloadTasks();
+        decodedPreloadExecutor.shutdownNow();
         decoders.clear();
         decodedBitmapCache.evictAll();
         clearCurrentPage();
@@ -609,35 +616,45 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             return;
         if(!decodedPreloads.add(cacheKey))
             return;
-        CustomTarget<Bitmap> target = new CustomTarget<Bitmap>() {
-            @Override
-            public void onResourceReady(@NonNull Bitmap bitmap, Transition<? super Bitmap> transition) {
-                decodedPreloadTargets.remove(this);
-                Bitmap glideBitmap = bitmap;
-                Bitmap decoded = decoderFor(page).decode(bitmap, width);
-                Bitmap displayBitmap = buildDisplayBitmap(page, decoded);
-                displayBitmap = retainIfGlideOwned(displayBitmap, glideBitmap);
-                decodedBitmapCache.put(cacheKey, displayBitmap);
-                trimDecodedPreloadTracker();
-            }
-
-            @Override
-            public void onLoadCleared(@Nullable Drawable placeholder) {
-                decodedPreloadTargets.remove(this);
-            }
-
-            @Override
-            public void onLoadFailed(@Nullable Drawable errorDrawable) {
-                decodedPreloadTargets.remove(this);
-                decodedPreloads.remove(cacheKey);
-            }
-        };
-        decodedPreloadTargets.add(target);
-        Glide.with(mainContext.getApplicationContext())
+        FutureTarget<Bitmap> target = Glide.with(mainContext.getApplicationContext())
                 .asBitmap()
                 .apply(viewerImageOptions())
                 .load(getImageModel(page))
-                .into(target);
+                .submit(Math.max(width, 1), Target.SIZE_ORIGINAL);
+        try {
+            Future<?> task = decodedPreloadExecutor.submit(() -> {
+                try {
+                    Bitmap bitmap = target.get();
+                    if(bitmap == null || bitmap.isRecycled()) {
+                        decodedPreloads.remove(cacheKey);
+                        return;
+                    }
+                    Bitmap glideBitmap = bitmap;
+                    Bitmap decoded = decoderFor(page).decode(bitmap, width);
+                    Bitmap displayBitmap = buildDisplayBitmap(page, decoded);
+                    displayBitmap = retainIfGlideOwned(displayBitmap, glideBitmap);
+                    decodedBitmapCache.put(cacheKey, displayBitmap);
+                    trimDecodedPreloadTracker();
+                } catch (Exception e) {
+                    decodedPreloads.remove(cacheKey);
+                } finally {
+                    try {
+                        Glide.with(mainContext.getApplicationContext()).clear(target);
+                    } catch (Exception ignored) {
+                    }
+                    trimDecodedPreloadTasks();
+                }
+            });
+            synchronized (decodedPreloadTasks) {
+                decodedPreloadTasks.add(task);
+            }
+        } catch (RejectedExecutionException e) {
+            decodedPreloads.remove(cacheKey);
+            try {
+                Glide.with(mainContext.getApplicationContext()).clear(target);
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     private String preloadKey(PageItem page) {
@@ -734,10 +751,24 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         }
     }
 
-    private void clearDecodedPreloadTargets() {
-        for(CustomTarget<Bitmap> target : new ArrayList<>(decodedPreloadTargets))
-            Glide.with(mainContext.getApplicationContext()).clear(target);
-        decodedPreloadTargets.clear();
+    private void trimDecodedPreloadTasks() {
+        synchronized (decodedPreloadTasks) {
+            Iterator<Future<?>> iterator = decodedPreloadTasks.iterator();
+            while(iterator.hasNext()) {
+                Future<?> task = iterator.next();
+                if(task == null || task.isDone() || task.isCancelled())
+                    iterator.remove();
+            }
+        }
+    }
+
+    private void clearDecodedPreloadTasks() {
+        synchronized (decodedPreloadTasks) {
+            for(Future<?> task : new ArrayList<>(decodedPreloadTasks))
+                if(task != null)
+                    task.cancel(true);
+            decodedPreloadTasks.clear();
+        }
     }
 
     // total number of rows
