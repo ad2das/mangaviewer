@@ -5,6 +5,7 @@ import android.content.Intent;
 import com.google.android.material.tabs.TabLayout;
 
 import androidx.annotation.NonNull;
+import androidx.appcompat.app.ActionBar;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 
@@ -50,23 +51,29 @@ public class CommentsActivity extends AppCompatActivity {
     context = this;
     Intent intent = getIntent();
     tab = this.findViewById(R.id.tab_layout);
+    ActionBar actionBar = getSupportActionBar();
 
     String gsonData = intent.getStringExtra("comments");
-    if (gsonData.length() > 0) {
+    if (gsonData != null && gsonData.length() > 0) {
       Gson gson = new Gson();
       comments = gson.fromJson(gsonData, new TypeToken<ArrayList<Comment>>() {}.getType());
       adapter = new CommentsAdapter(context, comments);
-      getSupportActionBar().setTitle("댓글 " + comments.size());
+      if(actionBar != null)
+        actionBar.setTitle("댓글 " + adapter.getCount());
     } else {
-      getSupportActionBar().setTitle("댓글 없음");
+      adapter = new CommentsAdapter(context, new ArrayList<>());
+      if(actionBar != null)
+        actionBar.setTitle("댓글 없음");
     }
 
     gsonData = intent.getStringExtra("bestComments");
-    if (gsonData.length() > 0) {
+    if (gsonData != null && gsonData.length() > 0) {
       Gson gson = new Gson();
       bcomments = gson.fromJson(gsonData, new TypeToken<ArrayList<Comment>>() {}.getType());
       badapter = new CommentsAdapter(context, bcomments);
       // ((TextView)toolbar.findViewById(R.id.comments_title)).setText("댓글 ["+comments.size()+"]");
+    } else {
+      badapter = new CommentsAdapter(context, new ArrayList<>());
     }
 
     SectionsPagerAdapter mSectionsPagerAdapter =

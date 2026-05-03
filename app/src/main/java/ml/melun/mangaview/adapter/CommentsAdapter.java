@@ -47,6 +47,8 @@ public class CommentsAdapter extends BaseAdapter {
         if(data == null || position < 0 || position >= data.size())
             return convertView;
         Comment c = data.get(position);
+        if(c == null)
+            return convertView;
         ConstraintLayout layout = convertView.findViewById(R.id.comment_layout);
         ImageView icon = convertView.findViewById(R.id.comment_icon);
         TextView content = convertView.findViewById(R.id.comment_content);
@@ -55,8 +57,9 @@ public class CommentsAdapter extends BaseAdapter {
         TextView likes = convertView.findViewById(R.id.comment_likes);
         TextView level = convertView.findViewById(R.id.comment_level);
 
+        String iconUrl = c.getIcon() == null ? "" : c.getIcon();
         layout.setPadding(60*c.getIndent(),0,0,0);
-        if(c.getIcon().length()>1 && !save) Glide.with(icon).load(c.getIcon()).into(icon);
+        if(iconUrl.length()>1 && !save) Glide.with(icon).load(iconUrl).into(icon);
         else icon.setImageResource(R.drawable.user);
         content.setText(c.getContent());
         timeStamp.setText(c.getTimestamp());

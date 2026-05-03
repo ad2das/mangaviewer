@@ -5,6 +5,7 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.ActivityNotFoundException;
 import android.net.Uri;
 import android.os.Bundle;
 import android.widget.Toast;
@@ -73,12 +74,17 @@ public class CrashReportActivity extends Activity {
                 .appendQueryParameter("title", title)
                 .appendQueryParameter("body", body)
                 .build());
-        startActivity(intent);
+        try {
+            startActivity(intent);
+        } catch (ActivityNotFoundException e) {
+            copyReport(report);
+        }
     }
 
     private void copyReport(String report) {
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        clipboard.setPrimaryClip(ClipData.newPlainText("mangaview_crash_report", report));
+        if(clipboard != null)
+            clipboard.setPrimaryClip(ClipData.newPlainText("mangaview_crash_report", report));
         Toast.makeText(this, "오류 리포트를 복사했습니다.", Toast.LENGTH_SHORT).show();
     }
 
