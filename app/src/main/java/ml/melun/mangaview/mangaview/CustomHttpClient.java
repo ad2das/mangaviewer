@@ -103,6 +103,8 @@ public class CustomHttpClient {
     }
 
     public synchronized void setCookie(String k, String v){
+        if(k == null || k.length() == 0 || v == null)
+            return;
         cookies.put(k, v);
         persistCookies();
     }
@@ -162,7 +164,9 @@ public class CustomHttpClient {
             JSONObject obj = new JSONObject(saved);
             for(java.util.Iterator<String> it = obj.keys(); it.hasNext();){
                 String k = it.next();
-                cookies.put(k, obj.getString(k));
+                String v = obj.optString(k, null);
+                if(k != null && k.length() > 0 && v != null)
+                    cookies.put(k, v);
             }
         } catch (Exception e) {
             e.printStackTrace();
@@ -172,8 +176,11 @@ public class CustomHttpClient {
     private synchronized void persistCookies(){
         try {
             JSONObject obj = new JSONObject();
-            for(String k : cookies.keySet())
-                obj.put(k, cookies.get(k));
+            for(String k : cookies.keySet()) {
+                String value = cookies.get(k);
+                if(k != null && value != null)
+                    obj.put(k, value);
+            }
             context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
                     .edit()
                     .putString("httpCookies", obj.toString())
@@ -233,7 +240,9 @@ public class CustomHttpClient {
                     .get();
             if(headers !=null)
                 for(String k : headers.keySet()){
-                    builder.addHeader(k, headers.get(k));
+                    String value = headers.get(k);
+                    if(k != null && value != null)
+                        builder.addHeader(k, value);
                 }
 
             Request request = builder.build();
@@ -528,9 +537,12 @@ public class CustomHttpClient {
 
         StringBuilder cbuilder = new StringBuilder();
         for(String key : cookie.keySet()){
+            String value = cookie.get(key);
+            if(key == null || value == null)
+                continue;
             cbuilder.append(key);
             cbuilder.append('=');
-            cbuilder.append(cookie.get(key));
+            cbuilder.append(value);
             cbuilder.append("; ");
         }
         if(cbuilder.length()>2)
