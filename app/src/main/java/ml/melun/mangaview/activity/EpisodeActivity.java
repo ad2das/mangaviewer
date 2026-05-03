@@ -88,7 +88,7 @@ public class EpisodeActivity extends AppCompatActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if(resultCode== RESULT_OK){
+        if(resultCode== RESULT_OK && data != null){
             int newid = data.getIntExtra("id", -1);
             if(newid>0 && newid!=bookmarkId){
                 bookmarkId = newid;
@@ -123,6 +123,10 @@ public class EpisodeActivity extends AppCompatActivity {
         setContentView(R.layout.activity_episode);
         Intent intent = getIntent();
         title = new Gson().fromJson(intent.getStringExtra("title"),new TypeToken<Title>(){}.getType());
+        if(title == null) {
+            finish();
+            return;
+        }
         online = intent.getBooleanExtra("online", true);
         if(title.useBookmark())
             bookmarkId = p.getBookmark(title);
@@ -164,9 +168,17 @@ public class EpisodeActivity extends AppCompatActivity {
             episodes = new ArrayList<>();
 
             //get child folder list of title dir
+            if(title.getPath() == null || title.getPath().length() == 0) {
+                finish();
+                return;
+            }
             if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
                 //scoped storage
                 DocumentFile titleDir = DocumentFile.fromTreeUri(context, Uri.parse(title.getPath()));
+                if(titleDir == null) {
+                    finish();
+                    return;
+                }
                 DocumentFile data = titleDir.findFile("title.gson");
                 if(data!=null){
                     mode = 3;
@@ -176,6 +188,8 @@ public class EpisodeActivity extends AppCompatActivity {
                     }
 
                     episodes = title.getEps();
+                    if(episodes == null)
+                        episodes = new ArrayList<>();
                     for(DocumentFile f : getOfflineEpisodes(titleDir)){
                         String name = f.getName();
                         try {
@@ -291,7 +305,8 @@ public class EpisodeActivity extends AppCompatActivity {
         }
         findViewById(R.id.upfab).setOnClickListener(v -> episodeList.scrollToPosition(0));
         findViewById(R.id.downfab).setOnClickListener(v -> {
-            episodeList.scrollToPosition(episodes.size()); //헤더가 0이기 때문
+            if(episodes != null)
+                episodeList.scrollToPosition(episodes.size()); //헤더가 0이기 때문
         });
         if(canResumeBookmark())
             resumefab.show();
@@ -309,7 +324,8 @@ public class EpisodeActivity extends AppCompatActivity {
             @Override
             public void onItemClick(int position, Manga selected) {
                 //add local images to manga
-                openViewer(selected,0);
+                if(selected != null)
+                    openViewer(selected,0);
             }
             @Override
             public void onStarClick(){
@@ -324,7 +340,7 @@ public class EpisodeActivity extends AppCompatActivity {
 
             @Override
             public void onAuthorClick() {
-                if(title.getAuthor().length()>0){
+                if(title.getAuthor() != null && title.getAuthor().length()>0){
                     Intent i = new Intent(context, TagSearchActivity.class);
                     i.putExtra("query",title.getAuthor());
                     i.putExtra("mode",1);
@@ -353,12 +369,19 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     private class getEpisodes extends LifecycleTask<Void,Void,Integer> {
+        getEpisodes() {
+            super(EpisodeActivity.this);
+        }
+
         protected void onPreExecute() {
             super.onPreExecute();
-            progress.setVisibility(View.VISIBLE);
+            if(progress != null)
+                progress.setVisibility(View.VISIBLE);
         }
 
         protected Integer doInBackground(Void... params) {
+            if(title == null)
+                return 1;
             int code = title.fetchEps(httpClient);
             episodes = title.getEps();
             return code;
@@ -398,6 +421,8 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     public void openViewer(Manga manga, int code){
+        if(manga == null)
+            return;
         manga.setMode(mode);
         Intent viewer = null;
         switch (p.getViewerType()){
@@ -411,6 +436,8 @@ public class EpisodeActivity extends AppCompatActivity {
                 viewer = new Intent(context, ViewerActivity2.class);
                 break;
         }
+        if(viewer == null)
+            viewer = new Intent(context, ViewerActivity.class);
         viewer.putExtra("manga", new Gson().toJson(manga));
         viewer.putExtra("title", new Gson().toJson(title));
         viewer.putExtra("recent",true);

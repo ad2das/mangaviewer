@@ -45,6 +45,10 @@ public class DownloadActivity extends AppCompatActivity {
         Intent intent = getIntent();
         try {
             title = new Gson().fromJson(intent.getStringExtra("title"),new TypeToken<Title>(){}.getType());
+            if(title == null) {
+                finish();
+                return;
+            }
             eplist.setLayoutManager(new NpaLinearLayoutManager(this));
             adapter = new SelectEpisodeAdapter(getApplicationContext(),title.getEps());
             adapter.setClickListener((view, position) -> adapter.select(position));
@@ -54,6 +58,8 @@ public class DownloadActivity extends AppCompatActivity {
         }
         Button dl = findViewById(R.id.dl_btn);
         dl.setOnClickListener(v -> {
+            if(adapter == null)
+                return;
             if(adapter.getSelected(false).length()>0) {
                 selected = adapter.getSelected(false);
                 downloadClick();
@@ -63,18 +69,25 @@ public class DownloadActivity extends AppCompatActivity {
         });
         Button dlAll = findViewById(R.id.dl_all_btn);
         dlAll.setOnClickListener(v -> {
+            if(adapter == null)
+                return;
             selected = adapter.getSelected(true);
             downloadClick();
         });
-        getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+        if(getSupportActionBar() != null)
+            getSupportActionBar().setDisplayHomeAsUpEnabled(true);
 
         Button selectionMode = findViewById(R.id.dl_mode_btn);
         selectionMode.setOnClickListener(view -> {
             if(singleSelect){
+                if(adapter == null)
+                    return;
                 singleSelect = false;
                 selectionMode.setText("범위 선택 모드");
                 adapter.setSelectionMode(singleSelect);
             }else{
+                if(adapter == null)
+                    return;
                 singleSelect = true;
                 selectionMode.setText("단일 선택 모드");
                 adapter.setSelectionMode(singleSelect);
@@ -91,6 +104,8 @@ public class DownloadActivity extends AppCompatActivity {
 
 
     private void downloadClick(){
+        if(title == null || selected == null)
+            return;
         //download manga
         //ask for confirmation
         DialogInterface.OnClickListener dialogClickListener = (dialog, which) -> {
