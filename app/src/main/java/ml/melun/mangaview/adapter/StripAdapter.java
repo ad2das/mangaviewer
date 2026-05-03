@@ -271,6 +271,20 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         return item instanceof PageItem ? (PageItem)item : null;
     }
 
+    public boolean isDisplayReady(int position) {
+        if(items == null || position < 0 || position >= items.size())
+            return true;
+        Object item = items.get(position);
+        if(!(item instanceof PageItem))
+            return true;
+        String cacheKey = decodedCacheKey((PageItem)item);
+        Bitmap cached = decodedBitmapCache.get(cacheKey);
+        if(cached != null && !cached.isRecycled())
+            return true;
+        preloadPage((PageItem)item);
+        return false;
+    }
+
     // data is passed into the constructor
     public StripAdapter(Context context, Manga manga, Boolean cut, int width, Title title, ViewerActivity.InfiniteScrollCallback callback) {
         autoCut = cut;

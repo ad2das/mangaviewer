@@ -106,8 +106,8 @@ public class ViewerActivity extends AppCompatActivity {
     boolean nextEpisodeBoundaryLoading = false;
     boolean previousEpisodeBoundaryJumpPending = false;
     boolean nextEpisodeBoundaryJumpPending = false;
-    private static final int NEXT_EPISODE_PRELOAD_LIMIT = 3;
-    private static final int DATA_SAVE_NEXT_EPISODE_PRELOAD_LIMIT = 1;
+    private static final int NEXT_EPISODE_PRELOAD_LIMIT = 6;
+    private static final int DATA_SAVE_NEXT_EPISODE_PRELOAD_LIMIT = 2;
     private static final int PREVIOUS_EPISODE_PULL_THRESHOLD_DP = 36;
     float topPullStartY = 0;
     boolean topPullTriggered = false;
@@ -1052,7 +1052,7 @@ public class ViewerActivity extends AppCompatActivity {
         int preloadLimit = p.getDataSave() ? DATA_SAVE_NEXT_EPISODE_PRELOAD_LIMIT : NEXT_EPISODE_PRELOAD_LIMIT;
         int limit = Math.min(preloadLimit, images.size());
         for(int i = 0; i < limit; i++)
-            Glide.with(context)
+            Glide.with(context.getApplicationContext())
                     .asBitmap()
                     .apply(viewerPreloadOptions())
                     .load(Utils.getGlideUrl(images.get(i), target.getBaseMode()))

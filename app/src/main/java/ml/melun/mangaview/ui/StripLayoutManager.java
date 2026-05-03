@@ -38,6 +38,16 @@ public class StripLayoutManager extends NpaLinearLayoutManager {
         super.onAdapterChanged(oldAdapter, newAdapter);
         adapter = (StripAdapter) newAdapter;
     }
+
+    @Override
+    public int scrollVerticallyBy(int dy, RecyclerView.Recycler recycler, RecyclerView.State state) {
+        if(adapter != null && dy != 0) {
+            int targetPosition = dy > 0 ? findLastVisibleItemPosition() + 1 : findFirstVisibleItemPosition() - 1;
+            if(targetPosition >= 0 && targetPosition < adapter.getItemCount() && !adapter.isDisplayReady(targetPosition))
+                return 0;
+        }
+        return super.scrollVerticallyBy(dy, recycler, state);
+    }
     
     public void scrollToPage(PageItem page){
         if(adapter == null || page == null)
