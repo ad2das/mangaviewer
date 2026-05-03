@@ -21,10 +21,12 @@ public class UrlUpdater extends LifecycleTask<Void, Void, Boolean> {
     Context c;
     UrlUpdaterCallback callback;
     public UrlUpdater(Context c){
+        super(c);
         this.c = c;
         this.fetchUrl = p.getDefUrl();
     }
     public UrlUpdater(Context c, boolean silent, UrlUpdaterCallback callback, String defUrl){
+        super(c);
         this.c = c;
         this.silent = silent;
         this.callback = callback;
