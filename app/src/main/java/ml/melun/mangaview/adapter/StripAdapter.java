@@ -54,8 +54,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     int width;
     int count = 0;
     final static int MaxStackSize = 3;
-    private static final int PRELOAD_AHEAD_COUNT = 6;
-    private static final int DATA_SAVE_PRELOAD_AHEAD_COUNT = 2;
+    private static final int PRELOAD_AHEAD_COUNT = 3;
+    private static final int DATA_SAVE_PRELOAD_AHEAD_COUNT = 1;
     private static final int PRELOAD_TRACK_LIMIT = 200;
     ViewerActivity.InfiniteScrollCallback callback;
     Title title;
@@ -334,6 +334,16 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         clearCurrentPage();
         count = 0;
         notifyItemRangeRemoved(0, size);
+    }
+
+    public void release() {
+        if(items != null)
+            items.clear();
+        preloadedImages.clear();
+        decoders.clear();
+        decodedBitmapCache.evictAll();
+        clearCurrentPage();
+        count = 0;
     }
 
     @Override
@@ -638,9 +648,9 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     private int decodedCacheSizeKb() {
         int maxMemoryKb = (int)(Runtime.getRuntime().maxMemory() / 1024);
-        int targetKb = maxMemoryKb / (p.getDataSave() ? 16 : 8);
-        int minKb = p.getDataSave() ? 4 * 1024 : 8 * 1024;
-        int maxKb = p.getDataSave() ? 12 * 1024 : 32 * 1024;
+        int targetKb = maxMemoryKb / (p.getDataSave() ? 24 : 16);
+        int minKb = p.getDataSave() ? 2 * 1024 : 4 * 1024;
+        int maxKb = p.getDataSave() ? 8 * 1024 : 16 * 1024;
         return Math.max(minKb, Math.min(targetKb, maxKb));
     }
 

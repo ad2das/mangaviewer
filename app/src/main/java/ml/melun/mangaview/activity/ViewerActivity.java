@@ -106,8 +106,8 @@ public class ViewerActivity extends AppCompatActivity {
     boolean nextEpisodeBoundaryLoading = false;
     boolean previousEpisodeBoundaryJumpPending = false;
     boolean nextEpisodeBoundaryJumpPending = false;
-    private static final int NEXT_EPISODE_PRELOAD_LIMIT = 8;
-    private static final int DATA_SAVE_NEXT_EPISODE_PRELOAD_LIMIT = 3;
+    private static final int NEXT_EPISODE_PRELOAD_LIMIT = 3;
+    private static final int DATA_SAVE_NEXT_EPISODE_PRELOAD_LIMIT = 1;
     private static final int PREVIOUS_EPISODE_PULL_THRESHOLD_DP = 36;
     float topPullStartY = 0;
     boolean topPullTriggered = false;
@@ -274,6 +274,7 @@ public class ViewerActivity extends AppCompatActivity {
             });
             spinner.setAdapter(spinnerAdapter);
             strip.setLayoutManager(manager);
+            strip.setItemViewCacheSize(0);
 
             if(intent.getBooleanExtra("recent",false)){
                 Intent resultIntent = new Intent();
@@ -387,7 +388,7 @@ public class ViewerActivity extends AppCompatActivity {
         }
         cancelActiveEpisodeLoader();
         cancelNextPrefetcher();
-        if(stripAdapter!=null) stripAdapter.removeAll();
+        clearStripAdapter();
         if(m.isOnline()) {
             if(hasLoadedImages(m)) {
                 setManga(m);
@@ -407,6 +408,15 @@ public class ViewerActivity extends AppCompatActivity {
             m = eps.get(eps.indexOf(m));
             setManga(m);
         }
+    }
+
+    private void clearStripAdapter() {
+        if(strip == null || stripAdapter == null)
+            return;
+        StripAdapter oldAdapter = stripAdapter;
+        strip.setAdapter(null);
+        oldAdapter.release();
+        stripAdapter = null;
     }
 
 
@@ -503,7 +513,7 @@ public class ViewerActivity extends AppCompatActivity {
             cut.setBackgroundResource(R.drawable.button_bg_on);
             //viewerBookmark *= 2;
         }
-        stripAdapter.removeAll();
+        clearStripAdapter();
         stripAdapter = new StripAdapter(context, page.manga, autoCut, width,title, infiniteScrollCallback);
         refreshAdapter();
         manager.scrollToPage(page);
@@ -1179,6 +1189,7 @@ public class ViewerActivity extends AppCompatActivity {
         if(loader != null)
             loader.cancel();
         cancelNextPrefetcher();
+        clearStripAdapter();
         imageLoadExecutor.shutdownNow();
         super.onDestroy();
     }
