@@ -298,14 +298,7 @@ public class Manga {
                     addImageIfValid(client, seenImages, src);
             }
 
-            if(title != null && title.getEps() != null && title.getEps().size() > 0) {
-                eps = title.getEps();
-                for(Manga ep : eps) {
-                    ep.setMode(0);
-                    ep.setTitle(title);
-                    ep.setTitleId(titleId);
-                }
-            } else {
+            if(!useWolfTitleEpisodes(client, titleId)) {
                 Manga next = wolfEpisode(d.selectFirst("section.webtoon-bottom li.next a[href^=\"" + epPath + titleId + "\"]"), titleId);
                 Manga prev = wolfEpisode(d.selectFirst("section.webtoon-bottom li.prev a[href^=\"" + epPath + titleId + "\"]"), titleId);
                 if(next != null)
@@ -327,6 +320,29 @@ public class Manga {
             }
         }
         return LOAD_OK;
+    }
+
+    private boolean useWolfTitleEpisodes(CustomHttpClient client, int titleId) {
+        if(title == null && titleId > 0)
+            title = new Title(name, "", "", null, "", titleId, baseMode);
+        if(title == null)
+            return false;
+
+        if(title.getEps() == null || title.getEps().size() == 0)
+            title.fetchEps(client);
+        if(title.getEps() == null || title.getEps().size() == 0)
+            return false;
+
+        eps = title.getEps();
+        for(Manga ep : eps) {
+            if(ep == null)
+                continue;
+            ep.setMode(0);
+            ep.setTitle(title);
+            ep.setTitleId(titleId);
+        }
+        this.titleId = titleId;
+        return true;
     }
 
     private boolean addImageIfValid(CustomHttpClient client, Set<String> seenImages, String img) {
