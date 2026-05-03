@@ -63,10 +63,7 @@ import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getGlideUrl;
 import static ml.melun.mangaview.Utils.getScreenSize;
 import static ml.melun.mangaview.Utils.hideSpinnerDropDown;
-import static ml.melun.mangaview.Utils.showCaptchaPopup;
-import static ml.melun.mangaview.Utils.showTokiCaptchaPopup;
-import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
-import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
+import static ml.melun.mangaview.Utils.showErrorPopup;
 
 public class ViewerActivity2 extends AppCompatActivity {
     Boolean dark, toolbarshow=true, reverse, touch=true, stretch, leftRight;
@@ -93,7 +90,6 @@ public class ViewerActivity2 extends AppCompatActivity {
     AlertDialog.Builder alert;
     int swidth = 0;
     Intent intent;
-    boolean captchaChecked = false;
     ImageButton toolbar_toggleBtn;
     CustomSpinner spinner;
     CustomSpinnerAdapter spinnerAdapter;
@@ -551,7 +547,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                             });
                 }catch(Exception e) {
                     e.printStackTrace();
-                    Utils.showCaptchaPopup(manga.getUrl(), context, e, p);
+                    showErrorPopup(context, "이미지를 불러오지 못했습니다.", e, true);
                 }
                 //일단 왼쪽거 냅두다가, 오른쪽이 landscape일 경우, GONE 처리
             }
@@ -728,7 +724,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                     });
         }catch(Exception e) {
             e.printStackTrace();
-            Utils.showCaptchaPopup(manga.getUrl(), context, e, p);
+            showErrorPopup(context, "이미지를 불러오지 못했습니다.", e, true);
         }
     }
 
@@ -854,12 +850,6 @@ public class ViewerActivity2 extends AppCompatActivity {
             if(title == null)
                 title = target.getTitle();
 
-            if(res == LOAD_CAPTCHA) {
-                //캡차 처리 팝업
-                showTokiCaptchaPopup(context, p);
-                return;
-            }
-
             reloadManga();
 
             //show info overlay
@@ -940,7 +930,7 @@ public class ViewerActivity2 extends AppCompatActivity {
             lockUi(false);
             imgs = manga.getImgs(context);
             if(imgs == null || imgs.size()==0) {
-                showCaptchaPopup(manga.getUrl(), context, p);
+                showErrorPopup(context, "이미지를 불러오지 못했습니다.", null, true);
                 return;
             }
             d = new Decoder(manga.getSeed(), manga.getId());
@@ -983,7 +973,6 @@ public class ViewerActivity2 extends AppCompatActivity {
     }
 
     public void refresh(){
-        captchaChecked = false;
         if(imageLoadTask != null)
             imageLoadTask.cancel(true);
         imageLoadTask = new loadImages(manga);
@@ -1039,14 +1028,6 @@ public class ViewerActivity2 extends AppCompatActivity {
         }
 
         pageBtn.setText(getString(R.string.viewer_page_counter, viewerBookmark + 1, imgs.size()));
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (resultCode == RESULT_CAPTCHA) {
-            refresh();
-        }
     }
 
 //    @Override

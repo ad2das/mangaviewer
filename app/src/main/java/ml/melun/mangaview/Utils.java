@@ -14,7 +14,6 @@ import android.graphics.Point;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.widget.PopupMenu;
 import androidx.documentfile.provider.DocumentFile;
-import androidx.fragment.app.Fragment;
 
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
@@ -27,11 +26,9 @@ import android.util.DisplayMetrics;
 import android.view.Display;
 import android.view.View;
 import android.widget.EditText;
-import android.widget.ImageView;
 import android.widget.Spinner;
 import android.widget.Toast;
 
-import com.bumptech.glide.Glide;
 import com.bumptech.glide.load.model.GlideUrl;
 import com.bumptech.glide.load.model.LazyHeaders;
 import com.google.gson.Gson;
@@ -51,31 +48,22 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-import ml.melun.mangaview.activity.CaptchaActivity;
 import ml.melun.mangaview.activity.EpisodeActivity;
 import ml.melun.mangaview.activity.ViewerActivity;
 import ml.melun.mangaview.activity.ViewerActivity2;
 import ml.melun.mangaview.activity.ViewerActivity3;
 import ml.melun.mangaview.interfaces.IntegerCallback;
 import ml.melun.mangaview.interfaces.StringCallback;
-import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
-import okhttp3.FormBody;
-import okhttp3.RequestBody;
-import okhttp3.Response;
 
-import static java.lang.System.currentTimeMillis;
 import static ml.melun.mangaview.MainApplication.httpClient;
 import static ml.melun.mangaview.MainApplication.p;
-import static ml.melun.mangaview.activity.CaptchaActivity.REQUEST_CAPTCHA;
-import static ml.melun.mangaview.activity.SettingsActivity.urlSettingPopup;
 
 public class Utils {
     private static final String MANGA_STATE_V2 = "manga_state_v2";
@@ -85,8 +73,6 @@ public class Utils {
     private static final String MANGA_BASE_MODE = "manga_base_mode";
     private static final String MANGA_MODE = "manga_mode";
     private static final String MANGA_OFFLINE_PATH = "manga_offline_path";
-
-    private static int captchaCount = 1;
 
     public static final String ReservedChars = "|\\?*<\":>+[]/'";
 
@@ -343,177 +329,6 @@ public class Utils {
             NetworkInfo activeNetworkInfo = connectivityManager.getActiveNetworkInfo();
             return activeNetworkInfo != null && activeNetworkInfo.isConnectedOrConnecting();
         }else return false;
-    }
-
-
-
-    public static void showCaptchaPopup(String url, Context context, int code, Exception e, boolean force_close, Fragment fragment, Preference p){
-        if(context instanceof Activity) {
-            if (!checkConnection(context)) {
-                //no internet
-                //showErrorPopup(context, "네트워크 연결이 없습니다.", e, force_close);
-                Toast.makeText(context, "네트워크 연결이 없습니다.", Toast.LENGTH_LONG).show();
-                if (force_close) ((Activity) context).finish();
-            } else if (captchaCount == 0) {
-                startCaptchaActivity(context, code, fragment, url);
-            } else {
-                AlertDialog.Builder builder;
-                String title = "오류";
-                String content = "정보를 불러오는데 실패하였습니다.";
-                if (new Preference(context).getDarkTheme())
-                    builder = new AlertDialog.Builder(context, R.style.darkDialog);
-                else builder = new AlertDialog.Builder(context);
-                builder.setTitle(title)
-                        .setMessage(content)
-                        .setNeutralButton("확인", (dialogInterface, i) -> {
-                            if (force_close) ((Activity) context).finish();
-                        })
-                        .setPositiveButton("CAPTCHA 인증", (dialog, which) -> startCaptchaActivity(context, code, fragment, url))
-                        .setNegativeButton("URL 설정", (dialogInterface, i) -> urlSettingPopup(context, p))
-                        .setOnCancelListener(dialogInterface -> {
-                            if (force_close) ((Activity) context).finish();
-                        });
-                if (e != null) {
-                    builder.setNeutralButton("자세히", (dialog, which) -> showStackTrace(context, e));
-                }
-                try {
-                    builder.show();
-                } catch (Exception e2) {
-                    e2.printStackTrace();
-                }
-            }
-            captchaCount++;
-        }
-    }
-
-    static void startCaptchaActivity(Context context, int code, Fragment fragment, String url){
-        if(!(context instanceof Activity))
-            return;
-        Intent captchaIntent = new Intent(context, CaptchaActivity.class);
-        if(url != null && url.startsWith("/"))
-            url = httpClient.getUrl(url) + url;
-        captchaIntent.putExtra("url", url);
-        if(fragment == null)
-            ((Activity)context).startActivityForResult(captchaIntent, code);
-        else
-            fragment.startActivityForResult(captchaIntent, code);
-    }
-
-    static void startCaptchaActivity(Context context, int code, Fragment fragment){
-        if(!(context instanceof Activity))
-            return;
-        Intent captchaIntent = new Intent(context, CaptchaActivity.class);
-        if(fragment == null)
-            ((Activity)context).startActivityForResult(captchaIntent, code);
-        else
-            fragment.startActivityForResult(captchaIntent, code);
-    }
-
-    public static void showCaptchaPopup(String url, Context context, int code, Exception e, boolean force_close, Preference p) {
-        showCaptchaPopup(url, context,code,e,force_close,null, p);
-    }
-
-    public static void showCaptchaPopup(String url, Context context, Exception e, Preference p) {
-        // viewer call
-        showCaptchaPopup(url, context, REQUEST_CAPTCHA, e, true, p);
-    }
-
-    public static void showCaptchaPopup(String url, Context context, int code, Preference p){
-        // menu call
-        showCaptchaPopup(url, context, code, null, false, p);
-    }
-
-    public static void showCaptchaPopup(String url, Context context, int code, Fragment fragment, Preference p){
-        // menu call
-        showCaptchaPopup(url, context, code, null, false, fragment, p);
-    }
-
-    public static void showCaptchaPopup(Context context, int code, Fragment fragment, Preference p){
-        // menu call
-        showCaptchaPopup(null, context, code, null, false, fragment, p);
-    }
-
-    public static void showCaptchaPopup(String url, Context context, Preference p){
-        // viewer call
-        showCaptchaPopup(url, context, 0, null, true, p);
-    }
-    public static void showCaptchaPopup(Context context, Preference p){
-        // viewer call
-        showCaptchaPopup(null, context, 0, null, true, p);
-    }
-
-
-    public static void showTokiCaptchaPopup(Context context, Preference p){
-        if(!(context instanceof Activity))
-            return;
-        AlertDialog.Builder builder;
-        String title = "캡차 인증";
-        if (new Preference(context).getDarkTheme())
-            builder = new AlertDialog.Builder(context, R.style.darkDialog);
-        else builder = new AlertDialog.Builder(context);
-        View v = ((Activity)context).getLayoutInflater().inflate(R.layout.content_toki_captcha_popup, null);
-
-        ImageView img = v.findViewById(R.id.toki_captcha_image);
-        EditText answer = v.findViewById(R.id.toki_captcha_answer);
-
-        new Thread(() -> {
-            int tries = 3;
-            while(tries > 0) {
-                Response r = null;
-                try {
-                    r = httpClient.post(p.getUrl() + "/plugin/kcaptcha/kcaptcha_session.php", new FormBody.Builder().build(), new HashMap<>(), true);
-                    if(r != null && r.code() == 200) {
-                        List<String> setcookie = r.headers("Set-Cookie");
-                        for (String c : setcookie) {
-                            if (c.contains("PHPSESSID=")) {
-                                String cookie = c.substring(c.indexOf("=") + 1, c.indexOf(";"));
-                                httpClient.setCookie("PHPSESSID", cookie);
-                            }
-                        }
-                        break;
-                    }
-                } finally {
-                    if(r != null)
-                        r.close();
-                }
-                tries--;
-            }
-            try {
-                Response r = httpClient.mget("/plugin/kcaptcha/kcaptcha_image.php?t=" + currentTimeMillis(), false);
-                final byte[] b = CustomHttpClient.readBytes(r);
-                ((Activity) context).runOnUiThread(() -> Glide.with(img)
-                        .load(b)
-                        .into(img));
-            }catch (Exception e){
-                e.printStackTrace();
-            }
-        }).start();
-
-        builder.setTitle(title)
-                .setView(v)
-                .setPositiveButton(android.R.string.ok, (dialog, which) -> new Thread(() -> {
-                    RequestBody requestBody = new FormBody.Builder()
-                            .addEncoded("url", p.getUrl())
-                            .addEncoded("captcha_key", answer.getText().toString())
-                            .build();
-                    Map<String, String> headers = new HashMap<>();
-                    headers.put("cookie", "PHPSESSID=" + httpClient.getCookie("PHPSESSID") + ";");
-                    Response response = null;
-                    try {
-                        response = httpClient.post(p.getUrl() + "/bbs/captcha_check.php", requestBody, headers, true);
-                    } finally {
-                        if(response != null)
-                            response.close();
-                    }
-                    ((Activity) context).runOnUiThread(() -> {
-                        ((Activity) context).finish();
-                        ((Activity) context).startActivity(((Activity) context).getIntent());
-                    });
-                }).start())
-                .setNegativeButton(android.R.string.cancel, (dialogInterface, i) -> ((Activity) context).finish())
-                .setOnCancelListener(dialogInterface -> ((Activity) context).finish());
-
-        builder.show();
     }
     public static GlideUrl getGlideUrl(String image){
         return getGlideUrl(image, guessImageBaseMode(image));

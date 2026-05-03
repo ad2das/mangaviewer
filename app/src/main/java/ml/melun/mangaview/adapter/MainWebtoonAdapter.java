@@ -697,11 +697,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             super.onPostExecute(hasAnyResult);
             if(fetcher == this)
                 fetcher = null;
-            if(!hasAnyResult) {
-                if(listener != null)
-                    listener.captchaCallback();
+            if(!hasAnyResult)
                 return;
-            }
             if(baseMode == base_webtoon)
                 MainPageWebtoon.enhanceWebtoonClassification(dataSet);
             updateRows(buildRows(dataSet, false));

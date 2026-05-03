@@ -28,7 +28,6 @@ public class Title extends MTitle {
     public static final int BATTERY_THREE_QUARTER = 3;
     public static final int BATTERY_FULL = 4;
     public static final int LOAD_OK = 0;
-    public static final int LOAD_CAPTCHA = 1;
     private static final long PAGE_CACHE_TTL_MS = 2 * 60 * 1000L;
     private static final int MAX_TIMEOUT_RETRIES = 2;
 
@@ -74,8 +73,6 @@ public class Title extends MTitle {
         for(int attempt = 0; attempt <= MAX_TIMEOUT_RETRIES; attempt++) {
             try {
                 CustomHttpClient.PageResponse page = client.mgetCachedPage('/'+baseModeStr(baseMode)+'/'+ id, PAGE_CACHE_TTL_MS);
-                if(page.code == 302)
-                    return LOAD_CAPTCHA;
                 String body = page.body;
                 if(body.contains("Connect Error: Connection timed out"))
                     continue;

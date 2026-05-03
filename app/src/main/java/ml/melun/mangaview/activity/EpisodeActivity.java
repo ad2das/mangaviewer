@@ -47,10 +47,7 @@ import static ml.melun.mangaview.MainApplication.httpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.CODE_SCOPED_STORAGE;
 import static ml.melun.mangaview.Utils.getOfflineEpisodes;
-import static ml.melun.mangaview.Utils.showCaptchaPopup;
-import static ml.melun.mangaview.Utils.showTokiCaptchaPopup;
-import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
-import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
+import static ml.melun.mangaview.Utils.showErrorPopup;
 
 
 public class EpisodeActivity extends AppCompatActivity {
@@ -127,10 +124,6 @@ public class EpisodeActivity extends AppCompatActivity {
                 resumefab.show();
             else
                 resumefab.hide();
-        }else if(resultCode == RESULT_CAPTCHA){
-            //captcha Checked
-            finish();
-            startActivity(getIntent());
         }
     }
 
@@ -433,7 +426,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 Title prefetchTitle = source.clone();
                 int result = prefetchTitle.fetchEps(httpClient);
                 List<Manga> prefetchEpisodes = prefetchTitle.getEps();
-                if(result != LOAD_CAPTCHA && prefetchEpisodes != null && prefetchEpisodes.size() > 0)
+                if(prefetchEpisodes != null && prefetchEpisodes.size() > 0)
                     putCachedEpisodesInCache(prefetchTitle, prefetchEpisodes);
             } catch (Exception e) {
                 e.printStackTrace();
@@ -523,16 +516,10 @@ public class EpisodeActivity extends AppCompatActivity {
             if(episodeTask != this)
                 return;
             episodeTask = null;
-            if(res == LOAD_CAPTCHA){
+            if(episodes == null || episodes.size()==0){
                 if(hasCachedEpisodes)
                     return;
-                //캡차 처리 팝업
-                showTokiCaptchaPopup(context, p);
-                return;
-            }else if(episodes == null || episodes.size()==0){
-                if(hasCachedEpisodes)
-                    return;
-                showCaptchaPopup(title.getUrl(), context, p);
+                showErrorPopup(context, "회차 정보를 불러오지 못했습니다.", null, true);
                 return;
             }else {
                 putCachedEpisodesInCache(title, episodes);

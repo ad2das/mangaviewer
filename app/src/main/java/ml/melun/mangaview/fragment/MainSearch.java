@@ -41,7 +41,6 @@ import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
 import static ml.melun.mangaview.Utils.openViewer;
 import static ml.melun.mangaview.Utils.popup;
-import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 
 public class MainSearch extends Fragment {
     SwipyRefreshLayout swipe;
@@ -188,13 +187,6 @@ public class MainSearch extends Fragment {
 
 
     @Override
-    public void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if(resultCode == RESULT_CAPTCHA && searchAdapter!=null && search != null)
-            searchSubmit();
-    }
-
-    @Override
     public void onDestroyView() {
         if(searchTask != null)
             searchTask.cancel(true);
@@ -236,7 +228,7 @@ public class MainSearch extends Fragment {
                 res = 1;
             if(res != 0){
                 // error
-                Utils.showCaptchaPopup(getContext(), 4, fragment, p);
+                Utils.showErrorPopup(getContext(), "검색 결과를 불러오지 못했습니다.", null, false);
             }
 
             if(searchAdapter.getItemCount()==0) {

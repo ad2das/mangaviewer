@@ -426,7 +426,6 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         void clickedRelease(String t);
         void clickedTitle(Title t);
         void clickedMoreUpdated();
-        void captchaCallback();
         void clickedSearch(String query);
         void clickedRetry();
         void clickedCategoryPath(String title, String path);
@@ -461,11 +460,6 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             if(u == null)
                 return;
             //update adapters?
-            if(u.getRecent().size() == 0){
-                // captcha?
-                if(mainClickListener != null)
-                    mainClickListener.captchaCallback();
-            }
             uadapter.setData(u.getRecent());
 
             replaceSection(weekh, u.getWeeklyRanking());

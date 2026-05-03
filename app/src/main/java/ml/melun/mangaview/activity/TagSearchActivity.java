@@ -4,7 +4,6 @@ import android.content.Context;
 import android.content.Intent;
 import ml.melun.mangaview.task.LifecycleTask;
 
-import androidx.annotation.Nullable;
 import androidx.appcompat.app.ActionBar;
 import androidx.appcompat.app.AppCompatActivity;
 import android.os.Bundle;
@@ -38,9 +37,8 @@ import ml.melun.mangaview.mangaview.UpdatedManga;
 import static ml.melun.mangaview.MainApplication.httpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
-import static ml.melun.mangaview.Utils.showCaptchaPopup;
+import static ml.melun.mangaview.Utils.showErrorPopup;
 import static ml.melun.mangaview.Utils.viewerIntent;
-import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 
 public class TagSearchActivity extends AppCompatActivity {
@@ -197,7 +195,7 @@ public class TagSearchActivity extends AppCompatActivity {
             if(!prepareLoadResult(this))
                 return;
             if(integer != 0){
-                showCaptchaPopup(context, p);
+                showErrorPopup(context, "목록을 불러오지 못했습니다.", null, false);
             }
             if(adapter.getItemCount()==0) {
                 adapter.addData(bookmark.getResult());
@@ -292,7 +290,7 @@ public class TagSearchActivity extends AppCompatActivity {
             if(res == null)
                 res = 1;
             if(res != 0){
-                showCaptchaPopup(context, p);
+                showErrorPopup(context, "목록을 불러오지 못했습니다.", null, false);
             }
             if(adapter.getItemCount()==0) {
                 adapter.addData(search.getResult());
@@ -388,7 +386,7 @@ public class TagSearchActivity extends AppCompatActivity {
                 result = new ArrayList<>();
             if(result.size() == 0 && uadapter.getItemCount() == 0){
                 //error
-                showCaptchaPopup(context, p);
+                showErrorPopup(context, "목록을 불러오지 못했습니다.", null, false);
             }
             if(uadapter.getItemCount()==0) {
                 uadapter.addData(result);
@@ -456,16 +454,6 @@ public class TagSearchActivity extends AppCompatActivity {
             return true;
         });
         popup.show(); //showing popup menu
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if(resultCode == RESULT_CAPTCHA){
-            //captcha
-            finish();
-            startActivity(getIntent());
-        }
     }
 
     @Override

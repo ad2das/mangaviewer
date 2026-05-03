@@ -22,7 +22,6 @@ import okhttp3.Response;
 import static ml.melun.mangaview.Utils.CODE_SCOPED_STORAGE;
 import static ml.melun.mangaview.mangaview.MTitle.baseModeStr;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
-import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
 import static ml.melun.mangaview.mangaview.Title.LOAD_OK;
 
 import android.content.Context;
@@ -112,18 +111,16 @@ public class Manga {
                 String body;
                 if(cookies == null || cookies.size() == 0) {
                     CustomHttpClient.PageResponse page = client.mgetCachedPage(baseModeStr(baseMode) + '/' + id, PAGE_CACHE_TTL_MS);
-                    if(page.code == 302)
-                        return LOAD_CAPTCHA;
                     body = page.body;
                 } else {
                     r = client.mget(  baseModeStr(baseMode) + '/' + id, false, cookies);
                     if(r == null)
                         break;
                     String location = r.header("location");
-                    if (r.code() == 302 && location != null && location.contains("captcha.php")) {
+                    if (r.code() == 302 && location != null) {
                         r.close();
                         r = null;
-                        return LOAD_CAPTCHA;
+                        break;
                     }
                     body = CustomHttpClient.readBody(r);
                     r = null;

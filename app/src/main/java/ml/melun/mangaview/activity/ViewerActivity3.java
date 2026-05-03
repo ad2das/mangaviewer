@@ -9,7 +9,6 @@ import android.graphics.Color;
 import ml.melun.mangaview.task.LifecycleTask;
 import com.google.android.material.appbar.AppBarLayout;
 
-import androidx.annotation.Nullable;
 import androidx.core.view.OnApplyWindowInsetsListener;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -46,10 +45,7 @@ import static ml.melun.mangaview.MainApplication.httpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getScreenSize;
 import static ml.melun.mangaview.Utils.hideSpinnerDropDown;
-import static ml.melun.mangaview.Utils.showCaptchaPopup;
-import static ml.melun.mangaview.Utils.showTokiCaptchaPopup;
-import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
-import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
+import static ml.melun.mangaview.Utils.showErrorPopup;
 
 public class ViewerActivity3 extends AppCompatActivity {
     List<String> imgs;
@@ -67,7 +63,6 @@ public class ViewerActivity3 extends AppCompatActivity {
     Intent intent;
     Title title;
     String name;
-    boolean captchaChecked = false;
     int id;
     int viewerBookmark = 0;
     int seed;
@@ -310,7 +305,6 @@ public class ViewerActivity3 extends AppCompatActivity {
     }
 
     void refresh(){
-        captchaChecked = false;
         if(imageLoadTask != null)
             imageLoadTask.cancel(true);
         imageLoadTask = new LoadImages(manga);
@@ -397,11 +391,6 @@ public class ViewerActivity3 extends AppCompatActivity {
             imageLoadTask = null;
             if(title == null)
                 title = target.getTitle();
-            if(res == LOAD_CAPTCHA){
-                //캡차 처리 팝업
-                showTokiCaptchaPopup(context, p);
-                return;
-            }
             reloadManga();
         }
 
@@ -438,7 +427,7 @@ public class ViewerActivity3 extends AppCompatActivity {
             lockUi(false);
             imgs = manga.getImgs(context);
             if(imgs == null || imgs.size()==0) {
-                showCaptchaPopup(manga.getUrl(), context, p);
+                showErrorPopup(context, "이미지를 불러오지 못했습니다.", null, true);
                 return;
             }
             refreshAdapter();
@@ -453,7 +442,7 @@ public class ViewerActivity3 extends AppCompatActivity {
             for(StackTraceElement s : stack){
                 message.append(s.toString()).append('\n');
             }
-            Utils.showCaptchaPopup(manga.getUrl(), context, e, p);
+            showErrorPopup(context, "이미지를 불러오지 못했습니다.", e, true);
         }
     }
 
@@ -527,14 +516,6 @@ public class ViewerActivity3 extends AppCompatActivity {
         pageBtn.setEnabled(!lock);
         cut.setEnabled(!lock);
         spinner.setEnabled(!lock);
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (resultCode == RESULT_CAPTCHA) {
-            refresh();
-        }
     }
 
     @Override

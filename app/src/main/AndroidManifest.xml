@@ -86,10 +86,6 @@
             android:configChanges="orientation|screenSize"
             android:theme="@style/AppTheme.Viewer" />
         <activity
-            android:name=".activity.CaptchaActivity"
-            android:configChanges="orientation|screenSize"
-            android:theme="@style/AppTheme.NoActionBar" />
-        <activity
             android:name=".activity.FirstTimeActivity"
             android:configChanges="orientation|screenSize"
             android:theme="@style/AppThemeBlackNoTitle" />

@@ -30,7 +30,6 @@ import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
 import static ml.melun.mangaview.Utils.openViewer;
-import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
 
@@ -221,11 +220,6 @@ public class MainMain extends Fragment{
             }
 
             @Override
-            public void captchaCallback() {
-                Utils.showCaptchaPopup(getActivity(), 3, fragment, p);
-            }
-
-            @Override
             public void clickedSearch(String query) {
                 if(mainActivityCallback != null)
                     mainActivityCallback.search(query);
@@ -323,15 +317,4 @@ public class MainMain extends Fragment{
         webtoonFetched = false;
     }
 
-    @Override
-    public void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if(resultCode == RESULT_CAPTCHA) {
-            if(p.getBaseMode() == base_comic)
-                comicFetched = false;
-            else
-                webtoonFetched = false;
-            fetchSelected();
-        }
-    }
 }

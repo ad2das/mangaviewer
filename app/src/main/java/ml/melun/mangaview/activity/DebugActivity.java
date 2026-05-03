@@ -62,7 +62,7 @@ public class DebugActivity extends AppCompatActivity {
             }
         });
 
-        this.findViewById(R.id.debug_webTest).setOnClickListener(v -> startActivity(new Intent(context, CaptchaActivity.class)));
+        this.findViewById(R.id.debug_webTest).setVisibility(View.GONE);
         scroll = this.findViewById(R.id.debug_scroll);
         pref.setOnClickListener(v -> output.setText(readPref(context)));
 
