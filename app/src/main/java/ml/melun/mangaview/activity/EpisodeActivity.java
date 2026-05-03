@@ -28,9 +28,13 @@ import com.google.gson.reflect.TypeToken;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.R;
@@ -52,6 +56,7 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
 public class EpisodeActivity extends AppCompatActivity {
     private static final long EPISODE_CACHE_TTL_MS = 10 * 60 * 1000L;
     private static final int EPISODE_CACHE_LIMIT = 24;
+    private static final ExecutorService EPISODE_PREFETCH_EXECUTOR = Executors.newFixedThreadPool(2);
     private static final Map<String, CachedEpisodes> EPISODE_CACHE =
             new LinkedHashMap<String, CachedEpisodes>(EPISODE_CACHE_LIMIT, 0.75f, true) {
                 @Override
@@ -59,6 +64,7 @@ public class EpisodeActivity extends AppCompatActivity {
                     return size() > EPISODE_CACHE_LIMIT;
                 }
             };
+    private static final Set<String> EPISODE_PREFETCHING = new HashSet<>();
 
     //global variables
     Title title;
@@ -173,11 +179,11 @@ public class EpisodeActivity extends AppCompatActivity {
         if(online) {
             mode = 0;
             fab_container.setVisibility(View.GONE);
-            CachedEpisodes cached = getCachedEpisodes(title);
+            CachedEpisodes cached = getCachedEpisodesFromCache(title);
             if(cached != null) {
                 hasCachedEpisodes = true;
                 applyCachedTitle(cached.title);
-                episodes = cloneEpisodes(cached.episodes);
+                episodes = cloneEpisodesForTitle(title, cached.episodes);
                 title.setEps(episodes);
                 episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
                 afterLoad();
@@ -413,13 +419,39 @@ public class EpisodeActivity extends AppCompatActivity {
         invalidateOptionsMenu();
     }
 
-    private String episodeCacheKey(Title target) {
+    public static void prefetchTitleDetails(Title source) {
+        if(source == null || source.getId() <= 0 || getCachedEpisodesFromCache(source) != null)
+            return;
+        String key = episodeCacheKey(source);
+        synchronized (EPISODE_CACHE) {
+            if(EPISODE_PREFETCHING.contains(key))
+                return;
+            EPISODE_PREFETCHING.add(key);
+        }
+        EPISODE_PREFETCH_EXECUTOR.execute(() -> {
+            try {
+                Title prefetchTitle = source.clone();
+                int result = prefetchTitle.fetchEps(httpClient);
+                List<Manga> prefetchEpisodes = prefetchTitle.getEps();
+                if(result != LOAD_CAPTCHA && prefetchEpisodes != null && prefetchEpisodes.size() > 0)
+                    putCachedEpisodesInCache(prefetchTitle, prefetchEpisodes);
+            } catch (Exception e) {
+                e.printStackTrace();
+            } finally {
+                synchronized (EPISODE_CACHE) {
+                    EPISODE_PREFETCHING.remove(key);
+                }
+            }
+        });
+    }
+
+    private static String episodeCacheKey(Title target) {
         if(target == null)
             return "";
         return target.getBaseMode() + ":" + target.getId();
     }
 
-    private CachedEpisodes getCachedEpisodes(Title target) {
+    private static CachedEpisodes getCachedEpisodesFromCache(Title target) {
         String key = episodeCacheKey(target);
         if(key.length() == 0)
             return null;
@@ -435,11 +467,11 @@ public class EpisodeActivity extends AppCompatActivity {
         }
     }
 
-    private void putCachedEpisodes(Title target, List<Manga> data) {
+    private static void putCachedEpisodesInCache(Title target, List<Manga> data) {
         if(target == null || data == null || data.size() == 0)
             return;
         synchronized (EPISODE_CACHE) {
-            EPISODE_CACHE.put(episodeCacheKey(target), new CachedEpisodes(target.clone(), cloneEpisodes(data)));
+            EPISODE_CACHE.put(episodeCacheKey(target), new CachedEpisodes(target.clone(), cloneEpisodesForTitle(target, data)));
         }
     }
 
@@ -449,7 +481,7 @@ public class EpisodeActivity extends AppCompatActivity {
         title = cachedTitle;
     }
 
-    private List<Manga> cloneEpisodes(List<Manga> source) {
+    private static List<Manga> cloneEpisodesForTitle(Title owner, List<Manga> source) {
         ArrayList<Manga> copy = new ArrayList<>();
         if(source == null)
             return copy;
@@ -458,7 +490,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 continue;
             Manga cloned = new Manga(manga.getId(), manga.getName(), manga.getDate(), manga.getBaseMode());
             cloned.setMode(manga.getMode());
-            cloned.setTitle(title);
+            cloned.setTitle(owner);
             cloned.setTitleId(manga.getTitleId());
             cloned.setOfflinePath(manga.getOfflinePath());
             copy.add(cloned);
@@ -503,7 +535,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 showCaptchaPopup(title.getUrl(), context, p);
                 return;
             }else {
-                putCachedEpisodes(title, episodes);
+                putCachedEpisodesInCache(title, episodes);
                 updateLoadedEpisodes();
             }
         }

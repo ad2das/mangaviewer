@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Locale;
 
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.activity.EpisodeActivity;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Title;
 
@@ -161,6 +162,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder>
                 updateFilteredData(mData);
             }
             preloadThumbnails(Math.max(0, oSize - 2), TITLE_PRELOAD_LIMIT);
+            prefetchDetails(Math.max(0, oSize - 2), 8);
         } else {
             mDataFiltered = mData;
             searching = false;
@@ -271,6 +273,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder>
         if(save && !forceThumbnail) holder.thumb.setVisibility(View.GONE);
         if(bookmark>0 && resume) holder.resume.setVisibility(View.VISIBLE);
         else holder.resume.setVisibility(View.GONE);
+        EpisodeActivity.prefetchTitleDetails(data);
 
     }
 
@@ -378,6 +381,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder>
                 int position = getAdapterPosition();
                 if(!isValidClickPosition(position) || mClickListener == null)
                     return;
+                EpisodeActivity.prefetchTitleDetails(mDataFiltered.get(position));
                 mClickListener.onItemClick(position);
             });
             card.setOnLongClickListener(v -> {
@@ -442,6 +446,15 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder>
         mDataFiltered = nextItems;
         diff.dispatchUpdatesTo(this);
         preloadThumbnails(0, TITLE_PRELOAD_LIMIT);
+        prefetchDetails(0, 8);
+    }
+
+    private void prefetchDetails(int start, int count) {
+        if(mDataFiltered == null || count <= 0)
+            return;
+        int end = Math.min(mDataFiltered.size(), start + count);
+        for(int i = Math.max(0, start); i < end; i++)
+            EpisodeActivity.prefetchTitleDetails(mDataFiltered.get(i));
     }
 
     private boolean sameTitle(Title a, Title b) {
