@@ -318,7 +318,7 @@ public class Utils {
     }
 
     public static boolean checkConnection(Context context){
-        if(context != null) {
+        if(context instanceof Activity) {
             ConnectivityManager connectivityManager
                     = (ConnectivityManager) ((Activity) context).getSystemService(Context.CONNECTIVITY_SERVICE);
             NetworkInfo activeNetworkInfo = connectivityManager.getActiveNetworkInfo();
@@ -329,7 +329,7 @@ public class Utils {
 
 
     public static void showCaptchaPopup(String url, Context context, int code, Exception e, boolean force_close, Fragment fragment, Preference p){
-        if(context != null) {
+        if(context instanceof Activity) {
             if (!checkConnection(context)) {
                 //no internet
                 //showErrorPopup(context, "네트워크 연결이 없습니다.", e, force_close);
@@ -368,6 +368,8 @@ public class Utils {
     }
 
     static void startCaptchaActivity(Context context, int code, Fragment fragment, String url){
+        if(!(context instanceof Activity))
+            return;
         Intent captchaIntent = new Intent(context, CaptchaActivity.class);
         if(url != null && url.startsWith("/"))
             url = httpClient.getUrl(url) + url;
@@ -379,6 +381,8 @@ public class Utils {
     }
 
     static void startCaptchaActivity(Context context, int code, Fragment fragment){
+        if(!(context instanceof Activity))
+            return;
         Intent captchaIntent = new Intent(context, CaptchaActivity.class);
         if(fragment == null)
             ((Activity)context).startActivityForResult(captchaIntent, code);
@@ -421,6 +425,8 @@ public class Utils {
 
 
     public static void showTokiCaptchaPopup(Context context, Preference p){
+        if(!(context instanceof Activity))
+            return;
         AlertDialog.Builder builder;
         String title = "캡차 인증";
         if (new Preference(context).getDarkTheme())
