@@ -100,7 +100,8 @@ public class Downloader extends Service {
             mchannel.enableVibration(false);
             mchannel.setSound(null, null);
             mchannel.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
-            notificationManager.createNotificationChannel(mchannel);
+            if(notificationManager != null)
+                notificationManager.createNotificationChannel(mchannel);
         }
         Intent notificationIntent = new Intent(this, MainActivity.class);
         pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, immutablePendingIntentFlags());
@@ -136,7 +137,8 @@ public class Downloader extends Service {
                     break;
                 case ACTION_STOP:
                 case ACTION_FORCE_STOP:
-                    dt.cancel(true);
+                    if(dt != null)
+                        dt.cancel(true);
                     break;
             }
         }
@@ -156,10 +158,12 @@ public class Downloader extends Service {
     }
 
     public void queueTitle(DownloadTitle title, JSONArray selection){
+        if(title == null || selection == null || selection.length() == 0)
+            return;
         titles.add(title);
         selected.add(selection);
         updateNotification("");
-        if(dt.getStatus() == LifecycleTask.Status.PENDING || dt.getStatus() == LifecycleTask.Status.FINISHED) {
+        if(dt == null || dt.getStatus() == LifecycleTask.Status.PENDING || dt.getStatus() == LifecycleTask.Status.FINISHED) {
             dt = new downloadTitle();
             dt.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
         }else{
@@ -196,7 +200,7 @@ public class Downloader extends Service {
                 return 4;
             }
             try {
-                while (titles.size() > 0) {
+                while (titles.size() > 0 && selected.size() > 0) {
                     //reset progress
                     progress = 0;
 
@@ -672,9 +676,15 @@ public class Downloader extends Service {
             notification.setSmallIcon(R.drawable.ic_logo);
         else
             notification.setSmallIcon(R.drawable.notification_logo);
-        startForeground(nid, notification.build());
+        try {
+            startForeground(nid, notification.build());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
     private void updateNotification(String text) {
+        if(notificationManager == null)
+            return;
         notification = new NotificationCompat.Builder(this, channeld)
                 .setContentIntent(pendingIntent)
                 .setContentTitle(notiTitle)
@@ -687,10 +697,16 @@ public class Downloader extends Service {
             notification.setSmallIcon(R.drawable.ic_logo);
         else
             notification.setSmallIcon(R.drawable.notification_logo);
-        notificationManager.notify(nid, notification.build());
+        try {
+            notificationManager.notify(nid, notification.build());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     private void endNotification(){
+        if(notificationManager == null)
+            return;
         notification = new NotificationCompat.Builder(this, channeld)
                 .setContentIntent(pendingIntent)
                 .setContentTitle("다운로드 완료")
@@ -699,10 +715,16 @@ public class Downloader extends Service {
             notification.setSmallIcon(R.drawable.ic_logo);
         else
             notification.setSmallIcon(R.drawable.notification_logo);
-        notificationManager.notify(nid, notification.build());
+        try {
+            notificationManager.notify(nid, notification.build());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
 }
 
     private void finishNotification(){
+        if(notificationManager == null)
+            return;
         notification = new NotificationCompat.Builder(this, channeld)
                 .setContentIntent(pendingIntent)
                 .setContentTitle("모든 다운로드가 완료되었습니다.")
@@ -715,9 +737,15 @@ public class Downloader extends Service {
             notification.setContentText("누락: " + failures);
             failures = 0;
         }
-        notificationManager.notify(nid+1, notification.build());
+        try {
+            notificationManager.notify(nid+1, notification.build());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
     private void stopNotification(String why){
+        if(notificationManager == null)
+            return;
         notification = new NotificationCompat.Builder(this, channeld)
                 .setContentIntent(pendingIntent)
                 .setContentText(why)
@@ -727,7 +755,11 @@ public class Downloader extends Service {
             notification.setSmallIcon(R.drawable.ic_logo);
         else
             notification.setSmallIcon(R.drawable.notification_logo);
-        notificationManager.notify(nid + 2, notification.build());
+        try {
+            notificationManager.notify(nid + 2, notification.build());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     private interface ProgressInterface{
