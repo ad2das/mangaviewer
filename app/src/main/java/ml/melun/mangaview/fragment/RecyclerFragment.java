@@ -78,6 +78,8 @@ public class RecyclerFragment extends Fragment {
         recyclerView = rootView.findViewById(R.id.recycler_list);
         titleAdapter = new TitleAdapter(getContext());
         recyclerView.setLayoutManager(new NpaLinearLayoutManager(getContext()));
+        recyclerView.setHasFixedSize(true);
+        recyclerView.setItemViewCacheSize(16);
         recyclerView.setAdapter(titleAdapter);
         titleAdapter.setClickListener(new TitleAdapter.ItemClickListener() {
             @Override

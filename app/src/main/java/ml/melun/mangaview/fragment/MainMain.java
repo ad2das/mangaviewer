@@ -135,6 +135,8 @@ public class MainMain extends Fragment{
         mainRecycler = rootView.findViewById(R.id.main_recycler);
         NpaLinearLayoutManager lm = new NpaLinearLayoutManager(getContext());
         mainRecycler.setLayoutManager(lm);
+        mainRecycler.setHasFixedSize(true);
+        mainRecycler.setItemViewCacheSize(12);
 
 
         MainAdapter.onItemClick listener = new MainAdapter.onItemClick() {
