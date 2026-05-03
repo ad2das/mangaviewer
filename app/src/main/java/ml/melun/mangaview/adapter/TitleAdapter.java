@@ -32,6 +32,8 @@ import static ml.melun.mangaview.Utils.getGlideUrl;
 public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder>
         implements Filterable, ListPreloader.PreloadModelProvider<Title>, ListPreloader.PreloadSizeProvider<Title> {
     private static final int TITLE_PRELOAD_LIMIT = 24;
+    private static final int THUMB_WIDTH_DP = 78;
+    private static final int THUMB_HEIGHT_DP = 118;
 
     private ArrayList<Title> mData;
     private ArrayList<Title> mDataFiltered;
@@ -262,7 +264,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder>
         if(thumb.length()>1 && (!save || forceThumbnail)) Glide.with(holder.thumb)
                 .load(getGlideUrl(thumb, data.getBaseMode()))
                 .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                .override(dp(92), dp(130))
+                .override(dp(THUMB_WIDTH_DP), dp(THUMB_HEIGHT_DP))
                 .dontAnimate()
                 .into(holder.thumb);
         else holder.thumb.setImageBitmap(null);
@@ -295,13 +297,13 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder>
         return Glide.with(mainContext)
                 .load(getGlideUrl(thumb, title.getBaseMode()))
                 .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                .override(dp(92), dp(130))
+                .override(dp(THUMB_WIDTH_DP), dp(THUMB_HEIGHT_DP))
                 .dontAnimate();
     }
 
     @Override
     public int[] getPreloadSize(Title item, int adapterPosition, int perItemPosition) {
-        return new int[] {dp(92), dp(130)};
+        return new int[] {dp(THUMB_WIDTH_DP), dp(THUMB_HEIGHT_DP)};
     }
 
     @Override
@@ -324,7 +326,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder>
         for(int i = Math.max(0, start); i < end; i++) {
             RequestBuilder<?> request = getPreloadRequestBuilder(mDataFiltered.get(i));
             if(request != null)
-                request.preload(dp(92), dp(130));
+                request.preload(dp(THUMB_WIDTH_DP), dp(THUMB_HEIGHT_DP));
         }
     }
 
