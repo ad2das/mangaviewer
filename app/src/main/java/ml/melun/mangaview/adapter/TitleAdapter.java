@@ -20,7 +20,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-import ml.melun.mangaview.Preference;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Title;
@@ -56,7 +55,6 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         this.forceThumbnail = b;
     }
     void init(Context context){
-        p = new Preference(context);
         dark = p.getDarkTheme();
         save = p.getDataSave();
         this.mInflater = LayoutInflater.from(context);
