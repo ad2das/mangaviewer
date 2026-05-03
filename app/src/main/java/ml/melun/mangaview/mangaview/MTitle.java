@@ -19,12 +19,12 @@ public class MTitle{
 
     }
     public MTitle(String name, int id, String thumb, String author, List<String> tags, String release, int baseMode) {
-        this.name = name.replace("\"", "");
+        this.name = cleanName(name);
         this.id = id;
-        this.thumb = thumb;
-        this.tags = tags;
-        this.release = release;
-        this.author = author;
+        this.thumb = thumb == null ? "" : thumb;
+        this.tags = tags == null ? new ArrayList<>() : tags;
+        this.release = release == null ? "" : release;
+        this.author = author == null ? "" : author;
         this.baseMode = baseMode;
     }
 
@@ -51,7 +51,7 @@ public class MTitle{
     }
 
     public String getName() {
-        return name;
+        return name == null ? "" : name;
     }
 
     public int getId() {
@@ -59,7 +59,7 @@ public class MTitle{
     }
 
     public String getThumb() {
-        return thumb;
+        return thumb == null ? "" : thumb;
     }
 
     public String getAuthor() {
@@ -73,7 +73,7 @@ public class MTitle{
     }
 
     public String getRelease() {
-        return release;
+        return release == null ? "" : release;
     }
 
     public void setId(int id) {
@@ -81,7 +81,7 @@ public class MTitle{
     }
 
     public void setName(String name) {
-        this.name = name.replace("\"", "");
+        this.name = cleanName(name);
     }
 
     public void setThumb(String thumb) {
@@ -133,11 +133,22 @@ public class MTitle{
     @NonNull
     @Override
     public String toString() {
-        return name + " . " + id + " . " +  thumb + " . " + author + " . " + baseMode;
+        return getName() + " . " + id + " . " +  getThumb() + " . " + getAuthor() + " . " + baseMode;
     }
 
     @Override
     public boolean equals(Object obj) {
-        return ((MTitle)obj).getBaseMode() == this.baseMode && ((MTitle)obj).getId() == this.id ;
+        return obj instanceof MTitle
+                && ((MTitle)obj).getBaseMode() == this.baseMode
+                && ((MTitle)obj).getId() == this.id ;
+    }
+
+    @Override
+    public int hashCode() {
+        return 31 * getBaseMode() + id;
+    }
+
+    private String cleanName(String value) {
+        return value == null ? "" : value.replace("\"", "");
     }
 }

@@ -305,6 +305,8 @@ public class Title extends MTitle {
     }
 
     public static boolean isInteger(String s) {
+        if(s == null)
+            return false;
         if(s.isEmpty()) return false;
         for(int i = 0; i < s.length(); i++) {
             if(i == 0 && s.charAt(i) == '-') {
@@ -317,7 +319,7 @@ public class Title extends MTitle {
     }
 
     public boolean useBookmark(){
-        return !isInteger(release);
+        return !isInteger(getRelease());
     }
 
     private boolean isWebtoonWolfSource() {
