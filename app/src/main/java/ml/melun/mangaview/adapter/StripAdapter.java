@@ -20,7 +20,6 @@ import com.bumptech.glide.Glide;
 import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import com.bumptech.glide.request.RequestOptions;
-import com.bumptech.glide.request.target.CustomTarget;
 import com.bumptech.glide.request.FutureTarget;
 import com.bumptech.glide.request.target.Target;
 import com.bumptech.glide.request.transition.Transition;
@@ -70,6 +69,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private final Set<String> decodedPreloads = new LinkedHashSet<>();
     private final List<Future<?>> decodedPreloadTasks = new ArrayList<>();
     private final ExecutorService decodedPreloadExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService displayDecodeExecutor = Executors.newFixedThreadPool(2);
     private final Map<String, Decoder> decoders = new HashMap<>();
     private final LruCache<String, Bitmap> decodedBitmapCache;
 
@@ -284,7 +284,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(!(item instanceof PageItem))
             return true;
         String cacheKey = decodedCacheKey((PageItem)item);
-        Bitmap cached = decodedBitmapCache.get(cacheKey);
+        Bitmap cached = getCachedBitmap(cacheKey);
         if(cached != null && !cached.isRecycled())
             return true;
         preloadPage((PageItem)item);
@@ -373,6 +373,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         decodedPreloads.clear();
         clearDecodedPreloadTasks();
         decodedPreloadExecutor.shutdownNow();
+        displayDecodeExecutor.shutdownNow();
         decoders.clear();
         decodedBitmapCache.evictAll();
         clearCurrentPage();
@@ -430,7 +431,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         Object url = getImageModel(item);
         holder.frame.setMinimumHeight(Math.max(width, 1));
         String cacheKey = decodedCacheKey(item);
-        Bitmap cached = decodedBitmapCache.get(cacheKey);
+        Bitmap cached = getCachedBitmap(cacheKey);
         if(cached != null && !cached.isRecycled()) {
             holder.frame.setMinimumHeight(0);
             holder.frame.setImageBitmap(cached);
@@ -438,89 +439,9 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             preloadAhead(pos);
             return;
         }
-        if (autoCut) {
-            CustomTarget<Bitmap> imageTarget = new CustomTarget<Bitmap>() {
-                @Override
-                public void onResourceReady(@NonNull Bitmap bitmap, Transition<? super Bitmap> transition) {
-                    if(!isActiveHolder(holder, item, this))
-                        return;
-                    holder.frame.setMinimumHeight(0);
-                    Bitmap glideBitmap = bitmap;
-                    bitmap = decoderFor(item).decode(bitmap, width);
-                    Bitmap displayBitmap = buildDisplayBitmap(item, bitmap);
-                    displayBitmap = retainIfGlideOwned(displayBitmap, glideBitmap);
-                    decodedBitmapCache.put(cacheKey, displayBitmap);
-                    holder.frame.setImageBitmap(displayBitmap);
-                    holder.refresh.setVisibility(View.GONE);
-                    preloadAhead(pos);
-                }
-
-                @Override
-                public void onLoadCleared(@Nullable Drawable placeholder) {
-                    if(holder.imageTarget != this)
-                        return;
-                    holder.frame.setMinimumHeight(Math.max(width, 1));
-                    holder.frame.setImageDrawable(null);
-                    holder.refresh.setVisibility(View.GONE);
-                }
-
-                @Override
-                public void onLoadFailed(@Nullable Drawable errorDrawable) {
-                    if(holder.imageTarget != this)
-                        return;
-                    holder.frame.setMinimumHeight(Math.max(width, 1));
-                    holder.frame.setImageResource(R.drawable.placeholder);
-                    holder.refresh.setVisibility(View.VISIBLE);
-                }
-            };
-            holder.imageTarget = imageTarget;
-            //set image to holder view
-            Glide.with(holder.frame)
-                    .asBitmap()
-                    .apply(viewerImageOptions())
-                    .load(url)
-                    .into(imageTarget);
-        } else {
-            CustomTarget<Bitmap> imageTarget = new CustomTarget<Bitmap>() {
-                @Override
-                public void onResourceReady(@NonNull Bitmap resource, @Nullable Transition<? super Bitmap> transition) {
-                    if(!isActiveHolder(holder, item, this))
-                        return;
-                    holder.frame.setMinimumHeight(0);
-                    Bitmap glideBitmap = resource;
-                    resource = decoderFor(item).decode(resource, width);
-                    resource = retainIfGlideOwned(resource, glideBitmap);
-                    decodedBitmapCache.put(cacheKey, resource);
-                    holder.frame.setImageBitmap(resource);
-                    holder.refresh.setVisibility(View.GONE);
-                    preloadAhead(pos);
-                }
-
-                @Override
-                public void onLoadCleared(@Nullable Drawable placeholder) {
-                    if(holder.imageTarget != this)
-                        return;
-                    holder.frame.setMinimumHeight(Math.max(width, 1));
-                    holder.frame.setImageDrawable(null);
-                    holder.refresh.setVisibility(View.GONE);
-                }
-
-                @Override
-                public void onLoadFailed(@Nullable Drawable errorDrawable) {
-                    if(holder.imageTarget != this)
-                        return;
-                    holder.frame.setMinimumHeight(Math.max(width, 1));
-                    holder.frame.setImageResource(R.drawable.placeholder);
-                    holder.refresh.setVisibility(View.VISIBLE);
-                }
-            };
-            holder.imageTarget = imageTarget;
-            Glide.with(holder.frame)
-                    .asBitmap()
-                    .apply(viewerImageOptions())
-                    .load(url)
-                    .into(imageTarget);
-        }
+        holder.frame.setImageDrawable(null);
+        holder.refresh.setVisibility(View.GONE);
+        loadDecodedIntoHolder(holder, item, url, cacheKey, pos);
     }
 
     private RequestOptions viewerImageOptions() {
@@ -535,14 +456,79 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private void clearImageTarget(ImgViewHolder holder) {
-        if(holder.imageTarget == null)
-            return;
-        CustomTarget<Bitmap> target = holder.imageTarget;
+        if(holder.imageTask != null)
+            holder.imageTask.cancel(true);
+        holder.imageTask = null;
+        if(holder.imageFutureTarget != null) {
+            try {
+                Glide.with(mainContext.getApplicationContext()).clear(holder.imageFutureTarget);
+            } catch (Exception ignored) {
+            }
+        }
+        holder.imageFutureTarget = null;
+        holder.boundItem = null;
         holder.frame.setMinimumHeight(Math.max(width, 1));
         holder.frame.setImageDrawable(null);
         holder.refresh.setVisibility(View.GONE);
-        holder.imageTarget = null;
-        Glide.with(mainContext.getApplicationContext()).clear(target);
+    }
+
+    private void loadDecodedIntoHolder(ImgViewHolder holder, PageItem item, Object model, String cacheKey, int position) {
+        holder.boundItem = item;
+        FutureTarget<Bitmap> target = Glide.with(mainContext.getApplicationContext())
+                .asBitmap()
+                .apply(viewerImageOptions())
+                .load(model)
+                .submit(Math.max(width, 1), Target.SIZE_ORIGINAL);
+        holder.imageFutureTarget = target;
+        try {
+            Future<?> task = displayDecodeExecutor.submit(() -> {
+                try {
+                    Bitmap bitmap = target.get();
+                    if(bitmap == null || bitmap.isRecycled())
+                        throw new IllegalStateException("Empty viewer bitmap");
+                    Bitmap glideBitmap = bitmap;
+                    Bitmap decoded = decoderFor(item).decode(bitmap, width);
+                    Bitmap displayBitmap = buildDisplayBitmap(item, decoded);
+                    displayBitmap = retainIfGlideOwned(displayBitmap, glideBitmap);
+                    putCachedBitmap(cacheKey, displayBitmap);
+                    Bitmap finalBitmap = displayBitmap;
+                    holder.frame.post(() -> {
+                        if(holder.boundItem != item || holder.imageFutureTarget != target)
+                            return;
+                        holder.imageTask = null;
+                        holder.imageFutureTarget = null;
+                        holder.frame.setMinimumHeight(0);
+                        holder.frame.setImageBitmap(finalBitmap);
+                        holder.refresh.setVisibility(View.GONE);
+                        preloadAhead(position);
+                    });
+                } catch (Exception e) {
+                    holder.frame.post(() -> {
+                        if(holder.boundItem != item || holder.imageFutureTarget != target)
+                            return;
+                        holder.imageTask = null;
+                        holder.imageFutureTarget = null;
+                        holder.frame.setMinimumHeight(Math.max(width, 1));
+                        holder.frame.setImageResource(R.drawable.placeholder);
+                        holder.refresh.setVisibility(View.VISIBLE);
+                    });
+                } finally {
+                    try {
+                        Glide.with(mainContext.getApplicationContext()).clear(target);
+                    } catch (Exception ignored) {
+                    }
+                }
+            });
+            holder.imageTask = task;
+        } catch (RejectedExecutionException e) {
+            try {
+                Glide.with(mainContext.getApplicationContext()).clear(target);
+            } catch (Exception ignored) {
+            }
+            holder.imageFutureTarget = null;
+            holder.frame.setImageResource(R.drawable.placeholder);
+            holder.refresh.setVisibility(View.VISIBLE);
+        }
     }
 
     private Bitmap retainIfGlideOwned(Bitmap displayBitmap, Bitmap glideBitmap) {
@@ -570,16 +556,12 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         return Bitmap.createBitmap(bitmap.getWidth(), 1, Bitmap.Config.ARGB_8888);
     }
 
-    private boolean isActiveHolder(ImgViewHolder holder, PageItem item, CustomTarget<Bitmap> target) {
-        return holder.imageTarget == target && isHolderStillBound(holder, item);
+    private synchronized Bitmap getCachedBitmap(String cacheKey) {
+        return decodedBitmapCache.get(cacheKey);
     }
 
-    private boolean isHolderStillBound(ImgViewHolder holder, PageItem item) {
-        int position = holder.getAdapterPosition();
-        return position != RecyclerView.NO_POSITION
-                && items != null
-                && position < items.size()
-                && items.get(position) == item;
+    private synchronized void putCachedBitmap(String cacheKey, Bitmap bitmap) {
+        decodedBitmapCache.put(cacheKey, bitmap);
     }
 
     private void preloadAhead(int adapterPosition) {
@@ -611,7 +593,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     private void preloadDecodedPage(PageItem page) {
         String cacheKey = decodedCacheKey(page);
-        Bitmap cached = decodedBitmapCache.get(cacheKey);
+        Bitmap cached = getCachedBitmap(cacheKey);
         if(cached != null && !cached.isRecycled())
             return;
         if(!decodedPreloads.add(cacheKey))
@@ -633,7 +615,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     Bitmap decoded = decoderFor(page).decode(bitmap, width);
                     Bitmap displayBitmap = buildDisplayBitmap(page, decoded);
                     displayBitmap = retainIfGlideOwned(displayBitmap, glideBitmap);
-                    decodedBitmapCache.put(cacheKey, displayBitmap);
+                    putCachedBitmap(cacheKey, displayBitmap);
                     trimDecodedPreloadTracker();
                 } catch (Exception e) {
                     decodedPreloads.remove(cacheKey);
@@ -681,13 +663,15 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     private Decoder decoderFor(PageItem page) {
         String key = decoderKey(page == null ? null : page.manga);
-        Decoder decoder = decoders.get(key);
-        if(decoder == null) {
-            Manga manga = page == null ? null : page.manga;
-            decoder = new Decoder(manga == null ? 0 : manga.getSeed(), manga == null ? 0 : manga.getId());
-            decoders.put(key, decoder);
+        synchronized (decoders) {
+            Decoder decoder = decoders.get(key);
+            if(decoder == null) {
+                Manga manga = page == null ? null : page.manga;
+                decoder = new Decoder(manga == null ? 0 : manga.getSeed(), manga == null ? 0 : manga.getId());
+                decoders.put(key, decoder);
+            }
+            return decoder;
         }
-        return decoder;
     }
 
     private String decoderKey(Manga manga) {
@@ -852,7 +836,9 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     public class ImgViewHolder extends RecyclerView.ViewHolder implements View.OnClickListener, View.OnLongClickListener {
         ImageView frame;
         ImageButton refresh;
-        CustomTarget<Bitmap> imageTarget;
+        PageItem boundItem;
+        FutureTarget<Bitmap> imageFutureTarget;
+        Future<?> imageTask;
         ImgViewHolder(View itemView) {
             super(itemView);
             frame = itemView.findViewById(R.id.frame);
