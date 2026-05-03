@@ -620,6 +620,10 @@ public class Preference {
         writeRecent();
     }
 
+    public List<MTitle> getRecentForSync(){
+        return recent == null ? new ArrayList<>() : recent;
+    }
+
     public void setBookmarks(JSONObject book){
         this.bookmark = book == null ? new JSONObject() : book;
         writeBookmark();

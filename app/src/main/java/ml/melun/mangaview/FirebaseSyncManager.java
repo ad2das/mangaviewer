@@ -76,12 +76,23 @@ public class FirebaseSyncManager {
     }
 
     public void uploadCurrentState() {
+        uploadCurrentState(null);
+    }
+
+    private void uploadCurrentState(Runnable afterUpload) {
         FirebaseUser user = currentUser();
-        if(user == null)
+        if(user == null) {
+            if(afterUpload != null)
+                afterUpload.run();
             return;
+        }
         DocumentReference doc = stateDoc(user.getUid());
         Map<String, Object> data = exportState();
-        doc.set(data);
+        doc.set(data)
+                .addOnCompleteListener(task -> {
+                    if(afterUpload != null)
+                        afterUpload.run();
+                });
     }
 
     private void downloadAndMerge(Runnable afterSync) {
@@ -97,32 +108,28 @@ public class FirebaseSyncManager {
                     try {
                         if(snapshot != null && snapshot.exists())
                             mergeRemote(snapshot.getData());
-                        uploadCurrentState();
                     } finally {
                         syncing = false;
-                        if(afterSync != null)
-                            afterSync.run();
                     }
+                    uploadCurrentState(afterSync);
                 })
                 .addOnFailureListener(e -> {
-                    uploadCurrentState();
-                    if(afterSync != null)
-                        afterSync.run();
+                    uploadCurrentState(afterSync);
                 });
     }
 
     private Map<String, Object> exportState() {
         Map<String, Object> data = new HashMap<>();
-        data.put("recentJson", gson.toJson(preference.getRecent()));
+        data.put("recentJson", gson.toJson(preference.getRecentForSync()));
         data.put("favoriteJson", gson.toJson(preference.getFavorite()));
         data.put("bookmarkJson", preference.getBookmarkObject().toString());
         data.put("pageBookmarkJson", preference.getViewerBookmarkObject().toString());
         data.put("settings", preference.exportSyncSettings());
-        data.put("recentUpdatedAt", getLocalUpdatedAt("recent"));
-        data.put("favoriteUpdatedAt", getLocalUpdatedAt("favorite"));
-        data.put("bookmarkUpdatedAt", getLocalUpdatedAt("bookmark"));
-        data.put("pageBookmarkUpdatedAt", getLocalUpdatedAt("pageBookmark"));
-        data.put("settingsUpdatedAt", getLocalUpdatedAt("settings"));
+        data.put("recentUpdatedAt", exportUpdatedAt("recent", !preference.getRecentForSync().isEmpty()));
+        data.put("favoriteUpdatedAt", exportUpdatedAt("favorite", !preference.getFavorite().isEmpty()));
+        data.put("bookmarkUpdatedAt", exportUpdatedAt("bookmark", preference.getBookmarkObject().length() > 0));
+        data.put("pageBookmarkUpdatedAt", exportUpdatedAt("pageBookmark", preference.getViewerBookmarkObject().length() > 0));
+        data.put("settingsUpdatedAt", exportUpdatedAt("settings", true));
         data.put("updatedAt", System.currentTimeMillis());
         return data;
     }
@@ -131,21 +138,21 @@ public class FirebaseSyncManager {
         if(remote == null)
             return;
         preference.runWithoutSync(() -> {
-            if(remoteTime(remote, "recentUpdatedAt") > getLocalUpdatedAt("recent")) {
+            if(shouldMerge(remote, "recent", "recentJson", "[]")) {
                 List<MTitle> recents = gson.fromJson(readString(remote, "recentJson", "[]"), new TypeToken<List<MTitle>>(){}.getType());
                 preference.setRecents(recents);
                 setLocalUpdatedAt("recent", remoteTime(remote, "recentUpdatedAt"));
             }
-            if(remoteTime(remote, "favoriteUpdatedAt") > getLocalUpdatedAt("favorite")) {
+            if(shouldMerge(remote, "favorite", "favoriteJson", "[]")) {
                 List<MTitle> favorites = gson.fromJson(readString(remote, "favoriteJson", "[]"), new TypeToken<List<MTitle>>(){}.getType());
                 preference.setFavorites(favorites);
                 setLocalUpdatedAt("favorite", remoteTime(remote, "favoriteUpdatedAt"));
             }
-            if(remoteTime(remote, "bookmarkUpdatedAt") > getLocalUpdatedAt("bookmark")) {
+            if(shouldMerge(remote, "bookmark", "bookmarkJson", "{}")) {
                 preference.setBookmarks(jsonObject(readString(remote, "bookmarkJson", "{}")));
                 setLocalUpdatedAt("bookmark", remoteTime(remote, "bookmarkUpdatedAt"));
             }
-            if(remoteTime(remote, "pageBookmarkUpdatedAt") > getLocalUpdatedAt("pageBookmark")) {
+            if(shouldMerge(remote, "pageBookmark", "pageBookmarkJson", "{}")) {
                 preference.setViewerBookmarks(jsonObject(readString(remote, "pageBookmarkJson", "{}")));
                 setLocalUpdatedAt("pageBookmark", remoteTime(remote, "pageBookmarkUpdatedAt"));
             }
@@ -183,12 +190,29 @@ public class FirebaseSyncManager {
     }
 
     private long getLocalUpdatedAt(String scope) {
-        long value = metaPref.getLong(scope + "UpdatedAt", 0L);
-        if(value > 0)
+        return metaPref.getLong(scope + "UpdatedAt", 0L);
+    }
+
+    private long exportUpdatedAt(String scope, boolean hasLocalData) {
+        long value = getLocalUpdatedAt(scope);
+        if(value > 0 || !hasLocalData)
             return value;
         long seeded = System.currentTimeMillis();
         setLocalUpdatedAt(scope, seeded);
         return seeded;
+    }
+
+    private boolean shouldMerge(Map<String, Object> remote, String scope, String payloadKey, String emptyPayload) {
+        long remoteUpdatedAt = remoteTime(remote, scope + "UpdatedAt");
+        long localUpdatedAt = getLocalUpdatedAt(scope);
+        if(remoteUpdatedAt > localUpdatedAt)
+            return true;
+        return localUpdatedAt == 0L && hasRemotePayload(remote, payloadKey, emptyPayload);
+    }
+
+    private boolean hasRemotePayload(Map<String, Object> remote, String payloadKey, String emptyPayload) {
+        String payload = readString(remote, payloadKey, emptyPayload);
+        return payload != null && payload.trim().length() > 0 && !payload.trim().equals(emptyPayload);
     }
 
     private void setLocalUpdatedAt(String scope, long timestamp) {

@@ -337,7 +337,7 @@ public class MainActivity extends AppCompatActivity
             button.setOnClickListener(v -> firebaseAccountManager.signOut(() -> runOnUiThread(this::setupAccountHeader)));
             if(!accountInitialSyncStarted && firebaseSyncManager != null) {
                 accountInitialSyncStarted = true;
-                firebaseSyncManager.syncAfterSignIn(null);
+                firebaseSyncManager.syncAfterSignIn(() -> runOnUiThread(this::refreshSyncedListIfVisible));
             }
         } else {
             name.setText("MangaView");
@@ -366,6 +366,11 @@ public class MainActivity extends AppCompatActivity
             return;
         }
         startGoogleSignIn();
+    }
+
+    private void refreshSyncedListIfVisible() {
+        if(currentTab >= 2 && fragments[2] instanceof RecyclerFragment)
+            ((RecyclerFragment)fragments[2]).changeMode(getTabId(currentTab));
     }
 
     public int getTabId(int i){
@@ -583,7 +588,10 @@ public class MainActivity extends AppCompatActivity
                         Toast.makeText(context, R.string.account_syncing, Toast.LENGTH_SHORT).show();
                         setupAccountHeader();
                         if(firebaseSyncManager != null)
-                            firebaseSyncManager.syncAfterSignIn(() -> runOnUiThread(() -> Toast.makeText(context, R.string.account_sync_complete, Toast.LENGTH_SHORT).show()));
+                            firebaseSyncManager.syncAfterSignIn(() -> runOnUiThread(() -> {
+                                refreshSyncedListIfVisible();
+                                Toast.makeText(context, R.string.account_sync_complete, Toast.LENGTH_SHORT).show();
+                            }));
                     } else {
                         Toast.makeText(context, message == null ? getString(R.string.account_sign_in_failed) : message, Toast.LENGTH_LONG).show();
                     }
