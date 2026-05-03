@@ -229,9 +229,12 @@ public class RecyclerFragment extends Fragment {
                                 try {
                                     Title title = new Gson().fromJson(readUriToString(context, d.getUri()), new TypeToken<Title>() {
                                     }.getType());
+                                    if(title == null)
+                                        throw new IllegalStateException("Invalid title metadata");
                                     title.setPath(f.getUri().toString());
-                                    if (title.getThumb().length() > 0) {
-                                        DocumentFile t = f.findFile(title.getThumb());
+                                    String thumb = title.getThumb();
+                                    if (thumb != null && thumb.length() > 0) {
+                                        DocumentFile t = f.findFile(thumb);
                                         if (t != null) title.setThumb(t.getUri().toString());
                                     }
                                     titles.add(title);
@@ -263,9 +266,12 @@ public class RecyclerFragment extends Fragment {
                                 try {
                                     Title title = new Gson().fromJson(readFileToString(data), new TypeToken<Title>() {
                                     }.getType());
+                                    if(title == null)
+                                        throw new IllegalStateException("Invalid title metadata");
                                     title.setPath(f.getAbsolutePath());
-                                    if (title.getThumb().length() > 0)
-                                        title.setThumb(f.getAbsolutePath() + '/' + title.getThumb());
+                                    String thumb = title.getThumb();
+                                    if (thumb != null && thumb.length() > 0)
+                                        title.setThumb(f.getAbsolutePath() + '/' + thumb);
                                     titles.add(title);
                                 } catch (Exception e) {
                                     e.printStackTrace();

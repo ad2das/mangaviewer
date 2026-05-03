@@ -473,7 +473,8 @@ public class MainActivity extends AppCompatActivity
             }
             res = true;
         }
-        getSupportActionBar().setTitle(getTabTitle(currentTab));
+        if(getSupportActionBar() != null)
+            getSupportActionBar().setTitle(getTabTitle(currentTab));
         syncNavigationSelection();
         return res;
     }
