@@ -28,6 +28,7 @@ import ml.melun.mangaview.adapter.TitleAdapter;
 import ml.melun.mangaview.adapter.UpdatedAdapter;
 import ml.melun.mangaview.mangaview.Bookmark;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
+import ml.melun.mangaview.mangaview.MainPageWebtoon;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
@@ -134,6 +135,9 @@ public class TagSearchActivity extends AppCompatActivity {
             adapter = new TitleAdapter(context);
             attachTitlePreloader(adapter);
             search = new Search(query,mode,baseMode);
+            searchResult.setAdapter(adapter);
+            bindTitleAdapterClicks();
+            showImmediateCategoryResults(title);
             startLoad(new searchManga());
             swipe.setOnRefreshListener(direction -> {
                 if (!search.isLast()) {
@@ -163,6 +167,57 @@ public class TagSearchActivity extends AppCompatActivity {
             return false;
         loadTask = null;
         return true;
+    }
+
+    private void bindTitleAdapterClicks() {
+        if(adapter == null)
+            return;
+        adapter.setClickListener(new TitleAdapter.ItemClickListener() {
+            @Override
+            public void onResumeClick(int position, int id) {
+                Title selected = adapter.getItem(position);
+                if(selected == null || id <= 0)
+                    return;
+                openResumeViewer(selected, id);
+            }
+
+            @Override
+            public void onItemClick(int position) {
+                Title selected = adapter.getItem(position);
+                if(selected == null)
+                    return;
+                Intent episodeView = episodeIntent(context, selected);
+                episodeView.putExtra("online", true);
+                startActivity(episodeView);
+            }
+
+            @Override
+            public void onLongClick(View view, int position) {
+                Title selected = adapter.getItem(position);
+                if(selected != null)
+                    popup(view, position, selected, 0);
+            }
+        });
+    }
+
+    private void showImmediateCategoryResults(String titleLabel) {
+        if(mode != 8 || adapter == null)
+            return;
+        ArrayList<Title> cached = Search.getCachedCategoryResults(query, baseMode);
+        if(cached != null && cached.size() > 0) {
+            adapter.addData(cached);
+            noresult.setVisibility(View.GONE);
+            swipe.setRefreshing(false);
+            return;
+        }
+        if(baseMode != base_comic && titleLabel != null && titleLabel.length() > 0) {
+            ArrayList<Title> local = MainPageWebtoon.getClassificationDbTitlesByGenre(titleLabel, 120);
+            if(local.size() > 0) {
+                adapter.addData(local);
+                noresult.setVisibility(View.GONE);
+                swipe.setRefreshing(false);
+            }
+        }
     }
 
     private void clearLoad(LifecycleTask<?, ?, ?> task) {
@@ -200,33 +255,7 @@ public class TagSearchActivity extends AppCompatActivity {
             if(adapter.getItemCount()==0) {
                 adapter.addData(bookmark.getResult());
                 searchResult.setAdapter(adapter);
-                adapter.setClickListener(new TitleAdapter.ItemClickListener() {
-                    @Override
-                    public void onResumeClick(int position, int id) {
-                        Title selected = adapter.getItem(position);
-                        if(selected == null || id <= 0)
-                            return;
-                        openResumeViewer(selected, id);
-                    }
-
-                    @Override
-                    public void onItemClick(int position) {
-                        // start intent : Episode viewer
-                        Title selected = adapter.getItem(position);
-                        if(selected == null)
-                            return;
-                        Intent episodeView = episodeIntent(context, selected);
-                        episodeView.putExtra("online", true);
-                        startActivity(episodeView);
-                    }
-
-                    @Override
-                    public void onLongClick(View view, int position) {
-                        Title selected = adapter.getItem(position);
-                        if(selected != null)
-                            popup(view, position, selected, 0);
-                    }
-                });
+                bindTitleAdapterClicks();
             }else{
                 adapter.addData(bookmark.getResult());
             }
@@ -295,33 +324,7 @@ public class TagSearchActivity extends AppCompatActivity {
             if(adapter.getItemCount()==0) {
                 adapter.addData(search.getResult());
                 searchResult.setAdapter(adapter);
-                adapter.setClickListener(new TitleAdapter.ItemClickListener() {
-                    @Override
-                    public void onResumeClick(int position, int id) {
-                        Title selected = adapter.getItem(position);
-                        if(selected == null || id <= 0)
-                            return;
-                        openResumeViewer(selected, id);
-                    }
-
-                    @Override
-                    public void onItemClick(int position) {
-                        // start intent : Episode viewer
-                        Title selected = adapter.getItem(position);
-                        if(selected == null)
-                            return;
-                        Intent episodeView = episodeIntent(context, selected);
-                        episodeView.putExtra("online", true);
-                        startActivity(episodeView);
-                    }
-
-                    @Override
-                    public void onLongClick(View view, int position) {
-                        Title selected = adapter.getItem(position);
-                        if(selected != null)
-                            popup(view, position, selected, 0);
-                    }
-                });
+                bindTitleAdapterClicks();
             }else{
                 adapter.addData(search.getResult());
             }

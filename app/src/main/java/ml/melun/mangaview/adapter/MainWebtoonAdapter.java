@@ -37,6 +37,7 @@ import ml.melun.mangaview.R;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MainPageWebtoon;
 import ml.melun.mangaview.mangaview.Ranking;
+import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 
@@ -259,6 +260,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 int max = context.getResources().getDisplayMetrics().widthPixels - dp(40);
                 for(String item : group) {
                     SectionName filter = parseSectionName(item);
+                    Search.prefetchCategoryPath(httpClient, filter.path, baseMode);
                     TextView chip = createFilterChip(filter.title, clicked -> {
                         if(listener != null)
                             listener.clickedCategoryPath(filter.title, filter.path);
@@ -351,6 +353,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             SectionName name = parseSectionName(section.getName());
             title.setText(name.title);
             count.setText("전체보기");
+            if(name.path.length() > 0)
+                Search.prefetchCategoryPath(httpClient, name.path, baseMode);
             count.setOnClickListener(v -> {
                 if(listener != null && name.path.length() > 0)
                     listener.clickedCategoryPath(name.title, name.path);
