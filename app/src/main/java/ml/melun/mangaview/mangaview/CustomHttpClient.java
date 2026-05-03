@@ -605,6 +605,13 @@ public class CustomHttpClient {
     }
 
     public Response post(String url, RequestBody body, Map<String,String> headers, boolean localCookies){
+        if(headers == null)
+            headers = new HashMap<>();
+        else
+            headers = new HashMap<>(headers);
+        if(body == null)
+            body = new okhttp3.FormBody.Builder().build();
+        String requestUrl = resolveRequestUrl(url);
 
         if(localCookies)
             syncCookiesFromWebView(getBaseUrl(url));
@@ -630,11 +637,13 @@ public class CustomHttpClient {
         try {
             Request.Builder builder = new Request.Builder()
                     .addHeader("User-Agent", agent)
-                    .url(url)
+                    .url(requestUrl)
                     .post(body);
 
             for(String key: headers.keySet()){
-                builder.addHeader(key, headers.get(key));
+                String value = headers.get(key);
+                if(key != null && value != null)
+                    builder.addHeader(key, value);
             }
 
             Request request = builder.build();
@@ -652,6 +661,15 @@ public class CustomHttpClient {
         }
         return response;
 
+    }
+
+    private String resolveRequestUrl(String url) {
+        if(url == null || url.length() == 0)
+            return getUrl() + "/";
+        if(url.startsWith("http://") || url.startsWith("https://"))
+            return url;
+        String normalized = normalizePath(url);
+        return getBaseUrl(normalized) + normalized;
     }
 
     private static boolean isInterruptedRequest(Exception e) {
