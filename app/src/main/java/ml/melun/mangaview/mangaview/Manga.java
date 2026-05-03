@@ -192,25 +192,36 @@ public class Manga {
                 Element commentdiv = d.selectFirst("div#viewcomment");
 
 
-                try {
-                    for (Element e : commentdiv.selectFirst("section#bo_vc").select("div.media")) {
-                        try {
-                            comments.add(parseComment(e));
-                        } catch (Exception e3) {
-                            e3.printStackTrace();
+                if(commentdiv != null) {
+                    try {
+                        Element commentSection = commentdiv.selectFirst("section#bo_vc");
+                        if(commentSection != null) {
+                            for (Element e : commentSection.select("div.media")) {
+                                try {
+                                    Comment comment = parseComment(e);
+                                    if(comment != null)
+                                        comments.add(comment);
+                                } catch (Exception e3) {
+                                    e3.printStackTrace();
+                                }
+                            }
                         }
 
-                    }
-                    for (Element e : commentdiv.selectFirst("section#bo_vcb").select("div.media")) {
-                        try {
-                            bcomments.add(parseComment(e));
-                        } catch (Exception e3) {
-                            e3.printStackTrace();
+                        Element bestCommentSection = commentdiv.selectFirst("section#bo_vcb");
+                        if(bestCommentSection != null) {
+                            for (Element e : bestCommentSection.select("div.media")) {
+                                try {
+                                    Comment comment = parseComment(e);
+                                    if(comment != null)
+                                        bcomments.add(comment);
+                                } catch (Exception e3) {
+                                    e3.printStackTrace();
+                                }
+                            }
                         }
-
+                    } catch (Exception e1) {
+                        e1.printStackTrace();
                     }
-                } catch (Exception e1) {
-                    e1.printStackTrace();
                 }
 
             } catch (Exception e2) {

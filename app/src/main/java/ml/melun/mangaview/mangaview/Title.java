@@ -115,13 +115,18 @@ public class Title extends MTitle {
 
                 //thumb
                 try {
-                    thumb = header.selectFirst("div.view-img").selectFirst("img").attr("src");
+                    Element thumbContainer = header == null ? null : header.selectFirst("div.view-img");
+                    Element thumbImage = thumbContainer == null ? null : thumbContainer.selectFirst("img");
+                    if(thumbImage != null)
+                        thumb = thumbImage.attr("src");
                 }catch (Exception e){}
 
-                Elements infos = header.select("div.view-content");
+                Elements infos = header == null ? new Elements() : header.select("div.view-content");
                 //title
                 try {
-                    name = infos.get(1).selectFirst("b").ownText();
+                    Element titleElement = infos.size() > 1 ? infos.get(1).selectFirst("b") : null;
+                    if(titleElement != null)
+                        name = titleElement.ownText();
                 }catch (Exception e){}
                 tags = new ArrayList<>();
 
@@ -152,7 +157,10 @@ public class Title extends MTitle {
                 eps = new ArrayList<>();
                 Set<Integer> seenEpisodeIds = new HashSet<>();
                 try{
-                    for(Element e : d.selectFirst("ul.list-body").select("li.list-item")) {
+                    Element listBody = d.selectFirst("ul.list-body");
+                    if(listBody == null)
+                        break;
+                    for(Element e : listBody.select("li.list-item")) {
                         Element titlee = e.selectFirst("a.item-subject");
                         if(titlee == null)
                             continue;
