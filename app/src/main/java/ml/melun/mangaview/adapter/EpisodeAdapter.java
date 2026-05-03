@@ -18,6 +18,7 @@ import android.widget.TextView;
 
 
 import com.bumptech.glide.Glide;
+import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import com.bumptech.glide.request.RequestOptions;
 
 
@@ -124,7 +125,10 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             Glide.with(h.h_thumb).clear(h.h_thumb);
             if(!save && thumb.length() > 0) Glide.with(h.h_thumb)
                     .load(getGlideUrl(thumb, title.getBaseMode()))
+                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
                     .apply(new RequestOptions().dontTransform())
+                    .override(dp(150), dp(210))
+                    .dontAnimate()
                     .into(h.h_thumb);
             else h.h_thumb.setImageBitmap(null);
             if(mode == 0 || mode == 3)
@@ -156,6 +160,10 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
                 h.itemView.setBackgroundColor(Color.TRANSPARENT);
             }
         }
+    }
+
+    private int dp(int value) {
+        return (int) (value * mainContext.getResources().getDisplayMetrics().density + 0.5f);
     }
 
     // total number of rows
