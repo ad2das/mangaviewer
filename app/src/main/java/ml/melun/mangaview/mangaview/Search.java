@@ -32,7 +32,7 @@ public class Search {
     private ArrayList<Title> result;
 
     public Search(String q, int mode, int baseMode) {
-        query = q;
+        query = q == null ? "" : q;
         this.mode = mode;
         this.baseMode = baseMode;
     }
