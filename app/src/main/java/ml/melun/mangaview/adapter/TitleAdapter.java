@@ -73,7 +73,11 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                     String lowerQuery = query.toLowerCase(Locale.ROOT);
                     ArrayList<Title> filtered = new ArrayList<>();
                     for(Title t : mData){
-                        if(t.getName().toLowerCase(Locale.ROOT).contains(lowerQuery) || t.getAuthor().toLowerCase(Locale.ROOT).contains(lowerQuery))
+                        if(t == null)
+                            continue;
+                        String name = t.getName() == null ? "" : t.getName();
+                        String author = t.getAuthor() == null ? "" : t.getAuthor();
+                        if(name.toLowerCase(Locale.ROOT).contains(lowerQuery) || author.toLowerCase(Locale.ROOT).contains(lowerQuery))
                             filtered.add(t);
                     }
                     payload = new FilterPayload(filtered, true);
@@ -187,6 +191,8 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
 
 
     public void moveItemToTop(int from){
+        if(!isValidPosition(from))
+            return;
         if(!searching) {
             mData.add(0, mData.get(from));
             mData.remove(from + 1);
@@ -196,18 +202,24 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         }else{
             Title t = mDataFiltered.get(from);
             int index = mData.indexOf(t);
+            if(index < 0)
+                return;
             mData.add(0, mData.get(index));
             mData.remove(index + 1);
         }
     }
 
     public void remove(int pos){
+        if(!isValidPosition(pos))
+            return;
         if(!searching) {
             mData.remove(pos);
             notifyItemRemoved(pos);
         }else{
             Title t = mDataFiltered.get(pos);
             int index = mData.indexOf(t);
+            if(index < 0)
+                return;
             mData.remove(index);
             mDataFiltered.remove(pos);
             notifyItemRemoved(pos);
@@ -295,20 +307,20 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             }
             card.setOnClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || mClickListener == null)
+                if(!isValidClickPosition(position) || mClickListener == null)
                     return;
                 mClickListener.onItemClick(position);
             });
             card.setOnLongClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || mClickListener == null)
+                if(!isValidClickPosition(position) || mClickListener == null)
                     return false;
                 mClickListener.onLongClick(v, position);
                 return true;
             });
             resume.setOnClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || mClickListener == null)
+                if(!isValidClickPosition(position) || mClickListener == null)
                     return;
                 mClickListener.onResumeClick(position, p.getBookmark(mDataFiltered.get(position)));
             });
@@ -321,7 +333,17 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         this.resume = resume;
     }
     public Title getItem(int index) {
+        if(!isValidPosition(index))
+            return null;
         return mDataFiltered.get(index);
+    }
+
+    public boolean isValidPosition(int index) {
+        return mDataFiltered != null && index >= 0 && index < mDataFiltered.size();
+    }
+
+    private boolean isValidClickPosition(int index) {
+        return index != RecyclerView.NO_POSITION && isValidPosition(index);
     }
 
     private void updateFilteredData(List<Title> nextData) {

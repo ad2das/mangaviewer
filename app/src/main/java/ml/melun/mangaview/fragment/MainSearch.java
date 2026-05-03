@@ -246,6 +246,8 @@ public class MainSearch extends Fragment {
                     public void onLongClick(View view, int position) {
                         //none
                         Title title = searchAdapter.getItem(position);
+                        if(title == null)
+                            return;
                         popup(getContext(),view, position, title, 0, item -> {
                             int itemId = item.getItemId();
                             if(itemId == R.id.favAdd || itemId == R.id.favDel) {
@@ -258,13 +260,17 @@ public class MainSearch extends Fragment {
 
                     @Override
                     public void onResumeClick(int position, int id) {
-                        openViewer(getContext(),new Manga(id,"","", targetSearch.getBaseMode()),-1);
+                        if(getContext() != null)
+                            openViewer(getContext(),new Manga(id,"","", targetSearch.getBaseMode()),-1);
                     }
 
                     @Override
                     public void onItemClick(int position) {
                         // start intent : Episode viewer
-                        Intent episodeView = episodeIntent(getContext(), searchAdapter.getItem(position));
+                        Title selected = searchAdapter.getItem(position);
+                        if(selected == null || getContext() == null)
+                            return;
+                        Intent episodeView = episodeIntent(getContext(), selected);
                         startActivity(episodeView);
                     }
                 });

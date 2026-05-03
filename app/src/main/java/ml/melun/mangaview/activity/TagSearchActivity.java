@@ -194,7 +194,10 @@ public class TagSearchActivity extends AppCompatActivity {
                 adapter.setClickListener(new TitleAdapter.ItemClickListener() {
                     @Override
                     public void onResumeClick(int position, int id) {
-                        Intent viewer = viewerIntent(context, new Manga(id,"","",adapter.getItem(position).getBaseMode()));
+                        Title selected = adapter.getItem(position);
+                        if(selected == null)
+                            return;
+                        Intent viewer = viewerIntent(context, new Manga(id,"","",selected.getBaseMode()));
                         viewer.putExtra("online",true);
                         startActivity(viewer);
                     }
@@ -203,6 +206,8 @@ public class TagSearchActivity extends AppCompatActivity {
                     public void onItemClick(int position) {
                         // start intent : Episode viewer
                         Title selected = adapter.getItem(position);
+                        if(selected == null)
+                            return;
                         Intent episodeView = episodeIntent(context, selected);
                         episodeView.putExtra("online", true);
                         startActivity(episodeView);
@@ -210,7 +215,9 @@ public class TagSearchActivity extends AppCompatActivity {
 
                     @Override
                     public void onLongClick(View view, int position) {
-                        popup(view, position, adapter.getItem(position), 0);
+                        Title selected = adapter.getItem(position);
+                        if(selected != null)
+                            popup(view, position, selected, 0);
                     }
                 });
             }else{
@@ -293,6 +300,8 @@ public class TagSearchActivity extends AppCompatActivity {
                     public void onItemClick(int position) {
                         // start intent : Episode viewer
                         Title selected = adapter.getItem(position);
+                        if(selected == null)
+                            return;
                         Intent episodeView = episodeIntent(context, selected);
                         episodeView.putExtra("online", true);
                         startActivity(episodeView);
@@ -300,7 +309,9 @@ public class TagSearchActivity extends AppCompatActivity {
 
                     @Override
                     public void onLongClick(View view, int position) {
-                        popup(view, position, adapter.getItem(position), 0);
+                        Title selected = adapter.getItem(position);
+                        if(selected != null)
+                            popup(view, position, selected, 0);
                     }
                 });
             }else{

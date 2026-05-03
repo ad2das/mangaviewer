@@ -83,16 +83,21 @@ public class RecyclerFragment extends Fragment {
             @Override
             public void onResumeClick(int position, int id) {
                 selectedPosition = position;
+                Title title = titleAdapter.getItem(position);
+                if(title == null)
+                    return;
                 if(mode == R.id.nav_recent) {
-                    openViewer(new Manga(id, "", "" , titleAdapter.getItem(position).getBaseMode()), 2);
+                    openViewer(new Manga(id, "", "" , title.getBaseMode()), 2);
                 } else if(mode == R.id.nav_favorite) {
-                    openViewer(new Manga(id, "", "", titleAdapter.getItem(position).getBaseMode()), -1);
+                    openViewer(new Manga(id, "", "", title.getBaseMode()), -1);
                 }
             }
 
             @Override
             public void onLongClick(View view, int position) {
                 Title title = titleAdapter.getItem(position);
+                if(title == null)
+                    return;
                 if(mode == R.id.nav_favorite) {
                     popup(view, position, title, 2);
                 }else if(mode == R.id.nav_recent){
@@ -105,7 +110,10 @@ public class RecyclerFragment extends Fragment {
             @Override
             public void onItemClick(int position) {
                 selectedPosition = position;
-                Intent episodeView = episodeIntent(getContext(), titleAdapter.getItem(position));
+                Title title = titleAdapter.getItem(position);
+                if(title == null || getContext() == null)
+                    return;
+                Intent episodeView = episodeIntent(getContext(), title);
                 if(mode == R.id.nav_favorite) {
                     episodeView.putExtra("position", position);
                     episodeView.putExtra("favorite",true);
@@ -131,8 +139,8 @@ public class RecyclerFragment extends Fragment {
 
     @Override
     public void onActivityResult(int requestCode, int resultCode, Intent data) {
-        if(resultCode == RESULT_OK){
-            if(titleAdapter != null && titleAdapter.getItemCount() > 0 && selectedPosition > -1) {
+        if(resultCode == RESULT_OK && data != null){
+            if(titleAdapter != null && titleAdapter.isValidPosition(selectedPosition)) {
                 switch (requestCode) {
                     case 1:
                         //favorite result
@@ -186,20 +194,29 @@ public class RecyclerFragment extends Fragment {
 
     public class OfflineReader extends LifecycleTask<Void,Void,Integer>{
         List<Title> titles;
+
+        OfflineReader() {
+            super(RecyclerFragment.this);
+        }
+
         @Override
         protected void onPostExecute(Integer integer) {
             super.onPostExecute(integer);
-            titleAdapter.addData(titles);
+            if(titleAdapter != null && titles != null)
+                titleAdapter.addData(titles);
         }
         @Override
         protected Integer doInBackground(Void... voids) {
             titles = new ArrayList<>();
+            Context context = getContext();
+            if(context == null)
+                return null;
             if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
                 //scoped storage
                 Uri uri = Uri.parse(p.getHomeDir());
                 DocumentFile home;
                 try {
-                    home = DocumentFile.fromTreeUri(getContext(), uri);
+                    home = DocumentFile.fromTreeUri(context, uri);
                 }catch (IllegalArgumentException e){
                     //home not set
                     return null;
@@ -210,7 +227,7 @@ public class RecyclerFragment extends Fragment {
                             DocumentFile d = f.findFile("title.gson");
                             if (d != null) {
                                 try {
-                                    Title title = new Gson().fromJson(readUriToString(getContext(), d.getUri()), new TypeToken<Title>() {
+                                    Title title = new Gson().fromJson(readUriToString(context, d.getUri()), new TypeToken<Title>() {
                                     }.getType());
                                     title.setPath(f.getUri().toString());
                                     if (title.getThumb().length() > 0) {
@@ -300,7 +317,9 @@ public class RecyclerFragment extends Fragment {
     }
 
     void openViewer(Manga manga, int code){
-        Title title = selectedPosition > -1 ? titleAdapter.getItem(selectedPosition) : null;
+        Title title = titleAdapter != null && titleAdapter.isValidPosition(selectedPosition) ? titleAdapter.getItem(selectedPosition) : null;
+        if(getContext() == null)
+            return;
         manga.setMode(0);
         if(title != null)
             manga.setTitle(title);
@@ -313,7 +332,10 @@ public class RecyclerFragment extends Fragment {
     }
 
     void popup(View view, final int position, final Title title, final int m){
-        PopupMenu popup = new PopupMenu(getContext(), view);
+        Context context = getContext();
+        if(context == null)
+            return;
+        PopupMenu popup = new PopupMenu(context, view);
         //Inflating the Popup using xml file
         //todo: clean this part
         popup.getMenuInflater()
@@ -362,25 +384,32 @@ public class RecyclerFragment extends Fragment {
                 DialogInterface.OnClickListener dialogClickListener = (dialog, which) -> {
                     if (which == DialogInterface.BUTTON_POSITIVE) {
                         //Yes button clicked
+                        Context currentContext = getContext();
+                        if(currentContext == null)
+                            return;
                         if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
-                            DocumentFile f = DocumentFile.fromTreeUri(getContext(), Uri.parse(p.getHomeDir()));
+                            DocumentFile f = DocumentFile.fromTreeUri(currentContext, Uri.parse(p.getHomeDir()));
+                            if(f == null) {
+                                showPopup(currentContext, "알림", "삭제를 실패했습니다");
+                                return;
+                            }
                             DocumentFile target = f.findFile(title.getName());
                             if (target != null && target.delete()) {
                                 titleAdapter.remove(position);
-                                Toast.makeText(getContext(), "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
-                            } else showPopup(getContext(), "알림", "삭제를 실패했습니다");
+                                Toast.makeText(currentContext, "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
+                            } else showPopup(currentContext, "알림", "삭제를 실패했습니다");
                         } else {
                             File folder = new File(p.getHomeDir(), filterFolder(title.getName()));
                             if (deleteRecursive(folder)) {
                                 titleAdapter.remove(position);
-                                Toast.makeText(getContext(), "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
-                            } else showPopup(getContext(), "알림", "삭제를 실패했습니다");
+                                Toast.makeText(currentContext, "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
+                            } else showPopup(currentContext, "알림", "삭제를 실패했습니다");
                         }
                     }
                 };
                 AlertDialog.Builder builder;
-                if(p.getDarkTheme()) builder = new AlertDialog.Builder(getContext(),R.style.darkDialog);
-                else builder = new AlertDialog.Builder(getContext());
+                if(p.getDarkTheme()) builder = new AlertDialog.Builder(context,R.style.darkDialog);
+                else builder = new AlertDialog.Builder(context);
                 builder.setMessage("정말로 삭제 하시겠습니까?").setPositiveButton("네", dialogClickListener)
                         .setNegativeButton("아니오", dialogClickListener).show();
             }

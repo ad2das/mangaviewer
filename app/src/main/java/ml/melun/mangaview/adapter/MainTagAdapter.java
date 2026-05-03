@@ -147,7 +147,7 @@ public class MainTagAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
 
             card.setOnClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || mClickListener == null)
+                if(position == RecyclerView.NO_POSITION || mClickListener == null || tags == null || position >= tags.size())
                     return;
                 mClickListener.onClick(position, tags.get(position));
             });
@@ -182,5 +182,4 @@ public class MainTagAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         void onClick(int position, String value);
     }
 }
-
 
