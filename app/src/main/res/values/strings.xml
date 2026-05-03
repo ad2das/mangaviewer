@@ -12,9 +12,17 @@
     <string name="viewer_previous_episode">이전 회차</string>
     <string name="viewer_toggle_toolbar">툴바 표시 전환</string>
     <string name="account_sign_in">Google 로그인</string>
+    <string name="account_sign_in_short">로그인</string>
     <string name="account_sign_out">로그아웃</string>
+    <string name="account_sync_now">지금 동기화</string>
+    <string name="account_manage">계정 관리</string>
+    <string name="account_header_title">MangaView 계정</string>
     <string name="account_syncing">동기화 중...</string>
     <string name="account_signed_out">로그인하면 읽은 기록을 동기화합니다</string>
+    <string name="account_status_signed_out">백업 꺼짐</string>
+    <string name="account_status_signed_in">동기화 켜짐</string>
+    <string name="account_status_syncing">동기화 중</string>
+    <string name="account_sign_out_confirm">이 기기에서 MangaView 동기화를 로그아웃할까요?</string>
     <string name="account_firebase_missing">Firebase 설정이 필요합니다. app/google-services.json을 추가해 주세요.</string>
     <string name="account_google_oauth_missing">Google 로그인 설정이 없습니다. Firebase Authentication에서 Google 제공자를 켜고 google-services.json을 다시 받아 주세요.</string>
     <string name="account_sign_in_failed">로그인 실패</string>

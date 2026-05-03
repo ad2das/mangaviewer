@@ -324,29 +324,33 @@ public class MainActivity extends AppCompatActivity
         if(navigationView == null || navigationView.getHeaderCount() == 0)
             return;
         View header = navigationView.getHeaderView(0);
+        View panel = header.findViewById(R.id.nav_account_panel);
         TextView name = header.findViewById(R.id.nav_account_name);
         TextView email = header.findViewById(R.id.nav_account_email);
-        View button = header.findViewById(R.id.nav_account_button);
-        if(button == null || name == null || email == null)
+        TextView button = header.findViewById(R.id.nav_account_button);
+        TextView status = header.findViewById(R.id.nav_account_status);
+        if(panel == null || button == null || name == null || email == null || status == null)
             return;
         FirebaseUser user = firebaseAccountManager == null ? null : firebaseAccountManager.getUser();
         if(user != null) {
             name.setText(user.getDisplayName() == null || user.getDisplayName().length() == 0 ? "MangaView" : user.getDisplayName());
             email.setText(user.getEmail() == null ? "" : user.getEmail());
-            button.setContentDescription(getString(R.string.account_sign_out));
-            button.setOnClickListener(v -> firebaseAccountManager.signOut(() -> runOnUiThread(this::setupAccountHeader)));
+            button.setText(R.string.account_manage);
+            button.setContentDescription(getString(R.string.account_manage));
+            status.setText(R.string.account_status_signed_in);
+            panel.setOnClickListener(v -> showAccountDialog());
+            button.setOnClickListener(v -> showAccountDialog());
             if(!accountInitialSyncStarted && firebaseSyncManager != null) {
                 accountInitialSyncStarted = true;
-                firebaseSyncManager.syncAfterSignIn((syncSuccess, syncMessage) -> runOnUiThread(() -> {
-                    refreshSyncedListIfVisible();
-                    if(!syncSuccess)
-                        Toast.makeText(context, syncMessage == null ? getString(R.string.account_sync_failed) : syncMessage, Toast.LENGTH_LONG).show();
-                }));
+                syncAccount(false);
             }
         } else {
             name.setText("MangaView");
             email.setText(R.string.account_signed_out);
+            button.setText(R.string.account_sign_in_short);
             button.setContentDescription(getString(R.string.account_sign_in));
+            status.setText(R.string.account_status_signed_out);
+            panel.setOnClickListener(v -> startGoogleSignIn());
             button.setOnClickListener(v -> startGoogleSignIn());
             accountInitialSyncStarted = false;
         }
@@ -366,10 +370,61 @@ public class MainActivity extends AppCompatActivity
 
     private void toggleAccountSignIn() {
         if(firebaseAccountManager != null && firebaseAccountManager.getUser() != null) {
-            firebaseAccountManager.signOut(() -> runOnUiThread(this::setupAccountHeader));
+            showAccountDialog();
             return;
         }
         startGoogleSignIn();
+    }
+
+    private void showAccountDialog() {
+        FirebaseUser user = firebaseAccountManager == null ? null : firebaseAccountManager.getUser();
+        if(user == null) {
+            startGoogleSignIn();
+            return;
+        }
+        String title = user.getDisplayName() == null || user.getDisplayName().length() == 0 ? getString(R.string.account_manage) : user.getDisplayName();
+        String message = user.getEmail() == null ? getString(R.string.account_status_signed_in) : user.getEmail();
+        new AlertDialog.Builder(context)
+                .setTitle(title)
+                .setMessage(message)
+                .setPositiveButton(R.string.account_sync_now, (dialog, which) -> syncAccount(true))
+                .setNegativeButton(R.string.account_sign_out, (dialog, which) -> confirmSignOut())
+                .setNeutralButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void confirmSignOut() {
+        new AlertDialog.Builder(context)
+                .setMessage(R.string.account_sign_out_confirm)
+                .setPositiveButton(R.string.account_sign_out, (dialog, which) -> {
+                    if(firebaseAccountManager != null)
+                        firebaseAccountManager.signOut(() -> runOnUiThread(this::setupAccountHeader));
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void syncAccount(boolean showResult) {
+        if(firebaseSyncManager == null)
+            return;
+        setAccountSyncingStatus(true);
+        if(showResult)
+            Toast.makeText(context, R.string.account_syncing, Toast.LENGTH_SHORT).show();
+        firebaseSyncManager.syncAfterSignIn((syncSuccess, syncMessage) -> runOnUiThread(() -> {
+            setAccountSyncingStatus(false);
+            refreshSyncedListIfVisible();
+            if(showResult || !syncSuccess)
+                Toast.makeText(context, syncSuccess ? getString(R.string.account_sync_complete) : (syncMessage == null ? getString(R.string.account_sync_failed) : syncMessage), syncSuccess ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
+        }));
+    }
+
+    private void setAccountSyncingStatus(boolean syncing) {
+        if(navigationView == null || navigationView.getHeaderCount() == 0)
+            return;
+        View header = navigationView.getHeaderView(0);
+        TextView status = header.findViewById(R.id.nav_account_status);
+        if(status != null)
+            status.setText(syncing ? R.string.account_status_syncing : R.string.account_status_signed_in);
     }
 
     private void refreshSyncedListIfVisible() {
@@ -589,14 +644,9 @@ public class MainActivity extends AppCompatActivity
             if(resultCode == RESULT_OK && data != null && firebaseAccountManager != null) {
                 firebaseAccountManager.handleActivityResult(data, (success, message) -> runOnUiThread(() -> {
                     if(success) {
-                        Toast.makeText(context, R.string.account_syncing, Toast.LENGTH_SHORT).show();
                         accountInitialSyncStarted = true;
                         setupAccountHeader();
-                        if(firebaseSyncManager != null)
-                            firebaseSyncManager.syncAfterSignIn((syncSuccess, syncMessage) -> runOnUiThread(() -> {
-                                refreshSyncedListIfVisible();
-                                Toast.makeText(context, syncSuccess ? getString(R.string.account_sync_complete) : (syncMessage == null ? getString(R.string.account_sync_failed) : syncMessage), syncSuccess ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
-                            }));
+                        syncAccount(true);
                     } else {
                         Toast.makeText(context, message == null ? getString(R.string.account_sign_in_failed) : message, Toast.LENGTH_LONG).show();
                     }
