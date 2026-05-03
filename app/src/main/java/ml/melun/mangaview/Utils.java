@@ -91,11 +91,17 @@ public class Utils {
     public static final String ReservedChars = "|\\?*<\":>+[]/'";
 
     public static boolean deleteRecursive(File fileOrDirectory) {
+        if(fileOrDirectory == null)
+            return false;
         if(!checkWriteable(fileOrDirectory)) return false;
         try {
-            if (fileOrDirectory.isDirectory())
-                for (File child : fileOrDirectory.listFiles())
+            if (fileOrDirectory.isDirectory()) {
+                File[] children = fileOrDirectory.listFiles();
+                if(children == null)
+                    return false;
+                for (File child : children)
                     if(!deleteRecursive(child)) return false;
+            }
             fileOrDirectory.delete();
         }catch (Exception e){
             return false;
@@ -104,6 +110,8 @@ public class Utils {
     }
 
     public static boolean checkWriteable(File targetDir) {
+        if(targetDir == null)
+            return false;
         if(targetDir.isDirectory()) {
             File tmp = new File(targetDir, "mangaViewTestFile");
             try {
@@ -114,7 +122,10 @@ public class Utils {
             }
             return true;
         }else{
-            File tmp = new File(targetDir.getParent(), "mangaViewTestFile");
+            File parent = targetDir.getParentFile();
+            if(parent == null)
+                return false;
+            File tmp = new File(parent, "mangaViewTestFile");
             try {
                 if (tmp.createNewFile()) tmp.delete();
                 else return false;
@@ -678,8 +689,12 @@ public class Utils {
     }
 
     public static boolean writePreferenceToFile(Context c, Uri uri){
+        if(c == null || uri == null)
+            return false;
         try {
             OutputStream stream = c.getContentResolver().openOutputStream(uri);
+            if(stream == null)
+                return false;
             stream.write(readPref(c).getBytes());
             stream.flush();
             stream.close();
@@ -916,6 +931,8 @@ public class Utils {
             return "";
         try {
             InputStream in = context.getContentResolver().openInputStream(uri);
+            if(in == null)
+                return "";
             BufferedReader r = new BufferedReader(new InputStreamReader(in));
             StringBuilder s = new StringBuilder();
             for (String line; (line = r.readLine()) != null; ) {
