@@ -16,11 +16,20 @@ import com.google.gson.reflect.TypeToken;
 
 import org.json.JSONObject;
 
+import java.io.IOException;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
 import ml.melun.mangaview.mangaview.MTitle;
+import okhttp3.Call;
+import okhttp3.Callback;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 
 public class FirebaseSyncManager {
     private static final String META_PREF = "firebaseSyncMeta";
@@ -32,6 +41,7 @@ public class FirebaseSyncManager {
     private final SharedPreferences metaPref;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Gson gson = new Gson();
+    private final OkHttpClient httpClient = new OkHttpClient();
     private FirebaseFirestore firestore;
     private FirebaseAuth auth;
     private boolean syncing;
@@ -40,6 +50,10 @@ public class FirebaseSyncManager {
 
     public interface SyncCallback {
         void onComplete(boolean success, String message);
+    }
+
+    private interface TokenCallback {
+        void onToken(boolean success, String token, String message);
     }
 
     public FirebaseSyncManager(Context context, Preference preference) {
@@ -57,7 +71,7 @@ public class FirebaseSyncManager {
     }
 
     public boolean isAvailable() {
-        return auth != null && firestore != null;
+        return auth != null;
     }
 
     public boolean isSignedIn() {
@@ -106,13 +120,33 @@ public class FirebaseSyncManager {
                 afterUpload.onComplete(false, "로그인이 필요합니다");
             return;
         }
-        DocumentReference doc = stateDoc(user.getUid());
         Map<String, Object> data = exportState();
-        doc.set(data)
-                .addOnCompleteListener(task -> {
-                    if(afterUpload != null)
-                        afterUpload.onComplete(task.isSuccessful(), task.isSuccessful() ? null : errorMessage("업로드 실패", task.getException()));
-                });
+        requestIdToken(user, (tokenSuccess, token, tokenMessage) -> {
+            if(!tokenSuccess) {
+                if(afterUpload != null)
+                    afterUpload.onComplete(false, tokenMessage);
+                return;
+            }
+            Request request = new Request.Builder()
+                    .url(restDocumentUrl(user.getUid()))
+                    .patch(RequestBody.create(MediaType.parse("application/json; charset=utf-8"), firestoreDocumentJson(data).toString()))
+                    .addHeader("Authorization", "Bearer " + token)
+                    .build();
+            httpClient.newCall(request).enqueue(new Callback() {
+                @Override
+                public void onFailure(Call call, IOException e) {
+                    deliver(afterUpload, false, errorMessage("업로드 실패", e));
+                }
+
+                @Override
+                public void onResponse(Call call, Response response) throws IOException {
+                    boolean success = response.isSuccessful();
+                    String body = response.body() == null ? "" : response.body().string();
+                    response.close();
+                    deliver(afterUpload, success, success ? null : restErrorMessage("업로드 실패", response.code(), body));
+                }
+            });
+        });
     }
 
     private void downloadAndMerge(SyncCallback afterSync) {
@@ -127,27 +161,44 @@ public class FirebaseSyncManager {
                 afterSync.onComplete(false, "인터넷 연결이 필요합니다");
             return;
         }
-        firestore.enableNetwork()
-                .addOnSuccessListener(unused -> stateDoc(user.getUid()).get()
-                        .addOnSuccessListener(snapshot -> {
-                            syncing = true;
-                            try {
-                                if(snapshot != null && snapshot.exists())
-                                    mergeRemote(snapshot.getData());
-                            } finally {
-                                syncing = false;
-                            }
-                            uploadCurrentState(afterSync);
-                        })
-                        .addOnFailureListener(e -> {
-                            if(afterSync != null)
-                                afterSync.onComplete(false, errorMessage("다운로드 실패", e));
-                        }))
-                .addOnFailureListener(e -> {
-                    if(afterSync != null)
-                        afterSync.onComplete(false, errorMessage("Firestore 네트워크 연결 실패", e));
-                })
-        ;
+        requestIdToken(user, (tokenSuccess, token, tokenMessage) -> {
+            if(!tokenSuccess) {
+                if(afterSync != null)
+                    afterSync.onComplete(false, tokenMessage);
+                return;
+            }
+            Request request = new Request.Builder()
+                    .url(restDocumentUrl(user.getUid()))
+                    .get()
+                    .addHeader("Authorization", "Bearer " + token)
+                    .build();
+            httpClient.newCall(request).enqueue(new Callback() {
+                @Override
+                public void onFailure(Call call, IOException e) {
+                    deliver(afterSync, false, errorMessage("다운로드 실패", e));
+                }
+
+                @Override
+                public void onResponse(Call call, Response response) throws IOException {
+                    String body = response.body() == null ? "" : response.body().string();
+                    int code = response.code();
+                    boolean success = response.isSuccessful();
+                    response.close();
+                    if(!success && code != 404) {
+                        deliver(afterSync, false, restErrorMessage("다운로드 실패", code, body));
+                        return;
+                    }
+                    syncing = true;
+                    try {
+                        if(success)
+                            mergeRemote(readFirestoreDocument(body));
+                    } finally {
+                        syncing = false;
+                    }
+                    uploadCurrentState(afterSync);
+                }
+            });
+        });
     }
 
     private Map<String, Object> exportState() {
@@ -264,6 +315,128 @@ public class FirebaseSyncManager {
             return true;
         NetworkInfo info = manager.getActiveNetworkInfo();
         return info != null && info.isConnected();
+    }
+
+    private void requestIdToken(FirebaseUser user, TokenCallback callback) {
+        user.getIdToken(false)
+                .addOnSuccessListener(result -> callback.onToken(true, result.getToken(), null))
+                .addOnFailureListener(e -> callback.onToken(false, null, errorMessage("인증 토큰 가져오기 실패", e)));
+    }
+
+    private void deliver(SyncCallback callback, boolean success, String message) {
+        if(callback == null)
+            return;
+        handler.post(() -> callback.onComplete(success, message));
+    }
+
+    private String restDocumentUrl(String uid) {
+        return "https://firestore.googleapis.com/v1/projects/"
+                + appContext.getString(R.string.project_id)
+                + "/databases/(default)/documents/users/"
+                + uid
+                + "/mangaView/"
+                + STATE_DOC;
+    }
+
+    private JSONObject firestoreDocumentJson(Map<String, Object> data) {
+        JSONObject root = new JSONObject();
+        JSONObject fields = new JSONObject();
+        try {
+            for(String key : data.keySet())
+                fields.put(key, firestoreValue(data.get(key)));
+            root.put("fields", fields);
+        } catch (Exception e) {
+            //
+        }
+        return root;
+    }
+
+    private JSONObject firestoreValue(Object value) {
+        JSONObject json = new JSONObject();
+        try {
+            if(value instanceof Boolean) {
+                json.put("booleanValue", value);
+            } else if(value instanceof Integer || value instanceof Long) {
+                json.put("integerValue", String.valueOf(value));
+            } else if(value instanceof Number) {
+                json.put("doubleValue", ((Number)value).doubleValue());
+            } else if(value instanceof Map) {
+                JSONObject fields = new JSONObject();
+                Map<String, Object> map = (Map<String, Object>)value;
+                for(String key : map.keySet())
+                    fields.put(key, firestoreValue(map.get(key)));
+                json.put("mapValue", new JSONObject().put("fields", fields));
+            } else {
+                json.put("stringValue", value == null ? "" : String.valueOf(value));
+            }
+        } catch (Exception e) {
+            //
+        }
+        return json;
+    }
+
+    private Map<String, Object> readFirestoreDocument(String body) {
+        Map<String, Object> data = new HashMap<>();
+        try {
+            JSONObject fields = new JSONObject(body).optJSONObject("fields");
+            if(fields == null)
+                return data;
+            Iterator<String> keys = fields.keys();
+            while(keys.hasNext()) {
+                String key = keys.next();
+                data.put(key, readFirestoreValue(fields.optJSONObject(key)));
+            }
+        } catch (Exception e) {
+            //
+        }
+        return data;
+    }
+
+    private Object readFirestoreValue(JSONObject value) {
+        if(value == null)
+            return null;
+        if(value.has("stringValue"))
+            return value.optString("stringValue", "");
+        if(value.has("integerValue")) {
+            try {
+                return Long.parseLong(value.optString("integerValue", "0"));
+            } catch (Exception e) {
+                return 0L;
+            }
+        }
+        if(value.has("doubleValue"))
+            return value.optDouble("doubleValue", 0);
+        if(value.has("booleanValue"))
+            return value.optBoolean("booleanValue", false);
+        if(value.has("mapValue")) {
+            Map<String, Object> map = new HashMap<>();
+            JSONObject fields = value.optJSONObject("mapValue").optJSONObject("fields");
+            if(fields == null)
+                return map;
+            Iterator<String> keys = fields.keys();
+            while(keys.hasNext()) {
+                String key = keys.next();
+                map.put(key, readFirestoreValue(fields.optJSONObject(key)));
+            }
+            return map;
+        }
+        return null;
+    }
+
+    private String restErrorMessage(String prefix, int code, String body) {
+        String message = "";
+        try {
+            JSONObject error = new JSONObject(body).optJSONObject("error");
+            if(error != null)
+                message = error.optString("message", "");
+        } catch (Exception e) {
+            //
+        }
+        if(message.contains("Missing or insufficient permissions"))
+            return prefix + ": Firestore 권한을 확인해 주세요";
+        if(message.length() == 0)
+            return prefix + " (" + code + ")";
+        return prefix + ": " + message;
     }
 
     private FirebaseUser currentUser() {
