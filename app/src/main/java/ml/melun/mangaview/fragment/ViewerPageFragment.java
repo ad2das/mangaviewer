@@ -14,6 +14,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageButton;
 import android.widget.ImageView;
+import android.widget.TextView;
 
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
@@ -36,6 +37,7 @@ public class ViewerPageFragment extends Fragment {
     int width;
     ImageView frame;
     ImageButton refresh;
+    TextView loading;
     CustomTarget<Bitmap> imageTarget;
     String activeImage;
 
@@ -63,6 +65,7 @@ public class ViewerPageFragment extends Fragment {
         View rootView = inflater.inflate(R.layout.fragment_viewer, container, false);
         frame = rootView.findViewById(R.id.page);
         refresh = rootView.findViewById(R.id.refreshButton);
+        loading = rootView.findViewById(R.id.pageLoading);
         //glide
         frame.setImageResource(R.drawable.placeholder);
         refresh.setVisibility(View.VISIBLE);
@@ -88,8 +91,11 @@ public class ViewerPageFragment extends Fragment {
         if(image == null) {
             frame.setImageResource(R.drawable.placeholder);
             refresh.setVisibility(View.VISIBLE);
+            loading.setVisibility(View.GONE);
             return;
         }
+        loading.setVisibility(View.VISIBLE);
+        refresh.setVisibility(View.GONE);
         activeImage = image;
         Object target = image.startsWith("http") ? getGlideUrl(image) : image;
         CustomTarget<Bitmap> targetView = new CustomTarget<Bitmap>() {
@@ -97,6 +103,7 @@ public class ViewerPageFragment extends Fragment {
             public void onResourceReady(Bitmap bitmap, Transition<? super Bitmap> transition) {
                 if(!isActiveTarget(this))
                     return;
+                loading.setVisibility(View.GONE);
                 refresh.setVisibility(View.GONE);
                 Bitmap glideBitmap = bitmap;
                 bitmap = decoder.decode(bitmap,width);
@@ -115,6 +122,7 @@ public class ViewerPageFragment extends Fragment {
             public void onLoadFailed(@Nullable Drawable errorDrawable) {
                 if(!isActiveTarget(this))
                     return;
+                loading.setVisibility(View.GONE);
                 if(image.length()>0) {
                     frame.setImageResource(R.drawable.placeholder);
                     refresh.setVisibility(View.VISIBLE);
@@ -136,6 +144,8 @@ public class ViewerPageFragment extends Fragment {
         frame.setImageResource(R.drawable.placeholder);
         if(refresh != null)
             refresh.setVisibility(View.VISIBLE);
+        if(loading != null)
+            loading.setVisibility(View.VISIBLE);
         imageTarget = null;
         Glide.with(frame).clear(target);
     }
@@ -170,6 +180,7 @@ public class ViewerPageFragment extends Fragment {
         clearImageTarget();
         frame = null;
         refresh = null;
+        loading = null;
         activeImage = null;
         super.onDestroyView();
     }

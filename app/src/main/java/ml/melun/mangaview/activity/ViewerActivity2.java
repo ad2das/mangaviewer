@@ -99,6 +99,8 @@ public class ViewerActivity2 extends AppCompatActivity {
     boolean split = false;
     boolean dirty = false;
     TextView info;
+    TextView loading, loading2;
+    View frameContainer, frameContainer2;
     int imageLoadGeneration = 0;
     loadImages imageLoadTask;
 
@@ -140,10 +142,20 @@ public class ViewerActivity2 extends AppCompatActivity {
         if(p.getDoublepReverse()){
             frame = this.findViewById(R.id.viewer_image2);
             frame2 = this.findViewById(R.id.viewer_image);
+            loading = this.findViewById(R.id.viewer_image2_loading);
+            loading2 = this.findViewById(R.id.viewer_image_loading);
+            frameContainer = this.findViewById(R.id.viewer_image2_container);
+            frameContainer2 = this.findViewById(R.id.viewer_image_container);
         }else{
             frame = this.findViewById(R.id.viewer_image);
             frame2 = this.findViewById(R.id.viewer_image2);
+            loading = this.findViewById(R.id.viewer_image_loading);
+            loading2 = this.findViewById(R.id.viewer_image2_loading);
+            frameContainer = this.findViewById(R.id.viewer_image_container);
+            frameContainer2 = this.findViewById(R.id.viewer_image2_container);
         }
+        setFrameVisibility(View.VISIBLE);
+        setFrame2Visibility(View.GONE);
 
 
 
@@ -412,6 +424,7 @@ public class ViewerActivity2 extends AppCompatActivity {
 
                 //placeholder
                 frame.setImageResource(R.drawable.placeholder);
+                showImageLoading();
                 Glide.with(context)
                         .asBitmap()
                         .apply(viewerImageOptions())
@@ -440,6 +453,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                                     type=-1;
                                     frame.setImageBitmap(bitmap);
                                 }
+                                hideImageLoading();
                                 preload();
                             }
                             @Override
@@ -448,12 +462,14 @@ public class ViewerActivity2 extends AppCompatActivity {
                                     return;
                                 viewerBookmark = Math.max(0, viewerBookmark - 1);
                                 frame.setImageResource(R.drawable.placeholder);
+                                hideImageLoading();
                                 updatePageIndex();
                             }
                         });
 
             }catch (Exception e){
                 e.printStackTrace();
+                hideImageLoading();
                 viewerBookmark--;
             }
         }
@@ -472,8 +488,8 @@ public class ViewerActivity2 extends AppCompatActivity {
             //첫페이지가 아닐 경우
             if(viewerBookmark>0){
                 viewerBookmark--;
-                frame.setVisibility(View.GONE);
-                frame2.setVisibility(View.VISIBLE);
+                setFrameVisibility(View.GONE);
+                setFrame2Visibility(View.VISIBLE);
                 frame.setImageResource(R.drawable.placeholder);
                 frame2.setImageResource(R.drawable.placeholder);
                 //오른쪽 부터 로드
@@ -482,6 +498,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                     int targetBookmark = viewerBookmark;
                     Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark), manga.getBaseMode()) : imgs.get(viewerBookmark);
                     //placeholder
+                    showImageLoading(loading2);
                     Glide.with(context)
                             .asBitmap()
                             .apply(viewerImageOptions())
@@ -507,6 +524,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                                         if(viewerBookmark > 0){
                                             //이전 페이지 로드하고 landscape 인지 확인, portrait일 경우에만 보여주기
                                             Object image2 = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark-1), manga.getBaseMode()) : imgs.get(viewerBookmark-1);
+                                            showImageLoading();
                                             Glide.with(context)
                                                     .asBitmap()
                                                     .apply(viewerImageOptions())
@@ -522,31 +540,42 @@ public class ViewerActivity2 extends AppCompatActivity {
                                                             if(width<height){
                                                                 //second is portrait
                                                                 type = 2;
-                                                                frame.setVisibility(View.VISIBLE);
+                                                                setFrameVisibility(View.VISIBLE);
                                                                 frame.setImageBitmap(bitmap1);
+                                                                hideImageLoading();
                                                                 viewerBookmark--;
                                                                 updatePageIndex();
                                                             }
+                                                            hideImageLoading();
                                                         }
 
                                                         @Override
                                                         public void onLoadCleared(@Nullable Drawable placeholder) {
 
                                                         }
+
+                                                        @Override
+                                                        public void onLoadFailed(@Nullable Drawable errorDrawable) {
+                                                            if(isActiveImageLoad(generation, targetBookmark))
+                                                                hideImageLoading();
+                                                        }
                                                     });
                                         }
                                     }
+                                    hideImageLoading(loading2);
                                     preload();
                                 }
                                 @Override
                                 public void onLoadFailed(@Nullable Drawable errorDrawable) {
                                     if(!isActiveImageLoad(generation, targetBookmark))
                                         return;
-                                    frame.setImageResource(R.drawable.placeholder);
+                                    frame2.setImageResource(R.drawable.placeholder);
+                                    hideImageLoading(loading2);
                                 }
                             });
                 }catch(Exception e) {
                     e.printStackTrace();
+                    hideImageLoading();
                     showErrorPopup(context, "이미지를 불러오지 못했습니다.", e, true);
                 }
                 //일단 왼쪽거 냅두다가, 오른쪽이 landscape일 경우, GONE 처리
@@ -577,6 +606,7 @@ public class ViewerActivity2 extends AppCompatActivity {
 
                 //placeholder
                 frame.setImageResource(R.drawable.placeholder);
+                showImageLoading();
                 Glide.with(context)
                         .asBitmap()
                         .apply(viewerImageOptions())
@@ -599,6 +629,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                                     type=-1;
                                     frame.setImageBitmap(bitmap);
                                 }
+                                hideImageLoading();
                             }
 
                             @Override
@@ -612,11 +643,13 @@ public class ViewerActivity2 extends AppCompatActivity {
                                     return;
                                 viewerBookmark = Math.min(imgs.size() - 1, viewerBookmark + 1);
                                 frame.setImageResource(R.drawable.placeholder);
+                                hideImageLoading();
                                 updatePageIndex();
                             }
                         });
             }catch (Exception e){
                 e.printStackTrace();
+                hideImageLoading();
                 viewerBookmark++;
             }
         }
@@ -633,10 +666,11 @@ public class ViewerActivity2 extends AppCompatActivity {
     void refreshImage(){
         int generation = nextImageLoadGeneration();
         int targetBookmark = viewerBookmark;
-        frame.setVisibility(View.VISIBLE);
-        frame2.setVisibility(View.GONE);
+        setFrameVisibility(View.VISIBLE);
+        setFrame2Visibility(View.GONE);
         frame.setImageResource(R.drawable.placeholder);
         if(split) frame2.setImageResource(R.drawable.placeholder);
+        showImageLoading();
         //refreshbtn.setVisibility(View.VISIBLE);
         try {
             Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark), manga.getBaseMode()) : imgs.get(viewerBookmark);
@@ -664,7 +698,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                                 if(split){
                                     //split일경우 자를 필요 없음, frame2만 없애주기
                                     type = 1;
-                                    frame2.setVisibility(View.GONE);
+                                    setFrame2Visibility(View.GONE);
                                     frame.setImageBitmap(bitmap);
                                 } else {
                                     imgCache = bitmap;
@@ -680,12 +714,13 @@ public class ViewerActivity2 extends AppCompatActivity {
                                 type = -1;
                                 frame.setImageBitmap(bitmap);
                                 if(split){
-                                    frame2.setVisibility(View.GONE);
+                                    setFrame2Visibility(View.GONE);
                                     type = 1;
                                     if(viewerBookmark+1 < imgs.size()) {
                                         //다음 페이지 로드하고 landscape 인지 확인, portrait일 경우에만 보여주기
                                         Object image2 = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark + 1), manga.getBaseMode()) : imgs.get(viewerBookmark + 1);
                                         frame2.setImageResource(R.drawable.placeholder);
+                                        showImageLoading(loading2);
                                         Glide.with(context)
                                                 .asBitmap()
                                                 .apply(viewerImageOptions())
@@ -699,20 +734,28 @@ public class ViewerActivity2 extends AppCompatActivity {
                                                         int width = bitmap1.getWidth();
                                                         int height = bitmap1.getHeight();
                                                         if (width < height) {
-                                                            frame2.setVisibility(View.VISIBLE);
+                                                            setFrame2Visibility(View.VISIBLE);
                                                             type = 2;
                                                             frame2.setImageBitmap(bitmap1);
                                                         }
+                                                        hideImageLoading(loading2);
                                                     }
 
                                                     @Override
                                                     public void onLoadCleared(@Nullable Drawable placeholder) {
 
                                                     }
+
+                                                    @Override
+                                                    public void onLoadFailed(@Nullable Drawable errorDrawable) {
+                                                        if(isActiveImageLoad(generation, targetBookmark))
+                                                            hideImageLoading(loading2);
+                                                    }
                                                 });
                                     }
                                 }
                             }
+                            hideImageLoading();
                             preload();
                         }
                         @Override
@@ -720,10 +763,12 @@ public class ViewerActivity2 extends AppCompatActivity {
                             if(!isActiveImageLoad(generation, targetBookmark))
                                 return;
                             frame.setImageResource(R.drawable.placeholder);
+                            hideImageLoading();
                         }
                     });
         }catch(Exception e) {
             e.printStackTrace();
+            hideImageLoading();
             showErrorPopup(context, "이미지를 불러오지 못했습니다.", e, true);
         }
     }
@@ -893,6 +938,38 @@ public class ViewerActivity2 extends AppCompatActivity {
         return !isFinishing()
                 && generation == imageLoadGeneration
                 && viewerBookmark == targetBookmark;
+    }
+
+    private void showImageLoading() {
+        showImageLoading(loading);
+    }
+
+    private void hideImageLoading() {
+        hideImageLoading(loading);
+    }
+
+    private void showImageLoading(TextView target) {
+        if(target != null)
+            target.setVisibility(View.VISIBLE);
+    }
+
+    private void hideImageLoading(TextView target) {
+        if(target != null)
+            target.setVisibility(View.GONE);
+    }
+
+    private void setFrameVisibility(int visibility) {
+        if(frameContainer != null)
+            frameContainer.setVisibility(visibility);
+        if(frame != null)
+            frame.setVisibility(visibility);
+    }
+
+    private void setFrame2Visibility(int visibility) {
+        if(frameContainer2 != null)
+            frameContainer2.setVisibility(visibility);
+        if(frame2 != null)
+            frame2.setVisibility(visibility);
     }
 
     private boolean hasSplittableImageCache() {

@@ -116,6 +116,12 @@ public class MainActivity extends AppCompatActivity
         changeFragment(1);
     }
 
+    @Override
+    public void openSettings() {
+        Intent settingIntent = new Intent(context, SettingsActivity.class);
+        startActivityForResult(settingIntent, 0);
+    }
+
 
 
     @Override
@@ -565,8 +571,7 @@ public class MainActivity extends AppCompatActivity
 
         //noinspection SimplifiableIfStatement
         if (id == R.id.action_settings) {
-            Intent settingIntent = new Intent(context, SettingsActivity.class);
-            startActivityForResult(settingIntent, 0);
+            openSettings();
             return true;
         }else if(id == R.id.action_debug){
             Intent debug = new Intent(context, DebugActivity.class);
@@ -623,8 +628,7 @@ public class MainActivity extends AppCompatActivity
 //                Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://open.kakao.com/o/gL4yY57"));
 //                startActivity(browserIntent);
             }else if(id==R.id.nav_settings){
-                Intent settingIntent = new Intent(context, SettingsActivity.class);
-                startActivityForResult(settingIntent, 0);
+                openSettings();
                 return true;
             }
             DrawerLayout drawer = (DrawerLayout) findViewById(R.id.drawer_layout);

@@ -31,4 +31,21 @@
         app:layout_constraintTop_toTopOf="parent"
         app:srcCompat="@drawable/ic_refresh" />
 
+    <TextView
+        android:id="@+id/stripLoading"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="#B8000000"
+        android:paddingLeft="18dp"
+        android:paddingTop="12dp"
+        android:paddingRight="18dp"
+        android:paddingBottom="12dp"
+        android:text="로딩중..."
+        android:textColor="#FFFFFFFF"
+        android:textSize="16sp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
 </androidx.constraintlayout.widget.ConstraintLayout>

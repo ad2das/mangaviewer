@@ -444,11 +444,13 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             applyBitmapHeight(holder, cacheKey, cached);
             holder.frame.setImageBitmap(cached);
             holder.refresh.setVisibility(View.GONE);
+            holder.loading.setVisibility(View.GONE);
             preloadAroundPosition(pos);
             return;
         }
         holder.frame.setImageDrawable(null);
         holder.refresh.setVisibility(View.GONE);
+        holder.loading.setVisibility(View.VISIBLE);
         loadDecodedIntoHolder(holder, item, url, cacheKey, pos);
     }
 
@@ -483,6 +485,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             applyHolderHeight(holder, estimatedPageHeight);
         holder.frame.setImageDrawable(null);
         holder.refresh.setVisibility(View.GONE);
+        holder.loading.setVisibility(View.GONE);
     }
 
     private void loadDecodedIntoHolder(ImgViewHolder holder, PageItem item, Object model, String cacheKey, int position) {
@@ -514,6 +517,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                         applyBitmapHeight(holder, cacheKey, finalBitmap);
                         holder.frame.setImageBitmap(finalBitmap);
                         holder.refresh.setVisibility(View.GONE);
+                        holder.loading.setVisibility(View.GONE);
                         preloadAroundPosition(position);
                     });
                 } catch (Exception e) {
@@ -525,6 +529,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                         applyHolderHeight(holder, estimatedPageHeight);
                         holder.frame.setImageResource(R.drawable.placeholder);
                         holder.refresh.setVisibility(View.VISIBLE);
+                        holder.loading.setVisibility(View.GONE);
                     });
                 } finally {
                     try {
@@ -542,6 +547,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             holder.imageFutureTarget = null;
             holder.frame.setImageResource(R.drawable.placeholder);
             holder.refresh.setVisibility(View.VISIBLE);
+            holder.loading.setVisibility(View.GONE);
         }
     }
 
@@ -884,6 +890,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             applyHolderHeight(imageHolder, estimatedPageHeight);
             imageHolder.frame.setImageDrawable(null);
             imageHolder.refresh.setVisibility(View.GONE);
+            imageHolder.loading.setVisibility(View.GONE);
         }
     }
 
@@ -908,6 +915,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     public class ImgViewHolder extends RecyclerView.ViewHolder implements View.OnClickListener, View.OnLongClickListener {
         ImageView frame;
         ImageButton refresh;
+        TextView loading;
         PageItem boundItem;
         FutureTarget<Bitmap> imageFutureTarget;
         Future<?> imageTask;
@@ -915,6 +923,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             super(itemView);
             frame = itemView.findViewById(R.id.frame);
             refresh = itemView.findViewById(R.id.refreshButton);
+            loading = itemView.findViewById(R.id.stripLoading);
             refresh.setOnClickListener(v -> {
                 //refresh image
                 int position = getAdapterPosition();

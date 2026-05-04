@@ -3,7 +3,9 @@ package ml.melun.mangaview.fragment;
 import android.content.Intent;
 import android.content.Context;
 import android.os.Bundle;
+import android.view.GestureDetector;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 
@@ -140,6 +142,7 @@ public class MainMain extends Fragment{
         mainRecycler.setItemViewCacheSize(12);
         mainRecycler.setItemAnimator(null);
         mainRecycler.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        attachSettingsSwipeGesture();
         mainRecycler.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
             public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
@@ -252,6 +255,50 @@ public class MainMain extends Fragment{
         if(!wait)
             fetchSelected();
         return rootView;
+    }
+
+    private void attachSettingsSwipeGesture() {
+        final int minSwipeDistance = dpToPx(120);
+        final int minSwipeVelocity = dpToPx(300);
+        GestureDetector detector = new GestureDetector(mainRecycler.getContext(), new GestureDetector.SimpleOnGestureListener() {
+            @Override
+            public boolean onDown(MotionEvent e) {
+                return true;
+            }
+
+            @Override
+            public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
+                if(e1 == null || e2 == null)
+                    return false;
+                float diffX = e2.getX() - e1.getX();
+                float diffY = e2.getY() - e1.getY();
+                if(diffX > minSwipeDistance && Math.abs(diffX) > Math.abs(diffY) && velocityX > minSwipeVelocity) {
+                    if(mainActivityCallback != null)
+                        mainActivityCallback.openSettings();
+                    return true;
+                }
+                return false;
+            }
+        });
+        mainRecycler.addOnItemTouchListener(new RecyclerView.OnItemTouchListener() {
+            @Override
+            public boolean onInterceptTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent e) {
+                return detector.onTouchEvent(e);
+            }
+
+            @Override
+            public void onTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent e) {
+                detector.onTouchEvent(e);
+            }
+
+            @Override
+            public void onRequestDisallowInterceptTouchEvent(boolean disallowIntercept) {
+            }
+        });
+    }
+
+    private int dpToPx(int dp) {
+        return Math.round(dp * getResources().getDisplayMetrics().density);
     }
 
     private MainWebtoonAdapter ensureComicAdapter() {

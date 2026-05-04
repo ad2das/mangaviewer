@@ -17,21 +17,64 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" >
-        <ImageView
-            android:id="@+id/viewer_image"
-            android:contentDescription="@string/viewer_page_image"
+        <FrameLayout
+            android:id="@+id/viewer_image_container"
             android:layout_height="match_parent"
             android:layout_width="0dp"
-            android:layout_weight="1"
-            android:scaleType="fitCenter" />
-        <ImageView
+            android:layout_weight="1">
+
+            <ImageView
+                android:id="@+id/viewer_image"
+                android:contentDescription="@string/viewer_page_image"
+                android:layout_height="match_parent"
+                android:layout_width="match_parent"
+                android:scaleType="fitCenter" />
+
+            <TextView
+                android:id="@+id/viewer_image_loading"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:background="#B8000000"
+                android:paddingLeft="18dp"
+                android:paddingTop="12dp"
+                android:paddingRight="18dp"
+                android:paddingBottom="12dp"
+                android:text="로딩중..."
+                android:textColor="#FFFFFFFF"
+                android:textSize="16sp"
+                android:visibility="gone" />
+        </FrameLayout>
+
+        <FrameLayout
+            android:id="@+id/viewer_image2_container"
             android:visibility="gone"
-            android:id="@+id/viewer_image2"
-            android:contentDescription="@string/viewer_page_image"
             android:layout_height="match_parent"
             android:layout_width="0dp"
-            android:layout_weight="1"
-            android:scaleType="fitCenter"/>
+            android:layout_weight="1">
+
+            <ImageView
+                android:id="@+id/viewer_image2"
+                android:contentDescription="@string/viewer_page_image"
+                android:layout_height="match_parent"
+                android:layout_width="match_parent"
+                android:scaleType="fitCenter" />
+
+            <TextView
+                android:id="@+id/viewer_image2_loading"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:background="#B8000000"
+                android:paddingLeft="18dp"
+                android:paddingTop="12dp"
+                android:paddingRight="18dp"
+                android:paddingBottom="12dp"
+                android:text="로딩중..."
+                android:textColor="#FFFFFFFF"
+                android:textSize="16sp"
+                android:visibility="gone" />
+        </FrameLayout>
     </androidx.appcompat.widget.LinearLayoutCompat>
 
 

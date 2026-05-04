@@ -260,7 +260,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 int max = context.getResources().getDisplayMetrics().widthPixels - dp(40);
                 for(String item : group) {
                     SectionName filter = parseSectionName(item);
-                    Search.prefetchCategoryPath(httpClient, filter.path, baseMode);
+                    if(!save)
+                        Search.prefetchCategoryPath(httpClient, filter.path, baseMode);
                     TextView chip = createFilterChip(filter.title, clicked -> {
                         if(listener != null)
                             listener.clickedCategoryPath(filter.title, filter.path);
@@ -353,7 +354,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             SectionName name = parseSectionName(section.getName());
             title.setText(name.title);
             count.setText("전체보기");
-            if(name.path.length() > 0)
+            if(!save && name.path.length() > 0)
                 Search.prefetchCategoryPath(httpClient, name.path, baseMode);
             count.setOnClickListener(v -> {
                 if(listener != null && name.path.length() > 0)
