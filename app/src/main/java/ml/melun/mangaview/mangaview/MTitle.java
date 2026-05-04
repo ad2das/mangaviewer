@@ -13,18 +13,21 @@ public class MTitle{
     List<String> tags;
     String release;
     String path;
+    int bookmarkEpisodeId = -1;
+    int bookmarkEpisodeIndex = -1;
+    int episodeCount = 0;
     int baseMode = base_comic; // default is comic
     //public static final String[] releases = {"미분류","주간","격주","월간","격월/비정기","단편","단행본","완결"};
     public MTitle(){
 
     }
     public MTitle(String name, int id, String thumb, String author, List<String> tags, String release, int baseMode) {
-        this.name = cleanName(name);
+        this.name = name.replace("\"", "");
         this.id = id;
-        this.thumb = thumb == null ? "" : thumb;
-        this.tags = tags == null ? new ArrayList<>() : tags;
-        this.release = release == null ? "" : release;
-        this.author = author == null ? "" : author;
+        this.thumb = thumb;
+        this.tags = tags;
+        this.release = release;
+        this.author = author;
         this.baseMode = baseMode;
     }
 
@@ -51,7 +54,7 @@ public class MTitle{
     }
 
     public String getName() {
-        return name == null ? "" : name;
+        return name;
     }
 
     public int getId() {
@@ -59,7 +62,7 @@ public class MTitle{
     }
 
     public String getThumb() {
-        return thumb == null ? "" : thumb;
+        return thumb;
     }
 
     public String getAuthor() {
@@ -73,7 +76,25 @@ public class MTitle{
     }
 
     public String getRelease() {
-        return release == null ? "" : release;
+        return release;
+    }
+
+    public int getBookmarkEpisodeId() {
+        return bookmarkEpisodeId;
+    }
+
+    public int getBookmarkEpisodeIndex() {
+        return bookmarkEpisodeIndex;
+    }
+
+    public int getEpisodeCount() {
+        return episodeCount;
+    }
+
+    public void setReadingProgress(int episodeId, int episodeIndex, int episodeCount) {
+        this.bookmarkEpisodeId = episodeId;
+        this.bookmarkEpisodeIndex = episodeIndex;
+        this.episodeCount = episodeCount;
     }
 
     public void setId(int id) {
@@ -81,7 +102,7 @@ public class MTitle{
     }
 
     public void setName(String name) {
-        this.name = cleanName(name);
+        this.name = name.replace("\"", "");
     }
 
     public void setThumb(String thumb) {
@@ -102,7 +123,10 @@ public class MTitle{
 
     @Override
     public MTitle clone() {
-        return new MTitle(name, id, thumb, author, tags, release, baseMode);
+        MTitle clone = new MTitle(name, id, thumb, author, tags, release, baseMode);
+        clone.setReadingProgress(bookmarkEpisodeId, bookmarkEpisodeIndex, episodeCount);
+        clone.setPath(path);
+        return clone;
     }
 
     public static final int base_auto = 0;
@@ -133,22 +157,11 @@ public class MTitle{
     @NonNull
     @Override
     public String toString() {
-        return getName() + " . " + id + " . " +  getThumb() + " . " + getAuthor() + " . " + baseMode;
+        return name + " . " + id + " . " +  thumb + " . " + author + " . " + baseMode;
     }
 
     @Override
     public boolean equals(Object obj) {
-        return obj instanceof MTitle
-                && ((MTitle)obj).getBaseMode() == this.baseMode
-                && ((MTitle)obj).getId() == this.id ;
-    }
-
-    @Override
-    public int hashCode() {
-        return 31 * getBaseMode() + id;
-    }
-
-    private String cleanName(String value) {
-        return value == null ? "" : value.replace("\"", "");
+        return ((MTitle)obj).getBaseMode() == this.baseMode && ((MTitle)obj).getId() == this.id ;
     }
 }

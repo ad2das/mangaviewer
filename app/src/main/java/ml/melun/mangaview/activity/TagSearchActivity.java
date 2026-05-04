@@ -4,9 +4,14 @@ import android.content.Context;
 import android.content.Intent;
 import ml.melun.mangaview.task.LifecycleTask;
 
+import androidx.annotation.Nullable;
 import androidx.appcompat.app.ActionBar;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
+
+import android.os.Build;
 import android.os.Bundle;
+import androidx.appcompat.widget.Toolbar;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.appcompat.widget.PopupMenu;
 import androidx.recyclerview.widget.RecyclerView;
@@ -14,9 +19,6 @@ import android.view.MenuItem;
 import android.view.View;
 import android.widget.TextView;
 
-import com.bumptech.glide.Glide;
-import com.bumptech.glide.integration.recyclerview.RecyclerViewPreloader;
-import com.google.gson.Gson;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayoutDirection;
 
@@ -28,7 +30,6 @@ import ml.melun.mangaview.adapter.TitleAdapter;
 import ml.melun.mangaview.adapter.UpdatedAdapter;
 import ml.melun.mangaview.mangaview.Bookmark;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
-import ml.melun.mangaview.mangaview.MainPageWebtoon;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
@@ -38,8 +39,9 @@ import ml.melun.mangaview.mangaview.UpdatedManga;
 import static ml.melun.mangaview.MainApplication.httpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
-import static ml.melun.mangaview.Utils.showErrorPopup;
+import static ml.melun.mangaview.Utils.showCaptchaPopup;
 import static ml.melun.mangaview.Utils.viewerIntent;
+import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 
 public class TagSearchActivity extends AppCompatActivity {
@@ -64,15 +66,27 @@ public class TagSearchActivity extends AppCompatActivity {
         if(p.getDarkTheme()) setTheme(R.style.AppThemeDark);
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_tag_search);
+        if(!p.getDarkTheme()) {
+            if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                getWindow().setStatusBarColor(ContextCompat.getColor(this, R.color.appSurface));
+                getWindow().setNavigationBarColor(ContextCompat.getColor(this, android.R.color.white));
+            }
+            if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                int flags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+                if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                    flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+                getWindow().getDecorView().setSystemUiVisibility(flags);
+            }
+        }
         context = this;
+        Toolbar toolbar = this.findViewById(R.id.tagSearchToolbar);
+        setSupportActionBar(toolbar);
         searchResult = this.findViewById(R.id.tagSearchResult);
         noresult = this.findViewById(R.id.tagSearchNoResult);
         LinearLayoutManager lm = new NpaLinearLayoutManager(context);
         searchResult.setLayoutManager(lm);
         searchResult.setHasFixedSize(true);
         searchResult.setItemViewCacheSize(12);
-        searchResult.setItemAnimator(null);
-        searchResult.setOverScrollMode(View.OVER_SCROLL_NEVER);
         Intent i = getIntent();
         query = i.getStringExtra("query");
         mode = i.getIntExtra("mode",0);
@@ -122,7 +136,6 @@ public class TagSearchActivity extends AppCompatActivity {
 
         }else if(mode == 7){
             adapter = new TitleAdapter(context);
-            attachTitlePreloader(adapter);
             bookmark = new Bookmark();
             startLoad(new getBookmarks());
             swipe.setOnRefreshListener(direction -> {
@@ -133,11 +146,7 @@ public class TagSearchActivity extends AppCompatActivity {
 
         }else {
             adapter = new TitleAdapter(context);
-            attachTitlePreloader(adapter);
             search = new Search(query,mode,baseMode);
-            searchResult.setAdapter(adapter);
-            bindTitleAdapterClicks();
-            showImmediateCategoryResults(title);
             startLoad(new searchManga());
             swipe.setOnRefreshListener(direction -> {
                 if (!search.isLast()) {
@@ -145,10 +154,6 @@ public class TagSearchActivity extends AppCompatActivity {
                 } else swipe.setRefreshing(false);
             });
         }
-    }
-
-    private void attachTitlePreloader(TitleAdapter adapter) {
-        searchResult.addOnScrollListener(new RecyclerViewPreloader<>(Glide.with(this), adapter, adapter, 24));
     }
 
     @SuppressWarnings("unchecked")
@@ -167,57 +172,6 @@ public class TagSearchActivity extends AppCompatActivity {
             return false;
         loadTask = null;
         return true;
-    }
-
-    private void bindTitleAdapterClicks() {
-        if(adapter == null)
-            return;
-        adapter.setClickListener(new TitleAdapter.ItemClickListener() {
-            @Override
-            public void onResumeClick(int position, int id) {
-                Title selected = adapter.getItem(position);
-                if(selected == null || id <= 0)
-                    return;
-                openResumeViewer(selected, id);
-            }
-
-            @Override
-            public void onItemClick(int position) {
-                Title selected = adapter.getItem(position);
-                if(selected == null)
-                    return;
-                Intent episodeView = episodeIntent(context, selected);
-                episodeView.putExtra("online", true);
-                startActivity(episodeView);
-            }
-
-            @Override
-            public void onLongClick(View view, int position) {
-                Title selected = adapter.getItem(position);
-                if(selected != null)
-                    popup(view, position, selected, 0);
-            }
-        });
-    }
-
-    private void showImmediateCategoryResults(String titleLabel) {
-        if(mode != 8 || adapter == null)
-            return;
-        ArrayList<Title> cached = Search.getCachedCategoryResults(query, baseMode);
-        if(cached != null && cached.size() > 0) {
-            adapter.addData(cached);
-            noresult.setVisibility(View.GONE);
-            swipe.setRefreshing(false);
-            return;
-        }
-        if(baseMode != base_comic && titleLabel != null && titleLabel.length() > 0) {
-            ArrayList<Title> local = MainPageWebtoon.getClassificationDbTitlesByGenre(titleLabel, 120);
-            if(local.size() > 0) {
-                adapter.addData(local);
-                noresult.setVisibility(View.GONE);
-                swipe.setRefreshing(false);
-            }
-        }
     }
 
     private void clearLoad(LifecycleTask<?, ?, ?> task) {
@@ -250,12 +204,33 @@ public class TagSearchActivity extends AppCompatActivity {
             if(!prepareLoadResult(this))
                 return;
             if(integer != 0){
-                showErrorPopup(context, "목록을 불러오지 못했습니다.", null, false);
+                showCaptchaPopup(context, p);
             }
             if(adapter.getItemCount()==0) {
                 adapter.addData(bookmark.getResult());
                 searchResult.setAdapter(adapter);
-                bindTitleAdapterClicks();
+                adapter.setClickListener(new TitleAdapter.ItemClickListener() {
+                    @Override
+                    public void onResumeClick(int position, int id) {
+                        Intent viewer = viewerIntent(context, new Manga(id,"","",adapter.getItem(position).getBaseMode()));
+                        viewer.putExtra("online",true);
+                        startActivity(viewer);
+                    }
+
+                    @Override
+                    public void onItemClick(int position) {
+                        // start intent : Episode viewer
+                        Title selected = adapter.getItem(position);
+                        Intent episodeView = episodeIntent(context, selected);
+                        episodeView.putExtra("online", true);
+                        startActivity(episodeView);
+                    }
+
+                    @Override
+                    public void onLongClick(View view, int position) {
+                        popup(view, position, adapter.getItem(position), 0);
+                    }
+                });
             }else{
                 adapter.addData(bookmark.getResult());
             }
@@ -319,12 +294,33 @@ public class TagSearchActivity extends AppCompatActivity {
             if(res == null)
                 res = 1;
             if(res != 0){
-                showErrorPopup(context, "목록을 불러오지 못했습니다.", null, false);
+                showCaptchaPopup(context, p);
             }
             if(adapter.getItemCount()==0) {
                 adapter.addData(search.getResult());
                 searchResult.setAdapter(adapter);
-                bindTitleAdapterClicks();
+                adapter.setClickListener(new TitleAdapter.ItemClickListener() {
+                    @Override
+                    public void onResumeClick(int position, int id) {
+                        Intent viewer = viewerIntent(context, new Manga(id,"","", search.getBaseMode()));
+                        viewer.putExtra("online",true);
+                        startActivity(viewer);
+                    }
+
+                    @Override
+                    public void onItemClick(int position) {
+                        // start intent : Episode viewer
+                        Title selected = adapter.getItem(position);
+                        Intent episodeView = episodeIntent(context, selected);
+                        episodeView.putExtra("online", true);
+                        startActivity(episodeView);
+                    }
+
+                    @Override
+                    public void onLongClick(View view, int position) {
+                        popup(view, position, adapter.getItem(position), 0);
+                    }
+                });
             }else{
                 adapter.addData(search.getResult());
             }
@@ -349,15 +345,6 @@ public class TagSearchActivity extends AppCompatActivity {
                 requestGroup.cancel();
             return super.cancel(mayInterruptIfRunning);
         }
-    }
-
-    private void openResumeViewer(Title selected, int episodeId) {
-        Intent viewer = viewerIntent(context, new Manga(episodeId, "", "", selected.getBaseMode()));
-        if(viewer == null)
-            return;
-        viewer.putExtra("title", new Gson().toJson(selected));
-        viewer.putExtra("online", true);
-        startActivity(viewer);
     }
 
     private class getUpdated extends LifecycleTask<Void, Void, String> {
@@ -389,7 +376,7 @@ public class TagSearchActivity extends AppCompatActivity {
                 result = new ArrayList<>();
             if(result.size() == 0 && uadapter.getItemCount() == 0){
                 //error
-                showErrorPopup(context, "목록을 불러오지 못했습니다.", null, false);
+                showCaptchaPopup(context, p);
             }
             if(uadapter.getItemCount()==0) {
                 uadapter.addData(result);
@@ -449,14 +436,28 @@ public class TagSearchActivity extends AppCompatActivity {
 
         //registering popup with OnMenuItemClickListener
         popup.setOnMenuItemClickListener(item -> {
-            int itemId = item.getItemId();
-            if(itemId == R.id.favAdd || itemId == R.id.favDel) {
-                //toggle favorite
-                p.toggleFavorite(title,0);
+            switch(item.getItemId()){
+                case R.id.del:
+                    break;
+                case R.id.favAdd:
+                case R.id.favDel:
+                    //toggle favorite
+                    p.toggleFavorite(title,0);
+                    break;
             }
             return true;
         });
         popup.show(); //showing popup menu
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if(resultCode == RESULT_CAPTCHA){
+            //captcha
+            finish();
+            startActivity(getIntent());
+        }
     }
 
     @Override

@@ -9,6 +9,7 @@ import android.graphics.Color;
 import ml.melun.mangaview.task.LifecycleTask;
 import com.google.android.material.appbar.AppBarLayout;
 
+import androidx.annotation.Nullable;
 import androidx.core.view.OnApplyWindowInsetsListener;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -45,7 +46,11 @@ import static ml.melun.mangaview.MainApplication.httpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getScreenSize;
 import static ml.melun.mangaview.Utils.hideSpinnerDropDown;
-import static ml.melun.mangaview.Utils.showErrorPopup;
+import static ml.melun.mangaview.Utils.queueOfflineDownload;
+import static ml.melun.mangaview.Utils.showCaptchaPopup;
+import static ml.melun.mangaview.Utils.showTokiCaptchaPopup;
+import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
+import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
 
 public class ViewerActivity3 extends AppCompatActivity {
     List<String> imgs;
@@ -59,10 +64,12 @@ public class ViewerActivity3 extends AppCompatActivity {
     Toolbar toolbar;
     Button cut, pageBtn;
     ImageButton commentBtn;
+    ImageButton saveBtn;
     int width;
     Intent intent;
     Title title;
     String name;
+    boolean captchaChecked = false;
     int id;
     int viewerBookmark = 0;
     int seed;
@@ -74,7 +81,6 @@ public class ViewerActivity3 extends AppCompatActivity {
     ViewPager.OnPageChangeListener listener;
     CustomSpinner spinner;
     CustomSpinnerAdapter spinnerAdapter;
-    LoadImages imageLoadTask;
 
 
     @Override
@@ -89,6 +95,15 @@ public class ViewerActivity3 extends AppCompatActivity {
         Utils.saveMangaState(outState, manga);
         super.onSaveInstanceState(outState);
     }
+    public int getStatusBarHeight() {
+        int result = 0;
+        int resourceId = getResources().getIdentifier("status_bar_height", "dimen", "android");
+        if (resourceId > 0) {
+            result = getResources().getDimensionPixelSize(resourceId);
+        }
+        return result;
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         dark = p.getDarkTheme();
@@ -104,15 +119,15 @@ public class ViewerActivity3 extends AppCompatActivity {
         toolbarTitle = this.findViewById(R.id.toolbar_title);
         appbarBottom = this.findViewById(R.id.viewerAppbarBottom);
         cut = this.findViewById(R.id.viewerBtn2);
-        this.findViewById(R.id.backButton).setOnClickListener(view -> finish());
+        this.findViewById(R.id.backButton).setOnClickListener(view -> onBackPressed());
 
         //initial padding setup
-        appbar.setPadding(0, 0,0,0);
+        appbar.setPadding(0, getStatusBarHeight(),0,0);
         getWindow().getDecorView().setBackgroundColor(Color.BLACK);
 
         ViewCompat.setOnApplyWindowInsetsListener(getWindow().getDecorView(), (view, windowInsetsCompat) -> {
             //This is where you get DisplayCutoutCompat
-            int statusBarHeight = windowInsetsCompat.getStableInsetTop();
+            int statusBarHeight = getStatusBarHeight();
             int ci;
             if(windowInsetsCompat.getDisplayCutout() == null) ci = 0;
             else ci = windowInsetsCompat.getDisplayCutout().getSafeInsetTop();
@@ -122,7 +137,6 @@ public class ViewerActivity3 extends AppCompatActivity {
             view.setPadding(windowInsetsCompat.getStableInsetLeft(),0,windowInsetsCompat.getStableInsetRight(),windowInsetsCompat.getStableInsetBottom());
             return windowInsetsCompat;
         });
-        ViewCompat.requestApplyInsets(getWindow().getDecorView());
 
 
         cut.setText("자동 분할");
@@ -131,6 +145,8 @@ public class ViewerActivity3 extends AppCompatActivity {
         pageBtn = this.findViewById(R.id.viewerBtn1);
         pageBtn.setText("-/-");
         commentBtn = this.findViewById(R.id.commentButton);
+        saveBtn = this.findViewById(R.id.viewerSaveButton);
+        saveBtn.setOnClickListener(view -> saveCurrentEpisodeOffline());
         width = getScreenSize(getWindowManager().getDefaultDisplay());
         viewPager = this.findViewById(R.id.viewerPager);
         viewPager.setOffscreenPageLimit(p.getDataSave() ? 1 : 2);
@@ -161,7 +177,7 @@ public class ViewerActivity3 extends AppCompatActivity {
                 int pos = p.getPageRtl() ? pageSize - position - 1 : position;
                 if(viewerBookmark != pos) {
                     viewerBookmark = pos;
-                    pageBtn.setText(getString(R.string.viewer_page_counter, viewerBookmark + 1, imgs.size()));
+                    pageBtn.setText(viewerBookmark + 1 + "/" + imgs.size());
                     if(manga.useBookmark()) {
                         if (viewerBookmark == pageSize - 1 || viewerBookmark == 0) {
                             p.removeViewerBookmark(manga);
@@ -221,6 +237,7 @@ public class ViewerActivity3 extends AppCompatActivity {
             if(!manga.isOnline()){
                 //load local imgs
                 commentBtn.setVisibility(View.GONE);
+                saveBtn.setVisibility(View.GONE);
                 reloadManga();
             }else {
                 refresh();
@@ -251,10 +268,12 @@ public class ViewerActivity3 extends AppCompatActivity {
             alert.setPositiveButton("이동", (dialog, button) -> {
                 //이동 시
                 if (input.getText().length() > 0) {
-                    int page = parsePageInput(input.getText().toString(), imgs.size());
+                    int page = Integer.parseInt(input.getText().toString());
+                    if (page < 1) page = 1;
+                    if (page > imgs.size()) page = imgs.size();
                     viewerBookmark = page - 1;
                     goPage(viewerBookmark, false);
-                    pageBtn.setText(getString(R.string.viewer_page_counter, viewerBookmark + 1, imgs.size()));
+                    pageBtn.setText(viewerBookmark + 1 + "/" + imgs.size());
                 }
             });
             alert.setNegativeButton("취소", (dialog, button) -> {
@@ -294,21 +313,9 @@ public class ViewerActivity3 extends AppCompatActivity {
         });
     }
 
-    private int parsePageInput(String value, int maxPage) {
-        try {
-            int page = Integer.parseInt(value);
-            if (page < 1) return 1;
-            return Math.min(page, Math.max(1, maxPage));
-        } catch (NumberFormatException e) {
-            return Math.max(1, maxPage);
-        }
-    }
-
     void refresh(){
-        if(imageLoadTask != null)
-            imageLoadTask.cancel(true);
-        imageLoadTask = new LoadImages(manga);
-        imageLoadTask.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+        captchaChecked = false;
+        new LoadImages().executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
     }
 
 
@@ -337,7 +344,7 @@ public class ViewerActivity3 extends AppCompatActivity {
             getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN);
         }
         else {
-            pageBtn.setText(getString(R.string.viewer_page_counter, viewerBookmark + 1, imgs.size()));
+            pageBtn.setText(viewerBookmark+1+"/"+imgs.size());
             appbar.animate().translationY(0);
             appbarBottom.animate().translationY(0);
             toolbarshow=true;
@@ -347,75 +354,103 @@ public class ViewerActivity3 extends AppCompatActivity {
     }
 
     private class LoadImages extends LifecycleTask<Void, String, Integer>{
-        final Manga target;
-        ProgressDialog dialog;
-
-        LoadImages(Manga target) {
-            this.target = target;
-        }
-
+        ProgressDialog pd;
         protected void onProgressUpdate(String... values) {
-            if(dialog != null)
-                dialog.setMessage(values[0]);
+            pd.setMessage(values[0]);
         }
         @Override
         protected void onPreExecute() {
             super.onPreExecute();
-            if(dark) dialog = new ProgressDialog(context, R.style.darkDialog);
-            else dialog = new ProgressDialog(context);
-            dialog.setMessage("로드중");
-            dialog.setCancelable(false);
-            dialog.setOnKeyListener((dialogInterface, keyCode, event) -> {
+            if(dark) pd = new ProgressDialog(context, R.style.darkDialog);
+            else pd = new ProgressDialog(context);
+            pd.setMessage("로드중");
+            pd.setCancelable(false);
+            pd.setOnKeyListener((dialog, keyCode, event) -> {
                 if(keyCode == KeyEvent.KEYCODE_BACK){
                     LoadImages.super.cancel(true);
-                    dismissLoadingDialog();
+                    pd.dismiss();
                     finish();
                 }
                 return true;
             });
-            dialog.show();
+            pd.show();
         }
 
         @Override
         protected Integer doInBackground(Void... voids) {
-            target.setListener(msg -> publishProgress(msg));
-            return target.fetch(httpClient);
+            manga.setListener(msg -> publishProgress(msg));
+            int res = ensureEpisodeListLoaded(manga);
+            if(res == LOAD_CAPTCHA)
+                return res;
+            res = manga.fetch(httpClient);
+            if(title == null)
+                title = manga.getTitle();
+            return res;
         }
 
         @Override
         protected void onPostExecute(Integer res) {
             super.onPostExecute(res);
-            dismissLoadingDialog();
-            if(!isActiveLoadTask(this))
+            if(res == LOAD_CAPTCHA){
+                //캡차 처리 팝업
+                showTokiCaptchaPopup(context, p);
                 return;
-            imageLoadTask = null;
-            if(title == null)
-                title = target.getTitle();
+            }
             reloadManga();
-        }
-
-        @Override
-        protected void onCancelled(Integer res) {
-            super.onCancelled(res);
-            dismissLoadingDialog();
-            if(imageLoadTask == this)
-                imageLoadTask = null;
-        }
-
-        private void dismissLoadingDialog() {
-            if(dialog != null && dialog.isShowing())
-                dialog.dismiss();
+            if(pd.isShowing()) pd.dismiss();
         }
     }
 
-    private boolean isActiveLoadTask(LoadImages task) {
-        return imageLoadTask == task
-                && task != null
-                && task.target != null
-                && manga != null
-                && task.target.getId() == manga.getId()
-                && task.target.getBaseMode() == manga.getBaseMode()
-                && !isFinishing();
+    private int ensureEpisodeListLoaded(Manga target) {
+        if(target == null || !target.isOnline())
+            return 0;
+        Title currentTitle = title != null ? title : target.getTitle();
+        if(currentTitle == null)
+            return 0;
+        if(currentTitle.getEps() == null || currentTitle.getEps().size() <= 1) {
+            int result = currentTitle.fetchEps(httpClient);
+            if(result == LOAD_CAPTCHA)
+                return result;
+        }
+        target.setTitle(currentTitle);
+        target.setTitleId(currentTitle.getId());
+        if(currentTitle.getEps() != null)
+            for(Manga episode : currentTitle.getEps()) {
+                if(episode != null) {
+                    episode.setTitle(currentTitle);
+                    episode.setTitleId(currentTitle.getId());
+                }
+            }
+        title = currentTitle;
+        return 0;
+    }
+
+    @Override
+    public void onBackPressed() {
+        if(openEpisodeListIfRequested())
+            return;
+        super.onBackPressed();
+    }
+
+    private boolean openEpisodeListIfRequested() {
+        if(getIntent() == null || !getIntent().getBooleanExtra("returnToEpisodes", false))
+            return false;
+        Title targetTitle = title != null ? title : (manga == null ? null : manga.getTitle());
+        if(targetTitle == null)
+            return false;
+        try {
+            if((targetTitle.getEps() == null || targetTitle.getEps().size() == 0) && manga != null && manga.getEps() != null)
+                targetTitle.setEps(manga.getEps());
+            Intent episodeIntent = new Intent(context, EpisodeActivity.class);
+            episodeIntent.putExtra("title", new Gson().toJson(targetTitle));
+            episodeIntent.putExtra("online", true);
+            startActivity(episodeIntent);
+            finish();
+            return true;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        }
     }
 
     public void goPage(int item, boolean smoothScroll) {
@@ -427,7 +462,7 @@ public class ViewerActivity3 extends AppCompatActivity {
             lockUi(false);
             imgs = manga.getImgs(context);
             if(imgs == null || imgs.size()==0) {
-                showErrorPopup(context, "이미지를 불러오지 못했습니다.", null, true);
+                showCaptchaPopup(manga.getUrl(), context, p);
                 return;
             }
             refreshAdapter();
@@ -442,7 +477,7 @@ public class ViewerActivity3 extends AppCompatActivity {
             for(StackTraceElement s : stack){
                 message.append(s.toString()).append('\n');
             }
-            showErrorPopup(context, "이미지를 불러오지 못했습니다.", e, true);
+            Utils.showCaptchaPopup(manga.getUrl(), context, e, p);
         }
     }
 
@@ -506,11 +541,12 @@ public class ViewerActivity3 extends AppCompatActivity {
             prev.setColorFilter(null);
             prev.setColorFilter(null);
         }
-        pageBtn.setText(getString(R.string.viewer_page_counter, viewerBookmark + 1, imgs.size()));
+        pageBtn.setText(viewerBookmark+1+"/"+imgs.size());
     }
 
     void lockUi(boolean lock){
         commentBtn.setEnabled(!lock);
+        saveBtn.setEnabled(!lock);
         next.setEnabled(!lock);
         prev.setEnabled(!lock);
         pageBtn.setEnabled(!lock);
@@ -518,10 +554,21 @@ public class ViewerActivity3 extends AppCompatActivity {
         spinner.setEnabled(!lock);
     }
 
+    private void saveCurrentEpisodeOffline() {
+        if(manga == null)
+            return;
+        if(title == null)
+            title = manga.getTitle();
+        if(title != null)
+            manga.setTitle(title);
+        queueOfflineDownload(context, title, manga);
+    }
+
     @Override
-    protected void onDestroy() {
-        if(imageLoadTask != null)
-            imageLoadTask.cancel(true);
-        super.onDestroy();
+    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (resultCode == RESULT_CAPTCHA) {
+            refresh();
+        }
     }
 }

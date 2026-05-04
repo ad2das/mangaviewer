@@ -88,6 +88,6 @@ dependencies {
 
 }
 
-if (file("google-services.json").exists()) {
+if (file("google-services.json").exists() && !file("src/main/res/values/google_services.xml").exists()) {
     apply plugin: 'com.google.gms.google-services'
 }

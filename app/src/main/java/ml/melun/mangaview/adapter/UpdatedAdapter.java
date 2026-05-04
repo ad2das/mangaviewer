@@ -13,9 +13,9 @@ import android.widget.ImageView;
 import android.widget.TextView;
 
 import com.bumptech.glide.Glide;
-import com.bumptech.glide.load.engine.DiskCacheStrategy;
 
 import java.util.ArrayList;
+import java.util.List;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.mangaview.Manga;
@@ -48,8 +48,6 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     }
 
     public void addData(ArrayList<UpdatedManga> data){
-        if(data == null || data.size() == 0)
-            return;
         int oSize = mData.size();
         mData.addAll(data);
         notifyItemRangeInserted(oSize,data.size());
@@ -68,21 +66,12 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     @Override
     public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position) {
         viewHolder h = (viewHolder) holder;
-        if(mData == null || position < 0 || position >= mData.size())
-            return;
         UpdatedManga m = mData.get(position);
-        h.text.setText(m.getName());
-        h.date.setText(m.getDate());
+        h.text.setText(m.getName() == null ? "" : m.getName());
+        h.date.setText(m.getDate() == null ? "" : m.getDate());
         String thumb = m.getThumb();
-        if(thumb == null)
-            thumb = "";
         Glide.with(h.thumb).clear(h.thumb);
-        if(thumb.length()>1 && !save) Glide.with(h.thumb)
-                .load(getGlideUrl(thumb, m.getBaseMode()))
-                .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                .override(dp(110), dp(150))
-                .dontAnimate()
-                .into(h.thumb);
+        if(thumb != null && thumb.length()>1 && !save) Glide.with(h.thumb).load(getGlideUrl(thumb, m.getBaseMode())).into(h.thumb);
         else h.thumb.setImageBitmap(null);
         if(save) h.thumb.setVisibility(View.GONE);
         if(p.getBookmark(m.getTitle())>0)
@@ -95,22 +84,19 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             h.fav.setVisibility(View.GONE);
 
         StringBuilder tags = new StringBuilder();
-        if(m.getTag() != null) {
-            for (String s :m.getTag()) {
+        List<String> tagList = m.getTag();
+        if(tagList != null) {
+            for (String s : tagList) {
                 tags.append(s).append(" ");
             }
         }
         h.tags.setText(tags.toString());
-        h.author.setText(m.getAuthor());
-    }
-
-    private int dp(int value) {
-        return (int) (value * context.getResources().getDisplayMetrics().density + 0.5f);
+        h.author.setText(m.getAuthor() == null ? "" : m.getAuthor());
     }
 
     @Override
     public int getItemCount() {
-        return mData == null ? 0 : mData.size();
+        return mData.size();
     }
 
     class viewHolder extends RecyclerView.ViewHolder{
@@ -141,17 +127,15 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             }
             card.setOnClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || olisten == null || mData == null || position >= mData.size())
+                if(position == RecyclerView.NO_POSITION || olisten == null)
                     return;
                 olisten.onClick(mData.get(position));
             });
             viewEps.setOnClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || olisten == null || mData == null || position >= mData.size())
+                if(position == RecyclerView.NO_POSITION || olisten == null)
                     return;
-                Title title = mData.get(position).getTitle();
-                if(title != null)
-                    olisten.onEpsClick(title);
+                olisten.onEpsClick(mData.get(position).getTitle());
             });
         }
     }

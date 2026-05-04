@@ -10,13 +10,8 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.Locale;
-import java.util.List;
-import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 import okhttp3.Response;
 
@@ -26,18 +21,7 @@ import static ml.melun.mangaview.mangaview.MTitle.baseModeStr;
 
 public class Search {
     private static final long PAGE_CACHE_TTL_MS = 2 * 60 * 1000L;
-    private static final long CATEGORY_RESULT_CACHE_TTL_MS = 5 * 60 * 1000L;
-    private static final int CATEGORY_RESULT_CACHE_LIMIT = 48;
     private static final int MAX_TIMEOUT_RETRIES = 2;
-    private static final ExecutorService CATEGORY_PREFETCH_EXECUTOR = Executors.newFixedThreadPool(2);
-    private static final Map<String, CachedSearchResult> CATEGORY_RESULT_CACHE =
-            new LinkedHashMap<String, CachedSearchResult>(CATEGORY_RESULT_CACHE_LIMIT, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, CachedSearchResult> eldest) {
-                    return size() > CATEGORY_RESULT_CACHE_LIMIT;
-                }
-            };
-    private static final Set<String> CATEGORY_PREFETCHING = new HashSet<>();
 
     int baseMode;
     private final String query;
@@ -48,7 +32,7 @@ public class Search {
     private ArrayList<Title> result;
 
     public Search(String q, int mode, int baseMode) {
-        query = q == null ? "" : q;
+        query = q;
         this.mode = mode;
         this.baseMode = baseMode;
     }
@@ -89,11 +73,11 @@ public class Search {
                         break;
                 }
 
-                int requestedPage = page;
-                Response response = client.mget('/'+baseModeStr(baseMode)+"/p" + requestedPage + searchUrl + URLEncoder.encode(query,"UTF-8"), true, null);
+                Response response = client.mget('/'+baseModeStr(baseMode)+"/p" + page++ + searchUrl + URLEncoder.encode(query,"UTF-8"), true, null);
                 int code = response == null ? 500 : response.code();
                 String body = CustomHttpClient.readBody(response);
                 if(body.contains("Connect Error: Connection timed out")){
+                    page--;
                     timeoutRetries = attempt + 1;
                     continue;
                 }
@@ -146,12 +130,13 @@ public class Search {
                 if (result.size() < 35)
                     last = true;
 
-                if(result.size() > 0)
-                    page = requestedPage + 1;
+                if(result.size()==0)
+                    page--;
                 timeoutRetries = 0;
                 return 0;
 
                 } catch (Exception e) {
+                    page--;
                     timeoutRetries = 0;
                     e.printStackTrace();
                     return 1;
@@ -165,14 +150,6 @@ public class Search {
 
     private int fetchWebtoon(CustomHttpClient client) {
         try {
-            if(mode == 8) {
-                ArrayList<Title> cached = getCachedCategoryResults(query, baseMode);
-                if(cached != null) {
-                    result.addAll(cached);
-                    last = true;
-                    return 0;
-                }
-            }
             ArrayList<Title> webtoonResults = new ArrayList<>();
             if(mode == 8) {
                 appendWebtoonResults(client, webtoonResults, query, 0);
@@ -194,11 +171,11 @@ public class Search {
                         appendWebtoonResults(client, webtoonResults, "/ing?type1=day&type2=" + day + "&o=n", 80);
                         appendWebtoonResults(client, webtoonResults, "/end?type1=day&type2=" + day + "&o=n", 80);
                     } else {
-                        appendWebtoonResults(client, webtoonResults, webtoonSearchPath(query), 80);
+                        appendWebtoonResults(client, webtoonResults, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), 80);
                     }
                 }
             } else {
-                appendWebtoonResults(client, webtoonResults, webtoonSearchPath(query), 80);
+                appendWebtoonResults(client, webtoonResults, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), 80);
             }
 
             Set<Integer> seen = new HashSet<>();
@@ -206,8 +183,6 @@ public class Search {
                 if(seen.add(title.getId()))
                     result.add(title);
             last = true;
-            if(mode == 8)
-                putCachedCategoryResults(query, baseMode, result);
             return 0;
         } catch (Exception e) {
             e.printStackTrace();
@@ -217,14 +192,6 @@ public class Search {
 
     private int fetchComic(CustomHttpClient client) {
         try {
-            if(mode == 8) {
-                ArrayList<Title> cached = getCachedCategoryResults(query, baseMode);
-                if(cached != null) {
-                    result.addAll(cached);
-                    last = true;
-                    return 0;
-                }
-            }
             ArrayList<Title> comicResults = new ArrayList<>();
             if(mode == 8) {
                 appendWebtoonResults(client, comicResults, query, 0);
@@ -237,9 +204,9 @@ public class Search {
                 if(type.length() > 0)
                     appendWebtoonResults(client, comicResults, "/cm?type1=complete&type2=" + type + "&o=n", 120);
                 else
-                    appendWebtoonResults(client, comicResults, comicSearchPath(query), 120);
+                    appendWebtoonResults(client, comicResults, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), 120);
             } else {
-                appendWebtoonResults(client, comicResults, comicSearchPath(query), 120);
+                appendWebtoonResults(client, comicResults, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), 120);
             }
 
             Set<Integer> seen = new HashSet<>();
@@ -247,8 +214,6 @@ public class Search {
                 if(seen.add(title.getId()))
                     result.add(title);
             last = true;
-            if(mode == 8)
-                putCachedCategoryResults(query, baseMode, result);
             return 0;
         } catch (Exception e) {
             e.printStackTrace();
@@ -273,14 +238,6 @@ public class Search {
 
     private void appendClassificationDbGenreResults(ArrayList<Title> target, String genre) {
         target.addAll(MainPageWebtoon.getClassificationDbTitlesByGenre(genre, 120));
-    }
-
-    private static String webtoonSearchPath(String query) {
-        return "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR"));
-    }
-
-    private static String comicSearchPath(String query) {
-        return webtoonSearchPath(query);
     }
 
     private static String percentEncode(String value, Charset charset) {
@@ -351,74 +308,5 @@ public class Search {
 
     public ArrayList<Title> getResult(){
         return result;
-    }
-
-    public static ArrayList<Title> getCachedCategoryResults(String path, int baseMode) {
-        String key = categoryCacheKey(path, baseMode);
-        synchronized (CATEGORY_RESULT_CACHE) {
-            CachedSearchResult cached = CATEGORY_RESULT_CACHE.get(key);
-            if(cached == null)
-                return null;
-            if(System.currentTimeMillis() - cached.createdAt > CATEGORY_RESULT_CACHE_TTL_MS) {
-                CATEGORY_RESULT_CACHE.remove(key);
-                return null;
-            }
-            return cloneTitles(cached.titles);
-        }
-    }
-
-    public static void putCachedCategoryResults(String path, int baseMode, List<Title> titles) {
-        if(path == null || path.length() == 0 || titles == null || titles.size() == 0)
-            return;
-        synchronized (CATEGORY_RESULT_CACHE) {
-            CATEGORY_RESULT_CACHE.put(categoryCacheKey(path, baseMode), new CachedSearchResult(cloneTitles(titles)));
-        }
-    }
-
-    public static void prefetchCategoryPath(CustomHttpClient client, String path, int baseMode) {
-        if(client == null || path == null || path.length() == 0 || getCachedCategoryResults(path, baseMode) != null)
-            return;
-        String key = categoryCacheKey(path, baseMode);
-        synchronized (CATEGORY_RESULT_CACHE) {
-            if(CATEGORY_PREFETCHING.contains(key))
-                return;
-            CATEGORY_PREFETCHING.add(key);
-        }
-        CATEGORY_PREFETCH_EXECUTOR.execute(() -> {
-            try {
-                Search search = new Search(path, 8, baseMode);
-                search.fetch(client);
-            } catch (Exception e) {
-                e.printStackTrace();
-            } finally {
-                synchronized (CATEGORY_RESULT_CACHE) {
-                    CATEGORY_PREFETCHING.remove(key);
-                }
-            }
-        });
-    }
-
-    private static String categoryCacheKey(String path, int baseMode) {
-        return baseMode + ":" + (path == null ? "" : path);
-    }
-
-    private static ArrayList<Title> cloneTitles(List<Title> source) {
-        ArrayList<Title> copy = new ArrayList<>();
-        if(source == null)
-            return copy;
-        for(Title title : source)
-            if(title != null)
-                copy.add(title.clone());
-        return copy;
-    }
-
-    private static class CachedSearchResult {
-        final ArrayList<Title> titles;
-        final long createdAt;
-
-        CachedSearchResult(ArrayList<Title> titles) {
-            this.titles = titles;
-            this.createdAt = System.currentTimeMillis();
-        }
     }
 }

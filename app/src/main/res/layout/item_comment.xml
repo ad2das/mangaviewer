@@ -4,7 +4,13 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/comment_layout"
     android:layout_height="wrap_content"
-    android:layout_width="match_parent">
+    android:layout_width="match_parent"
+    android:background="@drawable/app_outline_button_bg"
+    android:layout_marginStart="12dp"
+    android:layout_marginEnd="12dp"
+    android:layout_marginTop="8dp"
+    android:layout_marginBottom="4dp"
+    android:padding="10dp">
 
     <TextView
         android:id="@+id/comment_content"
@@ -16,15 +22,17 @@
         android:layout_width="0dp"
         android:minHeight="60dp"
         android:text="content"
+        android:textColor="@color/appText"
+        android:textSize="14sp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toEndOf="@+id/comment_icon"
         app:layout_constraintTop_toBottomOf="@+id/comment_time" />
 
     <ImageView
-        android:foreground="@drawable/button_bg"
+        android:background="@drawable/app_soft_chip_bg"
+        android:padding="4dp"
         android:id="@+id/comment_icon"
-        android:contentDescription="@string/comment_author_image"
         android:layout_height="60dp"
         android:layout_marginBottom="8dp"
         android:layout_marginStart="8dp"
@@ -40,7 +48,8 @@
         android:layout_margin="4dp"
         android:layout_width="0dp"
         android:text="0000-00-00 00:00"
-        android:textSize="11sp"
+        android:textColor="@color/appTextSecondary"
+        android:textSize="9sp"
         app:layout_constraintStart_toEndOf="@+id/comment_icon"
         app:layout_constraintTop_toTopOf="parent" />
 
@@ -52,7 +61,7 @@
         android:layout_width="0dp"
         android:text="likes"
         android:textColor="@color/colorAccent"
-        android:textSize="11sp"
+        android:textSize="9sp"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
@@ -63,7 +72,8 @@
         android:layout_width="0dp"
         android:text="User"
         android:textAlignment="center"
-        android:textSize="11sp"
+        android:textColor="@color/appText"
+        android:textSize="10sp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toStartOf="@+id/comment_content"
         app:layout_constraintStart_toStartOf="parent"
@@ -71,7 +81,7 @@
         app:layout_constraintVertical_bias="0.0" />
 
     <TextView
-        android:background="#7000"
+        android:background="@drawable/app_accent_button_bg"
         android:gravity="center"
         android:id="@+id/comment_level"
         android:layout_height="wrap_content"
@@ -82,7 +92,7 @@
         android:paddingTop="1dp"
         android:text="0"
         android:textColor="@android:color/white"
-        android:textSize="11sp"
+        android:textSize="10sp"
         app:layout_constraintStart_toStartOf="@+id/comment_icon"
         app:layout_constraintTop_toTopOf="@+id/comment_icon" />
 

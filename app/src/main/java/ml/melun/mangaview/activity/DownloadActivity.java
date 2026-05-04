@@ -2,7 +2,6 @@ package ml.melun.mangaview.activity;
 
 import android.content.DialogInterface;
 import android.content.Intent;
-import android.os.Build;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import android.os.Bundle;
@@ -18,14 +17,13 @@ import com.google.gson.reflect.TypeToken;
 
 import org.json.JSONArray;
 
-import ml.melun.mangaview.Downloader;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.adapter.SelectEpisodeAdapter;
-import ml.melun.mangaview.mangaview.DownloadTitle;
 import ml.melun.mangaview.mangaview.Title;
 
 import static ml.melun.mangaview.MainApplication.p;
+import static ml.melun.mangaview.Utils.queueOfflineDownload;
 
 public class DownloadActivity extends AppCompatActivity {
     Title title;
@@ -41,14 +39,11 @@ public class DownloadActivity extends AppCompatActivity {
         if(dark) setTheme(R.style.AppThemeDark);
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_download);
+        setTitle("오프라인 저장");
         eplist = this.findViewById(R.id.dl_eplist);
         Intent intent = getIntent();
         try {
             title = new Gson().fromJson(intent.getStringExtra("title"),new TypeToken<Title>(){}.getType());
-            if(title == null) {
-                finish();
-                return;
-            }
             eplist.setLayoutManager(new NpaLinearLayoutManager(this));
             adapter = new SelectEpisodeAdapter(getApplicationContext(),title.getEps());
             adapter.setClickListener((view, position) -> adapter.select(position));
@@ -58,8 +53,10 @@ public class DownloadActivity extends AppCompatActivity {
         }
         Button dl = findViewById(R.id.dl_btn);
         dl.setOnClickListener(v -> {
-            if(adapter == null)
+            if(adapter == null || title == null || title.getEps() == null || title.getEps().size() == 0) {
+                Toast.makeText(getApplication(),"다운로드할 회차 정보를 불러오지 못했습니다", Toast.LENGTH_SHORT).show();
                 return;
+            }
             if(adapter.getSelected(false).length()>0) {
                 selected = adapter.getSelected(false);
                 downloadClick();
@@ -69,25 +66,22 @@ public class DownloadActivity extends AppCompatActivity {
         });
         Button dlAll = findViewById(R.id.dl_all_btn);
         dlAll.setOnClickListener(v -> {
-            if(adapter == null)
+            if(adapter == null || title == null || title.getEps() == null || title.getEps().size() == 0) {
+                Toast.makeText(getApplication(),"다운로드할 회차 정보를 불러오지 못했습니다", Toast.LENGTH_SHORT).show();
                 return;
+            }
             selected = adapter.getSelected(true);
             downloadClick();
         });
-        if(getSupportActionBar() != null)
-            getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+        getSupportActionBar().setDisplayHomeAsUpEnabled(true);
 
         Button selectionMode = findViewById(R.id.dl_mode_btn);
         selectionMode.setOnClickListener(view -> {
             if(singleSelect){
-                if(adapter == null)
-                    return;
                 singleSelect = false;
                 selectionMode.setText("범위 선택 모드");
                 adapter.setSelectionMode(singleSelect);
             }else{
-                if(adapter == null)
-                    return;
                 singleSelect = true;
                 selectionMode.setText("단일 선택 모드");
                 adapter.setSelectionMode(singleSelect);
@@ -104,28 +98,13 @@ public class DownloadActivity extends AppCompatActivity {
 
 
     private void downloadClick(){
-        if(title == null || selected == null)
-            return;
         //download manga
         //ask for confirmation
         DialogInterface.OnClickListener dialogClickListener = (dialog, which) -> {
             switch (which){
                 case DialogInterface.BUTTON_POSITIVE:
-                    //Yes button clicked
-                    //check if download service is up and running
-                    Intent downloader = new Intent(getApplicationContext(),Downloader.class);
-                    downloader.setAction(Downloader.ACTION_QUEUE);
-                    downloader.putExtra("title", new Gson().toJson(new DownloadTitle(title)));
-                    downloader.putExtra("selected", selected.toString());
-
-                    if (Build.VERSION.SDK_INT >= 26) {
-                        startForegroundService(downloader);
-                    }else{
-                        startService(downloader);
-                    }
-                    //queue title to service
-                    Toast.makeText(getApplication(),"다운로드를 시작합니다.", Toast.LENGTH_LONG).show();
-                    finish();
+                    if(queueOfflineDownload(this, title, selected))
+                        finish();
                     break;
                 case DialogInterface.BUTTON_NEGATIVE:
                     //No button clicked

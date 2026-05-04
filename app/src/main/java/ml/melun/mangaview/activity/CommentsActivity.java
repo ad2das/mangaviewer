@@ -5,7 +5,6 @@ import android.content.Intent;
 import com.google.android.material.tabs.TabLayout;
 
 import androidx.annotation.NonNull;
-import androidx.appcompat.app.ActionBar;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 
@@ -16,6 +15,7 @@ import androidx.fragment.app.FragmentStatePagerAdapter;
 import androidx.viewpager.widget.PagerAdapter;
 import androidx.viewpager.widget.ViewPager;
 import android.os.Bundle;
+import android.os.Build;
 import android.view.View;
 
 import com.google.gson.Gson;
@@ -45,35 +45,36 @@ public class CommentsActivity extends AppCompatActivity {
     if (p.getDarkTheme()) setTheme(R.style.AppThemeDarkNoTitle);
     super.onCreate(savedInstanceState);
     setContentView(R.layout.activity_comments);
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+      getWindow().setStatusBarColor(getResources().getColor(R.color.appSurface));
+      getWindow().setNavigationBarColor(getResources().getColor(R.color.appSurface));
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+      getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+    }
 
     Toolbar toolbar = findViewById(R.id.toolbar);
     setSupportActionBar(toolbar);
     context = this;
     Intent intent = getIntent();
     tab = this.findViewById(R.id.tab_layout);
-    ActionBar actionBar = getSupportActionBar();
 
     String gsonData = intent.getStringExtra("comments");
-    if (gsonData != null && gsonData.length() > 0) {
+    if (gsonData.length() > 0) {
       Gson gson = new Gson();
       comments = gson.fromJson(gsonData, new TypeToken<ArrayList<Comment>>() {}.getType());
       adapter = new CommentsAdapter(context, comments);
-      if(actionBar != null)
-        actionBar.setTitle("댓글 " + adapter.getCount());
+      getSupportActionBar().setTitle("댓글 " + comments.size());
     } else {
-      adapter = new CommentsAdapter(context, new ArrayList<>());
-      if(actionBar != null)
-        actionBar.setTitle("댓글 없음");
+      getSupportActionBar().setTitle("댓글 없음");
     }
 
     gsonData = intent.getStringExtra("bestComments");
-    if (gsonData != null && gsonData.length() > 0) {
+    if (gsonData.length() > 0) {
       Gson gson = new Gson();
       bcomments = gson.fromJson(gsonData, new TypeToken<ArrayList<Comment>>() {}.getType());
       badapter = new CommentsAdapter(context, bcomments);
       // ((TextView)toolbar.findViewById(R.id.comments_title)).setText("댓글 ["+comments.size()+"]");
-    } else {
-      badapter = new CommentsAdapter(context, new ArrayList<>());
     }
 
     SectionsPagerAdapter mSectionsPagerAdapter =

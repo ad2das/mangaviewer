@@ -38,8 +38,12 @@ public class StripLayoutManager extends NpaLinearLayoutManager {
         super.onAdapterChanged(oldAdapter, newAdapter);
         adapter = (StripAdapter) newAdapter;
     }
-
+    
     public void scrollToPage(PageItem page){
+        scrollToPageWithOffset(page, 0);
+    }
+
+    public void scrollToPageWithOffset(PageItem page, int offset){
         if(adapter == null || page == null)
             return;
         List<Object> items = adapter.getItems();
@@ -49,7 +53,7 @@ public class StripLayoutManager extends NpaLinearLayoutManager {
             Object item = items.get(i);
             if(item instanceof PageItem){
                 if(((PageItem)item).equals(page))
-                    scrollToPosition(i);
+                    scrollToPositionWithOffset(i, offset);
             }
         }
     }

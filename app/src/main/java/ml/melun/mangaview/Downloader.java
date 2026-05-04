@@ -45,8 +45,8 @@ import ml.melun.mangaview.mangaview.Manga;
 
 import static ml.melun.mangaview.MainApplication.httpClient;
 import static ml.melun.mangaview.MainApplication.p;
-import static ml.melun.mangaview.Utils.CODE_SCOPED_STORAGE;
 import static ml.melun.mangaview.Utils.filterFolder;
+import static ml.melun.mangaview.Utils.useScopedStorageHome;
 
 public class Downloader extends Service {
     private static final int CONNECT_TIMEOUT_MS = 15000;
@@ -100,26 +100,19 @@ public class Downloader extends Service {
             mchannel.enableVibration(false);
             mchannel.setSound(null, null);
             mchannel.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
-            if(notificationManager != null)
-                notificationManager.createNotificationChannel(mchannel);
+            notificationManager.createNotificationChannel(mchannel);
         }
         Intent notificationIntent = new Intent(this, MainActivity.class);
-        pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, immutablePendingIntentFlags());
+        pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE);
         Intent previousIntent = new Intent(this, Downloader.class);
         previousIntent.setAction(ACTION_STOP);
-        stopIntent = PendingIntent.getService(this, 0, previousIntent, immutablePendingIntentFlags());
+        stopIntent = PendingIntent.getService(this, 0, previousIntent, PendingIntent.FLAG_IMMUTABLE);
         startNotification();
-    }
-
-    private static int immutablePendingIntentFlags() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
-            return PendingIntent.FLAG_IMMUTABLE;
-        return 0;
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if(intent!=null && intent.getAction() != null) {
+        if(intent!=null) {
             switch (intent.getAction()) {
                 case ACTION_START:
                     break;
@@ -129,16 +122,14 @@ public class Downloader extends Service {
                     try {
                         DownloadTitle target = new Gson().fromJson(intent.getStringExtra("title"), new TypeToken<DownloadTitle>() {}.getType());
                         JSONArray selection = new JSONArray(intent.getStringExtra("selected"));
-                        if(target != null && selection.length() > 0)
-                            queueTitle(target, selection);
+                        queueTitle(target, selection);
                     } catch (Exception e) {
                         e.printStackTrace();
                     }
                     break;
                 case ACTION_STOP:
                 case ACTION_FORCE_STOP:
-                    if(dt != null)
-                        dt.cancel(true);
+                    dt.cancel(true);
                     break;
             }
         }
@@ -158,12 +149,10 @@ public class Downloader extends Service {
     }
 
     public void queueTitle(DownloadTitle title, JSONArray selection){
-        if(title == null || selection == null || selection.length() == 0)
-            return;
         titles.add(title);
         selected.add(selection);
         updateNotification("");
-        if(dt == null || dt.getStatus() == LifecycleTask.Status.PENDING || dt.getStatus() == LifecycleTask.Status.FINISHED) {
+        if(dt.getStatus() == LifecycleTask.Status.PENDING || dt.getStatus() == LifecycleTask.Status.FINISHED) {
             dt = new downloadTitle();
             dt.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
         }else{
@@ -181,15 +170,15 @@ public class Downloader extends Service {
             File home = null;
             DocumentFile homed = null;
             try{
-                if(Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE){
+                if(useScopedStorageHome(homeDir)){
                     homed = DocumentFile.fromTreeUri(serviceContext, Uri.parse(homeDir));
-                    if(homed == null){
+                    if(homed == null || !homed.canWrite()){
                         this.cancel(true);
                         return 1;
                     }
                 } else {
                     home = new File(homeDir);
-                    if(!home.exists()) {
+                    if(!home.exists() && !home.mkdirs()) {
                         this.cancel(true);
                         return 1;
                     }
@@ -200,7 +189,7 @@ public class Downloader extends Service {
                 return 4;
             }
             try {
-                while (titles.size() > 0 && selected.size() > 0) {
+                while (titles.size() > 0) {
                     //reset progress
                     progress = 0;
 
@@ -214,6 +203,7 @@ public class Downloader extends Service {
                     //if (title.getEps() == null) title.fetchEps(httpClient);
                     List<Manga> mangas = title.getEps();
                     if(mangas == null || mangas.size() == 0 || selectedEps.length() == 0) {
+                        failures++;
                         titles.remove(0);
                         selected.remove(0);
                         continue;
@@ -224,12 +214,14 @@ public class Downloader extends Service {
                     for (int queueIndex = selectedEps.length()-1; queueIndex >= 0; queueIndex--) {
                         if (isCancelled()) return 0;
 
-                        if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
+                        if (homed != null) {
                             //scoped storage
                             DocumentFile titleDir = homed.findFile(filterFolder(title.getName()));
                             if(titleDir == null) titleDir = homed.createDirectory(filterFolder(title.getName()));
-                            if(titleDir == null)
-                                return 1;
+                            if(titleDir == null) {
+                                failures++;
+                                continue;
+                            }
 
                             //if first manga, save title data
                             if (queueIndex == selectedEps.length() - 1) {
@@ -243,12 +235,14 @@ public class Downloader extends Service {
                                     DocumentFile dataf = titleDir.findFile("title.gson");
                                     if(dataf != null)
                                         dataf.delete();
-                                    DocumentFile dataFile = titleDir.createFile("application", "title.gson");
-                                    if(dataFile == null)
-                                        return 1;
-                                    Uri data = dataFile.getUri();
+                                    DocumentFile summary = titleDir.createFile("application/json", "title.gson");
+                                    if(summary == null)
+                                        throw new IOException("Failed to create title.gson");
+                                    Uri data = summary.getUri();
 
                                     try (OutputStream stream = serviceContext.getContentResolver().openOutputStream(data)) {
+                                        if(stream == null)
+                                            throw new IOException("Failed to open title.gson");
                                         stream.write(new Gson().toJson(title).getBytes());
                                         stream.flush();
                                     }
@@ -265,8 +259,10 @@ public class Downloader extends Service {
                                 this.cancel(true);
                                 return 2;
                             }
-                            if(listIndex < 0 || listIndex >= mangas.size())
+                            if(listIndex < 0 || listIndex >= mangas.size()) {
+                                failures++;
                                 continue;
+                            }
 
                             Manga target = mangas.get(listIndex);
                             //error
@@ -294,8 +290,10 @@ public class Downloader extends Service {
                             if(dir != null)
                                 dir.delete();
                             dir = titleDir.createDirectory(name);
-                            if(dir == null)
-                                return 1;
+                            if(dir == null) {
+                                failures++;
+                                continue;
+                            }
 
                             //create download flag
                             DocumentFile downloadFlag = dir.findFile("downloading");
@@ -321,8 +319,7 @@ public class Downloader extends Service {
                                 updateNotification((selectedEps.length() - queueIndex) + "/" + selectedEps.length());
                             }
                             // check for download failures
-                            int downloaded = dir.listFiles() == null ? 0 : dir.listFiles().length;
-                            if (downloaded == 0 || downloaded < urls.size())
+                            if (dir.listFiles().length == 0 || dir.listFiles().length < urls.size())
                                 failures++;
 
                             if(downloadFlag != null)
@@ -332,16 +329,15 @@ public class Downloader extends Service {
 
                             //create dir for title
                             File titleDir = new File(homeDir, filterFolder(title.getName()));
-                            if (!titleDir.exists() && !titleDir.mkdirs())
-                                return 1;
+                            if (!titleDir.exists()) titleDir.mkdirs();
 
                             //if first manga, save title data
                             if (queueIndex == selectedEps.length() - 1) {
                                 try {
                                     //save thumbnail
-                                    File thumbFile = downloadFile(title.getThumb(), new File(titleDir, "thumb"));
-                                    if(thumbFile != null)
-                                        title.setThumb(thumbFile.getName());
+                                    File thumb = downloadFile(title.getThumb(), new File(titleDir, "thumb"));
+                                    if(thumb != null)
+                                        title.setThumb(thumb.getName());
 
                                     //if old title.data exist, remove file
                                     File old = new File(titleDir, "title.data");
@@ -368,8 +364,10 @@ public class Downloader extends Service {
                                 this.cancel(true);
                                 return 2;
                             }
-                            if(listIndex < 0 || listIndex >= mangas.size())
+                            if(listIndex < 0 || listIndex >= mangas.size()) {
+                                failures++;
                                 continue;
+                            }
 
                             Manga target = mangas.get(listIndex);
                             //error
@@ -392,8 +390,7 @@ public class Downloader extends Service {
                             //create dir for manga
                             int realIndex = mangas.size() - mangas.indexOf(target);
                             File dir = new File(titleDir, filterFolder(new DecimalFormat("0000").format(realIndex) + "." + target.getName()) + "." + target.getId());
-                            if (!dir.exists() && !dir.mkdirs())
-                                return 1;
+                            if (!dir.exists()) dir.mkdirs();
 
                             //create download flag
                             File downloadFlag = new File(dir, "downloading");
@@ -416,8 +413,7 @@ public class Downloader extends Service {
                                 updateNotification((selectedEps.length() - queueIndex) + "/" + selectedEps.length());
                             }
                             // check for download failures
-                            File[] downloaded = dir.listFiles();
-                            if (downloaded == null || downloaded.length == 0 || downloaded.length < urls.size())
+                            if (dir.listFiles().length == 0 || dir.listFiles().length < urls.size())
                                 failures++;
 
                             downloadFlag.delete();
@@ -449,8 +445,6 @@ public class Downloader extends Service {
             super.onCancelled();
             running = false;
             String why = "";
-            if(mode == null)
-                mode = 0;
             switch(mode){
                 case 0:
                     why = "유저 취소";
@@ -543,7 +537,7 @@ public class Downloader extends Service {
         try {
             URL url = resolveUrl(urlStr);
             if(url == null) return outputFile;
-            String fileType = getFileExtension(url);
+            String fileType = url.toString().substring(url.toString().lastIndexOf('.') + 1);
             URLConnection connection = openDownloadConnection(url);
             filesize = connection.getContentLength();
 
@@ -576,7 +570,7 @@ public class Downloader extends Service {
         try {
             URL url = resolveUrl(urlStr);
             if(url == null) return null;
-            String fileType = getFileExtension(url);
+            String fileType = url.toString().substring(url.toString().lastIndexOf('.') + 1);
             URLConnection connection = openDownloadConnection(url);
             filesize = connection.getContentLength();
 
@@ -639,21 +633,6 @@ public class Downloader extends Service {
         return connection;
     }
 
-    private String getFileExtension(URL url) {
-        if(url == null)
-            return "jpg";
-        String path = url.getPath();
-        if(path == null)
-            return "jpg";
-        int dot = path.lastIndexOf('.');
-        if(dot < 0 || dot == path.length() - 1)
-            return "jpg";
-        String extension = path.substring(dot + 1).toLowerCase(java.util.Locale.ROOT);
-        if(extension.length() > 5 || !extension.matches("[a-z0-9]+"))
-            return "jpg";
-        return extension;
-    }
-
     private void publishDownloadProgress(ProgressInterface publisher, int currentSize, int fileSize) {
         if(publisher != null && fileSize > 0)
             publisher.publish((int)(((double)currentSize/(double)fileSize)*100d));
@@ -676,15 +655,9 @@ public class Downloader extends Service {
             notification.setSmallIcon(R.drawable.ic_logo);
         else
             notification.setSmallIcon(R.drawable.notification_logo);
-        try {
-            startForeground(nid, notification.build());
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        startForeground(nid, notification.build());
     }
     private void updateNotification(String text) {
-        if(notificationManager == null)
-            return;
         notification = new NotificationCompat.Builder(this, channeld)
                 .setContentIntent(pendingIntent)
                 .setContentTitle(notiTitle)
@@ -697,16 +670,10 @@ public class Downloader extends Service {
             notification.setSmallIcon(R.drawable.ic_logo);
         else
             notification.setSmallIcon(R.drawable.notification_logo);
-        try {
-            notificationManager.notify(nid, notification.build());
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        notificationManager.notify(nid, notification.build());
     }
 
     private void endNotification(){
-        if(notificationManager == null)
-            return;
         notification = new NotificationCompat.Builder(this, channeld)
                 .setContentIntent(pendingIntent)
                 .setContentTitle("다운로드 완료")
@@ -715,16 +682,10 @@ public class Downloader extends Service {
             notification.setSmallIcon(R.drawable.ic_logo);
         else
             notification.setSmallIcon(R.drawable.notification_logo);
-        try {
-            notificationManager.notify(nid, notification.build());
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        notificationManager.notify(nid, notification.build());
 }
 
     private void finishNotification(){
-        if(notificationManager == null)
-            return;
         notification = new NotificationCompat.Builder(this, channeld)
                 .setContentIntent(pendingIntent)
                 .setContentTitle("모든 다운로드가 완료되었습니다.")
@@ -737,15 +698,9 @@ public class Downloader extends Service {
             notification.setContentText("누락: " + failures);
             failures = 0;
         }
-        try {
-            notificationManager.notify(nid+1, notification.build());
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        notificationManager.notify(nid+1, notification.build());
     }
     private void stopNotification(String why){
-        if(notificationManager == null)
-            return;
         notification = new NotificationCompat.Builder(this, channeld)
                 .setContentIntent(pendingIntent)
                 .setContentText(why)
@@ -755,11 +710,7 @@ public class Downloader extends Service {
             notification.setSmallIcon(R.drawable.ic_logo);
         else
             notification.setSmallIcon(R.drawable.notification_logo);
-        try {
-            notificationManager.notify(nid + 2, notification.build());
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        notificationManager.notify(nid + 2, notification.build());
     }
 
     private interface ProgressInterface{

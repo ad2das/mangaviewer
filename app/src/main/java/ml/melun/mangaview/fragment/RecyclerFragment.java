@@ -6,7 +6,6 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.net.Uri;
 import ml.melun.mangaview.task.LifecycleTask;
-import android.os.Build;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.Menu;
@@ -14,6 +13,7 @@ import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
@@ -24,9 +24,8 @@ import androidx.appcompat.widget.SearchView;
 import androidx.documentfile.provider.DocumentFile;
 import androidx.fragment.app.Fragment;
 import androidx.recyclerview.widget.RecyclerView;
+import androidx.recyclerview.widget.RecyclerView.AdapterDataObserver;
 
-import com.bumptech.glide.Glide;
-import com.bumptech.glide.integration.recyclerview.RecyclerViewPreloader;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
@@ -43,19 +42,22 @@ import ml.melun.mangaview.mangaview.Title;
 
 import static android.app.Activity.RESULT_OK;
 import static ml.melun.mangaview.MainApplication.p;
-import static ml.melun.mangaview.Utils.CODE_SCOPED_STORAGE;
 import static ml.melun.mangaview.Utils.deleteRecursive;
 import static ml.melun.mangaview.Utils.episodeIntent;
 import static ml.melun.mangaview.Utils.filterFolder;
 import static ml.melun.mangaview.Utils.readFileToString;
 import static ml.melun.mangaview.Utils.readUriToString;
 import static ml.melun.mangaview.Utils.showPopup;
+import static ml.melun.mangaview.Utils.useScopedStorageHome;
 import static ml.melun.mangaview.Utils.viewerIntent;
 
 public class RecyclerFragment extends Fragment {
     int selectedPosition = -1;
     TitleAdapter titleAdapter;
     RecyclerView recyclerView;
+    View emptyState;
+    TextView emptyStateTitle;
+    TextView emptyStateMessage;
     int mode = -1;
     boolean loaded = false;
     SearchView searchView;
@@ -78,33 +80,49 @@ public class RecyclerFragment extends Fragment {
     public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
         ViewGroup rootView = (ViewGroup) inflater.inflate(R.layout.content_recycler , container, false);
         recyclerView = rootView.findViewById(R.id.recycler_list);
+        emptyState = rootView.findViewById(R.id.empty_state);
+        emptyStateTitle = rootView.findViewById(R.id.empty_state_title);
+        emptyStateMessage = rootView.findViewById(R.id.empty_state_message);
         titleAdapter = new TitleAdapter(getContext());
         recyclerView.setLayoutManager(new NpaLinearLayoutManager(getContext()));
-        recyclerView.setHasFixedSize(true);
-        recyclerView.setItemViewCacheSize(16);
-        recyclerView.setItemAnimator(null);
-        recyclerView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         recyclerView.setAdapter(titleAdapter);
-        recyclerView.addOnScrollListener(new RecyclerViewPreloader<>(Glide.with(this), titleAdapter, titleAdapter, 24));
+        titleAdapter.registerAdapterDataObserver(new AdapterDataObserver() {
+            @Override
+            public void onChanged() {
+                updateEmptyState();
+            }
+
+            @Override
+            public void onItemRangeInserted(int positionStart, int itemCount) {
+                updateEmptyState();
+            }
+
+            @Override
+            public void onItemRangeRemoved(int positionStart, int itemCount) {
+                updateEmptyState();
+            }
+        });
         titleAdapter.setClickListener(new TitleAdapter.ItemClickListener() {
             @Override
             public void onResumeClick(int position, int id) {
                 selectedPosition = position;
                 Title title = titleAdapter.getItem(position);
-                if(title == null)
-                    return;
                 if(mode == R.id.nav_recent) {
-                    openViewer(new Manga(id, "", "" , title.getBaseMode()), 2);
+                    Manga manga = new Manga(id, "", "" , title.getBaseMode());
+                    manga.setTitle(title);
+                    manga.setTitleId(title.getId());
+                    openViewer(manga, 2);
                 } else if(mode == R.id.nav_favorite) {
-                    openViewer(new Manga(id, "", "", title.getBaseMode()), -1);
+                    Manga manga = new Manga(id, "", "", title.getBaseMode());
+                    manga.setTitle(title);
+                    manga.setTitleId(title.getId());
+                    openViewer(manga, -1);
                 }
             }
 
             @Override
             public void onLongClick(View view, int position) {
                 Title title = titleAdapter.getItem(position);
-                if(title == null)
-                    return;
                 if(mode == R.id.nav_favorite) {
                     popup(view, position, title, 2);
                 }else if(mode == R.id.nav_recent){
@@ -117,10 +135,7 @@ public class RecyclerFragment extends Fragment {
             @Override
             public void onItemClick(int position) {
                 selectedPosition = position;
-                Title title = titleAdapter.getItem(position);
-                if(title == null || getContext() == null)
-                    return;
-                Intent episodeView = episodeIntent(getContext(), title);
+                Intent episodeView = episodeIntent(getContext(), titleAdapter.getItem(position));
                 if(mode == R.id.nav_favorite) {
                     episodeView.putExtra("position", position);
                     episodeView.putExtra("favorite",true);
@@ -146,8 +161,8 @@ public class RecyclerFragment extends Fragment {
 
     @Override
     public void onActivityResult(int requestCode, int resultCode, Intent data) {
-        if(resultCode == RESULT_OK && data != null){
-            if(titleAdapter != null && titleAdapter.isValidPosition(selectedPosition)) {
+        if(resultCode == RESULT_OK){
+            if(titleAdapter != null && titleAdapter.getItemCount() > 0 && selectedPosition > -1) {
                 switch (requestCode) {
                     case 1:
                         //favorite result
@@ -196,34 +211,50 @@ public class RecyclerFragment extends Fragment {
             titleAdapter.clearData();
             new OfflineReader().executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
         }
+        updateEmptyState();
+    }
+
+    private void updateEmptyState() {
+        if(emptyState == null || titleAdapter == null)
+            return;
+        boolean isEmpty = titleAdapter.getItemCount() == 0;
+        recyclerView.setVisibility(isEmpty ? View.GONE : View.VISIBLE);
+        emptyState.setVisibility(isEmpty ? View.VISIBLE : View.GONE);
+        if(!isEmpty)
+            return;
+        if(mode == R.id.nav_recent) {
+            emptyStateTitle.setText("아직 읽은 작품이 없습니다");
+            emptyStateMessage.setText("작품을 열면 이어볼 수 있도록 여기에 표시됩니다");
+        } else if(mode == R.id.nav_favorite) {
+            emptyStateTitle.setText("보관함에 담긴 작품이 없습니다");
+            emptyStateMessage.setText("마음에 드는 작품을 보관하면 이곳에 모입니다");
+        } else if(mode == R.id.nav_download) {
+            emptyStateTitle.setText("저장된 작품이 없습니다");
+            emptyStateMessage.setText("오프라인으로 볼 작품을 저장하면 여기에 표시됩니다");
+        } else {
+            emptyStateTitle.setText("표시할 작품이 없습니다");
+            emptyStateMessage.setText("작품을 읽거나 저장하면 이곳에 정리됩니다");
+        }
     }
 
 
     public class OfflineReader extends LifecycleTask<Void,Void,Integer>{
         List<Title> titles;
-
-        OfflineReader() {
-            super(RecyclerFragment.this);
-        }
-
         @Override
         protected void onPostExecute(Integer integer) {
             super.onPostExecute(integer);
-            if(titleAdapter != null && titles != null)
-                titleAdapter.addData(titles);
+            titleAdapter.addData(titles);
+            updateEmptyState();
         }
         @Override
         protected Integer doInBackground(Void... voids) {
             titles = new ArrayList<>();
-            Context context = getContext();
-            if(context == null)
-                return null;
-            if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
+            if (useScopedStorageHome(p.getHomeDir())) {
                 //scoped storage
                 Uri uri = Uri.parse(p.getHomeDir());
                 DocumentFile home;
                 try {
-                    home = DocumentFile.fromTreeUri(context, uri);
+                    home = DocumentFile.fromTreeUri(getContext(), uri);
                 }catch (IllegalArgumentException e){
                     //home not set
                     return null;
@@ -234,10 +265,8 @@ public class RecyclerFragment extends Fragment {
                             DocumentFile d = f.findFile("title.gson");
                             if (d != null) {
                                 try {
-                                    Title title = new Gson().fromJson(readUriToString(context, d.getUri()), new TypeToken<Title>() {
+                                    Title title = new Gson().fromJson(readUriToString(getContext(), d.getUri()), new TypeToken<Title>() {
                                     }.getType());
-                                    if(title == null)
-                                        throw new IllegalStateException("Invalid title metadata");
                                     title.setPath(f.getUri().toString());
                                     String thumb = title.getThumb();
                                     if (thumb != null && thumb.length() > 0) {
@@ -273,8 +302,6 @@ public class RecyclerFragment extends Fragment {
                                 try {
                                     Title title = new Gson().fromJson(readFileToString(data), new TypeToken<Title>() {
                                     }.getType());
-                                    if(title == null)
-                                        throw new IllegalStateException("Invalid title metadata");
                                     title.setPath(f.getAbsolutePath());
                                     String thumb = title.getThumb();
                                     if (thumb != null && thumb.length() > 0)
@@ -304,12 +331,8 @@ public class RecyclerFragment extends Fragment {
     @Override
     public void onCreateOptionsMenu(Menu menu, MenuInflater inflater) {
         inflater.inflate(R.menu.search_menu, menu);
-        if(getActivity() == null)
-            return;
         SearchManager searchManager = (SearchManager) getActivity().getSystemService(Context.SEARCH_SERVICE);
         searchView = (SearchView) menu.findItem(R.id.filter_search).getActionView();
-        if(searchManager == null || searchView == null)
-            return;
         searchView.setSearchableInfo(searchManager.getSearchableInfo(getActivity().getComponentName()));
         searchView.setMaxWidth(Integer.MAX_VALUE);
         searchView.setQueryHint("검색");
@@ -334,9 +357,7 @@ public class RecyclerFragment extends Fragment {
     }
 
     void openViewer(Manga manga, int code){
-        Title title = titleAdapter != null && titleAdapter.isValidPosition(selectedPosition) ? titleAdapter.getItem(selectedPosition) : null;
-        if(getContext() == null)
-            return;
+        Title title = selectedPosition > -1 ? titleAdapter.getItem(selectedPosition) : null;
         manga.setMode(0);
         if(title != null)
             manga.setTitle(title);
@@ -349,10 +370,7 @@ public class RecyclerFragment extends Fragment {
     }
 
     void popup(View view, final int position, final Title title, final int m){
-        Context context = getContext();
-        if(context == null)
-            return;
-        PopupMenu popup = new PopupMenu(context, view);
+        PopupMenu popup = new PopupMenu(getContext(), view);
         //Inflating the Popup using xml file
         //todo: clean this part
         popup.getMenuInflater()
@@ -385,50 +403,47 @@ public class RecyclerFragment extends Fragment {
 
         //registering popup with OnMenuItemClickListener
         popup.setOnMenuItemClickListener(item -> {
-            int itemId = item.getItemId();
-            if(itemId == R.id.del) {
-                //delete (only in recent)
-                titleAdapter.remove(position);
-                p.removeRecent(position);
-            } else if(itemId == R.id.favAdd || itemId == R.id.favDel) {
-                //toggle favorite
-                p.toggleFavorite(title,0);
-                if(m==2){
+            switch(item.getItemId()){
+                case R.id.del:
+                    //delete (only in recent)
                     titleAdapter.remove(position);
-                }
-            } else if(itemId == R.id.remove) {
-                //저장된 만화에서 삭제
-                DialogInterface.OnClickListener dialogClickListener = (dialog, which) -> {
-                    if (which == DialogInterface.BUTTON_POSITIVE) {
-                        //Yes button clicked
-                        Context currentContext = getContext();
-                        if(currentContext == null)
-                            return;
-                        if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
-                            DocumentFile f = DocumentFile.fromTreeUri(currentContext, Uri.parse(p.getHomeDir()));
-                            if(f == null) {
-                                showPopup(currentContext, "알림", "삭제를 실패했습니다");
-                                return;
-                            }
-                            DocumentFile target = f.findFile(title.getName());
-                            if (target != null && target.delete()) {
-                                titleAdapter.remove(position);
-                                Toast.makeText(currentContext, "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
-                            } else showPopup(currentContext, "알림", "삭제를 실패했습니다");
-                        } else {
-                            File folder = new File(p.getHomeDir(), filterFolder(title.getName()));
-                            if (deleteRecursive(folder)) {
-                                titleAdapter.remove(position);
-                                Toast.makeText(currentContext, "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
-                            } else showPopup(currentContext, "알림", "삭제를 실패했습니다");
-                        }
+                    p.removeRecent(position);
+                    break;
+                case R.id.favAdd:
+                case R.id.favDel:
+                    //toggle favorite
+                    p.toggleFavorite(title,0);
+                    if(m==2){
+                        titleAdapter.remove(position);
                     }
-                };
-                AlertDialog.Builder builder;
-                if(p.getDarkTheme()) builder = new AlertDialog.Builder(context,R.style.darkDialog);
-                else builder = new AlertDialog.Builder(context);
-                builder.setMessage("정말로 삭제 하시겠습니까?").setPositiveButton("네", dialogClickListener)
-                        .setNegativeButton("아니오", dialogClickListener).show();
+                    break;
+                case R.id.remove:
+                    //저장된 만화에서 삭제
+                    DialogInterface.OnClickListener dialogClickListener = (dialog, which) -> {
+                        if (which == DialogInterface.BUTTON_POSITIVE) {
+                            //Yes button clicked
+                            if (useScopedStorageHome(p.getHomeDir())) {
+                                DocumentFile f = DocumentFile.fromTreeUri(getContext(), Uri.parse(p.getHomeDir()));
+                                DocumentFile target = f == null ? null : f.findFile(filterFolder(title.getName()));
+                                if (target != null && target.delete()) {
+                                    titleAdapter.remove(position);
+                                    Toast.makeText(getContext(), "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
+                                } else showPopup(getContext(), "알림", "삭제를 실패했습니다");
+                            } else {
+                                File folder = new File(p.getHomeDir(), filterFolder(title.getName()));
+                                if (deleteRecursive(folder)) {
+                                    titleAdapter.remove(position);
+                                    Toast.makeText(getContext(), "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
+                                } else showPopup(getContext(), "알림", "삭제를 실패했습니다");
+                            }
+                        }
+                    };
+                    AlertDialog.Builder builder;
+                    if(p.getDarkTheme()) builder = new AlertDialog.Builder(getContext(),R.style.darkDialog);
+                    else builder = new AlertDialog.Builder(getContext());
+                    builder.setMessage("정말로 삭제 하시겠습니까?").setPositiveButton("네", dialogClickListener)
+                            .setNegativeButton("아니오", dialogClickListener).show();
+                    break;
             }
             return false;
         });

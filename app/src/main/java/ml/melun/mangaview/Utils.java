@@ -14,21 +14,23 @@ import android.graphics.Point;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.widget.PopupMenu;
 import androidx.documentfile.provider.DocumentFile;
+import androidx.fragment.app.Fragment;
 
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.text.InputType;
 import android.util.DisplayMetrics;
 import android.view.Display;
 import android.view.View;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.Spinner;
 import android.widget.Toast;
 
+import com.bumptech.glide.Glide;
 import com.bumptech.glide.load.model.GlideUrl;
 import com.bumptech.glide.load.model.LazyHeaders;
 import com.google.gson.Gson;
@@ -48,22 +50,32 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
+import ml.melun.mangaview.activity.CaptchaActivity;
 import ml.melun.mangaview.activity.EpisodeActivity;
 import ml.melun.mangaview.activity.ViewerActivity;
 import ml.melun.mangaview.activity.ViewerActivity2;
 import ml.melun.mangaview.activity.ViewerActivity3;
 import ml.melun.mangaview.interfaces.IntegerCallback;
 import ml.melun.mangaview.interfaces.StringCallback;
+import ml.melun.mangaview.Downloader;
+import ml.melun.mangaview.mangaview.CustomHttpClient;
+import ml.melun.mangaview.mangaview.DownloadTitle;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
+import okhttp3.FormBody;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 
+import static java.lang.System.currentTimeMillis;
 import static ml.melun.mangaview.MainApplication.httpClient;
 import static ml.melun.mangaview.MainApplication.p;
+import static ml.melun.mangaview.activity.CaptchaActivity.REQUEST_CAPTCHA;
+import static ml.melun.mangaview.activity.SettingsActivity.urlSettingPopup;
 
 public class Utils {
     private static final String MANGA_STATE_V2 = "manga_state_v2";
@@ -74,20 +86,16 @@ public class Utils {
     private static final String MANGA_MODE = "manga_mode";
     private static final String MANGA_OFFLINE_PATH = "manga_offline_path";
 
+    private static int captchaCount = 1;
+
     public static final String ReservedChars = "|\\?*<\":>+[]/'";
 
     public static boolean deleteRecursive(File fileOrDirectory) {
-        if(fileOrDirectory == null)
-            return false;
         if(!checkWriteable(fileOrDirectory)) return false;
         try {
-            if (fileOrDirectory.isDirectory()) {
-                File[] children = fileOrDirectory.listFiles();
-                if(children == null)
-                    return false;
-                for (File child : children)
+            if (fileOrDirectory.isDirectory())
+                for (File child : fileOrDirectory.listFiles())
                     if(!deleteRecursive(child)) return false;
-            }
             fileOrDirectory.delete();
         }catch (Exception e){
             return false;
@@ -96,8 +104,6 @@ public class Utils {
     }
 
     public static boolean checkWriteable(File targetDir) {
-        if(targetDir == null)
-            return false;
         if(targetDir.isDirectory()) {
             File tmp = new File(targetDir, "mangaViewTestFile");
             try {
@@ -108,10 +114,7 @@ public class Utils {
             }
             return true;
         }else{
-            File parent = targetDir.getParentFile();
-            if(parent == null)
-                return false;
-            File tmp = new File(parent, "mangaViewTestFile");
+            File tmp = new File(targetDir.getParent(), "mangaViewTestFile");
             try {
                 if (tmp.createNewFile()) tmp.delete();
                 else return false;
@@ -170,16 +173,12 @@ public class Utils {
 //        return httpsGet(urlin, "");
 //    }
     public static Intent episodeIntent(Context context,Title title){
-        if(context == null || title == null)
-            return null;
         Intent episodeView = new Intent(context, EpisodeActivity.class);
         episodeView.putExtra("title", new Gson().toJson(title));
         return episodeView;
     }
 
     public static Intent viewerIntent(Context context, Manga manga){
-        if(context == null || manga == null)
-            return null;
         Intent viewer = null;
         switch (new Preference(context).getViewerType()){
             case 0:
@@ -192,10 +191,95 @@ public class Utils {
                 viewer = new Intent(context, ViewerActivity2.class);
                 break;
         }
-        if(viewer == null)
-            viewer = new Intent(context, ViewerActivity.class);
         viewer.putExtra("manga",new Gson().toJson(manga));
         return viewer;
+    }
+
+    public static boolean queueOfflineDownload(Context context, Title title, Manga manga) {
+        if(context == null)
+            return false;
+        if(manga == null) {
+            Toast.makeText(context, "저장할 회차 정보가 없습니다", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        if(!manga.isOnline()) {
+            Toast.makeText(context, "이미 오프라인 회차입니다", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        if(title == null)
+            title = manga.getTitle();
+        if(title == null) {
+            Toast.makeText(context, "작품 정보를 불러오지 못했습니다", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        if(title.getEps() == null)
+            title.setEps(new ArrayList<>());
+        int index = title.getEps().indexOf(manga);
+        if(index < 0) {
+            manga.setTitle(title);
+            title.getEps().add(manga);
+            index = title.getEps().size() - 1;
+        }
+        JSONArray selected = new JSONArray();
+        selected.put(index);
+        return queueOfflineDownload(context, title, selected);
+    }
+
+    public static boolean queueOfflineDownload(Context context, Title title, JSONArray selected) {
+        if(context == null || title == null || selected == null || selected.length() == 0) {
+            Toast.makeText(context, "다운로드할 회차를 선택해 주세요", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        if(title.getEps() == null || title.getEps().size() == 0) {
+            Toast.makeText(context, "다운로드할 회차 정보를 불러오지 못했습니다", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        if(!ensureOfflineHomeWritable(context))
+            return false;
+        Intent downloader = new Intent(context, Downloader.class);
+        downloader.setAction(Downloader.ACTION_QUEUE);
+        downloader.putExtra("title", new Gson().toJson(new DownloadTitle(title)));
+        downloader.putExtra("selected", selected.toString());
+        if (Build.VERSION.SDK_INT >= 26) {
+            context.startForegroundService(downloader);
+        }else{
+            context.startService(downloader);
+        }
+        Toast.makeText(context,"오프라인 저장을 시작합니다.", Toast.LENGTH_LONG).show();
+        return true;
+    }
+
+    private static boolean ensureOfflineHomeWritable(Context context) {
+        String homeDir = p.getHomeDir();
+        if(homeDir == null || homeDir.length() == 0) {
+            File defHome = getDefHomeDir(context);
+            if(defHome != null) {
+                p.setHomeDir(defHome.getAbsolutePath());
+                homeDir = p.getHomeDir();
+            }
+        }
+        if(homeDir == null || homeDir.length() == 0) {
+            Toast.makeText(context,"오프라인 저장 폴더를 먼저 설정해 주세요", Toast.LENGTH_LONG).show();
+            return false;
+        }
+        if(useScopedStorageHome(homeDir)) {
+            DocumentFile home = DocumentFile.fromTreeUri(context, Uri.parse(homeDir));
+            if(home == null || !home.canWrite()) {
+                Toast.makeText(context,"오프라인 저장 폴더 권한을 다시 설정해 주세요", Toast.LENGTH_LONG).show();
+                return false;
+            }
+            return true;
+        }
+        File home = new File(homeDir);
+        if(!home.exists() && !home.mkdirs()) {
+            Toast.makeText(context,"오프라인 저장 폴더를 만들 수 없습니다", Toast.LENGTH_LONG).show();
+            return false;
+        }
+        if(!home.canWrite()) {
+            Toast.makeText(context,"오프라인 저장 폴더에 쓸 수 없습니다", Toast.LENGTH_LONG).show();
+            return false;
+        }
+        return true;
     }
 
     public static void saveMangaState(Bundle outState, Manga manga) {
@@ -302,8 +386,6 @@ public class Utils {
     }
 
     public static void showErrorPopup(Context context, String message, Exception e, boolean force_close){
-        if(context == null)
-            return;
         AlertDialog.Builder builder;
         String title = "오류";
         if (new Preference(context).getDarkTheme()) builder = new AlertDialog.Builder(context, R.style.darkDialog);
@@ -311,10 +393,10 @@ public class Utils {
         builder.setTitle(title)
                 .setMessage(message)
                 .setPositiveButton("확인", (dialog, which) -> {
-                    if(force_close && context instanceof Activity) ((Activity)context).finish();
+                    if(force_close) ((Activity)context).finish();
                 })
                 .setOnCancelListener(dialogInterface -> {
-                    if(force_close && context instanceof Activity) ((Activity)context).finish();
+                    if(force_close) ((Activity)context).finish();
                 });
         if(e != null) {
             builder.setNeutralButton("자세히", (dialog, which) -> showStackTrace(context, e));
@@ -323,12 +405,177 @@ public class Utils {
     }
 
     public static boolean checkConnection(Context context){
-        if(context instanceof Activity) {
+        if(context != null) {
             ConnectivityManager connectivityManager
                     = (ConnectivityManager) ((Activity) context).getSystemService(Context.CONNECTIVITY_SERVICE);
             NetworkInfo activeNetworkInfo = connectivityManager.getActiveNetworkInfo();
             return activeNetworkInfo != null && activeNetworkInfo.isConnectedOrConnecting();
         }else return false;
+    }
+
+
+
+    public static void showCaptchaPopup(String url, Context context, int code, Exception e, boolean force_close, Fragment fragment, Preference p){
+        if(context != null) {
+            if (!checkConnection(context)) {
+                //no internet
+                //showErrorPopup(context, "네트워크 연결이 없습니다.", e, force_close);
+                Toast.makeText(context, "네트워크 연결이 없습니다.", Toast.LENGTH_LONG).show();
+                if (force_close) ((Activity) context).finish();
+            } else if (captchaCount == 0) {
+                startCaptchaActivity(context, code, fragment, url);
+            } else {
+                AlertDialog.Builder builder;
+                String title = "오류";
+                String content = "정보를 불러오는데 실패하였습니다.";
+                if (new Preference(context).getDarkTheme())
+                    builder = new AlertDialog.Builder(context, R.style.darkDialog);
+                else builder = new AlertDialog.Builder(context);
+                builder.setTitle(title)
+                        .setMessage(content)
+                        .setNeutralButton("확인", (dialogInterface, i) -> {
+                            if (force_close) ((Activity) context).finish();
+                        })
+                        .setPositiveButton("CAPTCHA 인증", (dialog, which) -> startCaptchaActivity(context, code, fragment, url))
+                        .setNegativeButton("URL 설정", (dialogInterface, i) -> urlSettingPopup(context, p))
+                        .setOnCancelListener(dialogInterface -> {
+                            if (force_close) ((Activity) context).finish();
+                        });
+                if (e != null) {
+                    builder.setNeutralButton("자세히", (dialog, which) -> showStackTrace(context, e));
+                }
+                try {
+                    builder.show();
+                } catch (Exception e2) {
+                    e2.printStackTrace();
+                }
+            }
+            captchaCount++;
+        }
+    }
+
+    static void startCaptchaActivity(Context context, int code, Fragment fragment, String url){
+        Intent captchaIntent = new Intent(context, CaptchaActivity.class);
+        if(url != null && url.startsWith("/"))
+            url = httpClient.getUrl(url) + url;
+        captchaIntent.putExtra("url", url);
+        if(fragment == null)
+            ((Activity)context).startActivityForResult(captchaIntent, code);
+        else
+            fragment.startActivityForResult(captchaIntent, code);
+    }
+
+    static void startCaptchaActivity(Context context, int code, Fragment fragment){
+        Intent captchaIntent = new Intent(context, CaptchaActivity.class);
+        if(fragment == null)
+            ((Activity)context).startActivityForResult(captchaIntent, code);
+        else
+            fragment.startActivityForResult(captchaIntent, code);
+    }
+
+    public static void showCaptchaPopup(String url, Context context, int code, Exception e, boolean force_close, Preference p) {
+        showCaptchaPopup(url, context,code,e,force_close,null, p);
+    }
+
+    public static void showCaptchaPopup(String url, Context context, Exception e, Preference p) {
+        // viewer call
+        showCaptchaPopup(url, context, REQUEST_CAPTCHA, e, true, p);
+    }
+
+    public static void showCaptchaPopup(String url, Context context, int code, Preference p){
+        // menu call
+        showCaptchaPopup(url, context, code, null, false, p);
+    }
+
+    public static void showCaptchaPopup(String url, Context context, int code, Fragment fragment, Preference p){
+        // menu call
+        showCaptchaPopup(url, context, code, null, false, fragment, p);
+    }
+
+    public static void showCaptchaPopup(Context context, int code, Fragment fragment, Preference p){
+        // menu call
+        showCaptchaPopup(null, context, code, null, false, fragment, p);
+    }
+
+    public static void showCaptchaPopup(String url, Context context, Preference p){
+        // viewer call
+        showCaptchaPopup(url, context, 0, null, true, p);
+    }
+    public static void showCaptchaPopup(Context context, Preference p){
+        // viewer call
+        showCaptchaPopup(null, context, 0, null, true, p);
+    }
+
+
+    public static void showTokiCaptchaPopup(Context context, Preference p){
+        AlertDialog.Builder builder;
+        String title = "캡차 인증";
+        if (new Preference(context).getDarkTheme())
+            builder = new AlertDialog.Builder(context, R.style.darkDialog);
+        else builder = new AlertDialog.Builder(context);
+        View v = ((Activity)context).getLayoutInflater().inflate(R.layout.content_toki_captcha_popup, null);
+
+        ImageView img = v.findViewById(R.id.toki_captcha_image);
+        EditText answer = v.findViewById(R.id.toki_captcha_answer);
+
+        new Thread(() -> {
+            int tries = 3;
+            while(tries > 0) {
+                Response r = null;
+                try {
+                    r = httpClient.post(p.getUrl() + "/plugin/kcaptcha/kcaptcha_session.php", new FormBody.Builder().build(), new HashMap<>(), true);
+                    if(r != null && r.code() == 200) {
+                        List<String> setcookie = r.headers("Set-Cookie");
+                        for (String c : setcookie) {
+                            if (c.contains("PHPSESSID=")) {
+                                String cookie = c.substring(c.indexOf("=") + 1, c.indexOf(";"));
+                                httpClient.setCookie("PHPSESSID", cookie);
+                            }
+                        }
+                        break;
+                    }
+                } finally {
+                    if(r != null)
+                        r.close();
+                }
+                tries--;
+            }
+            try {
+                Response r = httpClient.mget("/plugin/kcaptcha/kcaptcha_image.php?t=" + currentTimeMillis(), false);
+                final byte[] b = CustomHttpClient.readBytes(r);
+                ((Activity) context).runOnUiThread(() -> Glide.with(img)
+                        .load(b)
+                        .into(img));
+            }catch (Exception e){
+                e.printStackTrace();
+            }
+        }).start();
+
+        builder.setTitle(title)
+                .setView(v)
+                .setPositiveButton(android.R.string.ok, (dialog, which) -> new Thread(() -> {
+                    RequestBody requestBody = new FormBody.Builder()
+                            .addEncoded("url", p.getUrl())
+                            .addEncoded("captcha_key", answer.getText().toString())
+                            .build();
+                    Map<String, String> headers = new HashMap<>();
+                    headers.put("cookie", "PHPSESSID=" + httpClient.getCookie("PHPSESSID") + ";");
+                    Response response = null;
+                    try {
+                        response = httpClient.post(p.getUrl() + "/bbs/captcha_check.php", requestBody, headers, true);
+                    } finally {
+                        if(response != null)
+                            response.close();
+                    }
+                    ((Activity) context).runOnUiThread(() -> {
+                        ((Activity) context).finish();
+                        ((Activity) context).startActivity(((Activity) context).getIntent());
+                    });
+                }).start())
+                .setNegativeButton(android.R.string.cancel, (dialogInterface, i) -> ((Activity) context).finish())
+                .setOnCancelListener(dialogInterface -> ((Activity) context).finish());
+
+        builder.show();
     }
     public static GlideUrl getGlideUrl(String image){
         return getGlideUrl(image, guessImageBaseMode(image));
@@ -345,7 +592,7 @@ public class Utils {
     private static int guessImageBaseMode(String image) {
         if(image == null)
             return MTitle.base_comic;
-        String lower = image.toLowerCase(Locale.ROOT);
+        String lower = image.toLowerCase();
         if(lower.contains("/webtoon") || lower.contains("webtoon"))
             return MTitle.base_webtoon;
         return MTitle.base_comic;
@@ -392,17 +639,10 @@ public class Utils {
                     ClipData clip = ClipData.newPlainText("stack_trace", error);
                     clipboard.setPrimaryClip(clip);
                     Toast.makeText(context,"클립보드에 복사되었습니다.", Toast.LENGTH_SHORT).show();
-                    if(context instanceof Activity)
-                        ((Activity)context).finish();
+                    ((Activity)context).finish();
                 })
-                .setPositiveButton("확인", (dialog, which) -> {
-                    if(context instanceof Activity)
-                        ((Activity)context).finish();
-                })
-                .setOnCancelListener(dialog -> {
-                    if(context instanceof Activity)
-                        ((Activity)context).finish();
-                })
+                .setPositiveButton("확인", (dialog, which) -> ((Activity)context).finish())
+                .setOnCancelListener(dialog -> ((Activity)context).finish())
                 .show();
     }
 
@@ -410,7 +650,7 @@ public class Utils {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q){
             return context.getExternalFilesDir("");
         } else {
-            return new File(Environment.getExternalStorageDirectory(), "MangaView/saved/");
+            return new File("/sdcard/MangaView/saved/");
         }
     }
 
@@ -456,12 +696,11 @@ public class Utils {
 
     public static Bitmap getSample(Bitmap input, int width){
         //scale down bitmap to avoid outofmem exception
-        if(input == null || width <= 0) return input;
         if(input.getWidth()<=width) return input;
         else{
             //ratio
             float ratio = (float)input.getHeight()/(float)input.getWidth();
-            int height = Math.max(1, Math.round(ratio*width));
+            int height = Math.round(ratio*width);
             return Bitmap.createScaledBitmap(input, width, height,false);
         }
     }
@@ -504,12 +743,8 @@ public class Utils {
     }
 
     public static boolean writePreferenceToFile(Context c, Uri uri){
-        if(c == null || uri == null)
-            return false;
         try {
             OutputStream stream = c.getContentResolver().openOutputStream(uri);
-            if(stream == null)
-                return false;
             stream.write(readPref(c).getBytes());
             stream.flush();
             stream.close();
@@ -568,9 +803,7 @@ public class Utils {
     }
 
     public static String readPref(Context context){
-        if(context == null)
-            return "{}";
-        SharedPreferences sharedPref = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE);
+        SharedPreferences sharedPref = ((Activity)context).getSharedPreferences("mangaView", Context.MODE_PRIVATE);
         JSONObject data = new JSONObject();
         try {
             data.put("recent",new JSONArray(sharedPref.getString("recent", "[]")));
@@ -613,12 +846,16 @@ public class Utils {
     }
 
     public static void openViewer(Context context, Manga manga, int code){
-        if(!(context instanceof Activity) || manga == null)
-            return;
+        openViewer(context, manga, code, false);
+    }
+
+    public static void openViewer(Context context, Manga manga, int code, boolean returnToEpisodes){
         Intent viewer = viewerIntent(context,manga);
-        if(viewer == null)
-            return;
         viewer.putExtra("online",true);
+        if(returnToEpisodes)
+            viewer.putExtra("returnToEpisodes", true);
+        if(manga != null && manga.getTitle() != null)
+            viewer.putExtra("title", new Gson().toJson(manga.getTitle()));
         ((Activity)context).startActivityForResult(viewer, code);
     }
 
@@ -713,8 +950,6 @@ public class Utils {
     }
 
     public static List<File> getOfflineEpisodes(String path){
-        if(path == null)
-            return new ArrayList<>();
         File[] episodeFiles = new File(path).listFiles(pathname -> pathname.isDirectory());
         if(episodeFiles == null)
             return new ArrayList<>();
@@ -729,11 +964,7 @@ public class Utils {
         DocumentFile[] files = home.listFiles();
         if(files == null)
             return new ArrayList<>();
-        Arrays.sort(files, (documentFile, t1) -> {
-            String left = documentFile == null || documentFile.getName() == null ? "" : documentFile.getName();
-            String right = t1 == null || t1.getName() == null ? "" : t1.getName();
-            return left.compareTo(right);
-        });
+        Arrays.sort(files, (documentFile, t1) -> documentFile.getName().compareTo(t1.getName()));
         List<DocumentFile> res = new ArrayList<>();
         for(DocumentFile f : files){
             if(f.isDirectory()) res.add(f);
@@ -741,13 +972,39 @@ public class Utils {
         return res;
     }
 
+    public static boolean useScopedStorageHome(String homeDir) {
+        return Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE
+                && homeDir != null
+                && homeDir.startsWith("content://");
+    }
+
+    public static boolean isLocalMediaPath(String path) {
+        return path != null
+                && (path.startsWith("/")
+                || path.startsWith("file://")
+                || path.startsWith("content://"));
+    }
+
+    public static DocumentFile documentFileFromUri(Context context, String uriString) {
+        if(context == null || uriString == null || uriString.length() == 0)
+            return null;
+        Uri uri = Uri.parse(uriString);
+        try {
+            DocumentFile file = DocumentFile.fromTreeUri(context, uri);
+            if(file != null)
+                return file;
+        } catch (Exception ignored) {
+        }
+        try {
+            return DocumentFile.fromSingleUri(context, uri);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
     public static String readUriToString(Context context, Uri uri){
-        if(context == null || uri == null)
-            return "";
         try {
             InputStream in = context.getContentResolver().openInputStream(uri);
-            if(in == null)
-                return "";
             BufferedReader r = new BufferedReader(new InputStreamReader(in));
             StringBuilder s = new StringBuilder();
             for (String line; (line = r.readLine()) != null; ) {

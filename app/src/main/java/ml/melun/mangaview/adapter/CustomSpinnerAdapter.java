@@ -17,7 +17,7 @@ import ml.melun.mangaview.mangaview.Manga;
 public class CustomSpinnerAdapter extends BaseAdapter implements SpinnerAdapter {
 
     private List<Manga> data;
-    private final LayoutInflater inflater;
+    private static LayoutInflater inflater = null;
     private CustomSpinnerListener listener;
     private int selected = -1;
 
@@ -78,10 +78,10 @@ public class CustomSpinnerAdapter extends BaseAdapter implements SpinnerAdapter 
 
     @Override
     public View getDropDownView(int position, View convertView, ViewGroup parent) {
-            ViewHolder holder = null;
+        ViewHolder holder = null;
         try {
             if (convertView == null) {
-                convertView = inflater.inflate(R.layout.item_custom_spinner_dropdown, parent, false);
+                convertView = inflater.inflate(R.layout.item_custom_spinner_dropdown, null);
                 holder = new ViewHolder();
                 holder.name = (TextView) convertView.findViewById(R.id.spinner_text);
                 convertView.setTag(holder);

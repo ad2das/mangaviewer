@@ -14,6 +14,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
@@ -53,6 +54,11 @@ public class Preference {
     boolean doublepReverse;
     FirebaseSyncManager syncManager;
     boolean syncSuppressed;
+    private final CopyOnWriteArrayList<LocalChangeListener> localChangeListeners = new CopyOnWriteArrayList<>();
+
+    public interface LocalChangeListener {
+        void onLocalPreferenceChanged(String scope);
+    }
 
     public SharedPreferences getSharedPref(){
         return this.sharedPref;
@@ -70,6 +76,21 @@ public class Preference {
         } finally {
             syncSuppressed = previous;
         }
+    }
+
+    public void addLocalChangeListener(LocalChangeListener listener) {
+        if(listener != null && !localChangeListeners.contains(listener))
+            localChangeListeners.add(listener);
+    }
+
+    public void removeLocalChangeListener(LocalChangeListener listener) {
+        if(listener != null)
+            localChangeListeners.remove(listener);
+    }
+
+    private void notifyLocalChange(String scope) {
+        for(LocalChangeListener listener : localChangeListeners)
+            listener.onLocalPreferenceChanged(scope);
     }
 
     private void notifySync(String scope) {
@@ -436,14 +457,38 @@ public class Preference {
         if(titleId>0) {
             String key = title.getBaseMode() + "." + title.getId();
             try {
-                if(bookmark.has(key) && bookmark.getInt(key) == id)
+                if(bookmark.has(key) && bookmark.getInt(key) == id) {
+                    updateRecentProgress(title, id);
                     return;
+                }
                 bookmark.put(key, id);
             } catch (Exception e) {
                 //
             }
+            updateRecentProgress(title, id);
             writeBookmark();
         }
+    }
+
+    private void updateRecentProgress(Title title, int episodeId) {
+        if(title == null || episodeId <= 0)
+            return;
+        int index = getIndexOf(title);
+        if(index < 0)
+            return;
+        int episodeIndex = -1;
+        int episodeCount = title.getEpsCount();
+        if(title.getEps() != null) {
+            for(int i = 0; i < title.getEps().size(); i++) {
+                if(title.getEps().get(i) != null && title.getEps().get(i).getId() == episodeId) {
+                    episodeIndex = i + 1;
+                    break;
+                }
+            }
+        }
+        MTitle recentTitle = recent.get(index);
+        recentTitle.setReadingProgress(episodeId, episodeIndex, episodeCount);
+        writeRecent();
     }
     public int getBookmark(MTitle title){
         //return recent.mget(0).getBookmark();
@@ -480,6 +525,7 @@ public class Preference {
     public void writeBookmark(){
         prefsEditor.putString("bookmark2", bookmark.toString());
         prefsEditor.apply();
+        notifyLocalChange("bookmark");
         notifySync("bookmark");
     }
 
@@ -506,20 +552,33 @@ public class Preference {
         Gson gson = new Gson();
         prefsEditor.putString("recent", gson.toJson(recent));
         prefsEditor.apply();
+        notifyLocalChange("recent");
         notifySync("recent");
     }
 
 
     public void setViewerBookmark(Manga m,int index){
+        setViewerBookmark(m, index, 0);
+    }
+
+    public void setViewerBookmark(Manga m, int index, int offset){
         if(m == null)
             return;
         if(m.getId()>-1) {
-            if (index > 0) {
+            if(index <= 0 && offset == 0) {
+                removeViewerBookmark(m);
+                return;
+            }
+            if (index > 0 || offset != 0) {
                 String key = viewerBookmarkKey(m);
+                String offsetKey = viewerBookmarkOffsetKey(m);
                 try {
-                    if(pagebookmark.has(key) && pagebookmark.getInt(key) == index)
+                    int existingIndex = pagebookmark.has(key) ? pagebookmark.getInt(key) : 0;
+                    int existingOffset = pagebookmark.has(offsetKey) ? pagebookmark.getInt(offsetKey) : 0;
+                    if(existingIndex == index && existingOffset == offset)
                         return;
                     pagebookmark.put(key, index);
+                    pagebookmark.put(offsetKey, offset);
                 } catch (Exception e) {
                     //
                 }
@@ -539,13 +598,27 @@ public class Preference {
         }
         return 0;
     }
+    public int getViewerBookmarkOffset(Manga m){
+        if(m == null)
+            return 0;
+        if(m.getId()>-1) {
+            try {
+                return pagebookmark.getInt(viewerBookmarkOffsetKey(m));
+            } catch (Exception e) {
+                //
+            }
+        }
+        return 0;
+    }
     public void removeViewerBookmark(Manga m){
         if(m == null)
             return;
         String key = viewerBookmarkKey(m);
-        if(!pagebookmark.has(key))
+        String offsetKey = viewerBookmarkOffsetKey(m);
+        if(!pagebookmark.has(key) && !pagebookmark.has(offsetKey))
             return;
         pagebookmark.remove(key);
+        pagebookmark.remove(offsetKey);
         writeViewerBookmark();
     }
 
@@ -554,6 +627,10 @@ public class Preference {
         if(titleId > 0)
             return m.getBaseMode() + "." + titleId + "." + m.getId();
         return m.getBaseMode() + "." + m.getId();
+    }
+
+    private String viewerBookmarkOffsetKey(Manga m) {
+        return viewerBookmarkKey(m) + ".offset";
     }
     public void resetViewerBookmark(){
         try {
@@ -564,6 +641,7 @@ public class Preference {
     private void writeViewerBookmark(){
         prefsEditor.putString("bookmark", pagebookmark.toString());
         prefsEditor.apply();
+        notifyLocalChange("pageBookmark");
         notifySync("pageBookmark");
     }
 

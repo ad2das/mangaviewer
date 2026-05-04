@@ -6,7 +6,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -19,14 +18,14 @@ import org.jsoup.select.Elements;
 
 import okhttp3.Response;
 
-import static ml.melun.mangaview.Utils.CODE_SCOPED_STORAGE;
+import static ml.melun.mangaview.Utils.documentFileFromUri;
+import static ml.melun.mangaview.Utils.useScopedStorageHome;
 import static ml.melun.mangaview.mangaview.MTitle.baseModeStr;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
+import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
 import static ml.melun.mangaview.mangaview.Title.LOAD_OK;
 
 import android.content.Context;
-import android.net.Uri;
-import android.os.Build;
 
 import androidx.documentfile.provider.DocumentFile;
 
@@ -106,25 +105,17 @@ public class Manga {
         int timeoutRetries = 0;
 
         while (imgs.size() == 0 && tries < 2) {
-            Response r = null;
+            Response r = client.mget(  baseModeStr(baseMode) + '/' + id, false, cookies);
             try {
-                String body;
-                if(cookies == null || cookies.size() == 0) {
-                    CustomHttpClient.PageResponse page = client.mgetCachedPage(baseModeStr(baseMode) + '/' + id, PAGE_CACHE_TTL_MS);
-                    body = page.body;
-                } else {
-                    r = client.mget(  baseModeStr(baseMode) + '/' + id, false, cookies);
-                    if(r == null)
-                        break;
-                    String location = r.header("location");
-                    if (r.code() == 302 && location != null) {
-                        r.close();
-                        r = null;
-                        break;
-                    }
-                    body = CustomHttpClient.readBody(r);
-                    r = null;
+                if(r == null)
+                    break;
+                String location = r.header("location");
+                if (r.code() == 302 && location != null && location.contains("captcha.php")) {
+                    r.close();
+                    return LOAD_CAPTCHA;
                 }
+                String body = CustomHttpClient.readBody(r);
+                r = null;
                 if (body.contains("Connect Error: Connection timed out")) {
                     if(++timeoutRetries > MAX_TIMEOUT_RETRIES)
                         break;
@@ -153,9 +144,8 @@ public class Manga {
                     if(select != null) {
                         for (Element e : select.select("option")) {
                             String idstr = e.attr("value");
-                            int episodeId = parseIntOrDefault(idstr, -1);
-                            if (episodeId > 0)
-                                eps.add(new Manga(episodeId, e.ownText(), "", baseMode));
+                            if (idstr.length() > 0)
+                                eps.add(new Manga(Integer.parseInt(idstr), e.ownText(), "", baseMode));
                         }
                     }
                 }
@@ -199,44 +189,32 @@ public class Manga {
                 Element commentdiv = d.selectFirst("div#viewcomment");
 
 
-                if(commentdiv != null) {
-                    try {
-                        Element commentSection = commentdiv.selectFirst("section#bo_vc");
-                        if(commentSection != null) {
-                            for (Element e : commentSection.select("div.media")) {
-                                try {
-                                    Comment comment = parseComment(e);
-                                    if(comment != null)
-                                        comments.add(comment);
-                                } catch (Exception e3) {
-                                    e3.printStackTrace();
-                                }
-                            }
+                try {
+                    for (Element e : commentdiv.selectFirst("section#bo_vc").select("div.media")) {
+                        try {
+                            comments.add(parseComment(e));
+                        } catch (Exception e3) {
+                            e3.printStackTrace();
                         }
 
-                        Element bestCommentSection = commentdiv.selectFirst("section#bo_vcb");
-                        if(bestCommentSection != null) {
-                            for (Element e : bestCommentSection.select("div.media")) {
-                                try {
-                                    Comment comment = parseComment(e);
-                                    if(comment != null)
-                                        bcomments.add(comment);
-                                } catch (Exception e3) {
-                                    e3.printStackTrace();
-                                }
-                            }
-                        }
-                    } catch (Exception e1) {
-                        e1.printStackTrace();
                     }
+                    for (Element e : commentdiv.selectFirst("section#bo_vcb").select("div.media")) {
+                        try {
+                            bcomments.add(parseComment(e));
+                        } catch (Exception e3) {
+                            e3.printStackTrace();
+                        }
+
+                    }
+                } catch (Exception e1) {
+                    e1.printStackTrace();
                 }
 
             } catch (Exception e2) {
                 e2.printStackTrace();
-            } finally {
-                if (r != null) {
-                    r.close();
-                }
+            }
+            if (r != null) {
+                r.close();
             }
             tries++;
         }
@@ -250,16 +228,6 @@ public class Manga {
             return Integer.parseInt(href.split(marker)[1].split("\\?")[0]);
         } catch (Exception e) {
             return -1;
-        }
-    }
-
-    private int parseIntOrDefault(String value, int fallback) {
-        try {
-            if(value == null)
-                return fallback;
-            return Integer.parseInt(value.trim());
-        } catch (NumberFormatException e) {
-            return fallback;
         }
     }
 
@@ -306,7 +274,14 @@ public class Manga {
                     addImageIfValid(client, seenImages, src);
             }
 
-            if(!useWolfTitleEpisodes(client, titleId)) {
+            if(title != null && title.getEps() != null && title.getEps().size() > 0) {
+                eps = title.getEps();
+                for(Manga ep : eps) {
+                    ep.setMode(0);
+                    ep.setTitle(title);
+                    ep.setTitleId(titleId);
+                }
+            } else {
                 Manga next = wolfEpisode(d.selectFirst("section.webtoon-bottom li.next a[href^=\"" + epPath + titleId + "\"]"), titleId);
                 Manga prev = wolfEpisode(d.selectFirst("section.webtoon-bottom li.prev a[href^=\"" + epPath + titleId + "\"]"), titleId);
                 if(next != null)
@@ -330,29 +305,6 @@ public class Manga {
         return LOAD_OK;
     }
 
-    private boolean useWolfTitleEpisodes(CustomHttpClient client, int titleId) {
-        if(title == null && titleId > 0)
-            title = new Title(name, "", "", null, "", titleId, baseMode);
-        if(title == null)
-            return false;
-
-        if(title.getEps() == null || title.getEps().size() == 0)
-            title.fetchEps(client);
-        if(title.getEps() == null || title.getEps().size() == 0)
-            return false;
-
-        eps = title.getEps();
-        for(Manga ep : eps) {
-            if(ep == null)
-                continue;
-            ep.setMode(0);
-            ep.setTitle(title);
-            ep.setTitleId(titleId);
-        }
-        this.titleId = titleId;
-        return true;
-    }
-
     private boolean addImageIfValid(CustomHttpClient client, Set<String> seenImages, String img) {
         if(img == null)
             return false;
@@ -372,7 +324,7 @@ public class Manga {
     private boolean isImageSourceCandidate(String img) {
         if(img == null)
             return false;
-        String lower = img.toLowerCase(Locale.ROOT);
+        String lower = img.toLowerCase();
         if(lower.length() == 0
                 || lower.contains("blank")
                 || lower.contains("loading")
@@ -416,56 +368,35 @@ public class Manga {
         String indentstr;
         //indent
         indentstr = e.attr("style");
-        indent = parseIndent(indentstr);
+        if (indentstr.length() > 0)
+            indent = Integer.parseInt(indentstr.substring(indentstr.lastIndexOf(':') + 1, indentstr.lastIndexOf('p'))) / 64;
+        else
+            indent = 0;
 
         //icon
         Element icone = e.selectFirst(".media-object");
-        if (icone != null && icone.is("img"))
+        if (icone.is("img"))
             icon = icone.attr("src");
         else
             icon = "";
 
         Element header = e.selectFirst("div.media-heading");
-        Element userSpan = header == null ? null : header.selectFirst("span.member");
-        user = userSpan == null ? "" : userSpan.ownText();
-        if (userSpan == null || userSpan.hasClass("guest"))
+        Element userSpan = header.selectFirst("span.member");
+        user = userSpan.ownText();
+        if (userSpan.hasClass("guest"))
             level = 0;
         else {
-            Element levelImage = userSpan.selectFirst("img");
-            lvlstr = levelImage == null ? "" : levelImage.attr("src");
-            level = parseLevel(lvlstr);
+            lvlstr = userSpan.selectFirst("img").attr("src");
+            level = Integer.parseInt(lvlstr.substring(lvlstr.lastIndexOf('/') + 1, lvlstr.lastIndexOf('.')));
         }
-        Element timestampElement = header == null ? null : header.selectFirst("span.media-info");
-        timestamp = timestampElement == null ? "" : timestampElement.ownText();
+        timestamp = header.selectFirst("span.media-info").ownText();
 
         Element cbody = e.selectFirst("div.media-content");
-        Element contentElement = cbody == null ? null : cbody.selectFirst("div:not([class])");
-        content = contentElement == null ? "" : contentElement.ownText();
+        content = cbody.selectFirst("div:not([class])").ownText();
 
-        Element goodButton = cbody == null ? null : cbody.selectFirst("div.cmt-good-btn");
-        Elements cspans = goodButton == null ? new Elements() : goodButton.select("span");
-        likes = cspans.size() == 0 ? 0 : parseIntOrDefault(cspans.get(cspans.size() - 1).ownText(), 0);
+        Elements cspans = cbody.selectFirst("div.cmt-good-btn").select("span");
+        likes = Integer.parseInt(cspans.get(cspans.size() - 1).ownText());
         return new Comment(user, timestamp, icon, content, indent, likes, level);
-    }
-
-    private int parseIndent(String value) {
-        try {
-            if(value == null || value.length() == 0 || value.lastIndexOf(':') < 0 || value.lastIndexOf('p') <= value.lastIndexOf(':'))
-                return 0;
-            return Integer.parseInt(value.substring(value.lastIndexOf(':') + 1, value.lastIndexOf('p')).trim()) / 64;
-        } catch (NumberFormatException e) {
-            return 0;
-        }
-    }
-
-    private int parseLevel(String value) {
-        try {
-            if(value == null || value.length() == 0 || value.lastIndexOf('/') < 0 || value.lastIndexOf('.') <= value.lastIndexOf('/'))
-                return 0;
-            return Integer.parseInt(value.substring(value.lastIndexOf('/') + 1, value.lastIndexOf('.')));
-        } catch (NumberFormatException e) {
-            return 0;
-        }
     }
 
 
@@ -488,8 +419,8 @@ public class Manga {
             if (imgs == null) {
                 imgs = new ArrayList<>();
                 //is offline : read image list
-                if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
-                    DocumentFile root = DocumentFile.fromTreeUri(context, Uri.parse(offlinePath));
+                if (useScopedStorageHome(offlinePath)) {
+                    DocumentFile root = documentFileFromUri(context, offlinePath);
                     DocumentFile[] offimgs = root == null ? null : root.listFiles();
                     if(offimgs == null)
                         return imgs;

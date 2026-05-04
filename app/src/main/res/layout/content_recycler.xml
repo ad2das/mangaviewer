@@ -2,16 +2,63 @@
 <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
+    android:background="@color/appSurface"
     android:layout_height="match_parent"
     android:layout_width="match_parent">
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/recycler_list"
+        android:clipToPadding="false"
+        android:paddingTop="@dimen/app_space_md"
+        android:paddingBottom="@dimen/app_space_lg"
         android:layout_height="match_parent"
         android:layout_width="match_parent"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="parent" />
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <LinearLayout
+        android:id="@+id/empty_state"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/app_space_xl"
+        android:layout_marginEnd="@dimen/app_space_xl"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:visibility="gone"
+        app:layout_constraintBottom_toTopOf="@id/bottom_guide"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        tools:visibility="visible">
+
+        <TextView
+            android:id="@+id/empty_state_title"
+            style="@style/AppText.Header"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:text="표시할 작품이 없습니다"
+            android:textColor="@color/appText" />
+
+        <TextView
+            android:id="@+id/empty_state_message"
+            style="@style/AppText.Body"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/app_space_md"
+            android:gravity="center"
+            android:text="작품을 읽거나 저장하면 이곳에 정리됩니다"
+            android:textColor="@color/appTextSecondary" />
+
+    </LinearLayout>
+
+    <androidx.constraintlayout.widget.Guideline
+        android:id="@+id/bottom_guide"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        app:layout_constraintGuide_percent="0.72" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

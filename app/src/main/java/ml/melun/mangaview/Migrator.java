@@ -47,6 +47,7 @@ public class Migrator extends Service {
     public static final String MIGRATE_FAIL = "ml.melun.mangaview.migrator.FAIL";
     public static final String MIGRATE_PROGRESS = "ml.melun.mangaview.migrator.PROGRESS";
     public static final String MIGRATE_RESULT = "ml.melun.mangaview.migrator.RESULT";
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -64,7 +65,7 @@ public class Migrator extends Service {
             notificationManager.createNotificationChannel(mchannel);
         }
         Intent notificationIntent = new Intent(this, MainActivity.class);
-        pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, notificationIntentFlags());
+        pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, 0);
         resultIntent = new Intent(this, MainActivity.class);
         serviceContext = this;
         startNotification();
@@ -122,7 +123,7 @@ public class Migrator extends Service {
 
 
     private void endNotification(){
-        PendingIntent resultPendingIntent = PendingIntent.getActivity(serviceContext, 0, resultIntent, notificationIntentFlags());
+        PendingIntent resultPendingIntent = PendingIntent.getActivity(serviceContext, 0, resultIntent, 0);
         notification = new NotificationCompat.Builder(this, channeld)
                 .setContentIntent(resultPendingIntent)
                 .setContentTitle("기록 업데이트 완료")
@@ -133,13 +134,6 @@ public class Migrator extends Service {
         else
             notification.setSmallIcon(R.drawable.notification_logo);
         notificationManager.notify(nid, notification.build());
-    }
-
-    private static int notificationIntentFlags() {
-        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
-            flags |= PendingIntent.FLAG_IMMUTABLE;
-        return flags;
     }
 
     private void sendBroadcast(String action){

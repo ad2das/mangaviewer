@@ -2,11 +2,15 @@
 <menu xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
     <item
-        android:id="@+id/action_settings"
+        android:id="@+id/action_search"
         android:orderInCategory="0"
-        android:title="설정" />
+        android:icon="@drawable/ic_search"
+        android:title="검색"
+        app:showAsAction="always" />
     <item
-        android:id="@+id/action_debug"
+        android:id="@+id/action_settings"
         android:orderInCategory="1"
-        android:title="debug info" />
+        android:icon="@drawable/ic_profile_avatar"
+        android:title="프로필"
+        app:showAsAction="always" />
 </menu>

@@ -3,32 +3,40 @@
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:background="#000"
+    android:background="@color/appSurface"
     android:orientation="vertical">
     <TextView
         android:layout_marginTop="50dp"
         android:layout_marginBottom="30dp"
+        android:layout_marginLeft="20dp"
+        android:layout_marginRight="20dp"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:background="@drawable/app_outline_button_bg"
+        android:padding="18dp"
         android:textAlignment="center"
         android:textSize="15sp"
-        android:textColor="#FFF"
+        android:textColor="@color/appText"
         android:text="이전화"
         android:id="@+id/prevEpInfo"/>
     <ProgressBar
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:indeterminateTint="@color/appAccent"
         android:id="@+id/infoLoading"
-        android:indeterminate="true"
-        android:visibility="gone"/>
+        android:indeterminate="true"/>
 
 
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_marginLeft="20dp"
+        android:layout_marginRight="20dp"
+        android:background="@drawable/app_outline_button_bg"
+        android:padding="18dp"
         android:textAlignment="center"
         android:textSize="15sp"
-        android:textColor="#FFF"
+        android:textColor="@color/appText"
         android:text="다음화"
         android:layout_marginTop="30dp"
         android:layout_marginBottom="50dp"

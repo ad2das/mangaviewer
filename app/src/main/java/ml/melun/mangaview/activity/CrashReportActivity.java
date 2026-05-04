@@ -5,8 +5,6 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
-import android.content.ActivityNotFoundException;
-import android.net.Uri;
 import android.os.Bundle;
 import android.widget.Toast;
 
@@ -21,7 +19,6 @@ import ml.melun.mangaview.R;
 import ml.melun.mangaview.report.CrashReporter;
 
 public class CrashReportActivity extends Activity {
-    private static final String ISSUE_URL = "https://github.com/ad2das/mangaviewer/issues/new";
     private static final int MAX_BODY_LENGTH = 7500;
 
     @Override
@@ -35,8 +32,8 @@ public class CrashReportActivity extends Activity {
         new AlertDialog.Builder(this)
                 .setTitle("MangaView")
                 .setMessage(getString(R.string.acra_dialog_text))
-                .setPositiveButton("GitHub 열기", (dialog, which) -> {
-                    openGitHubIssue(report);
+                .setPositiveButton("공유", (dialog, which) -> {
+                    shareReport(report);
                     finish();
                 })
                 .setNeutralButton("복사", (dialog, which) -> {
@@ -66,25 +63,17 @@ public class CrashReportActivity extends Activity {
         }
     }
 
-    private void openGitHubIssue(String report) {
-        String title = "[Crash] " + firstCrashLine(report);
-        String body = "## Crash report\n\n```text\n" + limit(report, MAX_BODY_LENGTH) + "\n```\n\n"
-                + "## Notes\n\n오류 직전에 한 동작을 여기에 추가로 적어주세요.\n";
-        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(ISSUE_URL).buildUpon()
-                .appendQueryParameter("title", title)
-                .appendQueryParameter("body", body)
-                .build());
-        try {
-            startActivity(intent);
-        } catch (ActivityNotFoundException e) {
-            copyReport(report);
-        }
+    private void shareReport(String report) {
+        Intent intent = new Intent(Intent.ACTION_SEND);
+        intent.setType("text/plain");
+        intent.putExtra(Intent.EXTRA_SUBJECT, "[MangaView Crash] " + firstCrashLine(report));
+        intent.putExtra(Intent.EXTRA_TEXT, limit(report, MAX_BODY_LENGTH));
+        startActivity(Intent.createChooser(intent, "오류 리포트 공유"));
     }
 
     private void copyReport(String report) {
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        if(clipboard != null)
-            clipboard.setPrimaryClip(ClipData.newPlainText("mangaview_crash_report", report));
+        clipboard.setPrimaryClip(ClipData.newPlainText("mangaview_crash_report", report));
         Toast.makeText(this, "오류 리포트를 복사했습니다.", Toast.LENGTH_SHORT).show();
     }
 

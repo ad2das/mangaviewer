@@ -3,8 +3,12 @@
     xmlns:app="http://schemas.android.com/apk/res-auto">
     <item
         android:id="@+id/episode_download"
-        android:title="다운로드"
+        android:title="오프라인 저장"
         app:showAsAction="always"
-        android:icon="@drawable/download"
-        />
+        android:icon="@drawable/download" />
+    <item
+        android:id="@+id/episode_more"
+        android:title="더보기"
+        app:showAsAction="always"
+        android:icon="@drawable/ic_baseline_more_vert_24px" />
 </menu>

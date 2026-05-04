@@ -7,6 +7,7 @@ import ml.melun.mangaview.task.LifecycleTask;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageView;
@@ -14,6 +15,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
+import androidx.cardview.widget.CardView;
 import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.DiffUtil;
 import androidx.recyclerview.widget.LinearLayoutManager;
@@ -34,10 +36,11 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MainPageWebtoon;
+import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Ranking;
-import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 
@@ -48,9 +51,19 @@ import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
 
 public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+    private static final int HERO = 21;
+    private static final int HOME_SECTION = 22;
     private static final int GROUP = 23;
     private static final int SECTION = 24;
     private static final int CATEGORY = 25;
+    private static final int ACTION_STRIP = 26;
+    private static final int STYLE_CONTINUE = 1;
+    private static final int STYLE_RANKING = 2;
+    private static final int STYLE_STANDARD = 3;
+    public static final int ACTION_UPDATES = 1;
+    public static final int ACTION_BOOKMARKS = 2;
+    public static final int ACTION_DOWNLOADS = 3;
+    public static final int ACTION_GENRES = 4;
 
     Context context;
     boolean dark;
@@ -61,14 +74,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     MainAdapter.onItemClick listener;
     int baseMode;
     Fetcher fetcher;
-    RecyclerView attachedRecycler;
-    RecyclerView.OnScrollListener parentScrollListener;
+    RecyclerView anchorRecycler;
     List<Object> pendingRows;
+    boolean initialRowsShown = false;
     private final Set<String> preloadedThumbs = new LinkedHashSet<>();
-    private static final int PRELOADED_THUMB_LIMIT = 60;
-    private static final int PRELOAD_THUMB_MAX_PER_FETCH = 12;
+    private static final int PRELOADED_THUMB_LIMIT = 120;
+    private static final int PRELOAD_THUMB_MAX_PER_FETCH = 36;
     private static final int SECTION_BATCH_SIZE = 4;
+    private static final int FIRST_SCREEN_BATCH_SIZE = 1;
     private int preloadCount = 0;
+    private int activeHomeTab = 0;
 
     public MainWebtoonAdapter(Context context){
         this(context, base_webtoon);
@@ -81,7 +96,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         this.save = p.getDataSave();
         inflater = LayoutInflater.from(context);
         dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
-        rows = buildRows(dataSet, true);
+        rows = new ArrayList<>();
         setHasStableIds(true);
     }
 
@@ -101,16 +116,50 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     public void setLoading(){
         dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
-        updateRows(buildRows(dataSet, true));
+        rows = new ArrayList<>();
+        notifyDataSetChanged();
     }
 
     public void setListener(MainAdapter.onItemClick listener){
         this.listener = listener;
     }
 
+    public void setAnchorRecycler(RecyclerView recyclerView) {
+        if(this.anchorRecycler != null)
+            this.anchorRecycler.clearOnScrollListeners();
+        this.anchorRecycler = recyclerView;
+        if(this.anchorRecycler != null) {
+            this.anchorRecycler.addOnScrollListener(new RecyclerView.OnScrollListener() {
+                @Override
+                public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
+                    super.onScrollStateChanged(recyclerView, newState);
+                    if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                        applyPendingRows();
+                }
+            });
+        }
+    }
+
+    public void refreshLocalState() {
+        updateRows(buildRows(dataSet, false));
+    }
+
+    public void setHomeTab(int tabPosition) {
+        if(activeHomeTab == tabPosition && rows != null && rows.size() > 0)
+            return;
+        activeHomeTab = tabPosition;
+        updateRows(buildRows(dataSet, false));
+    }
+
     @NonNull
     @Override
     public RecyclerView.ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+        if(viewType == HERO)
+            return new HeroHolder(inflater.inflate(R.layout.item_webtoon_hero, parent, false));
+        if(viewType == HOME_SECTION)
+            return new HomeSectionHolder(inflater.inflate(R.layout.item_webtoon_section, parent, false));
+        if(viewType == ACTION_STRIP)
+            return new ActionStripHolder(inflater.inflate(R.layout.item_home_action_strip, parent, false));
         if(viewType == CATEGORY)
             return new CategoryHolder(inflater.inflate(R.layout.item_webtoon_category_panel, parent, false));
         if(viewType == GROUP)
@@ -120,10 +169,14 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     @Override
     public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position) {
-        if(rows == null || position < 0 || position >= rows.size())
-            return;
         Object row = rows.get(position);
-        if(holder instanceof CategoryHolder)
+        if(holder instanceof HeroHolder)
+            ((HeroHolder) holder).bind((HeroRow) row);
+        else if(holder instanceof HomeSectionHolder)
+            ((HomeSectionHolder) holder).bind((HomeSection) row);
+        else if(holder instanceof ActionStripHolder)
+            ((ActionStripHolder) holder).bind();
+        else if(holder instanceof CategoryHolder)
             ((CategoryHolder) holder).bind();
         else if(holder instanceof GroupHolder)
             ((GroupHolder) holder).bind((String) row);
@@ -133,8 +186,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     @Override
     public int getItemViewType(int position) {
-        if(rows == null || position < 0 || position >= rows.size())
-            return SECTION;
+        if(rows.get(position) instanceof HeroRow)
+            return HERO;
+        if(rows.get(position) instanceof HomeSection)
+            return HOME_SECTION;
+        if(rows.get(position) instanceof ActionStrip)
+            return ACTION_STRIP;
         if(rows.get(position) instanceof CategoryPanel)
             return CATEGORY;
         return rows.get(position) instanceof String ? GROUP : SECTION;
@@ -152,18 +209,110 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         return rowKey(rows.get(position)).hashCode();
     }
 
+    public int getScrollPositionForHomeTab(int tabPosition) {
+        return 0;
+    }
+
+    public boolean hasCategoryPanel() {
+        return findCategoryPosition() >= 0;
+    }
+
+    private int findHomeSectionPosition(String homeTitle, String fallbackSectionTitle, int fallback) {
+        if(rows == null)
+            return fallback;
+        for(int i = 0; i < rows.size(); i++)
+            if(rows.get(i) instanceof HomeSection && ((HomeSection) rows.get(i)).title.equals(homeTitle))
+                return i;
+        return findSectionPosition(fallbackSectionTitle, null, fallback);
+    }
+
+    private int findSectionPosition(String preferredTitle, String fallbackTitle, int fallback) {
+        if(rows == null)
+            return fallback;
+        for(int i = 0; i < rows.size(); i++) {
+            if(!(rows.get(i) instanceof Ranking))
+                continue;
+            SectionName name = parseSectionName(((Ranking<?>) rows.get(i)).getName());
+            if(preferredTitle != null && name.title.contains(preferredTitle))
+                return i;
+        }
+        if(fallbackTitle != null)
+            for(int i = 0; i < rows.size(); i++) {
+                if(!(rows.get(i) instanceof Ranking))
+                    continue;
+                SectionName name = parseSectionName(((Ranking<?>) rows.get(i)).getName());
+                if(name.title.contains(fallbackTitle))
+                    return i;
+            }
+        return fallback;
+    }
+
+    private int findCategoryPosition() {
+        if(rows == null)
+            return -1;
+        for(int i = 0; i < rows.size(); i++)
+            if(rows.get(i) instanceof CategoryPanel)
+                return i;
+        return -1;
+    }
+
+    public void showHomeRows() {
+        updateRows(buildRows(dataSet, false, false));
+    }
+
+    public void showCategoryRows() {
+        ensureCategoryOnlyRows();
+    }
+
+    private void ensureCategoryOnlyRows() {
+        List<Object> categoryRows = new ArrayList<>();
+        categoryRows.add(new CategoryPanel());
+        updateRows(categoryRows);
+    }
+
     private List<Object> buildRows(List<Ranking<?>> sections, boolean includeEmpty) {
+        return buildRows(sections, includeEmpty, false);
+    }
+
+    private List<Object> buildRows(List<Ranking<?>> sections, boolean includeEmpty, boolean includeCategoryPanel) {
         List<Object> result = new ArrayList<>();
+        if(activeHomeTab == 3) {
+            result.add(new CategoryPanel());
+            return result;
+        }
+        if(activeHomeTab == 1 || activeHomeTab == 2)
+            return buildTabRows(sections, includeEmpty, activeHomeTab == 1 ? "인기순" : freshSectionTitle());
         List<Object> contentRows = new ArrayList<>();
+        List<Title> seedTitles = collectTitles(sections, 24);
+        List<Title> recentTitles = recentTitles();
+        List<Title> heroTitles = seedTitles.size() > 0 ? seedTitles : recentTitles;
+        if(heroTitles.size() > 0)
+            result.add(new HeroRow(heroTitles.subList(0, Math.min(5, heroTitles.size()))));
+        List<Title> continueTitles = recentTitles;
+        if(continueTitles.size() > 0)
+            result.add(new HomeSection("이어보기", "전체보기", "", continueTitles, STYLE_CONTINUE));
+        SectionPick popular = findSection(sections, "인기순");
+        List<Title> popularTitles = popular == null ? new ArrayList<>() : titlesFromRanking(popular.ranking, 8);
+        boolean popularFeatured = popularTitles.size() > 0;
+        if(popularFeatured)
+            result.add(new HomeSection("이번 주 인기", "전체보기", popular == null ? "" : popular.name.path, popularTitles, STYLE_RANKING));
+        SectionPick fresh = findSection(sections, freshSectionTitle());
+        List<Title> freshTitles = fresh == null ? new ArrayList<>() : titlesFromRanking(fresh.ranking, 8);
+        boolean freshFeatured = recentTitles.size() > 0 && freshTitles.size() > 0;
+        if(freshFeatured)
+            result.add(new HomeSection("신작 업데이트", "전체보기", fresh == null ? "" : fresh.name.path, freshTitles, STYLE_CONTINUE));
         String lastGroup = "";
         if(sections == null) {
-            result.add(new CategoryPanel());
+            if(includeCategoryPanel)
+                result.add(new CategoryPanel());
             return result;
         }
         for(Ranking<?> section : sections) {
             if(section == null)
                 continue;
             if(!includeEmpty && section.size() == 0)
+                continue;
+            if((popularFeatured && section == popular.ranking) || (freshFeatured && section == fresh.ranking))
                 continue;
             SectionName name = parseSectionName(section.getName());
             if(!name.group.equals(lastGroup)) {
@@ -172,8 +321,35 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
             contentRows.add(section);
         }
-        result.add(new CategoryPanel());
         result.addAll(contentRows);
+        if(includeCategoryPanel)
+            result.add(new CategoryPanel());
+        return result;
+    }
+
+    private String freshSectionTitle() {
+        return baseMode == base_comic ? "최신" : "신작";
+    }
+
+    private List<Object> buildTabRows(List<Ranking<?>> sections, boolean includeEmpty, String titlePart) {
+        List<Object> result = new ArrayList<>();
+        String lastGroup = "";
+        if(sections == null)
+            return result;
+        for(Ranking<?> section : sections) {
+            if(section == null)
+                continue;
+            if(!includeEmpty && section.size() == 0)
+                continue;
+            SectionName name = parseSectionName(section.getName());
+            if(!name.title.contains(titlePart))
+                continue;
+            if(!name.group.equals(lastGroup)) {
+                result.add(name.group);
+                lastGroup = name.group;
+            }
+            result.add(section);
+        }
         return result;
     }
 
@@ -200,6 +376,60 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     static class CategoryPanel {
     }
 
+    static class ActionStrip {
+    }
+
+    static class HeroRow {
+        List<Title> titles;
+        int index = 0;
+
+        HeroRow(List<Title> titles) {
+            this.titles = titles == null ? new ArrayList<>() : new ArrayList<>(titles);
+        }
+
+        Title current() {
+            if(titles == null || titles.size() == 0)
+                return null;
+            if(index < 0)
+                index = 0;
+            if(index >= titles.size())
+                index = titles.size() - 1;
+            return titles.get(index);
+        }
+
+        void move(int delta) {
+            if(titles == null || titles.size() == 0)
+                return;
+            index = (index + delta + titles.size()) % titles.size();
+        }
+    }
+
+    static class HomeSection {
+        String title;
+        String action;
+        String path;
+        List<Title> titles;
+        int style;
+
+        HomeSection(String title, String action, String path, List<Title> titles, int style) {
+            this.title = title;
+            this.action = action;
+            this.path = path == null ? "" : path;
+            this.titles = titles == null ? new ArrayList<>() : titles;
+            this.style = style;
+        }
+    }
+
+    static class SectionPick {
+        Ranking<?> ranking;
+        SectionName name;
+
+        SectionPick(Ranking<?> ranking, SectionName name) {
+            this.ranking = ranking;
+            this.name = name;
+        }
+    }
+
     private static class SectionResult {
         int index;
         Ranking<?> ranking;
@@ -215,6 +445,516 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
         SectionBatch(List<SectionResult> results) {
             this.results = results;
+        }
+    }
+
+    private List<Title> collectTitles(List<Ranking<?>> sections, int limit) {
+        ArrayList<Title> titles = new ArrayList<>();
+        if(sections == null)
+            return titles;
+        for(Ranking<?> section : sections) {
+            appendTitles(section, titles, limit);
+            if(titles.size() >= limit)
+                break;
+        }
+        return titles;
+    }
+
+    private List<Title> titlesFromRanking(Ranking<?> ranking, int limit) {
+        ArrayList<Title> titles = new ArrayList<>();
+        appendTitles(ranking, titles, limit);
+        return titles;
+    }
+
+    private List<Title> recentTitles() {
+        ArrayList<Title> titles = new ArrayList<>();
+        try {
+            appendRecentTitlesForCurrentMode(titles, 6);
+        } catch (Exception ignored) {
+        }
+        for(Title title : titles) {
+            int bookmark = p.getBookmark(title);
+            if(bookmark > 0)
+                title.setBookmark(bookmark);
+        }
+        return titles;
+    }
+
+    private void appendRecentTitlesForCurrentMode(List<Title> target, int limit) {
+        List<MTitle> recent = p.getRecent();
+        if(recent == null || target == null)
+            return;
+        for(MTitle item : recent) {
+            if(item == null || item.getBaseMode() != baseMode)
+                continue;
+            Title title = item instanceof Title ? (Title) item : new Title(item);
+            if(containsTitle(target, title))
+                continue;
+            target.add(title);
+            if(limit > 0 && target.size() >= limit)
+                return;
+        }
+    }
+
+    private List<Title> mergeTitles(List<Title> primary, List<Title> secondary, int limit) {
+        ArrayList<Title> titles = new ArrayList<>();
+        appendTitles(primary, titles, limit);
+        appendTitles(secondary, titles, limit);
+        return titles;
+    }
+
+    private String firstSectionPath(List<Ranking<?>> sections) {
+        if(sections == null)
+            return "";
+        for(Ranking<?> section : sections) {
+            if(section == null || section.size() == 0)
+                continue;
+            return parseSectionName(section.getName()).path;
+        }
+        return "";
+    }
+
+    private void appendTitles(List<?> source, List<Title> target, int limit) {
+        if(source == null || target == null)
+            return;
+        for(Object item : source) {
+            if(!(item instanceof MTitle))
+                continue;
+            Title title = item instanceof Title ? (Title) item : new Title((MTitle) item);
+            if(containsTitle(target, title))
+                continue;
+            target.add(title);
+            if(limit > 0 && target.size() >= limit)
+                return;
+        }
+    }
+
+    private boolean containsTitle(List<Title> titles, Title target) {
+        if(titles == null || target == null)
+            return false;
+        for(Title title : titles) {
+            if(title == null)
+                continue;
+            if(title.getBaseMode() == target.getBaseMode() && title.getId() == target.getId())
+                return true;
+            if(title.getName() != null && title.getName().equals(target.getName()))
+                return true;
+        }
+        return false;
+    }
+
+    private SectionPick findSection(List<Ranking<?>> sections, String titlePart) {
+        if(sections == null || titlePart == null)
+            return null;
+        for(Ranking<?> section : sections) {
+            if(section == null || section.size() == 0)
+                continue;
+            SectionName name = parseSectionName(section.getName());
+            if(name.title.contains(titlePart))
+                return new SectionPick(section, name);
+        }
+        return null;
+    }
+
+    private void bindTitleThumb(ImageView thumbView, Title title, int widthDp, int heightDp) {
+        Glide.with(thumbView).clear(thumbView);
+        if(title == null || save || title.getThumb() == null || title.getThumb().length() == 0) {
+            thumbView.setImageResource(R.drawable.app_cover_placeholder);
+            return;
+        }
+        Glide.with(thumbView)
+                .load(getGlideUrl(title.getThumb(), title.getBaseMode()))
+                .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                .override(dp(widthDp), dp(heightDp))
+                .thumbnail(0.25f)
+                .dontAnimate()
+                .placeholder(R.drawable.app_cover_placeholder)
+                .into(thumbView);
+    }
+
+    class HeroHolder extends RecyclerView.ViewHolder {
+        CardView card;
+        ImageView thumb;
+        TextView title;
+        TextView badge;
+        TextView meta;
+        TextView dots;
+        TextView readButton;
+        float downX;
+        float downY;
+        boolean dragging;
+        boolean animating;
+
+        HeroHolder(View itemView) {
+            super(itemView);
+            card = itemView.findViewById(R.id.hero_card);
+            thumb = itemView.findViewById(R.id.hero_thumb);
+            title = itemView.findViewById(R.id.hero_title);
+            badge = itemView.findViewById(R.id.hero_badge);
+            meta = itemView.findViewById(R.id.hero_meta);
+            dots = itemView.findViewById(R.id.hero_dots);
+            readButton = itemView.findViewById(R.id.hero_read_button);
+        }
+
+        void bind(HeroRow row) {
+            bindHero(row);
+            card.setOnClickListener(v -> {
+                Title hero = row == null ? null : row.current();
+                if(listener != null && hero != null)
+                    listener.clickedTitle(hero);
+            });
+            readButton.setOnClickListener(v -> {
+                Title hero = row == null ? null : row.current();
+                if(listener != null && hero != null)
+                    listener.clickedTitle(hero);
+            });
+            card.setOnTouchListener((v, event) -> {
+                if(animating)
+                    return true;
+                if(row == null || row.titles == null || row.titles.size() < 2)
+                    return false;
+                switch(event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        downX = event.getX();
+                        downY = event.getY();
+                        dragging = false;
+                        card.animate().cancel();
+                        return true;
+                    case MotionEvent.ACTION_MOVE:
+                        float moveDx = event.getX() - downX;
+                        float moveDy = event.getY() - downY;
+                        if(!dragging && Math.abs(moveDy) > dp(10) && Math.abs(moveDy) > Math.abs(moveDx)) {
+                            v.getParent().requestDisallowInterceptTouchEvent(false);
+                            resetDrag();
+                            return false;
+                        }
+                        if(Math.abs(moveDx) > dp(8) && Math.abs(moveDx) > Math.abs(moveDy)) {
+                            dragging = true;
+                            v.getParent().requestDisallowInterceptTouchEvent(true);
+                            float resistance = Math.max(-dp(44), Math.min(dp(44), moveDx * 0.22f));
+                            card.setTranslationX(resistance);
+                            card.setScaleX(0.992f);
+                            card.setScaleY(0.992f);
+                            card.setAlpha(0.94f);
+                        }
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                        float dx = event.getX() - downX;
+                        float dy = event.getY() - downY;
+                        v.getParent().requestDisallowInterceptTouchEvent(false);
+                        if(Math.abs(dx) > dp(48) && Math.abs(dx) > Math.abs(dy)) {
+                            animateHeroChange(row, dx < 0 ? 1 : -1);
+                        } else if(Math.abs(dx) < dp(8) && Math.abs(dy) < dp(8)) {
+                            v.performClick();
+                        } else {
+                            resetDrag();
+                        }
+                        return true;
+                    case MotionEvent.ACTION_CANCEL:
+                        v.getParent().requestDisallowInterceptTouchEvent(false);
+                        resetDrag();
+                        return true;
+                }
+                return false;
+            });
+        }
+
+        private void animateHeroChange(HeroRow row, int direction) {
+            animating = true;
+            dragging = false;
+            float width = card.getWidth() > 0 ? card.getWidth() : dp(320);
+            float outX = direction > 0 ? -width * 0.32f : width * 0.32f;
+            float inX = -outX;
+            dots.animate().alpha(0.35f).setDuration(90).start();
+            card.animate()
+                    .translationX(outX)
+                    .alpha(0f)
+                    .scaleX(0.985f)
+                    .scaleY(0.985f)
+                    .setDuration(130)
+                    .withEndAction(() -> {
+                        row.move(direction);
+                        bindHero(row);
+                        card.setTranslationX(inX);
+                        card.setAlpha(0f);
+                        card.setScaleX(0.985f);
+                        card.setScaleY(0.985f);
+                        card.animate()
+                                .translationX(0f)
+                                .alpha(1f)
+                                .scaleX(1f)
+                                .scaleY(1f)
+                                .setDuration(180)
+                                .withEndAction(() -> {
+                                    animating = false;
+                                    dots.animate().alpha(1f).setDuration(90).start();
+                                })
+                                .start();
+                    })
+                    .start();
+        }
+
+        private void resetDrag() {
+            dragging = false;
+            card.animate()
+                    .translationX(0f)
+                    .alpha(1f)
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setDuration(140)
+                    .start();
+        }
+
+        private void bindHero(HeroRow row) {
+            Title hero = row == null ? null : row.current();
+            title.setText(hero == null ? "" : hero.getName());
+            String release = hero == null ? "" : hero.getRelease();
+            meta.setText(release == null || release.length() == 0 ? "지금 볼만한 추천 작품" : release);
+            badge.setText("추천");
+            bindTitleThumb(thumb, hero, 360, 210);
+            dots.setText(heroDots(row));
+        }
+
+        private String heroDots(HeroRow row) {
+            if(row == null || row.titles == null || row.titles.size() <= 1)
+                return "";
+            StringBuilder builder = new StringBuilder();
+            int count = Math.min(5, row.titles.size());
+            int selected = row.index % count;
+            for(int i = 0; i < count; i++) {
+                if(i > 0)
+                    builder.append("  ");
+                builder.append(i == selected ? "●" : "○");
+            }
+            return builder.toString();
+        }
+    }
+
+    class HomeSectionHolder extends RecyclerView.ViewHolder {
+        TextView title;
+        TextView action;
+        RecyclerView list;
+
+        HomeSectionHolder(View itemView) {
+            super(itemView);
+            title = itemView.findViewById(R.id.webtoon_section_title);
+            action = itemView.findViewById(R.id.webtoon_section_count);
+            list = itemView.findViewById(R.id.webtoon_section_list);
+            LinearLayoutManager manager = new NpaLinearLayoutManager(context);
+            manager.setOrientation(RecyclerView.HORIZONTAL);
+            list.setLayoutManager(manager);
+            list.setNestedScrollingEnabled(false);
+            list.setHasFixedSize(true);
+            list.setItemViewCacheSize(10);
+        }
+
+        void bind(HomeSection section) {
+            title.setText(section.title);
+            action.setText(section.action);
+            boolean hasAction = section.path.length() > 0;
+            action.setVisibility(hasAction ? View.VISIBLE : View.INVISIBLE);
+            action.setOnClickListener(v -> {
+                if(listener != null && section.path.length() > 0)
+                    listener.clickedCategoryPath(section.title, section.path);
+            });
+            ViewGroup.LayoutParams params = list.getLayoutParams();
+            params.height = section.style == STYLE_RANKING ? dp(222) : dp(238);
+            list.setLayoutParams(params);
+            RecyclerView.Adapter adapter = list.getAdapter();
+            if(adapter instanceof HomeTitleAdapter && ((HomeTitleAdapter) adapter).style == section.style)
+                ((HomeTitleAdapter) adapter).setItems(section.titles);
+            else
+                list.setAdapter(new HomeTitleAdapter(section.titles, section.style));
+        }
+    }
+
+    class HomeTitleAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+        List<Title> items;
+        int style;
+
+        HomeTitleAdapter(List<Title> items, int style) {
+            this.items = items == null ? new ArrayList<>() : items;
+            this.style = style;
+            setHasStableIds(true);
+        }
+
+        void setItems(List<Title> items) {
+            this.items = items == null ? new ArrayList<>() : items;
+            notifyDataSetChanged();
+        }
+
+        @NonNull
+        @Override
+        public RecyclerView.ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+            if(style == STYLE_RANKING)
+                return new RankHolder(inflater.inflate(R.layout.item_home_rank_card, parent, false));
+            return new ContinueHolder(inflater.inflate(R.layout.item_home_continue_card, parent, false));
+        }
+
+        @Override
+        public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position) {
+            Title item = position < items.size() ? items.get(position) : null;
+            if(holder instanceof RankHolder)
+                ((RankHolder) holder).bind(item, position);
+            else
+                ((ContinueHolder) holder).bind(item, position);
+        }
+
+        @Override
+        public int getItemCount() {
+            int realCount = items == null ? 0 : items.size();
+            return Math.min(realCount, style == STYLE_RANKING ? 6 : 6);
+        }
+
+        @Override
+        public long getItemId(int position) {
+            if(items != null && position < items.size()) {
+                Title item = items.get(position);
+                return (((long) item.getBaseMode()) << 32) ^ item.getId();
+            }
+            return -1000L - position - style * 100L;
+        }
+
+        class ContinueHolder extends RecyclerView.ViewHolder {
+            CardView card;
+            ImageView thumb;
+            TextView name;
+            TextView episode;
+            TextView percent;
+            android.widget.ProgressBar progress;
+
+            ContinueHolder(View itemView) {
+                super(itemView);
+                card = itemView.findViewById(R.id.home_continue_card);
+                thumb = itemView.findViewById(R.id.home_continue_thumb);
+                name = itemView.findViewById(R.id.home_continue_title);
+                episode = itemView.findViewById(R.id.home_continue_episode);
+                percent = itemView.findViewById(R.id.home_continue_percent);
+                progress = itemView.findViewById(R.id.home_continue_progress);
+            }
+
+            void bind(Title item, int position) {
+                name.setText(item == null ? "" : item.getName());
+                String release = item == null ? "" : item.getRelease();
+                episode.setText(progressLabel(item, release));
+                int progressPercent = readingProgressPercent(item);
+                progress.setVisibility(View.VISIBLE);
+                progress.setProgress(progressPercent);
+                percent.setText(progressPercent + "%");
+                bindTitleThumb(thumb, item, 156, 144);
+                card.setOnClickListener(v -> {
+                    if(listener != null && item != null) {
+                        int bookmark = p.getBookmark(item);
+                        if(bookmark <= 0)
+                            bookmark = item.getBookmark();
+                        if(bookmark > 0) {
+                            Manga manga = new Manga(bookmark, "", "", item.getBaseMode());
+                            manga.setTitle(item);
+                            manga.setTitleId(item.getId());
+                            listener.clickedManga(manga);
+                        } else {
+                            listener.clickedTitle(item);
+                        }
+                    }
+                });
+            }
+        }
+
+        private int readingProgressPercent(Title item) {
+            if(item == null)
+                return 0;
+            int watchedCount = watchedEpisodeCount(item);
+            int episodeCount = totalEpisodeCount(item);
+            if(watchedCount > 0 && episodeCount > 0)
+                return Math.max(1, Math.min(100, Math.round(watchedCount * 100f / episodeCount)));
+            return 0;
+        }
+
+        private String progressLabel(Title item, String fallback) {
+            if(item == null)
+                return "이어보기";
+            int watchedCount = watchedEpisodeCount(item);
+            int episodeCount = totalEpisodeCount(item);
+            if(watchedCount > 0 && episodeCount > 0)
+                return watchedCount + "/" + episodeCount + "화";
+            return fallback == null || fallback.length() == 0 ? "이어보기" : fallback;
+        }
+
+        private int watchedEpisodeCount(Title item) {
+            int episodeIndex = item.getBookmarkEpisodeIndex();
+            int episodeCount = totalEpisodeCount(item);
+            if(episodeIndex <= 0)
+                episodeIndex = item.getBookmarkIndex();
+            if(episodeIndex <= 0 || episodeCount <= 0)
+                return 0;
+            return Math.max(1, Math.min(episodeCount, episodeCount - episodeIndex + 1));
+        }
+
+        private int totalEpisodeCount(Title item) {
+            int episodeCount = item.getEpisodeCount();
+            if(episodeCount <= 0)
+                episodeCount = item.getEpsCount();
+            return episodeCount;
+        }
+
+        class RankHolder extends RecyclerView.ViewHolder {
+            CardView card;
+            ImageView thumb;
+            TextView index;
+            TextView title;
+            TextView meta;
+
+            RankHolder(View itemView) {
+                super(itemView);
+                card = itemView.findViewById(R.id.home_rank_card);
+                thumb = itemView.findViewById(R.id.home_rank_thumb);
+                index = itemView.findViewById(R.id.home_rank_index);
+                title = itemView.findViewById(R.id.home_rank_title);
+                meta = itemView.findViewById(R.id.home_rank_meta);
+            }
+
+            void bind(Title item, int position) {
+                index.setText(String.valueOf(position + 1));
+                title.setText(item == null ? "" : item.getName());
+                String release = item == null ? "" : item.getRelease();
+                meta.setText(release == null || release.length() == 0 ? "인기 작품" : release);
+                bindTitleThumb(thumb, item, 142, 138);
+                card.setOnClickListener(v -> {
+                    if(listener != null && item != null)
+                        listener.clickedTitle(item);
+                });
+                title.setOnClickListener(v -> {
+                    if(listener != null && item != null)
+                        listener.clickedTitle(item);
+                });
+            }
+        }
+    }
+
+    class ActionStripHolder extends RecyclerView.ViewHolder {
+        View updates;
+        View bookmarks;
+        View downloads;
+        View genres;
+
+        ActionStripHolder(View itemView) {
+            super(itemView);
+            updates = itemView.findViewById(R.id.home_action_updates);
+            bookmarks = itemView.findViewById(R.id.home_action_bookmarks);
+            downloads = itemView.findViewById(R.id.home_action_downloads);
+            genres = itemView.findViewById(R.id.home_action_genres);
+        }
+
+        void bind() {
+            updates.setOnClickListener(v -> sendHomeAction(ACTION_UPDATES));
+            bookmarks.setOnClickListener(v -> sendHomeAction(ACTION_BOOKMARKS));
+            downloads.setOnClickListener(v -> sendHomeAction(ACTION_DOWNLOADS));
+            genres.setOnClickListener(v -> sendHomeAction(ACTION_GENRES));
+        }
+
+        void sendHomeAction(int action) {
+            if(listener != null)
+                listener.clickedHomeAction(action);
         }
     }
 
@@ -246,37 +986,63 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 if(group.length == 0)
                     continue;
                 SectionName groupName = parseSectionName(group[0]);
-                TextView label = new TextView(context);
-                label.setText(groupName.group);
-                label.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-                label.setTextSize(14);
-                label.setPadding(0, dp(10), 0, dp(6));
-                filterSections.addView(label);
+                if(baseMode == base_webtoon && groupName.group.startsWith("완결"))
+                    continue;
+                String displayGroup = groupName.group;
+                if(baseMode == base_webtoon && displayGroup.startsWith("연재 "))
+                    displayGroup = displayGroup.substring(3);
 
-                LinearLayout row = new LinearLayout(context);
-                row.setOrientation(LinearLayout.HORIZONTAL);
-                filterSections.addView(row);
-                int used = 0;
-                int max = context.getResources().getDisplayMetrics().widthPixels - dp(40);
-                for(String item : group) {
-                    SectionName filter = parseSectionName(item);
-                    if(!save)
-                        Search.prefetchCategoryPath(httpClient, filter.path, baseMode);
-                    TextView chip = createFilterChip(filter.title, clicked -> {
-                        if(listener != null)
-                            listener.clickedCategoryPath(filter.title, filter.path);
-                    });
-                    int width = estimateChipWidth(filter.title);
-                    if(used > 0 && used + width > max) {
-                        row = new LinearLayout(context);
-                        row.setOrientation(LinearLayout.HORIZONTAL);
-                        filterSections.addView(row);
-                        used = 0;
-                    }
-                    row.addView(chip);
-                    used += width;
-                }
+                LinearLayout groupBlock = new LinearLayout(context);
+                groupBlock.setOrientation(LinearLayout.VERTICAL);
+                groupBlock.setPadding(0, dp(6), 0, dp(10));
+                filterSections.addView(groupBlock, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+                TextView label = new TextView(context);
+                label.setText(displayGroup);
+                label.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                label.setTextColor(ContextCompat.getColor(context, dark ? android.R.color.white : R.color.appText));
+                label.setTextSize(13);
+                label.setSingleLine(true);
+                label.setGravity(Gravity.CENTER_VERTICAL);
+                groupBlock.addView(label, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, dp(28)));
+                addFilterChipGrid(groupBlock, group);
             }
+        }
+
+        void addFilterChipGrid(LinearLayout groupBlock, String[] items) {
+            LinearLayout row = null;
+            int column = 0;
+            for(String item : items) {
+                if(column == 0) {
+                    row = new LinearLayout(context);
+                    row.setOrientation(LinearLayout.HORIZONTAL);
+                    row.setGravity(Gravity.CENTER_VERTICAL);
+                    groupBlock.addView(row, new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
+                }
+                SectionName filter = parseSectionName(item);
+                TextView chip = createFilterChip(filter.title, clicked -> {
+                    if(listener != null)
+                        listener.clickedCategoryPath(filter.title, filter.path);
+                });
+                row.addView(chip, chipGridParams(column));
+                column++;
+                if(column == 3)
+                    column = 0;
+            }
+            while(row != null && column > 0 && column < 3) {
+                View spacer = new View(context);
+                row.addView(spacer, chipGridParams(column));
+                column++;
+            }
+        }
+
+        LinearLayout.LayoutParams chipGridParams(int column) {
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(34), 1f);
+            params.setMargins(0, 0, column == 2 ? 0 : dp(8), dp(6));
+            return params;
         }
 
         TextView createFilterChip(String label, FilterClick click) {
@@ -286,24 +1052,18 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             chip.setGravity(Gravity.CENTER);
             chip.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
             chip.setTextSize(13);
+            chip.setTextColor(ContextCompat.getColor(context, dark ? android.R.color.white : R.color.appText));
             chip.setPadding(dp(12), 0, dp(12), 0);
             chip.setBackground(filterBackground());
             chip.setOnClickListener(v -> click.onClick(label));
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34));
-            params.setMargins(0, 0, dp(8), dp(8));
-            chip.setLayoutParams(params);
             return chip;
-        }
-
-        int estimateChipWidth(String label) {
-            return dp(32 + Math.max(2, label == null ? 2 : label.length()) * 15);
         }
 
         GradientDrawable filterBackground() {
             GradientDrawable background = new GradientDrawable();
-            background.setCornerRadius(dp(6));
-            background.setColor(ContextCompat.getColor(context, dark ? R.color.colorDarkBackground : R.color.colorBackground));
-            background.setStroke(dp(1), ContextCompat.getColor(context, dark ? R.color.colorDarkWindowBackground : R.color.colorPrimaryDark));
+            background.setCornerRadius(dp(8));
+            background.setColor(ContextCompat.getColor(context, dark ? R.color.colorDarkBackground : R.color.appCard));
+            background.setStroke(dp(1), ContextCompat.getColor(context, dark ? R.color.colorDarkWindowBackground : R.color.appDivider));
             return background;
         }
     }
@@ -341,21 +1101,18 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             list = itemView.findViewById(R.id.webtoon_section_list);
             LinearLayoutManager manager = new NpaLinearLayoutManager(context);
             manager.setOrientation(RecyclerView.HORIZONTAL);
-            manager.setInitialPrefetchItemCount(6);
             list.setLayoutManager(manager);
             list.setNestedScrollingEnabled(false);
             list.setHasFixedSize(true);
             list.setItemViewCacheSize(12);
-            list.setItemAnimator(null);
-            list.setOverScrollMode(View.OVER_SCROLL_NEVER);
         }
 
         void bind(Ranking<?> section) {
             SectionName name = parseSectionName(section.getName());
             title.setText(name.title);
             count.setText("전체보기");
-            if(!save && name.path.length() > 0)
-                Search.prefetchCategoryPath(httpClient, name.path, baseMode);
+            boolean hasAction = name.path.length() > 0;
+            count.setVisibility(hasAction ? View.VISIBLE : View.INVISIBLE);
             count.setOnClickListener(v -> {
                 if(listener != null && name.path.length() > 0)
                     listener.clickedCategoryPath(name.title, name.path);
@@ -380,13 +1137,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             int oldSize = this.items == null ? 0 : this.items.size();
             this.items = items;
             int newSize = this.items == null ? 0 : this.items.size();
-            int commonSize = Math.min(oldSize, newSize);
-            if(commonSize > 0)
-                notifyItemRangeChanged(0, commonSize);
-            if(newSize > oldSize)
-                notifyItemRangeInserted(oldSize, newSize - oldSize);
-            else if(oldSize > newSize)
-                notifyItemRangeRemoved(newSize, oldSize - newSize);
+            if(oldSize == newSize) {
+                if(newSize > 0)
+                    notifyItemRangeChanged(0, newSize);
+            } else {
+                notifyDataSetChanged();
+            }
         }
 
         @NonNull
@@ -397,8 +1153,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
         @Override
         public void onBindViewHolder(@NonNull CardHolder holder, int position) {
-            if(items == null || position < 0 || position >= items.size())
-                return;
             Object item = items.get(position);
             if(!(item instanceof Title))
                 return;
@@ -418,7 +1172,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 Glide.with(holder.thumb)
                         .load(getGlideUrl(thumb, title.getBaseMode()))
                         .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                        .override(dp(128), dp(138))
+                        .override(dp(180), dp(220))
                         .thumbnail(0.25f)
                         .dontAnimate()
                         .placeholder(R.mipmap.ic_launcher)
@@ -448,15 +1202,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return item.hashCode();
         }
 
-        @Override
-        public void onViewRecycled(@NonNull CardHolder holder) {
-            super.onViewRecycled(holder);
-            Glide.with(holder.thumb).clear(holder.thumb);
-            holder.thumb.setImageResource(R.mipmap.ic_launcher);
-        }
-
         class CardHolder extends RecyclerView.ViewHolder {
-            View card;
+            CardView card;
             ImageView thumb;
             TextView name;
             TextView meta;
@@ -467,12 +1214,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 thumb = itemView.findViewById(R.id.webtoon_thumb);
                 name = itemView.findViewById(R.id.webtoon_name);
                 meta = itemView.findViewById(R.id.webtoon_meta);
-                card.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-                if(dark) {
-                    card.setBackgroundColor(ContextCompat.getColor(context, R.color.colorDarkBackground));
-                    name.setTextColor(ContextCompat.getColor(context, android.R.color.white));
-                    meta.setTextColor(0xffcccccc);
-                }
+                if(dark)
+                    card.setCardBackgroundColor(ContextCompat.getColor(context, R.color.colorDarkBackground));
             }
         }
     }
@@ -498,7 +1241,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 Glide.with(context)
                         .load(getGlideUrl(thumb, ((Title) item).getBaseMode()))
                         .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                        .override(dp(128), dp(138))
+                        .override(dp(180), dp(220))
                         .preload();
                 if(++preloadCount >= PRELOAD_THUMB_MAX_PER_FETCH)
                     return;
@@ -517,12 +1260,14 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private void updateRows(List<Object> newRows) {
-        if(attachedRecycler != null && attachedRecycler.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
-            pendingRows = newRows == null ? new ArrayList<>() : new ArrayList<>(newRows);
-            return;
-        }
         final List<Object> oldRows = rows == null ? Collections.emptyList() : new ArrayList<>(rows);
         final List<Object> nextRows = newRows == null ? new ArrayList<>() : new ArrayList<>(newRows);
+        if(anchorRecycler != null && anchorRecycler.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
+            pendingRows = nextRows;
+            return;
+        }
+        pendingRows = null;
+        final ScrollAnchor anchor = captureScrollAnchor(oldRows);
         DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
             @Override
             public int getOldListSize() {
@@ -546,9 +1291,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }, false);
         rows = nextRows;
         diff.dispatchUpdatesTo(this);
+        restoreScrollAnchor(anchor);
     }
 
-    private void flushPendingRows() {
+    private void applyPendingRows() {
         if(pendingRows == null)
             return;
         List<Object> rowsToApply = pendingRows;
@@ -556,32 +1302,48 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         updateRows(rowsToApply);
     }
 
-    @Override
-    public void onAttachedToRecyclerView(@NonNull RecyclerView recyclerView) {
-        super.onAttachedToRecyclerView(recyclerView);
-        attachedRecycler = recyclerView;
-        parentScrollListener = new RecyclerView.OnScrollListener() {
-            @Override
-            public void onScrollStateChanged(@NonNull RecyclerView rv, int newState) {
-                super.onScrollStateChanged(rv, newState);
-                if(newState == RecyclerView.SCROLL_STATE_IDLE)
-                    flushPendingRows();
-            }
-        };
-        recyclerView.addOnScrollListener(parentScrollListener);
+    private ScrollAnchor captureScrollAnchor(List<Object> currentRows) {
+        if(anchorRecycler == null || anchorRecycler.getScrollState() == RecyclerView.SCROLL_STATE_IDLE)
+            return null;
+        RecyclerView.LayoutManager manager = anchorRecycler.getLayoutManager();
+        if(!(manager instanceof LinearLayoutManager) || currentRows == null || currentRows.size() == 0)
+            return null;
+        LinearLayoutManager linear = (LinearLayoutManager) manager;
+        int position = linear.findFirstVisibleItemPosition();
+        if(position == RecyclerView.NO_POSITION || position < 0 || position >= currentRows.size())
+            return null;
+        View child = linear.findViewByPosition(position);
+        if(child == null)
+            return null;
+        return new ScrollAnchor(rowKey(currentRows.get(position)), child.getTop() - anchorRecycler.getPaddingTop());
     }
 
-    @Override
-    public void onDetachedFromRecyclerView(@NonNull RecyclerView recyclerView) {
-        if(parentScrollListener != null)
-            recyclerView.removeOnScrollListener(parentScrollListener);
-        parentScrollListener = null;
-        attachedRecycler = null;
-        pendingRows = null;
-        super.onDetachedFromRecyclerView(recyclerView);
+    private void restoreScrollAnchor(ScrollAnchor anchor) {
+        if(anchor == null || anchorRecycler == null || rows == null)
+            return;
+        for(int i = 0; i < rows.size(); i++) {
+            if(!rowKey(rows.get(i)).equals(anchor.key))
+                continue;
+            RecyclerView.LayoutManager manager = anchorRecycler.getLayoutManager();
+            if(manager instanceof LinearLayoutManager) {
+                final int position = i;
+                anchorRecycler.post(() -> {
+                    RecyclerView.LayoutManager postedManager = anchorRecycler.getLayoutManager();
+                    if(postedManager instanceof LinearLayoutManager)
+                        ((LinearLayoutManager) postedManager).scrollToPositionWithOffset(position, anchor.offset);
+                });
+            }
+            return;
+        }
     }
 
     private String rowKey(Object row) {
+        if(row instanceof HeroRow)
+            return "hero";
+        if(row instanceof HomeSection)
+            return "home:" + ((HomeSection) row).title;
+        if(row instanceof ActionStrip)
+            return "home:actions";
         if(row instanceof CategoryPanel)
             return "category";
         if(row instanceof String)
@@ -592,6 +1354,29 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private String rowContentKey(Object row) {
+        if(row instanceof HeroRow) {
+            HeroRow hero = (HeroRow) row;
+            StringBuilder builder = new StringBuilder("hero:").append(hero.titles.size());
+            for(Title title : hero.titles)
+                if(title != null)
+                    builder.append(':').append(title.getBaseMode()).append('/').append(title.getId());
+            return builder.toString();
+        }
+        if(row instanceof HomeSection) {
+            HomeSection section = (HomeSection) row;
+            StringBuilder builder = new StringBuilder(rowKey(row)).append(':').append(section.style).append(':').append(section.titles.size());
+            for(Title title : section.titles)
+                if(title != null) {
+                    builder.append(':').append(title.getBaseMode()).append('/').append(title.getId());
+                    if(section.style == STYLE_CONTINUE)
+                        builder.append('@')
+                                .append(title.getBookmarkEpisodeId()).append('/')
+                                .append(title.getBookmarkEpisodeIndex()).append('/')
+                                .append(title.getEpisodeCount()).append('/')
+                                .append(title.getBookmark());
+                }
+            return builder.toString();
+        }
         if(row instanceof Ranking) {
             Ranking<?> ranking = (Ranking<?>) row;
             StringBuilder builder = new StringBuilder(rowKey(row)).append(':').append(ranking.size());
@@ -608,6 +1393,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         return rowKey(row);
     }
 
+    private static class ScrollAnchor {
+        final String key;
+        final int offset;
+
+        ScrollAnchor(String key, int offset) {
+            this.key = key;
+            this.offset = offset;
+        }
+    }
+
     private class Fetcher extends LifecycleTask<Void, SectionBatch, Boolean> {
         private CustomHttpClient.RequestGroup requestGroup;
 
@@ -617,7 +1412,14 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
             preloadedThumbs.clear();
             preloadCount = 0;
-            updateRows(buildRows(dataSet, false));
+            pendingRows = null;
+            initialRowsShown = false;
+            List<Object> warmRows = buildRows(dataSet, false);
+            if(hasHero(warmRows)) {
+                initialRowsShown = true;
+                updateRows(warmRows);
+                scrollHeroToTop();
+            }
         }
 
         @Override
@@ -634,6 +1436,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             int submitted = 0;
             int loaded = 0;
             List<SectionResult> pendingResults = new ArrayList<>();
+            boolean firstScreenPublished = false;
 
             try {
                 for(int i = 0; i < sections.length; i++) {
@@ -651,9 +1454,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                         if(result.ranking.size() > 0)
                             loaded++;
                         pendingResults.add(result);
-                        if(pendingResults.size() >= SECTION_BATCH_SIZE) {
+                        int batchSize = firstScreenPublished ? SECTION_BATCH_SIZE : FIRST_SCREEN_BATCH_SIZE;
+                        if(pendingResults.size() >= batchSize) {
                             publishProgress(new SectionBatch(new ArrayList<>(pendingResults)));
                             pendingResults.clear();
+                            firstScreenPublished = true;
                         }
                     }
                 }
@@ -693,8 +1498,20 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
             if(loadedSections.size() == 0)
                 return;
-            preloadThumbnails(loadedSections);
+            if(!initialRowsShown) {
+                List<Object> firstRows = buildRows(dataSet, false);
+                if(!hasHero(firstRows))
+                    return;
+                initialRowsShown = true;
+                updateRows(firstRows);
+                scrollHeroToTop();
+                scheduleThumbnailPreload(loadedSections);
+                return;
+            }
+            if(baseMode == base_webtoon)
+                MainPageWebtoon.enhanceWebtoonClassification(dataSet);
             updateRows(buildRows(dataSet, false));
+            scheduleThumbnailPreload(loadedSections);
         }
 
         @Override
@@ -702,11 +1519,19 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             super.onPostExecute(hasAnyResult);
             if(fetcher == this)
                 fetcher = null;
-            if(!hasAnyResult)
+            if(!hasAnyResult) {
+                if(listener != null)
+                    listener.captchaCallback();
                 return;
+            }
             if(baseMode == base_webtoon)
                 MainPageWebtoon.enhanceWebtoonClassification(dataSet);
-            updateRows(buildRows(dataSet, false));
+            List<Object> finalRows = buildRows(dataSet, false);
+            boolean shouldShowTop = !initialRowsShown && hasHero(finalRows);
+            initialRowsShown = true;
+            updateRows(finalRows);
+            if(shouldShowTop)
+                scrollHeroToTop();
         }
 
         @Override
@@ -722,5 +1547,28 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 requestGroup.cancel();
             return super.cancel(mayInterruptIfRunning);
         }
+    }
+
+    private void scrollHeroToTop() {
+        if(anchorRecycler == null)
+            return;
+        anchorRecycler.post(() -> {
+            RecyclerView.LayoutManager manager = anchorRecycler.getLayoutManager();
+            if(manager instanceof LinearLayoutManager)
+                ((LinearLayoutManager) manager).scrollToPositionWithOffset(0, 0);
+            else if(manager != null)
+                manager.scrollToPosition(0);
+        });
+    }
+
+    private void scheduleThumbnailPreload(List<Ranking<?>> sections) {
+        if(anchorRecycler != null)
+            anchorRecycler.post(() -> preloadThumbnails(sections));
+        else
+            preloadThumbnails(sections);
+    }
+
+    private boolean hasHero(List<Object> candidateRows) {
+        return candidateRows != null && candidateRows.size() > 0;
     }
 }

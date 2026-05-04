@@ -4,11 +4,11 @@ package ml.melun.mangaview.mangaview;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.webkit.CookieManager;
-import android.webkit.WebSettings;
 
 import org.json.JSONObject;
 
 import java.io.InterruptedIOException;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -19,6 +19,11 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
 
 import okhttp3.CipherSuite;
 import okhttp3.Call;
@@ -66,11 +71,6 @@ public class CustomHttpClient {
             }
         };
         loadSavedCookies();
-        try {
-            this.agent = WebSettings.getDefaultUserAgent(this.context);
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
         if(android.os.Build.VERSION.SDK_INT < CODE_SCOPED_STORAGE) {
             // Necessary because our servers don't have the right cipher suites.
             // https://github.com/square/okhttp/issues/4053
@@ -82,7 +82,7 @@ public class CustomHttpClient {
                     .cipherSuites(cipherSuites.toArray(new CipherSuite[0]))
                     .build();
 
-            this.client = configureDispatcher(new OkHttpClient.Builder())
+            this.client = configureDispatcher(getUnsafeOkHttpClient())
                     .connectionSpecs(Arrays.asList(legacyTls, ConnectionSpec.CLEARTEXT))
                     .followRedirects(false)
                     .followSslRedirects(false)
@@ -90,7 +90,7 @@ public class CustomHttpClient {
                     .readTimeout(20, TimeUnit.SECONDS)
                     .build();
         }else {
-            this.client = configureDispatcher(new OkHttpClient.Builder())
+            this.client = configureDispatcher(getUnsafeOkHttpClient())
                     .followRedirects(false)
                     .followSslRedirects(false)
                     .connectTimeout(20, TimeUnit.SECONDS)
@@ -103,8 +103,6 @@ public class CustomHttpClient {
     }
 
     public synchronized void setCookie(String k, String v){
-        if(k == null || k.length() == 0 || v == null)
-            return;
         cookies.put(k, v);
         persistCookies();
     }
@@ -164,9 +162,7 @@ public class CustomHttpClient {
             JSONObject obj = new JSONObject(saved);
             for(java.util.Iterator<String> it = obj.keys(); it.hasNext();){
                 String k = it.next();
-                String v = obj.optString(k, null);
-                if(k != null && k.length() > 0 && v != null)
-                    cookies.put(k, v);
+                cookies.put(k, obj.getString(k));
             }
         } catch (Exception e) {
             e.printStackTrace();
@@ -176,11 +172,8 @@ public class CustomHttpClient {
     private synchronized void persistCookies(){
         try {
             JSONObject obj = new JSONObject();
-            for(String k : cookies.keySet()) {
-                String value = cookies.get(k);
-                if(k != null && value != null)
-                    obj.put(k, value);
-            }
+            for(String k : cookies.keySet())
+                obj.put(k, cookies.get(k));
             context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
                     .edit()
                     .putString("httpCookies", obj.toString())
@@ -240,9 +233,7 @@ public class CustomHttpClient {
                     .get();
             if(headers !=null)
                 for(String k : headers.keySet()){
-                    String value = headers.get(k);
-                    if(k != null && value != null)
-                        builder.addHeader(k, value);
+                    builder.addHeader(k, headers.get(k));
                 }
 
             Request request = builder.build();
@@ -537,12 +528,9 @@ public class CustomHttpClient {
 
         StringBuilder cbuilder = new StringBuilder();
         for(String key : cookie.keySet()){
-            String value = cookie.get(key);
-            if(key == null || value == null)
-                continue;
             cbuilder.append(key);
             cbuilder.append('=');
-            cbuilder.append(value);
+            cbuilder.append(cookie.get(key));
             cbuilder.append("; ");
         }
         if(cbuilder.length()>2)
@@ -617,13 +605,6 @@ public class CustomHttpClient {
     }
 
     public Response post(String url, RequestBody body, Map<String,String> headers, boolean localCookies){
-        if(headers == null)
-            headers = new HashMap<>();
-        else
-            headers = new HashMap<>(headers);
-        if(body == null)
-            body = new okhttp3.FormBody.Builder().build();
-        String requestUrl = resolveRequestUrl(url);
 
         if(localCookies)
             syncCookiesFromWebView(getBaseUrl(url));
@@ -649,13 +630,11 @@ public class CustomHttpClient {
         try {
             Request.Builder builder = new Request.Builder()
                     .addHeader("User-Agent", agent)
-                    .url(requestUrl)
+                    .url(url)
                     .post(body);
 
             for(String key: headers.keySet()){
-                String value = headers.get(key);
-                if(key != null && value != null)
-                    builder.addHeader(key, value);
+                builder.addHeader(key, headers.get(key));
             }
 
             Request request = builder.build();
@@ -673,15 +652,6 @@ public class CustomHttpClient {
         }
         return response;
 
-    }
-
-    private String resolveRequestUrl(String url) {
-        if(url == null || url.length() == 0)
-            return getUrl() + "/";
-        if(url.startsWith("http://") || url.startsWith("https://"))
-            return url;
-        String normalized = normalizePath(url);
-        return getBaseUrl(normalized) + normalized;
     }
 
     private static boolean isInterruptedRequest(Exception e) {
@@ -733,6 +703,48 @@ public class CustomHttpClient {
 //            isloaded = true;
 //        }
         return post(url, body, new HashMap<>());
+    }
+
+    /*
+    code source : https://gist.github.com/chalup/8706740
+     */
+
+    private static OkHttpClient.Builder getUnsafeOkHttpClient() {
+        try {
+            // Create a trust manager that does not validate certificate chains
+            final TrustManager[] trustAllCerts = new TrustManager[]{
+                    new X509TrustManager() {
+                        @Override
+                        public void checkClientTrusted(java.security.cert.X509Certificate[] chain,
+                                                       String authType){
+                        }
+
+                        @Override
+                        public void checkServerTrusted(java.security.cert.X509Certificate[] chain,
+                                                       String authType){
+                        }
+
+                        @Override
+                        public java.security.cert.X509Certificate[] getAcceptedIssuers() {
+                            return new X509Certificate[0];
+                        }
+                    }
+            };
+
+            // Install the all-trusting trust manager
+            final SSLContext sslContext = SSLContext.getInstance("SSL");
+            sslContext.init(null, trustAllCerts, new java.security.SecureRandom());
+            // Create an ssl socket factory with our all-trusting manager
+            final SSLSocketFactory sslSocketFactory = sslContext.getSocketFactory();
+
+            return new OkHttpClient.Builder()
+                    .sslSocketFactory(sslSocketFactory, (X509TrustManager) trustAllCerts[0])
+                    .hostnameVerifier((hostname, session) -> true);
+
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+
     }
 
     private static OkHttpClient.Builder configureDispatcher(OkHttpClient.Builder builder) {

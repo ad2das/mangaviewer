@@ -3,19 +3,18 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_height="200dp"
-    android:layout_width="150dp">
+    android:layout_width="150dp"
+    android:background="@color/appSurface">
 
     <androidx.cardview.widget.CardView
         android:foreground="?android:attr/selectableItemBackground"
         android:id="@+id/updatedCard"
         android:layout_height="match_parent"
-        android:layout_marginBottom="4dp"
-        android:layout_marginEnd="4dp"
-        android:layout_marginStart="4dp"
-        android:layout_marginTop="4dp"
+        android:layout_margin="@dimen/app_space_xs"
         android:layout_width="match_parent"
-        app:cardCornerRadius="4dp"
-        app:cardElevation="2dp"
+        app:cardBackgroundColor="@color/appCard"
+        app:cardCornerRadius="8dp"
+        app:cardElevation="0dp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
@@ -27,10 +26,10 @@
 
             <ImageView
                 android:id="@+id/main_new_thumb"
-                android:contentDescription="@string/title_cover"
                 android:layout_height="0dp"
-                android:layout_marginBottom="8dp"
+                android:layout_marginBottom="@dimen/app_space_sm"
                 android:layout_width="match_parent"
+                android:background="@drawable/app_cover_placeholder"
                 android:scaleType="centerCrop"
                 app:layout_constraintBottom_toTopOf="@+id/main_new_name"
                 app:layout_constraintEnd_toEndOf="parent"
@@ -39,17 +38,20 @@
                 app:srcCompat="@mipmap/ic_launcher" />
 
             <TextView
+                style="@style/AppText.Meta"
                 android:ellipsize="marquee"
                 android:focusable="true"
                 android:id="@+id/main_new_name"
                 android:layout_height="wrap_content"
-                android:layout_marginBottom="8dp"
-                android:layout_marginEnd="8dp"
-                android:layout_marginStart="8dp"
+                android:layout_marginBottom="@dimen/app_space_sm"
+                android:layout_marginEnd="@dimen/app_space_sm"
+                android:layout_marginStart="@dimen/app_space_sm"
                 android:layout_width="match_parent"
                 android:marqueeRepeatLimit="marquee_forever"
                 android:singleLine="true"
-                android:text="TextViewText"
+                android:text="작품명"
+                android:textColor="@color/appText"
+                android:textStyle="bold"
                 app:layout_constraintBottom_toBottomOf="parent"
                 app:layout_constraintEnd_toEndOf="parent"
                 app:layout_constraintStart_toStartOf="parent" />

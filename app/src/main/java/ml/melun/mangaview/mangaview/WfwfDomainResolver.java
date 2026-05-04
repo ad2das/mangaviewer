@@ -146,11 +146,8 @@ public class WfwfDomainResolver {
         try {
             Request.Builder builder = new Request.Builder().url(url).get();
             if(headers != null)
-                for(String key : headers.keySet()) {
-                    String value = headers.get(key);
-                    if(key != null && value != null)
-                        builder.addHeader(key, value);
-                }
+                for(String key : headers.keySet())
+                    builder.addHeader(key, headers.get(key));
             call = client.newCall(builder.build());
             if(requestGroup != null)
                 requestGroup.add(call);

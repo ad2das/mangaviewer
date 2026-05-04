@@ -38,8 +38,11 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.bumptech.glide.Glide;
+import com.bumptech.glide.load.DataSource;
+import com.bumptech.glide.load.engine.GlideException;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy;
+import com.bumptech.glide.request.RequestListener;
 import com.bumptech.glide.request.RequestOptions;
 import com.bumptech.glide.request.target.CustomTarget;
 import com.bumptech.glide.request.target.Target;
@@ -63,7 +66,11 @@ import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getGlideUrl;
 import static ml.melun.mangaview.Utils.getScreenSize;
 import static ml.melun.mangaview.Utils.hideSpinnerDropDown;
-import static ml.melun.mangaview.Utils.showErrorPopup;
+import static ml.melun.mangaview.Utils.queueOfflineDownload;
+import static ml.melun.mangaview.Utils.showCaptchaPopup;
+import static ml.melun.mangaview.Utils.showTokiCaptchaPopup;
+import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
+import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
 
 public class ViewerActivity2 extends AppCompatActivity {
     Boolean dark, toolbarshow=true, reverse, touch=true, stretch, leftRight;
@@ -71,7 +78,7 @@ public class ViewerActivity2 extends AppCompatActivity {
     String name;
     int id;
     Manga manga;
-    ImageButton next, prev, commentBtn;
+    ImageButton next, prev, commentBtn, saveBtn;
     androidx.appcompat.widget.Toolbar toolbar;
     Button pageBtn, nextPageBtn, prevPageBtn, touchToggleBtn;
     AppBarLayout appbar, appbarBottom;
@@ -79,6 +86,7 @@ public class ViewerActivity2 extends AppCompatActivity {
     int viewerBookmark = 0;
     List<String> imgs;
     List<Integer> types;
+    ProgressDialog pd;
     List<Manga> eps;
     int index;
     Title title;
@@ -90,6 +98,7 @@ public class ViewerActivity2 extends AppCompatActivity {
     AlertDialog.Builder alert;
     int swidth = 0;
     Intent intent;
+    boolean captchaChecked = false;
     ImageButton toolbar_toggleBtn;
     CustomSpinner spinner;
     CustomSpinnerAdapter spinnerAdapter;
@@ -99,10 +108,6 @@ public class ViewerActivity2 extends AppCompatActivity {
     boolean split = false;
     boolean dirty = false;
     TextView info;
-    TextView loading, loading2;
-    View frameContainer, frameContainer2;
-    int imageLoadGeneration = 0;
-    loadImages imageLoadTask;
 
     @Override
     protected void onResume() {
@@ -115,6 +120,15 @@ public class ViewerActivity2 extends AppCompatActivity {
     protected void onSaveInstanceState(Bundle outState) {
         Utils.saveMangaState(outState, manga);
         super.onSaveInstanceState(outState);
+    }
+
+    public int getStatusBarHeight() {
+        int result = 0;
+        int resourceId = getResources().getIdentifier("status_bar_height", "dimen", "android");
+        if (resourceId > 0) {
+            result = getResources().getDimensionPixelSize(resourceId);
+        }
+        return result;
     }
 
     @Override
@@ -142,27 +156,17 @@ public class ViewerActivity2 extends AppCompatActivity {
         if(p.getDoublepReverse()){
             frame = this.findViewById(R.id.viewer_image2);
             frame2 = this.findViewById(R.id.viewer_image);
-            loading = this.findViewById(R.id.viewer_image2_loading);
-            loading2 = this.findViewById(R.id.viewer_image_loading);
-            frameContainer = this.findViewById(R.id.viewer_image2_container);
-            frameContainer2 = this.findViewById(R.id.viewer_image_container);
         }else{
             frame = this.findViewById(R.id.viewer_image);
             frame2 = this.findViewById(R.id.viewer_image2);
-            loading = this.findViewById(R.id.viewer_image_loading);
-            loading2 = this.findViewById(R.id.viewer_image2_loading);
-            frameContainer = this.findViewById(R.id.viewer_image_container);
-            frameContainer2 = this.findViewById(R.id.viewer_image2_container);
         }
-        setFrameVisibility(View.VISIBLE);
-        setFrame2Visibility(View.GONE);
 
 
 
         nextEpisode.setVisibility(View.GONE);
 
         //initial padding setup
-        appbar.setPadding(0, 0,0,0);
+        appbar.setPadding(0, getStatusBarHeight(),0,0);
         getWindow().getDecorView().setBackgroundColor(Color.BLACK);
 
 //        Display display  = getWindowManager().getDefaultDisplay();
@@ -175,7 +179,7 @@ public class ViewerActivity2 extends AppCompatActivity {
 
         ViewCompat.setOnApplyWindowInsetsListener(getWindow().getDecorView(), (view, windowInsetsCompat) -> {
             //This is where you get DisplayCutoutCompat
-            int statusBarHeight = windowInsetsCompat.getStableInsetTop();
+            int statusBarHeight = getStatusBarHeight();
             int ci;
             if(windowInsetsCompat.getDisplayCutout() == null) ci = 0;
             else ci = windowInsetsCompat.getDisplayCutout().getSafeInsetTop();
@@ -185,9 +189,8 @@ public class ViewerActivity2 extends AppCompatActivity {
             view.setPadding(windowInsetsCompat.getStableInsetLeft(),0,windowInsetsCompat.getStableInsetRight(),windowInsetsCompat.getStableInsetBottom());
             return windowInsetsCompat;
         });
-        ViewCompat.requestApplyInsets(getWindow().getDecorView());
 
-        this.findViewById(R.id.backButton).setOnClickListener(view -> finish());
+        this.findViewById(R.id.backButton).setOnClickListener(view -> onBackPressed());
         spinnerAdapter = new CustomSpinnerAdapter(context);
         spinnerAdapter.setListener((m, i) -> {
             lockUi(true);
@@ -215,6 +218,8 @@ public class ViewerActivity2 extends AppCompatActivity {
         touchToggleBtn = this.findViewById(R.id.viewerBtn2);
         touchToggleBtn.setText("입력 제한");
         commentBtn = this.findViewById(R.id.commentButton);
+        saveBtn = this.findViewById(R.id.viewerSaveButton);
+        saveBtn.setOnClickListener(view -> saveCurrentEpisodeOffline());
         stretch = p.getStretch();
 
         //refreshBtn = this.findViewById(R.id.refreshButton);
@@ -257,10 +262,12 @@ public class ViewerActivity2 extends AppCompatActivity {
         if(!manga.isOnline()) {
             reloadManga();
             commentBtn.setVisibility(View.GONE);
+            saveBtn.setVisibility(View.GONE);
         }else{
             //if online
             //fetch imgs
-            refresh();
+            loadImages l = new loadImages();
+            l.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
         }
 
         nextPageBtn.setOnClickListener(v -> {
@@ -275,11 +282,11 @@ public class ViewerActivity2 extends AppCompatActivity {
         touchToggleBtn.setOnClickListener(v -> {
             if(touch) {
                 touch = false;
-                touchToggleBtn.setBackgroundResource(R.drawable.button_bg_on);
+                touchToggleBtn.setBackgroundResource(R.drawable.app_selected_button_bg);
             }
             else{
                 touch = true;
-                touchToggleBtn.setBackgroundResource(R.drawable.button_bg);
+                touchToggleBtn.setBackgroundResource(R.drawable.app_outline_button_bg);
             }
         });
 
@@ -295,7 +302,9 @@ public class ViewerActivity2 extends AppCompatActivity {
             alert.setPositiveButton("이동", (dialog, button) -> {
                 //이동 시
                 if (input.getText().length() > 0) {
-                    int page = parsePageInput(input.getText().toString(), imgs.size());
+                    int page = Integer.parseInt(input.getText().toString());
+                    if (page < 1) page = 1;
+                    if (page > imgs.size()) page = imgs.size();
                     viewerBookmark = page - 1;
                     refreshImage();
                 }
@@ -353,16 +362,6 @@ public class ViewerActivity2 extends AppCompatActivity {
 
     }
 
-    private int parsePageInput(String value, int maxPage) {
-        try {
-            int page = Integer.parseInt(value);
-            if (page < 1) return 1;
-            return Math.min(page, Math.max(1, maxPage));
-        } catch (NumberFormatException e) {
-            return Math.max(1, maxPage);
-        }
-    }
-
     void refreshPageControlButton(){
         if(p.getPageControlButtonOffset()!= -1){
             Button left = this.findViewById(R.id.leftButton);
@@ -403,14 +402,11 @@ public class ViewerActivity2 extends AppCompatActivity {
             //dont add page
             //only change type
             //refreshbtn.setVisibility(View.INVISIBLE);
-            if(!hasSplittableImageCache()) {
-                type = -1;
-                refreshImage();
-                return;
-            }
             type = 1;
-            if(reverse) frame.setImageBitmap(createSplitBitmap(imgCache, false));
-            else frame.setImageBitmap(createSplitBitmap(imgCache, true));
+            int width = imgCache.getWidth();
+            int height = imgCache.getHeight();
+            if(reverse) frame.setImageBitmap(Bitmap.createBitmap(imgCache, width/2, 0, width / 2, height));
+            else frame.setImageBitmap(Bitmap.createBitmap(imgCache, 0, 0, width / 2, height));
 
         }else{
             //is single page OR unidentified
@@ -418,13 +414,10 @@ public class ViewerActivity2 extends AppCompatActivity {
             //has to check if twopage
             viewerBookmark++;
             try {
-                int generation = nextImageLoadGeneration();
-                int targetBookmark = viewerBookmark;
                 Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark), manga.getBaseMode()) : imgs.get(viewerBookmark);
 
                 //placeholder
                 frame.setImageResource(R.drawable.placeholder);
-                showImageLoading();
                 Glide.with(context)
                         .asBitmap()
                         .apply(viewerImageOptions())
@@ -438,38 +431,31 @@ public class ViewerActivity2 extends AppCompatActivity {
                             @Override
                             public void onResourceReady(Bitmap bitmap,
                                                         Transition<? super Bitmap> transition) {
-                                if(!isActiveImageLoad(generation, targetBookmark))
-                                    return;
                                 //refreshbtn.setVisibility(View.INVISIBLE);
-                                bitmap = decodeForDisplay(bitmap);
+                                bitmap = d.decode(bitmap, swidth);
                                 int width = bitmap.getWidth();
                                 int height = bitmap.getHeight();
                                 if(width>height){
                                     imgCache = bitmap;
                                     type=0;
-                                    if(reverse) frame.setImageBitmap(createSplitBitmap(imgCache, true));
-                                    else frame.setImageBitmap(createSplitBitmap(imgCache, false));
+                                    if(reverse) frame.setImageBitmap(Bitmap.createBitmap(imgCache,0,0,width/2,height));
+                                    else frame.setImageBitmap(Bitmap.createBitmap(imgCache,width/2,0,width/2,height));
                                 }else{
                                     type=-1;
                                     frame.setImageBitmap(bitmap);
                                 }
-                                hideImageLoading();
                                 preload();
                             }
                             @Override
                             public void onLoadFailed(@Nullable Drawable errorDrawable) {
-                                if(!isActiveImageLoad(generation, targetBookmark))
-                                    return;
                                 viewerBookmark = Math.max(0, viewerBookmark - 1);
                                 frame.setImageResource(R.drawable.placeholder);
-                                hideImageLoading();
                                 updatePageIndex();
                             }
                         });
 
             }catch (Exception e){
                 e.printStackTrace();
-                hideImageLoading();
                 viewerBookmark--;
             }
         }
@@ -488,17 +474,14 @@ public class ViewerActivity2 extends AppCompatActivity {
             //첫페이지가 아닐 경우
             if(viewerBookmark>0){
                 viewerBookmark--;
-                setFrameVisibility(View.GONE);
-                setFrame2Visibility(View.VISIBLE);
+                frame.setVisibility(View.GONE);
+                frame2.setVisibility(View.VISIBLE);
                 frame.setImageResource(R.drawable.placeholder);
                 frame2.setImageResource(R.drawable.placeholder);
                 //오른쪽 부터 로드
                 try {
-                    int generation = nextImageLoadGeneration();
-                    int targetBookmark = viewerBookmark;
                     Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark), manga.getBaseMode()) : imgs.get(viewerBookmark);
                     //placeholder
-                    showImageLoading(loading2);
                     Glide.with(context)
                             .asBitmap()
                             .apply(viewerImageOptions())
@@ -511,9 +494,7 @@ public class ViewerActivity2 extends AppCompatActivity {
 
                                 @Override
                                 public void onResourceReady(Bitmap bitmap, Transition<? super Bitmap> transition) {
-                                    if(!isActiveImageLoad(generation, targetBookmark))
-                                        return;
-                                    bitmap = decodeForDisplay(bitmap);
+                                    bitmap = d.decode(bitmap, swidth);
                                     int width = bitmap.getWidth();
                                     int height = bitmap.getHeight();
                                     frame2.setImageBitmap(bitmap);
@@ -524,7 +505,6 @@ public class ViewerActivity2 extends AppCompatActivity {
                                         if(viewerBookmark > 0){
                                             //이전 페이지 로드하고 landscape 인지 확인, portrait일 경우에만 보여주기
                                             Object image2 = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark-1), manga.getBaseMode()) : imgs.get(viewerBookmark-1);
-                                            showImageLoading();
                                             Glide.with(context)
                                                     .asBitmap()
                                                     .apply(viewerImageOptions())
@@ -532,51 +512,36 @@ public class ViewerActivity2 extends AppCompatActivity {
                                                     .into(new CustomTarget<Bitmap>() {
                                                         @Override
                                                         public void onResourceReady(@NonNull Bitmap bitmap1, @Nullable Transition<? super Bitmap> transition) {
-                                                            if(!isActiveImageLoad(generation, targetBookmark))
-                                                                return;
-                                                            bitmap1 = decodeForDisplay(bitmap1);
+                                                            bitmap1 = d.decode(bitmap1, swidth);
                                                             int width = bitmap1.getWidth();
                                                             int height = bitmap1.getHeight();
                                                             if(width<height){
                                                                 //second is portrait
                                                                 type = 2;
-                                                                setFrameVisibility(View.VISIBLE);
+                                                                frame.setVisibility(View.VISIBLE);
                                                                 frame.setImageBitmap(bitmap1);
-                                                                hideImageLoading();
                                                                 viewerBookmark--;
                                                                 updatePageIndex();
                                                             }
-                                                            hideImageLoading();
                                                         }
 
                                                         @Override
                                                         public void onLoadCleared(@Nullable Drawable placeholder) {
 
                                                         }
-
-                                                        @Override
-                                                        public void onLoadFailed(@Nullable Drawable errorDrawable) {
-                                                            if(isActiveImageLoad(generation, targetBookmark))
-                                                                hideImageLoading();
-                                                        }
                                                     });
                                         }
                                     }
-                                    hideImageLoading(loading2);
                                     preload();
                                 }
                                 @Override
                                 public void onLoadFailed(@Nullable Drawable errorDrawable) {
-                                    if(!isActiveImageLoad(generation, targetBookmark))
-                                        return;
-                                    frame2.setImageResource(R.drawable.placeholder);
-                                    hideImageLoading(loading2);
+                                    frame.setImageResource(R.drawable.placeholder);
                                 }
                             });
                 }catch(Exception e) {
                     e.printStackTrace();
-                    hideImageLoading();
-                    showErrorPopup(context, "이미지를 불러오지 못했습니다.", e, true);
+                    Utils.showCaptchaPopup(manga.getUrl(), context, e, p);
                 }
                 //일단 왼쪽거 냅두다가, 오른쪽이 landscape일 경우, GONE 처리
             }
@@ -586,27 +551,21 @@ public class ViewerActivity2 extends AppCompatActivity {
         } else if(type==1){
             //is two page, current pos: left
             //refreshbtn.setVisibility(View.INVISIBLE);
-            if(!hasSplittableImageCache()) {
-                type = -1;
-                refreshImage();
-                return;
-            }
             type = 0;
-            if(reverse) frame.setImageBitmap(createSplitBitmap(imgCache, true));
-            else frame.setImageBitmap(createSplitBitmap(imgCache, false));
+            int width = imgCache.getWidth();
+            int height = imgCache.getHeight();
+            if(reverse) frame.setImageBitmap(Bitmap.createBitmap(imgCache, 0, 0, width / 2, height));
+            else frame.setImageBitmap(Bitmap.createBitmap(imgCache, width/2, 0, width / 2, height));
         }else{
             //is single page OR unidentified
             //decrease page
             //has to check if twopage
             viewerBookmark--;
             try {
-                int generation = nextImageLoadGeneration();
-                int targetBookmark = viewerBookmark;
                 Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark), manga.getBaseMode()) : imgs.get(viewerBookmark);
 
                 //placeholder
                 frame.setImageResource(R.drawable.placeholder);
-                showImageLoading();
                 Glide.with(context)
                         .asBitmap()
                         .apply(viewerImageOptions())
@@ -614,22 +573,19 @@ public class ViewerActivity2 extends AppCompatActivity {
                         .into(new CustomTarget<Bitmap>() {
                             @Override
                             public void onResourceReady(Bitmap bitmap, Transition<? super Bitmap> transition) {
-                                if(!isActiveImageLoad(generation, targetBookmark))
-                                    return;
-                                bitmap = decodeForDisplay(bitmap);
+                                bitmap = d.decode(bitmap, swidth);
                                 //refreshbtn.setVisibility(View.INVISIBLE);
                                 int width = bitmap.getWidth();
                                 int height = bitmap.getHeight();
                                 if(width>height){
                                     imgCache = bitmap;
                                     type=1;
-                                    if(reverse) frame.setImageBitmap(createSplitBitmap(imgCache, false));
-                                    else frame.setImageBitmap(createSplitBitmap(imgCache, true));
+                                    if(reverse) frame.setImageBitmap(Bitmap.createBitmap(imgCache, width/2, 0, width / 2, height));
+                                    else frame.setImageBitmap(Bitmap.createBitmap(imgCache,0,0,width/2,height));
                                 }else{
                                     type=-1;
                                     frame.setImageBitmap(bitmap);
                                 }
-                                hideImageLoading();
                             }
 
                             @Override
@@ -639,17 +595,13 @@ public class ViewerActivity2 extends AppCompatActivity {
 
                             @Override
                             public void onLoadFailed(@Nullable Drawable errorDrawable) {
-                                if(!isActiveImageLoad(generation, targetBookmark))
-                                    return;
                                 viewerBookmark = Math.min(imgs.size() - 1, viewerBookmark + 1);
                                 frame.setImageResource(R.drawable.placeholder);
-                                hideImageLoading();
                                 updatePageIndex();
                             }
                         });
             }catch (Exception e){
                 e.printStackTrace();
-                hideImageLoading();
                 viewerBookmark++;
             }
         }
@@ -664,13 +616,10 @@ public class ViewerActivity2 extends AppCompatActivity {
 
 
     void refreshImage(){
-        int generation = nextImageLoadGeneration();
-        int targetBookmark = viewerBookmark;
-        setFrameVisibility(View.VISIBLE);
-        setFrame2Visibility(View.GONE);
+        frame.setVisibility(View.VISIBLE);
+        frame2.setVisibility(View.GONE);
         frame.setImageResource(R.drawable.placeholder);
         if(split) frame2.setImageResource(R.drawable.placeholder);
-        showImageLoading();
         //refreshbtn.setVisibility(View.VISIBLE);
         try {
             Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark), manga.getBaseMode()) : imgs.get(viewerBookmark);
@@ -688,25 +637,23 @@ public class ViewerActivity2 extends AppCompatActivity {
 
                         @Override
                         public void onResourceReady(Bitmap bitmap, Transition<? super Bitmap> transition) {
-                            if(!isActiveImageLoad(generation, targetBookmark))
-                                return;
                             //refreshbtn.setVisibility(View.INVISIBLE);
-                            bitmap = decodeForDisplay(bitmap);
+                            bitmap = d.decode(bitmap, swidth);
                             int width = bitmap.getWidth();
                             int height = bitmap.getHeight();
                             if (width > height) {
                                 if(split){
                                     //split일경우 자를 필요 없음, frame2만 없애주기
                                     type = 1;
-                                    setFrame2Visibility(View.GONE);
+                                    frame2.setVisibility(View.GONE);
                                     frame.setImageBitmap(bitmap);
                                 } else {
                                     imgCache = bitmap;
                                     type = 0;
                                     if (reverse) {
-                                        frame.setImageBitmap(createSplitBitmap(imgCache, true));
+                                        frame.setImageBitmap(Bitmap.createBitmap(imgCache, 0, 0, width / 2, height));
                                     } else {
-                                        frame.setImageBitmap(createSplitBitmap(imgCache, false));
+                                        frame.setImageBitmap(Bitmap.createBitmap(imgCache, width / 2, 0, width / 2, height));
                                     }
                                 }
 
@@ -714,13 +661,12 @@ public class ViewerActivity2 extends AppCompatActivity {
                                 type = -1;
                                 frame.setImageBitmap(bitmap);
                                 if(split){
-                                    setFrame2Visibility(View.GONE);
+                                    frame2.setVisibility(View.GONE);
                                     type = 1;
                                     if(viewerBookmark+1 < imgs.size()) {
                                         //다음 페이지 로드하고 landscape 인지 확인, portrait일 경우에만 보여주기
                                         Object image2 = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark + 1), manga.getBaseMode()) : imgs.get(viewerBookmark + 1);
                                         frame2.setImageResource(R.drawable.placeholder);
-                                        showImageLoading(loading2);
                                         Glide.with(context)
                                                 .asBitmap()
                                                 .apply(viewerImageOptions())
@@ -728,65 +674,57 @@ public class ViewerActivity2 extends AppCompatActivity {
                                                 .into(new CustomTarget<Bitmap>() {
                                                     @Override
                                                     public void onResourceReady(@NonNull Bitmap bitmap1, @Nullable Transition<? super Bitmap> transition) {
-                                                        if(!isActiveImageLoad(generation, targetBookmark))
-                                                            return;
-                                                        bitmap1 = decodeForDisplay(bitmap1);
+                                                        bitmap1 = d.decode(bitmap1, swidth);
                                                         int width = bitmap1.getWidth();
                                                         int height = bitmap1.getHeight();
                                                         if (width < height) {
-                                                            setFrame2Visibility(View.VISIBLE);
+                                                            frame2.setVisibility(View.VISIBLE);
                                                             type = 2;
                                                             frame2.setImageBitmap(bitmap1);
                                                         }
-                                                        hideImageLoading(loading2);
                                                     }
 
                                                     @Override
                                                     public void onLoadCleared(@Nullable Drawable placeholder) {
 
                                                     }
-
-                                                    @Override
-                                                    public void onLoadFailed(@Nullable Drawable errorDrawable) {
-                                                        if(isActiveImageLoad(generation, targetBookmark))
-                                                            hideImageLoading(loading2);
-                                                    }
                                                 });
                                     }
                                 }
                             }
-                            hideImageLoading();
                             preload();
                         }
                         @Override
                         public void onLoadFailed(@Nullable Drawable errorDrawable) {
-                            if(!isActiveImageLoad(generation, targetBookmark))
-                                return;
                             frame.setImageResource(R.drawable.placeholder);
-                            hideImageLoading();
                         }
                     });
         }catch(Exception e) {
             e.printStackTrace();
-            hideImageLoading();
-            showErrorPopup(context, "이미지를 불러오지 못했습니다.", e, true);
+            Utils.showCaptchaPopup(manga.getUrl(), context, e, p);
         }
     }
 
     void preload(){
-        preloadImageAt(viewerBookmark + 1);
-        preloadImageAt(viewerBookmark - 1);
-    }
+        if(viewerBookmark<imgs.size()-1) {
+            Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark+1), manga.getBaseMode()) : imgs.get(viewerBookmark+1);
+            Glide.with(context)
+                    .asBitmap()
+                    .apply(viewerImageOptions())
+                    .load(image)
+                    .addListener(new RequestListener<Bitmap>() {
+                        @Override
+                        public boolean onLoadFailed(@Nullable GlideException e, Object model, Target<Bitmap> target, boolean isFirstResource) {
+                            return false;
+                        }
 
-    private void preloadImageAt(int index) {
-        if(index < 0 || imgs == null || index >= imgs.size())
-            return;
-        Object image = manga.isOnline() ? getGlideUrl(imgs.get(index), manga.getBaseMode()) : imgs.get(index);
-        Glide.with(context)
-                .asBitmap()
-                .apply(viewerImageOptions())
-                .load(image)
-                .preload();
+                        @Override
+                        public boolean onResourceReady(Bitmap resource, Object model, Target<Bitmap> target, DataSource dataSource, boolean isFirstResource) {
+                            return false;
+                        }
+                    })
+                    .preload();
+        }
     }
     private RequestOptions viewerImageOptions() {
         return new RequestOptions()
@@ -795,7 +733,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                 .override(Math.max(swidth, 1), Target.SIZE_ORIGINAL);
     }
     void updatePageIndex(){
-        pageBtn.setText(getString(R.string.viewer_page_counter, viewerBookmark + 1, imgs.size()));
+        pageBtn.setText(viewerBookmark+1+"/"+imgs.size());
         boolean lastPage = viewerBookmark == imgs.size()-1;
         boolean firstPage = viewerBookmark == 0;
         if(toolbarshow && !lastPage)
@@ -852,48 +790,46 @@ public class ViewerActivity2 extends AppCompatActivity {
     }
 
     private class loadImages extends LifecycleTask<Void,String,Integer> {
-        final Manga target;
-        ProgressDialog dialog;
-
-        loadImages(Manga target) {
-            this.target = target;
-        }
-
         protected void onProgressUpdate(String... values) {
-            if(dialog != null)
-                dialog.setMessage(values[0]);
+            pd.setMessage(values[0]);
         }
         protected void onPreExecute() {
             super.onPreExecute();
-            if(dark) dialog = new ProgressDialog(context, R.style.darkDialog);
-            else dialog = new ProgressDialog(context);
-            dialog.setMessage("로드중");
-            dialog.setCancelable(false);
-            dialog.setOnKeyListener((dialogInterface, keyCode, event) -> {
+            if(dark) pd = new ProgressDialog(context, R.style.darkDialog);
+            else pd = new ProgressDialog(context);
+            pd.setMessage("로드중");
+            pd.setCancelable(false);
+            pd.setOnKeyListener((dialog, keyCode, event) -> {
                 if(keyCode == KeyEvent.KEYCODE_BACK){
                     loadImages.super.cancel(true);
-                    dismissLoadingDialog();
+                    pd.dismiss();
                     finish();
                 }
                 return true;
             });
-            dialog.show();
+            pd.show();
         }
 
         protected Integer doInBackground(Void... params) {
-            target.setListener(msg -> publishProgress(msg));
-            return target.fetch(httpClient);
+            manga.setListener(msg -> publishProgress(msg));
+            int res = ensureEpisodeListLoaded(manga);
+            if(res == LOAD_CAPTCHA)
+                return res;
+            res = manga.fetch(httpClient);
+            if(title == null)
+                title = manga.getTitle();
+            return res;
         }
 
         @Override
         protected void onPostExecute(Integer res) {
             super.onPostExecute(res);
-            dismissLoadingDialog();
-            if(!isActiveLoadTask(this))
+
+            if(res == LOAD_CAPTCHA) {
+                //캡차 처리 팝업
+                showTokiCaptchaPopup(context, p);
                 return;
-            imageLoadTask = null;
-            if(title == null)
-                title = target.getTitle();
+            }
 
             reloadManga();
 
@@ -914,92 +850,62 @@ public class ViewerActivity2 extends AppCompatActivity {
             }
 
 
-        }
-
-        @Override
-        protected void onCancelled(Integer res) {
-            super.onCancelled(res);
-            dismissLoadingDialog();
-            if(imageLoadTask == this)
-                imageLoadTask = null;
-        }
-
-        private void dismissLoadingDialog() {
-            if (dialog != null && dialog.isShowing())
-                dialog.dismiss();
+            if (pd.isShowing()) {
+                pd.dismiss();
+            }
         }
     }
 
-    private int nextImageLoadGeneration() {
-        return ++imageLoadGeneration;
+    private int ensureEpisodeListLoaded(Manga target) {
+        if(target == null || !target.isOnline())
+            return 0;
+        Title currentTitle = title != null ? title : target.getTitle();
+        if(currentTitle == null)
+            return 0;
+        if(currentTitle.getEps() == null || currentTitle.getEps().size() <= 1) {
+            int result = currentTitle.fetchEps(httpClient);
+            if(result == LOAD_CAPTCHA)
+                return result;
+        }
+        target.setTitle(currentTitle);
+        target.setTitleId(currentTitle.getId());
+        if(currentTitle.getEps() != null)
+            for(Manga episode : currentTitle.getEps()) {
+                if(episode != null) {
+                    episode.setTitle(currentTitle);
+                    episode.setTitleId(currentTitle.getId());
+                }
+            }
+        title = currentTitle;
+        return 0;
     }
 
-    private boolean isActiveImageLoad(int generation, int targetBookmark) {
-        return !isFinishing()
-                && generation == imageLoadGeneration
-                && viewerBookmark == targetBookmark;
+    @Override
+    public void onBackPressed() {
+        if(openEpisodeListIfRequested())
+            return;
+        super.onBackPressed();
     }
 
-    private void showImageLoading() {
-        showImageLoading(loading);
-    }
-
-    private void hideImageLoading() {
-        hideImageLoading(loading);
-    }
-
-    private void showImageLoading(TextView target) {
-        if(target != null)
-            target.setVisibility(View.VISIBLE);
-    }
-
-    private void hideImageLoading(TextView target) {
-        if(target != null)
-            target.setVisibility(View.GONE);
-    }
-
-    private void setFrameVisibility(int visibility) {
-        if(frameContainer != null)
-            frameContainer.setVisibility(visibility);
-        if(frame != null)
-            frame.setVisibility(visibility);
-    }
-
-    private void setFrame2Visibility(int visibility) {
-        if(frameContainer2 != null)
-            frameContainer2.setVisibility(visibility);
-        if(frame2 != null)
-            frame2.setVisibility(visibility);
-    }
-
-    private boolean hasSplittableImageCache() {
-        return imgCache != null && !imgCache.isRecycled() && imgCache.getWidth() >= 2 && imgCache.getHeight() > 0;
-    }
-
-    private Bitmap decodeForDisplay(Bitmap bitmap) {
-        Bitmap glideBitmap = bitmap;
-        Bitmap displayBitmap = d.decode(bitmap, swidth);
-        return retainIfGlideOwned(displayBitmap, glideBitmap);
-    }
-
-    private Bitmap retainIfGlideOwned(Bitmap displayBitmap, Bitmap glideBitmap) {
-        if(displayBitmap == null || displayBitmap.isRecycled() || displayBitmap != glideBitmap)
-            return displayBitmap;
+    private boolean openEpisodeListIfRequested() {
+        if(getIntent() == null || !getIntent().getBooleanExtra("returnToEpisodes", false))
+            return false;
+        Title targetTitle = title != null ? title : (manga == null ? null : manga.getTitle());
+        if(targetTitle == null)
+            return false;
         try {
-            return displayBitmap.copy(Bitmap.Config.ARGB_8888, false);
-        } catch (OutOfMemoryError e) {
-            return displayBitmap;
+            if((targetTitle.getEps() == null || targetTitle.getEps().size() == 0) && manga != null && manga.getEps() != null)
+                targetTitle.setEps(manga.getEps());
+            Intent episodeIntent = new Intent(context, EpisodeActivity.class);
+            episodeIntent.putExtra("title", new Gson().toJson(targetTitle));
+            episodeIntent.putExtra("online", true);
+            startActivity(episodeIntent);
+            finish();
+            return true;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
         }
-    }
-
-    private Bitmap createSplitBitmap(Bitmap bitmap, boolean leftSide) {
-        int width = bitmap.getWidth();
-        int height = bitmap.getHeight();
-        int leftWidth = width / 2;
-        int rightWidth = width - leftWidth;
-        if(leftSide)
-            return Bitmap.createBitmap(bitmap, 0, 0, leftWidth, height);
-        return Bitmap.createBitmap(bitmap, leftWidth, 0, rightWidth, height);
     }
 
     public void reloadManga(){
@@ -1007,7 +913,7 @@ public class ViewerActivity2 extends AppCompatActivity {
             lockUi(false);
             imgs = manga.getImgs(context);
             if(imgs == null || imgs.size()==0) {
-                showErrorPopup(context, "이미지를 불러오지 못했습니다.", null, true);
+                showCaptchaPopup(manga.getUrl(), context, p);
                 return;
             }
             d = new Decoder(manga.getSeed(), manga.getId());
@@ -1050,20 +956,9 @@ public class ViewerActivity2 extends AppCompatActivity {
     }
 
     public void refresh(){
-        if(imageLoadTask != null)
-            imageLoadTask.cancel(true);
-        imageLoadTask = new loadImages(manga);
-        imageLoadTask.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
-    }
-
-    private boolean isActiveLoadTask(loadImages task) {
-        return imageLoadTask == task
-                && task != null
-                && task.target != null
-                && manga != null
-                && task.target.getId() == manga.getId()
-                && task.target.getBaseMode() == manga.getBaseMode()
-                && !isFinishing();
+        captchaChecked = false;
+        loadImages l = new loadImages();
+        l.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
     }
 
     public void refreshToolbar(){
@@ -1104,7 +999,15 @@ public class ViewerActivity2 extends AppCompatActivity {
             prev.setColorFilter(null);
         }
 
-        pageBtn.setText(getString(R.string.viewer_page_counter, viewerBookmark + 1, imgs.size()));
+        pageBtn.setText(viewerBookmark+1+"/"+imgs.size());
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (resultCode == RESULT_CAPTCHA) {
+            refresh();
+        }
     }
 
 //    @Override
@@ -1125,6 +1028,7 @@ public class ViewerActivity2 extends AppCompatActivity {
     void lockUi(Boolean lock){
         toolbar_toggleBtn.setEnabled(!lock);
         commentBtn.setEnabled(!lock);
+        saveBtn.setEnabled(!lock);
         next.setEnabled(!lock);
         prev.setEnabled(!lock);
         pageBtn.setEnabled(!lock);
@@ -1134,11 +1038,15 @@ public class ViewerActivity2 extends AppCompatActivity {
         spinner.setEnabled(!lock);
     }
 
-    @Override
-    protected void onDestroy() {
-        if(imageLoadTask != null)
-            imageLoadTask.cancel(true);
-        super.onDestroy();
+    private void saveCurrentEpisodeOffline() {
+        if(manga == null)
+            return;
+        if(title == null)
+            title = manga.getTitle();
+        if(title != null)
+            manga.setTitle(title);
+        queueOfflineDownload(context, title, manga);
     }
+
 
 }

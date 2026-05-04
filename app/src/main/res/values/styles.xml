@@ -14,7 +14,7 @@
         <item name="android:windowLayoutInDisplayCutoutMode" tools:targetApi="p">
             shortEdges
         </item>
-        <item name="android:navigationBarColor">@color/colorPrimary</item>
+        <item name="android:navigationBarColor" tools:targetApi="lollipop">@color/colorPrimary</item>
     </style>
 
     <style name="AppTheme.NoActionBar" parent="AppTheme">
@@ -25,9 +25,7 @@
     <style name="AppTheme.Viewer" parent="AppTheme.NoActionBar">
         <item name="android:windowActionBarOverlay">true</item>
         <item name="windowActionBarOverlay">true</item>
-        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
-        <item name="android:statusBarColor">@android:color/transparent</item>
-        <item name="android:windowTranslucentStatus">true</item>
+        <item name="android:windowTranslucentStatus" tools:targetApi="kitkat">true</item>
     </style>
 
     <style name="AppThemeDarkNoTitle" parent="AppThemeDark">
@@ -61,5 +59,80 @@
     <style name="AppTheme.AppBarOverlay" parent="ThemeOverlay.AppCompat.Dark.ActionBar" />
 
     <style name="AppTheme.PopupOverlay" parent="ThemeOverlay.AppCompat.Light" />
+
+    <style name="AppTabText" parent="TextAppearance.Design.Tab">
+        <item name="android:textAllCaps">false</item>
+        <item name="textAllCaps">false</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+    </style>
+
+    <style name="AppToolbarTitle" parent="TextAppearance.Widget.AppCompat.Toolbar.Title">
+        <item name="android:textSize">21sp</item>
+        <item name="android:textColor">@color/appText</item>
+        <item name="android:includeFontPadding">false</item>
+    </style>
+
+    <style name="AppBottomNavText" parent="TextAppearance.AppCompat.Caption">
+        <item name="android:textSize">10sp</item>
+        <item name="android:includeFontPadding">false</item>
+    </style>
+
+    <style name="AppBottomNavText.Active" parent="AppBottomNavText">
+        <item name="android:textSize">10sp</item>
+    </style>
+
+    <style name="AppText">
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:includeFontPadding">false</item>
+        <item name="android:letterSpacing">0</item>
+        <item name="android:textColor">@color/appText</item>
+    </style>
+
+    <style name="AppText.Title" parent="AppText">
+        <item name="android:textSize">@dimen/app_text_title</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:lineSpacingExtra">2dp</item>
+    </style>
+
+    <style name="AppText.Body" parent="AppText">
+        <item name="android:textSize">@dimen/app_text_body</item>
+        <item name="android:lineSpacingExtra">3dp</item>
+    </style>
+
+    <style name="AppText.Meta" parent="AppText">
+        <item name="android:textSize">@dimen/app_text_meta</item>
+        <item name="android:textColor">@color/appTextSecondary</item>
+        <item name="android:lineSpacingExtra">2dp</item>
+    </style>
+
+    <style name="AppText.Caption" parent="AppText">
+        <item name="android:textSize">@dimen/app_text_caption</item>
+        <item name="android:textColor">@color/appTextSecondary</item>
+    </style>
+
+    <style name="AppText.Header" parent="AppText">
+        <item name="android:textSize">@dimen/app_text_header</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:lineSpacingExtra">2dp</item>
+    </style>
+
+    <style name="AppText.Action" parent="AppText">
+        <item name="android:textSize">@dimen/app_text_body</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textAllCaps">false</item>
+    </style>
+
+    <style name="AppText.CardTitle" parent="AppText">
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:lineSpacingExtra">2dp</item>
+    </style>
+
+    <style name="AppText.CardMeta" parent="AppText">
+        <item name="android:textSize">12sp</item>
+        <item name="android:textColor">@color/appTextSecondary</item>
+        <item name="android:lineSpacingExtra">1dp</item>
+    </style>
 
 </resources>

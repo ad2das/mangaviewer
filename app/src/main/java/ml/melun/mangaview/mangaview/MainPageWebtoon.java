@@ -25,10 +25,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
-import okhttp3.Response;
-
 import static ml.melun.mangaview.MainApplication.appContext;
-import static ml.melun.mangaview.MainApplication.httpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
@@ -56,9 +53,6 @@ public class MainPageWebtoon {
     private static final LinkedHashMap<String, List<String>> inferredTagCache = new LinkedHashMap<>();
     private static boolean inferredTagCacheLoaded = false;
     private static int inferredTagCacheWrites = 0;
-    private static final String[] CLASSIFICATION_DB_URLS = {
-            "https://raw.githubusercontent.com/ad2das/mangaviewer/main/webtoon-classification.json"
-    };
     private static final String CLASSIFICATION_DB_CACHE_KEY = "webtoonClassificationDbV2";
     private static final String CLASSIFICATION_DB_FETCHED_AT_KEY = "webtoonClassificationDbFetchedAt";
     private static final long CLASSIFICATION_DB_TTL_MS = 6 * 60 * 60 * 1000L;
@@ -67,7 +61,6 @@ public class MainPageWebtoon {
     private static final Map<Integer, DbTitle> classificationTitleDb = new LinkedHashMap<>();
     private static boolean classificationDbLoaded = false;
     private static long classificationDbLoadedAt = 0;
-    private static boolean classificationDbRefreshStarted = false;
 
     public static final String[][] WEBTOON_FILTER_GROUPS = buildWebtoonFilterGroups();
     public static final String[][] COMIC_FILTER_GROUPS = buildComicFilterGroups();
@@ -159,14 +152,22 @@ public class MainPageWebtoon {
             sections.add(section(statusLabel, "최신", webtoonDayPath(status, "recent", "n")));
             sections.add(section(statusLabel, "신작", webtoonDayPath(status, "new", "n")));
             sections.add(section(statusLabel, "인기순", webtoonOrderPath(status, "f")));
+            sections.add(section(statusLabel, "드라마", webtoonGenrePath(status, "드라마", "n")));
+            sections.add(section(statusLabel, "판타지", webtoonGenrePath(status, "판타지", "n")));
+            sections.add(section(statusLabel, "액션", webtoonGenrePath(status, "액션", "n")));
+            sections.add(section(statusLabel, "로맨스", webtoonGenrePath(status, "로맨스", "n")));
+            sections.add(section(statusLabel, "무협", webtoonGenrePath(status, "무협", "n")));
         }
         return sections.toArray(new String[0][]);
     }
 
     private static String[][] buildComicSections() {
         ArrayList<String[]> sections = new ArrayList<>();
+        sections.add(section("정렬", "인기순", "/cm?type1=complete&type2=recent&o=f"));
         for(int i = 0; i < COMIC_DAY_LABELS.length; i++)
             sections.add(section("연재일", COMIC_DAY_LABELS[i], comicDayPath(COMIC_DAY_VALUES[i], "n")));
+        for(String genre : COMIC_GENRES)
+            sections.add(section("장르별", genre, comicGenrePath(genre, "n")));
         for(int i = 0; i < ALPHABET_LABELS.length; i++)
             sections.add(section("작품별", ALPHABET_LABELS[i], comicAlphabetPath(ALPHABET_VALUES[i], "n")));
         return sections.toArray(new String[0][]);
@@ -285,8 +286,6 @@ public class MainPageWebtoon {
                 Element link = e.selectFirst("a[href*=toon=]");
                 if(link == null) continue;
                 String href = link.attr("href");
-                if(!matchesBaseModeHref(href, baseMode))
-                    continue;
                 int id = getQueryInt(href, "toon");
                 if(id <= 0) continue;
 
@@ -327,17 +326,6 @@ public class MainPageWebtoon {
             }
         }
         return titles;
-    }
-
-    private static boolean matchesBaseModeHref(String href, int baseMode) {
-        if(href == null)
-            return false;
-        String lower = href.toLowerCase(Locale.ROOT);
-        if(baseMode == base_comic)
-            return lower.startsWith("/cl") || lower.contains("/cl?");
-        if(baseMode == base_webtoon)
-            return lower.startsWith("/list") || lower.contains("/list?");
-        return true;
     }
 
     public static void applyInferredWebtoonTags(Title title) {
@@ -496,11 +484,23 @@ public class MainPageWebtoon {
                 return;
             cached = p.getSharedPref().getString(CLASSIFICATION_DB_CACHE_KEY, "");
             long fetchedAt = p.getSharedPref().getLong(CLASSIFICATION_DB_FETCHED_AT_KEY, 0);
+            if(cached.length() == 0 || now - fetchedAt > CLASSIFICATION_DB_TTL_MS) {
+                String fetched = fetchClassificationDb();
+                if(fetched.length() > 0) {
+                    cached = fetched;
+                    p.getSharedPref().edit()
+                            .putString(CLASSIFICATION_DB_CACHE_KEY, cached)
+                            .putLong(CLASSIFICATION_DB_FETCHED_AT_KEY, now)
+                            .apply();
+                } else if(cached.length() == 0) {
+                    p.getSharedPref().edit()
+                            .putLong(CLASSIFICATION_DB_FETCHED_AT_KEY, now)
+                            .apply();
+                }
+            }
             parseClassificationDb(cached);
             if(classificationDb.size() == 0)
                 parseClassificationDb(readBundledClassificationDb());
-            if(cached.length() == 0 || now - fetchedAt > CLASSIFICATION_DB_TTL_MS)
-                refreshClassificationDbAsync(now);
         } catch (Exception e) {
             classificationDb.clear();
             classificationNameDb.clear();
@@ -508,62 +508,10 @@ public class MainPageWebtoon {
             parseClassificationDb(cached);
             if(classificationDb.size() == 0)
                 parseClassificationDb(readBundledClassificationDb());
-            refreshClassificationDbAsync(now);
         }
-    }
-
-    private static synchronized void refreshClassificationDbAsync(long requestedAt) {
-        if(classificationDbRefreshStarted)
-            return;
-        classificationDbRefreshStarted = true;
-        Thread thread = new Thread(() -> {
-            try {
-                String fetched = fetchClassificationDb();
-                synchronized (MainPageWebtoon.class) {
-                    if(fetched.length() > 0) {
-                        if(p != null)
-                            p.getSharedPref().edit()
-                                    .putString(CLASSIFICATION_DB_CACHE_KEY, fetched)
-                                    .putLong(CLASSIFICATION_DB_FETCHED_AT_KEY, requestedAt)
-                                    .apply();
-                        parseClassificationDb(fetched);
-                        classificationDbLoadedAt = System.currentTimeMillis();
-                    } else if(p != null) {
-                        p.getSharedPref().edit()
-                                .putLong(CLASSIFICATION_DB_FETCHED_AT_KEY, requestedAt)
-                                .apply();
-                    }
-                    classificationDbRefreshStarted = false;
-                }
-            } catch (Exception ignored) {
-                synchronized (MainPageWebtoon.class) {
-                    classificationDbRefreshStarted = false;
-                }
-            }
-        }, "ClassificationDbRefresh");
-        thread.setDaemon(true);
-        thread.start();
     }
 
     private static String fetchClassificationDb() {
-        if(httpClient == null)
-            return "";
-        for(String url : CLASSIFICATION_DB_URLS) {
-            Response response = null;
-            try {
-                response = httpClient.get(url, null);
-                if(response == null)
-                    continue;
-                if(response.code() >= 400) {
-                    response.close();
-                    continue;
-                }
-                return CustomHttpClient.readBody(response);
-            } catch (Exception e) {
-                if(response != null)
-                    response.close();
-            }
-        }
         return "";
     }
 

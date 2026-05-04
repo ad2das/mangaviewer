@@ -2,100 +2,164 @@
 <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
-    android:layout_height="match_parent"
     android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/appSurface"
     app:layout_behavior="@string/appbar_scrolling_view_behavior"
     tools:context=".activity.MainActivity">
 
-    <com.google.android.material.floatingactionbutton.FloatingActionButton
-        android:id="@+id/advSearchBtn"
-        android:contentDescription="@string/advanced_search"
-        android:layout_height="wrap_content"
-        android:layout_margin="14dp"
-        android:visibility="gone"
-        android:layout_width="wrap_content"
-        app:layout_constraintBottom_toBottomOf="parent"
+    <EditText
+        android:id="@+id/searchBox"
+        style="@style/AppText.Body"
+        android:layout_width="0dp"
+        android:layout_height="50dp"
+        android:layout_marginStart="20dp"
+        android:layout_marginTop="8dp"
+        android:layout_marginEnd="20dp"
+        android:background="@drawable/app_home_search_bg"
+        android:contentDescription="검색어"
+        android:drawableStart="@drawable/ic_search"
+        android:drawablePadding="10dp"
+        android:hint="서재와 전체 작품 검색"
+        android:inputType="textPersonName"
+        android:paddingStart="@dimen/app_space_lg"
+        android:paddingEnd="@dimen/app_space_lg"
+        android:singleLine="true"
+        android:textColor="@color/appText"
+        android:textColorHint="@color/appTextSecondary"
+        android:visibility="visible"
+        app:layout_constraintEnd_toStartOf="@+id/searchSubmitButton"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <TextView
+        android:id="@+id/searchSubmitButton"
+        style="@style/AppText.Action"
+        android:layout_width="72dp"
+        android:layout_height="50dp"
+        android:layout_marginTop="8dp"
+        android:layout_marginEnd="20dp"
+        android:background="@drawable/app_accent_button_bg"
+        android:gravity="center"
+        android:text="검색"
+        android:textColor="@android:color/white"
+        app:layout_constraintBottom_toBottomOf="@+id/searchBox"
         app:layout_constraintEnd_toEndOf="parent"
-        app:srcCompat="@drawable/ic_adv_search" />
-
-
+        app:layout_constraintTop_toTopOf="@+id/searchBox" />
 
     <androidx.appcompat.widget.LinearLayoutCompat
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:paddingEnd="8dp"
-        android:paddingStart="0dp"
-        android:visibility="visible"
-        android:orientation="horizontal"
         android:id="@+id/searchOptionPanel"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/app_space_lg"
+        android:paddingEnd="@dimen/app_space_lg"
+        android:visibility="gone"
         app:layout_constraintTop_toBottomOf="@+id/searchBox">
 
         <androidx.appcompat.widget.AppCompatSpinner
-            android:layout_marginTop="8dp"
-            android:layout_marginStart="8dp"
+            android:id="@+id/searchBaseMode"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:id="@+id/searchBaseMode"
-            android:entries="@array/baseOption"/>
+            android:entries="@array/baseOption" />
 
         <androidx.appcompat.widget.AppCompatSpinner
-            android:layout_marginTop="8dp"
-            android:layout_marginStart="8dp"
-            android:entries="@array/searchModes"
             android:id="@+id/searchMode"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_width="wrap_content" />
-
+            android:entries="@array/searchModes" />
 
     </androidx.appcompat.widget.LinearLayoutCompat>
 
-
-
-    <TextView
-        android:id="@+id/noResult"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="8dp"
-        android:layout_marginEnd="8dp"
-        android:layout_marginStart="8dp"
-        android:layout_marginTop="8dp"
-        android:layout_width="wrap_content"
-        android:text="@string/search_no_results"
-        app:layout_constraintBottom_toBottomOf="parent"
+    <com.google.android.material.tabs.TabLayout
+        android:id="@+id/libraryTab"
+        android:layout_width="match_parent"
+        android:layout_height="50dp"
+        android:background="@color/appSurface"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="@+id/searchSwipe" />
+        app:tabGravity="fill"
+        app:tabIndicatorColor="@color/appAccent"
+        app:tabIndicatorFullWidth="false"
+        app:tabMode="fixed"
+        app:tabSelectedTextColor="@color/appAccent"
+        app:tabTextAppearance="@style/AppTabText"
+        app:tabTextColor="@color/appTextSecondary"
+        app:layout_constraintTop_toBottomOf="@+id/searchOptionPanel" />
 
-    <EditText
-        android:ems="10"
-        android:hint="@string/search_query"
-        android:id="@+id/searchBox"
-        android:importantForAutofill="no"
-        android:inputType="textPersonName"
-        android:layout_height="wrap_content"
-        android:layout_marginEnd="8dp"
-        android:layout_marginStart="8dp"
-        android:layout_marginTop="8dp"
-        android:layout_width="0dp"
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/libraryMeta"
+        android:layout_width="match_parent"
+        android:layout_height="42dp"
+        android:paddingStart="20dp"
+        android:paddingEnd="20dp"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent"
-        tools:text="검색어" />
+        app:layout_constraintTop_toBottomOf="@+id/libraryTab">
+
+        <TextView
+            android:id="@+id/libraryCount"
+            style="@style/AppText.Meta"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent"
+            tools:text="42개 작품" />
+
+        <TextView
+            android:id="@+id/librarySort"
+            style="@style/AppText.Meta"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="최근순"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
 
     <com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout
         android:id="@+id/searchSwipe"
-        android:layout_marginTop="8dp"
-        android:layout_height="0dp"
         android:layout_width="match_parent"
+        android:layout_height="0dp"
         app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/searchOptionPanel"
+        app:layout_constraintTop_toBottomOf="@+id/libraryMeta"
         app:srl_direction="bottom">
 
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/searchResult"
-            android:layout_height="match_parent"
             android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:paddingTop="@dimen/app_space_sm"
+            android:paddingBottom="@dimen/app_space_lg"
             android:scrollbars="vertical" />
 
     </com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout>
+
+    <TextView
+        android:id="@+id/noResult"
+        style="@style/AppText.Body"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="최근 읽거나 보관한 작품이 없습니다"
+        android:textColor="@color/appTextSecondary"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="@+id/searchSwipe"
+        app:layout_constraintEnd_toEndOf="@+id/searchSwipe"
+        app:layout_constraintStart_toStartOf="@+id/searchSwipe"
+        app:layout_constraintTop_toTopOf="@+id/searchSwipe" />
+
+    <com.google.android.material.floatingactionbutton.FloatingActionButton
+        android:id="@+id/advSearchBtn"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="@dimen/app_space_lg"
+        android:elevation="8dp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="@+id/searchSwipe"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:srcCompat="@drawable/ic_adv_search" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

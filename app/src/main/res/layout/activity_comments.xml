@@ -6,6 +6,7 @@
     android:id="@+id/main_content"
     android:layout_height="match_parent"
     android:layout_width="match_parent"
+    android:background="@color/appSurface"
     tools:context=".activity.CommentsActivity">
 
     <com.google.android.material.appbar.AppBarLayout
@@ -13,31 +14,35 @@
         android:layout_height="wrap_content"
         android:layout_width="match_parent"
         android:paddingTop="@dimen/appbar_padding_top"
-        android:theme="@style/AppTheme.AppBarOverlay"
+        android:background="@color/appSurface"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent">
 
         <androidx.appcompat.widget.Toolbar
-            android:background="?attr/colorPrimary"
+            android:background="@color/appSurface"
             android:id="@+id/toolbar"
-            android:layout_height="40dp"
+            android:layout_height="56dp"
             android:layout_width="match_parent"
+            android:elevation="0dp"
             app:layout_scrollFlags="scroll|enterAlways"
             app:popupTheme="@style/AppTheme.PopupOverlay"
-            app:title="@string/app_name">
+            app:title="@string/app_name"
+            app:titleTextColor="@color/appText">
 
         </androidx.appcompat.widget.Toolbar>
 
     </com.google.android.material.appbar.AppBarLayout>
 
     <com.google.android.material.tabs.TabLayout
-        android:background="?attr/colorPrimary"
+        android:background="@color/appSurface"
         android:id="@+id/tab_layout"
         android:layout_height="wrap_content"
         android:layout_width="match_parent"
         android:minHeight="30dp"
-        android:theme="@style/ThemeOverlay.AppCompat.Dark.ActionBar"
+        app:tabIndicatorColor="@color/appAccent"
+        app:tabSelectedTextColor="@color/appText"
+        app:tabTextColor="@color/appTextSecondary"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/appbar" />
@@ -59,6 +64,8 @@
         android:id="@+id/comment_input"
         android:layout_height="wrap_content"
         android:layout_width="match_parent"
+        android:background="@color/appCard"
+        android:elevation="4dp"
         android:paddingTop="8dp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
@@ -66,9 +73,9 @@
 
         <EditText
             android:ems="10"
-            android:hint="@string/comment_input_hint"
+            android:background="@drawable/app_search_box_bg"
+            android:hint="댓글을 입력해 주세요"
             android:id="@+id/comment_editText"
-            android:importantForAutofill="no"
             android:inputType="textMultiLine"
             android:layout_height="wrap_content"
             android:layout_marginBottom="8dp"
@@ -76,21 +83,26 @@
             android:layout_marginStart="8dp"
             android:layout_width="0dp"
             android:maxLines="3"
+            android:minHeight="44dp"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:textColor="@color/appText"
+            android:textColorHint="@color/appTextSecondary"
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintEnd_toStartOf="@+id/commentButton"
             app:layout_constraintStart_toStartOf="parent" />
 
         <ImageButton
-            android:background="?android:attr/selectableItemBackground"
-            android:contentDescription="@string/comment_send"
+            android:background="@drawable/app_toolbar_icon_bg"
             android:id="@+id/commentButton"
-            android:layout_height="wrap_content"
+            android:layout_height="44dp"
             android:layout_marginBottom="8dp"
             android:layout_marginEnd="8dp"
             android:layout_marginTop="8dp"
-            android:layout_width="wrap_content"
+            android:layout_width="44dp"
             android:padding="4dp"
             android:src="@android:drawable/ic_menu_send"
+            app:tint="@color/appAccent"
             app:layout_constraintBottom_toBottomOf="@+id/comment_editText"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintTop_toTopOf="@+id/comment_editText" />

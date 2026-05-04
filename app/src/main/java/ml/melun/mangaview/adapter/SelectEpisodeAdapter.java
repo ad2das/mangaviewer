@@ -10,10 +10,11 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
 
+import androidx.cardview.widget.CardView;
+
 import org.json.JSONArray;
 
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -39,9 +40,9 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
     public SelectEpisodeAdapter(Context context, List<Manga> list) {
         this.mInflater = LayoutInflater.from(context);
         mainContext = context;
-        this.data = list == null ? new ArrayList<>() : list;
+        this.data = list;
         outValue = new TypedValue();
-        selected = new boolean[this.data.size()];
+        selected = new boolean[list.size()];
         Arrays.fill(selected,Boolean.FALSE);
         dark = p.getDarkTheme();
         mainContext.getTheme().resolveAttribute(android.R.attr.selectableItemBackground, outValue, true);
@@ -70,13 +71,13 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
             h.date.setText(m.getDate());
             if (selected[position]) {
                 if(dark) h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.selectedDark));
-                else h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.selected));
+                else h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.appAccentLight));
             } else {
-                h.itemView.setBackgroundColor(Color.TRANSPARENT);
+                h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, dark ? R.color.colorDarkItem : R.color.appCard));
             }
 
             if(position == rs || position == re){
-                h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.rangeSelected));
+                h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.appAccent));
             }
         }catch (Exception e){
             e.printStackTrace();
@@ -86,12 +87,10 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
     // total number of rows
     @Override
     public int getItemCount() {
-        return data == null ? 0 : data.size();
+        return data.size();
     }
 
     public void select(int position){
-        if(!isValidPosition(position))
-            return;
         if(single) {
             selected[position] = !selected[position];
             notifyItemChanged(position);
@@ -102,12 +101,8 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
             }
             //selected pos = range start
             else if(position == rs){
-                int oldStart = rs;
-                int oldEnd = re;
                 rs = -1;
                 re = -1;
-                notifyIfValid(oldStart);
-                notifyIfValid(oldEnd);
             }
             //range end
             else if(rs != -1 && re == -1){
@@ -125,9 +120,9 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
                 rs = -1;
                 re = -1;
             }
-            notifyIfValid(rs);
-            notifyIfValid(re);
-            notifyIfValid(position);
+            notifySelectionChanged(rs);
+            notifySelectionChanged(re);
+            notifyItemChanged(position);
         }
     }
 
@@ -137,28 +132,36 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
         int tmpe = re;
         rs = -1;
         re = -1;
-        notifyIfValid(tmps);
-        notifyIfValid(tmpe);
+        notifySelectionChanged(tmps);
+        notifySelectionChanged(tmpe);
     }
 
     // stores and recycles views as they are scrolled off screen
     public class ViewHolder extends RecyclerView.ViewHolder{
         TextView episode, date;
+        CardView thumbCard;
+        View action, newBadge;
         ViewHolder(View itemView) {
             super(itemView);
             episode = itemView.findViewById(R.id.episode);
             date = itemView.findViewById(R.id.date);
+            thumbCard = itemView.findViewById(R.id.episodeThumbCard);
+            action = itemView.findViewById(R.id.episodeAction);
+            newBadge = itemView.findViewById(R.id.episodeNew);
+            thumbCard.setVisibility(View.GONE);
+            action.setVisibility(View.GONE);
+            newBadge.setVisibility(View.GONE);
             if(dark){
                 date.setTextColor(Color.WHITE);
                 episode.setTextColor(Color.WHITE);
             }
             else{
-                date.setTextColor(Color.BLACK);
-                episode.setTextColor(Color.BLACK);
+                date.setTextColor(ContextCompat.getColor(mainContext, R.color.appTextSecondary));
+                episode.setTextColor(ContextCompat.getColor(mainContext, R.color.appText));
             }
             itemView.setOnClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || mClickListener == null || !isValidPosition(position))
+                if(position == RecyclerView.NO_POSITION || mClickListener == null)
                     return;
                 mClickListener.onItemClick(v, position);
             });
@@ -176,16 +179,12 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
         return tmp;
     }
 
+    private void notifySelectionChanged(int position) {
+        if(position >= 0 && position < getItemCount())
+            notifyItemChanged(position);
+    }
+
     public interface ItemClickListener {
         void onItemClick(View view, int position);
-    }
-
-    private boolean isValidPosition(int position) {
-        return data != null && selected != null && position >= 0 && position < data.size() && position < selected.length;
-    }
-
-    private void notifyIfValid(int position) {
-        if(isValidPosition(position))
-            notifyItemChanged(position);
     }
 }

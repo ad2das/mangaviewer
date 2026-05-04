@@ -2,6 +2,7 @@
 <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
+    android:background="@color/appSurface"
     android:layout_height="match_parent"
     android:layout_width="match_parent"
     tools:context=".activity.EpisodeActivity">
@@ -11,15 +12,18 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         android:id="@+id/episode_toolbar"
+        android:background="@color/appSurface"
+        android:elevation="0dp"
         android:layout_height="wrap_content"
         android:layout_width="match_parent"
-        android:theme="@style/AppTheme.AppBarOverlay">
+        app:elevation="0dp">
 
         <ml.melun.mangaview.ui.MarqueeToolbar
-            android:background="?attr/colorPrimary"
+            android:background="@color/appSurface"
             android:id="@+id/toolbar"
             android:layout_height="?attr/actionBarSize"
             android:layout_width="match_parent"
+            app:titleTextColor="@color/appText"
             app:popupTheme="@style/AppTheme.PopupOverlay" />
 
     </com.google.android.material.appbar.AppBarLayout>
@@ -42,6 +46,9 @@
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/EpisodeList"
+        android:clipToPadding="false"
+        android:paddingTop="8dp"
+        android:paddingBottom="14dp"
         android:layout_height="0dp"
         android:layout_width="match_parent"
         android:scrollbars="vertical"
@@ -64,31 +71,31 @@
         <com.google.android.material.floatingactionbutton.FloatingActionButton
             android:layout_marginBottom="4dp"
             android:clickable="true"
-            android:contentDescription="@string/episode_scroll_top"
-            android:focusable="true"
             android:id="@+id/upfab"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            app:backgroundTint="@color/appAccent"
+            app:tint="@android:color/white"
             app:fabSize="mini"
             app:srcCompat="@drawable/up_arrow" />
         <com.google.android.material.floatingactionbutton.FloatingActionButton
             android:layout_marginBottom="4dp"
             android:clickable="true"
-            android:contentDescription="@string/episode_resume"
-            android:focusable="true"
             android:id="@+id/resumefab"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            app:backgroundTint="@color/appAccent"
+            app:tint="@android:color/white"
             app:fabSize="mini"
             app:srcCompat="@drawable/play" />
         <com.google.android.material.floatingactionbutton.FloatingActionButton
             android:layout_marginBottom="4dp"
             android:id="@+id/downfab"
             android:clickable="true"
-            android:contentDescription="@string/episode_scroll_bottom"
-            android:focusable="true"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            app:backgroundTint="@color/appAccent"
+            app:tint="@android:color/white"
             app:fabSize="mini"
             app:srcCompat="@drawable/down_arrow" />
 

@@ -35,8 +35,8 @@
         <item>ㅌ</item>
         <item>ㅍ</item>
         <item>ㅎ</item>
-        <item>0–9</item>
-        <item>A–Z</item>
+        <item>0-9</item>
+        <item>A-Z</item>
     </string-array>
     <string-array name="tag_release">
         <item>미분류</item>

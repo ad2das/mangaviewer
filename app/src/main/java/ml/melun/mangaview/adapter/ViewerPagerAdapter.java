@@ -3,6 +3,7 @@ package ml.melun.mangaview.adapter;
 import android.content.Context;
 import android.os.Parcelable;
 
+import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentManager;
 import androidx.fragment.app.FragmentStatePagerAdapter;
 
@@ -19,28 +20,30 @@ import static ml.melun.mangaview.MainApplication.p;
 
 public class ViewerPagerAdapter extends FragmentStatePagerAdapter
 {
+    List<Fragment> fragments;
     FragmentManager fm;
     int width;
     Context context;
     PageInterface itf;
-    List<String> imgs;
-    int seed;
-    int mangaId;
     public ViewerPagerAdapter(FragmentManager fm, int width, Context context, PageInterface i) {
         super(fm);
         this.fm = fm;
         this.width = width;
         this.context = context;
         this.itf = i;
-        imgs = new ArrayList<>();
+        fragments = new ArrayList<>();
     }
 
     public void setManga(Manga m){
+        fragments.clear();
         List<String> source = m.getImgs(context);
-        imgs = source == null ? new ArrayList<>() : new ArrayList<>(source);
+        List<String> imgs = source == null ? new ArrayList<>() : new ArrayList<>(source);
         if (p.getPageRtl()) Collections.reverse(imgs);
-        seed = m.getSeed();
-        mangaId = m.getId();
+        for(int i = 0; i<imgs.size(); i++){
+            String s = imgs.get(i);
+
+            fragments.add(ViewerPageFragment.create(s, new Decoder(m.getSeed(), m.getId()), width, context, () -> itf.onPageClick()));
+        }
         notifyDataSetChanged();
     }
     @Override
@@ -48,14 +51,14 @@ public class ViewerPagerAdapter extends FragmentStatePagerAdapter
         return POSITION_NONE;
     }
     @Override
-    public androidx.fragment.app.Fragment getItem(int position)
+    public Fragment getItem(int position)
     {
-        return ViewerPageFragment.create(imgs.get(position), new Decoder(seed, mangaId), width, context, () -> itf.onPageClick());
+        return fragments.get(position);
     }
     @Override
     public int getCount()
     {
-        return imgs.size();
+        return fragments.size();
     }
 
     @Override

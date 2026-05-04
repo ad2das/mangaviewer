@@ -27,19 +27,19 @@ public class MarqueeToolbar extends Toolbar {
 
     @Override
     public void setTitle(CharSequence title) {
+        super.setTitle(title);
         if (!reflected) {
             reflected = reflectTitle();
         }
-        super.setTitle(title);
         selectTitle();
     }
 
     @Override
     public void setTitle(int resId) {
+        super.setTitle(resId);
         if (!reflected) {
             reflected = reflectTitle();
         }
-        super.setTitle(resId);
         selectTitle();
     }
 
@@ -49,17 +49,12 @@ public class MarqueeToolbar extends Toolbar {
             Field field = Toolbar.class.getDeclaredField("mTitleTextView");
             field.setAccessible(true);
             title = (TextView) field.get(this);
+            if(title == null)
+                return false;
             title.setEllipsize(TextUtils.TruncateAt.MARQUEE);
             title.setMarqueeRepeatLimit(-1);
             return true;
-        } catch (NoSuchFieldException e) {
-            e.printStackTrace();
-            return false;
-        } catch (IllegalAccessException e) {
-            e.printStackTrace();
-            return false;
-        } catch (NullPointerException e) {
-            e.printStackTrace();
+        } catch (NoSuchFieldException | IllegalAccessException e) {
             return false;
         }
     }

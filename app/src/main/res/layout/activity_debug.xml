@@ -16,7 +16,7 @@
         app:layout_constraintTop_toTopOf="parent">
 
         <LinearLayout
-            android:layout_height="wrap_content"
+            android:layout_height="match_parent"
             android:layout_width="match_parent"
             android:orientation="vertical">
 
@@ -98,9 +98,7 @@
                 android:textIsSelectable="true" />
 
             <EditText
-                android:hint="@string/debug_input"
                 android:id="@+id/debug_edit"
-                android:importantForAutofill="no"
                 android:inputType="text|textMultiLine"
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"

@@ -4,6 +4,7 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_height="match_parent"
     android:layout_width="match_parent"
+    android:background="@color/appSurface"
     tools:context=".activity.SettingsActivity">
 
     <ScrollView
@@ -17,33 +18,37 @@
         <LinearLayout
             android:layout_height="wrap_content"
             android:layout_width="match_parent"
-            android:orientation="vertical">
+            android:background="@color/appSurface"
+            android:orientation="vertical"
+            android:paddingTop="@dimen/app_space_sm"
+            android:paddingBottom="@dimen/app_space_lg">
 
             <TextView
-                android:background="@android:color/black"
+                style="@style/AppText.Meta"
+                android:background="@color/appSurface"
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"
-                android:paddingBottom="5dp"
-                android:paddingEnd="10dp"
-                android:paddingStart="10dp"
-                android:paddingTop="5dp"
+                android:paddingBottom="@dimen/app_space_sm"
+                android:paddingLeft="@dimen/app_space_lg"
+                android:paddingTop="@dimen/app_space_lg"
                 android:text="기본 설정"
-                android:textColor="@android:color/white" />
+                android:textColor="@color/appAccent"
+                android:textStyle="bold" />
 
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
                 android:id="@+id/setting_url"
-                android:layout_height="70dp"
+                android:layout_height="64dp"
                 android:layout_width="match_parent">
 
                 <TextView
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="8dp"
-                    android:layout_marginEnd="8dp"
-                    android:layout_marginStart="8dp"
-                    android:layout_marginTop="8dp"
+                    style="@style/AppText.Body"
+                    android:layout_marginBottom="@dimen/app_space_sm"
+                    android:layout_marginEnd="@dimen/app_space_lg"
+                    android:layout_marginStart="@dimen/app_space_lg"
+                    android:layout_marginTop="@dimen/app_space_sm"
                     android:layout_width="0dp"
                     android:text="URL 설정"
                     app:layout_constraintBottom_toBottomOf="parent"
@@ -56,9 +61,8 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
                 android:id="@+id/setting_dir"
-                android:layout_height="70dp"
+                android:layout_height="56dp"
                 android:layout_width="match_parent">
 
                 <TextView
@@ -79,9 +83,8 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
                 android:id="@+id/setting_startTab"
-                android:layout_height="70dp"
+                android:layout_height="56dp"
                 android:layout_width="match_parent">
 
                 <TextView
@@ -115,9 +118,8 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
                 android:id="@+id/setting_dark"
-                android:layout_height="70dp"
+                android:layout_height="56dp"
                 android:layout_width="match_parent">
 
                 <TextView
@@ -134,7 +136,7 @@
                     app:layout_constraintStart_toStartOf="parent"
                     app:layout_constraintTop_toTopOf="parent" />
 
-                <androidx.appcompat.widget.SwitchCompat
+                <Switch
                     android:id="@+id/setting_dark_switch"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="8dp"
@@ -152,8 +154,7 @@
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"
                 android:paddingBottom="5dp"
-                android:paddingEnd="10dp"
-                android:paddingStart="10dp"
+                android:paddingLeft="10dp"
                 android:paddingTop="5dp"
                 android:text="뷰어 설정"
                 android:textColor="@android:color/white" />
@@ -163,8 +164,7 @@
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"
                 android:paddingBottom="5dp"
-                android:paddingEnd="10dp"
-                android:paddingStart="10dp"
+                android:paddingLeft="10dp"
                 android:paddingTop="5dp"
                 android:text="공통"
                 android:textColor="@android:color/white" />
@@ -172,9 +172,8 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
                 android:id="@+id/setting_viewer"
-                android:layout_height="70dp"
+                android:layout_height="56dp"
                 android:layout_width="match_parent">
 
                 <TextView
@@ -207,9 +206,8 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
                 android:id="@+id/setting_key"
-                android:layout_height="70dp"
+                android:layout_height="56dp"
                 android:layout_width="match_parent">
 
                 <TextView
@@ -233,9 +231,8 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
                 android:id="@+id/setting_reverse"
-                android:layout_height="70dp"
+                android:layout_height="56dp"
                 android:layout_width="match_parent">
 
                 <TextView
@@ -252,7 +249,7 @@
                     app:layout_constraintStart_toStartOf="parent"
                     app:layout_constraintTop_toTopOf="parent" />
 
-                <androidx.appcompat.widget.SwitchCompat
+                <Switch
                     android:id="@+id/setting_reverse_switch"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="8dp"
@@ -270,8 +267,7 @@
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"
                 android:paddingBottom="5dp"
-                android:paddingEnd="10dp"
-                android:paddingStart="10dp"
+                android:paddingLeft="10dp"
                 android:paddingTop="5dp"
                 android:text="터치 뷰어"
                 android:textColor="@android:color/white" />
@@ -279,9 +275,8 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
                 android:id="@+id/setting_buttonLayout"
-                android:layout_height="70dp"
+                android:layout_height="56dp"
                 android:layout_width="match_parent">
 
                 <TextView
@@ -302,9 +297,8 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
                 android:id="@+id/setting_double"
-                android:layout_height="70dp"
+                android:layout_height="56dp"
                 android:layout_width="match_parent">
 
                 <TextView
@@ -320,7 +314,7 @@
                     app:layout_constraintStart_toStartOf="parent"
                     app:layout_constraintTop_toTopOf="parent" />
 
-                <androidx.appcompat.widget.SwitchCompat
+                <Switch
                     android:id="@+id/setting_double_switch"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="8dp"
@@ -336,9 +330,8 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
                 android:id="@+id/setting_double_leftright"
-                android:layout_height="70dp"
+                android:layout_height="56dp"
                 android:layout_width="match_parent">
 
                 <TextView
@@ -354,7 +347,7 @@
                     app:layout_constraintStart_toStartOf="parent"
                     app:layout_constraintTop_toTopOf="parent" />
 
-                <androidx.appcompat.widget.SwitchCompat
+                <Switch
                     android:id="@+id/setting_double_leftright_switch"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="8dp"
@@ -370,9 +363,8 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
                 android:id="@+id/setting_stretch"
-                android:layout_height="70dp"
+                android:layout_height="56dp"
                 android:layout_width="match_parent">
 
                 <TextView
@@ -388,7 +380,7 @@
                     app:layout_constraintStart_toStartOf="parent"
                     app:layout_constraintTop_toTopOf="parent" />
 
-                <androidx.appcompat.widget.SwitchCompat
+                <Switch
                     android:id="@+id/setting_stretch_switch"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="8dp"
@@ -406,8 +398,7 @@
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"
                 android:paddingBottom="5dp"
-                android:paddingEnd="10dp"
-                android:paddingStart="10dp"
+                android:paddingLeft="10dp"
                 android:paddingTop="5dp"
                 android:text="컷툰 뷰어"
                 android:textColor="@android:color/white" />
@@ -415,10 +406,9 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:id="@+id/setting_pageRtl"
                 android:layout_width="match_parent"
-                android:layout_height="70dp"
+                android:layout_height="56dp"
                 android:background="?android:attr/selectableItemBackground"
-                android:clickable="true"
-                android:focusable="true">
+                android:clickable="true">
 
                 <TextView
                     android:id="@+id/textView10"
@@ -434,7 +424,7 @@
                     app:layout_constraintStart_toStartOf="parent"
                     app:layout_constraintTop_toTopOf="parent" />
 
-                <androidx.appcompat.widget.SwitchCompat
+                <Switch
                     android:id="@+id/setting_pageRtl_switch"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
@@ -452,8 +442,7 @@
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"
                 android:paddingBottom="5dp"
-                android:paddingEnd="10dp"
-                android:paddingStart="10dp"
+                android:paddingLeft="10dp"
                 android:paddingTop="5dp"
                 android:text="데이터 관리"
                 android:textColor="@android:color/white" />
@@ -461,9 +450,8 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
                 android:id="@+id/setting_dataExport"
-                android:layout_height="70dp"
+                android:layout_height="56dp"
                 android:layout_width="match_parent">
 
                 <TextView
@@ -484,9 +472,8 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
                 android:id="@+id/setting_dataImport"
-                android:layout_height="70dp"
+                android:layout_height="56dp"
                 android:layout_width="match_parent">
 
                 <TextView
@@ -507,9 +494,8 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
                 android:id="@+id/setting_reset"
-                android:layout_height="70dp"
+                android:layout_height="56dp"
                 android:layout_width="match_parent">
 
                 <TextView
@@ -532,8 +518,7 @@
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"
                 android:paddingBottom="5dp"
-                android:paddingEnd="10dp"
-                android:paddingStart="10dp"
+                android:paddingLeft="10dp"
                 android:paddingTop="5dp"
                 android:text="기타"
                 android:textColor="@android:color/white" />
@@ -541,9 +526,8 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
                 android:id="@+id/setting_dataSave"
-                android:layout_height="70dp"
+                android:layout_height="56dp"
                 android:layout_width="match_parent">
 
                 <TextView
@@ -560,7 +544,7 @@
                     app:layout_constraintStart_toStartOf="parent"
                     app:layout_constraintTop_toTopOf="parent" />
 
-                <androidx.appcompat.widget.SwitchCompat
+                <Switch
                     android:id="@+id/setting_dataSave_switch"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="8dp"
@@ -576,9 +560,8 @@
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
                 android:id="@+id/setting_license"
-                android:layout_height="70dp"
+                android:layout_height="56dp"
                 android:layout_width="match_parent">
 
                 <TextView

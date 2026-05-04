@@ -6,6 +6,7 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.util.TypedValue;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -18,11 +19,9 @@ import android.widget.TextView;
 
 
 import com.bumptech.glide.Glide;
-import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import com.bumptech.glide.request.RequestOptions;
 
 
-import java.util.ArrayList;
 import java.util.List;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
@@ -32,11 +31,12 @@ import ml.melun.mangaview.mangaview.Title;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getGlideUrl;
+import static ml.melun.mangaview.Utils.isLocalMediaPath;
 
 
 public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
-    private List<Manga> mData;
+    private final List<Manga> mData;
     private final LayoutInflater mInflater;
     private ItemClickListener mClickListener;
     private final Context mainContext;
@@ -55,7 +55,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     public EpisodeAdapter(Context context, List<Manga> data, Title title, int mode) {
         this.mInflater = LayoutInflater.from(context);
         mainContext = context;
-        this.mData = data == null ? new ArrayList<>() : data;
+        this.mData = data;
         this.title = title;
         this.mode = mode;
         outValue = new TypedValue();
@@ -120,16 +120,16 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             h.h_author.setText(this.title.getAuthor());
             if(release != null && release.length()>0) h.h_release.setText(release);
             else h.h_release.setText("");
+            h.h_overview.setText(overviewText(release));
+            h.h_info.setText(infoText());
+            h.selectTab(HeaderHolder.TAB_INTRO);
             if(favorite) h.h_star_icon.setImageResource(R.drawable.ic_favorite);
             else h.h_star_icon.setImageResource(R.drawable.ic_favorite_border);
             h.h_bookmark.setVisibility(View.GONE);
             Glide.with(h.h_thumb).clear(h.h_thumb);
             if(!save && thumb.length() > 0) Glide.with(h.h_thumb)
-                    .load(getGlideUrl(thumb, title.getBaseMode()))
-                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                    .load(isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, title.getBaseMode()))
                     .apply(new RequestOptions().dontTransform())
-                    .override(dp(150), dp(210))
-                    .dontAnimate()
                     .into(h.h_thumb);
             else h.h_thumb.setImageBitmap(null);
             if(mode == 0 || mode == 3)
@@ -153,18 +153,26 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             int Dposition = position-1;
             h.episode.setText(mData.get(Dposition).getName());
             h.date.setText(mData.get(Dposition).getDate());
+            h.newBadge.setVisibility(Dposition == 0 ? View.VISIBLE : View.GONE);
+            h.action.setVisibility(mode == 0 ? View.VISIBLE : View.GONE);
+            String thumb = title == null ? "" : title.getThumb();
+            Glide.with(h.thumb).clear(h.thumb);
+            if(!save && thumb != null && thumb.length() > 0) {
+                Glide.with(h.thumb)
+                        .load(isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, title.getBaseMode()))
+                        .apply(new RequestOptions().dontTransform())
+                        .into(h.thumb);
+            } else {
+                h.thumb.setImageResource(R.drawable.app_cover_placeholder);
+            }
             if (position == bookmark) {
                 if(dark) h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.selectedDark));
-                else h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.selected));
+                else h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.appAccentLight));
             }
             else{
-                h.itemView.setBackgroundColor(Color.TRANSPARENT);
+                h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, dark ? R.color.colorDarkBackground : R.color.appCard));
             }
         }
-    }
-
-    private int dp(int value) {
-        return (int) (value * mainContext.getResources().getDisplayMetrics().density + 0.5f);
     }
 
     // total number of rows
@@ -173,26 +181,18 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         return mData.size()+1;
     }
 
-    public void setData(List<Manga> data, Title title) {
-        this.mData = data == null ? new ArrayList<>() : data;
-        this.title = title;
-        if(title.getTags()!=null) {
-            ta = new TagAdapter(mainContext, title.getTags());
-            lm = new NpaLinearLayoutManager(mainContext);
-            lm.setOrientation(LinearLayoutManager.HORIZONTAL);
-        } else {
-            ta = null;
-            lm = null;
-        }
-        notifyDataSetChanged();
-    }
-
     public class ViewHolder extends RecyclerView.ViewHolder{
         TextView episode,date;
+        TextView newBadge;
+        ImageView thumb;
+        ImageView action;
         ViewHolder(View itemView) {
             super(itemView);
             episode = itemView.findViewById(R.id.episode);
             date = itemView.findViewById(R.id.date);
+            newBadge = itemView.findViewById(R.id.episodeNew);
+            thumb = itemView.findViewById(R.id.episodeThumb);
+            action = itemView.findViewById(R.id.episodeAction);
             itemView.setOnClickListener(v -> {
                 int position = getAdapterPosition();
                 if(position == RecyclerView.NO_POSITION || position == 0 || mClickListener == null)
@@ -208,17 +208,24 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
                 }
                 mClickListener.onItemClick(position - 1, m);
             });
+            action.setOnClickListener(v -> {
+                int position = getAdapterPosition();
+                if(position == RecyclerView.NO_POSITION || position == 0 || mClickListener == null)
+                    return;
+                mClickListener.onDownloadClick(position - 1, mData.get(position - 1));
+            });
         }
     }
     public class HeaderHolder extends RecyclerView.ViewHolder{
-        TextView h_title, h_author, h_release;
+        TextView h_title, h_author, h_release, h_overview;
+        TextView h_intro_tab, h_episode_tab, h_info_tab, h_info;
         ImageView h_thumb;
         ImageView h_star_icon;
         ImageView h_bookmark_icon;
 
         Button h_first;
         RecyclerView h_tags;
-        View h_bookmark, h_star, h_recommend;
+        View h_bookmark, h_star, h_recommend, h_indicator, h_tabs;
 
         TextView h_recommend_c;
             HeaderHolder(View itemView) {
@@ -230,6 +237,13 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             h_tags = itemView.findViewById(R.id.tagsContainer);
             h_author = itemView.findViewById(R.id.headerAuthor);
             h_release = itemView.findViewById(R.id.HeaderRelease);
+            h_overview = itemView.findViewById(R.id.detailOverview);
+            h_info = itemView.findViewById(R.id.detailInfo);
+            h_intro_tab = itemView.findViewById(R.id.detailIntroTab);
+            h_episode_tab = itemView.findViewById(R.id.detailEpisodeTab);
+            h_info_tab = itemView.findViewById(R.id.detailInfoTab);
+            h_indicator = itemView.findViewById(R.id.detailTabIndicator);
+            h_tabs = itemView.findViewById(R.id.detailTabs);
             h_bookmark_icon = itemView.findViewById(R.id.bookmarkIcon);
 
             h_star = itemView.findViewById(R.id.HeaderFavorite);
@@ -248,11 +262,69 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             h_author.setOnClickListener(v -> {
                 if(mClickListener != null) mClickListener.onAuthorClick();
             });
+            h_intro_tab.setOnClickListener(v -> selectTab(TAB_INTRO));
+            h_episode_tab.setOnClickListener(v -> {
+                selectTab(TAB_EPISODES);
+                if(mClickListener != null) mClickListener.onEpisodeTabClick();
+            });
+            h_info_tab.setOnClickListener(v -> selectTab(TAB_INFO));
             if(ta!=null) {
                 h_tags.setLayoutManager(lm);
                 h_tags.setAdapter(ta);
             }
         }
+
+        static final int TAB_INTRO = 0;
+        static final int TAB_EPISODES = 1;
+        static final int TAB_INFO = 2;
+
+        void selectTab(int selected) {
+            styleTab(h_intro_tab, selected == TAB_INTRO);
+            styleTab(h_episode_tab, selected == TAB_EPISODES);
+            styleTab(h_info_tab, selected == TAB_INFO);
+            h_overview.setVisibility(selected == TAB_INTRO ? View.VISIBLE : View.GONE);
+            h_info.setVisibility(selected == TAB_INFO ? View.VISIBLE : View.GONE);
+            h_tabs.post(() -> {
+                int tabWidth = h_tabs.getWidth() / 3;
+                ViewGroup.LayoutParams params = h_indicator.getLayoutParams();
+                params.width = tabWidth;
+                h_indicator.setLayoutParams(params);
+                h_indicator.setTranslationX(tabWidth * selected);
+            });
+        }
+
+        void styleTab(TextView tab, boolean selected) {
+            tab.setTextColor(ContextCompat.getColor(mainContext, selected ? R.color.appText : R.color.appTextSecondary));
+            tab.setTypeface(Typeface.DEFAULT, selected ? Typeface.BOLD : Typeface.NORMAL);
+        }
+    }
+
+    private String overviewText(String release) {
+        if(release != null && release.trim().length() > 0)
+            return release.trim();
+        return "등록된 소개가 없습니다.";
+    }
+
+    private String infoText() {
+        StringBuilder builder = new StringBuilder();
+        appendInfo(builder, "작품", title.getName());
+        appendInfo(builder, "구분", title.getBaseModeStr());
+        appendInfo(builder, "작가", title.getAuthor());
+        if(title.getTags().size() > 0)
+            appendInfo(builder, "분류", android.text.TextUtils.join(" / ", title.getTags()));
+        appendInfo(builder, "회차", mData == null ? "0개" : mData.size() + "개");
+        String release = title.getRelease();
+        if(release != null && release.trim().length() > 0)
+            appendInfo(builder, "소개", release.trim());
+        return builder.toString();
+    }
+
+    private void appendInfo(StringBuilder builder, String label, String value) {
+        if(value == null || value.trim().length() == 0)
+            return;
+        if(builder.length() > 0)
+            builder.append('\n');
+        builder.append(label).append(": ").append(value.trim());
     }
 
     public void setFavorite(boolean b){
@@ -289,5 +361,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         void onStarClick();
         void onFirstClick();
         void onAuthorClick();
+        void onEpisodeTabClick();
+        void onDownloadClick(int position, Manga m);
     }
 }

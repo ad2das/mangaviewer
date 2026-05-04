@@ -21,6 +21,7 @@ import androidx.core.content.ContextCompat;
 import androidx.appcompat.app.AlertDialog;
 
 import android.view.View;
+import com.google.android.material.bottomnavigation.BottomNavigationView;
 import com.google.android.material.navigation.NavigationView;
 import androidx.core.view.GravityCompat;
 import androidx.drawerlayout.widget.DrawerLayout;
@@ -52,6 +53,7 @@ import ml.melun.mangaview.R;
 import ml.melun.mangaview.fragment.MainMain;
 
 import ml.melun.mangaview.fragment.MainSearch;
+import ml.melun.mangaview.fragment.MainUpdates;
 import ml.melun.mangaview.fragment.RecyclerFragment;
 import ml.melun.mangaview.UrlUpdater;
 import ml.melun.mangaview.interfaces.MainActivityCallback;
@@ -92,15 +94,14 @@ public class MainActivity extends AppCompatActivity
     String homeDirStr;
     Boolean dark;
     NavigationView navigationView;
+    BottomNavigationView bottomNavigationView;
     Toolbar toolbar;
     View progressView;
     boolean accountInitialSyncStarted = false;
     private static final int FIRST_TIME_ACTIVITY = 9;
-    private BroadcastReceiver migratorStatusReceiver;
-    private BroadcastReceiver downloaderStopReceiver;
 
 
-    Fragment[] fragments = new Fragment[3];
+    Fragment[] fragments = new Fragment[4];
 
     FrameLayout content;
 
@@ -112,14 +113,21 @@ public class MainActivity extends AppCompatActivity
 
     @Override
     public void search(String query) {
-        ((MainSearch)fragments[1]).setSearch(query);
+        MainSearch searchFragment = (MainSearch) fragments[1];
+        searchFragment.setBaseMode(p.getBaseMode());
+        searchFragment.setSearch(query);
         changeFragment(1);
     }
 
     @Override
-    public void openSettings() {
-        Intent settingIntent = new Intent(context, SettingsActivity.class);
-        startActivityForResult(settingIntent, 0);
+    public void navigateToTab(int index) {
+        if(changeFragment(index) && toolbar != null)
+            toolbar.setTitle(getTabTitle(currentTab));
+    }
+
+    private void openSearchTab() {
+        changeFragment(1);
+        ((MainSearch) fragments[1]).enterSearchMode();
     }
 
 
@@ -128,7 +136,8 @@ public class MainActivity extends AppCompatActivity
     protected void onCreate(Bundle savedInstanceState) {
         fragments[0] = MainMain.newInstance();
         fragments[1] = new MainSearch();
-        fragments[2] = new RecyclerFragment();
+        fragments[2] = new MainUpdates();
+        fragments[3] = new RecyclerFragment();
         dark = p.getDarkTheme();
         if (dark) setTheme(R.style.AppThemeDarkNoTitle);
         else setTheme(R.style.AppTheme_NoActionBar);
@@ -158,7 +167,7 @@ public class MainActivity extends AppCompatActivity
             mpd.setCancelable(false);
             mpd.show();
 
-            migratorStatusReceiver = new BroadcastReceiver() {
+            BroadcastReceiver migratorStatusReceiver = new BroadcastReceiver() {
                 @Override
                 public void onReceive(Context context, Intent intent) {
                     switch (intent.getAction()) {
@@ -256,6 +265,7 @@ public class MainActivity extends AppCompatActivity
         p.check2();
         setContentView(R.layout.activity_main);
         progressView = this.findViewById(R.id.progress_panel);
+        applyMainWindowChrome();
 
         // url updater
         if(p.getAutoUrl()) {
@@ -271,6 +281,7 @@ public class MainActivity extends AppCompatActivity
                 this, drawer, toolbar, R.string.navigation_drawer_open, R.string.navigation_drawer_close);
         drawer.addDrawerListener(toggle);
         toggle.syncState();
+        toolbar.setNavigationIcon(null);
 
         //nav_drawer color scheme
         navigationView = (NavigationView) findViewById(R.id.nav_view);
@@ -292,6 +303,22 @@ public class MainActivity extends AppCompatActivity
             };
             ColorStateList colorStateList = new ColorStateList(states, colors);
             navigationView.setItemTextColor(colorStateList);
+        }
+        bottomNavigationView = findViewById(R.id.bottom_nav);
+        if(bottomNavigationView != null) {
+            bottomNavigationView.setOnItemSelectedListener(item -> {
+                int index = getFragmentIndex(item.getItemId());
+                if(index < 0)
+                    return false;
+                changeFragment(index);
+                toolbar.setTitle(getTabTitle(currentTab));
+                return true;
+            });
+            bottomNavigationView.setOnItemReselectedListener(item -> {
+                int index = getFragmentIndex(item.getItemId());
+                if(index == 0 && fragments[0] instanceof MainMain)
+                    ((MainMain) fragments[0]).scrollToSelectedTab();
+            });
         }
 
         homeDirStr = p.getHomeDir();
@@ -390,8 +417,8 @@ public class MainActivity extends AppCompatActivity
         }
         String title = user.getDisplayName() == null || user.getDisplayName().length() == 0 ? getString(R.string.account_manage) : user.getDisplayName();
         String message = user.getEmail() == null ? getString(R.string.account_status_signed_in) : user.getEmail();
-        new AlertDialog.Builder(context)
-                .setTitle(title)
+        AlertDialog.Builder builder = dark ? new AlertDialog.Builder(context, R.style.darkDialog) : new AlertDialog.Builder(context);
+        builder.setTitle(title)
                 .setMessage(message)
                 .setPositiveButton(R.string.account_sync_now, (dialog, which) -> syncAccount(true))
                 .setNegativeButton(R.string.account_sign_out, (dialog, which) -> confirmSignOut())
@@ -400,8 +427,8 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void confirmSignOut() {
-        new AlertDialog.Builder(context)
-                .setMessage(R.string.account_sign_out_confirm)
+        AlertDialog.Builder builder = dark ? new AlertDialog.Builder(context, R.style.darkDialog) : new AlertDialog.Builder(context);
+        builder.setMessage(R.string.account_sign_out_confirm)
                 .setPositiveButton(R.string.account_sign_out, (dialog, which) -> {
                     if(firebaseAccountManager != null)
                         firebaseAccountManager.signOut(() -> runOnUiThread(this::setupAccountHeader));
@@ -434,8 +461,8 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void refreshSyncedListIfVisible() {
-        if(currentTab >= 2 && fragments[2] instanceof RecyclerFragment)
-            ((RecyclerFragment)fragments[2]).changeMode(getTabId(currentTab));
+        if(currentTab >= 3 && fragments[3] instanceof RecyclerFragment)
+            ((RecyclerFragment) fragments[3]).changeMode(getTabId(currentTab));
     }
 
     public int getTabId(int i){
@@ -455,24 +482,47 @@ public class MainActivity extends AppCompatActivity
     }
 
     public int getFragmentIndex(int i){
-        if(i == R.id.nav_main)
-            return 0;
-        if(i == R.id.nav_search)
-            return 1;
-        if(i == R.id.nav_recent)
-            return 2;
-        if(i == R.id.nav_favorite)
-            return 3;
-        if(i == R.id.nav_download)
-            return 4;
+        switch(i){
+            case R.id.nav_main:
+                return 0;
+            case R.id.nav_search:
+                return 1;
+            case R.id.nav_recent:
+                return 2;
+            case R.id.nav_favorite:
+                return 3;
+            case R.id.nav_download:
+                return 4;
+        }
         return -1;
     }
 
     private CharSequence getTabTitle(int index) {
-        if(index == 0)
-            return "메인";
-        MenuItem item = navigationView.getMenu().findItem(getTabId(index));
-        return item == null ? "" : item.getTitle();
+        switch(index) {
+            case 0:
+                return "MangaView";
+            case 1:
+                return "서재";
+            case 2:
+                return "업데이트";
+            case 3:
+                return "보관함";
+            case 4:
+                return "오프라인";
+        }
+        return "";
+    }
+
+    private void applyMainWindowChrome() {
+        if(dark)
+            return;
+        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            getWindow().setStatusBarColor(ContextCompat.getColor(this, R.color.appSurface));
+            getWindow().setNavigationBarColor(ContextCompat.getColor(this, R.color.appCard));
+        }
+        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+        }
     }
 
     private void syncNavigationSelection() {
@@ -480,6 +530,14 @@ public class MainActivity extends AppCompatActivity
         for(int i = 0; i < menu.size(); i++)
             menu.getItem(i).setChecked(false);
         MenuItem item = menu.findItem(getTabId(currentTab));
+        if(item != null)
+            item.setChecked(true);
+    }
+
+    private void syncBottomNavigationSelection() {
+        if(bottomNavigationView == null)
+            return;
+        MenuItem item = bottomNavigationView.getMenu().findItem(getTabId(currentTab));
         if(item != null)
             item.setChecked(true);
     }
@@ -514,13 +572,11 @@ public class MainActivity extends AppCompatActivity
                                 }
 
                                 //broadcast receiver
-                                unregisterDownloaderStopReceiver();
-                                downloaderStopReceiver = new BroadcastReceiver() {
+                                BroadcastReceiver statusReceiver = new BroadcastReceiver() {
                                     @Override
                                     public void onReceive(Context context, Intent intent) {
                                         if(intent.getAction().matches(BROADCAST_STOP)){
                                             //service stopped
-                                            unregisterDownloaderStopReceiver();
                                             finishAffinity();
                                             System.runFinalization();
                                             System.exit(0);
@@ -529,7 +585,7 @@ public class MainActivity extends AppCompatActivity
                                 };
                                 IntentFilter infil = new IntentFilter();
                                 infil.addAction(BROADCAST_STOP);
-                                registerReceiver(downloaderStopReceiver, infil);
+                                registerReceiver(statusReceiver, infil);
 
                             }else{
                                 //kill application
@@ -566,16 +622,23 @@ public class MainActivity extends AppCompatActivity
     }
 
     @Override
+    public boolean onPrepareOptionsMenu(Menu menu) {
+        MenuItem search = menu.findItem(R.id.action_search);
+        if(search != null)
+            search.setVisible(false);
+        return super.onPrepareOptionsMenu(menu);
+    }
+
+    @Override
     public boolean onOptionsItemSelected(MenuItem item) {
         int id = item.getItemId();
 
         //noinspection SimplifiableIfStatement
-        if (id == R.id.action_settings) {
-            openSettings();
+        if (id == R.id.action_search) {
+            openSearchTab();
             return true;
-        }else if(id == R.id.action_debug){
-            Intent debug = new Intent(context, DebugActivity.class);
-            startActivity(debug);
+        }else if (id == R.id.action_settings) {
+            toggleAccountSignIn();
             return true;
         }
         return super.onOptionsItemSelected(item);
@@ -584,22 +647,25 @@ public class MainActivity extends AppCompatActivity
     boolean changeFragment(int index){
         if(index < 0)
             return false;
-        boolean change = !(currentTab >= 2 && index >= 2);
-        int fragmentI = index>2 ? 2 : index;
+        boolean change = !(currentTab >= 3 && index >= 3);
+        int fragmentI = index > 2 ? (index == 2 ? 2 : 3) : index;
         boolean res = false;
         if(index>-1 && index != currentTab){
             currentTab = index;
-            if(index >= 2){
-                ((RecyclerFragment)fragments[2]).changeMode(getTabId(index));
+            if(index == 2) {
+                ((MainUpdates) fragments[2]).refreshIfEmpty();
+            } else if(index >= 3){
+                ((RecyclerFragment)fragments[3]).changeMode(getTabId(index));
             }
             if(change) {
                 getSupportFragmentManager().beginTransaction().replace(R.id.contentHolder, (Fragment) fragments[fragmentI]).commit();
             }
             res = true;
         }
-        if(getSupportActionBar() != null)
-            getSupportActionBar().setTitle(getTabTitle(currentTab));
+        getSupportActionBar().setTitle(getTabTitle(currentTab));
         syncNavigationSelection();
+        syncBottomNavigationSelection();
+        invalidateOptionsMenu();
         return res;
     }
 
@@ -628,7 +694,8 @@ public class MainActivity extends AppCompatActivity
 //                Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://open.kakao.com/o/gL4yY57"));
 //                startActivity(browserIntent);
             }else if(id==R.id.nav_settings){
-                openSettings();
+                Intent settingIntent = new Intent(context, SettingsActivity.class);
+                startActivityForResult(settingIntent, 0);
                 return true;
             }
             DrawerLayout drawer = (DrawerLayout) findViewById(R.id.drawer_layout);
@@ -729,32 +796,5 @@ public class MainActivity extends AppCompatActivity
         }
         else if(resCode == 1)
             showPopup(context, "연결 오류", "연결을 확인하고 다시 시도해 주세요.", (dialogInterface, i) -> finish(), dialogInterface -> finish());
-    }
-
-    @Override
-    protected void onDestroy() {
-        unregisterMigratorStatusReceiver();
-        unregisterDownloaderStopReceiver();
-        super.onDestroy();
-    }
-
-    private void unregisterMigratorStatusReceiver() {
-        if(migratorStatusReceiver == null)
-            return;
-        try {
-            unregisterReceiver(migratorStatusReceiver);
-        } catch (Exception ignored) {
-        }
-        migratorStatusReceiver = null;
-    }
-
-    private void unregisterDownloaderStopReceiver() {
-        if(downloaderStopReceiver == null)
-            return;
-        try {
-            unregisterReceiver(downloaderStopReceiver);
-        } catch (Exception ignored) {
-        }
-        downloaderStopReceiver = null;
     }
 }

@@ -2,16 +2,16 @@
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/nav_account_panel"
+    android:layout_width="match_parent"
+    android:layout_height="210dp"
     android:background="@drawable/account_header_bg"
     android:clickable="true"
     android:focusable="true"
     android:foreground="?attr/selectableItemBackground"
-    android:layout_height="210dp"
-    android:layout_width="match_parent"
-    android:paddingBottom="18dp"
-    android:paddingEnd="18dp"
     android:paddingStart="18dp"
-    android:paddingTop="42dp">
+    android:paddingTop="42dp"
+    android:paddingEnd="18dp"
+    android:paddingBottom="18dp">
 
     <TextView
         android:id="@+id/nav_account_eyebrow"
@@ -69,8 +69,8 @@
 
             <TextView
                 android:id="@+id/nav_account_name"
-                android:layout_height="wrap_content"
                 android:layout_width="match_parent"
+                android:layout_height="wrap_content"
                 android:ellipsize="end"
                 android:maxLines="1"
                 android:text="MangaView"
@@ -80,8 +80,8 @@
 
             <TextView
                 android:id="@+id/nav_account_email"
-                android:layout_height="wrap_content"
                 android:layout_width="match_parent"
+                android:layout_height="wrap_content"
                 android:layout_marginTop="3dp"
                 android:ellipsize="end"
                 android:maxLines="1"

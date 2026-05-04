@@ -10,7 +10,7 @@ import androidx.annotation.Nullable;
 import androidx.constraintlayout.widget.ConstraintLayout;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.appcompat.widget.SwitchCompat;
+import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
 
 import android.os.Build;
@@ -26,6 +26,7 @@ import android.widget.CompoundButton;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.Spinner;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -55,7 +56,7 @@ public class SettingsActivity extends AppCompatActivity {
     Context context;
     ConstraintLayout s_setHomeDir, s_resetHistory, s_dark, s_viewer, s_reverse, s_pageRtl, s_dataSave, s_tab, s_stretch, s_double, s_double_reverse;
     Spinner s_tab_spinner, s_viewer_spinner;
-    SwitchCompat s_dark_switch, s_reverse_switch, s_pageRtl_switch, s_dataSave_switch, s_stretch_switch, s_double_switch, s_double_reverse_switch;
+    Switch s_dark_switch, s_reverse_switch, s_pageRtl_switch, s_dataSave_switch, s_stretch_switch, s_double_switch, s_double_reverse_switch;
     Boolean dark;
     public static final String prefExtension = ".mvpref";
     public static final int RESULT_NEED_RESTART = 7;
@@ -69,6 +70,7 @@ public class SettingsActivity extends AppCompatActivity {
         if(dark) setTheme(R.style.AppThemeDark);
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_settings);
+        styleSettingsScreen();
         context = this;
         s_setHomeDir = this.findViewById(R.id.setting_dir);
         s_setHomeDir.setOnClickListener(v -> {
@@ -76,7 +78,7 @@ public class SettingsActivity extends AppCompatActivity {
                 // Choose a directory using the system's file picker.
                 Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
                 Uri uri = Uri.parse(p.getHomeDir());
-                putInitialUri(intent, uri);
+                intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri);
                 Toast.makeText(context, "다운로드 위치를 선택해 주세요", Toast.LENGTH_SHORT).show();
                 startActivityForResult(intent, MODE_FOLDER_SELECT);
             }else{
@@ -84,8 +86,7 @@ public class SettingsActivity extends AppCompatActivity {
                 startActivityForResult(intent, MODE_FOLDER_SELECT);
             }
         });
-        if(getSupportActionBar() != null)
-            getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+        getSupportActionBar().setDisplayHomeAsUpEnabled(true);
 //        s_getSd = this.findViewById(R.id.setting_externalSd);
 //        s_getSd.setOnClickListener(new View.OnClickListener() {
 //            @Override
@@ -296,7 +297,7 @@ public class SettingsActivity extends AppCompatActivity {
             if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
                 Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
                 Uri uri = Uri.parse(p.getHomeDir());
-                putInitialUri(intent, uri);
+                intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri);
                 Toast.makeText(context, "백업 파일을 저장할 폴더를 선택해 주세요", Toast.LENGTH_SHORT).show();
                 startActivityForResult(intent, MODE_FILE_SAVE);
             }else{
@@ -313,7 +314,7 @@ public class SettingsActivity extends AppCompatActivity {
                 Uri uri = Uri.parse(p.getHomeDir());
                 intent.addCategory(Intent.CATEGORY_OPENABLE);
                 intent.setType("application/*");
-                putInitialUri(intent, uri);
+                intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri);
                 Toast.makeText(context, "백업 파일 선택", Toast.LENGTH_SHORT).show();
                 startActivityForResult(intent, MODE_FILE_SELECT);
             }else {
@@ -338,6 +339,85 @@ public class SettingsActivity extends AppCompatActivity {
 
     }
 
+    private void styleSettingsScreen() {
+        View root = findViewById(android.R.id.content);
+        root.setBackgroundColor(ContextCompat.getColor(this, R.color.appSurface));
+        styleSettingsTree(root);
+
+        int[] rowIds = {
+                R.id.setting_url,
+                R.id.setting_dir,
+                R.id.setting_startTab,
+                R.id.setting_dark,
+                R.id.setting_viewer,
+                R.id.setting_key,
+                R.id.setting_reverse,
+                R.id.setting_buttonLayout,
+                R.id.setting_double,
+                R.id.setting_double_leftright,
+                R.id.setting_stretch,
+                R.id.setting_pageRtl,
+                R.id.setting_dataExport,
+                R.id.setting_dataImport,
+                R.id.setting_reset,
+                R.id.setting_dataSave,
+                R.id.setting_license
+        };
+
+        for (int id : rowIds) {
+            View row = findViewById(id);
+            if (row == null)
+                continue;
+            row.setBackgroundResource(R.drawable.app_outline_button_bg);
+            row.setPadding(dp(12), 0, dp(12), 0);
+            row.setMinimumHeight(dp(56));
+            if (row.getLayoutParams() instanceof LinearLayout.LayoutParams) {
+                LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) row.getLayoutParams();
+                lp.width = LinearLayout.LayoutParams.MATCH_PARENT;
+                lp.height = LinearLayout.LayoutParams.WRAP_CONTENT;
+                lp.setMargins(dp(16), dp(3), dp(16), dp(3));
+                row.setLayoutParams(lp);
+            }
+        }
+    }
+
+    private void styleSettingsTree(View view) {
+        if (view instanceof TextView) {
+            TextView text = (TextView) view;
+            boolean sectionHeader = view.getParent() instanceof LinearLayout
+                    && !(view.getParent() instanceof ConstraintLayout);
+            if (sectionHeader) {
+                text.setBackgroundColor(ContextCompat.getColor(this, R.color.appSurface));
+                text.setTextColor(ContextCompat.getColor(this, R.color.appAccent));
+                text.setTextSize(13);
+                text.setGravity(Gravity.BOTTOM | Gravity.START);
+                text.setPadding(dp(20), dp(16), dp(20), dp(6));
+            } else {
+                text.setTextColor(ContextCompat.getColor(this, R.color.appText));
+                text.setTextSize(14);
+                text.setIncludeFontPadding(false);
+            }
+        }
+
+        if (view instanceof Spinner)
+            view.setBackgroundResource(R.drawable.app_search_box_bg);
+
+        if (view instanceof LinearLayout) {
+            LinearLayout layout = (LinearLayout) view;
+            layout.setBackgroundColor(ContextCompat.getColor(this, R.color.appSurface));
+        }
+
+        if (view instanceof android.view.ViewGroup) {
+            android.view.ViewGroup group = (android.view.ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++)
+                styleSettingsTree(group.getChildAt(i));
+        }
+    }
+
+    private int dp(int value) {
+        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
     public static void urlSettingPopup(Context context, Preference p){
         final LinearLayout layout = new LinearLayout(context);
         layout.setOrientation(LinearLayout.VERTICAL);
@@ -346,12 +426,14 @@ public class SettingsActivity extends AppCompatActivity {
         final TextView inputtext = new TextView(context);
         final TextView webtoonText = new TextView(context);
 
-        inputtext.setText(R.string.settings_comic_url_label);
+        inputtext.setText("사이트 URL:");
+
+        inputtext.setText("만화책 URL:");
         layout.addView(inputtext);
         definput.setText(p.getDefUrl());
         definput.setHint(p.getDefUrl());
         layout.addView(definput);
-        webtoonText.setText(R.string.settings_webtoon_url_label);
+        webtoonText.setText("웹툰 URL:");
         layout.addView(webtoonText);
         webtoonInput.setText(p.getWebtoonUrl());
         webtoonInput.setHint(p.getWebtoonUrl());
@@ -385,11 +467,6 @@ public class SettingsActivity extends AppCompatActivity {
         return super.onOptionsItemSelected(item);
     }
 
-    private static void putInitialUri(Intent intent, Uri uri) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-            intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri);
-    }
-
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
@@ -397,23 +474,14 @@ public class SettingsActivity extends AppCompatActivity {
         if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
             if (resultCode == Activity.RESULT_OK && data != null) {
                 final Uri uri = data.getData();
-                if(uri == null)
-                    return;
                 switch (requestCode) {
                     case MODE_FOLDER_SELECT:
-                        try {
-                            getContentResolver().takePersistableUriPermission(uri, (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION));
-                        } catch (SecurityException ignored) {
-                        }
+                        getContentResolver().takePersistableUriPermission(uri, (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION));
                         p.setHomeDir(uri.toString());
                         break;
                     case MODE_FILE_SAVE:
                         showStringInputPopup(context, "백업 파일 이름", s -> {
                             DocumentFile d = DocumentFile.fromTreeUri(context, uri);
-                            if(d == null) {
-                                Toast.makeText(context, "내보내기 실패", Toast.LENGTH_LONG).show();
-                                return;
-                            }
                             if(!s.endsWith(".mvpref")) s += ".mvpref";
 
                             final DocumentFile target = d.findFile(s);
@@ -421,15 +489,13 @@ public class SettingsActivity extends AppCompatActivity {
                                 String finalS = s;
                                 showYesNoPopup(context, "파일이 이미 존재합니다.", "덮어 쓸까요?", (dialogInterface, i) -> {
                                     target.delete();
-                                    DocumentFile output = d.createFile("application", finalS);
-                                    if (output != null && writePreferenceToFile(context, output.getUri()))
+                                    if (writePreferenceToFile(context, d.createFile("application", finalS).getUri()))
                                         Toast.makeText(context, "내보내기 완료!", Toast.LENGTH_LONG).show();
                                     else
                                         Toast.makeText(context, "내보내기 실패", Toast.LENGTH_LONG).show();
                                 }, null, null);
                             } else {
-                                DocumentFile output = d.createFile("application", s);
-                                if (output != null && writePreferenceToFile(context, output.getUri()))
+                                if (writePreferenceToFile(context, d.createFile("application", s).getUri()))
                                     Toast.makeText(context, "내보내기 완료!", Toast.LENGTH_LONG).show();
                                 else
                                     Toast.makeText(context, "내보내기 실패", Toast.LENGTH_LONG).show();
