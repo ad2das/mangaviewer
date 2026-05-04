@@ -407,6 +407,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             holder.refresh.setVisibility(View.GONE);
             return;
         }
+        if(cached != null && cached.isRecycled())
+            decodedBitmapCache.remove(cacheKey);
         if (autoCut) {
             CustomTarget<Bitmap> imageTarget = new CustomTarget<Bitmap>() {
                 @Override
@@ -414,29 +416,31 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this, pageKey))
                         return;
                     holder.frame.setMinimumHeight(0);
-                    bitmap = decoderFor(item).decode(bitmap, width);
+                    Bitmap decoded = decoderFor(item).decode(bitmap, width);
                     Bitmap displayBitmap;
-                    int width = bitmap.getWidth();
-                    int height = bitmap.getHeight();
+                    int width = decoded.getWidth();
+                    int height = decoded.getHeight();
                     if (width > height) {
                         if (item.side == PageItem.FIRST) {
                             if (reverse)
-                                displayBitmap = Bitmap.createBitmap(bitmap, 0, 0, width / 2, height);
+                                displayBitmap = Bitmap.createBitmap(decoded, 0, 0, width / 2, height);
                             else
-                                displayBitmap = Bitmap.createBitmap(bitmap, width / 2, 0, width / 2, height);
+                                displayBitmap = Bitmap.createBitmap(decoded, width / 2, 0, width / 2, height);
                         } else {
                             if (reverse)
-                                displayBitmap = Bitmap.createBitmap(bitmap, width / 2, 0, width / 2, height);
+                                displayBitmap = Bitmap.createBitmap(decoded, width / 2, 0, width / 2, height);
                             else
-                                displayBitmap = Bitmap.createBitmap(bitmap, 0, 0, width / 2, height);
+                                displayBitmap = Bitmap.createBitmap(decoded, 0, 0, width / 2, height);
                         }
                     } else {
                         if (item.side == PageItem.FIRST) {
-                            displayBitmap = bitmap;
+                            displayBitmap = detachBitmap(decoded);
                         } else {
-                            displayBitmap = Bitmap.createBitmap(bitmap.getWidth(), 1, Bitmap.Config.ARGB_8888);
+                            displayBitmap = Bitmap.createBitmap(decoded.getWidth(), 1, Bitmap.Config.ARGB_8888);
                         }
                     }
+                    if(decoded != bitmap && decoded != displayBitmap && !decoded.isRecycled())
+                        decoded.recycle();
                     decodedBitmapCache.put(cacheKey, displayBitmap);
                     holder.frame.setImageBitmap(displayBitmap);
                     holder.refresh.setVisibility(View.GONE);
@@ -475,9 +479,12 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this, pageKey))
                         return;
                     holder.frame.setMinimumHeight(0);
-                    resource = decoderFor(item).decode(resource, width);
-                    decodedBitmapCache.put(cacheKey, resource);
-                    holder.frame.setImageBitmap(resource);
+                    Bitmap decoded = decoderFor(item).decode(resource, width);
+                    Bitmap displayBitmap = detachBitmap(decoded);
+                    if(decoded != resource && decoded != displayBitmap && !decoded.isRecycled())
+                        decoded.recycle();
+                    decodedBitmapCache.put(cacheKey, displayBitmap);
+                    holder.frame.setImageBitmap(displayBitmap);
                     holder.refresh.setVisibility(View.GONE);
                 }
 
@@ -521,6 +528,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     private void clearImageTarget(ImgViewHolder holder) {
         holder.boundPageKey = null;
+        holder.frame.setImageDrawable(null);
         if(holder.imageTarget == null)
             return;
         CustomTarget<Bitmap> target = holder.imageTarget;
@@ -532,6 +540,13 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         } catch (IllegalArgumentException e) {
             // RecyclerView can recycle children while the viewer Activity is already destroyed.
         }
+    }
+
+    private Bitmap detachBitmap(Bitmap source) {
+        if(source == null)
+            return Bitmap.createBitmap(Math.max(width, 1), 1, Bitmap.Config.ARGB_8888);
+        Bitmap.Config config = source.getConfig() == null ? Bitmap.Config.ARGB_8888 : source.getConfig();
+        return source.copy(config, false);
     }
 
     private boolean isContextDestroyed() {
