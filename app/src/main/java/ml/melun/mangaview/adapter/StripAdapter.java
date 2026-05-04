@@ -26,9 +26,11 @@ import com.bumptech.glide.request.target.Target;
 import com.bumptech.glide.request.transition.Transition;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -50,8 +52,6 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private StripAdapter.ItemClickListener mClickListener;
     boolean autoCut;
     boolean reverse;
-    int __seed;
-    Decoder d;
     int width;
     int count = 0;
     final static int MaxStackSize = 3;
@@ -64,6 +64,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     List<Object> items;
     private final Set<String> preloadedImages = new LinkedHashSet<>();
     private final LruCache<String, Bitmap> decodedBitmapCache;
+    private final Map<String, Decoder> decoders = new HashMap<>();
 
     public List<Object> getItems(){
         return items;
@@ -100,7 +101,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     private long pageStableId(PageItem item) {
         long episode = episodeStableId(item.manga);
-        return (episode * 1000003L) ^ (((long)item.index) << 1) ^ item.side;
+        long image = item.img == null ? 0L : item.img.hashCode();
+        return (episode * 1000003L) ^ (((long)item.index) << 17) ^ (((long)item.side) << 1) ^ image;
     }
 
     private long infoStableId(InfoItem item) {
@@ -112,7 +114,9 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private long episodeStableId(Manga manga) {
         if(manga == null)
             return 0L;
-        return (((long)manga.getBaseMode()) << 32) ^ (manga.getId() & 0xffffffffL);
+        return (((long)manga.getBaseMode()) << 48)
+                ^ (((long)manga.getTitleId() & 0xffffL) << 32)
+                ^ (manga.getId() & 0xffffffffL);
     }
 
     public void appendManga(Manga m){
@@ -292,8 +296,6 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         this.mInflater = LayoutInflater.from(context);
         mainContext = context;
         reverse = p.getReverse();
-        __seed = manga.getSeed();
-        d = new Decoder(manga.getSeed(), manga.getId());
         this.width = width;
         this.title = title;
         this.decodedBitmapCache = new LruCache<String, Bitmap>(decodedCacheSizeKb()) {
@@ -338,6 +340,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         items.clear();
         preloadedImages.clear();
         decodedBitmapCache.evictAll();
+        decoders.clear();
         clearCurrentPage();
         count = 0;
         notifyItemRangeRemoved(0, size);
@@ -411,7 +414,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this, pageKey))
                         return;
                     holder.frame.setMinimumHeight(0);
-                    bitmap = d.decode(bitmap, width);
+                    bitmap = decoderFor(item).decode(bitmap, width);
                     Bitmap displayBitmap;
                     int width = bitmap.getWidth();
                     int height = bitmap.getHeight();
@@ -472,7 +475,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this, pageKey))
                         return;
                     holder.frame.setMinimumHeight(0);
-                    resource = d.decode(resource, width);
+                    resource = decoderFor(item).decode(resource, width);
                     decodedBitmapCache.put(cacheKey, resource);
                     holder.frame.setImageBitmap(resource);
                     holder.refresh.setVisibility(View.GONE);
@@ -599,13 +602,27 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 + ":" + autoCut
                 + ":" + reverse
                 + ":" + width
-                + ":" + __seed
+                + ":" + page.manga.getSeed()
                 + ":" + page.img;
+    }
+
+    private Decoder decoderFor(PageItem page) {
+        Manga manga = page == null ? null : page.manga;
+        int seed = manga == null ? 0 : manga.getSeed();
+        int id = manga == null ? 0 : manga.getId();
+        String key = (manga == null ? 0 : manga.getBaseMode()) + ":" + id + ":" + seed;
+        Decoder decoder = decoders.get(key);
+        if(decoder == null) {
+            decoder = new Decoder(seed, id);
+            decoders.put(key, decoder);
+        }
+        return decoder;
     }
 
     private void clearDecodedPageState() {
         preloadedImages.clear();
         decodedBitmapCache.evictAll();
+        decoders.clear();
     }
 
     private int decodedCacheSizeKb() {
