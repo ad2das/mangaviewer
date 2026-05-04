@@ -21,6 +21,7 @@ import androidx.core.content.ContextCompat;
 import androidx.appcompat.app.AlertDialog;
 
 import android.view.View;
+import com.google.android.material.bottomsheet.BottomSheetDialog;
 import com.google.android.material.bottomnavigation.BottomNavigationView;
 import com.google.android.material.navigation.NavigationView;
 import androidx.core.view.GravityCompat;
@@ -98,6 +99,13 @@ public class MainActivity extends AppCompatActivity
     Toolbar toolbar;
     View progressView;
     boolean accountInitialSyncStarted = false;
+    BottomSheetDialog accountSheet;
+    TextView accountSheetName;
+    TextView accountSheetEmail;
+    TextView accountSheetStatus;
+    TextView accountSheetPrimary;
+    TextView accountSheetSecondary;
+    TextView accountSheetHint;
     private static final int FIRST_TIME_ACTIVITY = 9;
 
 
@@ -384,8 +392,8 @@ public class MainActivity extends AppCompatActivity
             button.setText(R.string.account_sign_in_short);
             button.setContentDescription(getString(R.string.account_sign_in));
             status.setText(R.string.account_status_signed_out);
-            panel.setOnClickListener(v -> startGoogleSignIn());
-            button.setOnClickListener(v -> startGoogleSignIn());
+            panel.setOnClickListener(v -> showAccountDialog());
+            button.setOnClickListener(v -> showAccountDialog());
             accountInitialSyncStarted = false;
         }
     }
@@ -403,28 +411,26 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void toggleAccountSignIn() {
-        if(firebaseAccountManager != null && firebaseAccountManager.getUser() != null) {
-            showAccountDialog();
-            return;
-        }
-        startGoogleSignIn();
+        showAccountDialog();
     }
 
     private void showAccountDialog() {
-        FirebaseUser user = firebaseAccountManager == null ? null : firebaseAccountManager.getUser();
-        if(user == null) {
-            startGoogleSignIn();
+        if(accountSheet != null && accountSheet.isShowing()) {
+            updateAccountSheet(false);
             return;
         }
-        String title = user.getDisplayName() == null || user.getDisplayName().length() == 0 ? getString(R.string.account_manage) : user.getDisplayName();
-        String message = user.getEmail() == null ? getString(R.string.account_status_signed_in) : user.getEmail();
-        AlertDialog.Builder builder = dark ? new AlertDialog.Builder(context, R.style.darkDialog) : new AlertDialog.Builder(context);
-        builder.setTitle(title)
-                .setMessage(message)
-                .setPositiveButton(R.string.account_sync_now, (dialog, which) -> syncAccount(true))
-                .setNegativeButton(R.string.account_sign_out, (dialog, which) -> confirmSignOut())
-                .setNeutralButton(android.R.string.cancel, null)
-                .show();
+        accountSheet = new BottomSheetDialog(this);
+        View view = getLayoutInflater().inflate(R.layout.sheet_account, null);
+        accountSheetName = view.findViewById(R.id.account_sheet_name);
+        accountSheetEmail = view.findViewById(R.id.account_sheet_email);
+        accountSheetStatus = view.findViewById(R.id.account_sheet_status);
+        accountSheetPrimary = view.findViewById(R.id.account_sheet_primary);
+        accountSheetSecondary = view.findViewById(R.id.account_sheet_secondary);
+        accountSheetHint = view.findViewById(R.id.account_sheet_hint);
+        accountSheet.setContentView(view);
+        accountSheet.setOnDismissListener(dialog -> clearAccountSheetRefs());
+        updateAccountSheet(false);
+        accountSheet.show();
     }
 
     private void confirmSignOut() {
@@ -432,7 +438,10 @@ public class MainActivity extends AppCompatActivity
         builder.setMessage(R.string.account_sign_out_confirm)
                 .setPositiveButton(R.string.account_sign_out, (dialog, which) -> {
                     if(firebaseAccountManager != null)
-                        firebaseAccountManager.signOut(() -> runOnUiThread(this::setupAccountHeader));
+                        firebaseAccountManager.signOut(() -> runOnUiThread(() -> {
+                            setupAccountHeader();
+                            updateAccountSheet(false);
+                        }));
                 })
                 .setNegativeButton(android.R.string.cancel, null)
                 .show();
@@ -453,12 +462,53 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void setAccountSyncingStatus(boolean syncing) {
-        if(navigationView == null || navigationView.getHeaderCount() == 0)
+        if(navigationView != null && navigationView.getHeaderCount() > 0) {
+            View header = navigationView.getHeaderView(0);
+            TextView status = header.findViewById(R.id.nav_account_status);
+            if(status != null)
+                status.setText(syncing ? R.string.account_status_syncing : R.string.account_status_signed_in);
+        }
+        updateAccountSheet(syncing);
+    }
+
+    private void updateAccountSheet(boolean syncing) {
+        if(accountSheetName == null || accountSheetEmail == null || accountSheetStatus == null
+                || accountSheetPrimary == null || accountSheetSecondary == null || accountSheetHint == null)
             return;
-        View header = navigationView.getHeaderView(0);
-        TextView status = header.findViewById(R.id.nav_account_status);
-        if(status != null)
-            status.setText(syncing ? R.string.account_status_syncing : R.string.account_status_signed_in);
+        FirebaseUser user = firebaseAccountManager == null ? null : firebaseAccountManager.getUser();
+        if(user == null) {
+            accountSheetName.setText(R.string.account_sheet_signed_out_title);
+            accountSheetEmail.setText(R.string.account_sheet_signed_out_body);
+            accountSheetStatus.setText(R.string.account_status_signed_out);
+            accountSheetHint.setText(R.string.account_sync_scope);
+            accountSheetPrimary.setText(R.string.account_sign_in);
+            accountSheetPrimary.setEnabled(true);
+            accountSheetPrimary.setAlpha(1f);
+            accountSheetPrimary.setOnClickListener(v -> startGoogleSignIn());
+            accountSheetSecondary.setVisibility(View.GONE);
+            return;
+        }
+        accountSheetName.setText(user.getDisplayName() == null || user.getDisplayName().length() == 0 ? getString(R.string.account_manage) : user.getDisplayName());
+        accountSheetEmail.setText(user.getEmail() == null || user.getEmail().length() == 0 ? getString(R.string.account_status_signed_in) : user.getEmail());
+        accountSheetStatus.setText(syncing ? R.string.account_status_syncing : R.string.account_status_signed_in);
+        accountSheetHint.setText(R.string.account_sync_scope);
+        accountSheetPrimary.setText(syncing ? R.string.account_status_syncing : R.string.account_sync_now);
+        accountSheetPrimary.setEnabled(!syncing);
+        accountSheetPrimary.setAlpha(syncing ? 0.55f : 1f);
+        accountSheetPrimary.setOnClickListener(v -> syncAccount(true));
+        accountSheetSecondary.setVisibility(View.VISIBLE);
+        accountSheetSecondary.setText(R.string.account_sign_out);
+        accountSheetSecondary.setOnClickListener(v -> confirmSignOut());
+    }
+
+    private void clearAccountSheetRefs() {
+        accountSheet = null;
+        accountSheetName = null;
+        accountSheetEmail = null;
+        accountSheetStatus = null;
+        accountSheetPrimary = null;
+        accountSheetSecondary = null;
+        accountSheetHint = null;
     }
 
     private void refreshSyncedListIfVisible() {
