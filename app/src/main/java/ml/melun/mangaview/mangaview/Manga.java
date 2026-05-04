@@ -8,6 +8,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.json.JSONObject;
 import org.jsoup.*;
@@ -124,6 +126,7 @@ public class Manga {
                 timeoutRetries = 0;
 
                 Document d = Jsoup.parse(body);
+                seed = extractSeed(body, d, null);
 
                 //name
                 Element titleElement = d.selectFirst("div.toon-title");
@@ -153,6 +156,9 @@ public class Manga {
                 //imgs
                 Element scriptElement = findImageScript(d);
                 if(scriptElement != null) {
+                    int scriptSeed = extractSeed(scriptElement.data(), d, scriptElement);
+                    if(scriptSeed > 0)
+                        seed = scriptSeed;
                     String script = scriptElement.data();
                     StringBuilder encodedData = new StringBuilder();
                     encodedData.append('%');
@@ -239,6 +245,50 @@ public class Manga {
                 return script;
         }
         return d.selectFirst("script:containsData(html_data+=)");
+    }
+
+    private int extractSeed(String source, Document document, Element scriptElement) {
+        int parsed = extractSeedFromText(source);
+        if(parsed > 0)
+            return parsed;
+        if(scriptElement != null) {
+            parsed = extractSeedFromText(scriptElement.html());
+            if(parsed > 0)
+                return parsed;
+        }
+        if(document != null) {
+            for(Element script : document.select("script")) {
+                parsed = extractSeedFromText(script.data());
+                if(parsed > 0)
+                    return parsed;
+                parsed = extractSeedFromText(script.html());
+                if(parsed > 0)
+                    return parsed;
+            }
+        }
+        return seed;
+    }
+
+    private int extractSeedFromText(String source) {
+        if(source == null || source.length() == 0)
+            return 0;
+        String[] patterns = {
+                "(?:var\\s+)?view_cnt\\s*=\\s*['\\\"]?(\\d+)",
+                "(?:var\\s+)?viewCnt\\s*=\\s*['\\\"]?(\\d+)",
+                "['\\\"]view_cnt['\\\"]\\s*[:=]\\s*['\\\"]?(\\d+)",
+                "['\\\"]viewCnt['\\\"]\\s*[:=]\\s*['\\\"]?(\\d+)"
+        };
+        for(String pattern : patterns) {
+            Matcher matcher = Pattern.compile(pattern).matcher(source);
+            if(matcher.find()) {
+                try {
+                    return Integer.parseInt(matcher.group(1));
+                } catch (Exception e) {
+                    return 0;
+                }
+            }
+        }
+        return 0;
     }
 
     private int fetchWolf(CustomHttpClient client, String viewPath, String epPath) {

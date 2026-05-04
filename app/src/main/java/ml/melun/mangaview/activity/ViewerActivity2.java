@@ -108,6 +108,7 @@ public class ViewerActivity2 extends AppCompatActivity {
     boolean split = false;
     boolean dirty = false;
     TextView info;
+    int imageLoadGeneration = 0;
 
     @Override
     protected void onResume() {
@@ -616,6 +617,10 @@ public class ViewerActivity2 extends AppCompatActivity {
 
 
     void refreshImage(){
+        int requestGeneration = ++imageLoadGeneration;
+        int requestMangaId = manga == null ? -1 : manga.getId();
+        int requestBookmark = viewerBookmark;
+        Decoder requestDecoder = d == null ? new Decoder(manga == null ? 0 : manga.getSeed(), requestMangaId) : d;
         frame.setVisibility(View.VISIBLE);
         frame2.setVisibility(View.GONE);
         frame.setImageResource(R.drawable.placeholder);
@@ -637,8 +642,10 @@ public class ViewerActivity2 extends AppCompatActivity {
 
                         @Override
                         public void onResourceReady(Bitmap bitmap, Transition<? super Bitmap> transition) {
+                            if(!isActiveImageRequest(requestGeneration, requestMangaId, requestBookmark))
+                                return;
                             //refreshbtn.setVisibility(View.INVISIBLE);
-                            bitmap = d.decode(bitmap, swidth);
+                            bitmap = requestDecoder.decode(bitmap, swidth);
                             int width = bitmap.getWidth();
                             int height = bitmap.getHeight();
                             if (width > height) {
@@ -674,7 +681,9 @@ public class ViewerActivity2 extends AppCompatActivity {
                                                 .into(new CustomTarget<Bitmap>() {
                                                     @Override
                                                     public void onResourceReady(@NonNull Bitmap bitmap1, @Nullable Transition<? super Bitmap> transition) {
-                                                        bitmap1 = d.decode(bitmap1, swidth);
+                                                        if(!isActiveImageRequest(requestGeneration, requestMangaId, requestBookmark))
+                                                            return;
+                                                        bitmap1 = requestDecoder.decode(bitmap1, swidth);
                                                         int width = bitmap1.getWidth();
                                                         int height = bitmap1.getHeight();
                                                         if (width < height) {
@@ -696,6 +705,8 @@ public class ViewerActivity2 extends AppCompatActivity {
                         }
                         @Override
                         public void onLoadFailed(@Nullable Drawable errorDrawable) {
+                            if(!isActiveImageRequest(requestGeneration, requestMangaId, requestBookmark))
+                                return;
                             frame.setImageResource(R.drawable.placeholder);
                         }
                     });
@@ -854,6 +865,14 @@ public class ViewerActivity2 extends AppCompatActivity {
                 pd.dismiss();
             }
         }
+    }
+
+    private boolean isActiveImageRequest(int generation, int mangaId, int bookmark) {
+        return generation == imageLoadGeneration
+                && manga != null
+                && manga.getId() == mangaId
+                && viewerBookmark == bookmark
+                && !isFinishing();
     }
 
     private int ensureEpisodeListLoaded(Manga target) {
