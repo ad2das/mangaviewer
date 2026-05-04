@@ -894,10 +894,8 @@ public class ViewerActivity2 extends AppCompatActivity {
         if(targetTitle == null)
             return false;
         try {
-            if((targetTitle.getEps() == null || targetTitle.getEps().size() == 0) && manga != null && manga.getEps() != null)
-                targetTitle.setEps(manga.getEps());
             Intent episodeIntent = new Intent(context, EpisodeActivity.class);
-            episodeIntent.putExtra("title", new Gson().toJson(targetTitle));
+            episodeIntent.putExtra("title", new Gson().toJson(new Title(targetTitle.minimize())));
             episodeIntent.putExtra("online", true);
             startActivity(episodeIntent);
             finish();

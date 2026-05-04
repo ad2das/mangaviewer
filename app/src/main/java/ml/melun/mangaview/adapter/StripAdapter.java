@@ -1,6 +1,7 @@
 package ml.melun.mangaview.adapter;
 
 import android.content.Context;
+import android.app.Activity;
 import android.graphics.drawable.Drawable;
 import android.util.LruCache;
 import androidx.annotation.NonNull;
@@ -501,7 +502,21 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             return;
         CustomTarget<Bitmap> target = holder.imageTarget;
         holder.imageTarget = null;
-        Glide.with(holder.frame).clear(target);
+        if(isContextDestroyed())
+            return;
+        try {
+            Glide.with(holder.frame).clear(target);
+        } catch (IllegalArgumentException e) {
+            // RecyclerView can recycle children while the viewer Activity is already destroyed.
+        }
+    }
+
+    private boolean isContextDestroyed() {
+        if(mainContext instanceof Activity) {
+            Activity activity = (Activity) mainContext;
+            return activity.isFinishing() || activity.isDestroyed();
+        }
+        return false;
     }
 
     private boolean isActiveHolder(ImgViewHolder holder, PageItem item, CustomTarget<Bitmap> target) {
