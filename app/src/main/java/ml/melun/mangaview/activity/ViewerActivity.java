@@ -755,18 +755,13 @@ public class ViewerActivity extends AppCompatActivity {
     private void saveCurrentScrollBookmark() {
         if(strip == null || manager == null || stripAdapter == null)
             return;
-        PageItem focusedPage = getFocusedVisiblePage();
-        if(focusedPage == null || focusedPage.manga == null || !focusedPage.manga.useBookmark())
-            return;
         int first = manager.findFirstVisibleItemPosition();
         int last = manager.findLastVisibleItemPosition();
         if(first == RecyclerView.NO_POSITION || last == RecyclerView.NO_POSITION)
             return;
         for(int i = Math.max(0, first); i <= last && i < stripAdapter.getItemCount(); i++) {
             PageItem page = stripAdapter.getPageAtPosition(i);
-            if(page == null || page.manga == null)
-                continue;
-            if(page.index != focusedPage.index || page.manga.getId() != focusedPage.manga.getId())
+            if(page == null || page.manga == null || !page.manga.useBookmark())
                 continue;
             View view = manager.findViewByPosition(i);
             if(view == null)

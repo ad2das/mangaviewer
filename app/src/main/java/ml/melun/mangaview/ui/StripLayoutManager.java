@@ -52,10 +52,21 @@ public class StripLayoutManager extends NpaLinearLayoutManager {
         for(int i=0; i<items.size(); i++){
             Object item = items.get(i);
             if(item instanceof PageItem){
-                if(((PageItem)item).equals(page))
+                if(isSamePage((PageItem)item, page)) {
                     scrollToPositionWithOffset(i, offset);
+                    return;
+                }
             }
         }
+    }
+
+    private boolean isSamePage(PageItem a, PageItem b) {
+        if(a == null || b == null || a.manga == null || b.manga == null)
+            return false;
+        return a.index == b.index
+                && a.side == b.side
+                && a.manga.getId() == b.manga.getId()
+                && a.manga.getBaseMode() == b.manga.getBaseMode();
     }
 
 

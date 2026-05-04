@@ -596,6 +596,13 @@ public class Preference {
             } catch (Exception e) {
                 //
             }
+            try {
+                String legacyKey = legacyViewerBookmarkKey(m);
+                if(legacyKey != null)
+                    return pagebookmark.getInt(legacyKey);
+            } catch (Exception e) {
+                //
+            }
         }
         return 0;
     }
@@ -605,6 +612,13 @@ public class Preference {
         if(m.getId()>-1) {
             try {
                 return pagebookmark.getInt(viewerBookmarkOffsetKey(m));
+            } catch (Exception e) {
+                //
+            }
+            try {
+                String legacyKey = legacyViewerBookmarkKey(m);
+                if(legacyKey != null)
+                    return pagebookmark.getInt(legacyKey + ".offset");
             } catch (Exception e) {
                 //
             }
@@ -632,6 +646,12 @@ public class Preference {
 
     private String viewerBookmarkOffsetKey(Manga m) {
         return viewerBookmarkKey(m) + ".offset";
+    }
+
+    private String legacyViewerBookmarkKey(Manga m) {
+        if(m == null || m.getTitleId() <= 0)
+            return null;
+        return m.getBaseMode() + "." + m.getId();
     }
     public void resetViewerBookmark(){
         try {
