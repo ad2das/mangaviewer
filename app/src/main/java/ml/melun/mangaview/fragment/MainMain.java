@@ -186,7 +186,7 @@ public class MainMain extends Fragment{
                 //mget title from manga m and start intent for manga m
                 //getTitleFromManga intentStarter = new getTitleFromManga();
                 //intentStarter.execute(m);
-                openViewer(getContext(), m,-1, true);
+                openViewer(getContext(), m,-1);
             }
 
             @Override
