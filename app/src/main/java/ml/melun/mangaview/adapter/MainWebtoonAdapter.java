@@ -75,11 +75,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     int baseMode;
     Fetcher fetcher;
     RecyclerView anchorRecycler;
+    private final RecyclerView.RecycledViewPool sharedHomePool = new RecyclerView.RecycledViewPool();
     List<Object> pendingRows;
     boolean initialRowsShown = false;
     private final Set<String> preloadedThumbs = new LinkedHashSet<>();
     private static final int PRELOADED_THUMB_LIMIT = 120;
-    private static final int PRELOAD_THUMB_MAX_PER_FETCH = 36;
+    private static final int PRELOAD_THUMB_MAX_PER_FETCH = 12;
     private static final int SECTION_BATCH_SIZE = 4;
     private static final int FIRST_SCREEN_BATCH_SIZE = 1;
     private int preloadCount = 0;
@@ -745,7 +746,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             list.setLayoutManager(manager);
             list.setNestedScrollingEnabled(false);
             list.setHasFixedSize(true);
-            list.setItemViewCacheSize(10);
+            list.setRecycledViewPool(sharedHomePool);
+            list.setItemViewCacheSize(6);
+            manager.setInitialPrefetchItemCount(4);
         }
 
         void bind(HomeSection section) {
@@ -779,8 +782,13 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         void setItems(List<Title> items) {
+            int oldSize = this.items == null ? 0 : this.items.size();
             this.items = items == null ? new ArrayList<>() : items;
-            notifyDataSetChanged();
+            int newSize = this.items.size();
+            if(oldSize == newSize)
+                notifyItemRangeChanged(0, newSize);
+            else
+                notifyDataSetChanged();
         }
 
         @NonNull
@@ -1104,7 +1112,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             list.setLayoutManager(manager);
             list.setNestedScrollingEnabled(false);
             list.setHasFixedSize(true);
-            list.setItemViewCacheSize(12);
+            list.setRecycledViewPool(sharedHomePool);
+            list.setItemViewCacheSize(6);
+            manager.setInitialPrefetchItemCount(4);
         }
 
         void bind(Ranking<?> section) {

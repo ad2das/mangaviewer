@@ -17,6 +17,7 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.material.tabs.TabLayout;
+import com.bumptech.glide.Glide;
 
 import ml.melun.mangaview.interfaces.MainActivityCallback;
 import ml.melun.mangaview.R;
@@ -148,12 +149,20 @@ public class MainMain extends Fragment{
         mainRecycler = rootView.findViewById(R.id.main_recycler);
         NpaLinearLayoutManager lm = new NpaLinearLayoutManager(getContext());
         mainRecycler.setLayoutManager(lm);
+        mainRecycler.setHasFixedSize(true);
+        mainRecycler.setItemViewCacheSize(8);
         mainRecycler.setItemAnimator(null);
         mainRecycler.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        mainRecycler.setOnFlingListener(new RecyclerView.OnFlingListener() {
+        mainRecycler.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
-            public boolean onFling(int velocityX, int velocityY) {
-                return true;
+            public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
+                super.onScrollStateChanged(recyclerView, newState);
+                if(getContext() == null)
+                    return;
+                if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                    Glide.with(MainMain.this).resumeRequests();
+                else
+                    Glide.with(MainMain.this).pauseRequests();
             }
         });
         localChangeListener = scope -> {
