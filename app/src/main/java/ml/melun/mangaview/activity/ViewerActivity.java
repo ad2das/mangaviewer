@@ -608,8 +608,11 @@ public class ViewerActivity extends AppCompatActivity {
                     try {
                         if(m.isOnline()) {
                             result = ensureEpisodeListLoaded(m);
-                            if(result == LOAD_OK)
-                            result = httpClient.runWithRequestGroup(requestGroup, () -> m.fetch(httpClient));
+                            if(result == LOAD_OK) {
+                                result = httpClient.runWithRequestGroup(requestGroup, () -> m.fetch(httpClient));
+                                if(result == LOAD_OK && !cancelled && !hasLoadedImages(m))
+                                    result = httpClient.runWithRequestGroup(requestGroup, () -> m.fetch(httpClient));
+                            }
                         }
                     } catch (Exception e) {
                         if(!cancelled && !isFinishing())

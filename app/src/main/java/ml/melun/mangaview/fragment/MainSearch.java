@@ -7,8 +7,10 @@ import android.os.Bundle;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.MenuItem;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewConfiguration;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.AdapterView;
@@ -81,6 +83,9 @@ public class MainSearch extends Fragment {
     int pendingBaseMode = -1;
     String activeLibraryQuery = null;
     Preference.LocalChangeListener localChangeListener;
+    float listDownX;
+    float listDownY;
+    long listDownTime;
 
     @Nullable
     @Override
@@ -107,6 +112,24 @@ public class MainSearch extends Fragment {
                     Glide.with(MainSearch.this).resumeRequests();
                 else
                     Glide.with(MainSearch.this).pauseRequests();
+            }
+        });
+        searchResult.addOnItemTouchListener(new RecyclerView.SimpleOnItemTouchListener() {
+            @Override
+            public boolean onInterceptTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent event) {
+                if(event.getAction() == MotionEvent.ACTION_DOWN) {
+                    listDownX = event.getX();
+                    listDownY = event.getY();
+                    listDownTime = event.getEventTime();
+                    return false;
+                }
+                if(event.getAction() != MotionEvent.ACTION_UP)
+                    return false;
+                if(Math.abs(event.getX() - listDownX) > dp(12) || Math.abs(event.getY() - listDownY) > dp(12))
+                    return false;
+                if(event.getEventTime() - listDownTime >= ViewConfiguration.getLongPressTimeout())
+                    return false;
+                return handleTitleListTap(event.getX(), event.getY());
             }
         });
         searchMode = rootView.findViewById(R.id.searchMode);
@@ -351,12 +374,7 @@ public class MainSearch extends Fragment {
             public void onResumeClick(int position, int id) {
                 Title title = resolveLatestTitleForResume(searchAdapter.getItem(position));
                 int bookmark = resolveLatestBookmark(title, id);
-                if(title != null && title.getId() > 0 && bookmark > 0) {
-                    Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
-                    manga.setTitle(title);
-                    manga.setTitleId(title.getId());
-                    openViewer(getContext(), manga, -1);
-                }
+                openResume(title, bookmark);
             }
 
             @Override
@@ -433,8 +451,55 @@ public class MainSearch extends Fragment {
         return bookmark;
     }
 
+    private void openResume(Title title, int bookmark) {
+        if(getContext() == null || title == null || title.getId() <= 0 || bookmark <= 0)
+            return;
+        Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
+        manga.setTitle(title);
+        manga.setTitleId(title.getId());
+        openViewer(getContext(), manga, -1);
+    }
+
     private boolean isOfflineTitle(Title title) {
         return title != null && title.getPath() != null && title.getPath().length() > 0;
+    }
+
+    private boolean handleTitleListTap(float x, float y) {
+        if(searchResult == null || searchAdapter == null || getContext() == null)
+            return false;
+        View child = searchResult.findChildViewUnder(x, y);
+        if(child == null)
+            return false;
+        int position = searchResult.getChildAdapterPosition(child);
+        if(position == RecyclerView.NO_POSITION || position >= searchAdapter.getItemCount())
+            return false;
+        Title title = searchAdapter.getItem(position);
+        if(title == null)
+            return false;
+        if(x >= child.getRight() - dp(96)) {
+            Title latest = resolveLatestTitleForResume(title);
+            int bookmark = resolveLatestBookmark(latest, title.getBookmark());
+            openResume(latest, bookmark);
+        } else {
+            openTitleFromList(title);
+        }
+        return true;
+    }
+
+    private void openTitleFromList(Title title) {
+        if(title == null || getContext() == null)
+            return;
+        if(isOfflineTitle(title)) {
+            Intent episodeView = episodeIntent(getContext(), title);
+            episodeView.putExtra("online", false);
+            startActivity(episodeView);
+        } else if(title.getId() > 0) {
+            startActivity(episodeIntent(getContext(), title));
+        }
+    }
+
+    private int dp(int value) {
+        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
     }
 
     private void appendUnique(ArrayList<Title> target, List<?> source) {
@@ -762,12 +827,7 @@ public class MainSearch extends Fragment {
                     public void onResumeClick(int position, int id) {
                         Title title = resolveLatestTitleForResume(searchAdapter.getItem(position));
                         int bookmark = resolveLatestBookmark(title, id);
-                        if(title == null || bookmark <= 0)
-                            return;
-                        Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
-                        manga.setTitle(title);
-                        manga.setTitleId(title.getId());
-                        openViewer(getContext(), manga, -1);
+                        openResume(title, bookmark);
                     }
 
                     @Override

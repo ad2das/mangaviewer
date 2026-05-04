@@ -4,6 +4,7 @@ import androidx.core.content.ContextCompat;
 import androidx.cardview.widget.CardView;
 import androidx.recyclerview.widget.RecyclerView;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Filter;
@@ -371,10 +372,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                 resume.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.resumeDark));
             }
             card.setOnClickListener(v -> {
-                int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || mClickListener == null)
-                    return;
-                mClickListener.onItemClick(position);
+                openItem();
             });
             card.setOnLongClickListener(v -> {
                 int position = getAdapterPosition();
@@ -384,17 +382,43 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                 return true;
             });
             resume.setOnClickListener(v -> {
-                int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || mClickListener == null)
-                    return;
-                Title title = mDataFiltered.get(position);
-                int bookmark = resolveResumeBookmark(title);
-                if(bookmark <= 0)
-                    return;
-                mClickListener.onResumeClick(position, bookmark);
+                openResume();
+            });
+            resume.setOnTouchListener((v, event) -> {
+                if(event.getAction() == MotionEvent.ACTION_DOWN) {
+                    v.setPressed(true);
+                    return true;
+                }
+                if(event.getAction() == MotionEvent.ACTION_UP) {
+                    v.setPressed(false);
+                    v.performClick();
+                    return true;
+                }
+                if(event.getAction() == MotionEvent.ACTION_CANCEL) {
+                    v.setPressed(false);
+                    return true;
+                }
+                return true;
             });
 
+        }
 
+        private void openItem() {
+            int position = getAdapterPosition();
+            if(position == RecyclerView.NO_POSITION || mClickListener == null)
+                return;
+            mClickListener.onItemClick(position);
+        }
+
+        private void openResume() {
+            int position = getAdapterPosition();
+            if(position == RecyclerView.NO_POSITION || mClickListener == null)
+                return;
+            Title title = mDataFiltered.get(position);
+            int bookmark = resolveResumeBookmark(title);
+            if(bookmark <= 0)
+                return;
+            mClickListener.onResumeClick(position, bookmark);
         }
     }
 
