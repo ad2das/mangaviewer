@@ -159,11 +159,6 @@ public class MainPageWebtoon {
             sections.add(section(statusLabel, "최신", webtoonDayPath(status, "recent", "n")));
             sections.add(section(statusLabel, "신작", webtoonDayPath(status, "new", "n")));
             sections.add(section(statusLabel, "인기순", webtoonOrderPath(status, "f")));
-            sections.add(section(statusLabel, "드라마", webtoonGenrePath(status, "드라마", "n")));
-            sections.add(section(statusLabel, "판타지", webtoonGenrePath(status, "판타지", "n")));
-            sections.add(section(statusLabel, "액션", webtoonGenrePath(status, "액션", "n")));
-            sections.add(section(statusLabel, "로맨스", webtoonGenrePath(status, "로맨스", "n")));
-            sections.add(section(statusLabel, "무협", webtoonGenrePath(status, "무협", "n")));
         }
         return sections.toArray(new String[0][]);
     }
@@ -172,8 +167,6 @@ public class MainPageWebtoon {
         ArrayList<String[]> sections = new ArrayList<>();
         for(int i = 0; i < COMIC_DAY_LABELS.length; i++)
             sections.add(section("연재일", COMIC_DAY_LABELS[i], comicDayPath(COMIC_DAY_VALUES[i], "n")));
-        for(String genre : COMIC_GENRES)
-            sections.add(section("장르별", genre, comicGenrePath(genre, "n")));
         for(int i = 0; i < ALPHABET_LABELS.length; i++)
             sections.add(section("작품별", ALPHABET_LABELS[i], comicAlphabetPath(ALPHABET_VALUES[i], "n")));
         return sections.toArray(new String[0][]);
