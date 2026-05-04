@@ -18,6 +18,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
+import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.Title;
 
 import static ml.melun.mangaview.mangaview.MTitle.baseModeStr;
@@ -696,6 +697,49 @@ public class Preference {
     public void setRecents(List<MTitle> rec){
         this.recent = safeTitleList(rec);
         writeRecent();
+    }
+
+    public void backfillRecentProgress(CustomHttpClient client, int limit) {
+        if(client == null || recent == null || recent.size() == 0)
+            return;
+        boolean changed = false;
+        int processed = 0;
+        for(MTitle item : recent) {
+            if(item == null || item.getId() <= 0)
+                continue;
+            if(item.getBookmarkEpisodeIndex() > 0 && item.getEpisodeCount() > 0)
+                continue;
+            Title title = new Title(item);
+            int bookmarkId = getBookmark(title);
+            if(bookmarkId <= 0)
+                bookmarkId = item.getBookmarkEpisodeId();
+            if(bookmarkId <= 0)
+                continue;
+            if(limit > 0 && processed >= limit)
+                break;
+            processed++;
+            try {
+                int code = title.fetchEps(client);
+                if(code == Title.LOAD_CAPTCHA || title.getEps() == null || title.getEps().size() == 0)
+                    continue;
+                int episodeIndex = -1;
+                for(int i = 0; i < title.getEps().size(); i++) {
+                    Manga episode = title.getEps().get(i);
+                    if(episode != null && episode.getId() == bookmarkId) {
+                        episodeIndex = i + 1;
+                        break;
+                    }
+                }
+                if(episodeIndex > 0) {
+                    item.setReadingProgress(bookmarkId, episodeIndex, title.getEps().size());
+                    changed = true;
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+        if(changed)
+            writeRecent();
     }
 
     public List<MTitle> getRecentForSync(){

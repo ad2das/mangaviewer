@@ -245,6 +245,7 @@ public class FirebaseSyncManager {
                     preference.importSyncSettings((Map<String, Object>)settings);
                 setLocalUpdatedAt("settings", remoteTime(remote, "settingsUpdatedAt"));
             }
+            preference.backfillRecentProgress(MainApplication.httpClient, 30);
         });
     }
 
