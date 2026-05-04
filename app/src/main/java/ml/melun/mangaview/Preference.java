@@ -711,6 +711,7 @@ public class Preference {
         Gson gson = new Gson();
         prefsEditor.putString("favorite", gson.toJson(favorite));
         prefsEditor.apply();
+        notifyLocalChange("favorite");
         notifySync("favorite");
     }
 

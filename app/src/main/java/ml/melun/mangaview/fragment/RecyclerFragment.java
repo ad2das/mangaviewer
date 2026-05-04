@@ -134,14 +134,17 @@ public class RecyclerFragment extends Fragment {
             @Override
             public void onResumeClick(int position, int id) {
                 selectedPosition = position;
-                Title title = titleAdapter.getItem(position);
+                Title title = resolveLatestTitleForResume(titleAdapter.getItem(position));
+                int bookmark = resolveLatestBookmark(title, id);
+                if(bookmark <= 0)
+                    return;
                 if(mode == R.id.nav_recent) {
-                    Manga manga = new Manga(id, "", "" , title.getBaseMode());
+                    Manga manga = new Manga(bookmark, "", "" , title.getBaseMode());
                     manga.setTitle(title);
                     manga.setTitleId(title.getId());
                     openViewer(manga, 2);
                 } else if(mode == R.id.nav_favorite) {
-                    Manga manga = new Manga(id, "", "", title.getBaseMode());
+                    Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
                     manga.setTitle(title);
                     manga.setTitleId(title.getId());
                     openViewer(manga, -1);
@@ -210,6 +213,13 @@ public class RecyclerFragment extends Fragment {
     }
 
     @Override
+    public void onResume() {
+        super.onResume();
+        if(loaded && mode > -1)
+            changeMode(mode);
+    }
+
+    @Override
     public void onDestroyView() {
         if(localChangeListener != null) {
             p.removeLocalChangeListener(localChangeListener);
@@ -225,6 +235,50 @@ public class RecyclerFragment extends Fragment {
                 || "favorite".equals(scope)
                 || "bookmark".equals(scope)
                 || "pageBookmark".equals(scope);
+    }
+
+    private Title resolveLatestTitleForResume(Title title) {
+        if(title == null)
+            return null;
+        MTitle stored = findStoredTitle(title, mode == R.id.nav_favorite ? p.getFavorite() : p.getRecent());
+        if(stored == null && mode == R.id.nav_favorite)
+            stored = findStoredTitle(title, p.getRecent());
+        if(stored == null)
+            return title;
+        Title latest = stored instanceof Title ? (Title) stored : new Title(stored);
+        int bookmark = p.getBookmark(latest);
+        if(bookmark <= 0)
+            bookmark = latest.getBookmarkEpisodeId();
+        if(bookmark > 0)
+            latest.setBookmark(bookmark);
+        return latest;
+    }
+
+    private MTitle findStoredTitle(Title title, List<MTitle> source) {
+        if(title == null || source == null)
+            return null;
+        for(MTitle stored : source) {
+            if(stored != null
+                    && stored.getId() == title.getId()
+                    && stored.getBaseMode() == title.getBaseMode())
+                return stored;
+        }
+        return null;
+    }
+
+    private int resolveLatestBookmark(Title title, int fallback) {
+        if(title == null)
+            return fallback;
+        int bookmark = p.getBookmark(title);
+        if(bookmark <= 0)
+            bookmark = title.getBookmark();
+        if(bookmark <= 0)
+            bookmark = title.getBookmarkEpisodeId();
+        if(bookmark <= 0)
+            bookmark = fallback;
+        if(bookmark > 0)
+            title.setBookmark(bookmark);
+        return bookmark;
     }
 
     public void changeMode(int id){
