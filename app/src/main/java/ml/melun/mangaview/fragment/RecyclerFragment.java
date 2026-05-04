@@ -36,6 +36,7 @@ import java.util.List;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.Preference;
 import ml.melun.mangaview.adapter.TitleAdapter;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
@@ -62,6 +63,7 @@ public class RecyclerFragment extends Fragment {
     int mode = -1;
     boolean loaded = false;
     SearchView searchView;
+    Preference.LocalChangeListener localChangeListener;
 
 
     @Override
@@ -103,6 +105,15 @@ public class RecyclerFragment extends Fragment {
                     Glide.with(RecyclerFragment.this).pauseRequests();
             }
         });
+        localChangeListener = scope -> {
+            if(!isLibraryChange(scope) || recyclerView == null)
+                return;
+            recyclerView.post(() -> {
+                if(loaded && mode > -1)
+                    changeMode(mode);
+            });
+        };
+        p.addLocalChangeListener(localChangeListener);
         titleAdapter.registerAdapterDataObserver(new AdapterDataObserver() {
             @Override
             public void onChanged() {
@@ -200,9 +211,20 @@ public class RecyclerFragment extends Fragment {
 
     @Override
     public void onDestroyView() {
+        if(localChangeListener != null) {
+            p.removeLocalChangeListener(localChangeListener);
+            localChangeListener = null;
+        }
         super.onDestroyView();
         mode = -1;
         loaded = false;
+    }
+
+    private boolean isLibraryChange(String scope) {
+        return "recent".equals(scope)
+                || "favorite".equals(scope)
+                || "bookmark".equals(scope)
+                || "pageBookmark".equals(scope);
     }
 
     public void changeMode(int id){

@@ -38,6 +38,7 @@ import java.util.List;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.Preference;
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.adapter.TitleAdapter;
 import ml.melun.mangaview.activity.AdvSearchActivity;
@@ -79,6 +80,7 @@ public class MainSearch extends Fragment {
     LoadOfflineTitles offlineTask;
     int pendingBaseMode = -1;
     String activeLibraryQuery = null;
+    Preference.LocalChangeListener localChangeListener;
 
     @Nullable
     @Override
@@ -115,6 +117,12 @@ public class MainSearch extends Fragment {
         libraryCount = rootView.findViewById(R.id.libraryCount);
         libraryTab = rootView.findViewById(R.id.libraryTab);
         fragment = this;
+        localChangeListener = scope -> {
+            if(!isLibraryChange(scope) || searchResult == null)
+                return;
+            searchResult.post(this::refreshLibraryFromPreferences);
+        };
+        p.addLocalChangeListener(localChangeListener);
         setupLibraryTabs();
         if(p.getDarkTheme()){
             searchMode.setPopupBackgroundResource(R.color.colorDarkWindowBackground);
@@ -364,6 +372,22 @@ public class MainSearch extends Fragment {
         });
     }
 
+    private boolean isLibraryChange(String scope) {
+        return "recent".equals(scope)
+                || "favorite".equals(scope)
+                || "bookmark".equals(scope)
+                || "pageBookmark".equals(scope);
+    }
+
+    private void refreshLibraryFromPreferences() {
+        if(searchResult == null || getContext() == null || search != null)
+            return;
+        if(activeLibraryQuery != null && activeLibraryQuery.length() > 0)
+            performLibrarySearch(activeLibraryQuery);
+        else
+            showLibrary();
+    }
+
     private boolean isOfflineTitle(Title title) {
         return title != null && title.getPath() != null && title.getPath().length() > 0;
     }
@@ -522,6 +546,10 @@ public class MainSearch extends Fragment {
 
     @Override
     public void onDestroyView() {
+        if(localChangeListener != null) {
+            p.removeLocalChangeListener(localChangeListener);
+            localChangeListener = null;
+        }
         if(searchTask != null)
             searchTask.cancel(true);
         if(offlineTask != null)

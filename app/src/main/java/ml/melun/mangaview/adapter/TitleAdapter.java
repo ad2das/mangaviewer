@@ -245,8 +245,46 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         int bookmark = p.getBookmark(title);
         if(bookmark <= 0)
             bookmark = title.getBookmarkEpisodeId();
+        if(bookmark <= 0)
+            bookmark = findStoredProgressBookmark(title);
         if(bookmark > 0)
             title.setBookmark(bookmark);
+    }
+
+    private int resolveResumeBookmark(Title title) {
+        if(title == null)
+            return -1;
+        int bookmark = p.getBookmark(title);
+        if(bookmark <= 0)
+            bookmark = title.getBookmark();
+        if(bookmark <= 0)
+            bookmark = title.getBookmarkEpisodeId();
+        if(bookmark <= 0)
+            bookmark = findStoredProgressBookmark(title);
+        if(bookmark > 0)
+            title.setBookmark(bookmark);
+        return bookmark;
+    }
+
+    private int findStoredProgressBookmark(Title title) {
+        int bookmark = findStoredProgressBookmark(title, p.getRecent());
+        if(bookmark > 0)
+            return bookmark;
+        return findStoredProgressBookmark(title, p.getFavorite());
+    }
+
+    private int findStoredProgressBookmark(Title title, List<MTitle> source) {
+        if(title == null || source == null)
+            return -1;
+        for(MTitle stored : source) {
+            if(stored == null)
+                continue;
+            if(stored.getId() == title.getId()
+                    && stored.getBaseMode() == title.getBaseMode()
+                    && stored.getBookmarkEpisodeId() > 0)
+                return stored.getBookmarkEpisodeId();
+        }
+        return -1;
     }
 
     private int readingProgressPercent(Title title) {
@@ -350,11 +388,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                 if(position == RecyclerView.NO_POSITION || mClickListener == null)
                     return;
                 Title title = mDataFiltered.get(position);
-                int bookmark = p.getBookmark(title);
-                if(bookmark <= 0)
-                    bookmark = title.getBookmark();
-                if(bookmark <= 0)
-                    bookmark = title.getBookmarkEpisodeId();
+                int bookmark = resolveResumeBookmark(title);
                 if(bookmark <= 0)
                     return;
                 mClickListener.onResumeClick(position, bookmark);
