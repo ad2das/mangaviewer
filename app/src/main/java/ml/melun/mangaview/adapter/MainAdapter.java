@@ -193,6 +193,8 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             updatedList.setLayoutManager(lm);
             updatedList.setHasFixedSize(true);
             updatedList.setItemViewCacheSize(12);
+            updatedList.setOverScrollMode(View.OVER_SCROLL_NEVER);
+            updatedList.setItemAnimator(null);
             updatedList.setAdapter(uadapter);
             uadapter.setClickListener(new MainUpdatedAdapter.OnClickCallback() {
                 @Override

@@ -19,6 +19,7 @@ import android.widget.TextView;
 
 
 import com.bumptech.glide.Glide;
+import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import com.bumptech.glide.request.RequestOptions;
 
 
@@ -44,6 +45,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     boolean bookmarked = false;
     TypedValue outValue;
     private int bookmark = -1;
+    private static final Object PAYLOAD_SELECTION = "selection";
     //title is in index 0
     Title title;
     TagAdapter ta;
@@ -109,6 +111,15 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     // binds the data to the TextView in each row
     @Override
     public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {
+        onBindViewHolder(holder, position, java.util.Collections.emptyList());
+    }
+
+    @Override
+    public void onBindViewHolder(RecyclerView.ViewHolder holder, int position, List<Object> payloads) {
+        if(payloads != null && payloads.contains(PAYLOAD_SELECTION) && holder instanceof ViewHolder) {
+            bindSelection((ViewHolder) holder, position);
+            return;
+        }
         if(position==0){
             HeaderHolder h = (HeaderHolder) holder;
             String titles = this.title.getName();
@@ -130,6 +141,11 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             if(!save && thumb.length() > 0) Glide.with(h.h_thumb)
                     .load(isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, title.getBaseMode()))
                     .apply(new RequestOptions().dontTransform())
+                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                    .override(dp(132), dp(176))
+                    .thumbnail(0.25f)
+                    .dontAnimate()
+                    .placeholder(R.drawable.app_cover_placeholder)
                     .into(h.h_thumb);
             else h.h_thumb.setImageBitmap(null);
             if(mode == 0 || mode == 3)
@@ -161,18 +177,31 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
                 Glide.with(h.thumb)
                         .load(isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, title.getBaseMode()))
                         .apply(new RequestOptions().dontTransform())
+                        .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                        .override(dp(52), dp(70))
+                        .thumbnail(0.25f)
+                        .dontAnimate()
+                        .placeholder(R.drawable.app_cover_placeholder)
                         .into(h.thumb);
             } else {
                 h.thumb.setImageResource(R.drawable.app_cover_placeholder);
             }
-            if (position == bookmark) {
-                if(dark) h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.selectedDark));
-                else h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.appAccentLight));
-            }
-            else{
-                h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, dark ? R.color.colorDarkBackground : R.color.appCard));
-            }
+            bindSelection(h, position);
         }
+    }
+
+    private void bindSelection(ViewHolder holder, int position) {
+        if (position == bookmark) {
+            if(dark) holder.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.selectedDark));
+            else holder.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.appAccentLight));
+        }
+        else{
+            holder.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, dark ? R.color.colorDarkBackground : R.color.appCard));
+        }
+    }
+
+    int dp(int value) {
+        return (int) (value * mainContext.getResources().getDisplayMetrics().density + 0.5f);
     }
 
     // total number of rows
@@ -201,10 +230,10 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
                 if(m.getId()>-1) {
                     if (bookmark != -1) {
                         int pre = bookmark;
-                        notifyItemChanged(pre);
+                        notifyItemChanged(pre, PAYLOAD_SELECTION);
                     }
                     bookmark = position;
-                    notifyItemChanged(bookmark);
+                    notifyItemChanged(bookmark, PAYLOAD_SELECTION);
                 }
                 mClickListener.onItemClick(position - 1, m);
             });
@@ -340,8 +369,8 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         if(i!=bookmark){
             int tmp = bookmark;
             bookmark = i;
-            if(tmp>0) notifyItemChanged(tmp);
-            if(bookmark>0) notifyItemChanged(bookmark);
+            if(tmp>0) notifyItemChanged(tmp, PAYLOAD_SELECTION);
+            if(bookmark>0) notifyItemChanged(bookmark, PAYLOAD_SELECTION);
         }
     }
 

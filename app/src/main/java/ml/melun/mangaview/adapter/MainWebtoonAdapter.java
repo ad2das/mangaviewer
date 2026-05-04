@@ -75,12 +75,13 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     int baseMode;
     Fetcher fetcher;
     RecyclerView anchorRecycler;
+    RecyclerView.OnScrollListener anchorScrollListener;
     private final RecyclerView.RecycledViewPool sharedHomePool = new RecyclerView.RecycledViewPool();
     List<Object> pendingRows;
     boolean initialRowsShown = false;
     private final Set<String> preloadedThumbs = new LinkedHashSet<>();
     private static final int PRELOADED_THUMB_LIMIT = 120;
-    private static final int PRELOAD_THUMB_MAX_PER_FETCH = 12;
+    private static final int PRELOAD_THUMB_MAX_PER_FETCH = 4;
     private static final int SECTION_BATCH_SIZE = 4;
     private static final int FIRST_SCREEN_BATCH_SIZE = 1;
     private int preloadCount = 0;
@@ -98,6 +99,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         inflater = LayoutInflater.from(context);
         dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
         rows = new ArrayList<>();
+        sharedHomePool.setMaxRecycledViews(STYLE_CONTINUE, 12);
+        sharedHomePool.setMaxRecycledViews(STYLE_RANKING, 12);
+        sharedHomePool.setMaxRecycledViews(STYLE_STANDARD, 18);
         setHasStableIds(true);
     }
 
@@ -126,18 +130,25 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     public void setAnchorRecycler(RecyclerView recyclerView) {
-        if(this.anchorRecycler != null)
-            this.anchorRecycler.clearOnScrollListeners();
+        if(this.anchorRecycler != null && anchorScrollListener != null)
+            this.anchorRecycler.removeOnScrollListener(anchorScrollListener);
         this.anchorRecycler = recyclerView;
         if(this.anchorRecycler != null) {
-            this.anchorRecycler.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            anchorScrollListener = new RecyclerView.OnScrollListener() {
                 @Override
                 public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
                     super.onScrollStateChanged(recyclerView, newState);
                     if(newState == RecyclerView.SCROLL_STATE_IDLE)
-                        applyPendingRows();
+                        recyclerView.postDelayed(() -> {
+                            if(anchorRecycler == recyclerView
+                                    && recyclerView.getScrollState() == RecyclerView.SCROLL_STATE_IDLE)
+                                applyPendingRows();
+                        }, 250);
                 }
-            });
+            };
+            this.anchorRecycler.addOnScrollListener(anchorScrollListener);
+        } else {
+            anchorScrollListener = null;
         }
     }
 
@@ -746,9 +757,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             list.setLayoutManager(manager);
             list.setNestedScrollingEnabled(false);
             list.setHasFixedSize(true);
+            list.setOverScrollMode(View.OVER_SCROLL_NEVER);
+            list.setItemAnimator(null);
             list.setRecycledViewPool(sharedHomePool);
             list.setItemViewCacheSize(6);
-            manager.setInitialPrefetchItemCount(4);
+            manager.setInitialPrefetchItemCount(2);
         }
 
         void bind(HomeSection section) {
@@ -812,6 +825,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         public int getItemCount() {
             int realCount = items == null ? 0 : items.size();
             return Math.min(realCount, style == STYLE_RANKING ? 6 : 6);
+        }
+
+        @Override
+        public int getItemViewType(int position) {
+            return style;
         }
 
         @Override
@@ -1112,9 +1130,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             list.setLayoutManager(manager);
             list.setNestedScrollingEnabled(false);
             list.setHasFixedSize(true);
+            list.setOverScrollMode(View.OVER_SCROLL_NEVER);
+            list.setItemAnimator(null);
             list.setRecycledViewPool(sharedHomePool);
             list.setItemViewCacheSize(6);
-            manager.setInitialPrefetchItemCount(4);
+            manager.setInitialPrefetchItemCount(2);
         }
 
         void bind(Ranking<?> section) {
@@ -1198,6 +1218,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         @Override
         public int getItemCount() {
             return items == null ? 0 : items.size();
+        }
+
+        @Override
+        public int getItemViewType(int position) {
+            return STYLE_STANDARD;
         }
 
         @Override

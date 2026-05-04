@@ -13,6 +13,7 @@ import android.widget.ImageView;
 import android.widget.TextView;
 
 import com.bumptech.glide.Glide;
+import com.bumptech.glide.load.engine.DiskCacheStrategy;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -40,11 +41,20 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         save = p.getDataSave();
         dark = p.getDarkTheme();
         this.mInflater = LayoutInflater.from(main);
+        setHasStableIds(true);
     }
 
     @Override
     public long getItemId(int position) {
-        return position;
+        if(mData == null || position < 0 || position >= mData.size())
+            return RecyclerView.NO_ID;
+        UpdatedManga item = mData.get(position);
+        if(item == null)
+            return RecyclerView.NO_ID;
+        Title title = item.getTitle();
+        if(title != null && title.getId() > 0)
+            return (((long) title.getBaseMode()) << 32) ^ (title.getId() & 0xffffffffL);
+        return (((long) item.getBaseMode()) << 32) ^ (item.getName() == null ? position : item.getName().hashCode());
     }
 
     public void addData(ArrayList<UpdatedManga> data){
@@ -71,8 +81,18 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         h.date.setText(m.getDate() == null ? "" : m.getDate());
         String thumb = m.getThumb();
         Glide.with(h.thumb).clear(h.thumb);
-        if(thumb != null && thumb.length()>1 && !save) Glide.with(h.thumb).load(getGlideUrl(thumb, m.getBaseMode())).into(h.thumb);
-        else h.thumb.setImageBitmap(null);
+        if(thumb != null && thumb.length()>1 && !save) {
+            Glide.with(h.thumb)
+                    .load(getGlideUrl(thumb, m.getBaseMode()))
+                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                    .override(dp(72), dp(96))
+                    .thumbnail(0.25f)
+                    .dontAnimate()
+                    .placeholder(R.drawable.app_cover_placeholder)
+                    .into(h.thumb);
+        } else {
+            h.thumb.setImageBitmap(null);
+        }
         if(save) h.thumb.setVisibility(View.GONE);
         if(p.getBookmark(m.getTitle())>0)
             h.seen.setVisibility(View.VISIBLE);
@@ -92,6 +112,10 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         }
         h.tags.setText(tags.toString());
         h.author.setText(m.getAuthor() == null ? "" : m.getAuthor());
+    }
+
+    int dp(int value) {
+        return (int) (value * context.getResources().getDisplayMetrics().density + 0.5f);
     }
 
     @Override

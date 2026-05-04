@@ -289,6 +289,7 @@ public class ViewerActivity extends AppCompatActivity {
             
             loadManga(manga);
             strip.setItemAnimator(null);
+            strip.setOverScrollMode(View.OVER_SCROLL_NEVER);
             strip.setOnScrollListener(new RecyclerView.OnScrollListener() {
                 @Override
                 public void onScrollStateChanged(RecyclerView recyclerView, int newState) {

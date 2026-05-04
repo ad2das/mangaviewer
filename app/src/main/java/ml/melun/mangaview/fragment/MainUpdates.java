@@ -13,6 +13,7 @@ import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
 import androidx.recyclerview.widget.RecyclerView;
 
+import com.bumptech.glide.Glide;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout;
 
 import java.util.ArrayList;
@@ -57,6 +58,20 @@ public class MainUpdates extends Fragment {
         recyclerView.setLayoutManager(new NpaLinearLayoutManager(getContext()));
         recyclerView.setHasFixedSize(true);
         recyclerView.setItemViewCacheSize(20);
+        recyclerView.setItemAnimator(null);
+        recyclerView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        recyclerView.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
+                super.onScrollStateChanged(recyclerView, newState);
+                if(getContext() == null)
+                    return;
+                if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                    Glide.with(MainUpdates.this).resumeRequests();
+                else
+                    Glide.with(MainUpdates.this).pauseRequests();
+            }
+        });
         adapter = new UpdatedAdapter(getContext());
         adapter.setOnClickListener(new UpdatedAdapter.onclickListener() {
             @Override

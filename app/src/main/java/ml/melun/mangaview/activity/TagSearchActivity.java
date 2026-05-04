@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.Intent;
 import ml.melun.mangaview.task.LifecycleTask;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.ActionBar;
 import androidx.appcompat.app.AppCompatActivity;
@@ -19,6 +20,7 @@ import android.view.MenuItem;
 import android.view.View;
 import android.widget.TextView;
 
+import com.bumptech.glide.Glide;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayoutDirection;
 
@@ -87,6 +89,20 @@ public class TagSearchActivity extends AppCompatActivity {
         searchResult.setLayoutManager(lm);
         searchResult.setHasFixedSize(true);
         searchResult.setItemViewCacheSize(12);
+        searchResult.setItemAnimator(null);
+        searchResult.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        searchResult.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
+                super.onScrollStateChanged(recyclerView, newState);
+                if(isFinishing() || destroyed)
+                    return;
+                if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                    Glide.with(TagSearchActivity.this).resumeRequests();
+                else
+                    Glide.with(TagSearchActivity.this).pauseRequests();
+            }
+        });
         Intent i = getIntent();
         query = i.getStringExtra("query");
         mode = i.getIntExtra("mode",0);

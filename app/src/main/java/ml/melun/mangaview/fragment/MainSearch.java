@@ -94,6 +94,7 @@ public class MainSearch extends Fragment {
         searchResult.setHasFixedSize(true);
         searchResult.setItemViewCacheSize(12);
         searchResult.setItemAnimator(null);
+        searchResult.setOverScrollMode(View.OVER_SCROLL_NEVER);
         searchResult.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
             public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {

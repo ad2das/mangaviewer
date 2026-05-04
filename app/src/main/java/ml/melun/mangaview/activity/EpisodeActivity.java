@@ -190,11 +190,14 @@ public class EpisodeActivity extends AppCompatActivity {
         episodeList.setLayoutManager(new NpaLinearLayoutManager(this));
         episodeList.setHasFixedSize(true);
         episodeList.setItemViewCacheSize(20);
+        episodeList.setItemAnimator(null);
+        episodeList.setOverScrollMode(View.OVER_SCROLL_NEVER);
         homeDir = p.getHomeDir();
         resumefab = this.findViewById(R.id.resumefab);
         fab_container = findViewById(R.id.fab_container);
 
-        ((SimpleItemAnimator) episodeList.getItemAnimator()).setSupportsChangeAnimations(false);
+        if(episodeList.getItemAnimator() instanceof SimpleItemAnimator)
+            ((SimpleItemAnimator) episodeList.getItemAnimator()).setSupportsChangeAnimations(false);
         if(recentResult){
             Intent resultIntent = new Intent();
             setResult(RESULT_OK,resultIntent);

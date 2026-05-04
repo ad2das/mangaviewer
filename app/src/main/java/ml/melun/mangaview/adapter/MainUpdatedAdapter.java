@@ -18,6 +18,7 @@ import android.widget.ImageView;
 import android.widget.TextView;
 
 import com.bumptech.glide.Glide;
+import com.bumptech.glide.load.engine.DiskCacheStrategy;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -104,7 +105,18 @@ public class MainUpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }else if(save)
             h.thumb.setImageDrawable(ResourcesCompat.getDrawable(res, R.mipmap.ic_launcher, null));
         else
-            Glide.with(h.thumb).load(getGlideUrl(thumb, manga.getBaseMode())).into(h.thumb);
+            Glide.with(h.thumb)
+                    .load(getGlideUrl(thumb, manga.getBaseMode()))
+                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                    .override(dp(96), dp(128))
+                    .thumbnail(0.25f)
+                    .dontAnimate()
+                    .placeholder(R.drawable.app_cover_placeholder)
+                    .into(h.thumb);
+    }
+
+    int dp(int value) {
+        return (int) (value * context.getResources().getDisplayMetrics().density + 0.5f);
     }
 
 

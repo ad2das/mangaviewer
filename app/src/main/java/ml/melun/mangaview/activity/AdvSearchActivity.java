@@ -79,6 +79,18 @@ public class AdvSearchActivity extends AppCompatActivity {
         nr.setLayoutManager(nm);
         rr.setLayoutManager(rm);
         tr.setLayoutManager(tm);
+        nr.setHasFixedSize(true);
+        rr.setHasFixedSize(true);
+        tr.setHasFixedSize(true);
+        nr.setItemViewCacheSize(12);
+        rr.setItemViewCacheSize(12);
+        tr.setItemViewCacheSize(12);
+        nr.setItemAnimator(null);
+        rr.setItemAnimator(null);
+        tr.setItemAnimator(null);
+        nr.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        rr.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        tr.setOverScrollMode(View.OVER_SCROLL_NEVER);
 
         names = Arrays.asList(getResources().getStringArray(R.array.tag_name));
         releases = Arrays.asList(getResources().getStringArray(R.array.tag_release));

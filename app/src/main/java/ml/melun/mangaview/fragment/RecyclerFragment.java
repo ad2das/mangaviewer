@@ -89,6 +89,7 @@ public class RecyclerFragment extends Fragment {
         recyclerView.setHasFixedSize(true);
         recyclerView.setItemViewCacheSize(12);
         recyclerView.setItemAnimator(null);
+        recyclerView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         recyclerView.setAdapter(titleAdapter);
         recyclerView.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override

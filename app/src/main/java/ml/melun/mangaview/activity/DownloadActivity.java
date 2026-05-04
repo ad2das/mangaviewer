@@ -45,6 +45,10 @@ public class DownloadActivity extends AppCompatActivity {
         try {
             title = new Gson().fromJson(intent.getStringExtra("title"),new TypeToken<Title>(){}.getType());
             eplist.setLayoutManager(new NpaLinearLayoutManager(this));
+            eplist.setHasFixedSize(true);
+            eplist.setItemViewCacheSize(20);
+            eplist.setItemAnimator(null);
+            eplist.setOverScrollMode(View.OVER_SCROLL_NEVER);
             adapter = new SelectEpisodeAdapter(getApplicationContext(),title.getEps());
             adapter.setClickListener((view, position) -> adapter.select(position));
             eplist.setAdapter(adapter);
