@@ -524,20 +524,23 @@ public class ViewerActivity3 extends AppCompatActivity {
 
         if(index==0){
             next.setEnabled(false);
-            next.setColorFilter(Color.BLACK);
+            next.clearColorFilter();
+            next.setAlpha(0.38f);
         }
         else {
             next.setEnabled(true);
-            next.setColorFilter(null);
+            next.clearColorFilter();
+            next.setAlpha(1f);
         }
         if(index==eps.size()-1) {
             prev.setEnabled(false);
-            prev.setColorFilter(Color.BLACK);
+            prev.clearColorFilter();
+            prev.setAlpha(0.38f);
         }
         else {
             prev.setEnabled(true);
-            prev.setColorFilter(null);
-            prev.setColorFilter(null);
+            prev.clearColorFilter();
+            prev.setAlpha(1f);
         }
         pageBtn.setText(viewerBookmark+1+"/"+imgs.size());
     }

@@ -1069,19 +1069,23 @@ public class ViewerActivity extends AppCompatActivity {
 
         if(m.nextEp() == null){
             next.setEnabled(false);
-            next.setColorFilter(Color.BLACK);
+            next.clearColorFilter();
+            next.setAlpha(0.38f);
         }
         else {
             next.setEnabled(true);
-            next.setColorFilter(null);
+            next.clearColorFilter();
+            next.setAlpha(1f);
         }
         if(m.prevEp() == null) {
             prev.setEnabled(false);
-            prev.setColorFilter(Color.BLACK);
+            prev.clearColorFilter();
+            prev.setAlpha(0.38f);
         }
         else {
             prev.setEnabled(true);
-            prev.setColorFilter(null);
+            prev.clearColorFilter();
+            prev.setAlpha(1f);
         }
         PageItem page = getFocusedVisiblePage();
         if(page!=null)
