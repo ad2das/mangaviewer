@@ -2,6 +2,8 @@ package ml.melun.mangaview.model;
 
 import androidx.annotation.Nullable;
 
+import java.util.Objects;
+
 import ml.melun.mangaview.mangaview.Manga;
 
 public class PageItem{
@@ -22,16 +24,33 @@ public class PageItem{
 
     @Override
     public int hashCode() {
-        return manga.getId()*10000 + index*10 + this.side;
+        return Objects.hash(
+                manga == null ? 0 : manga.getBaseMode(),
+                manga == null ? 0 : manga.getId(),
+                index,
+                side,
+                img
+        );
     }
 
     @Override
     public boolean equals(@Nullable Object obj) {
         if(obj instanceof PageItem){
             PageItem p = (PageItem)obj;
-            return p.index == this.index && p.manga.equals(this.manga);
+            return p.index == this.index
+                    && p.side == this.side
+                    && Objects.equals(p.img, this.img)
+                    && sameManga(p.manga, this.manga);
         }else
             return false;
+    }
+
+    private boolean sameManga(Manga a, Manga b) {
+        if(a == b)
+            return true;
+        if(a == null || b == null)
+            return false;
+        return a.getBaseMode() == b.getBaseMode() && a.getId() == b.getId();
     }
 
     public int index;

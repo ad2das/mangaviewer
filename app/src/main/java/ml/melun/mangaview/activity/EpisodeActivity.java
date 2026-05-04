@@ -181,7 +181,7 @@ public class EpisodeActivity extends AppCompatActivity {
         title = new Gson().fromJson(intent.getStringExtra("title"),new TypeToken<Title>(){}.getType());
         online = intent.getBooleanExtra("online", true);
         if(title.useBookmark())
-            bookmarkId = p.getBookmark(title);
+            bookmarkId = restoredBookmarkId(title);
         position = intent.getIntExtra("position",0);
         favoriteResult = intent.getBooleanExtra("favorite",false);
         recentResult = intent.getBooleanExtra("recent",false);
@@ -348,6 +348,12 @@ public class EpisodeActivity extends AppCompatActivity {
                     }
                 }
         }
+        if(bookmarkIndex < 0 && title.getBookmarkEpisodeIndex() > 0 && episodes != null
+                && title.getBookmarkEpisodeIndex() <= episodes.size()) {
+            bookmarkIndex = title.getBookmarkEpisodeIndex();
+            bookmarkId = episodes.get(bookmarkIndex - 1).getId();
+            episodeAdapter.setBookmark(bookmarkIndex);
+        }
         episodeAdapter.setFavorite(p.findFavorite(title)>-1);
         episodeList.setAdapter(episodeAdapter);
         if(bookmarkIndex>8) {
@@ -361,7 +367,11 @@ public class EpisodeActivity extends AppCompatActivity {
             resumefab.show();
         else
             resumefab.hide();
-        resumefab.setOnClickListener(v -> openViewer(episodes.get(bookmarkIndex-1),0));
+        resumefab.setOnClickListener(v -> {
+            if(episodes == null || bookmarkIndex <= 0 || bookmarkIndex > episodes.size())
+                return;
+            openViewer(episodes.get(bookmarkIndex - 1),0);
+        });
 
         episodeAdapter.setClickListener(new EpisodeAdapter.ItemClickListener() {
 
@@ -419,6 +429,19 @@ public class EpisodeActivity extends AppCompatActivity {
             i.putExtra("mode",2);
             startActivity(i);
         });
+    }
+
+    private int restoredBookmarkId(Title title) {
+        if(title == null)
+            return -1;
+        int bookmark = p.getBookmark(title);
+        if(bookmark > 0)
+            return bookmark;
+        if(title.getBookmark() > 0)
+            return title.getBookmark();
+        if(title.getBookmarkEpisodeId() > 0)
+            return title.getBookmarkEpisodeId();
+        return -1;
     }
 
     private class getEpisodes extends LifecycleTask<Void,Void,Integer> {
