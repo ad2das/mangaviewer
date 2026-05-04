@@ -336,13 +336,14 @@ public class MainActivity extends AppCompatActivity
 
         content = findViewById(R.id.contentHolder);
 
-        // set initial tab
-        startTab = p.getStartTab();
+        // Always start a fresh app session from Home. The older startTab preference can
+        // point to Library after sync/settings restore, which makes cold starts feel wrong.
+        startTab = 0;
         if(savedInstanceState != null) {
             int t = savedInstanceState.getInt("currentTab", 0);
             changeFragment(t>-1 ? t : 0);
         }else
-            changeFragment(startTab);
+            changeFragment(0);
 
 
 
