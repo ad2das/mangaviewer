@@ -81,15 +81,15 @@ public class Manga {
         return thumb;
     }
 
-    public int fetch(CustomHttpClient client) {
+    public synchronized int fetch(CustomHttpClient client) {
         return fetch(client, true, null);
     }
 
-    public int fetch(CustomHttpClient client, Map<String, String> cookies) {
+    public synchronized int fetch(CustomHttpClient client, Map<String, String> cookies) {
         return fetch(client, false, cookies);
     }
 
-    public int fetch(CustomHttpClient client, boolean doLogin, Map<String, String> cookies) {
+    public synchronized int fetch(CustomHttpClient client, boolean doLogin, Map<String, String> cookies) {
         if(isComicWolfSource())
             return fetchWolf(client, "/cv?toon=", "/cv?toon=");
         if(isWebtoonWolfSource())
@@ -414,7 +414,7 @@ public class Manga {
         return title == null ? -1 : title.getId();
     }
 
-    public List<String> getImgs(Context context) {
+    public synchronized List<String> getImgs(Context context) {
         if (mode != 0) {
             if (imgs == null) {
                 imgs = new ArrayList<>();

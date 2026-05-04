@@ -133,8 +133,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         }
         items.add(new InfoItem(m, m.nextEp()));
         notifyItemRangeInserted(prevsize, items.size()-prevsize);
-        count++;
-        if(count>MaxStackSize){
+        count = loadedEpisodeCount();
+        if(count > MaxStackSize){
             popFirst();
         }
     }
@@ -159,9 +159,9 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
         int inserted = items.size()-prevsize;
         notifyItemRangeInserted(0, inserted);
-        count++;
+        count = loadedEpisodeCount();
 
-        if(count>MaxStackSize){
+        if(count > MaxStackSize){
             popLast();
         }
         return inserted;
@@ -199,6 +199,20 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 && a.getBaseMode() == b.getBaseMode();
     }
 
+    private int loadedEpisodeCount() {
+        if(items == null)
+            return 0;
+        Set<String> loaded = new LinkedHashSet<>();
+        for(Object item : items) {
+            if(item instanceof PageItem) {
+                Manga manga = ((PageItem) item).manga;
+                if(manga != null)
+                    loaded.add(manga.getBaseMode() + ":" + manga.getId());
+            }
+        }
+        return loaded.size();
+    }
+
     public void popFirst(){
         int size = 0;
         for(int i=1; i<items.size(); i++){
@@ -210,7 +224,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if (size > 0) {
             clearCurrentIfRemoving(0, size);
             items.subList(0, size).clear();
-            count--;
+            count = loadedEpisodeCount();
             clearDecodedPageState();
             notifyItemRangeRemoved(0,size);
         }
@@ -230,7 +244,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             int removeCount = originalSize - removeStart;
             clearCurrentIfRemoving(removeStart, originalSize);
             items.subList(removeStart, originalSize).clear();
-            count--;
+            count = loadedEpisodeCount();
             clearDecodedPageState();
             notifyItemRangeRemoved(removeStart, removeCount);
         }
@@ -633,7 +647,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     @Override
     public void onViewAttachedToWindow(@NonNull RecyclerView.ViewHolder holder) {
         //handle bookmark
-        int layoutPos = holder.getLayoutPosition();
+        int layoutPos = holder.getAdapterPosition();
         if(items == null || layoutPos == RecyclerView.NO_POSITION || layoutPos >= items.size())
             return;
         int type = getItemViewType(layoutPos);

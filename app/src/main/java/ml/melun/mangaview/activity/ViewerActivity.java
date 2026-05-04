@@ -170,6 +170,7 @@ public class ViewerActivity extends AppCompatActivity {
                 Manga target = curm.prevEp();
                 if(target != null) {
                     cancelActiveEpisodeLoader();
+                    cancelNextPrefetcher(target);
                     previousEpisodeBoundaryLoading = true;
                     int generation = episodeLoaderGeneration;
                     loader = new LoadImagesJob(target, m -> {
@@ -208,6 +209,7 @@ public class ViewerActivity extends AppCompatActivity {
                         return target;
                     }
                     cancelActiveEpisodeLoader();
+                    cancelNextPrefetcher(target);
                     nextEpisodeBoundaryLoading = true;
                     int generation = episodeLoaderGeneration;
                     loader = new LoadImagesJob(target, m -> {
@@ -608,7 +610,7 @@ public class ViewerActivity extends AppCompatActivity {
                     try {
                         if(m.isOnline()) {
                             result = ensureEpisodeListLoaded(m);
-                            if(result == LOAD_OK) {
+                            if(result == LOAD_OK && !hasLoadedImages(m)) {
                                 result = httpClient.runWithRequestGroup(requestGroup, () -> m.fetch(httpClient));
                                 if(result == LOAD_OK && !cancelled && !hasLoadedImages(m))
                                     result = httpClient.runWithRequestGroup(requestGroup, () -> m.fetch(httpClient));
@@ -1116,6 +1118,13 @@ public class ViewerActivity extends AppCompatActivity {
             nextPrefetcher.cancel();
         nextPrefetchEpisodeId = -1;
         nextPrefetchBaseMode = -1;
+    }
+
+    private void cancelNextPrefetcher(Manga target) {
+        if(target == null || nextPrefetcher == null)
+            return;
+        if(nextPrefetchEpisodeId == target.getId() && nextPrefetchBaseMode == target.getBaseMode())
+            cancelNextPrefetcher();
     }
 
     private boolean hasLoadedImages(Manga target) {
