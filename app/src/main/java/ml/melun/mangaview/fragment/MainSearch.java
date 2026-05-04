@@ -349,9 +349,10 @@ public class MainSearch extends Fragment {
 
             @Override
             public void onResumeClick(int position, int id) {
-                Title title = searchAdapter.getItem(position);
-                if(title.getId() > 0 && id > 0) {
-                    Manga manga = new Manga(id, "", "", title.getBaseMode());
+                Title title = resolveLatestTitleForResume(searchAdapter.getItem(position));
+                int bookmark = resolveLatestBookmark(title, id);
+                if(title != null && title.getId() > 0 && bookmark > 0) {
+                    Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
                     manga.setTitle(title);
                     manga.setTitleId(title.getId());
                     openViewer(getContext(), manga, -1);
@@ -386,6 +387,50 @@ public class MainSearch extends Fragment {
             performLibrarySearch(activeLibraryQuery);
         else
             showLibrary();
+    }
+
+    private Title resolveLatestTitleForResume(Title title) {
+        if(title == null)
+            return null;
+        MTitle stored = findStoredTitle(title, p.getRecent());
+        if(stored == null)
+            stored = findStoredTitle(title, p.getFavorite());
+        if(stored == null)
+            return title;
+        Title latest = stored instanceof Title ? (Title) stored : new Title(stored);
+        int bookmark = p.getBookmark(latest);
+        if(bookmark <= 0)
+            bookmark = latest.getBookmarkEpisodeId();
+        if(bookmark > 0)
+            latest.setBookmark(bookmark);
+        return latest;
+    }
+
+    private MTitle findStoredTitle(Title title, List<MTitle> source) {
+        if(title == null || source == null)
+            return null;
+        for(MTitle stored : source) {
+            if(stored != null
+                    && stored.getId() == title.getId()
+                    && stored.getBaseMode() == title.getBaseMode())
+                return stored;
+        }
+        return null;
+    }
+
+    private int resolveLatestBookmark(Title title, int fallback) {
+        if(title == null)
+            return fallback;
+        int bookmark = p.getBookmark(title);
+        if(bookmark <= 0)
+            bookmark = title.getBookmark();
+        if(bookmark <= 0)
+            bookmark = title.getBookmarkEpisodeId();
+        if(bookmark <= 0)
+            bookmark = fallback;
+        if(bookmark > 0)
+            title.setBookmark(bookmark);
+        return bookmark;
     }
 
     private boolean isOfflineTitle(Title title) {
@@ -715,10 +760,11 @@ public class MainSearch extends Fragment {
 
                     @Override
                     public void onResumeClick(int position, int id) {
-                        Title title = searchAdapter.getItem(position);
-                        if(title == null || id <= 0)
+                        Title title = resolveLatestTitleForResume(searchAdapter.getItem(position));
+                        int bookmark = resolveLatestBookmark(title, id);
+                        if(title == null || bookmark <= 0)
                             return;
-                        Manga manga = new Manga(id, "", "", title.getBaseMode());
+                        Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
                         manga.setTitle(title);
                         manga.setTitleId(title.getId());
                         openViewer(getContext(), manga, -1);
