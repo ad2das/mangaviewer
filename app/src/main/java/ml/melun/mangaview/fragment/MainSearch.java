@@ -26,6 +26,7 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import com.google.android.material.tabs.TabLayout;
+import com.bumptech.glide.Glide;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayoutDirection;
 import com.google.gson.Gson;
@@ -92,6 +93,19 @@ public class MainSearch extends Fragment {
         searchResult.setLayoutManager(new NpaLinearLayoutManager(getContext()));
         searchResult.setHasFixedSize(true);
         searchResult.setItemViewCacheSize(12);
+        searchResult.setItemAnimator(null);
+        searchResult.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
+                super.onScrollStateChanged(recyclerView, newState);
+                if(getContext() == null)
+                    return;
+                if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                    Glide.with(MainSearch.this).resumeRequests();
+                else
+                    Glide.with(MainSearch.this).pauseRequests();
+            }
+        });
         searchMode = rootView.findViewById(R.id.searchMode);
         baseMode = rootView.findViewById(R.id.searchBaseMode);
         advSearchBtn = rootView.findViewById(R.id.advSearchBtn);

@@ -26,6 +26,7 @@ import androidx.fragment.app.Fragment;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.recyclerview.widget.RecyclerView.AdapterDataObserver;
 
+import com.bumptech.glide.Glide;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
@@ -85,7 +86,22 @@ public class RecyclerFragment extends Fragment {
         emptyStateMessage = rootView.findViewById(R.id.empty_state_message);
         titleAdapter = new TitleAdapter(getContext());
         recyclerView.setLayoutManager(new NpaLinearLayoutManager(getContext()));
+        recyclerView.setHasFixedSize(true);
+        recyclerView.setItemViewCacheSize(12);
+        recyclerView.setItemAnimator(null);
         recyclerView.setAdapter(titleAdapter);
+        recyclerView.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
+                super.onScrollStateChanged(recyclerView, newState);
+                if(getContext() == null)
+                    return;
+                if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                    Glide.with(RecyclerFragment.this).resumeRequests();
+                else
+                    Glide.with(RecyclerFragment.this).pauseRequests();
+            }
+        });
         titleAdapter.registerAdapterDataObserver(new AdapterDataObserver() {
             @Override
             public void onChanged() {

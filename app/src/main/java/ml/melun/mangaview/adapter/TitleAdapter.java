@@ -14,6 +14,7 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 
 import com.bumptech.glide.Glide;
+import com.bumptech.glide.load.engine.DiskCacheStrategy;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -221,12 +222,22 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         holder.thumb.setVisibility(View.VISIBLE);
         if(thumb.length()>1 && (!save || forceThumbnail)) {
             Object source = isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, data.getBaseMode());
-            Glide.with(holder.thumb).load(source).into(holder.thumb);
+            Glide.with(holder.thumb)
+                    .load(source)
+                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                    .override(dp(96), dp(124))
+                    .thumbnail(0.25f)
+                    .dontAnimate()
+                    .into(holder.thumb);
         }
         else holder.thumb.setImageResource(R.drawable.app_cover_placeholder);
         if(bookmark>0 && resume) holder.resume.setVisibility(View.VISIBLE);
         else holder.resume.setVisibility(View.GONE);
 
+    }
+
+    int dp(int value) {
+        return (int) (value * mainContext.getResources().getDisplayMetrics().density + 0.5f);
     }
 
     private void applyStoredBookmark(Title title) {
