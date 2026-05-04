@@ -283,7 +283,8 @@ public class MainMain extends Fragment{
         mainRecycler.addOnItemTouchListener(new RecyclerView.OnItemTouchListener() {
             @Override
             public boolean onInterceptTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent e) {
-                return detector.onTouchEvent(e);
+                detector.onTouchEvent(e);
+                return false;
             }
 
             @Override
