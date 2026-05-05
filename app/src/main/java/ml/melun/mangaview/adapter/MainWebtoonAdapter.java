@@ -366,10 +366,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         List<Object> contentRows = new ArrayList<>();
         List<Title> seedTitles = collectTitles(sections, 24);
         List<Title> recentTitles = recentTitles();
-        if(seedTitles.size() > 0)
+        boolean hasServerTitles = seedTitles.size() > 0;
+        if(hasServerTitles)
             result.add(new HeroRow(seedTitles.subList(0, Math.min(5, seedTitles.size()))));
         List<Title> continueTitles = recentTitles;
-        if(continueTitles.size() > 0)
+        if(hasServerTitles && continueTitles.size() > 0)
             result.add(new HomeSection("이어보기", "전체보기", "", continueTitles, STYLE_CONTINUE));
         SectionPick popular = findSection(sections, "인기순");
         List<Title> popularTitles = popular == null ? new ArrayList<>() : titlesFromRanking(popular.ranking, 8);
@@ -1683,6 +1684,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private boolean hasHero(List<Object> candidateRows) {
-        return candidateRows != null && candidateRows.size() > 0;
+        if(candidateRows == null)
+            return false;
+        for(Object row : candidateRows)
+            if(row instanceof HeroRow)
+                return true;
+        return false;
     }
 }
