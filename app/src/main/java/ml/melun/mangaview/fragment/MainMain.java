@@ -40,6 +40,8 @@ import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
 public class MainMain extends Fragment{
 
     RecyclerView mainRecycler;
+    RecyclerView webtoonRecycler;
+    RecyclerView comicRecycler;
     MainWebtoonAdapter mainComicAdapter;
     MainWebtoonAdapter mainWebtoonAdapter;
     Fragment fragment;
@@ -141,30 +143,17 @@ public class MainMain extends Fragment{
         fragment = this;
         //main content
         // 최근 추가된 만화
-        mainRecycler = rootView.findViewById(R.id.main_recycler);
-        NpaLinearLayoutManager lm = new NpaLinearLayoutManager(getContext());
-        mainRecycler.setLayoutManager(lm);
-        mainRecycler.setHasFixedSize(true);
-        mainRecycler.setItemViewCacheSize(8);
-        mainRecycler.setItemAnimator(null);
-        mainRecycler.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        mainRecycler.addOnScrollListener(new RecyclerView.OnScrollListener() {
-            @Override
-            public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
-                super.onScrollStateChanged(recyclerView, newState);
-                if(getContext() == null)
-                    return;
-                if(newState == RecyclerView.SCROLL_STATE_IDLE)
-                    Glide.with(MainMain.this).resumeRequests();
-                else
-                    Glide.with(MainMain.this).pauseRequests();
-            }
-        });
+        webtoonRecycler = rootView.findViewById(R.id.main_recycler);
+        comicRecycler = rootView.findViewById(R.id.main_comic_recycler);
+        configureHomeRecycler(webtoonRecycler);
+        configureHomeRecycler(comicRecycler);
+        mainRecycler = webtoonRecycler;
         localChangeListener = scope -> {
             if(!"recent".equals(scope) && !"bookmark".equals(scope))
                 return;
-            if(mainRecycler != null)
-                mainRecycler.post(this::refreshHomeLocalState);
+            RecyclerView target = mainRecycler;
+            if(target != null)
+                target.post(this::refreshHomeLocalState);
         };
         p.addLocalChangeListener(localChangeListener);
 
@@ -263,11 +252,17 @@ public class MainMain extends Fragment{
 
         mainComicAdapter = new MainWebtoonAdapter(getContext(), base_comic);
         mainComicAdapter.setListener(listener);
-        mainComicAdapter.setAnchorRecycler(mainRecycler);
+        mainComicAdapter.setAnchorRecycler(comicRecycler);
 
         mainWebtoonAdapter = new MainWebtoonAdapter(getContext());
         mainWebtoonAdapter.setListener(listener);
-        mainWebtoonAdapter.setAnchorRecycler(mainRecycler);
+        mainWebtoonAdapter.setAnchorRecycler(webtoonRecycler);
+        webtoonRecycler.setAdapter(mainWebtoonAdapter);
+        comicRecycler.setAdapter(mainComicAdapter);
+        registerRevealObserver(mainWebtoonAdapter, webtoonRecycler, base_webtoon);
+        registerRevealObserver(mainComicAdapter, comicRecycler, base_comic);
+        mainWebtoonAdapter.showInitialRows();
+        mainComicAdapter.showInitialRows();
 
         selectedBaseMode = p.getBaseMode() == base_comic ? base_comic : base_webtoon;
         modeWebtoon.setOnClickListener(v -> {
@@ -288,6 +283,56 @@ public class MainMain extends Fragment{
         return rootView;
     }
 
+    private void configureHomeRecycler(RecyclerView recyclerView) {
+        if(recyclerView == null)
+            return;
+        NpaLinearLayoutManager lm = new NpaLinearLayoutManager(getContext());
+        recyclerView.setLayoutManager(lm);
+        recyclerView.setHasFixedSize(true);
+        recyclerView.setItemViewCacheSize(8);
+        recyclerView.setItemAnimator(null);
+        recyclerView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        recyclerView.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
+                super.onScrollStateChanged(recyclerView, newState);
+                if(getContext() == null)
+                    return;
+                if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                    Glide.with(MainMain.this).resumeRequests();
+                else
+                    Glide.with(MainMain.this).pauseRequests();
+            }
+        });
+    }
+
+    private void registerRevealObserver(MainWebtoonAdapter adapter, RecyclerView recyclerView, int baseMode) {
+        if(adapter == null || recyclerView == null)
+            return;
+        adapter.registerAdapterDataObserver(new RecyclerView.AdapterDataObserver() {
+            @Override
+            public void onChanged() {
+                revealIfSelectedAndReady();
+            }
+
+            @Override
+            public void onItemRangeInserted(int positionStart, int itemCount) {
+                revealIfSelectedAndReady();
+            }
+
+            private void revealIfSelectedAndReady() {
+                if(selectedBaseMode != baseMode || mainRecycler != recyclerView || !adapter.hasDisplayContent())
+                    return;
+                recyclerView.post(() -> {
+                    if(selectedBaseMode == baseMode && mainRecycler == recyclerView && adapter.hasDisplayContent() && recyclerView.getAlpha() < 1f) {
+                        showSelectedRecycler(getOtherRecycler(recyclerView), recyclerView);
+                        scrollHomeToTop();
+                    }
+                });
+            }
+        });
+    }
+
     private MainWebtoonAdapter getSelectedAdapter() {
         return selectedBaseMode == base_comic ? mainComicAdapter : mainWebtoonAdapter;
     }
@@ -301,20 +346,49 @@ public class MainMain extends Fragment{
     private void switchBaseMode(int baseMode) {
         cancelScheduledInitialFetch();
         cancelInactiveFetch(baseMode);
+        RecyclerView previousRecycler = mainRecycler;
         selectedBaseMode = baseMode;
         p.setBaseMode(baseMode);
+        MainWebtoonAdapter selectedAdapter = getSelectedAdapter();
+        if(selectedAdapter != null)
+            selectedAdapter.showInitialRows();
+        mainRecycler = getSelectedRecycler();
         if(mainRecycler != null) {
-            MainWebtoonAdapter selectedAdapter = getSelectedAdapter();
-            if(selectedAdapter != null)
-                selectedAdapter.showInitialRows();
+            if(previousRecycler != null)
+                previousRecycler.stopScroll();
             mainRecycler.stopScroll();
-            if(mainRecycler.getAdapter() != selectedAdapter)
-                mainRecycler.swapAdapter(selectedAdapter, false);
+            if(selectedAdapter == null || selectedAdapter.hasDisplayContent())
+                showSelectedRecycler(previousRecycler, mainRecycler);
             scrollHomeToTop();
         }
         updateModeToggle();
         applySelectedHomeTab();
         scrollToSelectedTab();
+    }
+
+    private RecyclerView getSelectedRecycler() {
+        return selectedBaseMode == base_comic ? comicRecycler : webtoonRecycler;
+    }
+
+    private RecyclerView getOtherRecycler(RecyclerView recyclerView) {
+        return recyclerView == comicRecycler ? webtoonRecycler : comicRecycler;
+    }
+
+    private void showSelectedRecycler(RecyclerView previousRecycler, RecyclerView selectedRecycler) {
+        if(selectedRecycler == null)
+            return;
+        selectedRecycler.setAlpha(1f);
+        selectedRecycler.setEnabled(true);
+        selectedRecycler.bringToFront();
+        RecyclerView inactiveRecycler = selectedRecycler == comicRecycler ? webtoonRecycler : comicRecycler;
+        if(inactiveRecycler != null && inactiveRecycler != selectedRecycler) {
+            inactiveRecycler.setAlpha(0f);
+            inactiveRecycler.setEnabled(false);
+        }
+        if(previousRecycler != null && previousRecycler != selectedRecycler) {
+            previousRecycler.setAlpha(0f);
+            previousRecycler.setEnabled(false);
+        }
     }
 
     private void applySelectedHomeTab() {
@@ -413,17 +487,22 @@ public class MainMain extends Fragment{
         }
         cancelScheduledInitialFetch();
         final int targetBaseMode = selectedBaseMode;
+        final RecyclerView targetRecycler = mainRecycler;
         pendingInitialFetch = () -> {
             pendingInitialFetch = null;
-            if(mainRecycler != null && isAdded() && !wait && selectedBaseMode == targetBaseMode)
+            if(mainRecycler == targetRecycler && isAdded() && !wait && selectedBaseMode == targetBaseMode)
                 fetchSelected();
         };
-        mainRecycler.postDelayed(pendingInitialFetch, 250);
+        targetRecycler.postDelayed(pendingInitialFetch, 250);
     }
 
     private void cancelScheduledInitialFetch() {
-        if(mainRecycler != null && pendingInitialFetch != null)
-            mainRecycler.removeCallbacks(pendingInitialFetch);
+        if(pendingInitialFetch != null) {
+            if(webtoonRecycler != null)
+                webtoonRecycler.removeCallbacks(pendingInitialFetch);
+            if(comicRecycler != null)
+                comicRecycler.removeCallbacks(pendingInitialFetch);
+        }
         pendingInitialFetch = null;
     }
 
@@ -495,6 +574,8 @@ public class MainMain extends Fragment{
             localChangeListener = null;
         }
         mainRecycler = null;
+        webtoonRecycler = null;
+        comicRecycler = null;
         mainComicAdapter = null;
         mainWebtoonAdapter = null;
         comicFetched = false;

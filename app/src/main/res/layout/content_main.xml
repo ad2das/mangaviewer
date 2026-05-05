@@ -120,4 +120,18 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@+id/mainTab" />
 
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/main_comic_recycler"
+        android:clipToPadding="false"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="26dp"
+        android:layout_height="0dp"
+        android:layout_width="match_parent"
+        android:alpha="0"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/mainTab" />
+
 </androidx.constraintlayout.widget.ConstraintLayout>

@@ -232,6 +232,22 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         return rows == null ? 0 : rows.size();
     }
 
+    public boolean hasDisplayContent() {
+        if(rows == null || rows.size() == 0)
+            return false;
+        for(Object row : rows) {
+            if(row instanceof HeroRow)
+                return true;
+            if(row instanceof HomeSection && ((HomeSection) row).titles.size() > 0)
+                return true;
+            if(row instanceof Ranking && ((Ranking<?>) row).size() > 0)
+                return true;
+            if(row instanceof CategoryPanel && activeHomeTab == 3)
+                return true;
+        }
+        return false;
+    }
+
     @Override
     public long getItemId(int position) {
         if(rows == null || position < 0 || position >= rows.size())
@@ -311,14 +327,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return result;
         }
         if(activeHomeTab == 0) {
-            result.add(new ActionStrip());
             Ranking<?> firstSection = firstNamedSection(dataSet, freshSectionTitle());
             if(firstSection == null)
                 firstSection = firstNamedSection(dataSet, "인기순");
-            if(firstSection != null)
+            if(firstSection != null && firstSection.size() > 0)
                 result.add(firstSection);
-            else
-                result.add(new CategoryPanel());
             return result;
         }
         List<Object> tabRows = buildTabRows(dataSet, true, activeHomeTab == 1 ? "인기순" : freshSectionTitle());
