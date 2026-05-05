@@ -586,6 +586,7 @@ public class MainSearch extends Fragment {
         if(title == null)
             return fallback;
         if(isOfflineTitle(title)) {
+            p.applyOfflineProgress(title);
             int bookmark = title.getBookmark();
             return bookmark > 0 ? bookmark : fallback;
         }

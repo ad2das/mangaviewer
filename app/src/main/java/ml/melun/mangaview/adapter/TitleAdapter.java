@@ -249,7 +249,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(title == null)
             return;
         if(isOfflineTitle(title)) {
-            int offlineBookmark = resolveOfflineBookmark(title);
+            int offlineBookmark = p.applyOfflineProgress(title) ? title.getBookmark() : resolveOfflineBookmark(title);
             if(offlineBookmark > 0) {
                 title.setBookmark(offlineBookmark);
                 applyOfflineReadingProgress(title, offlineBookmark);
@@ -272,7 +272,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(title == null)
             return -1;
         if(isOfflineTitle(title)) {
-            int bookmark = resolveOfflineBookmark(title);
+            int bookmark = p.applyOfflineProgress(title) ? title.getBookmark() : resolveOfflineBookmark(title);
             if(bookmark > 0) {
                 title.setBookmark(bookmark);
                 applyOfflineReadingProgress(title, bookmark);

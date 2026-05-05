@@ -777,6 +777,8 @@ public class ViewerActivity extends AppCompatActivity {
                 title = page.manga.getTitle();
             if(page.manga.isOnline())
                 p.setBookmark(title, page.manga.getId());
+            else
+                p.setOfflineProgress(title, page.manga);
             return;
         }
     }
