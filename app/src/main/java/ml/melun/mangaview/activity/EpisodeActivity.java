@@ -39,6 +39,7 @@ import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.adapter.EpisodeAdapter;
 import ml.melun.mangaview.adapter.TagAdapter;
+import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 
@@ -433,6 +434,26 @@ public class EpisodeActivity extends AppCompatActivity {
             i.putExtra("mode",2);
             startActivity(i);
         });
+        warmupInitialViewerTargets();
+    }
+
+    private void warmupInitialViewerTargets() {
+        if(!online || episodes == null || episodes.size() == 0)
+            return;
+        if(bookmarkIndex > 0 && bookmarkIndex <= episodes.size())
+            warmupEpisode(episodes.get(bookmarkIndex - 1));
+        int limit = p.getDataSave() ? 2 : 4;
+        for(int i = 0; i < episodes.size() && i < limit; i++)
+            warmupEpisode(episodes.get(i));
+    }
+
+    private void warmupEpisode(Manga manga) {
+        if(manga == null)
+            return;
+        manga.setMode(mode);
+        manga.setTitle(title);
+        manga.setTitleId(title == null ? manga.getTitleId() : title.getId());
+        ViewerWarmupManager.warmup(context, manga, title);
     }
 
     private void confirmDeleteOfflineEpisode(int position, Manga manga) {
@@ -561,6 +582,9 @@ public class EpisodeActivity extends AppCompatActivity {
 
     public void openViewer(Manga manga, int code){
         manga.setMode(mode);
+        manga.setTitle(title);
+        manga.setTitleId(title == null ? manga.getTitleId() : title.getId());
+        ViewerWarmupManager.warmup(context, manga, title);
         Intent viewer = null;
         switch (p.getViewerType()){
             case 0:

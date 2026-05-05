@@ -2,7 +2,6 @@ package ml.melun.mangaview.adapter;
 
 import android.content.Context;
 import android.app.Activity;
-import android.graphics.Canvas;
 import android.graphics.drawable.Drawable;
 import android.util.LruCache;
 import androidx.annotation.NonNull;
@@ -20,17 +19,13 @@ import android.widget.TextView;
 
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.Priority;
-import com.bumptech.glide.load.engine.bitmap_recycle.BitmapPool;
 import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy;
-import com.bumptech.glide.load.resource.bitmap.BitmapTransformation;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import com.bumptech.glide.request.RequestOptions;
 import com.bumptech.glide.request.target.CustomTarget;
 import com.bumptech.glide.request.target.Target;
 import com.bumptech.glide.request.transition.Transition;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -44,6 +39,7 @@ import static ml.melun.mangaview.Utils.getGlideUrl;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.activity.ViewerActivity;
+import ml.melun.mangaview.glide.ViewerPageTransformation;
 import ml.melun.mangaview.interfaces.StringCallback;
 import ml.melun.mangaview.mangaview.Decoder;
 import ml.melun.mangaview.mangaview.Manga;
@@ -576,97 +572,6 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(item != null)
             options = options.transform(new ViewerPageTransformation(item, autoCut, reverse, width));
         return options;
-    }
-
-    private static class ViewerPageTransformation extends BitmapTransformation {
-        private static final String ID = "ml.melun.mangaview.adapter.StripAdapter.ViewerPageTransformation.1";
-        private final int index;
-        private final int side;
-        private final int baseMode;
-        private final int mangaId;
-        private final int titleId;
-        private final int seed;
-        private final boolean autoCut;
-        private final boolean reverse;
-        private final int viewerWidth;
-
-        ViewerPageTransformation(PageItem item, boolean autoCut, boolean reverse, int viewerWidth) {
-            this.index = item == null ? 0 : item.index;
-            this.side = item == null ? PageItem.FIRST : item.side;
-            this.baseMode = item == null || item.manga == null ? 0 : item.manga.getBaseMode();
-            this.mangaId = item == null || item.manga == null ? 0 : item.manga.getId();
-            this.titleId = item == null || item.manga == null ? 0 : item.manga.getTitleId();
-            this.seed = item == null || item.manga == null ? 0 : item.manga.getSeed();
-            this.autoCut = autoCut;
-            this.reverse = reverse;
-            this.viewerWidth = Math.max(viewerWidth, 1);
-        }
-
-        @Override
-        protected Bitmap transform(@NonNull BitmapPool pool, @NonNull Bitmap toTransform, int outWidth, int outHeight) {
-            Bitmap decoded = new Decoder(seed, mangaId).decode(toTransform, viewerWidth);
-            if(!autoCut)
-                return decoded;
-
-            int decodedWidth = decoded.getWidth();
-            int decodedHeight = decoded.getHeight();
-            Bitmap displayBitmap;
-            if(decodedWidth > decodedHeight) {
-                int cropWidth = Math.max(1, decodedWidth / 2);
-                int cropX;
-                if(side == PageItem.FIRST)
-                    cropX = reverse ? 0 : decodedWidth - cropWidth;
-                else
-                    cropX = reverse ? decodedWidth - cropWidth : 0;
-                displayBitmap = Bitmap.createBitmap(decoded, cropX, 0, cropWidth, decodedHeight);
-            } else if(side == PageItem.FIRST) {
-                displayBitmap = decoded;
-            } else {
-                displayBitmap = pool.get(Math.max(decodedWidth, 1), 1, Bitmap.Config.ARGB_8888);
-                new Canvas(displayBitmap).drawColor(android.graphics.Color.TRANSPARENT);
-            }
-            if(decoded != toTransform && decoded != displayBitmap && !decoded.isRecycled())
-                decoded.recycle();
-            return displayBitmap;
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if(!(o instanceof ViewerPageTransformation))
-                return false;
-            ViewerPageTransformation other = (ViewerPageTransformation)o;
-            return index == other.index
-                    && side == other.side
-                    && baseMode == other.baseMode
-                    && mangaId == other.mangaId
-                    && titleId == other.titleId
-                    && seed == other.seed
-                    && autoCut == other.autoCut
-                    && reverse == other.reverse
-                    && viewerWidth == other.viewerWidth;
-        }
-
-        @Override
-        public int hashCode() {
-            int result = ID.hashCode();
-            result = 31 * result + index;
-            result = 31 * result + side;
-            result = 31 * result + baseMode;
-            result = 31 * result + mangaId;
-            result = 31 * result + titleId;
-            result = 31 * result + seed;
-            result = 31 * result + (autoCut ? 1 : 0);
-            result = 31 * result + (reverse ? 1 : 0);
-            result = 31 * result + viewerWidth;
-            return result;
-        }
-
-        @Override
-        public void updateDiskCacheKey(@NonNull MessageDigest messageDigest) {
-            String key = ID + ":" + index + ":" + side + ":" + baseMode + ":" + mangaId
-                    + ":" + titleId + ":" + seed + ":" + autoCut + ":" + reverse + ":" + viewerWidth;
-            messageDigest.update(key.getBytes(StandardCharsets.UTF_8));
-        }
     }
 
     private Object getImageModel(PageItem item) {

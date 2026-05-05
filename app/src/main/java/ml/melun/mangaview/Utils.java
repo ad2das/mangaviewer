@@ -59,6 +59,7 @@ import ml.melun.mangaview.activity.EpisodeActivity;
 import ml.melun.mangaview.activity.ViewerActivity;
 import ml.melun.mangaview.activity.ViewerActivity2;
 import ml.melun.mangaview.activity.ViewerActivity3;
+import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.IntegerCallback;
 import ml.melun.mangaview.interfaces.StringCallback;
 import ml.melun.mangaview.Downloader;
@@ -191,6 +192,7 @@ public class Utils {
                 viewer = new Intent(context, ViewerActivity2.class);
                 break;
         }
+        ViewerWarmupManager.warmup(context, manga, manga == null ? null : manga.getTitle());
         viewer.putExtra("manga",new Gson().toJson(manga));
         return viewer;
     }

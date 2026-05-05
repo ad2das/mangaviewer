@@ -38,6 +38,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MainPageWebtoon;
@@ -1086,6 +1087,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 progress.setProgress(progressPercent);
                 percent.setText(progressPercent + "%");
                 bindTitleThumb(thumb, item, 156, 144);
+                if(position < 3)
+                    warmupContinueViewer(item);
                 card.setOnClickListener(v -> {
                     if(listener != null && item != null) {
                         int bookmark = p.getBookmark(item);
@@ -1095,6 +1098,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                             Manga manga = new Manga(bookmark, "", "", item.getBaseMode());
                             manga.setTitle(item);
                             manga.setTitleId(item.getId());
+                            ViewerWarmupManager.warmup(context, manga, item);
                             listener.clickedManga(manga);
                         } else {
                             listener.clickedTitle(item);
@@ -1102,6 +1106,20 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     }
                 });
             }
+        }
+
+        private void warmupContinueViewer(Title item) {
+            if(item == null)
+                return;
+            int bookmark = p.getBookmark(item);
+            if(bookmark <= 0)
+                bookmark = item.getBookmark();
+            if(bookmark <= 0)
+                return;
+            Manga manga = new Manga(bookmark, "", "", item.getBaseMode());
+            manga.setTitle(item);
+            manga.setTitleId(item.getId());
+            ViewerWarmupManager.warmup(context, manga, item);
         }
 
         private int readingProgressPercent(Title item) {

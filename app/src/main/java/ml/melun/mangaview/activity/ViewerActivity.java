@@ -7,11 +7,6 @@ import android.graphics.Color;
 import android.os.Handler;
 import android.os.Looper;
 
-import com.bumptech.glide.Glide;
-import com.bumptech.glide.load.engine.DiskCacheStrategy;
-import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy;
-import com.bumptech.glide.request.RequestOptions;
-import com.bumptech.glide.request.target.Target;
 import com.google.android.material.appbar.AppBarLayout;
 
 import androidx.annotation.Nullable;
@@ -46,6 +41,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.StringCallback;
 import ml.melun.mangaview.ui.StripLayoutManager;
 import ml.melun.mangaview.Utils;
@@ -896,14 +892,7 @@ public class ViewerActivity extends AppCompatActivity {
         int pageIndex = target.useBookmark() ? p.getViewerBookmark(target) : 0;
         if(pageIndex < 0 || pageIndex >= images.size())
             pageIndex = 0;
-        int preloadLimit = p.getDataSave() ? 4 : 7;
-        int end = Math.min(images.size(), pageIndex + preloadLimit);
-        for(int i = pageIndex; i < end; i++)
-            Glide.with(context)
-                    .downloadOnly()
-                    .priority(com.bumptech.glide.Priority.HIGH)
-                    .load(Utils.getGlideUrl(images.get(i), target.getBaseMode()))
-                    .preload();
+        ViewerWarmupManager.preloadLoadedImages(context, target, pageIndex, width, autoCut, p.getReverse(), p.getDataSave() ? 3 : 5, com.bumptech.glide.Priority.IMMEDIATE);
     }
 
     private void scheduleFocusedPagePreload() {
@@ -1273,20 +1262,7 @@ public class ViewerActivity extends AppCompatActivity {
             return;
         List<String> images = target.getImgs(context);
         int preloadLimit = p.getDataSave() ? DATA_SAVE_NEXT_EPISODE_PRELOAD_LIMIT : NEXT_EPISODE_PRELOAD_LIMIT;
-        int limit = Math.min(preloadLimit, images.size());
-        for(int i = 0; i < limit; i++)
-            Glide.with(context)
-                    .asBitmap()
-                    .apply(viewerPreloadOptions())
-                    .load(Utils.getGlideUrl(images.get(i), target.getBaseMode()))
-                    .preload();
-    }
-
-    private RequestOptions viewerPreloadOptions() {
-        return new RequestOptions()
-                .diskCacheStrategy(DiskCacheStrategy.DATA)
-                .downsample(DownsampleStrategy.AT_MOST)
-                .override(Math.max(width, 1), Target.SIZE_ORIGINAL);
+        ViewerWarmupManager.preloadLoadedImages(context, target, 0, width, autoCut, p.getReverse(), Math.min(preloadLimit, images.size()), com.bumptech.glide.Priority.HIGH);
     }
 
     private interface EpisodeExpectation {
