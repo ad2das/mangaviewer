@@ -170,7 +170,9 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             h.episode.setText(mData.get(Dposition).getName());
             h.date.setText(mData.get(Dposition).getDate());
             h.newBadge.setVisibility(Dposition == 0 ? View.VISIBLE : View.GONE);
-            h.action.setVisibility(mode == 0 ? View.VISIBLE : View.GONE);
+            h.action.setVisibility(mode == 0 || mode == 1 || mode == 3 || mode == 4 ? View.VISIBLE : View.GONE);
+            h.action.setImageResource(mode == 0 ? R.drawable.download : R.drawable.ic_baseline_close_24);
+            h.action.setColorFilter(ContextCompat.getColor(mainContext, mode == 0 ? R.color.appAccent : R.color.appTextSecondary));
             String thumb = title == null ? "" : title.getThumb();
             Glide.with(h.thumb).clear(h.thumb);
             if(!save && thumb != null && thumb.length() > 0) {
@@ -372,6 +374,14 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             if(tmp>0) notifyItemChanged(tmp, PAYLOAD_SELECTION);
             if(bookmark>0) notifyItemChanged(bookmark, PAYLOAD_SELECTION);
         }
+    }
+
+    public void removeEpisode(int position) {
+        if(mData == null || position < 0 || position >= mData.size())
+            return;
+        mData.remove(position);
+        notifyItemRemoved(position + 1);
+        notifyItemChanged(0);
     }
 
     // allows clicks events to be caught

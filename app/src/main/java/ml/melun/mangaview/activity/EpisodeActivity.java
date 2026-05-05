@@ -1,11 +1,13 @@
 package ml.melun.mangaview.activity;
 
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.net.Uri;
 import ml.melun.mangaview.task.LifecycleTask;
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import androidx.appcompat.app.ActionBar;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
@@ -42,6 +44,7 @@ import ml.melun.mangaview.mangaview.Title;
 
 import static ml.melun.mangaview.MainApplication.httpClient;
 import static ml.melun.mangaview.MainApplication.p;
+import static ml.melun.mangaview.Utils.deleteRecursive;
 import static ml.melun.mangaview.Utils.documentFileFromUri;
 import static ml.melun.mangaview.Utils.getOfflineEpisodes;
 import static ml.melun.mangaview.Utils.queueOfflineDownload;
@@ -410,6 +413,7 @@ public class EpisodeActivity extends AppCompatActivity {
             @Override
             public void onDownloadClick(int position, Manga m) {
                 if(!online) {
+                    confirmDeleteOfflineEpisode(position, m);
                     return;
                 }
                 if(m != null)
@@ -429,6 +433,72 @@ public class EpisodeActivity extends AppCompatActivity {
             i.putExtra("mode",2);
             startActivity(i);
         });
+    }
+
+    private void confirmDeleteOfflineEpisode(int position, Manga manga) {
+        if(online || manga == null || manga.getOfflinePath() == null || manga.getOfflinePath().length() == 0)
+            return;
+        DialogInterface.OnClickListener listener = (dialog, which) -> {
+            if(which == DialogInterface.BUTTON_POSITIVE)
+                deleteOfflineEpisode(position, manga);
+        };
+        AlertDialog.Builder builder = dark
+                ? new AlertDialog.Builder(context, R.style.darkDialog)
+                : new AlertDialog.Builder(context);
+        builder.setMessage(manga.getName() + " 을(를) 저장됨에서 삭제하시겠습니까?")
+                .setPositiveButton("네", listener)
+                .setNegativeButton("아니오", listener)
+                .show();
+    }
+
+    private void deleteOfflineEpisode(int position, Manga manga) {
+        boolean deleted = false;
+        String path = manga.getOfflinePath();
+        if(useScopedStorageHome(path)) {
+            try {
+                DocumentFile target = documentFileFromUri(context, path);
+                deleted = target != null && target.delete();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        } else {
+            deleted = deleteRecursive(new File(path));
+        }
+        if(!deleted) {
+            Toast.makeText(context, "삭제를 실패했습니다.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        p.removeViewerBookmark(manga);
+        if(position >= 0 && episodes != null && position < episodes.size()) {
+            if(episodes.get(position) == manga)
+                episodeAdapter.removeEpisode(position);
+            else {
+                episodes.remove(manga);
+                episodeAdapter.notifyDataSetChanged();
+            }
+        }
+        Toast.makeText(context, "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
+        if(episodes == null || episodes.size() == 0) {
+            deleteEmptyOfflineTitle();
+            finish();
+        }
+    }
+
+    private void deleteEmptyOfflineTitle() {
+        if(title == null || title.getPath() == null || title.getPath().length() == 0)
+            return;
+        try {
+            if(useScopedStorageHome(title.getPath())) {
+                DocumentFile titleDir = documentFileFromUri(context, title.getPath());
+                if(titleDir != null)
+                    titleDir.delete();
+            } else {
+                deleteRecursive(new File(title.getPath()));
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     private int restoredBookmarkId(Title title) {
