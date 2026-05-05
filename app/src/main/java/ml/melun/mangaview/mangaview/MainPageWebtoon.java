@@ -323,7 +323,7 @@ public class MainPageWebtoon {
                     release = cleanTextWithoutChildren(infos.get(2));
 
                 titles.add(new Title(name, thumb, "", tags, release, id, baseMode));
-                applyInferredWebtoonTags(titles.get(titles.size() - 1));
+                applyInferredSearchTags(titles.get(titles.size() - 1));
                 if(limit > 0 && titles.size() >= limit) break;
             }catch (Exception ignored){
             }
@@ -361,6 +361,23 @@ public class MainPageWebtoon {
             title.setTags(tags);
             return;
         }
+        for(String inferredTag : inferWebtoonTags(title))
+            addUnique(tags, inferredTag);
+        title.setTags(tags);
+    }
+
+    public static void applyInferredSearchTags(Title title) {
+        if(title == null)
+            return;
+        if(title.getBaseMode() == base_webtoon) {
+            applyInferredWebtoonTags(title);
+            return;
+        }
+        if(title.getBaseMode() != base_comic)
+            return;
+        List<String> tags = new ArrayList<>(title.getTags());
+        for(String inferredTag : inferComicTags(title))
+            addUnique(tags, inferredTag);
         title.setTags(tags);
     }
 
@@ -467,6 +484,40 @@ public class MainPageWebtoon {
         if(hasAny(text, "일상", "힐링", "직장", "회사", "육아", "가족")) result.add("일상");
         if(hasAny(text, "드라마", "휴먼", "성장")) result.add("드라마");
         if(hasAny(text, "스토리")) result.add("스토리");
+
+        return result;
+    }
+
+    private static List<String> inferComicTags(Title title) {
+        ArrayList<String> result = new ArrayList<>();
+        String text = ((title.getName() == null ? "" : title.getName()) + " " +
+                (title.getRelease() == null ? "" : title.getRelease()) + " " +
+                join(title.getTags())).toLowerCase(Locale.ROOT);
+
+        if(hasAny(text, "bl", "비엘", "보이즈러브")) result.add("BL");
+        if(hasAny(text, "sf", "우주", "로봇", "미래", "사이버")) result.add("SF");
+        if(hasAny(text, "ts", "성전환", "여체화", "남체화")) result.add("TS");
+        if(hasAny(text, "액션", "격투", "전투", "전쟁", "검", "킬러", "암살")) result.add("액션");
+        if(hasAny(text, "개그", "코미디", "러브코미디", "럽코")) result.add("개그");
+        if(hasAny(text, "게임", "플레이어", "게이머")) result.add("게임");
+        if(hasAny(text, "공포", "호러", "괴담", "귀신", "좀비")) result.add("공포");
+        if(hasAny(text, "도박", "카지노", "마작", "포커")) result.add("도박");
+        if(hasAny(text, "라노벨", "라이트노벨")) result.add("라노벨");
+        if(hasAny(text, "러브코미디", "러브 코미디", "럽코")) result.add("러브코미디");
+        if(hasAny(text, "로맨스", "연애", "첫사랑", "사랑", "고백", "결혼")) result.add("로맨스");
+        if(hasAny(text, "먹방", "요리", "식당", "셰프", "요리사")) result.add("요리");
+        if(hasAny(text, "미스터리", "추리", "탐정", "사건")) result.add("미스터리");
+        if(hasAny(text, "백합", "gl")) result.add("백합");
+        if(hasAny(text, "순정")) result.add("순정");
+        if(hasAny(text, "스릴러", "범죄", "살인", "납치", "추적")) result.add("스릴러");
+        if(hasAny(text, "스포츠", "축구", "야구", "농구", "배구", "복싱")) result.add("스포츠");
+        if(hasAny(text, "시대", "역사", "전국", "에도", "왕국", "제국")) result.add("역사");
+        if(hasAny(text, "학교", "학원", "학생", "고교", "고등학교", "동아리")) result.add("학원");
+        if(hasAny(text, "여장", "남장")) result.add("여장");
+        if(hasAny(text, "음악", "밴드", "아이돌", "가수")) result.add("음악");
+        if(hasAny(text, "이세계", "전생", "환생", "용사", "마왕", "던전", "마법")) result.add("이세계");
+        if(hasAny(text, "일상", "힐링", "가족", "직장", "회사")) result.add("일상");
+        if(hasAny(text, "드라마", "휴먼", "성장")) result.add("드라마");
 
         return result;
     }
