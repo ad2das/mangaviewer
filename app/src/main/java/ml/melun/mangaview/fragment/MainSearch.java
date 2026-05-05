@@ -475,21 +475,7 @@ public class MainSearch extends Fragment {
             @Override
             public void onLongClick(View view, int position) {
                 Title title = searchAdapter.getItem(position);
-                popup(getContext(),view, position, title, libraryPopupMode(title), item -> {
-                    switch(item.getItemId()){
-                        case R.id.del:
-                            removeRecentTitle(title);
-                            break;
-                        case R.id.favAdd:
-                        case R.id.favDel:
-                            p.toggleFavorite(title,0);
-                            break;
-                        case R.id.remove:
-                            confirmDeleteOfflineTitle(title);
-                            break;
-                    }
-                    return false;
-                }, p);
+                showLibraryTitlePopup(view, title);
             }
 
             @Override
@@ -513,14 +499,6 @@ public class MainSearch extends Fragment {
         });
     }
 
-    private int libraryPopupMode(Title title) {
-        if(isRecentTitle(title))
-            return 1;
-        if(isOfflineTitle(title))
-            return 3;
-        return 0;
-    }
-
     private boolean isRecentTitle(Title title) {
         if(title == null)
             return false;
@@ -531,6 +509,39 @@ public class MainSearch extends Fragment {
                 return true;
         }
         return false;
+    }
+
+    private void showLibraryTitlePopup(View view, Title title) {
+        if(getContext() == null || title == null)
+            return;
+        PopupMenu popup = new PopupMenu(getContext(), view);
+        popup.getMenuInflater().inflate(R.menu.title_options, popup.getMenu());
+
+        boolean recent = isRecentTitle(title);
+        boolean favorite = p.findFavorite(title) > -1;
+        boolean offline = isOfflineTitle(title);
+
+        popup.getMenu().findItem(R.id.del).setVisible(recent);
+        popup.getMenu().findItem(favorite ? R.id.favDel : R.id.favAdd).setVisible(true);
+        popup.getMenu().findItem(R.id.remove).setVisible(offline);
+
+        popup.setOnMenuItemClickListener(item -> {
+            switch(item.getItemId()) {
+                case R.id.del:
+                    removeRecentTitle(title);
+                    break;
+                case R.id.favAdd:
+                case R.id.favDel:
+                    p.toggleFavorite(title, 0);
+                    refreshLibraryFromPreferences();
+                    break;
+                case R.id.remove:
+                    confirmDeleteOfflineTitle(title);
+                    break;
+            }
+            return true;
+        });
+        popup.show();
     }
 
     private void removeRecentTitle(Title title) {
