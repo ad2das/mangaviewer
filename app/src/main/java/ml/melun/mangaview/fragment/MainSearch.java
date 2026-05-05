@@ -703,8 +703,13 @@ public class MainSearch extends Fragment {
             String key = searchKey(query);
             if(searchTask != null && key.equals(activeSearchKey))
                 return;
-            if(searchAdapter != null) searchAdapter.removeAll();
-            else searchAdapter = new TitleAdapter(getContext());
+            if(searchAdapter != null)
+                searchAdapter.removeAll();
+            else
+                searchAdapter = new TitleAdapter(getContext());
+            bindOnlineAdapter();
+            if(noresult != null)
+                noresult.setVisibility(View.GONE);
             updateAdvSearchVisibility();
             search = new Search(query,searchMode.getSelectedItemPosition(), baseMode.getSelectedItemPosition()+1);
             if(searchTask != null)
@@ -730,6 +735,42 @@ public class MainSearch extends Fragment {
             if(libraryMeta != null)
                 libraryMeta.setVisibility(View.GONE);
         }
+    }
+
+    private void bindOnlineAdapter() {
+        if(searchResult == null || searchAdapter == null)
+            return;
+        searchAdapter.setResume(true);
+        searchAdapter.setForceThumbnail(false);
+        searchResult.setAdapter(searchAdapter);
+        searchAdapter.setClickListener(new TitleAdapter.ItemClickListener() {
+            @Override
+            public void onLongClick(View view, int position) {
+                Title title = searchAdapter.getItem(position);
+                popup(getContext(),view, position, title, 0, item -> {
+                    switch(item.getItemId()){
+                        case R.id.favAdd:
+                        case R.id.favDel:
+                            p.toggleFavorite(title,0);
+                            break;
+                    }
+                    return false;
+                }, p);
+            }
+
+            @Override
+            public void onResumeClick(int position, int id) {
+                Title title = resolveLatestTitleForResume(searchAdapter.getItem(position));
+                int bookmark = resolveLatestBookmark(title, id);
+                openResume(title, bookmark);
+            }
+
+            @Override
+            public void onItemClick(int position) {
+                Intent episodeView = episodeIntent(getContext(), searchAdapter.getItem(position));
+                startActivity(episodeView);
+            }
+        });
     }
 
     public void selectLibraryTab(int position) {
@@ -917,38 +958,7 @@ public class MainSearch extends Fragment {
 
             if(searchAdapter.getItemCount()==0) {
                 searchAdapter.addData(targetSearch.getResult());
-                searchResult.setAdapter(searchAdapter);
-                searchAdapter.setClickListener(new TitleAdapter.ItemClickListener() {
-                    @Override
-                    public void onLongClick(View view, int position) {
-                        //none
-                        Title title = searchAdapter.getItem(position);
-                        popup(getContext(),view, position, title, 0, item -> {
-                            switch(item.getItemId()){
-                                case R.id.favAdd:
-                                case R.id.favDel:
-                                    //toggle favorite
-                                    p.toggleFavorite(title,0);
-                                    break;
-                            }
-                            return false;
-                        }, p);
-                    }
-
-                    @Override
-                    public void onResumeClick(int position, int id) {
-                        Title title = resolveLatestTitleForResume(searchAdapter.getItem(position));
-                        int bookmark = resolveLatestBookmark(title, id);
-                        openResume(title, bookmark);
-                    }
-
-                    @Override
-                    public void onItemClick(int position) {
-                        // start intent : Episode viewer
-                        Intent episodeView = episodeIntent(getContext(), searchAdapter.getItem(position));
-                        startActivity(episodeView);
-                    }
-                });
+                bindOnlineAdapter();
             }else{
                 searchAdapter.addData(targetSearch.getResult());
             }
