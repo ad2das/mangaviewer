@@ -387,6 +387,16 @@ public class Preference {
         writeBookmark();
     }
 
+    public void removeRecent(MTitle title){
+        int position = getIndexOf(title);
+        if(position < 0)
+            return;
+        MTitle removed = recent.remove(position);
+        writeRecent();
+        removeBookmark(removed);
+        writeBookmark();
+    }
+
     public void addRecent(MTitle tmp){
         if(tmp != null && tmp.getId()>0) {
             tmp.setPath(null);

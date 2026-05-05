@@ -465,8 +465,11 @@ public class MainSearch extends Fragment {
             @Override
             public void onLongClick(View view, int position) {
                 Title title = searchAdapter.getItem(position);
-                popup(getContext(),view, position, title, isOfflineTitle(title) ? 3 : 0, item -> {
+                popup(getContext(),view, position, title, libraryPopupMode(title), item -> {
                     switch(item.getItemId()){
+                        case R.id.del:
+                            removeRecentTitle(title);
+                            break;
                         case R.id.favAdd:
                         case R.id.favDel:
                             p.toggleFavorite(title,0);
@@ -498,6 +501,36 @@ public class MainSearch extends Fragment {
                 }
             }
         });
+    }
+
+    private int libraryPopupMode(Title title) {
+        if(isOfflineTitle(title))
+            return 3;
+        if(isRecentTitle(title))
+            return 1;
+        return 0;
+    }
+
+    private boolean isRecentTitle(Title title) {
+        if(title == null)
+            return false;
+        for(MTitle recent : p.getRecent()) {
+            if(recent != null
+                    && recent.getId() == title.getId()
+                    && recent.getBaseMode() == title.getBaseMode())
+                return true;
+        }
+        return false;
+    }
+
+    private void removeRecentTitle(Title title) {
+        if(title == null)
+            return;
+        p.removeRecent(title);
+        if(activeLibraryQuery != null && activeLibraryQuery.length() > 0)
+            performLibrarySearch(activeLibraryQuery);
+        else
+            showLibrary();
     }
 
     private boolean isLibraryChange(String scope) {
