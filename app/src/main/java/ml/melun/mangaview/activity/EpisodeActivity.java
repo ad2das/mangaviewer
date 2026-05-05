@@ -440,11 +440,26 @@ public class EpisodeActivity extends AppCompatActivity {
     private void warmupInitialViewerTargets() {
         if(!online || episodes == null || episodes.size() == 0)
             return;
-        if(bookmarkIndex > 0 && bookmarkIndex <= episodes.size())
-            warmupEpisode(episodes.get(bookmarkIndex - 1));
         int limit = p.getDataSave() ? 2 : 4;
-        for(int i = 0; i < episodes.size() && i < limit; i++)
-            warmupEpisode(episodes.get(i));
+        List<Integer> targets = new ArrayList<>();
+        if(bookmarkIndex > 0 && bookmarkIndex <= episodes.size()) {
+            int current = bookmarkIndex - 1;
+            addWarmupIndex(targets, current, limit);
+            addWarmupIndex(targets, current + 1, limit);
+            addWarmupIndex(targets, current - 1, limit);
+        } else {
+            for(int i = episodes.size() - 1; i >= 0 && targets.size() < limit; i--)
+                addWarmupIndex(targets, i, limit);
+        }
+        for(Integer index : targets)
+            warmupEpisode(episodes.get(index));
+    }
+
+    private void addWarmupIndex(List<Integer> targets, int index, int limit) {
+        if(index < 0 || episodes == null || index >= episodes.size() || targets.size() >= limit)
+            return;
+        if(!targets.contains(index))
+            targets.add(index);
     }
 
     private void warmupEpisode(Manga manga) {
