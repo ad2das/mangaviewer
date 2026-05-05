@@ -185,12 +185,16 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         String author = data.getAuthor();
         StringBuilder tags = new StringBuilder();
         int bookmark = data.getBookmark();
-        holder.tagContainer.setVisibility(View.VISIBLE);
         holder.baseModeStr.setText(data.getBaseModeStr());
         for (String s : data.getTags()) {
-            tags.append(s).append(" ");
+            if(s == null || s.length() == 0)
+                continue;
+            if(tags.length() > 0)
+                tags.append(" / ");
+            tags.append(s);
         }
         holder.tags.setText(tags.toString());
+        holder.tagContainer.setVisibility(View.VISIBLE);
 
         holder.name.setText(title);
         String meta = data.getRelease();

@@ -46,6 +46,11 @@ public class MainPageWebtoonTest {
         assertTrue(webtoons.get(0).getTags().contains("액션"));
         assertTrue(comics.get(0).getTags().contains("학원"));
         assertTrue(comics.get(0).getTags().contains("러브코미디"));
+
+        ArrayList<Title> englishComics = MainPageWebtoon.parseWolfTitles(
+                Jsoup.parse(searchItem("/cl?toon=303", "Fate / stay night")), base_comic, 0);
+        assertTrue(englishComics.get(0).getTags().contains("액션"));
+        assertTrue(englishComics.get(0).getTags().contains("이세계"));
     }
 
     private String mixedSearchHtml() {

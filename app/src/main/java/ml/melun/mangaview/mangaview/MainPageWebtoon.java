@@ -497,7 +497,7 @@ public class MainPageWebtoon {
         if(hasAny(text, "bl", "비엘", "보이즈러브")) result.add("BL");
         if(hasAny(text, "sf", "우주", "로봇", "미래", "사이버")) result.add("SF");
         if(hasAny(text, "ts", "성전환", "여체화", "남체화")) result.add("TS");
-        if(hasAny(text, "액션", "격투", "전투", "전쟁", "검", "킬러", "암살")) result.add("액션");
+        if(hasAny(text, "fate", "액션", "격투", "전투", "전쟁", "검", "킬러", "암살")) result.add("액션");
         if(hasAny(text, "개그", "코미디", "러브코미디", "럽코")) result.add("개그");
         if(hasAny(text, "게임", "플레이어", "게이머")) result.add("게임");
         if(hasAny(text, "공포", "호러", "괴담", "귀신", "좀비")) result.add("공포");
@@ -515,7 +515,7 @@ public class MainPageWebtoon {
         if(hasAny(text, "학교", "학원", "학생", "고교", "고등학교", "동아리")) result.add("학원");
         if(hasAny(text, "여장", "남장")) result.add("여장");
         if(hasAny(text, "음악", "밴드", "아이돌", "가수")) result.add("음악");
-        if(hasAny(text, "이세계", "전생", "환생", "용사", "마왕", "던전", "마법")) result.add("이세계");
+        if(hasAny(text, "fate", "apocrypha", "stay night", "heaven", "strange fake", "이세계", "전생", "환생", "용사", "마왕", "던전", "마법")) result.add("이세계");
         if(hasAny(text, "일상", "힐링", "가족", "직장", "회사")) result.add("일상");
         if(hasAny(text, "드라마", "휴먼", "성장")) result.add("드라마");
 
