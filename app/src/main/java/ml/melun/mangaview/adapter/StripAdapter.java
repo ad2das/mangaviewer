@@ -40,6 +40,7 @@ import static ml.melun.mangaview.Utils.getGlideUrl;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.activity.ViewerActivity;
 import ml.melun.mangaview.glide.ViewerPageTransformation;
+import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.StringCallback;
 import ml.melun.mangaview.mangaview.Decoder;
 import ml.melun.mangaview.mangaview.Manga;
@@ -481,6 +482,15 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         }
         if(cached != null && cached.isRecycled())
             decodedBitmapCache.remove(cacheKey);
+        cached = ViewerWarmupManager.getDecodedBitmap(item, autoCut, reverse, width);
+        if(cached != null && !cached.isRecycled() && isHolderStillBound(holder, item, pageKey)) {
+            holder.frame.setMinimumHeight(0);
+            holder.frame.setImageBitmap(cached);
+            holder.refresh.setVisibility(View.GONE);
+            decodedBitmapCache.put(cacheKey, cached);
+            markDisplayedAndPreload(holder, item, pageKey);
+            return;
+        }
         if (autoCut) {
             CustomTarget<Bitmap> imageTarget = new CustomTarget<Bitmap>() {
                 @Override

@@ -795,6 +795,9 @@ public class ViewerActivity extends AppCompatActivity {
                         if(m.isOnline()) {
                             result = lockui ? prepareEpisodeIdentity(m) : ensureEpisodeListLoaded(m);
                             if(result == LOAD_OK && !hasLoadedImages(m)) {
+                                result = ViewerWarmupManager.applyWarmupResult(m, lockui ? 400 : 150);
+                            }
+                            if(result == LOAD_OK && !hasLoadedImages(m)) {
                                 result = getHttpClient().runWithRequestGroup(requestGroup, () -> m.fetchForViewerInitial(getHttpClient()));
                                 if(result == LOAD_OK && !cancelled && !hasLoadedImages(m))
                                     result = getHttpClient().runWithRequestGroup(requestGroup, () -> m.fetchForViewerInitial(getHttpClient()));
@@ -867,6 +870,8 @@ public class ViewerActivity extends AppCompatActivity {
                     int result = LOAD_OK;
                     try {
                         if(target != null && target.isOnline() && !hasLoadedImages(target))
+                            result = ViewerWarmupManager.applyWarmupResult(target, 150);
+                        if(target != null && target.isOnline() && result == LOAD_OK && !hasLoadedImages(target))
                             result = getHttpClient().runWithRequestGroup(requestGroup, () -> target.fetchForViewerInitial(getHttpClient()));
                     } catch (Exception e) {
                         if(!cancelled && !isFinishing())

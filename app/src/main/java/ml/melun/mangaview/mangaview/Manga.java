@@ -78,6 +78,28 @@ public class Manga {
         this.imgs = imgs;
     }
 
+    public synchronized boolean copyViewerStateFrom(Manga source) {
+        if(source == null
+                || source.getId() != getId()
+                || source.getBaseMode() != getBaseMode()
+                || source.getTitleId() != getTitleId())
+            return false;
+        List<String> sourceImages = source.getImgs(null);
+        if(sourceImages != null)
+            imgs = new ArrayList<>(sourceImages);
+        List<Manga> sourceEpisodes = source.getEps();
+        if(sourceEpisodes != null)
+            eps = new ArrayList<>(sourceEpisodes);
+        seed = source.getSeed();
+        if(source.getName() != null && source.getName().length() > 0)
+            name = source.getName();
+        if(source.getTitle() != null)
+            setTitle(source.getTitle());
+        else
+            setTitleId(source.getTitleId());
+        return true;
+    }
+
     public String getThumb() {
         if (thumb == null) return "";
         return thumb;
@@ -439,6 +461,10 @@ public class Manga {
 
     public int getSeed() {
         return seed;
+    }
+
+    public void setSeed(int seed) {
+        this.seed = seed;
     }
 
     public String toString() {
