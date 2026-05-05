@@ -63,7 +63,6 @@ public class MainMain extends Fragment{
     boolean webtoonFetched = false;
     boolean viewStarted = false;
     int scrollRequestVersion = 0;
-    Runnable pendingInitialFetch;
     Preference.LocalChangeListener localChangeListener;
 
     public void setWait(Boolean wait){
@@ -268,18 +267,21 @@ public class MainMain extends Fragment{
         modeWebtoon.setOnClickListener(v -> {
             switchBaseMode(base_webtoon);
             showInitialHomeRows();
-            scheduleInitialFetch();
+            fetchSelected();
+            scheduleInactivePrefetch();
         });
         modeComic.setOnClickListener(v -> {
             switchBaseMode(base_comic);
             showInitialHomeRows();
-            scheduleInitialFetch();
+            fetchSelected();
+            scheduleInactivePrefetch();
         });
         switchBaseMode(selectedBaseMode);
 
         showInitialHomeRows();
         if(!wait)
-            scheduleInitialFetch();
+            fetchSelected();
+        scheduleInactivePrefetch();
         return rootView;
     }
 
@@ -344,11 +346,10 @@ public class MainMain extends Fragment{
     }
 
     private void switchBaseMode(int baseMode) {
-        cancelScheduledInitialFetch();
-        cancelInactiveFetch(baseMode);
         RecyclerView previousRecycler = mainRecycler;
         selectedBaseMode = baseMode;
         p.setBaseMode(baseMode);
+        updateModeToggle();
         MainWebtoonAdapter selectedAdapter = getSelectedAdapter();
         if(selectedAdapter != null)
             selectedAdapter.showInitialRows();
@@ -357,11 +358,9 @@ public class MainMain extends Fragment{
             if(previousRecycler != null)
                 previousRecycler.stopScroll();
             mainRecycler.stopScroll();
-            if(selectedAdapter == null || selectedAdapter.hasDisplayContent())
-                showSelectedRecycler(previousRecycler, mainRecycler);
+            showSelectedRecycler(previousRecycler, mainRecycler);
             scrollHomeToTop();
         }
-        updateModeToggle();
         applySelectedHomeTab();
         scrollToSelectedTab();
     }
@@ -480,44 +479,19 @@ public class MainMain extends Fragment{
             adapter.showInitialRows();
     }
 
-    private void scheduleInitialFetch() {
-        if(mainRecycler == null) {
-            fetchSelected();
+    private void scheduleInactivePrefetch() {
+        RecyclerView targetRecycler = mainRecycler != null ? mainRecycler : getSelectedRecycler();
+        if(targetRecycler == null || wait)
             return;
-        }
-        cancelScheduledInitialFetch();
-        final int targetBaseMode = selectedBaseMode;
-        final RecyclerView targetRecycler = mainRecycler;
-        pendingInitialFetch = () -> {
-            pendingInitialFetch = null;
-            if(mainRecycler == targetRecycler && isAdded() && !wait && selectedBaseMode == targetBaseMode)
-                fetchSelected();
-        };
-        targetRecycler.postDelayed(pendingInitialFetch, 250);
-    }
-
-    private void cancelScheduledInitialFetch() {
-        if(pendingInitialFetch != null) {
-            if(webtoonRecycler != null)
-                webtoonRecycler.removeCallbacks(pendingInitialFetch);
-            if(comicRecycler != null)
-                comicRecycler.removeCallbacks(pendingInitialFetch);
-        }
-        pendingInitialFetch = null;
-    }
-
-    private void cancelInactiveFetch(int activeBaseMode) {
-        if(activeBaseMode == base_comic) {
-            if(mainWebtoonAdapter != null && mainWebtoonAdapter.isFetching()) {
-                mainWebtoonAdapter.cancelFetch();
-                webtoonFetched = false;
-            }
-        } else {
-            if(mainComicAdapter != null && mainComicAdapter.isFetching()) {
-                mainComicAdapter.cancelFetch();
-                comicFetched = false;
-            }
-        }
+        final int visibleBaseMode = selectedBaseMode;
+        targetRecycler.postDelayed(() -> {
+            if(!isAdded() || wait)
+                return;
+            if(visibleBaseMode == base_comic)
+                fetchWebtoon();
+            else
+                fetchComic();
+        }, 120);
     }
 
     private void fetchComic() {
@@ -564,7 +538,6 @@ public class MainMain extends Fragment{
     @Override
     public void onDestroyView() {
         super.onDestroyView();
-        cancelScheduledInitialFetch();
         if(mainComicAdapter != null)
             mainComicAdapter.cancelFetch();
         if(mainWebtoonAdapter != null)
