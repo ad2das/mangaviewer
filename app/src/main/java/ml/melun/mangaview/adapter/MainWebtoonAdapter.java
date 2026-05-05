@@ -1077,8 +1077,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
             void bind(Title item, int position) {
                 name.setText(item == null ? "" : item.getName());
-                String release = item == null ? "" : item.getRelease();
-                episode.setText(progressLabel(item, release));
+                episode.setText(progressLabel(item));
                 int progressPercent = readingProgressPercent(item);
                 progress.setVisibility(View.VISIBLE);
                 progress.setProgress(progressPercent);
@@ -1112,14 +1111,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return 0;
         }
 
-        private String progressLabel(Title item, String fallback) {
+        private String progressLabel(Title item) {
             if(item == null)
                 return "이어보기";
             int watchedCount = watchedEpisodeCount(item);
             int episodeCount = totalEpisodeCount(item);
             if(watchedCount > 0 && episodeCount > 0)
                 return watchedCount + "/" + episodeCount + "화";
-            return fallback == null || fallback.length() == 0 ? "이어보기" : fallback;
+            if(item.getBookmarkEpisodeId() > 0 || item.getBookmark() > 0)
+                return "보던 화";
+            return "이어보기";
         }
 
         private int watchedEpisodeCount(Title item) {

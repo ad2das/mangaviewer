@@ -504,6 +504,10 @@ public class Preference {
             }
         }
         MTitle recentTitle = recent.get(index);
+        if(episodeCount <= 0)
+            episodeCount = recentTitle.getEpisodeCount();
+        if(episodeIndex <= 0 && recentTitle.getBookmarkEpisodeId() == episodeId)
+            episodeIndex = recentTitle.getBookmarkEpisodeIndex();
         recentTitle.setReadingProgress(episodeId, episodeIndex, episodeCount);
         writeRecent();
     }
