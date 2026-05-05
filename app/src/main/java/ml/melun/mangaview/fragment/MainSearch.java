@@ -514,10 +514,10 @@ public class MainSearch extends Fragment {
     }
 
     private int libraryPopupMode(Title title) {
-        if(isOfflineTitle(title))
-            return 3;
         if(isRecentTitle(title))
             return 1;
+        if(isOfflineTitle(title))
+            return 3;
         return 0;
     }
 

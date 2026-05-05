@@ -5,6 +5,7 @@ import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.PopupMenu;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
@@ -247,6 +248,11 @@ public class MainMain extends Fragment{
                     if(tab != null)
                         tab.select();
                 }
+            }
+
+            @Override
+            public void longClickedContinue(View view, Title title) {
+                showContinuePopup(view, title);
             }
         };
 
@@ -533,6 +539,23 @@ public class MainMain extends Fragment{
             mainComicAdapter.refreshLocalState();
         if(mainWebtoonAdapter != null && webtoonFetched)
             mainWebtoonAdapter.refreshLocalState();
+    }
+
+    private void showContinuePopup(View view, Title title) {
+        if(getContext() == null || view == null || title == null)
+            return;
+        PopupMenu popup = new PopupMenu(getContext(), view);
+        popup.getMenuInflater().inflate(R.menu.title_options, popup.getMenu());
+        popup.getMenu().findItem(R.id.del).setVisible(true);
+        popup.setOnMenuItemClickListener(item -> {
+            if(item.getItemId() == R.id.del) {
+                p.removeRecent(title);
+                refreshHomeLocalState();
+                return true;
+            }
+            return false;
+        });
+        popup.show();
     }
 
     @Override

@@ -1105,6 +1105,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                         }
                     }
                 });
+                card.setOnLongClickListener(v -> {
+                    if(listener == null || item == null)
+                        return false;
+                    listener.longClickedContinue(v, item);
+                    return true;
+                });
             }
         }
 

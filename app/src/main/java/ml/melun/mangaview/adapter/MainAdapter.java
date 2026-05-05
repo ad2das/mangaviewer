@@ -424,6 +424,7 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         void clickedRetry();
         void clickedCategoryPath(String title, String path);
         void clickedHomeAction(int action);
+        default void longClickedContinue(View view, Title title) {}
     }
 
     private class MainFetcher extends LifecycleTask<Void, Integer, MainPage> {
