@@ -402,7 +402,8 @@ public class Preference {
             tmp.setPath(null);
             int position = getIndexOf(tmp);
             if (position > -1) {
-                recent.remove(position);
+                MTitle existing = recent.remove(position);
+                preserveMoreCompleteProgress(tmp, existing);
                 recent.add(0, tmp);
             } else recent.add(0, tmp);
             writeRecent();
@@ -414,11 +415,31 @@ public class Preference {
             title.setPath(null);
             int position = getIndexOf(title);
             if (position > -1) {
-                recent.remove(position);
+                MTitle existing = recent.remove(position);
+                preserveMoreCompleteProgress(title, existing);
                 recent.add(0, title);
             } else recent.add(0, title);
             writeRecent();
         }
+    }
+
+    private void preserveMoreCompleteProgress(MTitle target, MTitle existing) {
+        if(target == null || existing == null)
+            return;
+        int existingCount = existing.getEpisodeCount();
+        int targetCount = target.getEpisodeCount();
+        boolean targetHasCompleteProgress = target.getBookmarkEpisodeIndex() > 0
+                && targetCount > 0
+                && (existingCount <= 0 || targetCount >= existingCount);
+        if(targetHasCompleteProgress)
+            return;
+        int episodeId = target.getBookmarkEpisodeId() > 0
+                ? target.getBookmarkEpisodeId()
+                : existing.getBookmarkEpisodeId();
+        int episodeIndex = existing.getBookmarkEpisodeId() == episodeId
+                ? existing.getBookmarkEpisodeIndex()
+                : -1;
+        target.setReadingProgress(episodeId, episodeIndex, Math.max(existingCount, targetCount));
     }
 
 
@@ -494,8 +515,12 @@ public class Preference {
         if(index < 0)
             return;
         int episodeIndex = -1;
-        int episodeCount = title.getEpsCount();
-        if(title.getEps() != null) {
+        MTitle recentTitle = recent.get(index);
+        int existingCount = recentTitle.getEpisodeCount();
+        int incomingCount = title.getEpsCount();
+        boolean incomingHasCompleteList = incomingCount > 0
+                && (existingCount <= 0 || incomingCount >= existingCount);
+        if(incomingHasCompleteList && title.getEps() != null) {
             for(int i = 0; i < title.getEps().size(); i++) {
                 if(title.getEps().get(i) != null && title.getEps().get(i).getId() == episodeId) {
                     episodeIndex = i + 1;
@@ -503,9 +528,9 @@ public class Preference {
                 }
             }
         }
-        MTitle recentTitle = recent.get(index);
+        int episodeCount = incomingHasCompleteList ? incomingCount : existingCount;
         if(episodeCount <= 0)
-            episodeCount = recentTitle.getEpisodeCount();
+            episodeCount = title.getEpisodeCount();
         if(episodeIndex <= 0 && recentTitle.getBookmarkEpisodeId() == episodeId)
             episodeIndex = recentTitle.getBookmarkEpisodeIndex();
         recentTitle.setReadingProgress(episodeId, episodeIndex, episodeCount);
