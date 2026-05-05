@@ -102,6 +102,7 @@ public class MainSearch extends Fragment {
     Handler listTouchHandler = new Handler(Looper.getMainLooper());
     Runnable pendingListLongPress;
     boolean listLongPressHandled = false;
+    boolean listMovedBeyondTapSlop = false;
     long lastTitlePopupAt = 0;
     int lastTitlePopupId = -1;
     int lastTitlePopupBaseMode = -1;
@@ -169,28 +170,33 @@ public class MainSearch extends Fragment {
                     listDownY = event.getY();
                     listDownTime = event.getEventTime();
                     listLongPressHandled = false;
+                    listMovedBeyondTapSlop = false;
                     scheduleTitleListLongPress(listDownX, listDownY);
                     return false;
                 }
                 if(event.getAction() == MotionEvent.ACTION_MOVE) {
-                    if(Math.abs(event.getX() - listDownX) > dp(12) || Math.abs(event.getY() - listDownY) > dp(12))
+                    if(movedBeyondListTapSlop(event)) {
+                        listMovedBeyondTapSlop = true;
                         cancelTitleListLongPress();
+                    }
                     return false;
                 }
                 if(event.getAction() == MotionEvent.ACTION_CANCEL) {
-                    cancelTitleListLongPress();
-                    return listLongPressHandled;
+                    if(listMovedBeyondTapSlop)
+                        cancelTitleListLongPress();
+                    return false;
                 }
                 if(event.getAction() != MotionEvent.ACTION_UP)
                     return false;
                 cancelTitleListLongPress();
                 if(listLongPressHandled)
-                    return true;
-                if(Math.abs(event.getX() - listDownX) > dp(12) || Math.abs(event.getY() - listDownY) > dp(12))
+                    return false;
+                if(movedBeyondListTapSlop(event))
                     return false;
                 if(event.getEventTime() - listDownTime >= ViewConfiguration.getLongPressTimeout())
                     return false;
-                return handleTitleListTap(event.getX(), event.getY());
+                handleTitleListTap(event.getX(), event.getY());
+                return false;
             }
         });
         searchMode = rootView.findViewById(R.id.searchMode);
@@ -947,6 +953,11 @@ public class MainSearch extends Fragment {
             return false;
         showLibraryTitlePopup(child, title);
         return true;
+    }
+
+    private boolean movedBeyondListTapSlop(MotionEvent event) {
+        int slop = dp(28);
+        return Math.abs(event.getX() - listDownX) > slop || Math.abs(event.getY() - listDownY) > slop;
     }
 
     private void openTitleFromList(Title title) {
