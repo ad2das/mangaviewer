@@ -135,6 +135,8 @@ public class RecyclerFragment extends Fragment {
             public void onResumeClick(int position, int id) {
                 selectedPosition = position;
                 Title title = resolveLatestTitleForResume(titleAdapter.getItem(position));
+                if(title == null)
+                    return;
                 int bookmark = resolveLatestBookmark(title, id);
                 if(bookmark <= 0)
                     return;
@@ -154,6 +156,8 @@ public class RecyclerFragment extends Fragment {
             @Override
             public void onLongClick(View view, int position) {
                 Title title = titleAdapter.getItem(position);
+                if(title == null)
+                    return;
                 if(mode == R.id.nav_favorite) {
                     popup(view, position, title, 2);
                 }else if(mode == R.id.nav_recent){
@@ -166,7 +170,10 @@ public class RecyclerFragment extends Fragment {
             @Override
             public void onItemClick(int position) {
                 selectedPosition = position;
-                Intent episodeView = episodeIntent(getContext(), titleAdapter.getItem(position));
+                Title title = titleAdapter.getItem(position);
+                if(title == null)
+                    return;
+                Intent episodeView = episodeIntent(getContext(), title);
                 if(mode == R.id.nav_favorite) {
                     episodeView.putExtra("position", position);
                     episodeView.putExtra("favorite",true);

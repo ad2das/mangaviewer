@@ -404,7 +404,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                 if(!longClickEnabled)
                     return false;
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || mClickListener == null)
+                if(!isValidPosition(position) || mClickListener == null)
                     return false;
                 mClickListener.onLongClick(v, position);
                 return true;
@@ -441,14 +441,14 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
 
         private void openItem() {
             int position = getAdapterPosition();
-            if(position == RecyclerView.NO_POSITION || mClickListener == null)
+            if(!isValidPosition(position) || mClickListener == null)
                 return;
             mClickListener.onItemClick(position);
         }
 
         private void openResume() {
             int position = getAdapterPosition();
-            if(position == RecyclerView.NO_POSITION || mClickListener == null)
+            if(!isValidPosition(position) || mClickListener == null)
                 return;
             Title title = mDataFiltered.get(position);
             int bookmark = resolveResumeBookmark(title);
@@ -466,7 +466,16 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         this.longClickEnabled = longClickEnabled;
     }
     public Title getItem(int index) {
+        if(!isValidPosition(index))
+            return null;
         return mDataFiltered.get(index);
+    }
+
+    private boolean isValidPosition(int position) {
+        return position != RecyclerView.NO_POSITION
+                && mDataFiltered != null
+                && position >= 0
+                && position < mDataFiltered.size();
     }
 
     public void setClickListener(ItemClickListener itemClickListener) {

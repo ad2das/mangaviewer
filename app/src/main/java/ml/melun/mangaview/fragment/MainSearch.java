@@ -513,12 +513,16 @@ public class MainSearch extends Fragment {
             @Override
             public void onLongClick(View view, int position) {
                 Title title = searchAdapter.getItem(position);
+                if(title == null)
+                    return;
                 showLibraryTitlePopup(view, title);
             }
 
             @Override
             public void onResumeClick(int position, int id) {
                 Title title = resolveLatestTitleForResume(searchAdapter.getItem(position));
+                if(title == null)
+                    return;
                 int bookmark = resolveLatestBookmark(title, id);
                 openResume(title, bookmark);
             }
@@ -526,6 +530,8 @@ public class MainSearch extends Fragment {
             @Override
             public void onItemClick(int position) {
                 Title title = searchAdapter.getItem(position);
+                if(title == null)
+                    return;
                 if(isOfflineTitle(title)) {
                     Intent episodeView = episodeIntent(getContext(), title);
                     episodeView.putExtra("online", false);
@@ -1174,6 +1180,8 @@ public class MainSearch extends Fragment {
             @Override
             public void onLongClick(View view, int position) {
                 Title title = searchAdapter.getItem(position);
+                if(title == null)
+                    return;
                 popup(getContext(),view, position, title, 0, item -> {
                     switch(item.getItemId()){
                         case R.id.favAdd:
@@ -1188,13 +1196,18 @@ public class MainSearch extends Fragment {
             @Override
             public void onResumeClick(int position, int id) {
                 Title title = resolveLatestTitleForResume(searchAdapter.getItem(position));
+                if(title == null)
+                    return;
                 int bookmark = resolveLatestBookmark(title, id);
                 openResume(title, bookmark);
             }
 
             @Override
             public void onItemClick(int position) {
-                Intent episodeView = episodeIntent(getContext(), searchAdapter.getItem(position));
+                Title title = searchAdapter.getItem(position);
+                if(title == null)
+                    return;
+                Intent episodeView = episodeIntent(getContext(), title);
                 startActivity(episodeView);
             }
         });
