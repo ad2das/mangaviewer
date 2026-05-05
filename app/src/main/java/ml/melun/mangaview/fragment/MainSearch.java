@@ -40,6 +40,7 @@ import com.google.gson.reflect.TypeToken;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.R;
@@ -1087,7 +1088,7 @@ public class MainSearch extends Fragment {
     private boolean matchesLibraryQuery(Title title, String query) {
         if(title == null || query == null)
             return false;
-        String normalized = query.trim().toLowerCase();
+        String normalized = query.trim().toLowerCase(Locale.ROOT);
         if(normalized.length() == 0)
             return true;
         if(containsIgnoreCase(title.getName(), normalized))
@@ -1105,7 +1106,7 @@ public class MainSearch extends Fragment {
     }
 
     private boolean containsIgnoreCase(String value, String normalizedQuery) {
-        return value != null && value.toLowerCase().contains(normalizedQuery);
+        return value != null && value.toLowerCase(Locale.ROOT).contains(normalizedQuery);
     }
 
     private void hideKeyboard() {

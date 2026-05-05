@@ -18,6 +18,7 @@ import com.bumptech.glide.load.engine.DiskCacheStrategy;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.mangaview.MTitle;
@@ -71,9 +72,11 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                     searching = false;
                 }else{
                     searching = true;
+                    String normalizedQuery = query.toLowerCase(Locale.ROOT);
                     ArrayList<Title> filtered = new ArrayList<>();
                     for(Title t : mData){
-                        if(t.getName().toLowerCase().contains(query.toLowerCase()) || t.getAuthor().toLowerCase().contains(query.toLowerCase()))
+                        if(t.getName().toLowerCase(Locale.ROOT).contains(normalizedQuery)
+                                || t.getAuthor().toLowerCase(Locale.ROOT).contains(normalizedQuery))
                             filtered.add(t);
                     }
                     mDataFiltered = filtered;

@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -381,7 +382,7 @@ public class Manga {
     private boolean isImageSourceCandidate(String img) {
         if(img == null)
             return false;
-        String lower = img.toLowerCase();
+        String lower = img.toLowerCase(Locale.ROOT);
         if(lower.length() == 0
                 || lower.contains("blank")
                 || lower.contains("loading")

@@ -28,6 +28,7 @@ import android.widget.Toast;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Locale;
 
 import ml.melun.mangaview.R;
 
@@ -271,7 +272,7 @@ public class FolderSelectActivity extends AppCompatActivity {
                     tmp.add(f.getName() + '/');
                 }else {
                     if (mode == MODE_FILE_SELECT || mode == MODE_FILE_SAVE) {
-                        if(f.getName().toLowerCase().endsWith(prefExtension))
+                        if(f.getName().toLowerCase(Locale.ROOT).endsWith(prefExtension))
                             tmp.add(f.getName());
                     }
                 }

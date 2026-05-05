@@ -52,6 +52,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import ml.melun.mangaview.activity.CaptchaActivity;
@@ -668,7 +669,7 @@ public class Utils {
     private static int guessImageBaseMode(String image) {
         if(image == null)
             return MTitle.base_comic;
-        String lower = image.toLowerCase();
+        String lower = image.toLowerCase(Locale.ROOT);
         if(lower.contains("/webtoon") || lower.contains("webtoon"))
             return MTitle.base_webtoon;
         return MTitle.base_comic;
