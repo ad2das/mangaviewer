@@ -1,15 +1,11 @@
 package ml.melun.mangaview.adapter;
 import android.content.Context;
-import android.os.Handler;
-import android.os.Looper;
 import androidx.core.content.ContextCompat;
 import androidx.cardview.widget.CardView;
 import androidx.recyclerview.widget.RecyclerView;
 import android.view.LayoutInflater;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewConfiguration;
 import android.widget.Filter;
 import android.widget.Filterable;
 import android.widget.ImageButton;
@@ -43,6 +39,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     boolean resume = true;
     boolean updated = false;
     boolean forceThumbnail = false;
+    boolean longClickEnabled = true;
     String path = "";
     Filter filter;
     boolean searching = false;
@@ -374,12 +371,6 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         CardView card;
         View content;
         View thumbCard;
-        boolean resumeLongPressSent = false;
-        Handler touchHandler = new Handler(Looper.getMainLooper());
-        Runnable pendingLongPress;
-        boolean titleLongPressHandled = false;
-        float titleDownX;
-        float titleDownY;
 
         View tagContainer;
         View counterContainer;
@@ -410,6 +401,8 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                 resume.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.resumeDark));
             }
             View.OnLongClickListener longClickListener = v -> {
+                if(!longClickEnabled)
+                    return false;
                 int position = getAdapterPosition();
                 if(position == RecyclerView.NO_POSITION || mClickListener == null)
                     return false;
@@ -428,102 +421,22 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             progress.setOnLongClickListener(longClickListener);
             progressText.setOnLongClickListener(longClickListener);
             tagContainer.setOnLongClickListener(longClickListener);
-            View.OnTouchListener titleTouchListener = (v, event) -> handleTitleTouch(v, event);
-            itemView.setOnTouchListener(titleTouchListener);
-            card.setOnTouchListener(titleTouchListener);
-            content.setOnTouchListener(titleTouchListener);
-            thumbCard.setOnTouchListener(titleTouchListener);
-            name.setOnTouchListener(titleTouchListener);
-            thumb.setOnTouchListener(titleTouchListener);
-            author.setOnTouchListener(titleTouchListener);
-            tags.setOnTouchListener(titleTouchListener);
-            baseModeStr.setOnTouchListener(titleTouchListener);
-            progress.setOnTouchListener(titleTouchListener);
-            progressText.setOnTouchListener(titleTouchListener);
-            tagContainer.setOnTouchListener(titleTouchListener);
-            resume.setOnTouchListener((v, event) -> {
-                if(event.getAction() == MotionEvent.ACTION_DOWN) {
-                    v.setPressed(true);
-                    resumeLongPressSent = false;
-                    return true;
-                }
-                if(event.getAction() == MotionEvent.ACTION_MOVE) {
-                    if(!resumeLongPressSent && event.getEventTime() - event.getDownTime() >= android.view.ViewConfiguration.getLongPressTimeout()) {
-                        resumeLongPressSent = true;
-                        v.setPressed(false);
-                        v.performLongClick();
-                        return true;
-                    }
-                    return true;
-                }
-                if(event.getAction() == MotionEvent.ACTION_UP) {
-                    v.setPressed(false);
-                    if(!resumeLongPressSent && event.getEventTime() - event.getDownTime() >= android.view.ViewConfiguration.getLongPressTimeout()) {
-                        resumeLongPressSent = true;
-                        v.performLongClick();
-                    } else if(!resumeLongPressSent) {
-                        v.performClick();
-                    }
-                    return true;
-                }
-                if(event.getAction() == MotionEvent.ACTION_CANCEL) {
-                    v.setPressed(false);
-                    resumeLongPressSent = false;
-                    return true;
-                }
-                return true;
-            });
+            View.OnClickListener clickListener = v -> openItem();
+            itemView.setOnClickListener(clickListener);
+            card.setOnClickListener(clickListener);
+            content.setOnClickListener(clickListener);
+            thumbCard.setOnClickListener(clickListener);
+            name.setOnClickListener(clickListener);
+            thumb.setOnClickListener(clickListener);
+            author.setOnClickListener(clickListener);
+            tags.setOnClickListener(clickListener);
+            baseModeStr.setOnClickListener(clickListener);
+            progress.setOnClickListener(clickListener);
+            progressText.setOnClickListener(clickListener);
+            tagContainer.setOnClickListener(clickListener);
+            resume.setOnClickListener(v -> openResume());
             resume.setOnLongClickListener(longClickListener);
 
-        }
-
-        private boolean handleTitleTouch(View view, MotionEvent event) {
-            switch(event.getAction()) {
-                case MotionEvent.ACTION_DOWN:
-                    titleDownX = event.getRawX();
-                    titleDownY = event.getRawY();
-                    titleLongPressHandled = false;
-                    view.setPressed(true);
-                    scheduleTitleLongPress(view);
-                    return true;
-                case MotionEvent.ACTION_MOVE:
-                    if(Math.abs(event.getRawX() - titleDownX) > touchSlop()
-                            || Math.abs(event.getRawY() - titleDownY) > touchSlop())
-                        cancelTitleLongPress();
-                    return true;
-                case MotionEvent.ACTION_UP:
-                    view.setPressed(false);
-                    cancelTitleLongPress();
-                    if(!titleLongPressHandled)
-                        openItem();
-                    return true;
-                case MotionEvent.ACTION_CANCEL:
-                    view.setPressed(false);
-                    cancelTitleLongPress();
-                    return true;
-            }
-            return true;
-        }
-
-        private void scheduleTitleLongPress(View view) {
-            cancelTitleLongPress();
-            pendingLongPress = () -> {
-                titleLongPressHandled = true;
-                view.setPressed(false);
-                view.performLongClick();
-            };
-            touchHandler.postDelayed(pendingLongPress, ViewConfiguration.getLongPressTimeout());
-        }
-
-        private void cancelTitleLongPress() {
-            if(pendingLongPress != null) {
-                touchHandler.removeCallbacks(pendingLongPress);
-                pendingLongPress = null;
-            }
-        }
-
-        private int touchSlop() {
-            return ViewConfiguration.get(mainContext).getScaledTouchSlop();
         }
 
         private void openItem() {
@@ -547,6 +460,10 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
 
     public void setResume(boolean resume){
         this.resume = resume;
+    }
+
+    public void setLongClickEnabled(boolean longClickEnabled) {
+        this.longClickEnabled = longClickEnabled;
     }
     public Title getItem(int index) {
         return mDataFiltered.get(index);
