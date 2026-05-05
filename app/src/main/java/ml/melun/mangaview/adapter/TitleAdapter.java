@@ -22,6 +22,7 @@ import java.util.List;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.mangaview.MTitle;
+import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -247,6 +248,17 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     private void applyStoredBookmark(Title title) {
         if(title == null)
             return;
+        if(isOfflineTitle(title)) {
+            int offlineBookmark = resolveOfflineBookmark(title);
+            if(offlineBookmark > 0) {
+                title.setBookmark(offlineBookmark);
+                applyOfflineReadingProgress(title, offlineBookmark);
+            } else {
+                title.setBookmark(0);
+                title.setReadingProgress(-1, -1, totalEpisodeCount(title));
+            }
+            return;
+        }
         int bookmark = p.getBookmark(title);
         if(bookmark <= 0)
             bookmark = title.getBookmarkEpisodeId();
@@ -259,6 +271,14 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     private int resolveResumeBookmark(Title title) {
         if(title == null)
             return -1;
+        if(isOfflineTitle(title)) {
+            int bookmark = resolveOfflineBookmark(title);
+            if(bookmark > 0) {
+                title.setBookmark(bookmark);
+                applyOfflineReadingProgress(title, bookmark);
+            }
+            return bookmark;
+        }
         int bookmark = p.getBookmark(title);
         if(bookmark <= 0)
             bookmark = title.getBookmark();
@@ -269,6 +289,38 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(bookmark > 0)
             title.setBookmark(bookmark);
         return bookmark;
+    }
+
+    private boolean isOfflineTitle(Title title) {
+        return title != null && title.getPath() != null && title.getPath().length() > 0;
+    }
+
+    private int resolveOfflineBookmark(Title title) {
+        if(title == null || title.getEps() == null)
+            return -1;
+        for(Manga episode : title.getEps()) {
+            if(episode == null || episode.getId() <= 0)
+                continue;
+            episode.setTitle(title);
+            episode.setTitleId(title.getId());
+            if(p.getViewerBookmark(episode) > 0 || p.getViewerBookmarkOffset(episode) != 0)
+                return episode.getId();
+        }
+        return -1;
+    }
+
+    private void applyOfflineReadingProgress(Title title, int bookmark) {
+        if(title == null || title.getEps() == null || bookmark <= 0)
+            return;
+        int episodeIndex = -1;
+        for(int i = 0; i < title.getEps().size(); i++) {
+            Manga episode = title.getEps().get(i);
+            if(episode != null && episode.getId() == bookmark) {
+                episodeIndex = i + 1;
+                break;
+            }
+        }
+        title.setReadingProgress(bookmark, episodeIndex, title.getEpsCount());
     }
 
     private int findStoredProgressBookmark(Title title) {

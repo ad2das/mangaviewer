@@ -56,8 +56,10 @@ import ml.melun.mangaview.mangaview.Title;
 import static ml.melun.mangaview.MainApplication.httpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.deleteRecursive;
+import static ml.melun.mangaview.Utils.documentFileFromUri;
 import static ml.melun.mangaview.Utils.episodeIntent;
 import static ml.melun.mangaview.Utils.filterFolder;
+import static ml.melun.mangaview.Utils.getOfflineEpisodes;
 import static ml.melun.mangaview.Utils.openViewer;
 import static ml.melun.mangaview.Utils.popup;
 import static ml.melun.mangaview.Utils.readFileToString;
@@ -552,6 +554,8 @@ public class MainSearch extends Fragment {
     private Title resolveLatestTitleForResume(Title title) {
         if(title == null)
             return null;
+        if(isOfflineTitle(title))
+            return title;
         MTitle stored = findStoredTitle(title, p.getRecent());
         if(stored == null)
             stored = findStoredTitle(title, p.getFavorite());
@@ -581,6 +585,10 @@ public class MainSearch extends Fragment {
     private int resolveLatestBookmark(Title title, int fallback) {
         if(title == null)
             return fallback;
+        if(isOfflineTitle(title)) {
+            int bookmark = title.getBookmark();
+            return bookmark > 0 ? bookmark : fallback;
+        }
         int bookmark = p.getBookmark(title);
         if(bookmark <= 0)
             bookmark = title.getBookmark();
@@ -594,12 +602,100 @@ public class MainSearch extends Fragment {
     }
 
     private void openResume(Title title, int bookmark) {
-        if(getContext() == null || title == null || title.getId() <= 0 || bookmark <= 0)
+        if(getContext() == null || title == null || bookmark <= 0)
+            return;
+        if(isOfflineTitle(title)) {
+            openOfflineResume(title, bookmark);
+            return;
+        }
+        if(title.getId() <= 0)
             return;
         Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
         manga.setTitle(title);
         manga.setTitleId(title.getId());
         openViewer(getContext(), manga, -1);
+    }
+
+    private void openOfflineResume(Title title, int bookmark) {
+        Manga manga = resolveOfflineResumeManga(title, bookmark);
+        if(manga == null) {
+            Intent episodeView = episodeIntent(getContext(), title);
+            episodeView.putExtra("online", false);
+            startActivity(episodeView);
+            return;
+        }
+        manga.setTitle(title);
+        manga.setTitleId(title.getId());
+        openViewer(getContext(), manga, -1);
+    }
+
+    private Manga resolveOfflineResumeManga(Title title, int bookmark) {
+        if(title == null || title.getPath() == null)
+            return null;
+        List<Manga> episodes = title.getEps();
+        if(episodes == null)
+            episodes = new ArrayList<>();
+        title.setEps(episodes);
+        int mode = title.useBookmark() ? 3 : 4;
+        if(useScopedStorageHome(title.getPath())) {
+            DocumentFile titleDir = documentFileFromUri(getContext(), title.getPath());
+            for(DocumentFile folder : getOfflineEpisodes(titleDir)) {
+                Manga found = applyOfflineFolder(title, episodes, folder.getName(), folder.getUri().toString(), mode);
+                if(found != null && found.getId() == bookmark)
+                    return found;
+            }
+        } else {
+            for(File folder : getOfflineEpisodes(title.getPath())) {
+                Manga found = applyOfflineFolder(title, episodes, folder.getName(), folder.getAbsolutePath(), mode);
+                if(found != null && found.getId() == bookmark)
+                    return found;
+            }
+        }
+        int episodeIndex = title.getBookmarkEpisodeIndex();
+        if(episodeIndex <= 0)
+            episodeIndex = title.getBookmarkIndex();
+        if(episodeIndex > 0 && episodeIndex <= episodes.size()) {
+            Manga indexed = episodes.get(episodeIndex - 1);
+            if(indexed != null && indexed.getOfflinePath() != null)
+                return indexed;
+        }
+        return null;
+    }
+
+    private Manga applyOfflineFolder(Title title, List<Manga> episodes, String folderName, String path, int mode) {
+        if(folderName == null || path == null)
+            return null;
+        int id = parseOfflineEpisodeId(folderName);
+        Manga manga = null;
+        if(id > 0) {
+            for(Manga episode : episodes) {
+                if(episode != null && episode.getId() == id && episode.getBaseMode() == title.getBaseMode()) {
+                    manga = episode;
+                    break;
+                }
+            }
+            if(manga == null) {
+                manga = new Manga(id, folderName, "", title.getBaseMode());
+                episodes.add(manga);
+            }
+        } else {
+            manga = new Manga(-1, folderName, "", title.getBaseMode());
+            episodes.add(manga);
+        }
+        manga.setOfflinePath(path);
+        manga.setMode(id > 0 ? mode : 1);
+        return manga;
+    }
+
+    private int parseOfflineEpisodeId(String folderName) {
+        try {
+            int dot = folderName.lastIndexOf('.');
+            if(dot < 0 || dot >= folderName.length() - 1)
+                return -1;
+            return Integer.parseInt(folderName.substring(dot + 1));
+        } catch (Exception e) {
+            return -1;
+        }
     }
 
     private boolean isOfflineTitle(Title title) {
