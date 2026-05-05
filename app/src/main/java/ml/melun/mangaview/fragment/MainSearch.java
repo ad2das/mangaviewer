@@ -5,8 +5,6 @@ import android.content.DialogInterface;
 import android.net.Uri;
 import ml.melun.mangaview.task.LifecycleTask;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.MenuItem;
@@ -99,7 +97,6 @@ public class MainSearch extends Fragment {
     float listDownX;
     float listDownY;
     long listDownWallTime;
-    Handler listTouchHandler = new Handler(Looper.getMainLooper());
     Runnable pendingListLongPress;
     boolean listLongPressHandled = false;
     boolean listMovedBeyondTapSlop = false;
@@ -173,7 +170,7 @@ public class MainSearch extends Fragment {
                     listDownWallTime = System.currentTimeMillis();
                     listLongPressHandled = false;
                     listMovedBeyondTapSlop = false;
-                    scheduleTitleListLongPress(listDownX, listDownY);
+                    scheduleTitleListLongPress();
                     return false;
                 }
                 if(event.getAction() == MotionEvent.ACTION_MOVE) {
@@ -190,27 +187,25 @@ public class MainSearch extends Fragment {
                     listLongPressHandled = false;
                     return false;
                 }
-                if(event.getAction() != MotionEvent.ACTION_UP)
+                if(event.getAction() == MotionEvent.ACTION_UP) {
+                    cancelTitleListLongPress();
+                    if(listLongPressHandled) {
+                        listLongPressHandled = false;
+                        return true;
+                    }
+                    if(!listMovedBeyondTapSlop && System.currentTimeMillis() - listDownWallTime < ViewConfiguration.getLongPressTimeout())
+                        return handleTitleListTap(event.getX(), event.getY());
                     return false;
-                cancelTitleListLongPress();
-                if(listLongPressHandled) {
-                    listLongPressHandled = false;
-                    return true;
                 }
-                if(movedBeyondListTapSlop(event))
-                    return false;
-                if(System.currentTimeMillis() - listDownWallTime >= ViewConfiguration.getLongPressTimeout()) {
-                    listLongPressHandled = handleTitleListLongPress(event.getX(), event.getY());
-                    listLongPressHandled = false;
-                    return true;
-                }
-                return handleTitleListTap(event.getX(), event.getY());
+                return false;
             }
 
             @Override
             public void onTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent event) {
-                if(event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL)
+                if(event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) {
+                    cancelTitleListLongPress();
                     listLongPressHandled = false;
+                }
             }
         });
         searchMode = rootView.findViewById(R.id.searchMode);
@@ -916,6 +911,31 @@ public class MainSearch extends Fragment {
             showLibrary();
     }
 
+    private void scheduleTitleListLongPress() {
+        cancelTitleListLongPress();
+        if(searchResult == null)
+            return;
+        pendingListLongPress = () -> {
+            pendingListLongPress = null;
+            if(!listMovedBeyondTapSlop)
+                listLongPressHandled = handleTitleListLongPress(listDownX, listDownY);
+        };
+        searchResult.postDelayed(pendingListLongPress, ViewConfiguration.getLongPressTimeout());
+    }
+
+    private void cancelTitleListLongPress() {
+        if(searchResult != null && pendingListLongPress != null)
+            searchResult.removeCallbacks(pendingListLongPress);
+        pendingListLongPress = null;
+    }
+
+    private boolean movedBeyondListTapSlop(MotionEvent event) {
+        if(getContext() == null)
+            return false;
+        int slop = ViewConfiguration.get(getContext()).getScaledTouchSlop() * 8;
+        return Math.abs(event.getX() - listDownX) > slop || Math.abs(event.getY() - listDownY) > slop;
+    }
+
     private boolean handleTitleListTap(float x, float y) {
         if(searchResult == null || searchAdapter == null || getContext() == null)
             return false;
@@ -923,7 +943,7 @@ public class MainSearch extends Fragment {
         View item = searchResult.findContainingItemView(child);
         if(item == null)
             return false;
-        int position = searchResult.getChildAdapterPosition(item);
+        int position = positionForTitleListItem(item);
         if(position == RecyclerView.NO_POSITION || position >= searchAdapter.getItemCount())
             return false;
         Title title = searchAdapter.getItem(position);
@@ -937,41 +957,6 @@ public class MainSearch extends Fragment {
             openTitleFromList(title);
         }
         return true;
-    }
-
-    private void scheduleTitleListLongPress(float x, float y) {
-        cancelTitleListLongPress();
-        pendingListLongPress = () -> listLongPressHandled = handleTitleListLongPress(x, y);
-        listTouchHandler.postDelayed(pendingListLongPress, ViewConfiguration.getLongPressTimeout());
-    }
-
-    private void cancelTitleListLongPress() {
-        if(pendingListLongPress != null) {
-            listTouchHandler.removeCallbacks(pendingListLongPress);
-            pendingListLongPress = null;
-        }
-    }
-
-    private boolean handleTitleListLongPress(float x, float y) {
-        if(searchResult == null || searchAdapter == null || getContext() == null)
-            return false;
-        View child = searchResult.findChildViewUnder(x, y);
-        View item = searchResult.findContainingItemView(child);
-        if(item == null)
-            return false;
-        int position = searchResult.getChildAdapterPosition(item);
-        if(position == RecyclerView.NO_POSITION || position >= searchAdapter.getItemCount())
-            return false;
-        Title title = searchAdapter.getItem(position);
-        if(title == null)
-            return false;
-        showLibraryTitlePopup(item, title);
-        return true;
-    }
-
-    private boolean movedBeyondListTapSlop(MotionEvent event) {
-        int slop = dp(28);
-        return Math.abs(event.getX() - listDownX) > slop || Math.abs(event.getY() - listDownY) > slop;
     }
 
     private void openTitleFromList(Title title) {
@@ -988,6 +973,30 @@ public class MainSearch extends Fragment {
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private boolean handleTitleListLongPress(float x, float y) {
+        if(searchResult == null || searchAdapter == null || getContext() == null)
+            return false;
+        View child = searchResult.findChildViewUnder(x, y);
+        View item = searchResult.findContainingItemView(child);
+        if(item == null)
+            return false;
+        int position = positionForTitleListItem(item);
+        if(position == RecyclerView.NO_POSITION || position >= searchAdapter.getItemCount())
+            return false;
+        Title title = searchAdapter.getItem(position);
+        if(title == null)
+            return false;
+        showLibraryTitlePopup(item, title);
+        return true;
+    }
+
+    private int positionForTitleListItem(View item) {
+        int position = searchResult.getChildAdapterPosition(item);
+        if(position == RecyclerView.NO_POSITION)
+            position = searchResult.getChildLayoutPosition(item);
+        return position;
     }
 
     private void appendUnique(ArrayList<Title> target, List<?> source) {
