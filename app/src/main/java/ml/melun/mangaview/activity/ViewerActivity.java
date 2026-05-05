@@ -396,15 +396,65 @@ public class ViewerActivity extends AppCompatActivity {
                 episodePickerDialog = null;
         });
         episodePickerDialog.show();
+        loadFullEpisodeListForPicker(adapter, episodeList, pickerManager);
     }
 
     private List<Manga> currentEpisodeList() {
-        List<Manga> data = manga == null ? null : manga.getEps();
-        if(data == null || data.size() == 0)
-            data = eps;
-        if((data == null || data.size() == 0) && title != null)
-            data = title.getEps();
+        List<Manga> data = null;
+        if(manga != null)
+            data = largerEpisodeList(data, manga.getEps());
+        data = largerEpisodeList(data, eps);
+        if(title != null)
+            data = largerEpisodeList(data, title.getEps());
         return data;
+    }
+
+    private List<Manga> largerEpisodeList(List<Manga> current, List<Manga> candidate) {
+        if(candidate == null || candidate.size() == 0)
+            return current;
+        if(current == null || candidate.size() > current.size())
+            return candidate;
+        return current;
+    }
+
+    private void loadFullEpisodeListForPicker(EpisodePickerAdapter adapter, RecyclerView list, LinearLayoutManager layoutManager) {
+        Title currentTitle = title != null ? title : (manga == null ? null : manga.getTitle());
+        if(currentTitle == null || manga == null || !manga.isOnline())
+            return;
+        List<Manga> current = currentEpisodeList();
+        if(currentTitle.getEps() != null && currentTitle.getEps().size() >= (current == null ? 0 : current.size()) && currentTitle.getEps().size() > 3)
+            return;
+        imageLoadExecutor.submit(() -> {
+            try {
+                int result = currentTitle.fetchEps(getHttpClient());
+                if(result == LOAD_CAPTCHA || isFinishing())
+                    return;
+                List<Manga> loaded = currentTitle.getEps();
+                if(loaded == null || loaded.size() == 0)
+                    return;
+                for(Manga episode : loaded) {
+                    if(episode != null) {
+                        episode.setTitle(currentTitle);
+                        episode.setTitleId(currentTitle.getId());
+                    }
+                }
+                manga.setTitle(currentTitle);
+                manga.setTitleId(currentTitle.getId());
+                manga.setEps(loaded);
+                title = currentTitle;
+                mainHandler.post(() -> {
+                    if(isFinishing() || episodePickerDialog == null || adapter == null)
+                        return;
+                    int selected = findEpisodeIndex(loaded, manga);
+                    adapter.replaceData(loaded, selected);
+                    centerEpisodePicker(list, layoutManager, selected);
+                    refreshToolbar(manga);
+                });
+            } catch (Exception e) {
+                if(!isFinishing())
+                    e.printStackTrace();
+            }
+        });
     }
 
     private int findEpisodeIndex(List<Manga> data, Manga current) {
@@ -436,8 +486,8 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private class EpisodePickerAdapter extends RecyclerView.Adapter<EpisodePickerAdapter.EpisodeHolder> {
-        private final List<Manga> data;
-        private final int selected;
+        private List<Manga> data;
+        private int selected;
         private final EpisodeClickListener listener;
 
         EpisodePickerAdapter(List<Manga> data, int selected, EpisodeClickListener listener) {
@@ -445,6 +495,12 @@ public class ViewerActivity extends AppCompatActivity {
             this.selected = selected;
             this.listener = listener;
             setHasStableIds(true);
+        }
+
+        void replaceData(List<Manga> data, int selected) {
+            this.data = data;
+            this.selected = selected;
+            notifyDataSetChanged();
         }
 
         @Override
