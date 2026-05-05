@@ -21,6 +21,7 @@ import androidx.core.content.ContextCompat;
 import androidx.appcompat.app.AlertDialog;
 
 import android.view.View;
+import android.view.ViewGroup;
 import com.google.android.material.bottomsheet.BottomSheetDialog;
 import com.google.android.material.bottomnavigation.BottomNavigationView;
 import com.google.android.material.navigation.NavigationView;
@@ -442,7 +443,8 @@ public class MainActivity extends AppCompatActivity
             return;
         }
         accountSheet = new BottomSheetDialog(this);
-        View view = getLayoutInflater().inflate(R.layout.sheet_account, null);
+        ViewGroup content = findViewById(android.R.id.content);
+        View view = getLayoutInflater().inflate(R.layout.sheet_account, content, false);
         accountSheetName = view.findViewById(R.id.account_sheet_name);
         accountSheetEmail = view.findViewById(R.id.account_sheet_email);
         accountSheetStatus = view.findViewById(R.id.account_sheet_status);

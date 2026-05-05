@@ -81,7 +81,7 @@ public class CustomSpinnerAdapter extends BaseAdapter implements SpinnerAdapter 
         ViewHolder holder = null;
         try {
             if (convertView == null) {
-                convertView = inflater.inflate(R.layout.item_custom_spinner_dropdown, null);
+                convertView = inflater.inflate(R.layout.item_custom_spinner_dropdown, parent, false);
                 holder = new ViewHolder();
                 holder.name = (TextView) convertView.findViewById(R.id.spinner_text);
                 convertView.setTag(holder);
