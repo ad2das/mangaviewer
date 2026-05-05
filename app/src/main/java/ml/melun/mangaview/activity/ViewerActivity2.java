@@ -20,9 +20,7 @@ import com.bumptech.glide.load.model.LazyHeaders;
 import com.google.android.material.appbar.AppBarLayout;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.view.OnApplyWindowInsetsListener;
 import androidx.core.view.ViewCompat;
-import androidx.core.view.WindowInsetsCompat;
 
 import android.os.Bundle;
 import android.text.InputType;
@@ -123,15 +121,6 @@ public class ViewerActivity2 extends AppCompatActivity {
         super.onSaveInstanceState(outState);
     }
 
-    public int getStatusBarHeight() {
-        int result = 0;
-        int resourceId = getResources().getIdentifier("status_bar_height", "dimen", "android");
-        if (resourceId > 0) {
-            result = getResources().getDimensionPixelSize(resourceId);
-        }
-        return result;
-    }
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         dark = p.getDarkTheme();
@@ -167,7 +156,7 @@ public class ViewerActivity2 extends AppCompatActivity {
         nextEpisode.setVisibility(View.GONE);
 
         //initial padding setup
-        appbar.setPadding(0, getStatusBarHeight(),0,0);
+        appbar.setPadding(0, 0,0,0);
         getWindow().getDecorView().setBackgroundColor(Color.BLACK);
 
 //        Display display  = getWindowManager().getDefaultDisplay();
@@ -180,7 +169,7 @@ public class ViewerActivity2 extends AppCompatActivity {
 
         ViewCompat.setOnApplyWindowInsetsListener(getWindow().getDecorView(), (view, windowInsetsCompat) -> {
             //This is where you get DisplayCutoutCompat
-            int statusBarHeight = getStatusBarHeight();
+            int statusBarHeight = windowInsetsCompat.getSystemWindowInsetTop();
             int ci;
             if(windowInsetsCompat.getDisplayCutout() == null) ci = 0;
             else ci = windowInsetsCompat.getDisplayCutout().getSafeInsetTop();
