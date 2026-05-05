@@ -108,8 +108,11 @@ public class ViewerActivity extends AppCompatActivity {
     boolean nextEpisodeBoundaryLoading = false;
     boolean previousEpisodeBoundaryJumpPending = false;
     boolean nextEpisodeBoundaryJumpPending = false;
-    private static final int NEXT_EPISODE_PRELOAD_LIMIT = 8;
+    private static final int NEXT_EPISODE_PRELOAD_LIMIT = 3;
     private static final int DATA_SAVE_NEXT_EPISODE_PRELOAD_LIMIT = 3;
+    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 3;
+    private static final int NEXT_EPISODE_ATTACH_THRESHOLD = 6;
+    private static final int DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD = 4;
     private static final int PREVIOUS_EPISODE_PULL_THRESHOLD_DP = 36;
     float topPullStartY = 0;
     boolean topPullTriggered = false;
@@ -201,10 +204,8 @@ public class ViewerActivity extends AppCompatActivity {
                 Manga target = curm.nextEp();
                 if(target != null) {
                     if(hasLoadedImages(target)) {
-                        preloadFirstPages(target);
                         appendMangaWhenIdle(target, ViewerActivity.this::isNextTargetStillExpected, () -> {
                             callback.nextLoaded(target);
-                            prefetchNextEpisode(target);
                         });
                         return target;
                     }
@@ -223,11 +224,9 @@ public class ViewerActivity extends AppCompatActivity {
                         if (m.getImgs(context).size() > 0) {
                             appendMangaWhenIdle(m, ViewerActivity.this::isNextTargetStillExpected, () -> {
                                 callback.nextLoaded(m);
-                                prefetchNextEpisode(m);
                             });
                         } else {
                             callback.nextLoaded(m);
-                            prefetchNextEpisode(m);
                         }
                     },false);
                     loader.start();
@@ -428,7 +427,7 @@ public class ViewerActivity extends AppCompatActivity {
             bookmarkRefresh(m);
             refreshToolbar(m);
             updateIntent(m);
-            prefetchNextEpisode(m);
+            scheduleFocusedPagePreload();
 
         }catch (Exception e){
             Utils.showCaptchaPopup(m.getUrl(), context, e, p);
@@ -519,13 +518,13 @@ public class ViewerActivity extends AppCompatActivity {
         updateAutoCutButtonState();
         stripAdapter.removeAll();
         stripAdapter = new StripAdapter(context, page.manga, autoCut, width,title, infiniteScrollCallback);
-        stripAdapter.preloadAll();
         strip.setAdapter(stripAdapter);
         stripAdapter.setClickListener(() -> {
             // show/hide toolbar
             toggleToolbar();
         });
         manager.scrollToPage(new PageItem(page.index, "", page.manga));
+        scheduleFocusedPagePreload();
     }
 
     private void updateAutoCutButtonState() {
@@ -793,15 +792,32 @@ public class ViewerActivity extends AppCompatActivity {
         stripAdapter.setClickListener(this::toggleToolbar);
     }
 
+    private void scheduleFocusedPagePreload() {
+        if(strip == null)
+            return;
+        strip.postDelayed(this::preloadFocusedPages, 120);
+    }
+
+    private void preloadFocusedPages() {
+        if(stripAdapter == null || isFinishing())
+            return;
+        PageItem page = getFocusedVisiblePage();
+        if(page == null)
+            page = getFirstVisiblePage();
+        if(page != null)
+            stripAdapter.preloadAroundPage(page, INITIAL_PRELOAD_AHEAD_COUNT);
+    }
+
     private void loadEpisodeAtBoundaryIfNeeded() {
         if(strip == null || manager == null || stripAdapter == null || manager.getItemCount() == 0)
             return;
         int first = manager.findFirstVisibleItemPosition();
         int last = manager.findLastVisibleItemPosition();
         int total = manager.getItemCount();
+        int attachThreshold = p.getDataSave() ? DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD : NEXT_EPISODE_ATTACH_THRESHOLD;
         if(first <= 0 && !previousEpisodeBoundaryLoading)
             attachPreviousEpisode(false);
-        if(last != RecyclerView.NO_POSITION && last >= total - 12)
+        if(last != RecyclerView.NO_POSITION && last >= total - attachThreshold)
             attachNextEpisode(false);
         if(last != RecyclerView.NO_POSITION && (last >= total - 2 || !strip.canScrollVertically(1)))
             attachNextEpisode(true);

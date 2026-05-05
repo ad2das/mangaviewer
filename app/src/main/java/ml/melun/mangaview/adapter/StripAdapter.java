@@ -55,7 +55,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     int width;
     int count = 0;
     final static int MaxStackSize = 3;
-    private static final int PRELOAD_AHEAD_COUNT = 6;
+    private static final int PRELOAD_AHEAD_COUNT = 4;
     private static final int DATA_SAVE_PRELOAD_AHEAD_COUNT = 2;
     private static final int PRELOAD_TRACK_LIMIT = 200;
     ViewerActivity.InfiniteScrollCallback callback;
@@ -197,6 +197,20 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         return RecyclerView.NO_POSITION;
     }
 
+    private int findFirstMatchingPagePosition(PageItem page) {
+        if(page == null || items == null)
+            return RecyclerView.NO_POSITION;
+        for(int i = 0; i < items.size(); i++) {
+            Object item = items.get(i);
+            if(item instanceof PageItem) {
+                PageItem other = (PageItem) item;
+                if(sameManga(other.manga, page.manga) && other.index == page.index)
+                    return i;
+            }
+        }
+        return RecyclerView.NO_POSITION;
+    }
+
     private boolean sameManga(Manga a, Manga b) {
         return a != null && b != null
                 && a.getId() == b.getId()
@@ -314,6 +328,22 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         for(Object o : items) {
             if(o instanceof PageItem) {
                 preloadPage((PageItem) o);
+            }
+        }
+    }
+
+    public void preloadAroundPage(PageItem page, int aheadCount) {
+        if(page == null || items == null)
+            return;
+        int start = findFirstMatchingPagePosition(page);
+        if(start == RecyclerView.NO_POSITION)
+            return;
+        int preloaded = 0;
+        for(int i = start; i < items.size() && preloaded <= aheadCount; i++) {
+            Object next = items.get(i);
+            if(next instanceof PageItem) {
+                preloadPage((PageItem) next);
+                preloaded++;
             }
         }
     }
