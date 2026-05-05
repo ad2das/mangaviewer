@@ -410,6 +410,7 @@ public class ViewerActivity extends AppCompatActivity {
 
     public void setManga(Manga m){
         try {
+            manga = m;
             lockUi(false);
             if(m.getImgs(context) == null || m.getImgs(context).size()==0) {
                 showCaptchaPopup(m.getUrl(), context, p);
@@ -729,6 +730,7 @@ public class ViewerActivity extends AppCompatActivity {
         Title currentTitle = title != null ? title : target.getTitle();
         if(currentTitle == null)
             return LOAD_OK;
+        restoreTitleEpisodes(currentTitle, target);
         if(currentTitle.getEps() == null || currentTitle.getEps().size() <= 1) {
             int result = currentTitle.fetchEps(getHttpClient());
             if(result == LOAD_CAPTCHA)
@@ -753,6 +755,7 @@ public class ViewerActivity extends AppCompatActivity {
         Title currentTitle = title != null ? title : target.getTitle();
         if(currentTitle == null)
             return LOAD_OK;
+        restoreTitleEpisodes(currentTitle, target);
         target.setTitle(currentTitle);
         target.setTitleId(currentTitle.getId());
         if(currentTitle.getEps() != null)
@@ -764,6 +767,15 @@ public class ViewerActivity extends AppCompatActivity {
             }
         title = currentTitle;
         return LOAD_OK;
+    }
+
+    private void restoreTitleEpisodes(Title currentTitle, Manga target) {
+        if(currentTitle == null || target == null)
+            return;
+        List<Manga> targetEpisodes = target.getEps();
+        if((currentTitle.getEps() == null || currentTitle.getEps().size() <= 1)
+                && targetEpisodes != null && targetEpisodes.size() > 1)
+            currentTitle.setEps(targetEpisodes);
     }
 
     private void hydrateEpisodeListAfterFirstFrame(Manga target) {
