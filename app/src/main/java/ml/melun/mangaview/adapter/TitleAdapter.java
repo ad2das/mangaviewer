@@ -134,6 +134,28 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             notifyItemRangeInserted(oSize, inserted);
     }
 
+    public void preloadThumbnails(int startPosition, int count) {
+        if(mDataFiltered == null || count <= 0 || (save && !forceThumbnail))
+            return;
+        int start = Math.max(0, startPosition);
+        int end = Math.min(mDataFiltered.size(), start + count);
+        for(int i = start; i < end; i++) {
+            Title data = mDataFiltered.get(i);
+            if(data == null)
+                continue;
+            String thumb = data.getThumb();
+            if(thumb == null || thumb.length() <= 1)
+                continue;
+            Object source = isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, data.getBaseMode());
+            Glide.with(mainContext)
+                    .load(source)
+                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                    .override(dp(96), dp(124))
+                    .dontAnimate()
+                    .preload();
+        }
+    }
+
     public void setData(List<?> t){
         clearData();
         addData(t);

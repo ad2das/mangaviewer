@@ -47,6 +47,8 @@ import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 
 public class TagSearchActivity extends AppCompatActivity {
+    private static final int THUMBNAIL_PRELOAD_AHEAD = 18;
+    private static final int THUMBNAIL_PRELOAD_DELAY_MS = 80;
     RecyclerView searchResult;
     int mode;
     String query;
@@ -61,6 +63,7 @@ public class TagSearchActivity extends AppCompatActivity {
     int baseMode;
     LifecycleTask<?, ?, ?> loadTask;
     boolean destroyed = false;
+    Runnable thumbnailPreloadRunnable;
 
 
     @Override
@@ -99,8 +102,15 @@ public class TagSearchActivity extends AppCompatActivity {
                     return;
                 if(newState == RecyclerView.SCROLL_STATE_IDLE)
                     Glide.with(TagSearchActivity.this).resumeRequests();
-                else
-                    Glide.with(TagSearchActivity.this).pauseRequests();
+                scheduleThumbnailPreload();
+            }
+
+            @Override
+            public void onScrolled(@NonNull RecyclerView recyclerView, int dx, int dy) {
+                super.onScrolled(recyclerView, dx, dy);
+                if(isFinishing() || destroyed)
+                    return;
+                scheduleThumbnailPreload();
             }
         });
         Intent i = getIntent();
@@ -256,6 +266,7 @@ public class TagSearchActivity extends AppCompatActivity {
             }else{
                 noresult.setVisibility(View.VISIBLE);
             }
+            scheduleThumbnailPreload();
             swipe.setRefreshing(false);
         }
 
@@ -346,6 +357,7 @@ public class TagSearchActivity extends AppCompatActivity {
             }else{
                 noresult.setVisibility(View.VISIBLE);
             }
+            scheduleThumbnailPreload();
             swipe.setRefreshing(false);
         }
 
@@ -422,6 +434,7 @@ public class TagSearchActivity extends AppCompatActivity {
             }else{
                 noresult.setVisibility(View.VISIBLE);
             }
+            scheduleThumbnailPreload();
             swipe.setRefreshing(false);
         }
 
@@ -466,6 +479,34 @@ public class TagSearchActivity extends AppCompatActivity {
         popup.show(); //showing popup menu
     }
 
+    private void scheduleThumbnailPreload() {
+        if(searchResult == null)
+            return;
+        if(thumbnailPreloadRunnable != null)
+            searchResult.removeCallbacks(thumbnailPreloadRunnable);
+        thumbnailPreloadRunnable = this::preloadVisibleThumbnails;
+        searchResult.postDelayed(thumbnailPreloadRunnable, THUMBNAIL_PRELOAD_DELAY_MS);
+    }
+
+    private void preloadVisibleThumbnails() {
+        if(searchResult == null || destroyed || isFinishing())
+            return;
+        RecyclerView.LayoutManager manager = searchResult.getLayoutManager();
+        if(!(manager instanceof LinearLayoutManager))
+            return;
+        LinearLayoutManager layoutManager = (LinearLayoutManager) manager;
+        int first = layoutManager.findFirstVisibleItemPosition();
+        int last = layoutManager.findLastVisibleItemPosition();
+        if(first == RecyclerView.NO_POSITION)
+            first = 0;
+        int visibleCount = last >= first ? last - first + 1 : 8;
+        int preloadCount = visibleCount + THUMBNAIL_PRELOAD_AHEAD;
+        if(adapter != null)
+            adapter.preloadThumbnails(first, preloadCount);
+        if(uadapter != null)
+            uadapter.preloadThumbnails(first, preloadCount);
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
@@ -483,6 +524,8 @@ public class TagSearchActivity extends AppCompatActivity {
             loadTask.cancel(true);
             loadTask = null;
         }
+        if(searchResult != null && thumbnailPreloadRunnable != null)
+            searchResult.removeCallbacks(thumbnailPreloadRunnable);
         super.onDestroy();
     }
 }

@@ -63,6 +63,27 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         notifyItemRangeInserted(oSize,data.size());
     }
 
+    public void preloadThumbnails(int startPosition, int count) {
+        if(mData == null || count <= 0 || save)
+            return;
+        int start = Math.max(0, startPosition);
+        int end = Math.min(mData.size(), start + count);
+        for(int i = start; i < end; i++) {
+            UpdatedManga manga = mData.get(i);
+            if(manga == null)
+                continue;
+            String thumb = manga.getThumb();
+            if(thumb == null || thumb.length() <= 1)
+                continue;
+            Glide.with(context)
+                    .load(getGlideUrl(thumb, manga.getBaseMode()))
+                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                    .override(dp(72), dp(96))
+                    .dontAnimate()
+                    .preload();
+        }
+    }
+
     public void setOnClickListener(onclickListener click){
         olisten = click;
     }
