@@ -555,11 +555,7 @@ public class MainSearch extends Fragment {
             showMinimumSearchLengthToast();
             return;
         }
-        if(onlineSearchMode) {
-            searchSubmitOnline();
-            return;
-        }
-        performLibrarySearch(query);
+        searchSubmitOnline();
     }
 
     private void performLibrarySearch(String query) {
