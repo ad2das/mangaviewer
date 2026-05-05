@@ -637,6 +637,7 @@ public class ViewerActivity extends AppCompatActivity {
             if (title == null)
                 title = m.getTitle();
             resetOnBackPressed();
+            preloadInitialRequestWindow(m);
             callback.post(m);
             if(lockui)
                 hydrateEpisodeListAfterFirstFrame(m);
@@ -869,6 +870,26 @@ public class ViewerActivity extends AppCompatActivity {
         if(pageIndex < 0 || pageIndex >= images.size())
             pageIndex = 0;
         stripAdapter.preloadInitialAroundPage(new PageItem(pageIndex, "", target));
+    }
+
+    private void preloadInitialRequestWindow(Manga target) {
+        if(target == null || !target.isOnline())
+            return;
+        List<String> images = target.getImgs(context);
+        if(images == null || images.size() == 0)
+            return;
+        int pageIndex = target.useBookmark() ? p.getViewerBookmark(target) : 0;
+        if(pageIndex < 0 || pageIndex >= images.size())
+            pageIndex = 0;
+        int preloadLimit = p.getDataSave() ? 4 : 7;
+        int end = Math.min(images.size(), pageIndex + preloadLimit);
+        for(int i = pageIndex; i < end; i++)
+            Glide.with(context)
+                    .asBitmap()
+                    .priority(com.bumptech.glide.Priority.IMMEDIATE)
+                    .apply(viewerPreloadOptions())
+                    .load(Utils.getGlideUrl(images.get(i), target.getBaseMode()))
+                    .preload();
     }
 
     private void scheduleFocusedPagePreload() {
