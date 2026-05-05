@@ -22983,6 +22983,14 @@
         "개그"
       ]
     },
+    "2597": {
+      "name": "위너클럽",
+      "thumb": "https://i2.vcloud17.com/2597/fc36385f0dcdfa430715a31cd569e9973466d1e4259679a077c176e5594fec22.jpg",
+      "release": "",
+      "sourceTags": [
+        "드라마"
+      ]
+    },
     "2598": {
       "name": "보스 오빠,제발!",
       "thumb": "https://i2.vcloud17.com/2598/07e5e5f930bf2f68c522d52f60da0eda0fa25fca9fc7203423204612871b0256.jpg",
@@ -23004,6 +23012,15 @@
     "2600": {
       "name": "피플",
       "thumb": "https://i2.vcloud17.com/2600/f7ba15cb19b4f9cbf4c22f4a2da8c4afdaf2bf922a51346dee58df95d4eb5f64.jpg",
+      "release": "",
+      "sourceTags": [
+        "스토리",
+        "드라마"
+      ]
+    },
+    "2601": {
+      "name": "일진에게 회초리",
+      "thumb": "https://i2.vcloud17.com/2601/ec80b9f650a28114ebfce81d76c064f13f021c0457e12ea3d15fe550d294ada4.jpg",
       "release": "",
       "sourceTags": [
         "스토리",
@@ -28101,6 +28118,15 @@
       "sourceTags": [
         "판타지",
         "액션"
+      ]
+    },
+    "3146": {
+      "name": "양다리 하숙",
+      "thumb": "https://i3.vcloud17.com/3146/05fc31385dc87dd9b6a42003915926d687345321847e4eec3308266a3485d40b.jpg",
+      "release": "",
+      "sourceTags": [
+        "로맨스",
+        "드라마"
       ]
     },
     "3147": {
@@ -37308,15 +37334,6 @@
         "미스터리"
       ]
     },
-    "4148": {
-      "name": "음란한 그녀와의 순정만화",
-      "thumb": "https://i5.bacloud2.com/4148/8272be3944a807b05470ec1d477f2a6f5da13077d83a721128f3b5a8c433e60e.jpg",
-      "release": "",
-      "sourceTags": [
-        "성인",
-        "로맨스"
-      ]
-    },
     "4149": {
       "name": "원킬",
       "thumb": "https://i5.bacloud2.com/4149/d40dbd08aa300f1eb8e3f7c38defc8cb809a76577e0877f17f15147d823a7b0e.jpg",
@@ -43636,14 +43653,6 @@
     "4835": {
       "name": "반품여친",
       "thumb": "https://i6.bacloud2.com/4835/e2cfa2013b44ea497eb9d2a8ba8c0ce06be141a2c1dc3327cb4eaa3da9e50195.jpg",
-      "release": "",
-      "sourceTags": [
-        "성인"
-      ]
-    },
-    "4836": {
-      "name": "야한 레슨",
-      "thumb": "https://i6.bacloud2.com/4836/199e567d1e0238b16b5a79f73650478457dd9285612314b9c304ba5d2f5f3600.jpg",
       "release": "",
       "sourceTags": [
         "성인"
@@ -125100,8 +125109,8 @@
       ],
       "tags": [
         "스토리",
-        "로맨스",
         "드라마",
+        "로맨스",
         "판타지"
       ],
       "naverTitleId": 831770,
@@ -125739,14 +125748,6 @@
       "naverName": "나이스 ThinQ Time",
       "match": "normalized-title",
       "matchScore": 1.0
-    },
-    "73954": {
-      "name": "너, 그런 거 보니?",
-      "thumb": "https://vv14cloud.com/73954/rp19atdxpjiovebcpzmrou4h2kuzywxa6o.jpg",
-      "release": "",
-      "sourceTags": [
-        "성인"
-      ]
     },
     "73955": {
       "name": "천왕세가",
@@ -126982,14 +126983,6 @@
       "release": "",
       "sourceTags": [
         "BL"
-      ]
-    },
-    "74085": {
-      "name": "멍청바이러스",
-      "thumb": "https://vv14cloud.com/74085/df3xm1a8uqordz0lmhevjcagf94db4wbt3.jpg",
-      "release": "",
-      "sourceTags": [
-        "성인"
       ]
     },
     "74086": {
