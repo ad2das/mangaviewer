@@ -23,20 +23,23 @@
         app:srcCompat="@drawable/ic_arrow_right"
         app:tint="@color/appCard" />
 
-    <ml.melun.mangaview.ui.CustomSpinner
+    <ImageButton
         android:id="@+id/toolbar_spinner"
         android:layout_width="50dp"
         android:layout_height="44dp"
         android:layout_marginEnd="8dp"
         android:background="@drawable/viewer_episode_button_bg"
-        android:dropDownWidth="260dp"
+        android:contentDescription="회차 선택"
         android:elevation="3dp"
         android:paddingStart="8dp"
         android:paddingEnd="8dp"
+        android:scaleType="centerInside"
         android:visibility="visible"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toStartOf="@+id/toolbar_next"
-        app:layout_constraintTop_toTopOf="parent" />
+        app:layout_constraintTop_toTopOf="parent"
+        app:srcCompat="@drawable/ic_list"
+        app:tint="@color/appCard" />
 
     <ImageButton
         android:id="@+id/toolbar_previous"

@@ -6,9 +6,12 @@ import android.content.res.Configuration;
 import android.graphics.Color;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.TextUtils;
+import android.util.TypedValue;
 
 import com.google.android.material.appbar.AppBarLayout;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
@@ -16,14 +19,17 @@ import androidx.appcompat.app.AppCompatActivity;
 import android.os.Bundle;
 
 import androidx.constraintlayout.widget.ConstraintLayout;
+import androidx.core.content.ContextCompat;
 import androidx.core.view.ViewCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import android.text.InputType;
+import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.Menu;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageButton;
@@ -45,9 +51,7 @@ import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.StringCallback;
 import ml.melun.mangaview.ui.StripLayoutManager;
 import ml.melun.mangaview.Utils;
-import ml.melun.mangaview.adapter.CustomSpinnerAdapter;
 import ml.melun.mangaview.adapter.StripAdapter;
-import ml.melun.mangaview.ui.CustomSpinner;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
@@ -56,7 +60,6 @@ import ml.melun.mangaview.model.PageItem;
 import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getScreenSize;
-import static ml.melun.mangaview.Utils.hideSpinnerDropDown;
 import static ml.melun.mangaview.Utils.queueOfflineDownload;
 import static ml.melun.mangaview.Utils.showCaptchaPopup;
 import static ml.melun.mangaview.Utils.showPopup;
@@ -89,8 +92,8 @@ public class ViewerActivity extends AppCompatActivity {
     int width=0;
     Intent intent;
     boolean captchaChecked = false;
-    CustomSpinner spinner;
-    CustomSpinnerAdapter spinnerAdapter;
+    ImageButton episodeButton;
+    AlertDialog episodePickerDialog;
     InfiniteScrollCallback infiniteScrollCallback;
     LoadImagesJob loader;
     PrefetchImagesJob nextPrefetcher;
@@ -140,7 +143,7 @@ public class ViewerActivity extends AppCompatActivity {
         pageBtn = this.findViewById(R.id.viewerBtn1);
         pageBtn.setText("-/-");
         saveBtn = this.findViewById(R.id.viewerSaveButton);
-        spinner = this.findViewById(R.id.toolbar_spinner);
+        episodeButton = this.findViewById(R.id.toolbar_spinner);
         width = getScreenSize(getWindowManager().getDefaultDisplay());
 
         //initial padding setup
@@ -262,15 +265,6 @@ public class ViewerActivity extends AppCompatActivity {
             manager = new StripLayoutManager(this);
             manager.setOrientation(LinearLayoutManager.VERTICAL);
             strip.setItemViewCacheSize(4);
-            spinnerAdapter = new CustomSpinnerAdapter(context);
-            spinnerAdapter.setListener((m, i) -> {
-                lockUi(true);
-                spinner.setSelection(m);
-                hideSpinnerDropDown(spinner);
-                loadManga(m);
-
-            });
-            spinner.setAdapter(spinnerAdapter);
             strip.setLayoutManager(manager);
 
             if(intent.getBooleanExtra("recent",false)){
@@ -327,6 +321,7 @@ public class ViewerActivity extends AppCompatActivity {
 
         next.setOnClickListener(v -> loadManga(manga.nextEp()));
         prev.setOnClickListener(v -> loadManga(manga.prevEp()));
+        episodeButton.setOnClickListener(v -> showEpisodePicker());
         cut.setOnClickListener(v -> toggleAutoCut());
 
         pageBtn.setOnClickListener(v -> {
@@ -364,6 +359,152 @@ public class ViewerActivity extends AppCompatActivity {
 
     void refresh(){
         loadManga(manga);
+    }
+
+    private void showEpisodePicker() {
+        List<Manga> data = currentEpisodeList();
+        if(data == null || data.size() == 0)
+            return;
+        int selected = findEpisodeIndex(data, manga);
+        RecyclerView episodeList = new RecyclerView(context);
+        int maxHeight = Math.min(dp(520), getResources().getDisplayMetrics().heightPixels - dp(160));
+        episodeList.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxHeight));
+        episodeList.setClipToPadding(false);
+        episodeList.setPadding(0, dp(4), 0, dp(4));
+        LinearLayoutManager pickerManager = new LinearLayoutManager(context);
+        episodeList.setLayoutManager(pickerManager);
+        episodeList.setItemAnimator(null);
+
+        EpisodePickerAdapter adapter = new EpisodePickerAdapter(data, selected, selectedManga -> {
+            if(episodePickerDialog != null)
+                episodePickerDialog.dismiss();
+            lockUi(true);
+            loadManga(selectedManga);
+        });
+        episodeList.setAdapter(adapter);
+
+        AlertDialog.Builder builder = dark
+                ? new AlertDialog.Builder(context, R.style.darkDialog)
+                : new AlertDialog.Builder(context);
+        episodePickerDialog = builder
+                .setTitle("회차 선택")
+                .setView(episodeList)
+                .create();
+        episodePickerDialog.setOnShowListener(dialog -> centerEpisodePicker(episodeList, pickerManager, selected));
+        episodePickerDialog.setOnDismissListener(dialog -> {
+            if(episodePickerDialog == dialog)
+                episodePickerDialog = null;
+        });
+        episodePickerDialog.show();
+    }
+
+    private List<Manga> currentEpisodeList() {
+        List<Manga> data = manga == null ? null : manga.getEps();
+        if(data == null || data.size() == 0)
+            data = eps;
+        if((data == null || data.size() == 0) && title != null)
+            data = title.getEps();
+        return data;
+    }
+
+    private int findEpisodeIndex(List<Manga> data, Manga current) {
+        if(data == null || current == null)
+            return RecyclerView.NO_POSITION;
+        for(int i = 0; i < data.size(); i++) {
+            Manga candidate = data.get(i);
+            if(candidate != null && sameManga(candidate, current))
+                return i;
+        }
+        return RecyclerView.NO_POSITION;
+    }
+
+    private void centerEpisodePicker(RecyclerView list, LinearLayoutManager layoutManager, int selected) {
+        if(selected == RecyclerView.NO_POSITION || list == null || layoutManager == null)
+            return;
+        list.post(() -> {
+            if(list.getHeight() <= 0) {
+                list.postDelayed(() -> centerEpisodePicker(list, layoutManager, selected), 32);
+                return;
+            }
+            int offset = Math.max(0, (list.getHeight() - dp(52)) / 2);
+            layoutManager.scrollToPositionWithOffset(selected, offset);
+        });
+    }
+
+    private int dp(float value) {
+        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private class EpisodePickerAdapter extends RecyclerView.Adapter<EpisodePickerAdapter.EpisodeHolder> {
+        private final List<Manga> data;
+        private final int selected;
+        private final EpisodeClickListener listener;
+
+        EpisodePickerAdapter(List<Manga> data, int selected, EpisodeClickListener listener) {
+            this.data = data;
+            this.selected = selected;
+            this.listener = listener;
+            setHasStableIds(true);
+        }
+
+        @Override
+        @NonNull
+        public EpisodeHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+            TextView text = new TextView(parent.getContext());
+            text.setLayoutParams(new RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
+            text.setGravity(Gravity.CENTER_VERTICAL);
+            text.setPadding(dp(16), 0, dp(16), 0);
+            text.setSingleLine(true);
+            text.setEllipsize(TextUtils.TruncateAt.END);
+            text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+            return new EpisodeHolder(text);
+        }
+
+        @Override
+        public void onBindViewHolder(@NonNull EpisodeHolder holder, int position) {
+            Manga item = data.get(position);
+            boolean isSelected = position == selected;
+            holder.text.setText(item == null ? "" : item.getName());
+            holder.text.setTextColor(isSelected
+                    ? ContextCompat.getColor(context, R.color.appAccent)
+                    : dark ? Color.WHITE : ContextCompat.getColor(context, R.color.appText));
+            holder.text.setBackgroundColor(isSelected
+                    ? dark ? Color.rgb(40, 48, 64) : ContextCompat.getColor(context, R.color.appAccentLight)
+                    : Color.TRANSPARENT);
+            holder.text.setSelected(true);
+            holder.text.setOnClickListener(v -> {
+                if(listener != null && item != null)
+                    listener.onClick(item);
+            });
+        }
+
+        @Override
+        public int getItemCount() {
+            return data == null ? 0 : data.size();
+        }
+
+        @Override
+        public long getItemId(int position) {
+            Manga item = data == null || position < 0 || position >= data.size() ? null : data.get(position);
+            if(item == null)
+                return RecyclerView.NO_ID;
+            return (((long)item.getBaseMode()) << 48)
+                    ^ (((long)item.getTitleId() & 0xffffL) << 32)
+                    ^ (item.getId() & 0xffffffffL);
+        }
+
+        class EpisodeHolder extends RecyclerView.ViewHolder {
+            TextView text;
+
+            EpisodeHolder(@NonNull View itemView) {
+                super(itemView);
+                text = (TextView) itemView;
+            }
+        }
+    }
+
+    private interface EpisodeClickListener {
+        void onClick(Manga manga);
     }
 
     void loadManga(Manga m, LoadMangaCallback callback){
@@ -1188,12 +1329,13 @@ public class ViewerActivity extends AppCompatActivity {
     public void refreshToolbar(Manga m){
         //spinner
         eps = m.getEps();
-        if(eps == null || eps.size() == 0){
+        if((eps == null || eps.size() == 0) && title != null){
             //backup plan
             eps = title.getEps();
         }
-        spinnerAdapter.setData(eps, m);
-        spinner.setSelection(m);
+        boolean hasEpisodes = eps != null && eps.size() > 0;
+        episodeButton.setEnabled(hasEpisodes);
+        episodeButton.setAlpha(hasEpisodes ? 1f : 0.38f);
 
         //top toolbar
         toolbarTitle.setText(m.getName());
@@ -1385,7 +1527,7 @@ public class ViewerActivity extends AppCompatActivity {
         pageBtn.setEnabled(!lock);
         cut.setEnabled(!lock);
         strip.setEnabled(!lock);
-        spinner.setEnabled(!lock);
+        episodeButton.setEnabled(!lock);
     }
 
     private void saveCurrentEpisodeOffline() {

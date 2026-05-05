@@ -69,6 +69,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private final Set<String> displayedImages = new LinkedHashSet<>();
     private final LruCache<String, Bitmap> decodedBitmapCache;
     private final Map<String, Decoder> decoders = new HashMap<>();
+    private final Map<String, CustomTarget<Bitmap>> decodedPreloadTargets = new HashMap<>();
 
     public List<Object> getItems(){
         return items;
@@ -373,10 +374,14 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             return;
         int preloaded = 0;
         int preloadLimit = p.getDataSave() ? DATA_SAVE_PRELOAD_AHEAD_COUNT : INITIAL_PRELOAD_AHEAD_COUNT;
-        for(int i = start; i < items.size() && preloaded <= preloadLimit; i++) {
+        int decodedLimit = p.getDataSave() ? 1 : 2;
+        for(int i = start; i < items.size() && preloaded < preloadLimit; i++) {
             Object next = items.get(i);
             if(next instanceof PageItem) {
-                preloadPage((PageItem) next, Priority.HIGH);
+                if(preloaded < decodedLimit)
+                    preloadPageIntoDecodedCache((PageItem) next, Priority.IMMEDIATE);
+                else
+                    preloadPage((PageItem) next, Priority.HIGH);
                 preloaded++;
             }
         }
@@ -405,6 +410,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         preloadedImages.clear();
         decodedBitmapCache.evictAll();
         decoders.clear();
+        clearDecodedPreloadTargets();
         clearCurrentPage();
         count = 0;
         notifyItemRangeRemoved(0, size);
@@ -657,6 +663,47 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 .preload();
     }
 
+    private void preloadPageIntoDecodedCache(PageItem page, Priority priority) {
+        String key = decodedCacheKey(page);
+        if(key == null || key.length() == 0)
+            return;
+        Bitmap cached = decodedBitmapCache.get(key);
+        if(cached != null && !cached.isRecycled())
+            return;
+        if(cached != null)
+            decodedBitmapCache.remove(key);
+        String requestKey = "decoded:" + key;
+        if(!preloadedImages.add(requestKey))
+            return;
+        trimPreloadTracker();
+        CustomTarget<Bitmap> target = new CustomTarget<Bitmap>() {
+            @Override
+            public void onResourceReady(@NonNull Bitmap resource, @Nullable Transition<? super Bitmap> transition) {
+                decodedPreloadTargets.remove(requestKey);
+                if(resource == null || resource.isRecycled() || isContextDestroyed())
+                    return;
+                decodedBitmapCache.put(key, detachBitmap(resource));
+            }
+
+            @Override
+            public void onLoadCleared(@Nullable Drawable placeholder) {
+                decodedPreloadTargets.remove(requestKey);
+            }
+
+            @Override
+            public void onLoadFailed(@Nullable Drawable errorDrawable) {
+                decodedPreloadTargets.remove(requestKey);
+            }
+        };
+        decodedPreloadTargets.put(requestKey, target);
+        Glide.with(mainContext)
+                .asBitmap()
+                .priority(priority)
+                .apply(viewerImageOptions(page))
+                .load(getImageModel(page))
+                .into(target);
+    }
+
     private String preloadKey(PageItem page) {
         if(page == null || page.manga == null)
             return "";
@@ -690,6 +737,22 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         preloadedImages.clear();
         decodedBitmapCache.evictAll();
         decoders.clear();
+        clearDecodedPreloadTargets();
+    }
+
+    private void clearDecodedPreloadTargets() {
+        if(decodedPreloadTargets.size() == 0)
+            return;
+        List<CustomTarget<Bitmap>> targets = new ArrayList<>(decodedPreloadTargets.values());
+        decodedPreloadTargets.clear();
+        if(isContextDestroyed())
+            return;
+        for(CustomTarget<Bitmap> target : targets) {
+            try {
+                Glide.with(mainContext).clear(target);
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
     }
 
     private int decodedCacheSizeKb() {
