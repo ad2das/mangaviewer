@@ -393,7 +393,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         List<Title> freshTitles = fresh == null ? new ArrayList<>() : titlesFromRanking(fresh.ranking, 8);
         boolean freshFeatured = recentTitles.size() > 0 && freshTitles.size() > 0;
         if(freshFeatured)
-            result.add(new HomeSection("신작 업데이트", "전체보기", fresh == null ? "" : fresh.name.path, freshTitles, STYLE_CONTINUE));
+            result.add(new HomeSection("신작 업데이트", "전체보기", fresh == null ? "" : fresh.name.path, freshTitles, STYLE_STANDARD));
         String lastGroup = "";
         if(sections == null) {
             if(includeCategoryPanel)
@@ -1081,20 +1081,25 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
             void bind(Title item, int position) {
                 name.setText(item == null ? "" : item.getName());
-                episode.setText(progressLabel(item));
-                int progressPercent = readingProgressPercent(item);
-                progress.setVisibility(View.VISIBLE);
-                progress.setProgress(progressPercent);
-                percent.setText(progressPercent + "%");
+                boolean continueStyle = style == STYLE_CONTINUE;
+                episode.setVisibility(continueStyle ? View.VISIBLE : View.GONE);
+                progress.setVisibility(continueStyle ? View.VISIBLE : View.GONE);
+                percent.setVisibility(continueStyle ? View.VISIBLE : View.GONE);
+                if(continueStyle) {
+                    episode.setText(progressLabel(item));
+                    int progressPercent = readingProgressPercent(item);
+                    progress.setProgress(progressPercent);
+                    percent.setText(progressPercent + "%");
+                }
                 bindTitleThumb(thumb, item, 156, 144);
-                if(position < 3)
+                if(continueStyle && position < 3)
                     warmupContinueViewer(item);
                 card.setOnClickListener(v -> {
                     if(listener != null && item != null) {
                         int bookmark = p.getBookmark(item);
                         if(bookmark <= 0)
                             bookmark = item.getBookmark();
-                        if(bookmark > 0) {
+                        if(continueStyle && bookmark > 0) {
                             Manga manga = new Manga(bookmark, "", "", item.getBaseMode());
                             manga.setTitle(item);
                             manga.setTitleId(item.getId());
@@ -1106,7 +1111,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     }
                 });
                 card.setOnLongClickListener(v -> {
-                    if(listener == null || item == null)
+                    if(!continueStyle || listener == null || item == null)
                         return false;
                     listener.longClickedContinue(v, item);
                     return true;
