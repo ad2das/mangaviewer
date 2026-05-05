@@ -202,17 +202,22 @@ public class Utils {
     }
 
     public static String toViewerTitleJson(Title title) {
+        return toViewerTitleJson(title, true);
+    }
+
+    public static String toViewerTitleJson(Title title, boolean includeEpisodes) {
         if(title == null)
             return null;
         Title copy = new Title(title.minimize());
-        copy.setEps(viewerEpisodeCopies(title.getEps()));
+        if(includeEpisodes)
+            copy.setEps(viewerEpisodeCopies(title.getEps()));
         return new Gson().toJson(copy);
     }
 
     private static Manga viewerMangaCopy(Manga source, Title title) {
         if(source == null)
             return null;
-        Manga copy = viewerEpisodeCopy(source);
+        Manga copy = viewerEpisodeCopy(source, true);
         List<Manga> episodes = null;
         if(title != null && title.getEps() != null)
             episodes = title.getEps();
@@ -230,23 +235,25 @@ public class Utils {
             return copies;
         for(Manga episode : episodes) {
             if(episode != null)
-                copies.add(viewerEpisodeCopy(episode));
+                copies.add(viewerEpisodeCopy(episode, false));
         }
         return copies;
     }
 
-    private static Manga viewerEpisodeCopy(Manga source) {
+    private static Manga viewerEpisodeCopy(Manga source, boolean includeImages) {
         Manga copy = new Manga(source.getId(), source.getName(), source.getDate(), source.getBaseMode());
         copy.addThumb(source.getThumb());
         copy.setMode(source.getMode());
         copy.setTitleId(source.getTitleId());
         copy.setOfflinePath(source.getOfflinePath());
-        try {
-            List<String> images = source.getImgs(null);
-            if(images != null)
-                copy.setImgs(new ArrayList<>(images));
-        } catch (Exception ignored) {
-            // Offline image lists need a Context to resolve storage; the viewer can resolve them after launch.
+        if(includeImages) {
+            try {
+                List<String> images = source.getImgs(null);
+                if(images != null)
+                    copy.setImgs(new ArrayList<>(images));
+            } catch (Exception ignored) {
+                // Offline image lists need a Context to resolve storage; the viewer can resolve them after launch.
+            }
         }
         return copy;
     }
@@ -924,7 +931,7 @@ public class Utils {
         if(returnToEpisodes)
             viewer.putExtra("returnToEpisodes", true);
         if(manga != null && manga.getTitle() != null)
-            viewer.putExtra("title", toViewerTitleJson(manga.getTitle()));
+            viewer.putExtra("title", toViewerTitleJson(manga.getTitle(), !manga.isOnline()));
         ((Activity)context).startActivityForResult(viewer, code);
     }
 

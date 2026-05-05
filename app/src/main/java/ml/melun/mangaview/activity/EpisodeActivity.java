@@ -615,7 +615,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 break;
         }
         viewer.putExtra("manga", toViewerMangaJson(manga, title));
-        viewer.putExtra("title", toViewerTitleJson(title));
+        viewer.putExtra("title", toViewerTitleJson(title, !manga.isOnline()));
         viewer.putExtra("recent",true);
         startActivityForResult(viewer, code);
     }
