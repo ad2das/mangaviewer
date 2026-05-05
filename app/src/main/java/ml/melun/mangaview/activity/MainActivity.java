@@ -370,7 +370,7 @@ public class MainActivity extends AppCompatActivity
         if(permissionCheck == PackageManager.PERMISSION_DENIED) {
             if(Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
                 // Scoped storage does not need the legacy storage permission.
-            } else if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            } else {
                 requestPermissions(new String[]{READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE}, PERMISSION_CODE);
             }
         }
@@ -584,13 +584,9 @@ public class MainActivity extends AppCompatActivity
     private void applyMainWindowChrome() {
         if(dark)
             return;
-        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            getWindow().setStatusBarColor(ContextCompat.getColor(this, R.color.appSurface));
-            getWindow().setNavigationBarColor(ContextCompat.getColor(this, R.color.appCard));
-        }
-        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
-        }
+        getWindow().setStatusBarColor(ContextCompat.getColor(this, R.color.appSurface));
+        getWindow().setNavigationBarColor(ContextCompat.getColor(this, R.color.appCard));
+        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
     }
 
     private void syncNavigationSelection() {

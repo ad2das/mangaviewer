@@ -11,7 +11,6 @@ import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
-import android.os.Build;
 import android.os.Bundle;
 
 import androidx.appcompat.widget.LinearLayoutCompat;
@@ -664,13 +663,9 @@ public class EpisodeActivity extends AppCompatActivity {
     private void applyEpisodeWindowChrome() {
         if(dark)
             return;
-        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            getWindow().setStatusBarColor(ContextCompat.getColor(this, R.color.appSurface));
-            getWindow().setNavigationBarColor(ContextCompat.getColor(this, R.color.appSurface));
-        }
-        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
-        }
+        getWindow().setStatusBarColor(ContextCompat.getColor(this, R.color.appSurface));
+        getWindow().setNavigationBarColor(ContextCompat.getColor(this, R.color.appSurface));
+        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
     }
 
 }

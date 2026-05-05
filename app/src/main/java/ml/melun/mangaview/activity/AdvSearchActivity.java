@@ -41,16 +41,12 @@ public class AdvSearchActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_adv_search);
         if(!p.getDarkTheme()) {
-            if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                getWindow().setStatusBarColor(ContextCompat.getColor(this, R.color.appSurface));
-                getWindow().setNavigationBarColor(ContextCompat.getColor(this, android.R.color.white));
-            }
-            if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                int flags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-                if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                    flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
-                getWindow().getDecorView().setSystemUiVisibility(flags);
-            }
+            getWindow().setStatusBarColor(ContextCompat.getColor(this, R.color.appSurface));
+            getWindow().setNavigationBarColor(ContextCompat.getColor(this, android.R.color.white));
+            int flags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            getWindow().getDecorView().setSystemUiVisibility(flags);
         }
         context = this;
 
