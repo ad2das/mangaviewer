@@ -182,8 +182,7 @@ public class ViewerActivity3 extends AppCompatActivity {
                         if (viewerBookmark == pageSize - 1 || viewerBookmark == 0) {
                             p.removeViewerBookmark(manga);
                         } else p.setViewerBookmark(manga, viewerBookmark);
-                        if(!manga.isOnline())
-                            p.setOfflineProgress(title, manga);
+                        p.setBookmark(title, manga.getId());
                     }
 
                     boolean lastPage = viewerBookmark == pageSize - 1;

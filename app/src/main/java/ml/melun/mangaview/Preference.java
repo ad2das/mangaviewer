@@ -35,7 +35,6 @@ public class Preference {
     SharedPreferences.Editor prefsEditor;
     JSONObject pagebookmark;
     JSONObject bookmark;
-    JSONObject offlineProgress;
     String homeDir;
     boolean darkTheme;
     int viewerType;
@@ -106,7 +105,6 @@ public class Preference {
         resetRecent();
         resetBookmark();
         resetViewerBookmark();
-        resetOfflineProgress();
     }
 
     //Offline manga has id of -1
@@ -120,7 +118,6 @@ public class Preference {
         favorite = new ArrayList<>();
         pagebookmark = new JSONObject();
         bookmark = new JSONObject();
-        offlineProgress = new JSONObject();
         homeDir = "";
         darkTheme = false;
         viewerType = 0;
@@ -149,7 +146,6 @@ public class Preference {
             nextPageKey = sharedPref.getInt("nextPageKey", -1);
             pagebookmark = new JSONObject(sharedPref.getString("bookmark", "{}"));
             bookmark = new JSONObject(sharedPref.getString("bookmark2", "{}"));
-            offlineProgress = new JSONObject(sharedPref.getString("offlineProgress", "{}"));
             darkTheme = sharedPref.getBoolean("darkTheme", false);
             viewerType = sharedPref.getInt("viewerType",0);
             reverse = sharedPref.getBoolean("pageReverse",false);
@@ -524,89 +520,6 @@ public class Preference {
             }
         }
         return -1;
-    }
-
-    public void setOfflineProgress(Title title, Manga manga) {
-        if(title == null || manga == null || manga.isOnline() || manga.getId() <= 0)
-            return;
-        String key = offlineProgressKey(title);
-        if(key == null)
-            return;
-        int episodeIndex = -1;
-        int episodeCount = title.getEpsCount();
-        if(title.getEps() != null) {
-            for(int i = 0; i < title.getEps().size(); i++) {
-                Manga episode = title.getEps().get(i);
-                if(episode != null && episode.getId() == manga.getId()) {
-                    episodeIndex = i + 1;
-                    break;
-                }
-            }
-        }
-        try {
-            JSONObject value = new JSONObject();
-            value.put("episodeId", manga.getId());
-            value.put("episodeIndex", episodeIndex);
-            value.put("episodeCount", episodeCount);
-            offlineProgress.put(key, value);
-            writeOfflineProgress();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-
-    public int getOfflineBookmark(MTitle title) {
-        JSONObject value = getOfflineProgress(title);
-        if(value == null)
-            return -1;
-        return value.optInt("episodeId", -1);
-    }
-
-    public boolean applyOfflineProgress(Title title) {
-        if(title == null)
-            return false;
-        JSONObject value = getOfflineProgress(title);
-        if(value == null)
-            return false;
-        int episodeId = value.optInt("episodeId", -1);
-        if(episodeId <= 0)
-            return false;
-        int episodeIndex = value.optInt("episodeIndex", -1);
-        int episodeCount = value.optInt("episodeCount", title.getEpsCount());
-        title.setBookmark(episodeId);
-        title.setReadingProgress(episodeId, episodeIndex, episodeCount);
-        return true;
-    }
-
-    private JSONObject getOfflineProgress(MTitle title) {
-        String key = offlineProgressKey(title);
-        if(key == null)
-            return null;
-        return offlineProgress.optJSONObject(key);
-    }
-
-    private String offlineProgressKey(MTitle title) {
-        if(title == null)
-            return null;
-        if(title.getId() > 0)
-            return title.getBaseMode() + "." + title.getId();
-        String path = title.getPath();
-        if(path != null && path.length() > 0)
-            return "path." + path.hashCode();
-        return null;
-    }
-
-    private void writeOfflineProgress() {
-        prefsEditor.putString("offlineProgress", offlineProgress.toString());
-        prefsEditor.apply();
-        notifyLocalChange("offlineProgress");
-    }
-
-    private void resetOfflineProgress(){
-        try {
-            offlineProgress = new JSONObject("{}");
-        }catch (Exception e){}
-        writeOfflineProgress();
     }
 
     private void removeBookmark(MTitle title){

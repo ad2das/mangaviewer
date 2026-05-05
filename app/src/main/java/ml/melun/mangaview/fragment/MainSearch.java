@@ -554,8 +554,12 @@ public class MainSearch extends Fragment {
     private Title resolveLatestTitleForResume(Title title) {
         if(title == null)
             return null;
-        if(isOfflineTitle(title))
+        if(isOfflineTitle(title)) {
+            int bookmark = resolveSharedBookmark(title, title.getBookmark());
+            if(bookmark > 0)
+                title.setBookmark(bookmark);
             return title;
+        }
         MTitle stored = findStoredTitle(title, p.getRecent());
         if(stored == null)
             stored = findStoredTitle(title, p.getFavorite());
@@ -585,11 +589,14 @@ public class MainSearch extends Fragment {
     private int resolveLatestBookmark(Title title, int fallback) {
         if(title == null)
             return fallback;
-        if(isOfflineTitle(title)) {
-            p.applyOfflineProgress(title);
-            int bookmark = title.getBookmark();
-            return bookmark > 0 ? bookmark : fallback;
-        }
+        if(isOfflineTitle(title))
+            return resolveSharedBookmark(title, fallback);
+        return resolveSharedBookmark(title, fallback);
+    }
+
+    private int resolveSharedBookmark(Title title, int fallback) {
+        if(title == null)
+            return fallback;
         int bookmark = p.getBookmark(title);
         if(bookmark <= 0)
             bookmark = title.getBookmark();
@@ -620,13 +627,38 @@ public class MainSearch extends Fragment {
     private void openOfflineResume(Title title, int bookmark) {
         Manga manga = resolveOfflineResumeManga(title, bookmark);
         if(manga == null) {
-            Intent episodeView = episodeIntent(getContext(), title);
-            episodeView.putExtra("online", false);
-            startActivity(episodeView);
+            Toast.makeText(getContext(), "해당 회차가 저장되어 있지 않습니다", Toast.LENGTH_SHORT).show();
+            confirmOnlineResume(title, bookmark);
             return;
         }
         manga.setTitle(title);
         manga.setTitleId(title.getId());
+        openViewer(getContext(), manga, -1);
+    }
+
+    private void confirmOnlineResume(Title title, int bookmark) {
+        if(getContext() == null || title == null || title.getId() <= 0 || bookmark <= 0)
+            return;
+        DialogInterface.OnClickListener listener = (dialog, which) -> {
+            if(which == DialogInterface.BUTTON_POSITIVE)
+                openOnlineResume(title, bookmark);
+        };
+        AlertDialog.Builder builder = p.getDarkTheme()
+                ? new AlertDialog.Builder(getContext(), R.style.darkDialog)
+                : new AlertDialog.Builder(getContext());
+        builder.setMessage("온라인으로 이어보시겠습니까?")
+                .setPositiveButton("네", listener)
+                .setNegativeButton("아니오", listener)
+                .show();
+    }
+
+    private void openOnlineResume(Title title, int bookmark) {
+        Title onlineTitle = new Title(title.getName(), title.getThumb(), title.getAuthor(),
+                title.getTags(), title.getRelease(), title.getId(), title.getBaseMode());
+        onlineTitle.setBookmark(bookmark);
+        Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
+        manga.setTitle(onlineTitle);
+        manga.setTitleId(onlineTitle.getId());
         openViewer(getContext(), manga, -1);
     }
 
@@ -651,14 +683,6 @@ public class MainSearch extends Fragment {
                 if(found != null && found.getId() == bookmark)
                     return found;
             }
-        }
-        int episodeIndex = title.getBookmarkEpisodeIndex();
-        if(episodeIndex <= 0)
-            episodeIndex = title.getBookmarkIndex();
-        if(episodeIndex > 0 && episodeIndex <= episodes.size()) {
-            Manga indexed = episodes.get(episodeIndex - 1);
-            if(indexed != null && indexed.getOfflinePath() != null)
-                return indexed;
         }
         return null;
     }
