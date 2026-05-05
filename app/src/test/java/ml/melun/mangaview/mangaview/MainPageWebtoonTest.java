@@ -4,6 +4,7 @@ import org.jsoup.Jsoup;
 import org.junit.Test;
 
 import java.util.ArrayList;
+import java.util.List;
 
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
@@ -51,6 +52,21 @@ public class MainPageWebtoonTest {
                 Jsoup.parse(searchItem("/cl?toon=303", "Fate / stay night")), base_comic, 0);
         assertTrue(englishComics.get(0).getTags().contains("액션"));
         assertTrue(englishComics.get(0).getTags().contains("이세계"));
+    }
+
+    @Test
+    public void enhanceComicClassification_backfillsGenreSectionsFromInferredTags() {
+        Ranking<Title> recent = new Ranking<>("정렬|최신순|/cm?type1=complete&type2=recent&o=n");
+        recent.add(new Title("학원 러브코미디 만화", "", "", new ArrayList<>(), "", 401, base_comic));
+        Ranking<Title> school = new Ranking<>("장르별|학원|/cm?type1=genre&type2=%C7%D0%BF%F8&o=n");
+        List<Ranking<?>> sections = new ArrayList<>();
+        sections.add(recent);
+        sections.add(school);
+
+        MainPageWebtoon.enhanceComicClassification(sections);
+
+        assertEquals(1, school.size());
+        assertEquals(401, school.get(0).getId());
     }
 
     private String mixedSearchHtml() {

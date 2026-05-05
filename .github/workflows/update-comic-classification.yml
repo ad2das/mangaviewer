@@ -1,0 +1,79 @@
+name: Update comic classification DB
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "47 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-comic-classification
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore source detail cache
+        uses: actions/cache@v4
+        with:
+          path: .comic-source-detail-cache.json
+          key: comic-source-detail-cache-${{ github.run_id }}
+          restore-keys: |
+            comic-source-detail-cache-
+
+      - name: Rebuild classification DB
+        run: |
+          python -X utf8 tools/build_comic_classification.py \
+            --delay 0.05 \
+            --source-workers 16 \
+            --source-detail-workers 16 \
+            --unclassified-output comic-classification-unclassified.json
+
+      - name: Validate classification DB
+        run: |
+          python -X utf8 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path("comic-classification.json")
+          asset = Path("app/src/main/assets/comic-classification.json")
+          root_data = json.loads(root.read_text(encoding="utf-8"))
+          asset_data = json.loads(asset.read_text(encoding="utf-8"))
+          assert root_data == asset_data, "root DB and APK asset DB differ"
+
+          titles = root_data.get("titles", {})
+          assert isinstance(titles, dict) and titles, "titles must be a non-empty object"
+          unclassified = json.loads(Path("comic-classification-unclassified.json").read_text(encoding="utf-8"))
+
+          print("titles", len(titles))
+          print("unclassified", len(unclassified))
+          print("manual", sum(1 for item in titles.values() if item.get("manual")))
+          print("sha256", hashlib.sha256(root.read_bytes()).hexdigest())
+          PY
+
+      - name: Commit DB changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add comic-classification.json app/src/main/assets/comic-classification.json comic-classification-unclassified.json
+          if git diff --cached --quiet; then
+            echo "No classification DB changes."
+          else
+            git commit -m "Update comic classification DB"
+            git push
+          fi

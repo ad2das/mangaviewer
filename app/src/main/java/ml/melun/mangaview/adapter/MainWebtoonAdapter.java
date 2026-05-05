@@ -1543,6 +1543,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
             if(baseMode == base_webtoon)
                 MainPageWebtoon.enhanceWebtoonClassification(dataSet);
+            else if(baseMode == base_comic)
+                MainPageWebtoon.enhanceComicClassification(dataSet);
             updateRows(buildRows(dataSet, false));
             scheduleThumbnailPreload(loadedSections);
         }
@@ -1559,6 +1561,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
             if(baseMode == base_webtoon)
                 MainPageWebtoon.enhanceWebtoonClassification(dataSet);
+            else if(baseMode == base_comic)
+                MainPageWebtoon.enhanceComicClassification(dataSet);
             List<Object> finalRows = buildRows(dataSet, false);
             boolean shouldShowTop = !initialRowsShown && hasHero(finalRows);
             initialRowsShown = true;
