@@ -23,6 +23,8 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -84,6 +86,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private static final int PRELOAD_THUMB_MAX_PER_FETCH = 4;
     private static final int SECTION_BATCH_SIZE = 4;
     private static final int FIRST_SCREEN_BATCH_SIZE = 1;
+    private static final long HOME_CACHE_TTL_MS = 24 * 60 * 60 * 1000L;
+    private static final String HOME_CACHE_KEY_PREFIX = "homeSnapshotV1_";
     private int preloadCount = 0;
     private int activeHomeTab = 0;
 
@@ -114,6 +118,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     public void showInitialRows() {
         if(rows != null && rows.size() > 0)
+            return;
+        if(showCachedHomeRows())
             return;
         dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
         List<Object> warmRows = buildRows(dataSet, false);
@@ -526,6 +532,97 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
         SectionBatch(List<SectionResult> results) {
             this.results = results;
+        }
+    }
+
+    private static class HomeSnapshot {
+        long savedAt;
+        List<CachedSection> sections;
+    }
+
+    private static class CachedSection {
+        String name;
+        List<MTitle> titles;
+    }
+
+    private String homeCacheKey() {
+        return HOME_CACHE_KEY_PREFIX + baseMode;
+    }
+
+    private boolean showCachedHomeRows() {
+        List<Ranking<?>> cached = loadHomeSnapshot();
+        if(cached == null || cached.size() == 0)
+            return false;
+        dataSet = cached;
+        List<Object> cachedRows = buildRows(dataSet, false);
+        if(!hasHero(cachedRows))
+            return false;
+        initialRowsShown = true;
+        updateRows(cachedRows);
+        scrollHeroToTop();
+        scheduleThumbnailPreload(dataSet);
+        return true;
+    }
+
+    private List<Ranking<?>> loadHomeSnapshot() {
+        try {
+            String json = p.getSharedPref().getString(homeCacheKey(), "");
+            if(json == null || json.length() == 0)
+                return null;
+            HomeSnapshot snapshot = new Gson().fromJson(json, new TypeToken<HomeSnapshot>(){}.getType());
+            long now = System.currentTimeMillis();
+            if(snapshot == null || snapshot.sections == null || now - snapshot.savedAt > HOME_CACHE_TTL_MS)
+                return null;
+            ArrayList<Ranking<?>> restored = new ArrayList<>();
+            for(CachedSection cachedSection : snapshot.sections) {
+                if(cachedSection == null || cachedSection.name == null || cachedSection.titles == null || cachedSection.titles.size() == 0)
+                    continue;
+                Ranking<Title> ranking = new Ranking<>(cachedSection.name);
+                for(MTitle item : cachedSection.titles) {
+                    if(item == null || item.getId() <= 0)
+                        continue;
+                    ranking.add(new Title(item));
+                }
+                if(ranking.size() > 0)
+                    restored.add(ranking);
+            }
+            return restored.size() == 0 ? null : restored;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private void saveHomeSnapshot(List<Ranking<?>> sections) {
+        try {
+            if(sections == null || collectTitles(sections, 1).size() == 0)
+                return;
+            HomeSnapshot snapshot = new HomeSnapshot();
+            snapshot.savedAt = System.currentTimeMillis();
+            snapshot.sections = new ArrayList<>();
+            for(Ranking<?> section : sections) {
+                if(section == null || section.size() == 0)
+                    continue;
+                CachedSection cachedSection = new CachedSection();
+                cachedSection.name = section.getName();
+                cachedSection.titles = new ArrayList<>();
+                for(Object item : section) {
+                    if(!(item instanceof MTitle))
+                        continue;
+                    MTitle title = ((MTitle) item).clone();
+                    if(title.getId() <= 0)
+                        continue;
+                    title.setBaseMode(baseMode);
+                    cachedSection.titles.add(title);
+                }
+                if(cachedSection.titles.size() > 0)
+                    snapshot.sections.add(cachedSection);
+            }
+            if(snapshot.sections.size() == 0)
+                return;
+            p.getSharedPref().edit()
+                    .putString(homeCacheKey(), new Gson().toJson(snapshot))
+                    .apply();
+        } catch (Exception ignored) {
         }
     }
 
@@ -1512,15 +1609,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         @Override
         protected void onPreExecute() {
             super.onPreExecute();
+            boolean hadInitialRows = rows != null && rows.size() > 0 && hasDisplayContent();
             dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
             preloadedThumbs.clear();
             preloadCount = 0;
             pendingRows = null;
-            initialRowsShown = false;
+            initialRowsShown = hadInitialRows;
             List<Object> warmRows = buildRows(dataSet, false);
             if(!hasHero(warmRows))
                 warmRows = buildInitialPlaceholderRows();
-            if(hasHero(warmRows)) {
+            if(!initialRowsShown && hasHero(warmRows)) {
                 initialRowsShown = true;
                 updateRows(warmRows);
                 scrollHeroToTop();
@@ -1645,6 +1743,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             boolean shouldShowTop = !initialRowsShown && hasHero(finalRows);
             initialRowsShown = true;
             updateRows(finalRows);
+            saveHomeSnapshot(dataSet);
             if(shouldShowTop)
                 scrollHeroToTop();
         }
