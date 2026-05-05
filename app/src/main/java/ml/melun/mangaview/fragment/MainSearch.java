@@ -97,6 +97,7 @@ public class MainSearch extends Fragment {
     float listDownX;
     float listDownY;
     long listDownTime;
+    boolean pendingLibraryRefresh = false;
     boolean libraryMode = true;
 
     public static MainSearch newSearchTab() {
@@ -144,10 +145,12 @@ public class MainSearch extends Fragment {
                 super.onScrollStateChanged(recyclerView, newState);
                 if(getContext() == null)
                     return;
-                if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                if(newState == RecyclerView.SCROLL_STATE_IDLE) {
                     Glide.with(MainSearch.this).resumeRequests();
-                else
+                    applyPendingLibraryRefreshIfIdle();
+                } else {
                     Glide.with(MainSearch.this).pauseRequests();
+                }
             }
         });
         searchResult.addOnItemTouchListener(new RecyclerView.SimpleOnItemTouchListener() {
@@ -172,6 +175,7 @@ public class MainSearch extends Fragment {
         baseMode = rootView.findViewById(R.id.searchBaseMode);
         advSearchBtn = rootView.findViewById(R.id.advSearchBtn);
         swipe = rootView.findViewById(R.id.searchSwipe);
+        updateSwipeEnabled();
         optionsPanel = rootView.findViewById(R.id.searchOptionPanel);
         libraryCount = rootView.findViewById(R.id.libraryCount);
         libraryMeta = rootView.findViewById(R.id.libraryMeta);
@@ -250,7 +254,7 @@ public class MainSearch extends Fragment {
 
 
         swipe.setOnRefreshListener(direction -> {
-            if(search==null) swipe.setRefreshing(false);
+            if(search==null || !onlineSearchMode) swipe.setRefreshing(false);
             else {
                 if (!search.isLast()) {
                     if(searchTask == null) {
@@ -286,6 +290,7 @@ public class MainSearch extends Fragment {
         this.prequery = prequery;
         onlineSearchMode = true;
         activeLibraryQuery = null;
+        updateSwipeEnabled();
         if(searchBox != null)
             applyPendingSearch();
     }
@@ -352,6 +357,7 @@ public class MainSearch extends Fragment {
         }
         pendingOpenSearch = false;
         onlineSearchMode = false;
+        updateSwipeEnabled();
         prequery = null;
         activeLibraryQuery = null;
         search = null;
@@ -401,6 +407,7 @@ public class MainSearch extends Fragment {
         if(searchBox != null)
             searchBox.setHint("보관함에서 검색");
         onlineSearchMode = false;
+        updateSwipeEnabled();
         updateSearchChrome(false);
         if(activeLibraryQuery != null && activeLibraryQuery.length() > 0) {
             performLibrarySearch(activeLibraryQuery);
@@ -455,7 +462,8 @@ public class MainSearch extends Fragment {
         searchAdapter.setResume(true);
         searchAdapter.setForceThumbnail(false);
         searchAdapter.setData(data);
-        searchResult.setAdapter(searchAdapter);
+        if(searchResult.getAdapter() != searchAdapter)
+            searchResult.setAdapter(searchAdapter);
         updateAdvSearchVisibility();
         if(swipe != null)
             swipe.setRefreshing(false);
@@ -545,10 +553,28 @@ public class MainSearch extends Fragment {
     private void refreshLibraryFromPreferences() {
         if(searchResult == null || getContext() == null || search != null)
             return;
+        if(searchResult.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
+            pendingLibraryRefresh = true;
+            return;
+        }
         if(activeLibraryQuery != null && activeLibraryQuery.length() > 0)
             performLibrarySearch(activeLibraryQuery);
         else
             showLibrary();
+    }
+
+    private void applyPendingLibraryRefreshIfIdle() {
+        if(!pendingLibraryRefresh || searchResult == null)
+            return;
+        if(searchResult.getScrollState() != RecyclerView.SCROLL_STATE_IDLE)
+            return;
+        pendingLibraryRefresh = false;
+        refreshLibraryFromPreferences();
+    }
+
+    private void updateSwipeEnabled() {
+        if(swipe != null)
+            swipe.setEnabled(!libraryMode || onlineSearchMode);
     }
 
     private Title resolveLatestTitleForResume(Title title) {
@@ -1138,8 +1164,12 @@ public class MainSearch extends Fragment {
             if(offlineTask == this)
                 offlineTask = null;
             offlineTitles = titles == null ? new ArrayList<>() : titles;
-            if(search == null)
-                showLibrary();
+            if(search == null) {
+                if(searchResult != null && searchResult.getScrollState() != RecyclerView.SCROLL_STATE_IDLE)
+                    pendingLibraryRefresh = true;
+                else
+                    showLibrary();
+            }
         }
 
         @Override
