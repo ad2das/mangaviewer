@@ -366,9 +366,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         List<Object> contentRows = new ArrayList<>();
         List<Title> seedTitles = collectTitles(sections, 24);
         List<Title> recentTitles = recentTitles();
-        List<Title> heroTitles = seedTitles.size() > 0 ? seedTitles : recentTitles;
-        if(heroTitles.size() > 0)
-            result.add(new HeroRow(heroTitles.subList(0, Math.min(5, heroTitles.size()))));
+        if(seedTitles.size() > 0)
+            result.add(new HeroRow(seedTitles.subList(0, Math.min(5, seedTitles.size()))));
         List<Title> continueTitles = recentTitles;
         if(continueTitles.size() > 0)
             result.add(new HomeSection("이어보기", "전체보기", "", continueTitles, STYLE_CONTINUE));
