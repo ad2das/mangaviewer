@@ -38,7 +38,7 @@ import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.mangaview.UpdatedList;
 import ml.melun.mangaview.mangaview.UpdatedManga;
 
-import static ml.melun.mangaview.MainApplication.httpClient;
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
 import static ml.melun.mangaview.Utils.showCaptchaPopup;
@@ -269,7 +269,7 @@ public class TagSearchActivity extends AppCompatActivity {
         protected Integer doInBackground(Void... voids) {
             requestGroup = new CustomHttpClient.RequestGroup();
             try {
-                return httpClient.runWithRequestGroup(requestGroup, () -> bookmark.fetch(httpClient));
+                return getHttpClient().runWithRequestGroup(requestGroup, () -> bookmark.fetch(getHttpClient()));
             } catch (Exception e) {
                 if(!isCancelled())
                     e.printStackTrace();
@@ -295,7 +295,7 @@ public class TagSearchActivity extends AppCompatActivity {
         protected Integer doInBackground(Void... params){
             requestGroup = new CustomHttpClient.RequestGroup();
             try {
-                return httpClient.runWithRequestGroup(requestGroup, () -> search.fetch(httpClient));
+                return getHttpClient().runWithRequestGroup(requestGroup, () -> search.fetch(getHttpClient()));
             } catch (Exception e) {
                 if(!isCancelled())
                     e.printStackTrace();
@@ -372,8 +372,8 @@ public class TagSearchActivity extends AppCompatActivity {
         protected String doInBackground(Void... params){
             requestGroup = new CustomHttpClient.RequestGroup();
             try {
-                return httpClient.runWithRequestGroup(requestGroup, () -> {
-                    updated.fetch(httpClient);
+                return getHttpClient().runWithRequestGroup(requestGroup, () -> {
+                    updated.fetch(getHttpClient());
                     return null;
                 });
             } catch (Exception e) {

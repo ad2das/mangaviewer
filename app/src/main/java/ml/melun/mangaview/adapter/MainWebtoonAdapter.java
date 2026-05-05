@@ -46,7 +46,7 @@ import ml.melun.mangaview.mangaview.Ranking;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 
-import static ml.melun.mangaview.MainApplication.httpClient;
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getGlideUrl;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
@@ -1646,8 +1646,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 for(int i = 0; i < sections.length; i++) {
                     final int index = i;
                     final String[] section = sections[i];
-                    completion.submit(() -> httpClient.runWithRequestGroup(requestGroup, () ->
-                            new SectionResult(index, parser.parseWolfTitle(httpClient, section[0], section[1], baseMode))));
+                    completion.submit(() -> getHttpClient().runWithRequestGroup(requestGroup, () ->
+                            new SectionResult(index, parser.parseWolfTitle(getHttpClient(), section[0], section[1], baseMode))));
                     submitted++;
                 }
 

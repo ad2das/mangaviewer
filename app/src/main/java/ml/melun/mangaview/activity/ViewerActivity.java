@@ -57,7 +57,7 @@ import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.model.PageItem;
 
-import static ml.melun.mangaview.MainApplication.httpClient;
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getScreenSize;
 import static ml.melun.mangaview.Utils.hideSpinnerDropDown;
@@ -608,9 +608,9 @@ public class ViewerActivity extends AppCompatActivity {
                         if(m.isOnline()) {
                             result = ensureEpisodeListLoaded(m);
                             if(result == LOAD_OK && !hasLoadedImages(m)) {
-                                result = httpClient.runWithRequestGroup(requestGroup, () -> m.fetch(httpClient));
+                                result = getHttpClient().runWithRequestGroup(requestGroup, () -> m.fetch(getHttpClient()));
                                 if(result == LOAD_OK && !cancelled && !hasLoadedImages(m))
-                                    result = httpClient.runWithRequestGroup(requestGroup, () -> m.fetch(httpClient));
+                                    result = getHttpClient().runWithRequestGroup(requestGroup, () -> m.fetch(getHttpClient()));
                             }
                         }
                     } catch (Exception e) {
@@ -677,7 +677,7 @@ public class ViewerActivity extends AppCompatActivity {
                     int result = LOAD_OK;
                     try {
                         if(target != null && target.isOnline() && !hasLoadedImages(target))
-                            result = httpClient.runWithRequestGroup(requestGroup, () -> target.fetch(httpClient));
+                            result = getHttpClient().runWithRequestGroup(requestGroup, () -> target.fetch(getHttpClient()));
                     } catch (Exception e) {
                         if(!cancelled && !isFinishing())
                             e.printStackTrace();
@@ -738,7 +738,7 @@ public class ViewerActivity extends AppCompatActivity {
         if(currentTitle == null)
             return LOAD_OK;
         if(currentTitle.getEps() == null || currentTitle.getEps().size() <= 1) {
-            int result = currentTitle.fetchEps(httpClient);
+            int result = currentTitle.fetchEps(getHttpClient());
             if(result == LOAD_CAPTCHA)
                 return result;
         }

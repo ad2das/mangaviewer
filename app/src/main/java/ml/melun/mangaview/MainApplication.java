@@ -30,9 +30,29 @@ public class MainApplication extends MultiDexApplication {
         CrashReporter.install(this);
         AppCompatDelegate.setCompatVectorFromResourcesEnabled(true);
         p = new Preference(this);
-        firebaseAccountManager = new FirebaseAccountManager(this);
-        firebaseSyncManager = new FirebaseSyncManager(this, p);
-        httpClient = new CustomHttpClient(this);
         super.onCreate();
+    }
+
+    public static synchronized CustomHttpClient getHttpClient() {
+        if(httpClient == null)
+            httpClient = new CustomHttpClient(appContext);
+        return httpClient;
+    }
+
+    public static synchronized FirebaseAccountManager getFirebaseAccountManager() {
+        if(firebaseAccountManager == null)
+            firebaseAccountManager = new FirebaseAccountManager(appContext);
+        return firebaseAccountManager;
+    }
+
+    public static synchronized FirebaseSyncManager getFirebaseSyncManager() {
+        if(firebaseSyncManager == null)
+            firebaseSyncManager = new FirebaseSyncManager(appContext, p);
+        return firebaseSyncManager;
+    }
+
+    public static synchronized void initDeferredServices() {
+        getFirebaseAccountManager();
+        getFirebaseSyncManager();
     }
 }

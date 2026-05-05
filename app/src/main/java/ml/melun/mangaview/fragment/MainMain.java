@@ -44,6 +44,7 @@ public class MainMain extends Fragment{
     RecyclerView comicRecycler;
     MainWebtoonAdapter mainComicAdapter;
     MainWebtoonAdapter mainWebtoonAdapter;
+    MainAdapter.onItemClick homeClickListener;
     Fragment fragment;
     boolean wait = false;
     UrlUpdater.UrlUpdaterCallback callback;
@@ -157,7 +158,7 @@ public class MainMain extends Fragment{
         p.addLocalChangeListener(localChangeListener);
 
 
-        MainAdapter.onItemClick listener = new MainAdapter.onItemClick() {
+        homeClickListener = new MainAdapter.onItemClick() {
 
             @Override
             public void clickedTitle(Title t) {
@@ -249,39 +250,31 @@ public class MainMain extends Fragment{
             }
         };
 
-        mainComicAdapter = new MainWebtoonAdapter(getContext(), base_comic);
-        mainComicAdapter.setListener(listener);
-        mainComicAdapter.setAnchorRecycler(comicRecycler);
-
-        mainWebtoonAdapter = new MainWebtoonAdapter(getContext());
-        mainWebtoonAdapter.setListener(listener);
-        mainWebtoonAdapter.setAnchorRecycler(webtoonRecycler);
-        webtoonRecycler.setAdapter(mainWebtoonAdapter);
-        comicRecycler.setAdapter(mainComicAdapter);
-        registerRevealObserver(mainWebtoonAdapter, webtoonRecycler, base_webtoon);
-        registerRevealObserver(mainComicAdapter, comicRecycler, base_comic);
-        mainWebtoonAdapter.showInitialRows();
-        mainComicAdapter.showInitialRows();
-
         selectedBaseMode = p.getBaseMode() == base_comic ? base_comic : base_webtoon;
+        ensureHomeAdapter(selectedBaseMode);
         modeWebtoon.setOnClickListener(v -> {
             switchBaseMode(base_webtoon);
-            showInitialHomeRows();
             fetchSelected();
             scheduleInactivePrefetch();
         });
         modeComic.setOnClickListener(v -> {
             switchBaseMode(base_comic);
-            showInitialHomeRows();
             fetchSelected();
             scheduleInactivePrefetch();
         });
         switchBaseMode(selectedBaseMode);
 
         showInitialHomeRows();
-        if(!wait)
-            fetchSelected();
-        scheduleInactivePrefetch();
+        RecyclerView selectedRecycler = getSelectedRecycler();
+        if(selectedRecycler != null) {
+            selectedRecycler.postDelayed(() -> {
+                if(!isAdded())
+                    return;
+                if(!wait)
+                    fetchSelected();
+                scheduleInactivePrefetch();
+            }, 160);
+        }
         return rootView;
     }
 
@@ -335,7 +328,31 @@ public class MainMain extends Fragment{
         });
     }
 
+    private MainWebtoonAdapter ensureHomeAdapter(int baseMode) {
+        if(baseMode == base_comic) {
+            if(mainComicAdapter == null) {
+                mainComicAdapter = new MainWebtoonAdapter(getContext(), base_comic);
+                mainComicAdapter.setListener(homeClickListener);
+                mainComicAdapter.setAnchorRecycler(comicRecycler);
+                if(comicRecycler != null)
+                    comicRecycler.setAdapter(mainComicAdapter);
+                registerRevealObserver(mainComicAdapter, comicRecycler, base_comic);
+            }
+            return mainComicAdapter;
+        }
+        if(mainWebtoonAdapter == null) {
+            mainWebtoonAdapter = new MainWebtoonAdapter(getContext());
+            mainWebtoonAdapter.setListener(homeClickListener);
+            mainWebtoonAdapter.setAnchorRecycler(webtoonRecycler);
+            if(webtoonRecycler != null)
+                webtoonRecycler.setAdapter(mainWebtoonAdapter);
+            registerRevealObserver(mainWebtoonAdapter, webtoonRecycler, base_webtoon);
+        }
+        return mainWebtoonAdapter;
+    }
+
     private MainWebtoonAdapter getSelectedAdapter() {
+        ensureHomeAdapter(selectedBaseMode);
         return selectedBaseMode == base_comic ? mainComicAdapter : mainWebtoonAdapter;
     }
 
@@ -349,6 +366,7 @@ public class MainMain extends Fragment{
         RecyclerView previousRecycler = mainRecycler;
         selectedBaseMode = baseMode;
         p.setBaseMode(baseMode);
+        ensureHomeAdapter(baseMode);
         updateModeToggle();
         MainWebtoonAdapter selectedAdapter = getSelectedAdapter();
         if(selectedAdapter != null)
@@ -491,10 +509,11 @@ public class MainMain extends Fragment{
                 fetchWebtoon();
             else
                 fetchComic();
-        }, 120);
+        }, 900);
     }
 
     private void fetchComic() {
+        ensureHomeAdapter(base_comic);
         if(mainComicAdapter != null && !comicFetched) {
             comicFetched = true;
             mainComicAdapter.fetch();
@@ -502,6 +521,7 @@ public class MainMain extends Fragment{
     }
 
     private void fetchWebtoon() {
+        ensureHomeAdapter(base_webtoon);
         if(mainWebtoonAdapter != null && !webtoonFetched) {
             webtoonFetched = true;
             mainWebtoonAdapter.fetch();
@@ -551,6 +571,7 @@ public class MainMain extends Fragment{
         comicRecycler = null;
         mainComicAdapter = null;
         mainWebtoonAdapter = null;
+        homeClickListener = null;
         comicFetched = false;
         webtoonFetched = false;
     }

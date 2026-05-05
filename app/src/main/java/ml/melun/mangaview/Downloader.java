@@ -49,7 +49,7 @@ import ml.melun.mangaview.mangaview.Decoder;
 import ml.melun.mangaview.mangaview.DownloadTitle;
 import ml.melun.mangaview.mangaview.Manga;
 
-import static ml.melun.mangaview.MainApplication.httpClient;
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.filterFolder;
 import static ml.melun.mangaview.Utils.useScopedStorageHome;
@@ -207,7 +207,7 @@ public class Downloader extends Service {
                     notiTitle = title.getName();
                     updateNotification("준비중");
 
-                    //if (title.getEps() == null) title.fetchEps(httpClient);
+                    //if (title.getEps() == null) title.fetchEps(getHttpClient());
                     List<Manga> mangas = title.getEps();
                     if(mangas == null || mangas.size() == 0 || selectedEps.length() == 0) {
                         failures++;
@@ -651,7 +651,7 @@ public class Downloader extends Service {
         URLConnection connection = url.openConnection();
         connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
         connection.setReadTimeout(READ_TIMEOUT_MS);
-        connection.setRequestProperty("User-Agent", httpClient.agent);
+        connection.setRequestProperty("User-Agent", getHttpClient().agent);
         connection.setRequestProperty("Referer", p.getUrl());
         String cookieHeader = buildDownloadCookieHeader(url);
         if(cookieHeader.length() > 0)
@@ -663,7 +663,7 @@ public class Downloader extends Service {
         StringBuilder builder = new StringBuilder();
         appendCookieString(builder, CookieManager.getInstance().getCookie(url.toString()));
         appendCookieString(builder, CookieManager.getInstance().getCookie(p.getUrl()));
-        String session = httpClient.getCookie("PHPSESSID");
+        String session = getHttpClient().getCookie("PHPSESSID");
         if(session != null && session.length() > 0 && builder.indexOf("PHPSESSID=") < 0)
             appendCookieString(builder, "PHPSESSID=" + session);
         if(cookies != null)
@@ -714,7 +714,7 @@ public class Downloader extends Service {
     private List<String> fetchDownloadImages(Manga target) {
         List<String> urls = null;
         for(int tries = 0; tries < 3; tries++) {
-            target.fetch(httpClient, cookies);
+            target.fetch(getHttpClient(), cookies);
             urls = target.getImgs(getApplicationContext());
             if(urls != null && urls.size() > 0)
                 return urls;

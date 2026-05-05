@@ -11,7 +11,7 @@ import okhttp3.Response;
 
 import ml.melun.mangaview.mangaview.WfwfDomainResolver;
 
-import static ml.melun.mangaview.MainApplication.httpClient;
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 
 public class UrlUpdater extends LifecycleTask<Void, Void, Boolean> {
@@ -40,17 +40,17 @@ public class UrlUpdater extends LifecycleTask<Void, Void, Boolean> {
     protected Boolean fetch(){
         try {
             Map<String, String> headers = new HashMap<>();
-            headers.put("User-Agent", httpClient.agent);
+            headers.put("User-Agent", getHttpClient().agent);
             String root = WfwfDomainResolver.toRoot(fetchUrl);
             if(WfwfDomainResolver.isWfwfUrl(root)) {
                 headers.put("Referer", root);
-                result = WfwfDomainResolver.resolve(httpClient.client, root, headers);
+                result = WfwfDomainResolver.resolve(getHttpClient().client, root, headers);
                 return result != null;
             }
 
             Response r = null;
             try {
-                r = httpClient.get(fetchUrl, headers);
+                r = getHttpClient().get(fetchUrl, headers);
                 if(r == null)
                     return false;
                 if (r.code() != 302)
@@ -75,8 +75,8 @@ public class UrlUpdater extends LifecycleTask<Void, Void, Boolean> {
                 p.setWebtoonUrl(root);
                 p.setDefUrl(root + "/cm");
                 p.setUrl(root + "/cm");
-                httpClient.resetCookie();
-                httpClient.clearPageCache();
+                getHttpClient().resetCookie();
+                getHttpClient().clearPageCache();
             } else {
                 p.setUrl(result);
             }

@@ -53,7 +53,7 @@ import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
 
-import static ml.melun.mangaview.MainApplication.httpClient;
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.deleteRecursive;
 import static ml.melun.mangaview.Utils.documentFileFromUri;
@@ -1237,7 +1237,7 @@ public class MainSearch extends Fragment {
         protected Integer doInBackground(Void... params){
             requestGroup = new CustomHttpClient.RequestGroup();
             try {
-                return httpClient.runWithRequestGroup(requestGroup, () -> targetSearch.fetch(httpClient));
+                return getHttpClient().runWithRequestGroup(requestGroup, () -> targetSearch.fetch(getHttpClient()));
             } catch (Exception e) {
                 if(!isCancelled())
                     e.printStackTrace();

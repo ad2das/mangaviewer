@@ -48,6 +48,7 @@ import java.io.File;
 
 import ml.melun.mangaview.Downloader;
 import ml.melun.mangaview.FirebaseAccountManager;
+import ml.melun.mangaview.MainApplication;
 import ml.melun.mangaview.Migrator;
 import ml.melun.mangaview.Preference;
 import ml.melun.mangaview.R;
@@ -60,9 +61,6 @@ import ml.melun.mangaview.interfaces.MainActivityCallback;
 import static android.Manifest.permission.READ_EXTERNAL_STORAGE;
 import static android.Manifest.permission.WRITE_EXTERNAL_STORAGE;
 import static ml.melun.mangaview.Downloader.BROADCAST_STOP;
-import static ml.melun.mangaview.MainApplication.firebaseAccountManager;
-import static ml.melun.mangaview.MainApplication.firebaseSyncManager;
-import static ml.melun.mangaview.MainApplication.httpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Migrator.MIGRATE_FAIL;
 import static ml.melun.mangaview.Migrator.MIGRATE_PROGRESS;
@@ -275,12 +273,6 @@ public class MainActivity extends AppCompatActivity
         progressView = this.findViewById(R.id.progress_panel);
         applyMainWindowChrome();
 
-        // url updater
-        if(p.getAutoUrl()) {
-            ((MainMain)fragments[0]).setWait(true);
-            new UrlUpdater(context, false, ((MainMain)fragments[0]).getCallback(), p.getDefUrl()).executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
-        }
-
         toolbar = (Toolbar) findViewById(R.id.toolbar);
         setSupportActionBar(toolbar);
 
@@ -294,7 +286,6 @@ public class MainActivity extends AppCompatActivity
         //nav_drawer color scheme
         navigationView = (NavigationView) findViewById(R.id.nav_view);
         navigationView.setNavigationItemSelectedListener(this);
-        setupAccountHeader();
         if(dark) {
             int[][] states = new int[][]{
                     new int[]{-android.R.attr.state_enabled}, // disabled
@@ -338,21 +329,6 @@ public class MainActivity extends AppCompatActivity
 
         homeDirStr = p.getHomeDir();
 
-        //check for permission
-        int permissionCheck = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE);
-        if(permissionCheck== PackageManager.PERMISSION_DENIED){
-            if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE){
-                //doesn't have to do anything
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                requestPermissions(new String[]{READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE},
-                        PERMISSION_CODE);
-            }
-        }
-        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-                && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_DENIED) {
-            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, PERMISSION_CODE + 1);
-        }
-
         content = findViewById(R.id.contentHolder);
 
         // Always start a fresh app session from Home. The older startTab preference can
@@ -364,13 +340,43 @@ public class MainActivity extends AppCompatActivity
         }else
             changeFragment(0);
 
-
+        content.postDelayed(this::runDeferredStartupTasks, 500);
 
         // savedInstanceState
 
 
         // First launch should go straight into the app without notice/update popups.
 
+    }
+
+    private void runDeferredStartupTasks() {
+        if(isFinishing() || isDestroyed())
+            return;
+        MainApplication.initDeferredServices();
+        setupAccountHeader();
+        startDeferredUrlUpdate();
+        requestStartupPermissions();
+    }
+
+    private void startDeferredUrlUpdate() {
+        if(!p.getAutoUrl())
+            return;
+        new UrlUpdater(context, false, ((MainMain)fragments[0]).getCallback(), p.getDefUrl()).executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+    }
+
+    private void requestStartupPermissions() {
+        int permissionCheck = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        if(permissionCheck == PackageManager.PERMISSION_DENIED) {
+            if(Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
+                // Scoped storage does not need the legacy storage permission.
+            } else if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                requestPermissions(new String[]{READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE}, PERMISSION_CODE);
+            }
+        }
+        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_DENIED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, PERMISSION_CODE + 1);
+        }
     }
 
     private void setupAccountHeader() {
@@ -384,7 +390,8 @@ public class MainActivity extends AppCompatActivity
         TextView status = header.findViewById(R.id.nav_account_status);
         if(panel == null || button == null || name == null || email == null || status == null)
             return;
-        FirebaseUser user = firebaseAccountManager == null ? null : firebaseAccountManager.getUser();
+        FirebaseAccountManager accountManager = MainApplication.getFirebaseAccountManager();
+        FirebaseUser user = accountManager == null ? null : accountManager.getUser();
         if(user != null) {
             name.setText(user.getDisplayName() == null || user.getDisplayName().length() == 0 ? "MangaView" : user.getDisplayName());
             email.setText(user.getEmail() == null ? "" : user.getEmail());
@@ -393,7 +400,7 @@ public class MainActivity extends AppCompatActivity
             status.setText(R.string.account_status_signed_in);
             panel.setOnClickListener(v -> showAccountDialog());
             button.setOnClickListener(v -> showAccountDialog());
-            if(!accountInitialSyncStarted && firebaseSyncManager != null) {
+            if(!accountInitialSyncStarted && MainApplication.firebaseSyncManager != null) {
                 accountInitialSyncStarted = true;
                 panel.post(() -> {
                     if(!isFinishing() && !isDestroyed())
@@ -413,15 +420,16 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void startGoogleSignIn() {
-        if(firebaseAccountManager == null || !firebaseAccountManager.hasFirebaseConfig()) {
+        FirebaseAccountManager accountManager = MainApplication.getFirebaseAccountManager();
+        if(accountManager == null || !accountManager.hasFirebaseConfig()) {
             Toast.makeText(context, R.string.account_firebase_missing, Toast.LENGTH_LONG).show();
             return;
         }
-        if(!firebaseAccountManager.isAvailable()) {
+        if(!accountManager.isAvailable()) {
             Toast.makeText(context, R.string.account_google_oauth_missing, Toast.LENGTH_LONG).show();
             return;
         }
-        firebaseAccountManager.signIn(this);
+        accountManager.signIn(this);
     }
 
     private void toggleAccountSignIn() {
@@ -451,8 +459,9 @@ public class MainActivity extends AppCompatActivity
         AlertDialog.Builder builder = dark ? new AlertDialog.Builder(context, R.style.darkDialog) : new AlertDialog.Builder(context);
         builder.setMessage(R.string.account_sign_out_confirm)
                 .setPositiveButton(R.string.account_sign_out, (dialog, which) -> {
-                    if(firebaseAccountManager != null)
-                        firebaseAccountManager.signOut(() -> runOnUiThread(() -> {
+                    FirebaseAccountManager accountManager = MainApplication.getFirebaseAccountManager();
+                    if(accountManager != null)
+                        accountManager.signOut(() -> runOnUiThread(() -> {
                             setupAccountHeader();
                             updateAccountSheet(false);
                         }));
@@ -462,12 +471,12 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void syncAccount(boolean showResult) {
-        if(firebaseSyncManager == null)
+        if(MainApplication.getFirebaseSyncManager() == null)
             return;
         setAccountSyncingStatus(true);
         if(showResult)
             Toast.makeText(context, R.string.account_syncing, Toast.LENGTH_SHORT).show();
-        firebaseSyncManager.syncAfterSignIn((syncSuccess, syncMessage) -> runOnUiThread(() -> {
+        MainApplication.getFirebaseSyncManager().syncAfterSignIn((syncSuccess, syncMessage) -> runOnUiThread(() -> {
             setAccountSyncingStatus(false);
             refreshSyncedListIfVisible();
             if(showResult || !syncSuccess)
@@ -489,7 +498,8 @@ public class MainActivity extends AppCompatActivity
         if(accountSheetName == null || accountSheetEmail == null || accountSheetStatus == null
                 || accountSheetPrimary == null || accountSheetSecondary == null || accountSheetHint == null)
             return;
-        FirebaseUser user = firebaseAccountManager == null ? null : firebaseAccountManager.getUser();
+        FirebaseAccountManager accountManager = MainApplication.getFirebaseAccountManager();
+        FirebaseUser user = accountManager == null ? null : accountManager.getUser();
         if(user == null) {
             accountSheetName.setText(R.string.account_sheet_signed_out_title);
             accountSheetEmail.setText(R.string.account_sheet_signed_out_body);
@@ -775,8 +785,9 @@ public class MainActivity extends AppCompatActivity
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if(requestCode == FirebaseAccountManager.RC_GOOGLE_SIGN_IN) {
-            if(resultCode == RESULT_OK && data != null && firebaseAccountManager != null) {
-                firebaseAccountManager.handleActivityResult(data, (success, message) -> runOnUiThread(() -> {
+            FirebaseAccountManager accountManager = MainApplication.getFirebaseAccountManager();
+            if(resultCode == RESULT_OK && data != null && accountManager != null) {
+                accountManager.handleActivityResult(data, (success, message) -> runOnUiThread(() -> {
                     if(success) {
                         accountInitialSyncStarted = true;
                         setupAccountHeader();

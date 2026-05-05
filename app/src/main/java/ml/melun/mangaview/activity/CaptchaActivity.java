@@ -29,7 +29,7 @@ import java.util.Map;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
 
-import static ml.melun.mangaview.MainApplication.httpClient;
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.showErrorPopup;
 import static ml.melun.mangaview.Utils.showPopup;
@@ -95,7 +95,7 @@ public class CaptchaActivity extends AppCompatActivity {
             @Nullable
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                httpClient.agent = request.getRequestHeaders().get("User-Agent");
+                getHttpClient().agent = request.getRequestHeaders().get("User-Agent");
                 return super.shouldInterceptRequest(view, request);
             }
 
@@ -112,7 +112,7 @@ public class CaptchaActivity extends AppCompatActivity {
                             for (String s : cookieStr.split("; ")) {
                                 String k = s.substring(0, s.indexOf("="));
                                 String v = s.substring(s.indexOf("=") + 1);
-                                httpClient.setCookie(k, v);
+                                getHttpClient().setCookie(k, v);
                             }
                         }
                         Intent resultIntent = new Intent();
@@ -157,7 +157,7 @@ public class CaptchaActivity extends AppCompatActivity {
                     continue;
                 String k = s.substring(0, eq);
                 String v = s.substring(eq + 1);
-                httpClient.setCookie(k, v);
+                getHttpClient().setCookie(k, v);
                 if("cf_clearance".equals(k))
                     hasClearance = true;
             }

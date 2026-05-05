@@ -25,7 +25,7 @@ import ml.melun.mangaview.mangaview.MainPage;
 import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
 
-import static ml.melun.mangaview.MainApplication.httpClient;
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 
@@ -172,7 +172,7 @@ public class Migrator extends Service {
         @Override
         protected Integer doInBackground(Void... voids) {
             // check domain
-            MainPage mp = new MainPage(httpClient);
+            MainPage mp = new MainPage(getHttpClient());
             if(mp.getRecent().size()<1)
                 return 1;
 
@@ -249,7 +249,7 @@ public class Migrator extends Service {
             String name = title.getName();
             Search s = new Search(name,0, base_comic);
             while(!s.isLast()){
-                s.fetch(httpClient);
+                s.fetch(getHttpClient());
                 for(Title t : s.getResult()){
                     if(t.getName().equals(name)){
                         return t.minimize();

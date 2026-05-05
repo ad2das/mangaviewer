@@ -24,7 +24,7 @@ import ml.melun.mangaview.mangaview.MainPage;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 
-import static ml.melun.mangaview.MainApplication.httpClient;
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 
@@ -438,7 +438,7 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         protected MainPage doInBackground(Void... params) {
             requestGroup = new CustomHttpClient.RequestGroup();
             try {
-                return httpClient.runWithRequestGroup(requestGroup, () -> new MainPage(httpClient));
+                return getHttpClient().runWithRequestGroup(requestGroup, () -> new MainPage(getHttpClient()));
             } catch (Exception e) {
                 if(!isCancelled())
                     e.printStackTrace();

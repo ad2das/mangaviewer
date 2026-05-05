@@ -42,7 +42,7 @@ import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.ui.CustomSpinner;
 
-import static ml.melun.mangaview.MainApplication.httpClient;
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getScreenSize;
 import static ml.melun.mangaview.Utils.hideSpinnerDropDown;
@@ -383,7 +383,7 @@ public class ViewerActivity3 extends AppCompatActivity {
             int res = ensureEpisodeListLoaded(manga);
             if(res == LOAD_CAPTCHA)
                 return res;
-            res = manga.fetch(httpClient);
+            res = manga.fetch(getHttpClient());
             if(title == null)
                 title = manga.getTitle();
             return res;
@@ -409,7 +409,7 @@ public class ViewerActivity3 extends AppCompatActivity {
         if(currentTitle == null)
             return 0;
         if(currentTitle.getEps() == null || currentTitle.getEps().size() <= 1) {
-            int result = currentTitle.fetchEps(httpClient);
+            int result = currentTitle.fetchEps(getHttpClient());
             if(result == LOAD_CAPTCHA)
                 return result;
         }

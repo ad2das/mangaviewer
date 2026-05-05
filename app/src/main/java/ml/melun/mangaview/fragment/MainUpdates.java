@@ -29,7 +29,7 @@ import ml.melun.mangaview.mangaview.UpdatedManga;
 import ml.melun.mangaview.task.LifecycleTask;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 
-import static ml.melun.mangaview.MainApplication.httpClient;
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
 
@@ -151,8 +151,8 @@ public class MainUpdates extends Fragment {
         protected ArrayList<UpdatedManga> doInBackground(Void... voids) {
             requestGroup = new CustomHttpClient.RequestGroup();
             try {
-                httpClient.runWithRequestGroup(requestGroup, () -> {
-                    updated.fetch(httpClient);
+                getHttpClient().runWithRequestGroup(requestGroup, () -> {
+                    updated.fetch(getHttpClient());
                     return null;
                 });
                 ArrayList<UpdatedManga> result = updated.getResult();

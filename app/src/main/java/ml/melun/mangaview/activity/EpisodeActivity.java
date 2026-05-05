@@ -42,7 +42,7 @@ import ml.melun.mangaview.adapter.TagAdapter;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 
-import static ml.melun.mangaview.MainApplication.httpClient;
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.deleteRecursive;
 import static ml.melun.mangaview.Utils.documentFileFromUri;
@@ -141,7 +141,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 return "";
             if(path.startsWith("http://") || path.startsWith("https://"))
                 return path;
-            return httpClient.getUrl(path);
+            return getHttpClient().getUrl(path);
         } catch (Exception e) {
             return "";
         }
@@ -521,7 +521,7 @@ public class EpisodeActivity extends AppCompatActivity {
         }
 
         protected Integer doInBackground(Void... params) {
-            int code = title.fetchEps(httpClient);
+            int code = title.fetchEps(getHttpClient());
             episodes = title.getEps();
             return code;
         }

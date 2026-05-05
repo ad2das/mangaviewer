@@ -72,7 +72,7 @@ import okhttp3.RequestBody;
 import okhttp3.Response;
 
 import static java.lang.System.currentTimeMillis;
-import static ml.melun.mangaview.MainApplication.httpClient;
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.activity.CaptchaActivity.REQUEST_CAPTCHA;
 import static ml.melun.mangaview.activity.SettingsActivity.urlSettingPopup;
@@ -470,7 +470,7 @@ public class Utils {
     static void startCaptchaActivity(Context context, int code, Fragment fragment, String url){
         Intent captchaIntent = new Intent(context, CaptchaActivity.class);
         if(url != null && url.startsWith("/"))
-            url = httpClient.getUrl(url) + url;
+            url = getHttpClient().getUrl(url) + url;
         captchaIntent.putExtra("url", url);
         if(fragment == null)
             ((Activity)context).startActivityForResult(captchaIntent, code);
@@ -536,13 +536,13 @@ public class Utils {
             while(tries > 0) {
                 Response r = null;
                 try {
-                    r = httpClient.post(p.getUrl() + "/plugin/kcaptcha/kcaptcha_session.php", new FormBody.Builder().build(), new HashMap<>(), true);
+                    r = getHttpClient().post(p.getUrl() + "/plugin/kcaptcha/kcaptcha_session.php", new FormBody.Builder().build(), new HashMap<>(), true);
                     if(r != null && r.code() == 200) {
                         List<String> setcookie = r.headers("Set-Cookie");
                         for (String c : setcookie) {
                             if (c.contains("PHPSESSID=")) {
                                 String cookie = c.substring(c.indexOf("=") + 1, c.indexOf(";"));
-                                httpClient.setCookie("PHPSESSID", cookie);
+                                getHttpClient().setCookie("PHPSESSID", cookie);
                             }
                         }
                         break;
@@ -554,7 +554,7 @@ public class Utils {
                 tries--;
             }
             try {
-                Response r = httpClient.mget("/plugin/kcaptcha/kcaptcha_image.php?t=" + currentTimeMillis(), false);
+                Response r = getHttpClient().mget("/plugin/kcaptcha/kcaptcha_image.php?t=" + currentTimeMillis(), false);
                 final byte[] b = CustomHttpClient.readBytes(r);
                 ((Activity) context).runOnUiThread(() -> Glide.with(img)
                         .load(b)
@@ -572,10 +572,10 @@ public class Utils {
                             .addEncoded("captcha_key", answer.getText().toString())
                             .build();
                     Map<String, String> headers = new HashMap<>();
-                    headers.put("cookie", "PHPSESSID=" + httpClient.getCookie("PHPSESSID") + ";");
+                    headers.put("cookie", "PHPSESSID=" + getHttpClient().getCookie("PHPSESSID") + ";");
                     Response response = null;
                     try {
-                        response = httpClient.post(p.getUrl() + "/bbs/captcha_check.php", requestBody, headers, true);
+                        response = getHttpClient().post(p.getUrl() + "/bbs/captcha_check.php", requestBody, headers, true);
                     } finally {
                         if(response != null)
                             response.close();
@@ -595,7 +595,7 @@ public class Utils {
     }
 
     public static GlideUrl getGlideUrl(String image, int baseMode){
-        String referer = httpClient.getUrl(baseMode);
+        String referer = getHttpClient().getUrl(baseMode);
         String url = normalizeImageUrl(image, baseMode);
         return new GlideUrl(url, new LazyHeaders.Builder()
                 .addHeader("Referer", referer)
@@ -625,7 +625,7 @@ public class Utils {
     }
 
     private static String getSiteRoot(int baseMode) {
-        String url = httpClient.getUrl(baseMode);
+        String url = getHttpClient().getUrl(baseMode);
         while(url.endsWith("/"))
             url = url.substring(0, url.length() - 1);
         if(url.endsWith("/cm"))
