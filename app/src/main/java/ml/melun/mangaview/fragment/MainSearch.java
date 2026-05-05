@@ -556,6 +556,10 @@ public class MainSearch extends Fragment {
             showLibrary();
             return;
         }
+        if(search != null) {
+            searchSubmitOnline();
+            return;
+        }
         performLibrarySearch(query);
     }
 

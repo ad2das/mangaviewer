@@ -288,6 +288,9 @@ public class MainPageWebtoon {
                 String href = link.attr("href");
                 int id = getQueryInt(href, "toon");
                 if(id <= 0) continue;
+                int detectedBaseMode = detectWolfBaseMode(href);
+                if(detectedBaseMode != 0 && detectedBaseMode != baseMode)
+                    continue;
 
                 String name = firstOwnText(e.selectFirst("p.subject"));
                 if(name.length() == 0)
@@ -326,6 +329,23 @@ public class MainPageWebtoon {
             }
         }
         return titles;
+    }
+
+    private static int detectWolfBaseMode(String href) {
+        if(href == null)
+            return 0;
+        String normalized = href.toLowerCase(Locale.ROOT);
+        if(normalized.contains("/cl?toon=")
+                || normalized.contains("/cv?toon=")
+                || normalized.contains("/cm?"))
+            return base_comic;
+        if(normalized.contains("/list?toon=")
+                || normalized.contains("/view?toon=")
+                || normalized.contains("/webtoon")
+                || normalized.contains("/ing?")
+                || normalized.contains("/end?"))
+            return base_webtoon;
+        return 0;
     }
 
     public static void applyInferredWebtoonTags(Title title) {
