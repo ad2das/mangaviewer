@@ -270,11 +270,13 @@ public class MainMain extends Fragment{
         selectedBaseMode = p.getBaseMode() == base_comic ? base_comic : base_webtoon;
         modeWebtoon.setOnClickListener(v -> {
             switchBaseMode(base_webtoon);
-            fetchSelected();
+            showInitialHomeRows();
+            scheduleInitialFetch();
         });
         modeComic.setOnClickListener(v -> {
             switchBaseMode(base_comic);
-            fetchSelected();
+            showInitialHomeRows();
+            scheduleInitialFetch();
         });
         switchBaseMode(selectedBaseMode);
 

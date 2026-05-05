@@ -1450,6 +1450,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     private class Fetcher extends LifecycleTask<Void, SectionBatch, Boolean> {
         private CustomHttpClient.RequestGroup requestGroup;
+        private List<Ranking<?>> finalDataSet;
 
         @Override
         protected void onPreExecute() {
@@ -1478,6 +1479,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             ExecutorService executor = Executors.newFixedThreadPool(Math.min(4, sections.length));
             ExecutorCompletionService<SectionResult> completion = new ExecutorCompletionService<>(executor);
             MainPageWebtoon parser = new MainPageWebtoon(baseMode);
+            List<Ranking<?>> fetchedSections = MainPageWebtoon.getBlankDataSet(baseMode);
             int submitted = 0;
             int loaded = 0;
             List<SectionResult> pendingResults = new ArrayList<>();
@@ -1498,6 +1500,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     if(result != null && result.ranking != null) {
                         if(result.ranking.size() > 0)
                             loaded++;
+                        if(result.index >= 0) {
+                            if(result.index < fetchedSections.size())
+                                fetchedSections.set(result.index, result.ranking);
+                            else
+                                fetchedSections.add(result.ranking);
+                        }
                         pendingResults.add(result);
                         int batchSize = firstScreenPublished ? SECTION_BATCH_SIZE : FIRST_SCREEN_BATCH_SIZE;
                         if(pendingResults.size() >= batchSize) {
@@ -1509,6 +1517,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 }
                 if(pendingResults.size() > 0)
                     publishProgress(new SectionBatch(new ArrayList<>(pendingResults)));
+                if(baseMode == base_webtoon)
+                    MainPageWebtoon.enhanceWebtoonClassification(fetchedSections);
+                else if(baseMode == base_comic)
+                    MainPageWebtoon.enhanceComicClassification(fetchedSections);
+                finalDataSet = fetchedSections;
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } catch (Exception e) {
@@ -1553,10 +1566,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 scheduleThumbnailPreload(loadedSections);
                 return;
             }
-            if(baseMode == base_webtoon)
-                MainPageWebtoon.enhanceWebtoonClassification(dataSet);
-            else if(baseMode == base_comic)
-                MainPageWebtoon.enhanceComicClassification(dataSet);
             updateRows(buildRows(dataSet, false));
             scheduleThumbnailPreload(loadedSections);
         }
@@ -1571,10 +1580,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     listener.captchaCallback();
                 return;
             }
-            if(baseMode == base_webtoon)
-                MainPageWebtoon.enhanceWebtoonClassification(dataSet);
-            else if(baseMode == base_comic)
-                MainPageWebtoon.enhanceComicClassification(dataSet);
+            if(finalDataSet != null)
+                dataSet = finalDataSet;
             List<Object> finalRows = buildRows(dataSet, false);
             boolean shouldShowTop = !initialRowsShown && hasHero(finalRows);
             initialRowsShown = true;
