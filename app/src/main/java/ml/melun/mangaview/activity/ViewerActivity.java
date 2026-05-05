@@ -612,9 +612,9 @@ public class ViewerActivity extends AppCompatActivity {
                         if(m.isOnline()) {
                             result = lockui ? prepareEpisodeIdentity(m) : ensureEpisodeListLoaded(m);
                             if(result == LOAD_OK && !hasLoadedImages(m)) {
-                                result = getHttpClient().runWithRequestGroup(requestGroup, () -> m.fetch(getHttpClient()));
+                                result = getHttpClient().runWithRequestGroup(requestGroup, () -> m.fetchForViewerInitial(getHttpClient()));
                                 if(result == LOAD_OK && !cancelled && !hasLoadedImages(m))
-                                    result = getHttpClient().runWithRequestGroup(requestGroup, () -> m.fetch(getHttpClient()));
+                                    result = getHttpClient().runWithRequestGroup(requestGroup, () -> m.fetchForViewerInitial(getHttpClient()));
                             }
                         }
                     } catch (Exception e) {
@@ -652,6 +652,8 @@ public class ViewerActivity extends AppCompatActivity {
             callback.post(m);
             if(lockui)
                 hydrateEpisodeListAfterFirstFrame(m);
+            if(lockui)
+                hydrateCommentsAfterFirstFrame(m);
         }
 
         void cancel() {
@@ -683,7 +685,7 @@ public class ViewerActivity extends AppCompatActivity {
                     int result = LOAD_OK;
                     try {
                         if(target != null && target.isOnline() && !hasLoadedImages(target))
-                            result = getHttpClient().runWithRequestGroup(requestGroup, () -> target.fetch(getHttpClient()));
+                            result = getHttpClient().runWithRequestGroup(requestGroup, () -> target.fetchForViewerInitial(getHttpClient()));
                     } catch (Exception e) {
                         if(!cancelled && !isFinishing())
                             e.printStackTrace();
@@ -818,6 +820,26 @@ public class ViewerActivity extends AppCompatActivity {
                     e.printStackTrace();
             }
         }, 350);
+    }
+
+    private void hydrateCommentsAfterFirstFrame(Manga target) {
+        if(target == null || !target.isOnline() || target.areCommentsLoaded())
+            return;
+        mainHandler.postDelayed(() -> {
+            try {
+                imageLoadExecutor.submit(() -> {
+                    try {
+                        target.fetchComments(getHttpClient());
+                    } catch (Exception e) {
+                        if(!isFinishing())
+                            e.printStackTrace();
+                    }
+                });
+            } catch (RejectedExecutionException e) {
+                if(!isFinishing())
+                    e.printStackTrace();
+            }
+        }, 700);
     }
 
     private void saveCurrentScrollBookmark() {

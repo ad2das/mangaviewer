@@ -84,14 +84,22 @@ public class Manga {
     }
 
     public synchronized int fetch(CustomHttpClient client) {
-        return fetch(client, true, null);
+        return fetch(client, true, null, true);
     }
 
     public synchronized int fetch(CustomHttpClient client, Map<String, String> cookies) {
-        return fetch(client, false, cookies);
+        return fetch(client, false, cookies, true);
     }
 
     public synchronized int fetch(CustomHttpClient client, boolean doLogin, Map<String, String> cookies) {
+        return fetch(client, doLogin, cookies, true);
+    }
+
+    public synchronized int fetchForViewerInitial(CustomHttpClient client) {
+        return fetch(client, true, null, false);
+    }
+
+    private synchronized int fetch(CustomHttpClient client, boolean doLogin, Map<String, String> cookies, boolean includeComments) {
         if(isComicWolfSource())
             return fetchWolf(client, "/cv?toon=", "/cv?toon=");
         if(isWebtoonWolfSource())
@@ -103,21 +111,32 @@ public class Manga {
         eps = new ArrayList<>();
         comments = new ArrayList<>();
         bcomments = new ArrayList<>();
+        commentsLoaded = false;
         int tries = 0;
         int timeoutRetries = 0;
 
         while (imgs.size() == 0 && tries < 2) {
-            Response r = client.mget(  baseModeStr(baseMode) + '/' + id, false, cookies);
+            Response r = null;
             try {
-                if(r == null)
-                    break;
-                String location = r.header("location");
-                if (r.code() == 302 && location != null && location.contains("captcha.php")) {
-                    r.close();
-                    return LOAD_CAPTCHA;
+                String path = baseModeStr(baseMode) + '/' + id;
+                String body;
+                if(doLogin && cookies == null) {
+                    CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+                    body = page.body;
+                    if(page.code == 302 && body.contains("captcha.php"))
+                        return LOAD_CAPTCHA;
+                } else {
+                    r = client.mget(path, false, cookies);
+                    if(r == null)
+                        break;
+                    String location = r.header("location");
+                    if (r.code() == 302 && location != null && location.contains("captcha.php")) {
+                        r.close();
+                        return LOAD_CAPTCHA;
+                    }
+                    body = CustomHttpClient.readBody(r);
+                    r = null;
                 }
-                String body = CustomHttpClient.readBody(r);
-                r = null;
                 if (body.contains("Connect Error: Connection timed out")) {
                     if(++timeoutRetries > MAX_TIMEOUT_RETRIES)
                         break;
@@ -191,30 +210,8 @@ public class Manga {
                     }
                 }
 
-                //comments
-                Element commentdiv = d.selectFirst("div#viewcomment");
-
-
-                try {
-                    for (Element e : commentdiv.selectFirst("section#bo_vc").select("div.media")) {
-                        try {
-                            comments.add(parseComment(e));
-                        } catch (Exception e3) {
-                            e3.printStackTrace();
-                        }
-
-                    }
-                    for (Element e : commentdiv.selectFirst("section#bo_vcb").select("div.media")) {
-                        try {
-                            bcomments.add(parseComment(e));
-                        } catch (Exception e3) {
-                            e3.printStackTrace();
-                        }
-
-                    }
-                } catch (Exception e1) {
-                    e1.printStackTrace();
-                }
+                if(includeComments)
+                    parseComments(d);
 
             } catch (Exception e2) {
                 e2.printStackTrace();
@@ -225,6 +222,17 @@ public class Manga {
             tries++;
         }
         return LOAD_OK;
+    }
+
+    public synchronized void fetchComments(CustomHttpClient client) {
+        if(commentsLoaded || !isOnline() || isComicWolfSource() || isWebtoonWolfSource())
+            return;
+        try {
+            CustomHttpClient.PageResponse page = client.mgetCachedPage(baseModeStr(baseMode) + '/' + id, PAGE_CACHE_TTL_MS);
+            parseComments(Jsoup.parse(page.body));
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     private int parseEpisodeId(String href, String marker) {
@@ -298,6 +306,7 @@ public class Manga {
         eps = new ArrayList<>();
         comments = new ArrayList<>();
         bcomments = new ArrayList<>();
+        commentsLoaded = true;
 
         for(int attempt = 0; attempt < 2; attempt++) {
             try {
@@ -406,6 +415,33 @@ public class Manga {
         return manga;
     }
 
+    private void parseComments(Document d) {
+        comments = new ArrayList<>();
+        bcomments = new ArrayList<>();
+        Element commentdiv = d == null ? null : d.selectFirst("div#viewcomment");
+        try {
+            if(commentdiv != null && commentdiv.selectFirst("section#bo_vc") != null)
+                for (Element e : commentdiv.selectFirst("section#bo_vc").select("div.media")) {
+                    try {
+                        comments.add(parseComment(e));
+                    } catch (Exception e3) {
+                        e3.printStackTrace();
+                    }
+                }
+            if(commentdiv != null && commentdiv.selectFirst("section#bo_vcb") != null)
+                for (Element e : commentdiv.selectFirst("section#bo_vcb").select("div.media")) {
+                    try {
+                        bcomments.add(parseComment(e));
+                    } catch (Exception e3) {
+                        e3.printStackTrace();
+                    }
+                }
+        } catch (Exception e1) {
+            e1.printStackTrace();
+        }
+        commentsLoaded = true;
+    }
+
     private Comment parseComment(Element e) {
         String user;
         String icon;
@@ -502,6 +538,10 @@ public class Manga {
 
     public List<Comment> getBestComments() {
         return bcomments;
+    }
+
+    public boolean areCommentsLoaded() {
+        return commentsLoaded;
     }
 
     public int getSeed() {
@@ -656,6 +696,7 @@ public class Manga {
     List<Manga> eps;
     List<String> imgs;
     List<Comment> comments, bcomments;
+    boolean commentsLoaded = false;
     String offlinePath;
     String thumb;
     transient Title title;
