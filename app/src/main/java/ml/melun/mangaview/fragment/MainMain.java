@@ -8,6 +8,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.EditText;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -304,10 +305,12 @@ public class MainMain extends Fragment{
         String query = homeSearchInput == null || homeSearchInput.getText() == null ? "" : homeSearchInput.getText().toString().trim();
         if(mainActivityCallback == null)
             return;
-        if(query.length() == 0)
-            mainActivityCallback.navigateToTab(1);
-        else
-            mainActivityCallback.search(query);
+        if(query.length() < 2) {
+            if(getContext() != null)
+                Toast.makeText(getContext(), "최소 2글자 이상 입력해주세요", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        mainActivityCallback.search(query);
     }
 
     private MainWebtoonAdapter getSelectedAdapter() {

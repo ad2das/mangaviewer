@@ -41,6 +41,10 @@ public class Search {
         return baseMode;
     }
 
+    public String getQuery() {
+        return query;
+    }
+
     public Boolean isLast() {
         return last;
     }

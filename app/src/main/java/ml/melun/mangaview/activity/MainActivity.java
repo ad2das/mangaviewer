@@ -122,9 +122,12 @@ public class MainActivity extends AppCompatActivity
     @Override
     public void search(String query) {
         MainSearch searchFragment = (MainSearch) fragments[1];
+        changeFragment(1);
+        getSupportFragmentManager().executePendingTransactions();
         searchFragment.setBaseMode(p.getBaseMode());
         searchFragment.setSearch(query);
-        changeFragment(1);
+        if(getSupportActionBar() != null)
+            getSupportActionBar().setTitle("검색");
     }
 
     @Override
@@ -326,6 +329,10 @@ public class MainActivity extends AppCompatActivity
                 int index = getFragmentIndex(item.getItemId());
                 if(index == 0 && fragments[0] instanceof MainMain)
                     ((MainMain) fragments[0]).scrollToSelectedTab();
+                else if(index == 1 && fragments[1] instanceof MainSearch) {
+                    ((MainSearch) fragments[1]).enterLibraryMode();
+                    toolbar.setTitle(getTabTitle(1));
+                }
             });
         }
 
@@ -702,6 +709,8 @@ public class MainActivity extends AppCompatActivity
         int fragmentI = index > 2 ? (index == 2 ? 2 : 3) : index;
         boolean res = false;
         if(index>-1 && index != currentTab){
+            if(index == 1 && fragments[1] instanceof MainSearch)
+                ((MainSearch) fragments[1]).enterLibraryMode();
             currentTab = index;
             if(index == 2) {
                 ((MainUpdates) fragments[2]).refreshIfEmpty();

@@ -79,6 +79,7 @@ public class MainSearch extends Fragment {
     boolean pendingOpenSearch = false;
     boolean onlineSearchMode = false;
     TextView libraryCount;
+    View libraryMeta;
     TabLayout libraryTab;
     ArrayList<Title> offlineTitles = new ArrayList<>();
     LoadOfflineTitles offlineTask;
@@ -140,6 +141,7 @@ public class MainSearch extends Fragment {
         swipe = rootView.findViewById(R.id.searchSwipe);
         optionsPanel = rootView.findViewById(R.id.searchOptionPanel);
         libraryCount = rootView.findViewById(R.id.libraryCount);
+        libraryMeta = rootView.findViewById(R.id.libraryMeta);
         libraryTab = rootView.findViewById(R.id.libraryTab);
         fragment = this;
         localChangeListener = scope -> {
@@ -196,7 +198,8 @@ public class MainSearch extends Fragment {
         baseMode.setSelection(p.getBaseMode()-1);
         if(pendingBaseMode > 0)
             applyBaseMode(pendingBaseMode);
-        showLibrary();
+        if(prequery == null && !onlineSearchMode)
+            showLibrary();
         if(pendingOpenSearch)
             enterSearchMode();
 
@@ -222,7 +225,7 @@ public class MainSearch extends Fragment {
         super.onResume();
         if(prequery != null){
             applyPendingSearch();
-        } else if(search == null) {
+        } else if(search == null && !onlineSearchMode) {
             showLibrary();
         }
     }
@@ -234,6 +237,8 @@ public class MainSearch extends Fragment {
 
     public void setSearch(String prequery){
         this.prequery = prequery;
+        onlineSearchMode = true;
+        activeLibraryQuery = null;
         if(searchBox != null)
             applyPendingSearch();
     }
@@ -270,6 +275,23 @@ public class MainSearch extends Fragment {
         });
     }
 
+    public void enterLibraryMode() {
+        pendingOpenSearch = false;
+        onlineSearchMode = false;
+        prequery = null;
+        activeLibraryQuery = null;
+        search = null;
+        activeSearchKey = null;
+        if(searchTask != null) {
+            searchTask.cancel(true);
+            searchTask = null;
+        }
+        if(searchBox != null)
+            searchBox.setText("");
+        if(searchResult != null)
+            showLibrary();
+    }
+
     private void setupLibraryTabs() {
         if(libraryTab == null || libraryTab.getTabCount() > 0)
             return;
@@ -299,6 +321,7 @@ public class MainSearch extends Fragment {
         if(searchResult == null || getContext() == null)
             return;
         onlineSearchMode = false;
+        updateSearchChrome(false);
         if(activeLibraryQuery != null && activeLibraryQuery.length() > 0) {
             performLibrarySearch(activeLibraryQuery);
             return;
@@ -555,7 +578,11 @@ public class MainSearch extends Fragment {
             showMinimumSearchLengthToast();
             return;
         }
-        searchSubmitOnline();
+        if(onlineSearchMode) {
+            searchSubmitOnline();
+            return;
+        }
+        performLibrarySearch(query);
     }
 
     private void performLibrarySearch(String query) {
@@ -623,6 +650,7 @@ public class MainSearch extends Fragment {
         }
         if(query.length()>0) {
             onlineSearchMode = true;
+            updateSearchChrome(true);
             activeLibraryQuery = null;
             hideKeyboard();
             swipe.setRefreshing(true);
@@ -643,6 +671,13 @@ public class MainSearch extends Fragment {
 
     private String searchKey(String query) {
         return query + "\u001f" + searchMode.getSelectedItemPosition() + "\u001f" + (baseMode.getSelectedItemPosition() + 1);
+    }
+
+    private void updateSearchChrome(boolean online) {
+        if(libraryTab != null)
+            libraryTab.setVisibility(online ? View.GONE : View.VISIBLE);
+        if(libraryMeta != null)
+            libraryMeta.setVisibility(online ? View.GONE : View.VISIBLE);
     }
 
     private void showMinimumSearchLengthToast() {
@@ -854,6 +889,7 @@ public class MainSearch extends Fragment {
             if(searchAdapter.getItemCount()>0) {
                 noresult.setVisibility(View.GONE);
             }else{
+                noresult.setText("\"" + targetSearch.getQuery() + "\" 검색 결과가 없습니다");
                 noresult.setVisibility(View.VISIBLE);
             }
 
