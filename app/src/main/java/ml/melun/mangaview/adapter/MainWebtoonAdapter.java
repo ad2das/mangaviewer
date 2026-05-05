@@ -88,6 +88,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private static final int FIRST_SCREEN_BATCH_SIZE = 1;
     private static final long HOME_CACHE_TTL_MS = 24 * 60 * 60 * 1000L;
     private static final String HOME_CACHE_KEY_PREFIX = "homeSnapshotV1_";
+    private static final int HOME_CACHE_MAX_SECTIONS = 6;
+    private static final int HOME_CACHE_MAX_TITLES_PER_SECTION = 10;
     private int preloadCount = 0;
     private int activeHomeTab = 0;
 
@@ -542,7 +544,38 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     private static class CachedSection {
         String name;
-        List<MTitle> titles;
+        List<CachedTitle> titles;
+    }
+
+    private static class CachedTitle {
+        String name;
+        int id;
+        String thumb;
+        String author;
+        List<String> tags;
+        String release;
+        String path;
+        int baseMode;
+
+        CachedTitle() {
+        }
+
+        CachedTitle(MTitle source, int baseMode) {
+            this.name = source.getName();
+            this.id = source.getId();
+            this.thumb = source.getThumb();
+            this.author = source.getAuthor();
+            this.tags = source.getTags();
+            this.release = source.getRelease();
+            this.path = source.getPath();
+            this.baseMode = baseMode;
+        }
+
+        Title toTitle() {
+            MTitle title = new MTitle(name, id, thumb, author, tags, release, baseMode);
+            title.setPath(path);
+            return new Title(title);
+        }
     }
 
     private String homeCacheKey() {
@@ -561,6 +594,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         updateRows(cachedRows);
         scrollHeroToTop();
         scheduleThumbnailPreload(dataSet);
+        saveHomeSnapshot(dataSet);
         return true;
     }
 
@@ -578,10 +612,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 if(cachedSection == null || cachedSection.name == null || cachedSection.titles == null || cachedSection.titles.size() == 0)
                     continue;
                 Ranking<Title> ranking = new Ranking<>(cachedSection.name);
-                for(MTitle item : cachedSection.titles) {
-                    if(item == null || item.getId() <= 0)
+                for(CachedTitle item : cachedSection.titles) {
+                    if(item == null || item.id <= 0)
                         continue;
-                    ranking.add(new Title(item));
+                    ranking.add(item.toTitle());
                 }
                 if(ranking.size() > 0)
                     restored.add(ranking);
@@ -599,8 +633,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             HomeSnapshot snapshot = new HomeSnapshot();
             snapshot.savedAt = System.currentTimeMillis();
             snapshot.sections = new ArrayList<>();
+            int sectionCount = 0;
             for(Ranking<?> section : sections) {
                 if(section == null || section.size() == 0)
+                    continue;
+                if(!shouldKeepHomeCacheSection(section, sectionCount))
                     continue;
                 CachedSection cachedSection = new CachedSection();
                 cachedSection.name = section.getName();
@@ -612,10 +649,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     if(title.getId() <= 0)
                         continue;
                     title.setBaseMode(baseMode);
-                    cachedSection.titles.add(title);
+                    cachedSection.titles.add(new CachedTitle(title, baseMode));
+                    if(cachedSection.titles.size() >= HOME_CACHE_MAX_TITLES_PER_SECTION)
+                        break;
                 }
-                if(cachedSection.titles.size() > 0)
+                if(cachedSection.titles.size() > 0) {
                     snapshot.sections.add(cachedSection);
+                    sectionCount++;
+                }
+                if(sectionCount >= HOME_CACHE_MAX_SECTIONS)
+                    break;
             }
             if(snapshot.sections.size() == 0)
                 return;
@@ -624,6 +667,13 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     .apply();
         } catch (Exception ignored) {
         }
+    }
+
+    private boolean shouldKeepHomeCacheSection(Ranking<?> section, int keptSections) {
+        if(keptSections < 2)
+            return true;
+        SectionName name = parseSectionName(section.getName());
+        return name.title.contains("인기순") || name.title.contains(freshSectionTitle());
     }
 
     private List<Title> collectTitles(List<Ranking<?>> sections, int limit) {
