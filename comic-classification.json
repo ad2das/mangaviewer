@@ -109,8 +109,10 @@
       "name": "사무라이8 하치마루전",
       "thumb": "https://i1.imgcloud18.com/10011/ac7c520a.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션",
+        "SF",
+        "판타지"
       ]
     },
     "10012": {
@@ -136,8 +138,8 @@
       "name": "소꿉친구는 전지전능",
       "thumb": "https://i0.imgcloud18.com/10014/381d32b5.jpg?v=2",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "로맨스"
       ]
     },
     "10015": {
@@ -199,8 +201,8 @@
       "name": "녹아내려라! 미조레 쨩",
       "thumb": "https://i1.imgcloud18.com/10021/b9e25f60.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "10022": {
@@ -275,8 +277,8 @@
       "name": "손바닥에 별이 가득",
       "thumb": "https://i0.imgcloud18.com/10029/9f4720cf.jpg?v=2",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "10030": {
@@ -573,8 +575,8 @@
       "name": "너와 함께면 생각처럼 안 돼",
       "thumb": "https://i0.imgcloud18.com/10060/fd699285.jpg?v=2",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "학원"
       ]
     },
     "10061": {
@@ -620,6 +622,7 @@
       "thumb": "https://i0.imgcloud18.com/10065/8def04a4.jpg",
       "release": "",
       "inferredTags": [
+        "먹방",
         "요리"
       ]
     },
@@ -627,8 +630,9 @@
       "name": "유니콘 아빠",
       "thumb": "https://i1.imgcloud18.com/10066/52c24828.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지",
+        "일상"
       ]
     },
     "10067": {
@@ -671,8 +675,8 @@
       "name": "오늘밤은 달이 아름다운데요,",
       "thumb": "https://i1.imgcloud18.com/10071/bb8bcbdc.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "순정"
       ]
     },
     "10072": {
@@ -779,8 +783,8 @@
       "name": "나(임시)",
       "thumb": "https://i1.imgcloud18.com/10083/6014d06f.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "순정"
       ]
     },
     "10084": {
@@ -920,8 +924,10 @@
       "name": "맛 없는 밥 엘프와 유목생활",
       "thumb": "https://i1.imgcloud18.com/10097/eb1c7494.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "먹방",
+        "요리",
+        "판타지"
       ]
     },
     "10098": {
@@ -1010,7 +1016,8 @@
       "thumb": "https://i1.imgcloud18.com/10107/7899a250.jpg",
       "release": "",
       "inferredTags": [
-        "로맨스"
+        "로맨스",
+        "판타지"
       ]
     },
     "10108": {
@@ -1072,8 +1079,8 @@
       "name": "감금혼",
       "thumb": "https://i1.imgcloud18.com/10114/c19dc401.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "스릴러"
       ]
     },
     "10115": {
@@ -1101,8 +1108,9 @@
       "name": "친구의 딸이 들이닥쳐 곤란합",
       "thumb": "https://i1.imgcloud18.com/10117/6f0e94a1.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "라노벨",
+        "러브코미디"
       ]
     },
     "10118": {
@@ -1150,8 +1158,8 @@
       "name": "너같은 히로인이 있을까보다!",
       "thumb": "https://i1.imgcloud18.com/10122/3f01d304.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "로맨스"
       ]
     },
     "10123": {
@@ -1166,16 +1174,16 @@
       "name": "RDB 레드 데이터 북",
       "thumb": "https://i1.imgcloud18.com/10124/5df3b35c.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "SF"
       ]
     },
     "10125": {
       "name": "런웨이에서 웃어줘",
       "thumb": "https://i1.imgcloud18.com/10125/35cc24fc.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "10126": {
@@ -1548,8 +1556,8 @@
       "name": "하나후리 여관의 셋방살이 소",
       "thumb": "https://i1.imgcloud18.com/10165/dd26ce5a.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "일상"
       ]
     },
     "10166": {
@@ -1685,8 +1693,9 @@
       "name": "쌍둥이 언니가 무녀로 거둬져",
       "thumb": "https://i1.imgcloud18.com/10180/5596f2a2.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "시대",
+        "판타지"
       ]
     },
     "10181": {
@@ -1702,8 +1711,8 @@
       "name": "유니콘을 어른으로 만드는 방",
       "thumb": "https://i1.imgcloud18.com/10182/28b49474.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "10183": {
@@ -1769,8 +1778,10 @@
       "name": "하나조노 군과 카조에 양의",
       "thumb": "https://i1.imgcloud18.com/10189/96cf2293.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그",
+        "러브코미디",
+        "학원"
       ]
     },
     "10190": {
@@ -1864,8 +1875,8 @@
       "name": "그는 그녀로 변하여",
       "thumb": "https://i1.imgcloud18.com/10199/f20f3cd5.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "TS"
       ]
     },
     "10200": {
@@ -1960,8 +1971,8 @@
       "name": "넥스트 라이프",
       "thumb": "https://i1.imgcloud18.com/10210/9f643ec5.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "백합"
       ]
     },
     "10211": {
@@ -2159,8 +2170,9 @@
       "name": "바닷물이 날아오고, 아이가",
       "thumb": "https://i1.imgcloud18.com/10231/9115f2c9.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디",
+        "개그"
       ]
     },
     "10232": {
@@ -2356,8 +2368,8 @@
       "name": "위그드라실버",
       "thumb": "https://i1.imgcloud18.com/10252/84f1527c.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "10253": {
@@ -2429,8 +2441,8 @@
       "name": "살애",
       "thumb": "https://i1.imgcloud18.com/10260/8f9d80e8.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "10261": {
@@ -2466,16 +2478,16 @@
       "name": "천사걸",
       "thumb": "https://i1.imgcloud18.com/10264/f27126c4.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "10265": {
       "name": "진수의 숲의 유니콘",
       "thumb": "https://i1.imgcloud18.com/10265/7297b648.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "10266": {
@@ -2724,8 +2736,8 @@
       "name": "드라콘!",
       "thumb": "https://i1.imgcloud18.com/10291/1d4375d0.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "10292": {
@@ -2785,8 +2797,9 @@
       "name": "커피를 조용하게",
       "thumb": "https://i1.imgcloud18.com/10298/33f1da16.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "먹방",
+        "요리"
       ]
     },
     "10299": {
@@ -2949,8 +2962,8 @@
       "name": "여동생에게 혼약자를 양보해달",
       "thumb": "https://i1.imgcloud18.com/10315/ff880fca.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "로맨스"
       ]
     },
     "10316": {
@@ -3363,8 +3376,8 @@
       "name": "와타누키 씨네 집",
       "thumb": "https://i1.imgcloud18.com/10358/1eda894e.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "일상"
       ]
     },
     "10359": {
@@ -3509,8 +3522,10 @@
       "name": "무드즈모 없는 개혁~프린세스",
       "thumb": "https://i1.imgcloud18.com/10373/36a5a590.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "성인",
+        "판타지",
+        "개그"
       ]
     },
     "10374": {
@@ -3527,8 +3542,9 @@
       "name": "히나 쨩 체인지",
       "thumb": "https://i1.imgcloud18.com/10375/3282192a.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "TS",
+        "개그"
       ]
     },
     "10376": {
@@ -3544,8 +3560,8 @@
       "name": "거울 저편 끝의 도서관 빛의",
       "thumb": "https://i1.imgcloud18.com/10377/c30c6d42.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "10378": {
@@ -3800,8 +3816,8 @@
       "name": "리베리오·마키나",
       "thumb": "https://i2.imgcloud18.com/10405/1cba1552.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "10406": {
@@ -3871,8 +3887,8 @@
       "name": "바다의 크레이들",
       "thumb": "https://i2.imgcloud18.com/10413/99815295.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션"
       ]
     },
     "10414": {
@@ -3909,8 +3925,8 @@
       "name": "귀여운 후배에게 듣고 싶어",
       "thumb": "https://i2.imgcloud18.com/10417/df53683c.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "학원"
       ]
     },
     "10418": {
@@ -4496,8 +4512,11 @@
       "name": "아다치와 시마무라",
       "thumb": "https://i2.imgcloud18.com/10478/0fa111ae.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "백합",
+        "로맨스",
+        "학원",
+        "일상"
       ]
     },
     "10479": {
@@ -4627,8 +4646,8 @@
       "name": "하카타벤의 여자아이는 귀엽다",
       "thumb": "https://i2.imgcloud18.com/10492/91f7faa0.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "10493": {
@@ -4904,8 +4923,10 @@
       "name": "어째서 아무도 나의 세계를",
       "thumb": "https://i2.imgcloud18.com/10523/da82a464.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디",
+        "이세계",
+        "개그"
       ]
     },
     "10524": {
@@ -4921,8 +4942,10 @@
       "name": "얕보이고 싶지 않은 나메카와",
       "thumb": "https://i0.imgcloud18.com/10525/6e3716ce.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디",
+        "학원",
+        "개그"
       ]
     },
     "10526": {
@@ -4964,8 +4987,9 @@
       "name": "HUMAN LOST 인간실격",
       "thumb": "https://i2.imgcloud18.com/10530/a145756f.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "SF",
+        "드라마"
       ]
     },
     "10531": {
@@ -5009,8 +5033,10 @@
       "name": "도쿄 걸즈 디스트럭션",
       "thumb": "https://i2.imgcloud18.com/10535/a35d6529.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션",
+        "스포츠",
+        "SF"
       ]
     },
     "10536": {
@@ -5026,8 +5052,8 @@
       "name": "괴수 도마뱀",
       "thumb": "https://i2.imgcloud18.com/10537/4e238ae9.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "10538": {
@@ -5045,8 +5071,8 @@
       "name": "나의 소피아",
       "thumb": "https://i2.imgcloud18.com/10539/6bf76384.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디"
       ]
     },
     "10541": {
@@ -5350,8 +5376,11 @@
       "name": "방과후는 찻집에서",
       "thumb": "https://i2.imgcloud18.com/10572/9e319aac.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "먹방",
+        "요리",
+        "학원",
+        "일상"
       ]
     },
     "10573": {
@@ -5724,8 +5753,8 @@
       "name": "당신의 어머니를 제게 주세요",
       "thumb": "https://i2.imgcloud18.com/10613/2d9fb259.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "일상"
       ]
     },
     "10614": {
@@ -5741,8 +5770,8 @@
       "name": "소꿉친구가 과보호라 괴로워",
       "thumb": "https://i2.imgcloud18.com/10615/e69fb3b7.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "로맨스"
       ]
     },
     "10616": {
@@ -5891,8 +5920,8 @@
       "name": "몬스터의 주인님",
       "thumb": "https://i2.imgcloud18.com/10631/d4547fa3.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "10632": {
@@ -5944,8 +5973,8 @@
       "name": "선생님, 이번 달 어떠신가요",
       "thumb": "https://i0.imgcloud18.com/10637/58758cee.jpg?v=2",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "학원"
       ]
     },
     "10638": {
@@ -6017,8 +6046,8 @@
       "name": "도쿄 시노비 스쿼드",
       "thumb": "https://i2.imgcloud18.com/10645/94e7e847.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션"
       ]
     },
     "10646": {
@@ -6331,8 +6360,8 @@
       "name": "귀곡의 커스 홀더",
       "thumb": "https://i2.imgcloud18.com/10678/793bacba.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "10679": {
@@ -6356,8 +6385,8 @@
       "name": "마녀와 야수",
       "thumb": "https://i2.imgcloud18.com/10681/cd17283a.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "10682": {
@@ -6399,8 +6428,8 @@
       "name": "신주의 넥타르",
       "thumb": "https://i2.imgcloud18.com/10686/491d3799.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "10687": {
@@ -6480,8 +6509,8 @@
       "name": "오컬트 짱은 말할 수 없어",
       "thumb": "https://i0.imgcloud18.com/10695/d358e6d0.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "공포"
       ]
     },
     "10696": {
@@ -6544,8 +6573,8 @@
       "name": "별빛 그래픽스",
       "thumb": "https://i2.imgcloud18.com/10702/c0c51bdb.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "10703": {
@@ -6605,16 +6634,16 @@
       "name": "어디까지나 풍기를 위해서니까",
       "thumb": "https://i2.imgcloud18.com/10709/ce13a324.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "학원"
       ]
     },
     "10710": {
       "name": "야행성 보건의 아다시노 선생",
       "thumb": "https://i2.imgcloud18.com/10710/480a090d.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "학원"
       ]
     },
     "10711": {
@@ -6631,8 +6660,8 @@
       "name": "블릿X팽",
       "thumb": "https://i0.imgcloud18.com/10712/35fac491.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션"
       ]
     },
     "10713": {
@@ -6648,16 +6677,16 @@
       "name": "밤과 바다",
       "thumb": "https://i2.imgcloud18.com/10714/0c5cf315.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "10715": {
       "name": "계모의 자식이 전 여친이었다",
       "thumb": "https://i2.imgcloud18.com/10715/f504ac41.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "로맨스"
       ]
     },
     "10716": {
@@ -6710,8 +6739,8 @@
       "name": "칸코레 ~ 언젠가 조용한 바",
       "thumb": "https://i2.imgcloud18.com/10721/7ff01a0c.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "게임"
       ]
     },
     "10722": {
@@ -6727,8 +6756,8 @@
       "name": "U12",
       "thumb": "https://i2.imgcloud18.com/10723/7997ae6a.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "10724": {
@@ -7165,8 +7194,8 @@
       "name": "특공의 섬",
       "thumb": "https://i2.imgcloud18.com/10769/9aee6d0d.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션"
       ]
     },
     "10770": {
@@ -7182,16 +7211,18 @@
       "name": "탈 사라 짱은 치유받고 싶어",
       "thumb": "https://i2.imgcloud18.com/10771/93dfe17d.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디",
+        "개그",
+        "학원"
       ]
     },
     "10772": {
       "name": "절약 락",
       "thumb": "https://i2.imgcloud18.com/10772/d85ff586.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "10773": {
@@ -7219,6 +7250,7 @@
       "thumb": "https://i2.imgcloud18.com/10775/ebc49737.jpg",
       "release": "",
       "inferredTags": [
+        "액션",
         "이세계",
         "판타지"
       ]
@@ -7256,8 +7288,9 @@
       "name": "잠에서 깼더니 여고생이 되었",
       "thumb": "https://i2.imgcloud18.com/10779/efdcab89.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "TS",
+        "학원"
       ]
     },
     "10780": {
@@ -7423,16 +7456,18 @@
       "name": "아무도 알려주지 않는 친구를",
       "thumb": "https://i2.imgcloud18.com/10797/59beca6e.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마",
+        "개그",
+        "러브코미디"
       ]
     },
     "10798": {
       "name": "마녀사냥 당할 뻔한 소녀를",
       "thumb": "https://i2.imgcloud18.com/10798/3ca336df.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "10799": {
@@ -7536,16 +7571,17 @@
       "name": "마계 귀환의 열등능력자",
       "thumb": "https://i0.imgcloud18.com/10809/d6901eeb.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "이세계",
+        "판타지"
       ]
     },
     "10810": {
       "name": "히나",
       "thumb": "https://i2.imgcloud18.com/10810/dbe9f014.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "10811": {
@@ -7588,16 +7624,16 @@
       "name": "코야마는 소심해",
       "thumb": "https://i2.imgcloud18.com/10815/69e7512f.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "10816": {
       "name": "불려온 살육자",
       "thumb": "https://i2.imgcloud18.com/10816/76b69a79.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션"
       ]
     },
     "10817": {
@@ -7622,8 +7658,8 @@
       "name": "노기자카의 시",
       "thumb": "https://i2.imgcloud18.com/10819/ab114044.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "10820": {
@@ -7668,8 +7704,10 @@
       "name": "내일, 나는 누군가의 여자친",
       "thumb": "https://i2.imgcloud18.com/10824/16e0423d.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디",
+        "학원",
+        "개그"
       ]
     },
     "10825": {
@@ -7737,8 +7775,8 @@
       "name": "다크 아츠 마스터",
       "thumb": "https://i3.imgcloud18.com/10832/96e50110.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "음악"
       ]
     },
     "10833": {
@@ -7783,8 +7821,9 @@
       "name": "절대비밀의 기계소녀",
       "thumb": "https://i3.imgcloud18.com/10837/eb1ac9ed.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "SF",
+        "미스터리"
       ]
     },
     "10838": {
@@ -7875,8 +7914,8 @@
       "name": "귀멸의 칼날 4컷 스핀오프",
       "thumb": "https://i3.imgcloud18.com/10847/3bce80a9.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "10848": {
@@ -7921,16 +7960,17 @@
       "name": "앗, 다음 일은 괴물퇴치입니",
       "thumb": "https://i3.imgcloud18.com/10852/c904ec5d.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션",
+        "판타지"
       ]
     },
     "10853": {
       "name": "옆집의 소리",
       "thumb": "https://i3.imgcloud18.com/10853/1af4700f.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "일상"
       ]
     },
     "10854": {
@@ -7976,8 +8016,8 @@
       "name": "일하는 혈소판 짱",
       "thumb": "https://i3.imgcloud18.com/10858/48cc2747.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "일상"
       ]
     },
     "10859": {
@@ -8066,8 +8106,8 @@
       "name": "뱀의 산",
       "thumb": "https://i3.imgcloud18.com/10868/7e8a07c5.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "10869": {
@@ -8101,8 +8141,8 @@
       "name": "쌍둥이는 적령기",
       "thumb": "https://i3.imgcloud18.com/10872/a1bf5074.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "학원"
       ]
     },
     "10873": {
@@ -8229,8 +8269,8 @@
       "name": "리월드 프런티어",
       "thumb": "https://i3.imgcloud18.com/10886/1fa4eacd.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "10887": {
@@ -8395,8 +8435,8 @@
       "name": "다이어트 씨와 실연 짱",
       "thumb": "https://i3.imgcloud18.com/10904/fb363aff.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "백합"
       ]
     },
     "10905": {
@@ -8525,8 +8565,9 @@
       "name": "하네배드!",
       "thumb": "https://i3.imgcloud18.com/10918/65a6d92b.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "스포츠",
+        "학원"
       ]
     },
     "10919": {
@@ -8879,8 +8920,8 @@
       "name": "옷을 입는다면 이런식으로!",
       "thumb": "https://i3.imgcloud18.com/10957/5f42d2b4.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "라노벨"
       ]
     },
     "10958": {
@@ -8922,8 +8963,8 @@
       "name": "마쿠무스비",
       "thumb": "https://i3.imgcloud18.com/10962/94f47ae8.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디"
       ]
     },
     "10963": {
@@ -8949,8 +8990,8 @@
       "name": "NeuN",
       "thumb": "https://i3.imgcloud18.com/10965/7e3d7266.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션"
       ]
     },
     "10966": {
@@ -9076,8 +9117,8 @@
       "name": "죽지 마! 아스카와 양",
       "thumb": "https://i3.imgcloud18.com/10979/bd2ed426.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "10980": {
@@ -9146,8 +9187,10 @@
       "name": "타임머신 미다라 쨩",
       "thumb": "https://i3.imgcloud18.com/10987/7f55eeae.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "성인",
+        "SF",
+        "개그"
       ]
     },
     "10988": {
@@ -9164,6 +9207,7 @@
       "thumb": "https://i3.imgcloud18.com/10989/57f220e9.jpg",
       "release": "",
       "inferredTags": [
+        "먹방",
         "요리"
       ]
     },
@@ -9199,8 +9243,10 @@
       "name": "Love The War Z",
       "thumb": "https://i3.imgcloud18.com/10993/903f1411.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션",
+        "스릴러",
+        "순정"
       ]
     },
     "10994": {
@@ -9332,8 +9378,8 @@
       "name": "비밀의 렙타일즈",
       "thumb": "https://i3.imgcloud18.com/11007/59888e2a.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "미스터리"
       ]
     },
     "11008": {
@@ -9588,6 +9634,7 @@
       "thumb": "https://i3.imgcloud18.com/11034/60a7f2a9.jpg",
       "release": "",
       "inferredTags": [
+        "미스터리",
         "음악"
       ]
     },
@@ -9935,8 +9982,8 @@
       "name": "극도 패러사이트",
       "thumb": "https://i3.imgcloud18.com/11074/8b5fbae1.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "스릴러"
       ]
     },
     "11075": {
@@ -10153,8 +10200,9 @@
       "name": "노하라 히로시의 점심식사 방",
       "thumb": "https://i3.imgcloud18.com/11099/d8961587.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "먹방",
+        "요리"
       ]
     },
     "11100": {
@@ -10171,8 +10219,9 @@
       "name": "최강의 흡혈희는 여동생을 원",
       "thumb": "https://i3.imgcloud18.com/11101/4e4e0731.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "공포",
+        "판타지"
       ]
     },
     "11102": {
@@ -10308,8 +10357,9 @@
       "name": "모여라 애니멀",
       "thumb": "https://i3.imgcloud18.com/11116/e5ec5394.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디",
+        "개그"
       ]
     },
     "11117": {
@@ -10755,16 +10805,17 @@
       "name": "그녀와 그",
       "thumb": "https://i3.imgcloud18.com/11165/2d5e3f93.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디",
+        "개그"
       ]
     },
     "11166": {
       "name": "연리지",
       "thumb": "https://i3.imgcloud18.com/11166/fdd83308.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "11167": {
@@ -11172,8 +11223,8 @@
       "name": "깊은 산속 상어 여자",
       "thumb": "https://i0.imgcloud18.com/11212/a540f584.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "11213": {
@@ -11991,8 +12042,8 @@
       "name": "자신을 성노예라고 믿고 있는",
       "thumb": "https://i4.imgcloud18.com/11302/960f6696.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "성인"
       ]
     },
     "11303": {
@@ -12035,8 +12086,8 @@
       "name": "보스 배틀",
       "thumb": "https://i4.imgcloud18.com/11307/e2c34b00.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션"
       ]
     },
     "11308": {
@@ -12285,8 +12336,8 @@
       "name": "그린 데이즈",
       "thumb": "https://i4.imgcloud18.com/11337/62e8b66d.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "순정"
       ]
     },
     "11338": {
@@ -12301,8 +12352,9 @@
       "name": "꿈결의 바메이드",
       "thumb": "https://i4.imgcloud18.com/11339/ef95059d.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "먹방",
+        "요리"
       ]
     },
     "11340": {
@@ -12435,16 +12487,16 @@
       "name": "아르슬란 전기",
       "thumb": "https://i4.imgcloud18.com/11354/ab66a109.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션"
       ]
     },
     "11355": {
       "name": "2×2 투바이투",
       "thumb": "https://i4.imgcloud18.com/11355/344763eb.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "라노벨"
       ]
     },
     "11356": {
@@ -12600,8 +12652,8 @@
       "name": "섬머 히어로",
       "thumb": "https://i4.imgcloud18.com/11372/72f8b7ac.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션"
       ]
     },
     "11373": {
@@ -12747,8 +12799,8 @@
       "name": "그대들, 어떻게 살 것인가",
       "thumb": "https://i4.imgcloud18.com/11388/c279f020.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "11389": {
@@ -12963,8 +13015,10 @@
       "name": "열혈강호",
       "thumb": "https://i4.imgcloud18.com/11412/f0c6d54d.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션",
+        "시대",
+        "드라마"
       ]
     },
     "11413": {
@@ -13430,8 +13484,8 @@
       "name": "진한 룸 셰어",
       "thumb": "https://i4.imgcloud18.com/11462/89b3949a.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "성인"
       ]
     },
     "11463": {
@@ -13623,8 +13677,10 @@
       "name": "쓰레기 이능력【서모 오퍼레이",
       "thumb": "https://i4.imgcloud18.com/11483/61eb0f18.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션",
+        "성인",
+        "러브코미디"
       ]
     },
     "11484": {
@@ -13649,24 +13705,27 @@
       "name": "방과 후 훈남밥",
       "thumb": "https://i4.imgcloud18.com/11486/c4c71724.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "먹방",
+        "요리",
+        "학원"
       ]
     },
     "11487": {
       "name": "S자를 더듬어가는 우리들의",
       "thumb": "https://i4.imgcloud18.com/11487/fac8dfa0.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "순정",
+        "드라마"
       ]
     },
     "11488": {
       "name": "노부나건!",
       "thumb": "https://i4.imgcloud18.com/11488/a715c8a6.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "시대"
       ]
     },
     "11489": {
@@ -13863,8 +13922,8 @@
       "name": "갓 쨩즈",
       "thumb": "https://i4.imgcloud18.com/11510/a6735622.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "11511": {
@@ -13899,8 +13958,8 @@
       "name": "GREEN WORLDZ /",
       "thumb": "https://i4.imgcloud18.com/11514/df820851.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "SF"
       ]
     },
     "11515": {
@@ -13995,8 +14054,8 @@
       "name": "원예부인",
       "thumb": "https://i4.imgcloud18.com/11525/80f23440.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "순정"
       ]
     },
     "11526": {
@@ -14218,8 +14277,9 @@
       "name": "고지식한 풍기위원은 발렌타인",
       "thumb": "https://i4.imgcloud18.com/11549/f19df14a.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "로맨스",
+        "학원"
       ]
     },
     "11550": {
@@ -14282,8 +14342,8 @@
       "name": "한겨울의 엠파티",
       "thumb": "https://i4.imgcloud18.com/11556/34c1d2f7.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "11557": {
@@ -14430,8 +14490,8 @@
       "name": "모노노케 토가리",
       "thumb": "https://i4.imgcloud18.com/11572/37e04aac.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "11573": {
@@ -15155,8 +15215,8 @@
       "name": "그림굇수 일지",
       "thumb": "https://i4.imgcloud18.com/11654/3f5dc76f.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "11655": {
@@ -15632,8 +15692,11 @@
       "name": "스즈미야 하루히의 우울",
       "thumb": "https://i5.imgcloud18.com/11707/8b0042ff.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "라노벨",
+        "학원",
+        "SF",
+        "일상"
       ]
     },
     "11708": {
@@ -15677,8 +15740,8 @@
       "name": "마사무네군 / 마사무네의 리",
       "thumb": "https://i5.imgcloud18.com/11712/d880ad94.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "11713": {
@@ -15890,8 +15953,9 @@
       "name": "디그레이맨",
       "thumb": "https://i5.imgcloud18.com/11735/283c1775.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션",
+        "판타지"
       ]
     },
     "11736": {
@@ -17096,8 +17160,8 @@
       "name": "[단편]좌우 평등 주의",
       "thumb": "https://i5.imgcloud18.com/11868/33a480a4.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "11869": {
@@ -17157,8 +17221,9 @@
       "name": "나는 내일, 어제의 너를 만",
       "thumb": "https://i5.imgcloud18.com/11875/3cc4dd30.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "순정",
+        "백합"
       ]
     },
     "11876": {
@@ -17285,8 +17350,8 @@
       "name": "사키쨩은 서큐버스야",
       "thumb": "https://i5.imgcloud18.com/11890/0ba7aadf.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "11891": {
@@ -17322,8 +17387,8 @@
       "name": "NOT LIVES 낫 라이브",
       "thumb": "https://i5.imgcloud18.com/11894/42e6d18e.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "공포"
       ]
     },
     "11895": {
@@ -17507,8 +17572,8 @@
       "name": "내 여친이 너무 진지해서 처",
       "thumb": "https://i5.imgcloud18.com/11915/3d19c0ff.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "로맨스"
       ]
     },
     "11916": {
@@ -17578,8 +17643,8 @@
       "name": "새해 전 날[단편]",
       "thumb": "https://i5.imgcloud18.com/11923/3034d982.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "11924": {
@@ -17651,8 +17716,10 @@
       "name": "장기 밥",
       "thumb": "https://i5.imgcloud18.com/11931/e830c16c.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "도박",
+        "먹방",
+        "요리"
       ]
     },
     "11932": {
@@ -17723,8 +17790,8 @@
       "name": "[단편]소울메이트",
       "thumb": "https://i5.imgcloud18.com/11939/af555854.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디"
       ]
     },
     "11940": {
@@ -17914,8 +17981,8 @@
       "name": "레이디 로즈는 평민이 되고",
       "thumb": "https://i5.imgcloud18.com/11961/5d6bc5ac.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "11962": {
@@ -17966,8 +18033,9 @@
       "name": "김성모 만화 마계대전",
       "thumb": "https://i5.imgcloud18.com/11967/5297e75f.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "이세계",
+        "판타지"
       ]
     },
     "11968": {
@@ -17999,8 +18067,8 @@
       "name": "[단편]후지코 F. 후지오",
       "thumb": "https://i5.imgcloud18.com/11971/639a2f88.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "11972": {
@@ -18113,8 +18181,8 @@
       "name": "레전드 오브 이슈린",
       "thumb": "https://i5.imgcloud18.com/11984/5f1424e9.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "공포"
       ]
     },
     "11985": {
@@ -18631,8 +18699,8 @@
       "name": "월요일은 2교시부터",
       "thumb": "https://i5.imgcloud18.com/12040/9f88520b.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12041": {
@@ -18673,8 +18741,8 @@
       "name": "드래곤즈 라이덴",
       "thumb": "https://i5.imgcloud18.com/12045/5c93a84a.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "12046": {
@@ -19019,8 +19087,8 @@
       "name": "쿠마니시 미술부 러프스케치",
       "thumb": "https://i5.imgcloud18.com/12084/4bc20df8.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "학원"
       ]
     },
     "12085": {
@@ -19138,6 +19206,7 @@
       "thumb": "https://i6.imgcloud18.com/12097/6390f34d.jpg",
       "release": "",
       "inferredTags": [
+        "판타지",
         "일상"
       ]
     },
@@ -19311,8 +19380,10 @@
       "name": "[단편] 아오이 군은 죽고",
       "thumb": "https://i6.imgcloud18.com/12116/167af85e.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그",
+        "TS",
+        "러브코미디"
       ]
     },
     "12117": {
@@ -19355,8 +19426,8 @@
       "name": "얼음속성남자와 쿨한 여자동료",
       "thumb": "https://i6.imgcloud18.com/12121/08b7e8b0.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "백합"
       ]
     },
     "12122": {
@@ -19503,8 +19574,9 @@
       "name": "흑의 소환사",
       "thumb": "https://img8cloud.net/12138/9913e5d1.jpg?v=3",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "이세계",
+        "판타지"
       ]
     },
     "12139": {
@@ -19546,8 +19618,10 @@
       "name": "사춘기 르네상스 다비드군",
       "thumb": "https://i6.imgcloud18.com/12143/71a4a295.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디",
+        "드라마",
+        "개그"
       ]
     },
     "12144": {
@@ -19575,16 +19649,18 @@
       "name": "Crueler than De",
       "thumb": "https://i6.imgcloud18.com/12146/dabf9d57.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "애니화",
+        "액션",
+        "SF"
       ]
     },
     "12147": {
       "name": "펜리르",
       "thumb": "https://i0.imgcloud18.com/12147/61944c58.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "12148": {
@@ -19601,8 +19677,8 @@
       "name": "일그러진 아말감",
       "thumb": "https://i6.imgcloud18.com/12149/3f4da450.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12150": {
@@ -19654,8 +19730,9 @@
       "name": "미궁 블랙 컴퍼니",
       "thumb": "https://i6.imgcloud18.com/12155/438ce997.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "이세계",
+        "판타지"
       ]
     },
     "12156": {
@@ -19679,8 +19756,8 @@
       "name": "단신의 집",
       "thumb": "https://i6.imgcloud18.com/12158/97755093.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "일상"
       ]
     },
     "12159": {
@@ -20054,8 +20131,8 @@
       "name": "나와 너의 소중한 이야기",
       "thumb": "https://i6.imgcloud18.com/12201/c0ee4f36.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디"
       ]
     },
     "12202": {
@@ -20257,8 +20334,10 @@
       "name": "너무 노력한 세계최강의 무투",
       "thumb": "https://i6.imgcloud18.com/12224/ec0088c3.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "라노벨",
+        "이세계",
+        "판타지"
       ]
     },
     "12225": {
@@ -20397,8 +20476,10 @@
       "name": "오늘의 유이코양",
       "thumb": "https://i6.imgcloud18.com/12240/a64f6777.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "먹방",
+        "드라마",
+        "일상"
       ]
     },
     "12241": {
@@ -20424,6 +20505,7 @@
       "thumb": "https://i6.imgcloud18.com/12243/01e9ecee.jpg",
       "release": "",
       "inferredTags": [
+        "먹방",
         "요리"
       ]
     },
@@ -20469,8 +20551,8 @@
       "name": "난시 나라의 앨리스",
       "thumb": "https://i6.imgcloud18.com/12248/53d957e7.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "12249": {
@@ -20485,8 +20567,8 @@
       "name": "도로시는 기분이 언짢아?",
       "thumb": "https://i6.imgcloud18.com/12250/eaf0ca89.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12251": {
@@ -20502,8 +20584,8 @@
       "name": "망상가업 미치나가양",
       "thumb": "https://i6.imgcloud18.com/12252/2d6e9ce0.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12253": {
@@ -20555,8 +20637,8 @@
       "name": "내가 인기 있어서 어쩌잔 거",
       "thumb": "https://i6.imgcloud18.com/12258/dbe7b438.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디"
       ]
     },
     "12259": {
@@ -20589,8 +20671,8 @@
       "name": "WxY",
       "thumb": "https://i6.imgcloud18.com/12262/3878f3d8.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "12263": {
@@ -20805,8 +20887,8 @@
       "name": "타마첸!!",
       "thumb": "https://i6.imgcloud18.com/12286/62b67e3a.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "일상"
       ]
     },
     "12287": {
@@ -20831,8 +20913,10 @@
       "name": "도로헤도로",
       "thumb": "https://i6.imgcloud18.com/12289/996a1393.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션",
+        "판타지",
+        "스릴러"
       ]
     },
     "12290": {
@@ -20963,8 +21047,8 @@
       "name": "아웃사이드 포르노그래프",
       "thumb": "https://i6.imgcloud18.com/12304/b7a15230.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "성인"
       ]
     },
     "12305": {
@@ -20982,6 +21066,7 @@
       "thumb": "https://i6.imgcloud18.com/12306/62ded401.jpg",
       "release": "",
       "inferredTags": [
+        "성인",
         "로맨스"
       ]
     },
@@ -21116,16 +21201,16 @@
       "name": "히로 군이 선생님",
       "thumb": "https://i6.imgcloud18.com/12321/14d7abaa.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "학원"
       ]
     },
     "12322": {
       "name": "히토가타나",
       "thumb": "https://i6.imgcloud18.com/12322/df11c3fa.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션"
       ]
     },
     "12323": {
@@ -21458,8 +21543,8 @@
       "name": "먹고자는 마르타",
       "thumb": "https://i6.imgcloud18.com/12360/7efd8ed3.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "12361": {
@@ -21485,8 +21570,9 @@
       "name": "모든 것이 F가 된다",
       "thumb": "https://i6.imgcloud18.com/12363/ddab7741.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "미스터리",
+        "추리"
       ]
     },
     "12364": {
@@ -21503,8 +21589,9 @@
       "name": "MEMENTO 메멘토",
       "thumb": "https://i6.imgcloud18.com/12365/20469655.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마",
+        "액션"
       ]
     },
     "12366": {
@@ -21538,40 +21625,40 @@
       "name": "매지컬 파티셰 코사키쨩!!",
       "thumb": "https://i6.imgcloud18.com/12369/287edacc.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12370": {
       "name": "메츠코에게 잘부탁해",
       "thumb": "https://i6.imgcloud18.com/12370/91651e13.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12371": {
       "name": "모노노케 셰어링",
       "thumb": "https://i6.imgcloud18.com/12371/26f1cd70.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "12372": {
       "name": "만취 스미레 양",
       "thumb": "https://i6.imgcloud18.com/12372/b40b2168.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "성인"
       ]
     },
     "12373": {
       "name": "메이의 집사",
       "thumb": "https://i6.imgcloud18.com/12373/9a00a1b7.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "일상"
       ]
     },
     "12374": {
@@ -21588,8 +21675,8 @@
       "name": "마계왕자",
       "thumb": "https://i6.imgcloud18.com/12375/3ee16a07.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "12376": {
@@ -21613,16 +21700,17 @@
       "name": "모노노케장의 니트들",
       "thumb": "https://i6.imgcloud18.com/12378/d08a2d81.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "12379": {
       "name": "맹랑한 에구치군",
       "thumb": "https://i6.imgcloud18.com/12379/a67d3909.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디",
+        "개그"
       ]
     },
     "12380": {
@@ -21638,16 +21726,18 @@
       "name": "메르 / 메르헤븐",
       "thumb": "https://i6.imgcloud18.com/12381/6f9902d5.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지",
+        "액션"
       ]
     },
     "12382": {
       "name": "마돈나는 유리 케이스 안",
       "thumb": "https://i6.imgcloud18.com/12382/b3f6898e.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디",
+        "개그"
       ]
     },
     "12383": {
@@ -21673,8 +21763,9 @@
       "name": "맹수성 소년소녀",
       "thumb": "https://i6.imgcloud18.com/12385/b6aa4abc.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디",
+        "개그"
       ]
     },
     "12386": {
@@ -21708,16 +21799,19 @@
       "name": "마도로미짱이 간다",
       "thumb": "https://i6.imgcloud18.com/12389/aa095f95.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "이세계",
+        "라노벨"
       ]
     },
     "12390": {
       "name": "마시로 군은 보살피고 싶어",
       "thumb": "https://i6.imgcloud18.com/12390/fc31fd60.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그",
+        "러브코미디",
+        "학원"
       ]
     },
     "12391": {
@@ -21740,8 +21834,8 @@
       "name": "마노와 -마물을 쓰러뜨리고",
       "thumb": "https://i6.imgcloud18.com/12393/0e85dddc.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "12394": {
@@ -21766,104 +21860,105 @@
       "name": "매일나비",
       "thumb": "https://i6.imgcloud18.com/12396/53a171ed.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "12397": {
       "name": "매지컬☆체인지",
       "thumb": "https://i6.imgcloud18.com/12397/e7b6edb5.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "TS"
       ]
     },
     "12398": {
       "name": "렛츠라군",
       "thumb": "https://i6.imgcloud18.com/12398/d9b43a1b.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디"
       ]
     },
     "12399": {
       "name": "류시카 류시카",
       "thumb": "https://i6.imgcloud18.com/12399/9df0514f.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12400": {
       "name": "리얼 어카운트",
       "thumb": "https://i6.imgcloud18.com/12400/02e4e22a.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "게임",
+        "스릴러"
       ]
     },
     "12401": {
       "name": "LIttLE13",
       "thumb": "https://i6.imgcloud18.com/12401/65bb94c1.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션"
       ]
     },
     "12402": {
       "name": "re 마리나",
       "thumb": "https://i6.imgcloud18.com/12402/91f9473d.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "스릴러"
       ]
     },
     "12403": {
       "name": "레터비 / 테가미바치",
       "thumb": "https://i6.imgcloud18.com/12403/e597f9f0.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12404": {
       "name": "리브니스",
       "thumb": "https://i6.imgcloud18.com/12404/60ab38dd.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "학원"
       ]
     },
     "12405": {
       "name": "라부타",
       "thumb": "https://i6.imgcloud18.com/12405/09343d56.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "12406": {
       "name": "라라 파라필리아",
       "thumb": "https://i6.imgcloud18.com/12406/81e739e1.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12407": {
       "name": "라스트이닝",
       "thumb": "https://i6.imgcloud18.com/12407/b7282b7c.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "스포츠"
       ]
     },
     "12408": {
       "name": "ReRe헬로",
       "thumb": "https://i6.imgcloud18.com/12408/910d6b48.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션"
       ]
     },
     "12409": {
@@ -21912,24 +22007,24 @@
       "name": "라이칸슬로프의 모험 보험",
       "thumb": "https://i6.imgcloud18.com/12414/428cdc2b.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "12415": {
       "name": "러브라이브! 선샤인!!",
       "thumb": "https://i6.imgcloud18.com/12415/2fe28af8.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "게임"
       ]
     },
     "12416": {
       "name": "란과 잿빛의 세계",
       "thumb": "https://i6.imgcloud18.com/12416/bf63271c.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "이세계"
       ]
     },
     "12417": {
@@ -21954,8 +22049,8 @@
       "name": "래트맨",
       "thumb": "https://i6.imgcloud18.com/12419/64067b5e.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션"
       ]
     },
     "12420": {
@@ -21982,48 +22077,49 @@
       "name": "단재분리의 크라임엣지",
       "thumb": "https://i6.imgcloud18.com/12422/40ce2e3b.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "스릴러"
       ]
     },
     "12423": {
       "name": "떨어진 용왕과 멸망해가는 마",
       "thumb": "https://i6.imgcloud18.com/12423/cdfa6a45.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "12424": {
       "name": "드레스 차림의 내가 높으신",
       "thumb": "https://i6.imgcloud18.com/12424/49241f7c.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "라노벨"
       ]
     },
     "12425": {
       "name": "데드 소울 리볼버",
       "thumb": "https://i6.imgcloud18.com/12425/4e7cff69.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "스릴러"
       ]
     },
     "12426": {
       "name": "데몬즈 코어",
       "thumb": "https://i6.imgcloud18.com/12426/5e4807b0.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12427": {
       "name": "도쿄 DTED",
       "thumb": "https://i6.imgcloud18.com/12427/3e9692c4.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션",
+        "SF"
       ]
     },
     "12428": {
@@ -22039,16 +22135,16 @@
       "name": "디멘션 더블유 / Dimen",
       "thumb": "https://i6.imgcloud18.com/12429/e519d44a.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "SF"
       ]
     },
     "12430": {
       "name": "도라에몽 시리즈",
       "thumb": "https://i6.imgcloud18.com/12430/aee4b074.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12431": {
@@ -22072,32 +22168,37 @@
       "name": "닥터 K 시리즈",
       "thumb": "https://i6.imgcloud18.com/12433/2d7a2ed4.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "12434": {
       "name": "도쿄 레이븐즈 외전 swor",
       "thumb": "https://i6.imgcloud18.com/12434/cb5c7c16.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "SF",
+        "액션"
       ]
     },
     "12435": {
       "name": "데이트 어 라이브",
       "thumb": "https://i6.imgcloud18.com/12435/33da7f26.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "라노벨",
+        "러브코미디",
+        "SF",
+        "판타지"
       ]
     },
     "12436": {
       "name": "데이트 어 파티",
       "thumb": "https://i6.imgcloud18.com/12436/18a9a72b.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그",
+        "러브코미디"
       ]
     },
     "12437": {
@@ -22121,32 +22222,36 @@
       "name": "단칸방의 침략자",
       "thumb": "https://i6.imgcloud18.com/12439/150223a3.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "라노벨",
+        "러브코미디",
+        "SF"
       ]
     },
     "12440": {
       "name": "The Gate 더 게이트",
       "thumb": "https://i6.imgcloud18.com/12440/16fec722.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지",
+        "액션",
+        "이세계"
       ]
     },
     "12441": {
       "name": "대공자 나기",
       "thumb": "https://i6.imgcloud18.com/12441/82af3261.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12442": {
       "name": "도미노 킥",
       "thumb": "https://i6.imgcloud18.com/12442/7b2779fd.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12443": {
@@ -22201,16 +22306,16 @@
       "name": "데드 오어 스트라이크",
       "thumb": "https://i6.imgcloud18.com/12448/2e91eba3.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "스릴러"
       ]
     },
     "12449": {
       "name": "돌리♥킬킬",
       "thumb": "https://i6.imgcloud18.com/12449/968a3565.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "12450": {
@@ -22234,8 +22339,9 @@
       "name": "다나카의 아틀리에",
       "thumb": "https://i6.imgcloud18.com/12452/a7adb88f.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "먹방",
+        "일상"
       ]
     },
     "12453": {
@@ -22251,64 +22357,69 @@
       "name": "등자는 반투명하게 다시 잠든",
       "thumb": "https://i6.imgcloud18.com/12454/e0fb4132.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "전생"
       ]
     },
     "12455": {
       "name": "돌격! 빳빠라대",
       "thumb": "https://i6.imgcloud18.com/12455/c9232639.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그",
+        "액션",
+        "학원"
       ]
     },
     "12456": {
       "name": "딸기와 밀푀유",
       "thumb": "https://i6.imgcloud18.com/12456/0a2696ae.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12457": {
       "name": "드래곤, 집을 사다",
       "thumb": "https://i6.imgcloud18.com/12457/c9264572.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지",
+        "개그"
       ]
     },
     "12458": {
       "name": "데미 라이프!",
       "thumb": "https://i6.imgcloud18.com/12458/f7a6dfb3.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "백합"
       ]
     },
     "12459": {
       "name": "데빌즈 라인",
       "thumb": "https://i6.imgcloud18.com/12459/87b3661a.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "스릴러",
+        "로맨스",
+        "판타지"
       ]
     },
     "12460": {
       "name": "단치가이",
       "thumb": "https://i6.imgcloud18.com/12460/623dee72.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "12461": {
       "name": "디지몬 유니버스 어플리 몬스",
       "thumb": "https://i6.imgcloud18.com/12461/46c23f04.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "SF"
       ]
     },
     "12462": {
@@ -22343,16 +22454,16 @@
       "name": "농림 푸치",
       "thumb": "https://i6.imgcloud18.com/12465/7b63bfd8.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "12466": {
       "name": "닌코이",
       "thumb": "https://i6.imgcloud18.com/12466/63393722.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12467": {
@@ -22388,32 +22499,35 @@
       "name": "노예구",
       "thumb": "https://i6.imgcloud18.com/12470/30ab746b.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "스릴러",
+        "성인"
       ]
     },
     "12471": {
       "name": "노조X키미",
       "thumb": "https://i6.imgcloud18.com/12471/8133da97.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12472": {
       "name": "늑대폐하의 신부",
       "thumb": "https://i6.imgcloud18.com/12472/49c836e2.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "순정",
+        "로맨스",
+        "시대"
       ]
     },
     "12473": {
       "name": "노조에몽",
       "thumb": "https://i6.imgcloud18.com/12473/e119aa2d.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "12474": {
@@ -22428,8 +22542,9 @@
       "name": "나의 신부",
       "thumb": "https://i6.imgcloud18.com/12475/2ef3e8d1.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "로맨스",
+        "순정"
       ]
     },
     "12476": {
@@ -22445,16 +22560,16 @@
       "name": "나루사와군은 맛있어하는 얼굴",
       "thumb": "https://i6.imgcloud18.com/12477/5e04a4b9.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디"
       ]
     },
     "12478": {
       "name": "니트쨩과 오빠",
       "thumb": "https://i6.imgcloud18.com/12478/c4ad2864.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12479": {
@@ -22479,16 +22594,16 @@
       "name": "님이여 죽지 말지어다",
       "thumb": "https://i6.imgcloud18.com/12481/ac1fccac.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "12482": {
       "name": "느긋캠프",
       "thumb": "https://i6.imgcloud18.com/12482/8b1c4e1c.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "일상"
       ]
     },
     "12483": {
@@ -22539,8 +22654,10 @@
       "name": "늑대소년은 오늘도 거짓말을",
       "thumb": "https://i6.imgcloud18.com/12488/7f430ce1.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "순정",
+        "러브코미디",
+        "붕탁"
       ]
     },
     "12489": {
@@ -22558,16 +22675,16 @@
       "name": "내 팬티가 노려지고 있다",
       "thumb": "https://i6.imgcloud18.com/12490/1a0dac87.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "성인"
       ]
     },
     "12491": {
       "name": "남자셋 여자넷",
       "thumb": "https://i6.imgcloud18.com/12491/d825df0e.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12492": {
@@ -22582,40 +22699,43 @@
       "name": "남자 배드민턴부에 여자아이가",
       "thumb": "https://i6.imgcloud18.com/12493/f277e15c.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "스포츠"
       ]
     },
     "12494": {
       "name": "내 여친이 왠지 요괴",
       "thumb": "https://i6.imgcloud18.com/12494/93babec8.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "로맨스",
+        "판타지"
       ]
     },
     "12495": {
       "name": "나는 너를 울리고 싶어",
       "thumb": "https://i6.imgcloud18.com/12495/fee5cc85.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디",
+        "백합",
+        "학원"
       ]
     },
     "12496": {
       "name": "뇌장작렬 걸",
       "thumb": "https://i6.imgcloud18.com/12496/f81295cd.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "12497": {
       "name": "내 공주구두를 신어줘",
       "thumb": "https://i6.imgcloud18.com/12497/d040dfa6.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "시대"
       ]
     },
     "12498": {
@@ -22630,24 +22750,25 @@
       "name": "날조트랩",
       "thumb": "https://i6.imgcloud18.com/12499/87584280.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "백합",
+        "로맨스"
       ]
     },
     "12500": {
       "name": "나의 사육계 군",
       "thumb": "https://i6.imgcloud18.com/12500/4820a7ed.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디"
       ]
     },
     "12501": {
       "name": "나, 능력은 평균치로라고 말",
       "thumb": "https://i6.imgcloud18.com/12501/1d86efb7.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "라노벨"
       ]
     },
     "12502": {
@@ -22670,8 +22791,8 @@
       "name": "내 이름은 소년A",
       "thumb": "https://i6.imgcloud18.com/12504/294612bb.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "12505": {
@@ -22716,16 +22837,20 @@
       "name": "금색의 그녀와 은색의 그녀",
       "thumb": "https://i7.imgcloud18.com/12509/4a015ab1.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디",
+        "액션",
+        "개그"
       ]
     },
     "12510": {
       "name": "개와 가위는 쓰기 나름",
       "thumb": "https://i7.imgcloud18.com/12510/de95c86a.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "라노벨",
+        "개그",
+        "미스터리"
       ]
     },
     "12511": {
@@ -22819,8 +22944,8 @@
       "name": "강식장갑 가이버",
       "thumb": "https://i7.imgcloud18.com/12521/9eecd961.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12522": {
@@ -23059,6 +23184,7 @@
       "thumb": "https://i0.imgcloud18.com/12548/ad20efbe.jpg?v=2",
       "release": "",
       "inferredTags": [
+        "성인",
         "이세계",
         "전생",
         "판타지"
@@ -23141,8 +23267,8 @@
       "name": "그대는 음란한 나의 여왕",
       "thumb": "https://i7.imgcloud18.com/12557/db8ad62f.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "성인"
       ]
     },
     "12558": {
@@ -23297,8 +23423,10 @@
       "name": "기생수 리버시",
       "thumb": "https://i7.imgcloud18.com/12575/7ae6d531.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "공포",
+        "스릴러",
+        "SF"
       ]
     },
     "12576": {
@@ -23384,16 +23512,16 @@
       "name": "창조주이니 좀 더 상냥하게",
       "thumb": "https://i0.imgcloud18.com/12585/7464f84a.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "학원"
       ]
     },
     "12586": {
       "name": "소년을 기르다",
       "thumb": "https://i0.imgcloud18.com/12586/71f2d602.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12587": {
@@ -23410,8 +23538,8 @@
       "name": "수요일 남매",
       "thumb": "https://i0.imgcloud18.com/12588/c75f75e0.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디"
       ]
     },
     "12589": {
@@ -23464,8 +23592,8 @@
       "name": "하이드로 브레인",
       "thumb": "https://i0.imgcloud18.com/12594/88724f6b.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12595": {
@@ -23570,8 +23698,8 @@
       "name": "메메모리 군에게는 당해낼 수",
       "thumb": "https://i0.imgcloud18.com/12606/98d9ff7e.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "순정"
       ]
     },
     "12607": {
@@ -23606,16 +23734,17 @@
       "name": "십자가의 6인",
       "thumb": "https://i0.imgcloud18.com/12610/ce35dd33.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "스릴러",
+        "액션"
       ]
     },
     "12611": {
       "name": "일어나주세요, 쿠사카베 씨",
       "thumb": "https://i0.imgcloud18.com/12611/d8ffeeca.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12612": {
@@ -23633,16 +23762,16 @@
       "name": "미열 풀 사이드",
       "thumb": "https://i0.imgcloud18.com/12613/c1d1e1e1.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "스포츠"
       ]
     },
     "12614": {
       "name": "철륜의 카게루이",
       "thumb": "https://i0.imgcloud18.com/12614/0e3f5f1d.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "학원"
       ]
     },
     "12615": {
@@ -23657,8 +23786,9 @@
       "name": "농락하고 싶은 쿠로키야 양",
       "thumb": "https://i0.imgcloud18.com/12616/8c48e74d.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그",
+        "러브코미디"
       ]
     },
     "12617": {
@@ -23694,8 +23824,9 @@
       "name": "미술실의 몬스터즈",
       "thumb": "https://i0.imgcloud18.com/12620/cbe30af6.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "학원",
+        "판타지"
       ]
     },
     "12621": {
@@ -23874,16 +24005,16 @@
       "name": "타프리스 슈가 스텝",
       "thumb": "https://i1.imgcloud18.com/12640/74847ded.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "백합"
       ]
     },
     "12641": {
       "name": "보건실의 카게야마 군",
       "thumb": "https://i1.imgcloud18.com/12641/bdb331a8.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "학원"
       ]
     },
     "12642": {
@@ -23901,8 +24032,10 @@
       "name": "양키 여자는 오타쿠가 되고",
       "thumb": "https://i0.imgcloud18.com/12643/6a41c278.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디",
+        "개그",
+        "TS"
       ]
     },
     "12644": {
@@ -24086,8 +24219,8 @@
       "name": "숨바꼭질(연모)",
       "thumb": "https://i0.imgcloud18.com/12662/9dc73f33.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "12663": {
@@ -24145,8 +24278,8 @@
       "name": "물방울 허니보이",
       "thumb": "https://i1.imgcloud18.com/12668/67ae618c.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "로맨스"
       ]
     },
     "12669": {
@@ -24449,8 +24582,8 @@
       "name": "상처투성이의 피아노 소나타",
       "thumb": "https://i0.imgcloud18.com/12701/a9575b55.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "음악"
       ]
     },
     "12702": {
@@ -24558,16 +24691,16 @@
       "name": "보석성의 신입",
       "thumb": "https://i1.imgcloud18.com/12713/aca93114.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12714": {
       "name": "부기팝은 웃지 않는다 VS이",
       "thumb": "https://i1.imgcloud18.com/12714/c4e50cd5.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "미스터리"
       ]
     },
     "12715": {
@@ -24680,8 +24813,8 @@
       "name": "린나 경부는 숨 쉴 수 없어",
       "thumb": "https://i1.imgcloud18.com/12726/05160da8.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12727": {
@@ -24790,8 +24923,8 @@
       "name": "마도카의 비밀",
       "thumb": "https://i1.imgcloud18.com/12738/cec4da2f.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "미스터리"
       ]
     },
     "12739": {
@@ -24826,8 +24959,8 @@
       "name": "집주인양아치!! ~양키 집주",
       "thumb": "https://i1.imgcloud18.com/12742/47377052.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "일상"
       ]
     },
     "12743": {
@@ -24950,8 +25083,8 @@
       "name": "해묘장 days",
       "thumb": "https://i0.imgcloud18.com/12755/0a45f6e2.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션"
       ]
     },
     "12756": {
@@ -25202,8 +25335,8 @@
       "name": "숲킹",
       "thumb": "https://i1.imgcloud18.com/12782/6d5c12da.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "12783": {
@@ -25304,16 +25437,16 @@
       "name": "대수해의 몬스터 파트너",
       "thumb": "https://i1.imgcloud18.com/12793/05f9ff44.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "12794": {
       "name": "마녀 마리는 마녀가 아냐",
       "thumb": "https://i1.imgcloud18.com/12794/0f5b338d.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "12795": {
@@ -25328,16 +25461,18 @@
       "name": "충식소녀 이나미 양",
       "thumb": "https://i1.imgcloud18.com/12796/6c1f30cd.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "12797": {
       "name": "100명의 영웅을 키운 최강",
       "thumb": "https://i1.imgcloud18.com/12797/d4a785e9.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "이세계",
+        "라노벨",
+        "공포"
       ]
     },
     "12798": {
@@ -25417,16 +25552,18 @@
       "name": "아이와 아이자와",
       "thumb": "https://i1.imgcloud18.com/12806/a71649c5.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "학원"
       ]
     },
     "12807": {
       "name": "날씨의 아이",
       "thumb": "https://i1.imgcloud18.com/12807/4575dbf5.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "로맨스",
+        "판타지",
+        "드라마"
       ]
     },
     "12808": {
@@ -25443,16 +25580,16 @@
       "name": "도망자 에리오",
       "thumb": "https://i1.imgcloud18.com/12809/0127eaad.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "스릴러"
       ]
     },
     "12810": {
       "name": "저는 얌전히 사라지기로 했습",
       "thumb": "https://i1.imgcloud18.com/12810/41ff9cc1.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "12811": {
@@ -25522,8 +25659,8 @@
       "name": "사신에게 길러진 소녀는 칠흑",
       "thumb": "https://i1.imgcloud18.com/12818/05153c55.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "공포"
       ]
     },
     "12819": {
@@ -25566,8 +25703,8 @@
       "name": "숫자로 구한다! 약소국가",
       "thumb": "https://i1.imgcloud18.com/12823/c38a1d66.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "라노벨"
       ]
     },
     "12824": {
@@ -25623,16 +25760,19 @@
       "name": "남친이 있는데",
       "thumb": "https://i1.imgcloud18.com/12830/906e7d00.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "성인",
+        "로맨스"
       ]
     },
     "12831": {
       "name": "꽝취급 받는 [상태이상 스킬",
       "thumb": "https://i1.imgcloud18.com/12831/2db04e4b.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "라노벨",
+        "판타지",
+        "이세계"
       ]
     },
     "12832": {
@@ -25681,8 +25821,8 @@
       "name": "양장점의 처녀",
       "thumb": "https://i1.imgcloud18.com/12837/d7f5722a.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "순정"
       ]
     },
     "12838": {
@@ -25897,8 +26037,10 @@
       "name": "너무나 상냥한 아마에 짱",
       "thumb": "https://i1.imgcloud18.com/12862/f1366a84.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "학원",
+        "개그",
+        "러브코미디"
       ]
     },
     "12863": {
@@ -25948,8 +26090,8 @@
       "name": "변신뉴스",
       "thumb": "https://i1.imgcloud18.com/12868/2809f946.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "TS"
       ]
     },
     "12869": {
@@ -26018,8 +26160,8 @@
       "name": "용왕이 하는 일",
       "thumb": "https://i1.imgcloud18.com/12876/31a8b50f.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "12877": {
@@ -26079,16 +26221,16 @@
       "name": "체인지 드러그",
       "thumb": "https://i1.imgcloud18.com/12883/7afe10da.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "TS"
       ]
     },
     "12884": {
       "name": "케무니마크",
       "thumb": "https://i1.imgcloud18.com/12884/e839c5a3.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "먹방"
       ]
     },
     "12885": {
@@ -26143,8 +26285,8 @@
       "name": "건널목 타임",
       "thumb": "https://i1.imgcloud18.com/12890/94ceb755.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디"
       ]
     },
     "12891": {
@@ -26193,8 +26335,8 @@
       "name": "비질랜티~나의 히어로 아카데",
       "thumb": "https://i1.imgcloud18.com/12896/b9e824b0.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션"
       ]
     },
     "12897": {
@@ -26271,8 +26413,8 @@
       "name": "온화한 귀족의 휴가의 권장",
       "thumb": "https://i0.imgcloud18.com/12905/12ccb2e0.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "시대"
       ]
     },
     "12906": {
@@ -26296,8 +26438,8 @@
       "name": "재의 쌍둥이는 백흑을 가리지",
       "thumb": "https://i0.imgcloud18.com/12908/d7c8dc6c.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "백합"
       ]
     },
     "12909": {
@@ -26312,8 +26454,9 @@
       "name": "진정한 실력은 아슬아슬할 때",
       "thumb": "https://i0.imgcloud18.com/12910/3b734b44.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "라노벨",
+        "판타지"
       ]
     },
     "12911": {
@@ -26396,24 +26539,24 @@
       "name": "시카쿠",
       "thumb": "https://i1.imgcloud18.com/12920/2e4fcfab.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디"
       ]
     },
     "12921": {
       "name": "늑대아이 소라는 전장에 있다",
       "thumb": "https://i1.imgcloud18.com/12921/2db7b38b.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "12922": {
       "name": "아야카시 씨와 이안의 신부",
       "thumb": "https://i1.imgcloud18.com/12922/83cda468.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "로맨스"
       ]
     },
     "12923": {
@@ -26537,8 +26680,8 @@
       "name": "밤벚꽃 섹스트랜스",
       "thumb": "https://i1.imgcloud18.com/12937/6bf0954b.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "성인"
       ]
     },
     "12938": {
@@ -26581,8 +26724,8 @@
       "name": "프린세스 커넥트! Re:Di",
       "thumb": "https://i1.imgcloud18.com/12942/adce99f2.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "게임"
       ]
     },
     "12943": {
@@ -26647,8 +26790,8 @@
       "name": "진혼소녀와 장례여행",
       "thumb": "https://i1.imgcloud18.com/12950/9c6909a4.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "12951": {
@@ -27074,7 +27217,8 @@
       "thumb": "https://i1.imgcloud18.com/13001/cd51e4c8.jpg",
       "release": "",
       "inferredTags": [
-        "공포"
+        "공포",
+        "로맨스"
       ]
     },
     "13002": {
@@ -27610,8 +27754,8 @@
       "name": "은의 니나",
       "thumb": "https://i0.imgcloud18.com/13063/fe765026.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "13064": {
@@ -27702,8 +27846,10 @@
       "name": "Unnamed Memory",
       "thumb": "https://i0.imgcloud18.com/13074/33fd41f0.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "라노벨",
+        "판타지",
+        "로맨스"
       ]
     },
     "13075": {
@@ -27940,8 +28086,10 @@
       "name": "흑갸루가 되어서 친구와 해봤",
       "thumb": "https://i0.imgcloud18.com/13101/85c02426.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그",
+        "러브코미디",
+        "학원"
       ]
     },
     "13102": {
@@ -29253,8 +29401,8 @@
       "name": "병아리 왈츠",
       "thumb": "https://i0.imgcloud18.com/13248/92f733b5.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "백합"
       ]
     },
     "13249": {
@@ -29672,8 +29820,8 @@
       "name": "한쪽 팔의 에이미",
       "thumb": "https://i0.imgcloud18.com/13294/83cb635d.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션"
       ]
     },
     "13295": {
@@ -30828,6 +30976,7 @@
       "thumb": "https://i0.imgcloud18.com/13421/19e3d49e.jpg?v=1",
       "release": "",
       "inferredTags": [
+        "성인",
         "백합"
       ]
     },
@@ -30880,16 +31029,16 @@
       "name": "천국의 모형정원",
       "thumb": "https://i0.imgcloud18.com/13427/ad06660c.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "13428": {
       "name": "역습 셔틀콕",
       "thumb": "https://i0.imgcloud18.com/13428/6dec8319.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "스포츠"
       ]
     },
     "13429": {
@@ -30959,7 +31108,6 @@
       "thumb": "https://i0.imgcloud18.com/13435/b1979532.jpg?v=1",
       "release": "",
       "inferredTags": [
-        "액션",
         "이세계",
         "전생",
         "판타지"
@@ -30994,16 +31142,17 @@
       "name": "바키 외전 레츠카이오는 이세",
       "thumb": "https://i0.imgcloud18.com/13439/e857e5d3.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션"
       ]
     },
     "13440": {
       "name": "영웅 마술사는 느긋하게 살고",
       "thumb": "https://i0.imgcloud18.com/13440/6a9080bc.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "이세계",
+        "판타지"
       ]
     },
     "13441": {
@@ -31122,8 +31271,9 @@
       "name": "처맞지 않으면 나오지 않아요",
       "thumb": "https://i0.imgcloud18.com/13454/9593c153.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "이세계",
+        "라노벨"
       ]
     },
     "13455": {
@@ -31156,8 +31306,10 @@
       "name": "망할 꼬맹이, 어서 나한테",
       "thumb": "https://i0.imgcloud18.com/13458/e3436c9b.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "라노벨",
+        "러브코미디",
+        "개그"
       ]
     },
     "13459": {
@@ -31202,16 +31354,16 @@
       "name": "가슴 보여줘",
       "thumb": "https://i0.imgcloud18.com/13463/f22fd6bb.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "성인"
       ]
     },
     "13464": {
       "name": "악역영애 레벨99 ~저는 숨",
       "thumb": "https://i0.imgcloud18.com/13464/c98eaf9b.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "이세계"
       ]
     },
     "13465": {
@@ -31262,8 +31414,9 @@
       "name": "블러디 베리는 밤에 웃는다",
       "thumb": "https://i0.imgcloud18.com/13470/c544d0b3.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "공포",
+        "스릴러"
       ]
     },
     "13471": {
@@ -31326,8 +31479,8 @@
       "name": "리타이어한 인형사의 MMO기",
       "thumb": "https://i0.imgcloud18.com/13477/a91d3ca7.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "게임"
       ]
     },
     "13478": {
@@ -31425,16 +31578,18 @@
       "name": "해변의 큐",
       "thumb": "https://i0.imgcloud18.com/13488/bd083bd2.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "13489": {
       "name": "멸망한 세계에서 살아가는 두",
       "thumb": "https://i0.imgcloud18.com/13489/034a3dac.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "라노벨",
+        "이세계",
+        "판타지"
       ]
     },
     "13490": {
@@ -31622,24 +31777,24 @@
       "name": "큭 죽여라의 공주기사가 되어",
       "thumb": "https://i0.imgcloud18.com/13510/05971c89.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "시대"
       ]
     },
     "13511": {
       "name": "교제 0 일혼",
       "thumb": "https://i0.imgcloud18.com/13511/5cd833d4.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "로맨스"
       ]
     },
     "13512": {
       "name": "바보 취급하지 마!",
       "thumb": "https://i0.imgcloud18.com/13512/19171bf4.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "13513": {
@@ -31739,8 +31894,8 @@
       "name": "갑자기 아빠가 된 최강 드래",
       "thumb": "https://i0.imgcloud18.com/13523/92f4d691.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "일상"
       ]
     },
     "13524": {
@@ -31781,8 +31936,9 @@
       "name": "마술사들의 베들럼",
       "thumb": "https://i0.imgcloud18.com/13528/1240b431.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "이세계",
+        "판타지"
       ]
     },
     "13529": {
@@ -31798,8 +31954,8 @@
       "name": "갸루의 등 뒤에 유령이 있다",
       "thumb": "https://i0.imgcloud18.com/13530/a82fa956.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "공포"
       ]
     },
     "13531": {
@@ -31823,8 +31979,10 @@
       "name": "쓰르라미 울 적에 업",
       "thumb": "https://i0.imgcloud18.com/13533/77de3765.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "공포",
+        "미스터리",
+        "스릴러"
       ]
     },
     "13534": {
@@ -31849,6 +32007,7 @@
       "thumb": "https://i0.imgcloud18.com/13536/5580dcd7.jpg",
       "release": "",
       "inferredTags": [
+        "액션",
         "이세계",
         "판타지"
       ]
@@ -31910,16 +32069,16 @@
       "name": "I WILL ROCK YOU",
       "thumb": "https://i0.imgcloud18.com/13543/9c087223.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "음악"
       ]
     },
     "13544": {
       "name": "내가 불꽃놀이에 이길 수 있",
       "thumb": "https://i0.imgcloud18.com/13544/5073eda4.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디"
       ]
     },
     "13545": {
@@ -31964,8 +32123,8 @@
       "name": "나는 모든 것을 【패링】한다",
       "thumb": "https://i0.imgcloud18.com/13549/947a7cc2.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션"
       ]
     },
     "13550": {
@@ -32072,8 +32231,9 @@
       "name": "유령이 됐으니까 팬티를 보여",
       "thumb": "https://i0.imgcloud18.com/13561/d24faeb1.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "성인",
+        "공포"
       ]
     },
     "13562": {
@@ -32175,8 +32335,8 @@
       "name": "쿠로와 아인",
       "thumb": "https://i0.imgcloud18.com/13573/1576449a.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "13574": {
@@ -32209,8 +32369,9 @@
       "name": "Liebring",
       "thumb": "https://i0.imgcloud18.com/13577/680da9b9.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션",
+        "SF"
       ]
     },
     "13578": {
@@ -32234,16 +32395,18 @@
       "name": "데비 더 코르시파는 지기 싫",
       "thumb": "https://i0.imgcloud18.com/13580/aa66a9a7.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "13581": {
       "name": "밀월의 성 ~악마 공작의 달",
       "thumb": "https://i0.imgcloud18.com/13581/3b3724ea.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "성인",
+        "시대",
+        "판타지"
       ]
     },
     "13582": {
@@ -32267,8 +32430,8 @@
       "name": "정의의 분노를 터트려라!",
       "thumb": "https://i0.imgcloud18.com/13584/bfbb6b03.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "라노벨"
       ]
     },
     "13585": {
@@ -32285,8 +32448,10 @@
       "name": "전기뱀장어의 미소녀 공략",
       "thumb": "https://i0.imgcloud18.com/13586/f83e17c3.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "TS",
+        "라노벨",
+        "붕탁"
       ]
     },
     "13587": {
@@ -32878,8 +33043,8 @@
       "name": "해왕 단테",
       "thumb": "https://i0.imgcloud18.com/13652/c8f55cca.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "13653": {
@@ -35116,16 +35281,17 @@
       "name": "괴뢰전기",
       "thumb": "https://i0.imgcloud18.com/13894/736d667d.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "13895": {
       "name": "라디앙",
       "thumb": "https://i0.imgcloud18.com/13895/96207c90.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지",
+        "액션"
       ]
     },
     "13896": {
@@ -35158,8 +35324,8 @@
       "name": "월화소녀는 맹견이 좋아",
       "thumb": "https://i0.imgcloud18.com/13899/dcc4d6c3.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "개그"
       ]
     },
     "13900": {
@@ -36519,8 +36685,8 @@
       "name": "하트 프로그램",
       "thumb": "https://i0.imgcloud18.com/14044/d550bedb.jpg?v=2",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "SF"
       ]
     },
     "14045": {
@@ -36740,8 +36906,9 @@
       "name": "금요일은 아틀리에에서",
       "thumb": "https://i0.imgcloud18.com/14069/fab05819.jpg?v=2",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "먹방",
+        "일상"
       ]
     },
     "14070": {
@@ -37048,8 +37215,8 @@
       "name": "108번 죽은 악역영애 모든",
       "thumb": "https://i0.imgcloud18.com/14102/fac55f0c.jpg?v=2",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "이세계"
       ]
     },
     "14103": {
@@ -37347,8 +37514,9 @@
       "name": "무녀는 꼭 청초해야만 하나요",
       "thumb": "https://i0.imgcloud18.com/14134/91ee66d6.jpg?v=2",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "시대",
+        "판타지"
       ]
     },
     "14135": {
@@ -37517,8 +37685,8 @@
       "name": "블레이드 키드",
       "thumb": "https://i0.imgcloud18.com/14153/b250a5d6.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션"
       ]
     },
     "14154": {
@@ -38418,8 +38586,8 @@
       "name": "아보카도 짱의 관찰일기",
       "thumb": "https://i0.imgcloud18.com/14249/c003a303.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "일상"
       ]
     },
     "14250": {
@@ -38453,8 +38621,10 @@
       "name": "아라포 샐러리맨의 신데렐라",
       "thumb": "https://i0.imgcloud18.com/14253/1d8f4006.jpg?v=2",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "순정",
+        "라노벨",
+        "이세계"
       ]
     },
     "14254": {
@@ -38472,8 +38642,8 @@
       "name": "섬의 소리",
       "thumb": "https://i0.imgcloud18.com/14255/8acd8e3a.jpg?v=4",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디"
       ]
     },
     "14256": {
@@ -44174,7 +44344,8 @@
       "thumb": "https://i0.imgcloud18.com/14904/0d6f8f33.jpg",
       "release": "",
       "inferredTags": [
-        "로맨스"
+        "로맨스",
+        "시대"
       ]
     },
     "14905": {
@@ -45970,8 +46141,10 @@
       "name": "누나가 침략중!?",
       "thumb": "https://i0.imgcloud18.com/15105/466e7d1c.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디",
+        "개그",
+        "라노벨"
       ]
     },
     "15106": {
@@ -49521,8 +49694,8 @@
       "name": "내 여친이 만화가가 된다",
       "thumb": "https://i0.imgcloud18.com/15501/c8af0a18.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "로맨스"
       ]
     },
     "15502": {
@@ -51291,8 +51464,9 @@
       "name": "매리지 톡신",
       "thumb": "https://img8cloud.net/15694/2f256ee3.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "액션",
+        "러브코미디"
       ]
     },
     "15695": {
@@ -52567,8 +52741,9 @@
       "name": "이노센트 데빌",
       "thumb": "https://img8cloud.net/15831/f11ed3d1.jpg?v=1",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "스릴러",
+        "액션"
       ]
     },
     "15832": {
@@ -53295,8 +53470,8 @@
       "name": "히노하",
       "thumb": "https://i0.imgcloud18.com/15912/0c5a4b82.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "학원"
       ]
     },
     "15913": {
@@ -55161,8 +55336,8 @@
       "name": "엔드롤 백",
       "thumb": "https://img8cloud.net/16115/0b7e8d50.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "16116": {
@@ -58289,8 +58464,9 @@
       "name": "최고 난이도 미궁에서 파티에",
       "thumb": "https://g9cm.net/16459/81581191.jpg?v=2",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "이세계",
+        "판타지"
       ]
     },
     "16460": {
@@ -60886,7 +61062,7 @@
       "thumb": "https://img8cloud.net/16748/c9b14bb2.jpg",
       "release": "",
       "inferredTags": [
-        "액션"
+        "드라마"
       ]
     },
     "16749": {
@@ -61776,8 +61952,8 @@
       "name": "【허버허버데스와】추방당한 영",
       "thumb": "https://g9cm.net/16847/dd3b60f7.jpg?v=2",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "이세계"
       ]
     },
     "16848": {
@@ -62657,8 +62833,10 @@
       "name": "친구(메스가키)가 나를 참교",
       "thumb": "https://img8cloud.net/16943/3e9063ea.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "일상",
+        "개그",
+        "러브코미디"
       ]
     },
     "16944": {
@@ -65254,8 +65432,8 @@
       "name": "배뱀배뱀뱀뱀파이어",
       "thumb": "https://g9cm.net/17235/d4bb7d6e.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "공포"
       ]
     },
     "17236": {
@@ -65508,8 +65686,9 @@
       "name": "꼬추악마를 쫓아라!",
       "thumb": "https://g9cm.net/17263/4938c484.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "성인",
+        "판타지"
       ]
     },
     "17264": {
@@ -73590,8 +73769,9 @@
       "name": "모험가가 되지 못한 나, 스",
       "thumb": "https://c11cm.net/18154/ba08d5ea.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지",
+        "라노벨"
       ]
     },
     "18155": {
@@ -74876,8 +75056,9 @@
       "name": "나는 절대 실수하지 않을거야",
       "thumb": "https://c11cm.net/18296/a4a13339.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디",
+        "개그"
       ]
     },
     "18297": {
@@ -75354,8 +75535,10 @@
       "name": "예쁜 아저씨는, 좋아하시나요",
       "thumb": "https://c11cm.net/18348/5b5c50cb.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "성인",
+        "러브코미디",
+        "개그"
       ]
     },
     "18349": {
@@ -77464,8 +77647,8 @@
       "name": "오늘은 뭐 할래?",
       "thumb": "https://c11cm.net/18578/aab68666.jpg?v=2",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "백합"
       ]
     },
     "18579": {
@@ -77575,8 +77758,8 @@
       "name": "산극",
       "thumb": "https://c11cm.net/18590/4cd79f87.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "드라마"
       ]
     },
     "18591": {
@@ -77592,16 +77775,17 @@
       "name": "쿠루미자와 요시히코의 우행",
       "thumb": "https://c11cm.net/18592/4ea84bd0.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "학원",
+        "러브코미디"
       ]
     },
     "18593": {
       "name": "뒷골목에서 주운 소녀가 배드",
       "thumb": "https://c11cm.net/18593/3ebc8197.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "TS"
       ]
     },
     "18594": {
@@ -77624,8 +77808,8 @@
       "name": "천년영웅",
       "thumb": "https://c11cm.net/18596/c1ead721.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "판타지"
       ]
     },
     "18597": {
@@ -77649,8 +77833,10 @@
       "name": "아직 너를 올려다보고 있다",
       "thumb": "https://c11cm.net/18599/b24f1ada.jpg?v=2",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디",
+        "개그",
+        "학원"
       ]
     },
     "18600": {
@@ -77693,8 +77879,8 @@
       "name": "사토코는 지뢰가 아니니까",
       "thumb": "https://c11cm.net/18604/2f813769.jpg?v=2",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "스릴러"
       ]
     },
     "18605": {
@@ -77730,16 +77916,17 @@
       "name": "번데기의 심장",
       "thumb": "https://c11cm.net/18608/e36bb90c.jpg?v=2",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "러브코미디"
       ]
     },
     "18609": {
       "name": "HORIZON",
       "thumb": "https://c11cm.net/18609/9f367980.jpg",
       "release": "",
-      "sourceTags": [
-        "미분류"
+      "inferredTags": [
+        "SF",
+        "액션"
       ]
     },
     "18610": {

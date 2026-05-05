@@ -59,6 +59,7 @@ jobs:
           titles = root_data.get("titles", {})
           assert isinstance(titles, dict) and titles, "titles must be a non-empty object"
           unclassified = json.loads(Path("comic-classification-unclassified.json").read_text(encoding="utf-8"))
+          assert unclassified == [], f"unclassified titles remain: {len(unclassified)}"
 
           print("titles", len(titles))
           print("unclassified", len(unclassified))
