@@ -627,7 +627,6 @@ public class MainSearch extends Fragment {
     private void openOfflineResume(Title title, int bookmark) {
         Manga manga = resolveOfflineResumeManga(title, bookmark);
         if(manga == null) {
-            Toast.makeText(getContext(), "해당 회차가 저장되어 있지 않습니다", Toast.LENGTH_SHORT).show();
             confirmOnlineResume(title, bookmark);
             return;
         }
@@ -646,7 +645,7 @@ public class MainSearch extends Fragment {
         AlertDialog.Builder builder = p.getDarkTheme()
                 ? new AlertDialog.Builder(getContext(), R.style.darkDialog)
                 : new AlertDialog.Builder(getContext());
-        builder.setMessage("온라인으로 이어보시겠습니까?")
+        builder.setMessage("해당 회차가 저장되어 있지 않습니다.\n온라인으로 이어보시겠습니까?")
                 .setPositiveButton("네", listener)
                 .setNegativeButton("아니오", listener)
                 .show();
