@@ -5,6 +5,8 @@ import android.content.DialogInterface;
 import android.net.Uri;
 import ml.melun.mangaview.task.LifecycleTask;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.MenuItem;
@@ -97,6 +99,9 @@ public class MainSearch extends Fragment {
     float listDownX;
     float listDownY;
     long listDownWallTime;
+    Handler listTouchHandler = new Handler(Looper.getMainLooper());
+    Runnable pendingListLongPress;
+    boolean listLongPressHandled = false;
     boolean listMovedBeyondTapSlop = false;
     long lastTitlePopupAt = 0;
     int lastTitlePopupId = -1;
@@ -166,22 +171,37 @@ public class MainSearch extends Fragment {
                     listDownX = event.getX();
                     listDownY = event.getY();
                     listDownWallTime = System.currentTimeMillis();
+                    listLongPressHandled = false;
                     listMovedBeyondTapSlop = false;
+                    scheduleTitleListLongPress(listDownX, listDownY);
                     return false;
                 }
                 if(event.getAction() == MotionEvent.ACTION_MOVE) {
-                    if(movedBeyondListTapSlop(event))
+                    if(listLongPressHandled)
+                        return true;
+                    if(movedBeyondListTapSlop(event)) {
                         listMovedBeyondTapSlop = true;
+                        cancelTitleListLongPress();
+                    }
                     return false;
                 }
-                if(event.getAction() == MotionEvent.ACTION_CANCEL)
+                if(event.getAction() == MotionEvent.ACTION_CANCEL) {
+                    cancelTitleListLongPress();
+                    listLongPressHandled = false;
                     return false;
+                }
                 if(event.getAction() != MotionEvent.ACTION_UP)
                     return false;
+                cancelTitleListLongPress();
+                if(listLongPressHandled) {
+                    listLongPressHandled = false;
+                    return true;
+                }
                 if(movedBeyondListTapSlop(event))
                     return false;
                 if(System.currentTimeMillis() - listDownWallTime >= ViewConfiguration.getLongPressTimeout()) {
-                    handleTitleListLongPress(event.getX(), event.getY());
+                    listLongPressHandled = handleTitleListLongPress(event.getX(), event.getY());
+                    listLongPressHandled = false;
                     return true;
                 }
                 return handleTitleListTap(event.getX(), event.getY());
@@ -189,6 +209,8 @@ public class MainSearch extends Fragment {
 
             @Override
             public void onTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent event) {
+                if(event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL)
+                    listLongPressHandled = false;
             }
         });
         searchMode = rootView.findViewById(R.id.searchMode);
@@ -917,6 +939,19 @@ public class MainSearch extends Fragment {
         return true;
     }
 
+    private void scheduleTitleListLongPress(float x, float y) {
+        cancelTitleListLongPress();
+        pendingListLongPress = () -> listLongPressHandled = handleTitleListLongPress(x, y);
+        listTouchHandler.postDelayed(pendingListLongPress, ViewConfiguration.getLongPressTimeout());
+    }
+
+    private void cancelTitleListLongPress() {
+        if(pendingListLongPress != null) {
+            listTouchHandler.removeCallbacks(pendingListLongPress);
+            pendingListLongPress = null;
+        }
+    }
+
     private boolean handleTitleListLongPress(float x, float y) {
         if(searchResult == null || searchAdapter == null || getContext() == null)
             return false;
@@ -1192,6 +1227,7 @@ public class MainSearch extends Fragment {
 
     @Override
     public void onDestroyView() {
+        cancelTitleListLongPress();
         if(localChangeListener != null) {
             p.removeLocalChangeListener(localChangeListener);
             localChangeListener = null;
