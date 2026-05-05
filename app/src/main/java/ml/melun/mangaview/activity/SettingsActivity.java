@@ -15,7 +15,6 @@ import androidx.documentfile.provider.DocumentFile;
 
 import android.os.Build;
 import android.os.Bundle;
-import android.provider.DocumentsContract;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MenuItem;
@@ -60,6 +59,7 @@ public class SettingsActivity extends AppCompatActivity {
     Boolean dark;
     public static final String prefExtension = ".mvpref";
     public static final int RESULT_NEED_RESTART = 7;
+    private static final String EXTRA_INITIAL_URI = "android.provider.extra.INITIAL_URI";
 
     View.OnClickListener pbtnClear, nbtnClear, pbtnSet, nbtnSet;
 
@@ -78,7 +78,7 @@ public class SettingsActivity extends AppCompatActivity {
                 // Choose a directory using the system's file picker.
                 Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
                 Uri uri = Uri.parse(p.getHomeDir());
-                intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri);
+                intent.putExtra(EXTRA_INITIAL_URI, uri);
                 Toast.makeText(context, "다운로드 위치를 선택해 주세요", Toast.LENGTH_SHORT).show();
                 startActivityForResult(intent, MODE_FOLDER_SELECT);
             }else{
@@ -297,7 +297,7 @@ public class SettingsActivity extends AppCompatActivity {
             if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
                 Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
                 Uri uri = Uri.parse(p.getHomeDir());
-                intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri);
+                intent.putExtra(EXTRA_INITIAL_URI, uri);
                 Toast.makeText(context, "백업 파일을 저장할 폴더를 선택해 주세요", Toast.LENGTH_SHORT).show();
                 startActivityForResult(intent, MODE_FILE_SAVE);
             }else{
@@ -314,7 +314,7 @@ public class SettingsActivity extends AppCompatActivity {
                 Uri uri = Uri.parse(p.getHomeDir());
                 intent.addCategory(Intent.CATEGORY_OPENABLE);
                 intent.setType("application/*");
-                intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri);
+                intent.putExtra(EXTRA_INITIAL_URI, uri);
                 Toast.makeText(context, "백업 파일 선택", Toast.LENGTH_SHORT).show();
                 startActivityForResult(intent, MODE_FILE_SELECT);
             }else {
