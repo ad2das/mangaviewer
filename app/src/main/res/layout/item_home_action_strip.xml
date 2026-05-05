@@ -49,7 +49,7 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:gravity="center"
-            android:text="서재"
+            android:text="보관함"
             android:textColor="@color/appText" />
 
     </androidx.cardview.widget.CardView>

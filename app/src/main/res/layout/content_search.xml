@@ -12,7 +12,7 @@
         android:id="@+id/searchBox"
         style="@style/AppText.Body"
         android:layout_width="0dp"
-        android:layout_height="50dp"
+        android:layout_height="48dp"
         android:layout_marginStart="20dp"
         android:layout_marginTop="8dp"
         android:layout_marginEnd="12dp"
@@ -20,7 +20,7 @@
         android:contentDescription="검색어"
         android:drawableStart="@drawable/ic_search"
         android:drawablePadding="10dp"
-        android:hint="서재에서 검색"
+        android:hint="작품 검색"
         android:inputType="textPersonName"
         android:paddingStart="@dimen/app_space_lg"
         android:paddingEnd="@dimen/app_space_lg"
@@ -36,7 +36,7 @@
         android:id="@+id/searchSubmitButton"
         style="@style/AppText.Action"
         android:layout_width="88dp"
-        android:layout_height="50dp"
+        android:layout_height="48dp"
         android:layout_marginTop="8dp"
         android:layout_marginEnd="20dp"
         android:background="@drawable/app_accent_button_bg"
@@ -79,7 +79,7 @@
     <com.google.android.material.tabs.TabLayout
         android:id="@+id/libraryTab"
         android:layout_width="match_parent"
-        android:layout_height="50dp"
+        android:layout_height="48dp"
         android:background="@color/appSurface"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
@@ -95,7 +95,7 @@
     <androidx.constraintlayout.widget.ConstraintLayout
         android:id="@+id/libraryMeta"
         android:layout_width="match_parent"
-        android:layout_height="42dp"
+        android:layout_height="40dp"
         android:paddingStart="20dp"
         android:paddingEnd="20dp"
         app:layout_constraintEnd_toEndOf="parent"
@@ -117,7 +117,7 @@
             style="@style/AppText.Meta"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="최근순"
+            android:text="최근 업데이트"
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintTop_toTopOf="parent" />
@@ -138,7 +138,7 @@
             android:layout_height="match_parent"
             android:clipToPadding="false"
             android:paddingTop="@dimen/app_space_sm"
-            android:paddingBottom="@dimen/app_space_lg"
+            android:paddingBottom="24dp"
             android:scrollbars="vertical" />
 
     </com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout>

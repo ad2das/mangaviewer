@@ -254,11 +254,11 @@ public class MainMain extends Fragment{
                 if(mainActivityCallback == null)
                     return;
                 if(action == MainWebtoonAdapter.ACTION_UPDATES)
-                    mainActivityCallback.navigateToTab(2);
+                    selectHomeTab(NEW_TAB);
                 else if(action == MainWebtoonAdapter.ACTION_BOOKMARKS)
-                    mainActivityCallback.navigateToTab(1);
+                    mainActivityCallback.navigateToTab(2);
                 else if(action == MainWebtoonAdapter.ACTION_DOWNLOADS)
-                    mainActivityCallback.navigateToTab(1);
+                    mainActivityCallback.navigateToTab(2);
                 else if(action == MainWebtoonAdapter.ACTION_GENRES) {
                     TabLayout.Tab tab = mainTabLayout == null ? null : mainTabLayout.getTabAt(GENRES_TAB);
                     if(tab != null)
@@ -367,6 +367,14 @@ public class MainMain extends Fragment{
             else if(manager != null)
                 manager.scrollToPosition(target);
         });
+    }
+
+    private void selectHomeTab(int position) {
+        if(mainTabLayout == null || position < 0 || position >= mainTabLayout.getTabCount())
+            return;
+        TabLayout.Tab tab = mainTabLayout.getTabAt(position);
+        if(tab != null)
+            tab.select();
     }
 
     private void fetchSelected() {

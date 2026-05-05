@@ -2,33 +2,33 @@
 <resources>
     <color name="colorPrimary">#000000</color>
     <color name="colorPrimaryDark">#d8d8d8</color>
-    <color name="colorAccent">#2563EB</color>
+    <color name="colorAccent">#2F5BFF</color>
     <color name="colorRanking">#8d78a0</color>
     <color name="selected">#e1d3ef</color>
     <color name="selectedDark">#664a73</color>
     <color name="resumeDark">#493c4f</color>
     <color name="colorText">#121212</color>
     <color name="colorBackground">#ffffff</color>
-    <color name="appSurface">#F7F8FA</color>
+    <color name="appSurface">#F5F7FB</color>
     <color name="appCard">#FFFFFF</color>
-    <color name="appText">#111827</color>
+    <color name="appText">#101828</color>
     <color name="appTextSecondary">#667085</color>
-    <color name="appAccent">#2563EB</color>
-    <color name="appAccentLight">#EAF1FF</color>
-    <color name="appDivider">#E5E7EB</color>
-    <color name="appMutedSurface">#EEF2F6</color>
-    <color name="appWarmAccent">#F97316</color>
-    <color name="appTealAccent">#0F766E</color>
-    <color name="appInk">#0B1220</color>
+    <color name="appAccent">#2F5BFF</color>
+    <color name="appAccentLight">#E8EDFF</color>
+    <color name="appDivider">#DDE3EE</color>
+    <color name="appMutedSurface">#EBEFF6</color>
+    <color name="appWarmAccent">#B45309</color>
+    <color name="appTealAccent">#0E7C73</color>
+    <color name="appInk">#111827</color>
 
     <color name="rangeSelected">#4CAF50</color>
 
 
-    <color name="colorDarkBackground">#2c2c2c</color>
+    <color name="colorDarkBackground">#111318</color>
     <color name="nav_enable">#a2a2a2</color>
     <color name="nav_disable">#565656</color>
-    <color name="colorDarkWindowBackground">#222222</color>
-    <color name="colorDarkItem">#333333</color>
+    <color name="colorDarkWindowBackground">#111318</color>
+    <color name="colorDarkItem">#1A1D25</color>
 
     <color name="thumb">#5997e7</color>
     <color name="smile">#ee7873</color>

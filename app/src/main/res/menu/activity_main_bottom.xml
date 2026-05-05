@@ -6,6 +6,10 @@
         android:title="홈" />
     <item
         android:id="@+id/nav_search"
+        android:icon="@drawable/ic_search"
+        android:title="검색" />
+    <item
+        android:id="@+id/nav_recent"
         android:icon="@drawable/ic_baseline_library_books_24"
-        android:title="서재" />
+        android:title="보관함" />
 </menu>

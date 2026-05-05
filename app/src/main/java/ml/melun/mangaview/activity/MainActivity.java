@@ -54,8 +54,6 @@ import ml.melun.mangaview.R;
 import ml.melun.mangaview.fragment.MainMain;
 
 import ml.melun.mangaview.fragment.MainSearch;
-import ml.melun.mangaview.fragment.MainUpdates;
-import ml.melun.mangaview.fragment.RecyclerFragment;
 import ml.melun.mangaview.UrlUpdater;
 import ml.melun.mangaview.interfaces.MainActivityCallback;
 
@@ -109,7 +107,7 @@ public class MainActivity extends AppCompatActivity
     private static final int FIRST_TIME_ACTIVITY = 9;
 
 
-    Fragment[] fragments = new Fragment[4];
+    Fragment[] fragments = new Fragment[3];
 
     FrameLayout content;
 
@@ -146,9 +144,8 @@ public class MainActivity extends AppCompatActivity
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         fragments[0] = MainMain.newInstance();
-        fragments[1] = new MainSearch();
-        fragments[2] = new MainUpdates();
-        fragments[3] = new RecyclerFragment();
+        fragments[1] = MainSearch.newSearchTab();
+        fragments[2] = MainSearch.newLibraryTab();
         dark = p.getDarkTheme();
         if (dark) setTheme(R.style.AppThemeDarkNoTitle);
         else setTheme(R.style.AppTheme_NoActionBar);
@@ -330,8 +327,11 @@ public class MainActivity extends AppCompatActivity
                 if(index == 0 && fragments[0] instanceof MainMain)
                     ((MainMain) fragments[0]).scrollToSelectedTab();
                 else if(index == 1 && fragments[1] instanceof MainSearch) {
-                    ((MainSearch) fragments[1]).enterLibraryMode();
+                    ((MainSearch) fragments[1]).enterSearchMode();
                     toolbar.setTitle(getTabTitle(1));
+                } else if(index == 2 && fragments[2] instanceof MainSearch) {
+                    ((MainSearch) fragments[2]).enterLibraryMode();
+                    toolbar.setTitle(getTabTitle(2));
                 }
             });
         }
@@ -519,8 +519,8 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void refreshSyncedListIfVisible() {
-        if(currentTab >= 3 && fragments[3] instanceof RecyclerFragment)
-            ((RecyclerFragment) fragments[3]).changeMode(getTabId(currentTab));
+        if(currentTab == 2 && fragments[2] instanceof MainSearch)
+            ((MainSearch) fragments[2]).enterLibraryMode();
     }
 
     public int getTabId(int i){
@@ -531,10 +531,6 @@ public class MainActivity extends AppCompatActivity
                 return(R.id.nav_search);
             case 2:
                 return(R.id.nav_recent);
-            case 3:
-                return(R.id.nav_favorite);
-            case 4:
-                return(R.id.nav_download);
         }
         return 0;
     }
@@ -548,9 +544,8 @@ public class MainActivity extends AppCompatActivity
             case R.id.nav_recent:
                 return 2;
             case R.id.nav_favorite:
-                return 3;
             case R.id.nav_download:
-                return 4;
+                return 2;
         }
         return -1;
     }
@@ -560,13 +555,9 @@ public class MainActivity extends AppCompatActivity
             case 0:
                 return "MangaView";
             case 1:
-                return "서재";
+                return "검색";
             case 2:
-                return "업데이트";
-            case 3:
-                return "보관함";
-            case 4:
-                return "오프라인";
+                return "내 보관함";
         }
         return "";
     }
@@ -705,22 +696,17 @@ public class MainActivity extends AppCompatActivity
     boolean changeFragment(int index){
         if(index < 0)
             return false;
-        boolean change = !(currentTab >= 3 && index >= 3);
-        int fragmentI = index > 2 ? (index == 2 ? 2 : 3) : index;
         boolean res = false;
         if(index>-1 && index != currentTab){
             if(index == 1 && fragments[1] instanceof MainSearch)
-                ((MainSearch) fragments[1]).enterLibraryMode();
+                ((MainSearch) fragments[1]).enterSearchMode();
             currentTab = index;
-            if(index == 2) {
-                ((MainUpdates) fragments[2]).refreshIfEmpty();
-            } else if(index >= 3){
-                ((RecyclerFragment)fragments[3]).changeMode(getTabId(index));
-            }
-            if(change) {
-                getSupportFragmentManager().beginTransaction().replace(R.id.contentHolder, (Fragment) fragments[fragmentI]).commit();
-            }
+            getSupportFragmentManager().beginTransaction().replace(R.id.contentHolder, (Fragment) fragments[index]).commit();
             res = true;
+        } else if(index == 1 && fragments[1] instanceof MainSearch) {
+            ((MainSearch) fragments[1]).enterSearchMode();
+        } else if(index == 2 && fragments[2] instanceof MainSearch) {
+            ((MainSearch) fragments[2]).enterLibraryMode();
         }
         getSupportActionBar().setTitle(getTabTitle(currentTab));
         syncNavigationSelection();
@@ -735,6 +721,16 @@ public class MainActivity extends AppCompatActivity
     public boolean onNavigationItemSelected(MenuItem item) {
         // Handle navigation view item clicks here.
         int id = item.getItemId();
+        if(id == R.id.nav_favorite || id == R.id.nav_download) {
+            changeFragment(2);
+            getSupportFragmentManager().executePendingTransactions();
+            if(fragments[2] instanceof MainSearch)
+                ((MainSearch) fragments[2]).selectLibraryTab(id == R.id.nav_favorite ? 2 : 3);
+            toolbar.setTitle(getTabTitle(2));
+            DrawerLayout drawer = (DrawerLayout) findViewById(R.id.drawer_layout);
+            drawer.closeDrawer(GravityCompat.START);
+            return true;
+        }
         if (!changeFragment(getFragmentIndex(id))) {
             //don't refresh views
             if(id==R.id.nav_kakao){

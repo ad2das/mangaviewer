@@ -62,6 +62,7 @@ import static ml.melun.mangaview.Utils.useScopedStorageHome;
 import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 
 public class MainSearch extends Fragment {
+    private static final String ARG_LIBRARY_MODE = "libraryMode";
     SwipyRefreshLayout swipe;
     FloatingActionButton advSearchBtn;
     TextView noresult;
@@ -89,6 +90,31 @@ public class MainSearch extends Fragment {
     float listDownX;
     float listDownY;
     long listDownTime;
+    boolean libraryMode = true;
+
+    public static MainSearch newSearchTab() {
+        MainSearch fragment = new MainSearch();
+        Bundle args = new Bundle();
+        args.putBoolean(ARG_LIBRARY_MODE, false);
+        fragment.setArguments(args);
+        return fragment;
+    }
+
+    public static MainSearch newLibraryTab() {
+        MainSearch fragment = new MainSearch();
+        Bundle args = new Bundle();
+        args.putBoolean(ARG_LIBRARY_MODE, true);
+        fragment.setArguments(args);
+        return fragment;
+    }
+
+    @Override
+    public void onCreate(@Nullable Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        Bundle args = getArguments();
+        libraryMode = args == null || args.getBoolean(ARG_LIBRARY_MODE, true);
+        onlineSearchMode = !libraryMode;
+    }
 
     @Nullable
     @Override
@@ -151,6 +177,14 @@ public class MainSearch extends Fragment {
         };
         p.addLocalChangeListener(localChangeListener);
         setupLibraryTabs();
+        if(!libraryMode) {
+            if(libraryTab != null)
+                libraryTab.setVisibility(View.GONE);
+            if(libraryMeta != null)
+                libraryMeta.setVisibility(View.GONE);
+            noresult.setText("검색어를 입력하면 작품을 찾아드립니다");
+            noresult.setVisibility(View.VISIBLE);
+        }
         if(p.getDarkTheme()){
             searchMode.setPopupBackgroundResource(R.color.colorDarkWindowBackground);
             baseMode.setPopupBackgroundResource(R.color.colorDarkWindowBackground);
@@ -198,9 +232,9 @@ public class MainSearch extends Fragment {
         baseMode.setSelection(p.getBaseMode()-1);
         if(pendingBaseMode > 0)
             applyBaseMode(pendingBaseMode);
-        if(prequery == null && !onlineSearchMode)
+        if(prequery == null && libraryMode && !onlineSearchMode)
             showLibrary();
-        if(pendingOpenSearch)
+        if(pendingOpenSearch || !libraryMode)
             enterSearchMode();
 
 
@@ -225,7 +259,7 @@ public class MainSearch extends Fragment {
         super.onResume();
         if(prequery != null){
             applyPendingSearch();
-        } else if(search == null && !onlineSearchMode) {
+        } else if(libraryMode && search == null && !onlineSearchMode) {
             showLibrary();
         }
     }
@@ -261,6 +295,8 @@ public class MainSearch extends Fragment {
         if(searchBox == null)
             return;
         pendingOpenSearch = false;
+        if(!libraryMode)
+            searchBox.setHint("작품 검색");
         searchBox.setVisibility(View.VISIBLE);
         if(optionsPanel != null)
             optionsPanel.setVisibility(View.GONE);
@@ -276,6 +312,10 @@ public class MainSearch extends Fragment {
     }
 
     public void enterLibraryMode() {
+        if(!libraryMode) {
+            enterSearchMode();
+            return;
+        }
         pendingOpenSearch = false;
         onlineSearchMode = false;
         prequery = null;
@@ -288,6 +328,8 @@ public class MainSearch extends Fragment {
         }
         if(searchBox != null)
             searchBox.setText("");
+        if(searchBox != null)
+            searchBox.setHint("보관함에서 검색");
         if(searchResult != null)
             showLibrary();
     }
@@ -297,7 +339,7 @@ public class MainSearch extends Fragment {
             return;
         libraryTab.addTab(libraryTab.newTab().setText("전체"));
         libraryTab.addTab(libraryTab.newTab().setText("최근"));
-        libraryTab.addTab(libraryTab.newTab().setText("보관함"));
+        libraryTab.addTab(libraryTab.newTab().setText("좋아요"));
         libraryTab.addTab(libraryTab.newTab().setText("저장됨"));
         libraryTab.addOnTabSelectedListener(new TabLayout.OnTabSelectedListener() {
             @Override
@@ -318,8 +360,12 @@ public class MainSearch extends Fragment {
     }
 
     private void showLibrary() {
+        if(!libraryMode)
+            return;
         if(searchResult == null || getContext() == null)
             return;
+        if(searchBox != null)
+            searchBox.setHint("보관함에서 검색");
         onlineSearchMode = false;
         updateSearchChrome(false);
         if(activeLibraryQuery != null && activeLibraryQuery.length() > 0) {
@@ -578,7 +624,7 @@ public class MainSearch extends Fragment {
             showMinimumSearchLengthToast();
             return;
         }
-        if(onlineSearchMode) {
+        if(onlineSearchMode || !libraryMode) {
             searchSubmitOnline();
             return;
         }
@@ -678,6 +724,27 @@ public class MainSearch extends Fragment {
             libraryTab.setVisibility(online ? View.GONE : View.VISIBLE);
         if(libraryMeta != null)
             libraryMeta.setVisibility(online ? View.GONE : View.VISIBLE);
+        if(!libraryMode) {
+            if(libraryTab != null)
+                libraryTab.setVisibility(View.GONE);
+            if(libraryMeta != null)
+                libraryMeta.setVisibility(View.GONE);
+        }
+    }
+
+    public void selectLibraryTab(int position) {
+        if(!libraryMode)
+            return;
+        if(libraryTab == null) {
+            pendingOpenSearch = false;
+            return;
+        }
+        if(position >= 0 && position < libraryTab.getTabCount()) {
+            TabLayout.Tab tab = libraryTab.getTabAt(position);
+            if(tab != null)
+                tab.select();
+        }
+        enterLibraryMode();
     }
 
     private void showMinimumSearchLengthToast() {
