@@ -92,6 +92,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private static final int HOME_CACHE_MAX_TITLES_PER_SECTION = 10;
     private int preloadCount = 0;
     private int activeHomeTab = 0;
+    private boolean continueProgressBackfillRunning = false;
 
     public MainWebtoonAdapter(Context context){
         this(context, base_webtoon);
@@ -180,6 +181,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     public void refreshLocalState() {
         updateRows(buildRows(dataSet, false));
+        scheduleContinueProgressBackfill();
     }
 
     public void setHomeTab(int tabPosition) {
@@ -187,6 +189,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return;
         activeHomeTab = tabPosition;
         updateRows(buildRows(dataSet, false));
+        scheduleContinueProgressBackfill();
     }
 
     @NonNull
@@ -1118,8 +1121,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             int episodeCount = totalEpisodeCount(item);
             if(watchedCount > 0 && episodeCount > 0)
                 return watchedCount + "/" + episodeCount + "화";
-            if(item.getBookmarkEpisodeId() > 0 || item.getBookmark() > 0)
-                return "보던 화";
+            if(item.getBookmarkEpisodeId() > 0 || item.getBookmark() > 0 || p.getBookmark(item) > 0)
+                return "확인 중";
             return "이어보기";
         }
 
@@ -1797,6 +1800,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             saveHomeSnapshot(dataSet);
             if(shouldShowTop)
                 scrollHeroToTop();
+            scheduleContinueProgressBackfill();
         }
 
         @Override
@@ -1839,6 +1843,46 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         for(Object row : candidateRows)
             if(row instanceof HeroRow)
                 return true;
+        return false;
+    }
+
+    private void scheduleContinueProgressBackfill() {
+        if(continueProgressBackfillRunning || !hasMissingContinueProgress())
+            return;
+        continueProgressBackfillRunning = true;
+        LifecycleTask.THREAD_POOL_EXECUTOR.execute(() -> {
+            try {
+                p.backfillRecentProgress(getHttpClient(), 12);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            Runnable done = () -> {
+                continueProgressBackfillRunning = false;
+                updateRows(buildRows(dataSet, false));
+            };
+            if(anchorRecycler != null)
+                anchorRecycler.post(done);
+            else
+                continueProgressBackfillRunning = false;
+        });
+    }
+
+    private boolean hasMissingContinueProgress() {
+        List<MTitle> recent = p.getRecent();
+        if(recent == null)
+            return false;
+        for(MTitle item : recent) {
+            if(item == null || item.getBaseMode() != baseMode)
+                continue;
+            if(item.getBookmarkEpisodeIndex() > 0 && item.getEpisodeCount() > 0)
+                continue;
+            Title title = item instanceof Title ? (Title) item : new Title(item);
+            int bookmark = p.getBookmark(title);
+            if(bookmark <= 0)
+                bookmark = item.getBookmarkEpisodeId();
+            if(bookmark > 0)
+                return true;
+        }
         return false;
     }
 }

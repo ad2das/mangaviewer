@@ -792,6 +792,8 @@ public class ViewerActivity extends AppCompatActivity {
                             }
                         if(currentTitle.getEps() != null && currentTitle.getEps().size() > 0)
                             target.setEps(currentTitle.getEps());
+                        p.addRecent(currentTitle);
+                        p.setBookmark(currentTitle, target.getId());
                         mainHandler.post(() -> {
                             if(!isFinishing() && manga != null && manga.getId() == target.getId())
                                 refreshToolbar(target);
