@@ -60,6 +60,7 @@ public class MainMain extends Fragment{
     boolean comicFetched = false;
     boolean webtoonFetched = false;
     boolean viewStarted = false;
+    int scrollRequestVersion = 0;
     Runnable pendingInitialFetch;
     Preference.LocalChangeListener localChangeListener;
 
@@ -302,8 +303,11 @@ public class MainMain extends Fragment{
         cancelInactiveFetch(baseMode);
         selectedBaseMode = baseMode;
         p.setBaseMode(baseMode);
-        if(mainRecycler != null)
+        if(mainRecycler != null) {
+            mainRecycler.stopScroll();
             mainRecycler.setAdapter(getSelectedAdapter());
+            scrollHomeToTop();
+        }
         updateModeToggle();
         applySelectedHomeTab();
         scrollToSelectedTab();
@@ -335,14 +339,46 @@ public class MainMain extends Fragment{
         if(adapter == null)
             return;
         int target = adapter.getScrollPositionForHomeTab(getSelectedTabPosition());
+        int requestVersion = ++scrollRequestVersion;
+        int requestBaseMode = selectedBaseMode;
+        int requestTab = getSelectedTabPosition();
         mainRecycler.stopScroll();
+        scrollRecyclerToPosition(target);
         mainRecycler.post(() -> {
-            RecyclerView.LayoutManager manager = mainRecycler.getLayoutManager();
-            if(manager instanceof LinearLayoutManager)
-                ((LinearLayoutManager) manager).scrollToPositionWithOffset(target, 0);
-            else if(manager != null)
-                manager.scrollToPosition(target);
+            if(mainRecycler == null || requestVersion != scrollRequestVersion || requestBaseMode != selectedBaseMode || requestTab != getSelectedTabPosition())
+                return;
+            scrollRecyclerToPosition(target);
         });
+        mainRecycler.postDelayed(() -> {
+            if(mainRecycler == null || requestVersion != scrollRequestVersion || requestBaseMode != selectedBaseMode || requestTab != getSelectedTabPosition())
+                return;
+            scrollRecyclerToPosition(target);
+        }, 120);
+        mainRecycler.postDelayed(() -> {
+            if(mainRecycler == null || requestVersion != scrollRequestVersion || requestBaseMode != selectedBaseMode || requestTab != getSelectedTabPosition())
+                return;
+            scrollRecyclerToPosition(target);
+        }, 300);
+    }
+
+    private void scrollHomeToTop() {
+        if(mainRecycler == null)
+            return;
+        scrollRecyclerToPosition(0);
+        mainRecycler.post(() -> {
+            if(mainRecycler != null)
+                scrollRecyclerToPosition(0);
+        });
+    }
+
+    private void scrollRecyclerToPosition(int position) {
+        if(mainRecycler == null)
+            return;
+        RecyclerView.LayoutManager manager = mainRecycler.getLayoutManager();
+        if(manager instanceof LinearLayoutManager)
+            ((LinearLayoutManager) manager).scrollToPositionWithOffset(position, 0);
+        else if(manager != null)
+            manager.scrollToPosition(position);
     }
 
     private void selectHomeTab(int position) {
