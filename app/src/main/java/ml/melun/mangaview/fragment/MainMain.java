@@ -278,8 +278,9 @@ public class MainMain extends Fragment{
         });
         switchBaseMode(selectedBaseMode);
 
+        showInitialHomeRows();
         if(!wait)
-            fetchSelected();
+            scheduleInitialFetch();
         return rootView;
     }
 
@@ -352,6 +353,23 @@ public class MainMain extends Fragment{
             fetchComic();
         else
             fetchWebtoon();
+    }
+
+    private void showInitialHomeRows() {
+        MainWebtoonAdapter adapter = getSelectedAdapter();
+        if(adapter != null)
+            adapter.showInitialRows();
+    }
+
+    private void scheduleInitialFetch() {
+        if(mainRecycler == null) {
+            fetchSelected();
+            return;
+        }
+        mainRecycler.postDelayed(() -> {
+            if(mainRecycler != null && isAdded() && !wait)
+                fetchSelected();
+        }, 250);
     }
 
     private void fetchComic() {

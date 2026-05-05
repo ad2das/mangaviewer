@@ -112,6 +112,18 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         fetcher.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
     }
 
+    public void showInitialRows() {
+        if(rows != null && rows.size() > 0)
+            return;
+        dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
+        List<Object> warmRows = buildRows(dataSet, false);
+        if(hasHero(warmRows)) {
+            initialRowsShown = true;
+            updateRows(warmRows);
+            scrollHeroToTop();
+        }
+    }
+
     public void cancelFetch() {
         if(fetcher != null) {
             fetcher.cancel(true);

@@ -395,7 +395,10 @@ public class MainActivity extends AppCompatActivity
             button.setOnClickListener(v -> showAccountDialog());
             if(!accountInitialSyncStarted && firebaseSyncManager != null) {
                 accountInitialSyncStarted = true;
-                syncAccount(false);
+                panel.post(() -> {
+                    if(!isFinishing() && !isDestroyed())
+                        syncAccount(false);
+                });
             }
         } else {
             name.setText("MangaView");
