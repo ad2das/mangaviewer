@@ -454,6 +454,10 @@ public class Manga {
         return eps;
     }
 
+    public void setEps(List<Manga> eps) {
+        this.eps = eps;
+    }
+
     public Title getTitle() {
         return title;
     }

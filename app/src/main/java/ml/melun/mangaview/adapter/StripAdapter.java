@@ -58,6 +58,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     final static int MaxStackSize = 3;
     private static final int PRELOAD_AHEAD_COUNT = 12;
     private static final int DATA_SAVE_PRELOAD_AHEAD_COUNT = 6;
+    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 8;
     private static final int PRELOAD_TRACK_LIMIT = 500;
     ViewerActivity.InfiniteScrollCallback callback;
     Title title;
@@ -354,6 +355,25 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         }
     }
 
+    public void preloadInitialAroundPage(PageItem page) {
+        if(page == null || items == null)
+            return;
+        int start = findFirstMatchingPagePosition(page);
+        if(start == RecyclerView.NO_POSITION)
+            start = findFirstPagePosition(page.manga);
+        if(start == RecyclerView.NO_POSITION)
+            return;
+        int preloaded = 0;
+        int preloadLimit = p.getDataSave() ? DATA_SAVE_PRELOAD_AHEAD_COUNT : INITIAL_PRELOAD_AHEAD_COUNT;
+        for(int i = start; i < items.size() && preloaded <= preloadLimit; i++) {
+            Object next = items.get(i);
+            if(next instanceof PageItem) {
+                preloadPage((PageItem) next, Priority.HIGH);
+                preloaded++;
+            }
+        }
+    }
+
     final static int IMG = 0;
     final static int INFO = 1;
 
@@ -639,13 +659,17 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private void preloadPage(PageItem page) {
+        preloadPage(page, Priority.LOW);
+    }
+
+    private void preloadPage(PageItem page, Priority priority) {
         String key = preloadKey(page);
         if(!preloadedImages.add(key))
             return;
         trimPreloadTracker();
         Glide.with(mainContext)
                 .asBitmap()
-                .priority(Priority.LOW)
+                .priority(priority)
                 .apply(viewerImageOptions())
                 .load(getImageModel(page))
                 .preload();

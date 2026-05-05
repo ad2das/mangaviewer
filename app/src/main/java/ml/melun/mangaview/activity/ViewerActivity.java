@@ -267,6 +267,7 @@ public class ViewerActivity extends AppCompatActivity {
             strip = this.findViewById(R.id.strip);
             manager = new StripLayoutManager(this);
             manager.setOrientation(LinearLayoutManager.VERTICAL);
+            strip.setItemViewCacheSize(4);
             spinnerAdapter = new CustomSpinnerAdapter(context);
             spinnerAdapter.setListener((m, i) -> {
                 lockUi(true);
@@ -422,11 +423,14 @@ public class ViewerActivity extends AppCompatActivity {
                 return;
             }
             stripAdapter = new StripAdapter(context, m, autoCut, width,title, infiniteScrollCallback);
+            preloadInitialViewerPages(m);
 
             refreshAdapter();
             bookmarkRefresh(m);
+            scheduleFocusedPagePreload();
             refreshToolbar(m);
             updateIntent(m);
+            prefetchNextEpisode(m);
 
         }catch (Exception e){
             Utils.showCaptchaPopup(m.getUrl(), context, e, p);
@@ -606,7 +610,7 @@ public class ViewerActivity extends AppCompatActivity {
                     int result = LOAD_OK;
                     try {
                         if(m.isOnline()) {
-                            result = ensureEpisodeListLoaded(m);
+                            result = lockui ? prepareEpisodeIdentity(m) : ensureEpisodeListLoaded(m);
                             if(result == LOAD_OK && !hasLoadedImages(m)) {
                                 result = getHttpClient().runWithRequestGroup(requestGroup, () -> m.fetch(getHttpClient()));
                                 if(result == LOAD_OK && !cancelled && !hasLoadedImages(m))
@@ -646,6 +650,8 @@ public class ViewerActivity extends AppCompatActivity {
                 title = m.getTitle();
             resetOnBackPressed();
             callback.post(m);
+            if(lockui)
+                hydrateEpisodeListAfterFirstFrame(m);
         }
 
         void cancel() {
@@ -755,6 +761,65 @@ public class ViewerActivity extends AppCompatActivity {
         return LOAD_OK;
     }
 
+    private int prepareEpisodeIdentity(Manga target) {
+        if(target == null || !target.isOnline())
+            return LOAD_OK;
+        Title currentTitle = title != null ? title : target.getTitle();
+        if(currentTitle == null)
+            return LOAD_OK;
+        target.setTitle(currentTitle);
+        target.setTitleId(currentTitle.getId());
+        if(currentTitle.getEps() != null)
+            for(Manga episode : currentTitle.getEps()) {
+                if(episode != null) {
+                    episode.setTitle(currentTitle);
+                    episode.setTitleId(currentTitle.getId());
+                }
+            }
+        title = currentTitle;
+        return LOAD_OK;
+    }
+
+    private void hydrateEpisodeListAfterFirstFrame(Manga target) {
+        if(target == null || !target.isOnline())
+            return;
+        Title currentTitle = title != null ? title : target.getTitle();
+        if(currentTitle == null || (currentTitle.getEps() != null && currentTitle.getEps().size() > 1))
+            return;
+        mainHandler.postDelayed(() -> {
+            try {
+                imageLoadExecutor.submit(() -> {
+                    try {
+                        int result = currentTitle.fetchEps(getHttpClient());
+                        if(result == LOAD_CAPTCHA || isFinishing())
+                            return;
+                        target.setTitle(currentTitle);
+                        target.setTitleId(currentTitle.getId());
+                        if(currentTitle.getEps() != null)
+                            for(Manga episode : currentTitle.getEps()) {
+                                if(episode != null) {
+                                    episode.setTitle(currentTitle);
+                                    episode.setTitleId(currentTitle.getId());
+                                }
+                            }
+                        if(currentTitle.getEps() != null && currentTitle.getEps().size() > 0)
+                            target.setEps(currentTitle.getEps());
+                        mainHandler.post(() -> {
+                            if(!isFinishing() && manga != null && manga.getId() == target.getId())
+                                refreshToolbar(target);
+                        });
+                    } catch (Exception e) {
+                        if(!isFinishing())
+                            e.printStackTrace();
+                    }
+                });
+            } catch (RejectedExecutionException e) {
+                if(!isFinishing())
+                    e.printStackTrace();
+            }
+        }, 350);
+    }
+
     private void saveCurrentScrollBookmark() {
         if(strip == null || manager == null || stripAdapter == null)
             return;
@@ -791,10 +856,22 @@ public class ViewerActivity extends AppCompatActivity {
         stripAdapter.setClickListener(this::toggleToolbar);
     }
 
+    private void preloadInitialViewerPages(Manga target) {
+        if(stripAdapter == null || target == null)
+            return;
+        int pageIndex = target.useBookmark() ? p.getViewerBookmark(target) : 0;
+        List<String> images = target.getImgs(context);
+        if(images == null || images.size() == 0)
+            return;
+        if(pageIndex < 0 || pageIndex >= images.size())
+            pageIndex = 0;
+        stripAdapter.preloadInitialAroundPage(new PageItem(pageIndex, "", target));
+    }
+
     private void scheduleFocusedPagePreload() {
         if(strip == null)
             return;
-        strip.postDelayed(this::preloadFocusedPages, 120);
+        strip.postDelayed(this::preloadFocusedPages, 40);
     }
 
     private void preloadFocusedPages() {
