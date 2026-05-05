@@ -120,10 +120,7 @@ public class FirebaseAccountManager {
     }
 
     private String getDefaultWebClientId() {
-        int id = appContext.getResources().getIdentifier("default_web_client_id", "string", appContext.getPackageName());
-        if(id == 0)
-            return "";
-        return appContext.getString(id);
+        return appContext.getString(R.string.default_web_client_id);
     }
 
     public interface SignInCallback {
