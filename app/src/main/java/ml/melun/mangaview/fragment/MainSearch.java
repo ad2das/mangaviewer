@@ -5,6 +5,8 @@ import android.content.DialogInterface;
 import android.net.Uri;
 import ml.melun.mangaview.task.LifecycleTask;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.MenuItem;
@@ -97,6 +99,12 @@ public class MainSearch extends Fragment {
     float listDownX;
     float listDownY;
     long listDownTime;
+    Handler listTouchHandler = new Handler(Looper.getMainLooper());
+    Runnable pendingListLongPress;
+    boolean listLongPressHandled = false;
+    long lastTitlePopupAt = 0;
+    int lastTitlePopupId = -1;
+    int lastTitlePopupBaseMode = -1;
     boolean pendingLibraryRefresh = false;
     boolean libraryMode = true;
 
@@ -160,10 +168,24 @@ public class MainSearch extends Fragment {
                     listDownX = event.getX();
                     listDownY = event.getY();
                     listDownTime = event.getEventTime();
+                    listLongPressHandled = false;
+                    scheduleTitleListLongPress(listDownX, listDownY);
                     return false;
+                }
+                if(event.getAction() == MotionEvent.ACTION_MOVE) {
+                    if(Math.abs(event.getX() - listDownX) > dp(12) || Math.abs(event.getY() - listDownY) > dp(12))
+                        cancelTitleListLongPress();
+                    return false;
+                }
+                if(event.getAction() == MotionEvent.ACTION_CANCEL) {
+                    cancelTitleListLongPress();
+                    return listLongPressHandled;
                 }
                 if(event.getAction() != MotionEvent.ACTION_UP)
                     return false;
+                cancelTitleListLongPress();
+                if(listLongPressHandled)
+                    return true;
                 if(Math.abs(event.getX() - listDownX) > dp(12) || Math.abs(event.getY() - listDownY) > dp(12))
                     return false;
                 if(event.getEventTime() - listDownTime >= ViewConfiguration.getLongPressTimeout())
@@ -514,6 +536,14 @@ public class MainSearch extends Fragment {
     private void showLibraryTitlePopup(View view, Title title) {
         if(getContext() == null || title == null)
             return;
+        long now = System.currentTimeMillis();
+        if(title.getId() == lastTitlePopupId
+                && title.getBaseMode() == lastTitlePopupBaseMode
+                && now - lastTitlePopupAt < 600)
+            return;
+        lastTitlePopupAt = now;
+        lastTitlePopupId = title.getId();
+        lastTitlePopupBaseMode = title.getBaseMode();
         PopupMenu popup = new PopupMenu(getContext(), view);
         popup.getMenuInflater().inflate(R.menu.title_options, popup.getMenu());
 
@@ -887,6 +917,38 @@ public class MainSearch extends Fragment {
         return true;
     }
 
+    private void scheduleTitleListLongPress(float x, float y) {
+        cancelTitleListLongPress();
+        pendingListLongPress = () -> {
+            if(handleTitleListLongPress(x, y))
+                listLongPressHandled = true;
+        };
+        listTouchHandler.postDelayed(pendingListLongPress, ViewConfiguration.getLongPressTimeout());
+    }
+
+    private void cancelTitleListLongPress() {
+        if(pendingListLongPress != null) {
+            listTouchHandler.removeCallbacks(pendingListLongPress);
+            pendingListLongPress = null;
+        }
+    }
+
+    private boolean handleTitleListLongPress(float x, float y) {
+        if(searchResult == null || searchAdapter == null || getContext() == null)
+            return false;
+        View child = searchResult.findChildViewUnder(x, y);
+        if(child == null)
+            return false;
+        int position = searchResult.getChildAdapterPosition(child);
+        if(position == RecyclerView.NO_POSITION || position >= searchAdapter.getItemCount())
+            return false;
+        Title title = searchAdapter.getItem(position);
+        if(title == null)
+            return false;
+        showLibraryTitlePopup(child, title);
+        return true;
+    }
+
     private void openTitleFromList(Title title) {
         if(title == null || getContext() == null)
             return;
@@ -1139,6 +1201,7 @@ public class MainSearch extends Fragment {
 
     @Override
     public void onDestroyView() {
+        cancelTitleListLongPress();
         if(localChangeListener != null) {
             p.removeLocalChangeListener(localChangeListener);
             localChangeListener = null;
