@@ -10,6 +10,7 @@ import android.widget.EditText;
 import android.widget.Toast;
 
 import java.text.SimpleDateFormat;
+import java.util.Locale;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.UrlUpdater;
@@ -70,7 +71,7 @@ public class FirstTimeActivity extends AppCompatActivity {
                         p.getSharedPref().edit().putLong("eula2", time).apply();
                         // not a migrator
                         p.getSharedPref().edit().putBoolean("manamoa", false).apply();
-                        Toast.makeText(context, new SimpleDateFormat("yyyy MM dd HH:mm:ss").format(time) + " 부로 EULA에 동의했습니다.",Toast.LENGTH_LONG).show();
+                        Toast.makeText(context, agreementMessage(time),Toast.LENGTH_LONG).show();
                         setResult(RESULT_EULA_AGREE);
                         finish();
                     }else{
@@ -88,7 +89,7 @@ public class FirstTimeActivity extends AppCompatActivity {
                     p.getSharedPref().edit().putLong("eula2", time).apply();
                     // not a migrator
                     p.getSharedPref().edit().putBoolean("manamoa", false).apply();
-                    Toast.makeText(context, new SimpleDateFormat("yyyy MM dd HH:mm:ss").format(time) + " 부로 EULA에 동의했습니다.",Toast.LENGTH_LONG).show();
+                    Toast.makeText(context, agreementMessage(time),Toast.LENGTH_LONG).show();
                     setResult(RESULT_EULA_AGREE);
                     finish();
                 },null, null));
@@ -110,7 +111,7 @@ public class FirstTimeActivity extends AppCompatActivity {
         long time = System.currentTimeMillis();
         p.getSharedPref().edit().putLong("eula2", time).apply();
         p.getSharedPref().edit().putBoolean("manamoa", false).apply();
-        Toast.makeText(context, new SimpleDateFormat("yyyy MM dd HH:mm:ss").format(time) + " 부로 EULA에 동의했습니다.",Toast.LENGTH_LONG).show();
+        Toast.makeText(context, agreementMessage(time),Toast.LENGTH_LONG).show();
         setResult(RESULT_EULA_AGREE);
         finish();
     }
@@ -119,6 +120,10 @@ public class FirstTimeActivity extends AppCompatActivity {
         while(url.endsWith("/"))
             url = url.substring(0, url.length() - 1);
         return url;
+    }
+
+    private String agreementMessage(long time) {
+        return new SimpleDateFormat("yyyy MM dd HH:mm:ss", Locale.ROOT).format(time) + " 부로 EULA에 동의했습니다.";
     }
 
     public boolean containsDigit(String s){
