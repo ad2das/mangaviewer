@@ -48,70 +48,17 @@
         android:layout_marginStart="20dp"
         android:layout_marginTop="6dp"
         android:layout_marginEnd="20dp"
-        android:text="최근 기록, 인기 목록, 검색을 한 화면에서 정리했습니다."
+        android:text="최근 기록, 인기 목록, 신작과 장르를 한 화면에서 정리했습니다."
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@+id/homeTitle" />
-
-    <androidx.constraintlayout.widget.ConstraintLayout
-        android:id="@+id/homeTopSearch"
-        android:layout_width="match_parent"
-        android:layout_height="52dp"
-        android:layout_marginStart="20dp"
-        android:layout_marginTop="16dp"
-        android:layout_marginEnd="20dp"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/homeSubtitle">
-
-        <EditText
-            android:id="@+id/homeSearchInput"
-            style="@style/AppText.Body"
-            android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:background="@drawable/app_home_search_bg"
-            android:drawableStart="@drawable/ic_search"
-            android:drawablePadding="10dp"
-            android:hint="작품, 작가, 장르 검색"
-            android:imeOptions="actionSearch"
-            android:inputType="text"
-            android:maxLines="1"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
-            android:singleLine="true"
-            android:textColorHint="@color/appTextSecondary"
-            app:layout_constraintBottom_toBottomOf="parent"
-            app:layout_constraintEnd_toStartOf="@+id/homeSearchButton"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toTopOf="parent" />
-
-        <TextView
-            android:id="@+id/homeSearchButton"
-            style="@style/AppText.Action"
-            android:layout_width="88dp"
-            android:layout_height="48dp"
-            android:layout_marginStart="8dp"
-            android:background="@drawable/app_accent_button_bg"
-            android:gravity="center"
-            android:includeFontPadding="false"
-            android:maxLines="1"
-            android:minWidth="88dp"
-            android:singleLine="true"
-            android:text="검색"
-            android:textColor="@android:color/white"
-            android:textSize="16sp"
-            app:layout_constraintBottom_toBottomOf="@+id/homeSearchInput"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintTop_toTopOf="@+id/homeSearchInput" />
-
-    </androidx.constraintlayout.widget.ConstraintLayout>
 
     <androidx.appcompat.widget.LinearLayoutCompat
         android:id="@+id/mainModeToggle"
         android:layout_width="match_parent"
         android:layout_height="40dp"
         android:layout_marginStart="20dp"
-        android:layout_marginTop="14dp"
+        android:layout_marginTop="18dp"
         android:layout_marginEnd="20dp"
         android:background="@drawable/app_outline_button_bg"
         android:gravity="center"
@@ -119,7 +66,7 @@
         android:padding="4dp"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/homeTopSearch">
+        app:layout_constraintTop_toBottomOf="@+id/homeSubtitle">
 
         <TextView
             android:id="@+id/modeWebtoon"

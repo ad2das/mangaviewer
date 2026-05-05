@@ -2,13 +2,10 @@ package ml.melun.mangaview.fragment;
 
 import android.content.Intent;
 import android.os.Bundle;
-import android.view.inputmethod.EditorInfo;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.EditText;
 import android.widget.TextView;
-import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -52,8 +49,6 @@ public class MainMain extends Fragment{
     TabLayout mainTabLayout;
     TextView modeWebtoon;
     TextView modeComic;
-    EditText homeSearchInput;
-    TextView homeSearchButton;
     int selectedBaseMode = base_webtoon;
 
     final static int FOR_YOU_TAB = 0;
@@ -111,9 +106,6 @@ public class MainMain extends Fragment{
         mainTabLayout = rootView.findViewById(R.id.mainTab);
         modeWebtoon = rootView.findViewById(R.id.modeWebtoon);
         modeComic = rootView.findViewById(R.id.modeComic);
-
-        homeSearchInput = rootView.findViewById(R.id.homeSearchInput);
-        homeSearchButton = rootView.findViewById(R.id.homeSearchButton);
 
         TabLayout.Tab forYouTab = mainTabLayout.newTab().setText("홈");
         TabLayout.Tab popularTab = mainTabLayout.newTab().setText("인기");
@@ -286,31 +278,9 @@ public class MainMain extends Fragment{
         });
         switchBaseMode(selectedBaseMode);
 
-        homeSearchButton.setOnClickListener(v -> runHomeSearch());
-        homeSearchInput.setOnEditorActionListener((v, actionId, event) -> {
-            boolean enter = event != null && event.getKeyCode() == android.view.KeyEvent.KEYCODE_ENTER && event.getAction() == android.view.KeyEvent.ACTION_UP;
-            if(actionId == EditorInfo.IME_ACTION_SEARCH || enter) {
-                runHomeSearch();
-                return true;
-            }
-            return false;
-        });
-
         if(!wait)
             fetchSelected();
         return rootView;
-    }
-
-    private void runHomeSearch() {
-        String query = homeSearchInput == null || homeSearchInput.getText() == null ? "" : homeSearchInput.getText().toString().trim();
-        if(mainActivityCallback == null)
-            return;
-        if(query.length() < 2) {
-            if(getContext() != null)
-                Toast.makeText(getContext(), "최소 2글자 이상 입력해주세요", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        mainActivityCallback.search(query);
     }
 
     private MainWebtoonAdapter getSelectedAdapter() {
