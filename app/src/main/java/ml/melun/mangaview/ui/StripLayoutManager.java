@@ -66,6 +66,7 @@ public class StripLayoutManager extends NpaLinearLayoutManager {
         return a.index == b.index
                 && a.side == b.side
                 && a.manga.getId() == b.manga.getId()
+                && a.manga.getTitleId() == b.manga.getTitleId()
                 && a.manga.getBaseMode() == b.manga.getBaseMode();
     }
 

@@ -108,11 +108,11 @@ public class ViewerActivity extends AppCompatActivity {
     boolean nextEpisodeBoundaryLoading = false;
     boolean previousEpisodeBoundaryJumpPending = false;
     boolean nextEpisodeBoundaryJumpPending = false;
-    private static final int NEXT_EPISODE_PRELOAD_LIMIT = 3;
-    private static final int DATA_SAVE_NEXT_EPISODE_PRELOAD_LIMIT = 3;
-    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 3;
-    private static final int NEXT_EPISODE_ATTACH_THRESHOLD = 6;
-    private static final int DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD = 4;
+    private static final int NEXT_EPISODE_PRELOAD_LIMIT = 8;
+    private static final int DATA_SAVE_NEXT_EPISODE_PRELOAD_LIMIT = 6;
+    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 12;
+    private static final int NEXT_EPISODE_ATTACH_THRESHOLD = 16;
+    private static final int DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD = 10;
     private static final int PREVIOUS_EPISODE_PULL_THRESHOLD_DP = 36;
     float topPullStartY = 0;
     boolean topPullTriggered = false;
@@ -428,6 +428,7 @@ public class ViewerActivity extends AppCompatActivity {
             refreshToolbar(m);
             updateIntent(m);
             scheduleFocusedPagePreload();
+            prefetchNextEpisode(m);
 
         }catch (Exception e){
             Utils.showCaptchaPopup(m.getUrl(), context, e, p);
@@ -701,7 +702,8 @@ public class ViewerActivity extends AppCompatActivity {
             if(cancelled || isFinishing() || result == LOAD_CAPTCHA || !hasLoadedImages(target))
                 return;
             preloadFirstPages(target);
-            if(stripAdapter != null && manager != null && manager.findLastVisibleItemPosition() >= manager.getItemCount() - 12)
+            int attachThreshold = p.getDataSave() ? DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD : NEXT_EPISODE_ATTACH_THRESHOLD;
+            if(stripAdapter != null && manager != null && manager.findLastVisibleItemPosition() >= manager.getItemCount() - attachThreshold)
                 attachNextEpisode(false);
         }
 
@@ -1267,6 +1269,7 @@ public class ViewerActivity extends AppCompatActivity {
     private boolean sameManga(Manga a, Manga b) {
         return a != null && b != null
                 && a.getId() == b.getId()
+                && a.getTitleId() == b.getTitleId()
                 && a.getBaseMode() == b.getBaseMode();
     }
 

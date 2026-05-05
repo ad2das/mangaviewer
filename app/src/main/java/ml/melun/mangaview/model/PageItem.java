@@ -26,6 +26,7 @@ public class PageItem{
     public int hashCode() {
         return Objects.hash(
                 manga == null ? 0 : manga.getBaseMode(),
+                manga == null ? 0 : manga.getTitleId(),
                 manga == null ? 0 : manga.getId(),
                 index,
                 side,
@@ -50,7 +51,26 @@ public class PageItem{
             return true;
         if(a == null || b == null)
             return false;
-        return a.getBaseMode() == b.getBaseMode() && a.getId() == b.getId();
+        return a.getBaseMode() == b.getBaseMode()
+                && a.getTitleId() == b.getTitleId()
+                && a.getId() == b.getId();
+    }
+
+    public static String episodeKey(Manga manga) {
+        if(manga == null)
+            return "0:0:0";
+        return manga.getBaseMode() + ":" + manga.getTitleId() + ":" + manga.getId();
+    }
+
+    public String pageKey(boolean autoCut, boolean reverse, int width) {
+        return episodeKey(manga)
+                + ":" + index
+                + ":" + side
+                + ":" + autoCut
+                + ":" + reverse
+                + ":" + width
+                + ":" + (manga == null ? 0 : manga.getSeed())
+                + ":" + img;
     }
 
     public int index;

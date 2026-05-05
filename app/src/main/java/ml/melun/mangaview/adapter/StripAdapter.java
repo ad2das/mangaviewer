@@ -55,9 +55,9 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     int width;
     int count = 0;
     final static int MaxStackSize = 3;
-    private static final int PRELOAD_AHEAD_COUNT = 4;
-    private static final int DATA_SAVE_PRELOAD_AHEAD_COUNT = 2;
-    private static final int PRELOAD_TRACK_LIMIT = 200;
+    private static final int PRELOAD_AHEAD_COUNT = 12;
+    private static final int DATA_SAVE_PRELOAD_AHEAD_COUNT = 6;
+    private static final int PRELOAD_TRACK_LIMIT = 500;
     ViewerActivity.InfiniteScrollCallback callback;
     Title title;
 
@@ -204,7 +204,10 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             Object item = items.get(i);
             if(item instanceof PageItem) {
                 PageItem other = (PageItem) item;
-                if(sameManga(other.manga, page.manga) && other.index == page.index)
+                if(sameManga(other.manga, page.manga)
+                        && other.index == page.index
+                        && other.side == page.side
+                        && (page.img == null || page.img.length() == 0 || page.img.equals(other.img)))
                     return i;
             }
         }
@@ -214,6 +217,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private boolean sameManga(Manga a, Manga b) {
         return a != null && b != null
                 && a.getId() == b.getId()
+                && a.getTitleId() == b.getTitleId()
                 && a.getBaseMode() == b.getBaseMode();
     }
 
@@ -225,7 +229,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             if(item instanceof PageItem) {
                 Manga manga = ((PageItem) item).manga;
                 if(manga != null)
-                    loaded.add(manga.getBaseMode() + ":" + manga.getId());
+                    loaded.add(PageItem.episodeKey(manga));
             }
         }
         return loaded.size();
@@ -427,6 +431,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         PageItem item = ((PageItem)items.get(pos));
         Object url = getImageModel(item);
         String pageKey = pageBindKey(item);
+        int bindGeneration = ++holder.bindGeneration;
         holder.boundPageKey = pageKey;
         holder.frame.setMinimumHeight(Math.max(width, 1));
         String cacheKey = decodedCacheKey(item);
@@ -443,7 +448,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             CustomTarget<Bitmap> imageTarget = new CustomTarget<Bitmap>() {
                 @Override
                 public void onResourceReady(@NonNull Bitmap bitmap, Transition<? super Bitmap> transition) {
-                    if(!isActiveHolder(holder, item, this, pageKey))
+                    if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
                     holder.frame.setMinimumHeight(0);
                     Bitmap decoded = decoderFor(item).decode(bitmap, width);
@@ -478,7 +483,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
                 @Override
                 public void onLoadCleared(@Nullable Drawable placeholder) {
-                    if(!isActiveHolder(holder, item, this, pageKey))
+                    if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
                     holder.frame.setMinimumHeight(Math.max(width, 1));
                     holder.frame.setImageDrawable(placeholder);
@@ -487,7 +492,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
                 @Override
                 public void onLoadFailed(@Nullable Drawable errorDrawable) {
-                    if(!isActiveHolder(holder, item, this, pageKey))
+                    if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
                     holder.frame.setMinimumHeight(Math.max(width, 1));
                     holder.frame.setImageResource(R.drawable.placeholder);
@@ -506,7 +511,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             CustomTarget<Bitmap> imageTarget = new CustomTarget<Bitmap>() {
                 @Override
                 public void onResourceReady(@NonNull Bitmap resource, @Nullable Transition<? super Bitmap> transition) {
-                    if(!isActiveHolder(holder, item, this, pageKey))
+                    if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
                     holder.frame.setMinimumHeight(0);
                     Bitmap decoded = decoderFor(item).decode(resource, width);
@@ -520,7 +525,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
                 @Override
                 public void onLoadCleared(@Nullable Drawable placeholder) {
-                    if(!isActiveHolder(holder, item, this, pageKey))
+                    if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
                     holder.frame.setMinimumHeight(Math.max(width, 1));
                     holder.frame.setImageDrawable(placeholder);
@@ -529,7 +534,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
                 @Override
                 public void onLoadFailed(@Nullable Drawable errorDrawable) {
-                    if(!isActiveHolder(holder, item, this, pageKey))
+                    if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
                     holder.frame.setMinimumHeight(Math.max(width, 1));
                     holder.frame.setImageResource(R.drawable.placeholder);
@@ -558,6 +563,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     private void clearImageTarget(ImgViewHolder holder) {
         holder.boundPageKey = null;
+        holder.bindGeneration++;
         holder.frame.setImageDrawable(null);
         if(holder.imageTarget == null)
             return;
@@ -587,8 +593,9 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         return false;
     }
 
-    private boolean isActiveHolder(ImgViewHolder holder, PageItem item, CustomTarget<Bitmap> target, String pageKey) {
+    private boolean isActiveHolder(ImgViewHolder holder, PageItem item, CustomTarget<Bitmap> target, String pageKey, int bindGeneration) {
         return holder.imageTarget == target
+                && holder.bindGeneration == bindGeneration
                 && pageKey != null
                 && pageKey.equals(holder.boundPageKey)
                 && isHolderStillBound(holder, item, pageKey);
@@ -639,16 +646,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private String pageBindKey(PageItem page) {
         if(page == null || page.manga == null)
             return "";
-        return page.manga.getBaseMode()
-                + ":" + page.manga.getTitleId()
-                + ":" + page.manga.getId()
-                + ":" + page.index
-                + ":" + page.side
-                + ":" + autoCut
-                + ":" + reverse
-                + ":" + width
-                + ":" + page.manga.getSeed()
-                + ":" + page.img;
+        return page.pageKey(autoCut, reverse, width);
     }
 
     private Decoder decoderFor(PageItem page) {
@@ -763,6 +761,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         ImageButton refresh;
         CustomTarget<Bitmap> imageTarget;
         String boundPageKey;
+        int bindGeneration = 0;
         ImgViewHolder(View itemView) {
             super(itemView);
             frame = itemView.findViewById(R.id.frame);
