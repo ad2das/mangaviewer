@@ -421,6 +421,7 @@ public class ViewerActivity extends AppCompatActivity {
             }
             stripAdapter = new StripAdapter(context, m, autoCut, width,title, infiniteScrollCallback);
             preloadInitialViewerPages(m);
+            prepareInitialViewerPosition(m);
 
             refreshAdapter();
             bookmarkRefresh(m);
@@ -835,6 +836,20 @@ public class ViewerActivity extends AppCompatActivity {
         }
     }
 
+    private void prepareInitialViewerPosition(Manga target) {
+        if(stripAdapter == null || manager == null || target == null)
+            return;
+        int pageIndex = target.useBookmark() ? p.getViewerBookmark(target) : 0;
+        if(pageIndex < 0)
+            pageIndex = 0;
+        PageItem page = new PageItem(pageIndex, "", target);
+        int position = stripAdapter.findPagePosition(page);
+        if(position == RecyclerView.NO_POSITION)
+            return;
+        int offset = target.useBookmark() ? p.getViewerBookmarkOffset(target) : 0;
+        manager.scrollToPositionWithOffset(position, offset);
+    }
+
     private Title titleForProgress(Manga target) {
         Title source = title != null ? title : (target == null ? null : target.getTitle());
         if(source == null || target == null)
@@ -885,9 +900,8 @@ public class ViewerActivity extends AppCompatActivity {
         int end = Math.min(images.size(), pageIndex + preloadLimit);
         for(int i = pageIndex; i < end; i++)
             Glide.with(context)
-                    .asBitmap()
-                    .priority(com.bumptech.glide.Priority.IMMEDIATE)
-                    .apply(viewerPreloadOptions())
+                    .downloadOnly()
+                    .priority(com.bumptech.glide.Priority.HIGH)
                     .load(Utils.getGlideUrl(images.get(i), target.getBaseMode()))
                     .preload();
     }
