@@ -60,6 +60,7 @@ public class MainMain extends Fragment{
     boolean comicFetched = false;
     boolean webtoonFetched = false;
     boolean viewStarted = false;
+    Runnable pendingInitialFetch;
     Preference.LocalChangeListener localChangeListener;
 
     public void setWait(Boolean wait){
@@ -297,6 +298,8 @@ public class MainMain extends Fragment{
     }
 
     private void switchBaseMode(int baseMode) {
+        cancelScheduledInitialFetch();
+        cancelInactiveFetch(baseMode);
         selectedBaseMode = baseMode;
         p.setBaseMode(baseMode);
         if(mainRecycler != null)
@@ -368,10 +371,34 @@ public class MainMain extends Fragment{
             fetchSelected();
             return;
         }
-        mainRecycler.postDelayed(() -> {
-            if(mainRecycler != null && isAdded() && !wait)
+        cancelScheduledInitialFetch();
+        final int targetBaseMode = selectedBaseMode;
+        pendingInitialFetch = () -> {
+            pendingInitialFetch = null;
+            if(mainRecycler != null && isAdded() && !wait && selectedBaseMode == targetBaseMode)
                 fetchSelected();
-        }, 250);
+        };
+        mainRecycler.postDelayed(pendingInitialFetch, 250);
+    }
+
+    private void cancelScheduledInitialFetch() {
+        if(mainRecycler != null && pendingInitialFetch != null)
+            mainRecycler.removeCallbacks(pendingInitialFetch);
+        pendingInitialFetch = null;
+    }
+
+    private void cancelInactiveFetch(int activeBaseMode) {
+        if(activeBaseMode == base_comic) {
+            if(mainWebtoonAdapter != null && mainWebtoonAdapter.isFetching()) {
+                mainWebtoonAdapter.cancelFetch();
+                webtoonFetched = false;
+            }
+        } else {
+            if(mainComicAdapter != null && mainComicAdapter.isFetching()) {
+                mainComicAdapter.cancelFetch();
+                comicFetched = false;
+            }
+        }
     }
 
     private void fetchComic() {
@@ -418,6 +445,7 @@ public class MainMain extends Fragment{
     @Override
     public void onDestroyView() {
         super.onDestroyView();
+        cancelScheduledInitialFetch();
         if(mainComicAdapter != null)
             mainComicAdapter.cancelFetch();
         if(mainWebtoonAdapter != null)

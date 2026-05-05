@@ -117,11 +117,17 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return;
         dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
         List<Object> warmRows = buildRows(dataSet, false);
+        if(!hasHero(warmRows))
+            warmRows = buildInitialPlaceholderRows();
         if(hasHero(warmRows)) {
             initialRowsShown = true;
             updateRows(warmRows);
             scrollHeroToTop();
         }
+    }
+
+    public boolean isFetching() {
+        return fetcher != null;
     }
 
     public void cancelFetch() {
@@ -296,6 +302,44 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     private List<Object> buildRows(List<Ranking<?>> sections, boolean includeEmpty) {
         return buildRows(sections, includeEmpty, false);
+    }
+
+    private List<Object> buildInitialPlaceholderRows() {
+        List<Object> result = new ArrayList<>();
+        if(activeHomeTab == 3) {
+            result.add(new CategoryPanel());
+            return result;
+        }
+        if(activeHomeTab == 0) {
+            result.add(new ActionStrip());
+            Ranking<?> firstSection = firstNamedSection(dataSet, freshSectionTitle());
+            if(firstSection == null)
+                firstSection = firstNamedSection(dataSet, "인기순");
+            if(firstSection != null)
+                result.add(firstSection);
+            else
+                result.add(new CategoryPanel());
+            return result;
+        }
+        List<Object> tabRows = buildTabRows(dataSet, true, activeHomeTab == 1 ? "인기순" : freshSectionTitle());
+        if(tabRows.size() > 0)
+            result.addAll(tabRows);
+        else
+            result.add(new CategoryPanel());
+        return result;
+    }
+
+    private Ranking<?> firstNamedSection(List<Ranking<?>> sections, String titlePart) {
+        if(sections == null || titlePart == null)
+            return null;
+        for(Ranking<?> section : sections) {
+            if(section == null)
+                continue;
+            SectionName name = parseSectionName(section.getName());
+            if(name.title.contains(titlePart))
+                return section;
+        }
+        return null;
     }
 
     private List<Object> buildRows(List<Ranking<?>> sections, boolean includeEmpty, boolean includeCategoryPanel) {
@@ -1461,6 +1505,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             pendingRows = null;
             initialRowsShown = false;
             List<Object> warmRows = buildRows(dataSet, false);
+            if(!hasHero(warmRows))
+                warmRows = buildInitialPlaceholderRows();
             if(hasHero(warmRows)) {
                 initialRowsShown = true;
                 updateRows(warmRows);
