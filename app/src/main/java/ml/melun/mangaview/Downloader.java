@@ -265,20 +265,12 @@ public class Downloader extends Service {
                             }
 
                             Manga target = mangas.get(listIndex);
-                            //error
-                            int cf_tries = 3;
-                            while (cf_tries > 0) {
-                                target.fetch(httpClient, cookies);
-                                // todo: cf scrape
-                                cf_tries--;
-                            }
-
-                            Decoder d = new Decoder(target.getSeed(), target.getId());
-                            List<String> urls = target.getImgs(getApplicationContext());
+                            List<String> urls = fetchDownloadImages(target);
                             if(urls == null || urls.size() == 0) {
                                 failures++;
                                 continue;
                             }
+                            Decoder d = new Decoder(target.getSeed(), target.getId());
 
                             //set stepsize
                             float imgStepSize = stepSize / urls.size();
@@ -377,19 +369,12 @@ public class Downloader extends Service {
                             }
 
                             Manga target = mangas.get(listIndex);
-                            //error
-                            int cf_tries = 3;
-                            while (cf_tries > 0) {
-                                target.fetch(httpClient, cookies);
-                                cf_tries--;
-                            }
-
-                            Decoder d = new Decoder(target.getSeed(), target.getId());
-                            List<String> urls = target.getImgs(getApplicationContext());
+                            List<String> urls = fetchDownloadImages(target);
                             if(urls == null || urls.size() == 0) {
                                 failures++;
                                 continue;
                             }
+                            Decoder d = new Decoder(target.getSeed(), target.getId());
 
                             //set stepsize
                             float imgStepSize = stepSize / urls.size();
@@ -679,6 +664,17 @@ public class Downloader extends Service {
                     deleteRecursively(child);
         }
         file.delete();
+    }
+
+    private List<String> fetchDownloadImages(Manga target) {
+        List<String> urls = null;
+        for(int tries = 0; tries < 3; tries++) {
+            target.fetch(httpClient, cookies);
+            urls = target.getImgs(getApplicationContext());
+            if(urls != null && urls.size() > 0)
+                return urls;
+        }
+        return urls;
     }
 
     private void publishDownloadProgress(ProgressInterface publisher, int currentSize, int fileSize) {
