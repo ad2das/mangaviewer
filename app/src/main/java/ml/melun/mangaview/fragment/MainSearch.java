@@ -520,15 +520,21 @@ public class MainSearch extends Fragment {
         boolean recent = isRecentTitle(title);
         boolean favorite = p.findFavorite(title) > -1;
         boolean offline = isOfflineTitle(title);
+        boolean allTab = getLibraryTabPosition() == 0;
 
-        popup.getMenu().findItem(R.id.del).setVisible(recent);
-        popup.getMenu().findItem(favorite ? R.id.favDel : R.id.favAdd).setVisible(true);
+        popup.getMenu().findItem(R.id.del).setVisible(allTab ? recent || favorite : recent);
+        popup.getMenu().findItem(R.id.del).setTitle("삭제");
+        if(!allTab)
+            popup.getMenu().findItem(favorite ? R.id.favDel : R.id.favAdd).setVisible(true);
         popup.getMenu().findItem(R.id.remove).setVisible(offline);
 
         popup.setOnMenuItemClickListener(item -> {
             switch(item.getItemId()) {
                 case R.id.del:
-                    removeRecentTitle(title);
+                    if(allTab)
+                        deleteLibraryListTitle(title);
+                    else
+                        removeRecentTitle(title);
                     break;
                 case R.id.favAdd:
                 case R.id.favDel:
@@ -542,6 +548,19 @@ public class MainSearch extends Fragment {
             return true;
         });
         popup.show();
+    }
+
+    private void deleteLibraryListTitle(Title title) {
+        if(title == null)
+            return;
+        if(isRecentTitle(title))
+            p.removeRecent(title);
+        if(p.findFavorite(title) > -1)
+            p.toggleFavorite(title, 0);
+        if(activeLibraryQuery != null && activeLibraryQuery.length() > 0)
+            performLibrarySearch(activeLibraryQuery);
+        else
+            showLibrary();
     }
 
     private void removeRecentTitle(Title title) {
