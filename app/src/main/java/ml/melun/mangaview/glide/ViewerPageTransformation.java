@@ -2,6 +2,7 @@ package ml.melun.mangaview.glide;
 
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Rect;
 
 import androidx.annotation.NonNull;
 
@@ -54,7 +55,10 @@ public class ViewerPageTransformation extends BitmapTransformation {
                 cropX = reverse ? 0 : decodedWidth - cropWidth;
             else
                 cropX = reverse ? decodedWidth - cropWidth : 0;
-            displayBitmap = Bitmap.createBitmap(decoded, cropX, 0, cropWidth, decodedHeight);
+            displayBitmap = pool.get(cropWidth, decodedHeight, Bitmap.Config.ARGB_8888);
+            Rect src = new Rect(cropX, 0, cropX + cropWidth, decodedHeight);
+            Rect dst = new Rect(0, 0, cropWidth, decodedHeight);
+            new Canvas(displayBitmap).drawBitmap(decoded, src, dst, null);
         } else if(side == PageItem.FIRST) {
             displayBitmap = decoded;
         } else {
