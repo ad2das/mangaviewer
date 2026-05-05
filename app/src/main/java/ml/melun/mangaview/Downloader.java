@@ -30,7 +30,6 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLConnection;
 import java.text.DecimalFormat;
@@ -38,6 +37,12 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import ml.melun.mangaview.activity.MainActivity;
 import ml.melun.mangaview.mangaview.Decoder;
@@ -53,6 +58,7 @@ public class Downloader extends Service {
     private static final int CONNECT_TIMEOUT_MS = 15000;
     private static final int READ_TIMEOUT_MS = 30000;
     private static final int BUFFER_SIZE = 8192;
+    private static final int PARALLEL_IMAGE_DOWNLOADS = 4;
     String homeDir;
     String baseUrl;
     ArrayList<DownloadTitle> titles;
@@ -296,29 +302,7 @@ public class Downloader extends Service {
                                 downloadFlag.delete();
                             downloadFlag = dir.createFile("application", "downloading");
 
-                            //download images
-                            int downloadedImages = 0;
-                            for (int i = 0; i < urls.size(); i++) {
-                                boolean imageSaved = false;
-                                int tries = 0;
-                                while (tries < 5) {
-                                    // retry for 5 cycles
-                                    if (isCancelled()) return 0;
-                                    String url = urls.get(i);
-
-                                    if (!downloadImage(url, dir, new DecimalFormat("0000").format(i), d)) {
-                                        //change image server name and retry
-                                        tries++;
-                                    } else {
-                                        imageSaved = true;
-                                        break;
-                                    }
-                                }
-                                if(imageSaved)
-                                    downloadedImages++;
-                                progress += imgStepSize;
-                                updateNotification(target, currentEpisode, selectedEps.length(), i + 1, urls.size());
-                            }
+                            int downloadedImages = downloadImages(urls, dir, d, imgStepSize, target, currentEpisode, selectedEps.length());
 
                             if(downloadFlag != null)
                                 downloadFlag.delete();
@@ -397,29 +381,7 @@ public class Downloader extends Service {
                             //create download flag
                             File downloadFlag = new File(dir, "downloading");
                             downloadFlag.createNewFile();
-                            //download images
-                            int downloadedImages = 0;
-                            for (int i = 0; i < urls.size(); i++) {
-                                boolean imageSaved = false;
-                                int tries = 0;
-                                while (tries < 5) {
-                                    // retry for 5 cycles
-                                    if (isCancelled()) return 0;
-                                    String url = urls.get(i);
-
-                                    if (!downloadImage(url, new File(dir, new DecimalFormat("0000").format(i)), d)) {
-                                        //change image server name and retry
-                                        tries++;
-                                    } else {
-                                        imageSaved = true;
-                                        break;
-                                    }
-                                }
-                                if(imageSaved)
-                                    downloadedImages++;
-                                progress += imgStepSize;
-                                updateNotification(target, currentEpisode, selectedEps.length(), i + 1, urls.size());
-                            }
+                            int downloadedImages = downloadImages(urls, dir, d, imgStepSize, target, currentEpisode, selectedEps.length());
 
                             downloadFlag.delete();
                             if (downloadedImages < urls.size()) {
@@ -536,6 +498,71 @@ public class Downloader extends Service {
         return true;
     }
 
+    private int downloadImages(List<String> urls, File dir, Decoder decoder, float imgStepSize,
+                               Manga target, int currentEpisode, int totalEpisodes) {
+        return downloadImagesInParallel(urls, i -> downloadImage(urls.get(i), new File(dir, new DecimalFormat("0000").format(i)), decoder),
+                imgStepSize, target, currentEpisode, totalEpisodes);
+    }
+
+    private int downloadImages(List<String> urls, DocumentFile dir, Decoder decoder, float imgStepSize,
+                               Manga target, int currentEpisode, int totalEpisodes) {
+        return downloadImagesInParallel(urls, i -> downloadImage(urls.get(i), dir, new DecimalFormat("0000").format(i), decoder),
+                imgStepSize, target, currentEpisode, totalEpisodes);
+    }
+
+    private int downloadImagesInParallel(List<String> urls, ImageDownloadTask task, float imgStepSize,
+                                         Manga target, int currentEpisode, int totalEpisodes) {
+        if(urls == null || urls.size() == 0)
+            return 0;
+        int workers = Math.max(1, Math.min(PARALLEL_IMAGE_DOWNLOADS, urls.size()));
+        ExecutorService executor = Executors.newFixedThreadPool(workers);
+        CompletionService<Boolean> completion = new ExecutorCompletionService<>(executor);
+        int submitted = 0;
+        try {
+            for(int i = 0; i < urls.size(); i++) {
+                final int index = i;
+                completion.submit((Callable<Boolean>) () -> {
+                    int tries = 0;
+                    while(tries < 5) {
+                        if(Thread.currentThread().isInterrupted())
+                            return false;
+                        if(task.download(index))
+                            return true;
+                        tries++;
+                    }
+                    return false;
+                });
+                submitted++;
+            }
+            int downloadedImages = 0;
+            for(int completed = 0; completed < submitted; completed++) {
+                if(Thread.currentThread().isInterrupted())
+                    break;
+                Future<Boolean> future = completion.take();
+                boolean imageSaved = false;
+                try {
+                    imageSaved = future.get();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+                if(imageSaved)
+                    downloadedImages++;
+                progress += imgStepSize;
+                updateNotification(target, currentEpisode, totalEpisodes, completed + 1, urls.size());
+            }
+            return downloadedImages;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return 0;
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    private interface ImageDownloadTask {
+        boolean download(int index);
+    }
+
     File downloadFile(String urlStr, File outputFile) {
         return downloadFile(urlStr, outputFile, null);
     }
@@ -617,26 +644,7 @@ public class Downloader extends Service {
         urlStr = normalizeDownloadUrl(urlStr);
         if(urlStr.length() == 0)
             return null;
-        URL url = new URL(urlStr);
-        URLConnection rawConnection = openDownloadConnection(url);
-        if(!(rawConnection instanceof HttpURLConnection))
-            return url;
-        HttpURLConnection connection = (HttpURLConnection) rawConnection;
-        try {
-            connection.setInstanceFollowRedirects(false);
-            int responseCode = connection.getResponseCode();
-            if (responseCode >= 300 && responseCode < 400) {
-                String location = connection.getHeaderField("location");
-                if(location == null || location.length() == 0)
-                    return null;
-                return new URL(url, location);
-            }
-            if (responseCode >= 400)
-                return null;
-            return url;
-        } finally {
-            connection.disconnect();
-        }
+        return new URL(urlStr);
     }
 
     private URLConnection openDownloadConnection(URL url) throws IOException {
