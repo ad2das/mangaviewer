@@ -266,6 +266,8 @@ public class Downloader extends Service {
                             }
 
                             Manga target = mangas.get(listIndex);
+                            int currentEpisode = selectedEps.length() - queueIndex;
+                            updateNotification(target, currentEpisode, selectedEps.length(), 0, 0);
                             List<String> urls = fetchDownloadImages(target);
                             if(urls == null || urls.size() == 0) {
                                 failures++;
@@ -315,7 +317,7 @@ public class Downloader extends Service {
                                 if(imageSaved)
                                     downloadedImages++;
                                 progress += imgStepSize;
-                                updateNotification((selectedEps.length() - queueIndex) + "/" + selectedEps.length());
+                                updateNotification(target, currentEpisode, selectedEps.length(), i + 1, urls.size());
                             }
 
                             if(downloadFlag != null)
@@ -370,6 +372,8 @@ public class Downloader extends Service {
                             }
 
                             Manga target = mangas.get(listIndex);
+                            int currentEpisode = selectedEps.length() - queueIndex;
+                            updateNotification(target, currentEpisode, selectedEps.length(), 0, 0);
                             List<String> urls = fetchDownloadImages(target);
                             if(urls == null || urls.size() == 0) {
                                 failures++;
@@ -414,7 +418,7 @@ public class Downloader extends Service {
                                 if(imageSaved)
                                     downloadedImages++;
                                 progress += imgStepSize;
-                                updateNotification((selectedEps.length() - queueIndex) + "/" + selectedEps.length());
+                                updateNotification(target, currentEpisode, selectedEps.length(), i + 1, urls.size());
                             }
 
                             downloadFlag.delete();
@@ -742,6 +746,37 @@ public class Downloader extends Service {
                 .setContentText(text)
                 .addAction(R.drawable.blank, "중지", stopIntent)
                 .setProgress(maxProgress, (int) progress, !(progress > 0))
+                .setOnlyAlertOnce(true)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+                .setOngoing(true);
+        if (Build.VERSION.SDK_INT >= 26)
+            notification.setSmallIcon(R.drawable.ic_logo);
+        else
+            notification.setSmallIcon(R.drawable.notification_logo);
+        notificationManager.notify(nid, notification.build());
+    }
+
+    private void updateNotification(Manga target, int currentEpisode, int totalEpisodes, int currentImage, int totalImages) {
+        int percent = maxProgress > 0 ? Math.min(100, Math.round((progress / maxProgress) * 100)) : 0;
+        String episodeProgress = currentEpisode + "/" + totalEpisodes;
+        String imageProgress = totalImages > 0 ? currentImage + "/" + totalImages : "이미지 준비중";
+        String episodeName = target != null && target.getName() != null ? target.getName() : "";
+        String text = "회차 " + episodeProgress + " · " + imageProgress + " · " + percent + "%";
+        NotificationCompat.BigTextStyle style = new NotificationCompat.BigTextStyle()
+                .bigText((episodeName.length() > 0 ? episodeName + "\n" : "") + text);
+        notification = new NotificationCompat.Builder(this, channeld)
+                .setContentIntent(pendingIntent)
+                .setContentTitle(notiTitle)
+                .setSubText("저장중")
+                .setContentText(text)
+                .setContentInfo(percent + "%")
+                .setStyle(style)
+                .addAction(R.drawable.blank, "중지", stopIntent)
+                .setProgress(maxProgress, (int) progress, totalImages <= 0)
+                .setOnlyAlertOnce(true)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setCategory(NotificationCompat.CATEGORY_PROGRESS)
                 .setOngoing(true);
         if (Build.VERSION.SDK_INT >= 26)
             notification.setSmallIcon(R.drawable.ic_logo);

@@ -348,6 +348,10 @@ public class MainActivity extends AppCompatActivity
                         PERMISSION_CODE);
             }
         }
+        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_DENIED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, PERMISSION_CODE + 1);
+        }
 
         content = findViewById(R.id.contentHolder);
 
