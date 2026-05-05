@@ -260,6 +260,9 @@ public class MainSearch extends Fragment {
         if(prequery != null){
             applyPendingSearch();
         } else if(libraryMode && search == null && !onlineSearchMode) {
+            int tab = getLibraryTabPosition();
+            if(tab == 0 || tab == 3)
+                offlineTitles = new ArrayList<>();
             showLibrary();
         }
     }

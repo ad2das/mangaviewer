@@ -81,6 +81,9 @@ public class EpisodeActivity extends AppCompatActivity {
             case android.R.id.home:
                 finish();
                 return true;
+            case R.id.episode_favorite:
+                toggleFavorite();
+                return true;
             case R.id.episode_download:
                 Intent download = new Intent(context, DownloadActivity.class);
                 download.putExtra("title", new Gson().toJson(title));
@@ -385,13 +388,7 @@ public class EpisodeActivity extends AppCompatActivity {
             }
             @Override
             public void onStarClick(){
-                //star click handler
-                episodeAdapter.setFavorite(p.toggleFavorite(title, position));
-                if(favoriteResult){
-                    Intent resultIntent = new Intent();
-                    resultIntent.putExtra("favorite", p.findFavorite(title)>-1);
-                    setResult(RESULT_OK, resultIntent);
-                }
+                toggleFavorite();
             }
 
             @Override
@@ -519,6 +516,29 @@ public class EpisodeActivity extends AppCompatActivity {
         if(loaded)
             inflater.inflate(R.menu.episode_menu, menu);
         return true;
+    }
+
+    @Override
+    public boolean onPrepareOptionsMenu(Menu menu) {
+        boolean result = super.onPrepareOptionsMenu(menu);
+        MenuItem favorite = menu.findItem(R.id.episode_favorite);
+        if(favorite != null)
+            favorite.setIcon(p.findFavorite(title) > -1 ? R.drawable.ic_favorite : R.drawable.ic_favorite_border);
+        return result;
+    }
+
+    private void toggleFavorite() {
+        if(title == null)
+            return;
+        boolean favorite = p.toggleFavorite(title, position);
+        if(episodeAdapter != null)
+            episodeAdapter.setFavorite(favorite);
+        invalidateOptionsMenu();
+        if(favoriteResult){
+            Intent resultIntent = new Intent();
+            resultIntent.putExtra("favorite", favorite);
+            setResult(RESULT_OK, resultIntent);
+        }
     }
 
     @Override

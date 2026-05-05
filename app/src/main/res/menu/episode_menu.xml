@@ -2,6 +2,11 @@
 <menu xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
     <item
+        android:id="@+id/episode_favorite"
+        android:title="좋아요"
+        app:showAsAction="always"
+        android:icon="@drawable/ic_favorite_border" />
+    <item
         android:id="@+id/episode_download"
         android:title="오프라인 저장"
         app:showAsAction="always"

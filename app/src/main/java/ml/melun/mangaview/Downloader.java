@@ -302,7 +302,9 @@ public class Downloader extends Service {
                             downloadFlag = dir.createFile("application", "downloading");
 
                             //download images
+                            int downloadedImages = 0;
                             for (int i = 0; i < urls.size(); i++) {
+                                boolean imageSaved = false;
                                 int tries = 0;
                                 while (tries < 5) {
                                     // retry for 5 cycles
@@ -312,18 +314,23 @@ public class Downloader extends Service {
                                     if (!downloadImage(url, dir, new DecimalFormat("0000").format(i), d)) {
                                         //change image server name and retry
                                         tries++;
-                                    } else //else : success
+                                    } else {
+                                        imageSaved = true;
                                         break;
+                                    }
                                 }
+                                if(imageSaved)
+                                    downloadedImages++;
                                 progress += imgStepSize;
                                 updateNotification((selectedEps.length() - queueIndex) + "/" + selectedEps.length());
                             }
-                            // check for download failures
-                            if (dir.listFiles().length == 0 || dir.listFiles().length < urls.size())
-                                failures++;
 
                             if(downloadFlag != null)
                                 downloadFlag.delete();
+                            if (downloadedImages < urls.size()) {
+                                dir.delete();
+                                failures++;
+                            }
 
                         }else {
 
@@ -396,7 +403,9 @@ public class Downloader extends Service {
                             File downloadFlag = new File(dir, "downloading");
                             downloadFlag.createNewFile();
                             //download images
+                            int downloadedImages = 0;
                             for (int i = 0; i < urls.size(); i++) {
+                                boolean imageSaved = false;
                                 int tries = 0;
                                 while (tries < 5) {
                                     // retry for 5 cycles
@@ -406,17 +415,22 @@ public class Downloader extends Service {
                                     if (!downloadImage(url, new File(dir, new DecimalFormat("0000").format(i)), d)) {
                                         //change image server name and retry
                                         tries++;
-                                    } else //else : success
+                                    } else {
+                                        imageSaved = true;
                                         break;
+                                    }
                                 }
+                                if(imageSaved)
+                                    downloadedImages++;
                                 progress += imgStepSize;
                                 updateNotification((selectedEps.length() - queueIndex) + "/" + selectedEps.length());
                             }
-                            // check for download failures
-                            if (dir.listFiles().length == 0 || dir.listFiles().length < urls.size())
-                                failures++;
 
                             downloadFlag.delete();
+                            if (downloadedImages < urls.size()) {
+                                deleteRecursively(dir);
+                                failures++;
+                            }
                         }
                     }
                     titles.remove(0);
@@ -603,6 +617,11 @@ public class Downloader extends Service {
     }
 
     private URL resolveUrl(String urlStr) throws IOException {
+        if(urlStr == null)
+            return null;
+        urlStr = normalizeDownloadUrl(urlStr);
+        if(urlStr.length() == 0)
+            return null;
         URL url = new URL(urlStr);
         URLConnection rawConnection = openDownloadConnection(url);
         if(!(rawConnection instanceof HttpURLConnection))
@@ -629,8 +648,37 @@ public class Downloader extends Service {
         URLConnection connection = url.openConnection();
         connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
         connection.setReadTimeout(READ_TIMEOUT_MS);
+        connection.setRequestProperty("User-Agent", httpClient.agent);
         connection.setRequestProperty("Referer", p.getUrl());
         return connection;
+    }
+
+    private String normalizeDownloadUrl(String urlStr) {
+        String url = urlStr.trim();
+        if(url.startsWith("//"))
+            return "https:" + url;
+        if(url.startsWith("http://") || url.startsWith("https://"))
+            return url;
+        String root = p.getUrl();
+        while(root.endsWith("/"))
+            root = root.substring(0, root.length() - 1);
+        if(root.endsWith("/cm"))
+            root = root.substring(0, root.length() - 3);
+        if(url.startsWith("/"))
+            return root + url;
+        return root + "/" + url;
+    }
+
+    private void deleteRecursively(File file) {
+        if(file == null || !file.exists())
+            return;
+        if(file.isDirectory()) {
+            File[] children = file.listFiles();
+            if(children != null)
+                for(File child : children)
+                    deleteRecursively(child);
+        }
+        file.delete();
     }
 
     private void publishDownloadProgress(ProgressInterface publisher, int currentSize, int fileSize) {
