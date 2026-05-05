@@ -826,11 +826,24 @@ public class ViewerActivity extends AppCompatActivity {
                 continue;
             int offset = view.getTop() - strip.getPaddingTop();
             p.setViewerBookmark(page.manga, page.index, offset);
+            Title bookmarkTitle = titleForProgress(page.manga);
             if(title == null)
-                title = page.manga.getTitle();
-            p.setBookmark(title, page.manga.getId());
+                title = bookmarkTitle;
+            p.setBookmark(bookmarkTitle, page.manga.getId());
             return;
         }
+    }
+
+    private Title titleForProgress(Manga target) {
+        Title source = title != null ? title : (target == null ? null : target.getTitle());
+        if(source == null || target == null)
+            return source;
+        List<Manga> episodes = target.getEps();
+        if((source.getEps() == null || source.getEps().size() <= 1) && episodes != null && episodes.size() > 1)
+            source.setEps(episodes);
+        target.setTitle(source);
+        target.setTitleId(source.getId());
+        return source;
     }
 
     public void updateIntent(Manga m){

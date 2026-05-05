@@ -1850,7 +1850,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(continueProgressBackfillRunning || !hasMissingContinueProgress())
             return;
         continueProgressBackfillRunning = true;
-        LifecycleTask.THREAD_POOL_EXECUTOR.execute(() -> {
+        LifecycleTask.USER_ACTION_EXECUTOR.execute(() -> {
             try {
                 p.backfillRecentProgress(getHttpClient(), 12);
             } catch (Exception e) {
