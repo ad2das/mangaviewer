@@ -304,8 +304,12 @@ public class MainMain extends Fragment{
         selectedBaseMode = baseMode;
         p.setBaseMode(baseMode);
         if(mainRecycler != null) {
+            MainWebtoonAdapter selectedAdapter = getSelectedAdapter();
+            if(selectedAdapter != null)
+                selectedAdapter.showInitialRows();
             mainRecycler.stopScroll();
-            mainRecycler.setAdapter(getSelectedAdapter());
+            if(mainRecycler.getAdapter() != selectedAdapter)
+                mainRecycler.swapAdapter(selectedAdapter, false);
             scrollHomeToTop();
         }
         updateModeToggle();
