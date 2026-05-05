@@ -149,9 +149,9 @@
             <androidx.appcompat.widget.LinearLayoutCompat
                 android:id="@+id/TitleTagContainer"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="24dp"
                 android:layout_marginStart="@dimen/app_space_md"
-                android:layout_marginTop="@dimen/app_space_xs"
+                android:layout_marginTop="6dp"
                 android:layout_marginEnd="@dimen/app_space_sm"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
@@ -164,21 +164,30 @@
                 <TextView
                     android:id="@+id/TitleBaseMode"
                     android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginEnd="@dimen/app_space_xs"
+                    android:layout_height="22dp"
+                    android:layout_marginEnd="6dp"
+                    android:background="@drawable/app_soft_chip_bg"
                     android:ellipsize="end"
+                    android:gravity="center"
+                    android:includeFontPadding="false"
                     android:maxLines="1"
+                    android:minWidth="38dp"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
                     android:textColor="@color/appAccent"
-                    android:textSize="12sp"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
                     tools:text="웹툰" />
 
                 <TextView
                     android:id="@+id/TitleTag"
                     style="@style/AppText.Caption"
                     android:layout_width="0dp"
-                    android:layout_height="wrap_content"
+                    android:layout_height="22dp"
                     android:layout_weight="1"
                     android:ellipsize="end"
+                    android:gravity="center_vertical"
+                    android:includeFontPadding="false"
                     android:maxLines="1"
                     tools:text="액션 판타지 드라마" />
 
