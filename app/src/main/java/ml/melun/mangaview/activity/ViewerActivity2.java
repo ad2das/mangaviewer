@@ -946,9 +946,10 @@ public class ViewerActivity2 extends AppCompatActivity {
     public void bookmarkRefresh(){
         if(manga.useBookmark()) {
             viewerBookmark = p.getViewerBookmark(manga);
-            // if manga is online or has title.gson
-            p.addRecent(title);
-            p.setBookmark(title, id);
+            if(manga.isOnline()) {
+                p.addRecent(title);
+                p.setBookmark(title, id);
+            }
         }else
             viewerBookmark = 0;
     }

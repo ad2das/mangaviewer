@@ -181,8 +181,10 @@ public class Preference {
         if(source == null)
             return result;
         for(MTitle title : source) {
-            if(title != null && title.getId() > 0)
+            if(title != null && title.getId() > 0) {
+                title.setPath(null);
                 result.add(title);
+            }
         }
         return result;
     }
@@ -387,6 +389,7 @@ public class Preference {
 
     public void addRecent(MTitle tmp){
         if(tmp != null && tmp.getId()>0) {
+            tmp.setPath(null);
             int position = getIndexOf(tmp);
             if (position > -1) {
                 recent.remove(position);
@@ -398,6 +401,7 @@ public class Preference {
     public void addRecent(Title tmp){
         if(tmp != null && tmp.getId()>0) {
             MTitle title = tmp.minimize();
+            title.setPath(null);
             int position = getIndexOf(title);
             if (position > -1) {
                 recent.remove(position);
@@ -412,6 +416,7 @@ public class Preference {
         if(title == null)
             return;
         MTitle tmp = title.clone();
+        tmp.setPath(null);
         int recentIndex = getIndexOf(tmp);
         if(recentIndex > -1) {
             recent.set(recentIndex, tmp);
@@ -430,6 +435,7 @@ public class Preference {
         if(title == null)
             return;
         MTitle tmp = title.minimize();
+        tmp.setPath(null);
         int recentIndex = getIndexOf(tmp);
         if(recentIndex > -1) {
             recent.set(recentIndex, tmp);

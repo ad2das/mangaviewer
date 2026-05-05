@@ -722,7 +722,7 @@ public class ViewerActivity extends AppCompatActivity {
             if (page.index > -1) {
                 manager.scrollToPageWithOffset(page, p.getViewerBookmarkOffset(m));
             }
-            if (m.useBookmark()) {
+            if (m.isOnline()) {
                 // if manga is online or has title.gson
                 if (title == null) title = m.getTitle();
                 p.addRecent(title);
@@ -775,7 +775,8 @@ public class ViewerActivity extends AppCompatActivity {
             p.setViewerBookmark(page.manga, page.index, offset);
             if(title == null)
                 title = page.manga.getTitle();
-            p.setBookmark(title, page.manga.getId());
+            if(page.manga.isOnline())
+                p.setBookmark(title, page.manga.getId());
             return;
         }
     }
