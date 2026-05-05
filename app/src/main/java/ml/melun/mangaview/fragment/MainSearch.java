@@ -17,6 +17,7 @@ import android.widget.AdapterView;
 import android.widget.EditText;
 import android.widget.Spinner;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -76,6 +77,7 @@ public class MainSearch extends Fragment {
     LinearLayoutCompat optionsPanel;
     String prequery = null;
     boolean pendingOpenSearch = false;
+    boolean onlineSearchMode = false;
     TextView libraryCount;
     TabLayout libraryTab;
     ArrayList<Title> offlineTitles = new ArrayList<>();
@@ -278,6 +280,8 @@ public class MainSearch extends Fragment {
         libraryTab.addOnTabSelectedListener(new TabLayout.OnTabSelectedListener() {
             @Override
             public void onTabSelected(TabLayout.Tab tab) {
+                if(onlineSearchMode)
+                    return;
                 showLibrary();
             }
 
@@ -294,6 +298,7 @@ public class MainSearch extends Fragment {
     private void showLibrary() {
         if(searchResult == null || getContext() == null)
             return;
+        onlineSearchMode = false;
         if(activeLibraryQuery != null && activeLibraryQuery.length() > 0) {
             performLibrarySearch(activeLibraryQuery);
             return;
@@ -540,23 +545,17 @@ public class MainSearch extends Fragment {
         searchBox.setText(prequery);
         searchBox.setSelection(searchBox.getText().length());
         prequery = null;
+        onlineSearchMode = true;
         searchSubmitOnline();
     }
 
     void searchSubmit(){
         String query = searchBox.getText().toString().trim();
-        if(query.length() == 0) {
-            activeLibraryQuery = null;
-            search = null;
-            if(searchTask != null) {
-                searchTask.cancel(true);
-                searchTask = null;
-            }
-            activeSearchKey = null;
-            showLibrary();
+        if(query.length() < 2) {
+            showMinimumSearchLengthToast();
             return;
         }
-        if(search != null) {
+        if(onlineSearchMode) {
             searchSubmitOnline();
             return;
         }
@@ -566,6 +565,7 @@ public class MainSearch extends Fragment {
     private void performLibrarySearch(String query) {
         if(getContext() == null)
             return;
+        onlineSearchMode = false;
         activeLibraryQuery = query;
         search = null;
         activeSearchKey = null;
@@ -621,7 +621,12 @@ public class MainSearch extends Fragment {
 
     private void searchSubmitOnline(){
         String query = searchBox.getText().toString().trim();
+        if(query.length() < 2) {
+            showMinimumSearchLengthToast();
+            return;
+        }
         if(query.length()>0) {
+            onlineSearchMode = true;
             activeLibraryQuery = null;
             hideKeyboard();
             swipe.setRefreshing(true);
@@ -642,6 +647,11 @@ public class MainSearch extends Fragment {
 
     private String searchKey(String query) {
         return query + "\u001f" + searchMode.getSelectedItemPosition() + "\u001f" + (baseMode.getSelectedItemPosition() + 1);
+    }
+
+    private void showMinimumSearchLengthToast() {
+        if(getContext() != null)
+            Toast.makeText(getContext(), "최소 2글자 이상 입력해주세요", Toast.LENGTH_SHORT).show();
     }
 
     private void updateAdvSearchVisibility() {
