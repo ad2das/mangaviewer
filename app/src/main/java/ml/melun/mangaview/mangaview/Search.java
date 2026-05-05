@@ -16,6 +16,7 @@ import java.util.Set;
 import okhttp3.Response;
 
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
+import static ml.melun.mangaview.mangaview.MTitle.base_auto;
 import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
 import static ml.melun.mangaview.mangaview.MTitle.baseModeStr;
 
@@ -52,6 +53,8 @@ public class Search {
     public int fetch(CustomHttpClient client) {
         result = new ArrayList<>();
         if(!last) {
+            if(baseMode == base_auto)
+                return fetchAll(client);
             if(baseMode == base_webtoon)
                 return fetchWebtoon(client);
             if(baseMode == base_comic)
@@ -150,6 +153,49 @@ public class Search {
             return 1;
         }
         return 0;
+    }
+
+    private int fetchAll(CustomHttpClient client) {
+        int status = 0;
+        ArrayList<Title> combined = new ArrayList<>();
+
+        Search webtoonSearch = new Search(query, mode, base_webtoon);
+        int webtoonStatus = webtoonSearch.fetch(client);
+        if(webtoonStatus == 0)
+            appendUnique(combined, webtoonSearch.getResult());
+        else
+            status = webtoonStatus;
+
+        Search comicSearch = new Search(query, mode, base_comic);
+        int comicStatus = comicSearch.fetch(client);
+        if(comicStatus == 0)
+            appendUnique(combined, comicSearch.getResult());
+        else if(status == 0)
+            status = comicStatus;
+
+        result.addAll(combined);
+        last = true;
+        return result.size() > 0 ? 0 : status;
+    }
+
+    private static void appendUnique(ArrayList<Title> target, ArrayList<Title> source) {
+        if(target == null || source == null)
+            return;
+        for(Title title : source) {
+            if(title == null)
+                continue;
+            boolean exists = false;
+            for(Title existing : target) {
+                if(existing != null
+                        && existing.getBaseMode() == title.getBaseMode()
+                        && existing.getId() == title.getId()) {
+                    exists = true;
+                    break;
+                }
+            }
+            if(!exists)
+                target.add(title);
+        }
     }
 
     private int fetchWebtoon(CustomHttpClient client) {

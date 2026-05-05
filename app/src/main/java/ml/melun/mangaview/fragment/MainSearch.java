@@ -296,7 +296,7 @@ public class MainSearch extends Fragment {
             return;
         pendingOpenSearch = false;
         if(!libraryMode)
-            searchBox.setHint("작품 검색");
+            searchBox.setHint("웹툰/만화 통합 검색");
         searchBox.setVisibility(View.VISIBLE);
         if(optionsPanel != null)
             optionsPanel.setVisibility(View.GONE);
@@ -711,7 +711,7 @@ public class MainSearch extends Fragment {
             if(noresult != null)
                 noresult.setVisibility(View.GONE);
             updateAdvSearchVisibility();
-            search = new Search(query,searchMode.getSelectedItemPosition(), baseMode.getSelectedItemPosition()+1);
+            search = new Search(query, searchMode.getSelectedItemPosition(), MTitle.base_auto);
             if(searchTask != null)
                 searchTask.cancel(true);
             activeSearchKey = key;
@@ -721,7 +721,7 @@ public class MainSearch extends Fragment {
     }
 
     private String searchKey(String query) {
-        return query + "\u001f" + searchMode.getSelectedItemPosition() + "\u001f" + (baseMode.getSelectedItemPosition() + 1);
+        return query + "\u001f" + searchMode.getSelectedItemPosition() + "\u001f" + MTitle.base_auto;
     }
 
     private void updateSearchChrome(boolean online) {

@@ -20,7 +20,7 @@
         android:contentDescription="검색어"
         android:drawableStart="@drawable/ic_search"
         android:drawablePadding="10dp"
-        android:hint="작품 검색"
+        android:hint="웹툰/만화 통합 검색"
         android:inputType="textPersonName"
         android:paddingStart="@dimen/app_space_lg"
         android:paddingEnd="@dimen/app_space_lg"
