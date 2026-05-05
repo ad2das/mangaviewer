@@ -1,6 +1,7 @@
 package ml.melun.mangaview.fragment;
 
 import android.content.Intent;
+import android.content.DialogInterface;
 import android.net.Uri;
 import ml.melun.mangaview.task.LifecycleTask;
 import android.os.Bundle;
@@ -21,6 +22,7 @@ import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.widget.LinearLayoutCompat;
 import androidx.appcompat.widget.PopupMenu;
 import androidx.documentfile.provider.DocumentFile;
@@ -53,11 +55,14 @@ import ml.melun.mangaview.mangaview.Title;
 
 import static ml.melun.mangaview.MainApplication.httpClient;
 import static ml.melun.mangaview.MainApplication.p;
+import static ml.melun.mangaview.Utils.deleteRecursive;
 import static ml.melun.mangaview.Utils.episodeIntent;
+import static ml.melun.mangaview.Utils.filterFolder;
 import static ml.melun.mangaview.Utils.openViewer;
 import static ml.melun.mangaview.Utils.popup;
 import static ml.melun.mangaview.Utils.readFileToString;
 import static ml.melun.mangaview.Utils.readUriToString;
+import static ml.melun.mangaview.Utils.showPopup;
 import static ml.melun.mangaview.Utils.useScopedStorageHome;
 import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 
@@ -436,11 +441,14 @@ public class MainSearch extends Fragment {
             @Override
             public void onLongClick(View view, int position) {
                 Title title = searchAdapter.getItem(position);
-                popup(getContext(),view, position, title, 0, item -> {
+                popup(getContext(),view, position, title, isOfflineTitle(title) ? 3 : 0, item -> {
                     switch(item.getItemId()){
                         case R.id.favAdd:
                         case R.id.favDel:
                             p.toggleFavorite(title,0);
+                            break;
+                        case R.id.remove:
+                            confirmDeleteOfflineTitle(title);
                             break;
                     }
                     return false;
@@ -539,6 +547,89 @@ public class MainSearch extends Fragment {
 
     private boolean isOfflineTitle(Title title) {
         return title != null && title.getPath() != null && title.getPath().length() > 0;
+    }
+
+    private void confirmDeleteOfflineTitle(Title title) {
+        if(getContext() == null || !isOfflineTitle(title))
+            return;
+        DialogInterface.OnClickListener listener = (dialog, which) -> {
+            if(which == DialogInterface.BUTTON_POSITIVE)
+                deleteOfflineTitle(title);
+        };
+        AlertDialog.Builder builder = p.getDarkTheme()
+                ? new AlertDialog.Builder(getContext(), R.style.darkDialog)
+                : new AlertDialog.Builder(getContext());
+        builder.setMessage(title.getName() + " 을(를) 저장됨에서 삭제하시겠습니까?")
+                .setPositiveButton("네", listener)
+                .setNegativeButton("아니오", listener)
+                .show();
+    }
+
+    private void deleteOfflineTitle(Title title) {
+        if(getContext() == null || title == null)
+            return;
+        boolean deleted = false;
+        String path = title.getPath();
+        if(path != null && path.length() > 0) {
+            if(useScopedStorageHome(path)) {
+                try {
+                    DocumentFile target = DocumentFile.fromTreeUri(getContext(), Uri.parse(path));
+                    deleted = target != null && target.delete();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            } else {
+                deleted = deleteRecursive(new File(path));
+            }
+        }
+        if(!deleted)
+            deleted = deleteOfflineTitleByName(title);
+
+        if(deleted) {
+            removeOfflineTitleFromCache(title);
+            Toast.makeText(getContext(), "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
+            refreshLibraryAfterOfflineDelete();
+        } else {
+            showPopup(getContext(), "알림", "삭제를 실패했습니다");
+        }
+    }
+
+    private boolean deleteOfflineTitleByName(Title title) {
+        if(getContext() == null || title == null)
+            return false;
+        if(useScopedStorageHome(p.getHomeDir())) {
+            try {
+                DocumentFile home = DocumentFile.fromTreeUri(getContext(), Uri.parse(p.getHomeDir()));
+                DocumentFile target = home == null ? null : home.findFile(filterFolder(title.getName()));
+                return target != null && target.delete();
+            } catch (Exception e) {
+                e.printStackTrace();
+                return false;
+            }
+        }
+        return deleteRecursive(new File(p.getHomeDir(), filterFolder(title.getName())));
+    }
+
+    private void removeOfflineTitleFromCache(Title title) {
+        if(title == null)
+            return;
+        for(int i = offlineTitles.size() - 1; i >= 0; i--) {
+            Title stored = offlineTitles.get(i);
+            if(stored == null)
+                continue;
+            boolean samePath = title.getPath() != null && title.getPath().equals(stored.getPath());
+            boolean sameTitle = title.getId() > 0 && stored.getId() == title.getId() && stored.getBaseMode() == title.getBaseMode();
+            if(samePath || sameTitle)
+                offlineTitles.remove(i);
+        }
+    }
+
+    private void refreshLibraryAfterOfflineDelete() {
+        offlineTitles = new ArrayList<>();
+        if(activeLibraryQuery != null && activeLibraryQuery.length() > 0)
+            performLibrarySearch(activeLibraryQuery);
+        else
+            showLibrary();
     }
 
     private boolean handleTitleListTap(float x, float y) {
