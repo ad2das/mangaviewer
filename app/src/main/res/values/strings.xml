@@ -254,7 +254,6 @@
         소스 사이트로 해주십시오.
     </string>
     <string name="eula">MangaView를 사용하며 발생하는 문제에 대한 모든 책임은 사용자에게 있습니다. 동의하지 않을 경우 종료해 주세요.</string>
-    <string name="title_activity_comments">CommentsActivity</string>
     <string name="title_activity_test">testActivity</string>
     <string name="section_format">Hello World from section: %1$d</string>
     <string name="title_activity_login">로그인</string>

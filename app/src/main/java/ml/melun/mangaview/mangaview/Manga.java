@@ -84,22 +84,18 @@ public class Manga {
     }
 
     public synchronized int fetch(CustomHttpClient client) {
-        return fetch(client, true, null, true);
+        return fetch(client, true, null);
     }
 
     public synchronized int fetch(CustomHttpClient client, Map<String, String> cookies) {
-        return fetch(client, false, cookies, true);
-    }
-
-    public synchronized int fetch(CustomHttpClient client, boolean doLogin, Map<String, String> cookies) {
-        return fetch(client, doLogin, cookies, true);
+        return fetch(client, false, cookies);
     }
 
     public synchronized int fetchForViewerInitial(CustomHttpClient client) {
-        return fetch(client, true, null, false);
+        return fetch(client, true, null);
     }
 
-    private synchronized int fetch(CustomHttpClient client, boolean doLogin, Map<String, String> cookies, boolean includeComments) {
+    public synchronized int fetch(CustomHttpClient client, boolean doLogin, Map<String, String> cookies) {
         if(isComicWolfSource())
             return fetchWolf(client, "/cv?toon=", "/cv?toon=");
         if(isWebtoonWolfSource())
@@ -109,9 +105,6 @@ public class Manga {
         imgs = new ArrayList<>();
         Set<String> seenImages = new LinkedHashSet<>();
         eps = new ArrayList<>();
-        comments = new ArrayList<>();
-        bcomments = new ArrayList<>();
-        commentsLoaded = false;
         int tries = 0;
         int timeoutRetries = 0;
 
@@ -210,9 +203,6 @@ public class Manga {
                     }
                 }
 
-                if(includeComments)
-                    parseComments(d);
-
             } catch (Exception e2) {
                 e2.printStackTrace();
             }
@@ -222,17 +212,6 @@ public class Manga {
             tries++;
         }
         return LOAD_OK;
-    }
-
-    public synchronized void fetchComments(CustomHttpClient client) {
-        if(commentsLoaded || !isOnline() || isComicWolfSource() || isWebtoonWolfSource())
-            return;
-        try {
-            CustomHttpClient.PageResponse page = client.mgetCachedPage(baseModeStr(baseMode) + '/' + id, PAGE_CACHE_TTL_MS);
-            parseComments(Jsoup.parse(page.body));
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
     }
 
     private int parseEpisodeId(String href, String marker) {
@@ -304,9 +283,6 @@ public class Manga {
         imgs = new ArrayList<>();
         Set<String> seenImages = new LinkedHashSet<>();
         eps = new ArrayList<>();
-        comments = new ArrayList<>();
-        bcomments = new ArrayList<>();
-        commentsLoaded = true;
 
         for(int attempt = 0; attempt < 2; attempt++) {
             try {
@@ -415,77 +391,6 @@ public class Manga {
         return manga;
     }
 
-    private void parseComments(Document d) {
-        comments = new ArrayList<>();
-        bcomments = new ArrayList<>();
-        Element commentdiv = d == null ? null : d.selectFirst("div#viewcomment");
-        try {
-            if(commentdiv != null && commentdiv.selectFirst("section#bo_vc") != null)
-                for (Element e : commentdiv.selectFirst("section#bo_vc").select("div.media")) {
-                    try {
-                        comments.add(parseComment(e));
-                    } catch (Exception e3) {
-                        e3.printStackTrace();
-                    }
-                }
-            if(commentdiv != null && commentdiv.selectFirst("section#bo_vcb") != null)
-                for (Element e : commentdiv.selectFirst("section#bo_vcb").select("div.media")) {
-                    try {
-                        bcomments.add(parseComment(e));
-                    } catch (Exception e3) {
-                        e3.printStackTrace();
-                    }
-                }
-        } catch (Exception e1) {
-            e1.printStackTrace();
-        }
-        commentsLoaded = true;
-    }
-
-    private Comment parseComment(Element e) {
-        String user;
-        String icon;
-        String content;
-        String timestamp;
-        int likes;
-        int level;
-        String lvlstr;
-        int indent;
-        String indentstr;
-        //indent
-        indentstr = e.attr("style");
-        if (indentstr.length() > 0)
-            indent = Integer.parseInt(indentstr.substring(indentstr.lastIndexOf(':') + 1, indentstr.lastIndexOf('p'))) / 64;
-        else
-            indent = 0;
-
-        //icon
-        Element icone = e.selectFirst(".media-object");
-        if (icone.is("img"))
-            icon = icone.attr("src");
-        else
-            icon = "";
-
-        Element header = e.selectFirst("div.media-heading");
-        Element userSpan = header.selectFirst("span.member");
-        user = userSpan.ownText();
-        if (userSpan.hasClass("guest"))
-            level = 0;
-        else {
-            lvlstr = userSpan.selectFirst("img").attr("src");
-            level = Integer.parseInt(lvlstr.substring(lvlstr.lastIndexOf('/') + 1, lvlstr.lastIndexOf('.')));
-        }
-        timestamp = header.selectFirst("span.media-info").ownText();
-
-        Element cbody = e.selectFirst("div.media-content");
-        content = cbody.selectFirst("div:not([class])").ownText();
-
-        Elements cspans = cbody.selectFirst("div.cmt-good-btn").select("span");
-        likes = Integer.parseInt(cspans.get(cspans.size() - 1).ownText());
-        return new Comment(user, timestamp, icon, content, indent, likes, level);
-    }
-
-
     public List<Manga> getEps() {
         return eps;
     }
@@ -530,18 +435,6 @@ public class Manga {
             }
         }
         return imgs;
-    }
-
-    public List<Comment> getComments() {
-        return comments;
-    }
-
-    public List<Comment> getBestComments() {
-        return bcomments;
-    }
-
-    public boolean areCommentsLoaded() {
-        return commentsLoaded;
     }
 
     public int getSeed() {
@@ -695,8 +588,6 @@ public class Manga {
     String name;
     List<Manga> eps;
     List<String> imgs;
-    List<Comment> comments, bcomments;
-    boolean commentsLoaded = false;
     String offlinePath;
     String thumb;
     transient Title title;

@@ -89,7 +89,6 @@ public class ViewerActivity extends AppCompatActivity {
     List<String> imgs;
     boolean dark;
     Intent result;
-    ImageButton commentBtn;
     ImageButton saveBtn;
     int width=0;
     Intent intent;
@@ -144,7 +143,6 @@ public class ViewerActivity extends AppCompatActivity {
         updateAutoCutButtonState();
         pageBtn = this.findViewById(R.id.viewerBtn1);
         pageBtn.setText("-/-");
-        commentBtn = this.findViewById(R.id.commentButton);
         saveBtn = this.findViewById(R.id.viewerSaveButton);
         spinner = this.findViewById(R.id.toolbar_spinner);
         width = getScreenSize(getWindowManager().getDefaultDisplay());
@@ -285,7 +283,6 @@ public class ViewerActivity extends AppCompatActivity {
             }
 
             if(!manga.isOnline()){
-                commentBtn.setVisibility(View.GONE);
                 saveBtn.setVisibility(View.GONE);
             }
             
@@ -494,15 +491,6 @@ public class ViewerActivity extends AppCompatActivity {
             if(item != null) {
                 pageBtn.setText(item.index+1 + "/" + item.manga.getImgs(context).size());
                 toolbarTitle.setText(item.manga.getName());
-                commentBtn.setOnClickListener(v -> {
-                    Intent commentActivity = new Intent(context, CommentsActivity.class);
-                    //create gson and put extra
-                    Gson gson = new Gson();
-                    commentActivity.putExtra("comments", gson.toJson(item.manga.getComments()));
-                    commentActivity.putExtra("bestComments", gson.toJson(item.manga.getBestComments()));
-                    commentActivity.putExtra("id", item.manga.getId());
-                    startActivity(commentActivity);
-                });
                 appbar.animate().translationY(0);
                 appbarBottom.animate().translationY(0);
                 toolbarshow = true;
@@ -652,8 +640,6 @@ public class ViewerActivity extends AppCompatActivity {
             callback.post(m);
             if(lockui)
                 hydrateEpisodeListAfterFirstFrame(m);
-            if(lockui)
-                hydrateCommentsAfterFirstFrame(m);
         }
 
         void cancel() {
@@ -820,26 +806,6 @@ public class ViewerActivity extends AppCompatActivity {
                     e.printStackTrace();
             }
         }, 350);
-    }
-
-    private void hydrateCommentsAfterFirstFrame(Manga target) {
-        if(target == null || !target.isOnline() || target.areCommentsLoaded())
-            return;
-        mainHandler.postDelayed(() -> {
-            try {
-                imageLoadExecutor.submit(() -> {
-                    try {
-                        target.fetchComments(getHttpClient());
-                    } catch (Exception e) {
-                        if(!isFinishing())
-                            e.printStackTrace();
-                    }
-                });
-            } catch (RejectedExecutionException e) {
-                if(!isFinishing())
-                    e.printStackTrace();
-            }
-        }, 700);
     }
 
     private void saveCurrentScrollBookmark() {
@@ -1375,7 +1341,6 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     void lockUi(boolean lock){
-        commentBtn.setEnabled(!lock);
         saveBtn.setEnabled(!lock);
         next.setEnabled(!lock);
         prev.setEnabled(!lock);

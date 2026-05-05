@@ -73,11 +73,6 @@
             android:configChanges="orientation|screenSize"
             android:label="고급 검색" />
         <activity
-            android:name=".activity.CommentsActivity"
-            android:configChanges="orientation|screenSize"
-            android:label="댓글"
-            android:theme="@style/AppTheme.NoActionBar" />
-        <activity
             android:name=".activity.DebugActivity"
             android:configChanges="orientation|screenSize" />
         <activity

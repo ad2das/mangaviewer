@@ -363,7 +363,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         ImageView thumb, fav;
         TextView author;
         TextView tags;
-        TextView recommend_c, battery_c, comment_c, bookmark_c;
+        TextView recommend_c, battery_c, bookmark_c;
         TextView baseModeStr;
         TextView progressText;
         ProgressBar progress;
@@ -383,7 +383,6 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             resume = itemView.findViewById(R.id.epsButton);
             recommend_c = itemView.findViewById(R.id.TitleRecommend_c);
             battery_c = itemView.findViewById(R.id.TitleBattery_c);
-            comment_c = itemView.findViewById(R.id.TitleComment_c);
             bookmark_c = itemView.findViewById(R.id.TitleBookmark_c);
             baseModeStr = itemView.findViewById(R.id.TitleBaseMode);
             progress = itemView.findViewById(R.id.TitleProgress);

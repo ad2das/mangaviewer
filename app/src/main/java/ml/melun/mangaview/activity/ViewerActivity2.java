@@ -78,7 +78,7 @@ public class ViewerActivity2 extends AppCompatActivity {
     String name;
     int id;
     Manga manga;
-    ImageButton next, prev, commentBtn, saveBtn;
+    ImageButton next, prev, saveBtn;
     androidx.appcompat.widget.Toolbar toolbar;
     Button pageBtn, nextPageBtn, prevPageBtn, touchToggleBtn;
     AppBarLayout appbar, appbarBottom;
@@ -218,7 +218,6 @@ public class ViewerActivity2 extends AppCompatActivity {
 
         touchToggleBtn = this.findViewById(R.id.viewerBtn2);
         touchToggleBtn.setText("입력 제한");
-        commentBtn = this.findViewById(R.id.commentButton);
         saveBtn = this.findViewById(R.id.viewerSaveButton);
         saveBtn.setOnClickListener(view -> saveCurrentEpisodeOffline());
         stretch = p.getStretch();
@@ -262,7 +261,6 @@ public class ViewerActivity2 extends AppCompatActivity {
         }
         if(!manga.isOnline()) {
             reloadManga();
-            commentBtn.setVisibility(View.GONE);
             saveBtn.setVisibility(View.GONE);
         }else{
             //if online
@@ -350,16 +348,6 @@ public class ViewerActivity2 extends AppCompatActivity {
         };
         nextPageBtn.setOnLongClickListener(tbToggle);
         prevPageBtn.setOnLongClickListener(tbToggle);
-
-        commentBtn.setOnClickListener(v -> {
-            Intent commentActivity = new Intent(context, CommentsActivity.class);
-            //create gson and put extra
-            Gson gson = new Gson();
-            commentActivity.putExtra("comments", gson.toJson(manga.getComments()));
-            commentActivity.putExtra("bestComments", gson.toJson(manga.getBestComments()));
-            commentActivity.putExtra("id", manga.getId());
-            startActivity(commentActivity);
-        });
 
     }
 
@@ -1051,7 +1039,6 @@ public class ViewerActivity2 extends AppCompatActivity {
 
     void lockUi(Boolean lock){
         toolbar_toggleBtn.setEnabled(!lock);
-        commentBtn.setEnabled(!lock);
         saveBtn.setEnabled(!lock);
         next.setEnabled(!lock);
         prev.setEnabled(!lock);

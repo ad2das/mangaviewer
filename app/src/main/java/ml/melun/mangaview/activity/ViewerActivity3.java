@@ -63,7 +63,6 @@ public class ViewerActivity3 extends AppCompatActivity {
     AppBarLayout appbar, appbarBottom;
     Toolbar toolbar;
     Button cut, pageBtn;
-    ImageButton commentBtn;
     ImageButton saveBtn;
     int width;
     Intent intent;
@@ -144,7 +143,6 @@ public class ViewerActivity3 extends AppCompatActivity {
 
         pageBtn = this.findViewById(R.id.viewerBtn1);
         pageBtn.setText("-/-");
-        commentBtn = this.findViewById(R.id.commentButton);
         saveBtn = this.findViewById(R.id.viewerSaveButton);
         saveBtn.setOnClickListener(view -> saveCurrentEpisodeOffline());
         width = getScreenSize(getWindowManager().getDefaultDisplay());
@@ -237,21 +235,11 @@ public class ViewerActivity3 extends AppCompatActivity {
             }
             if(!manga.isOnline()){
                 //load local imgs
-                commentBtn.setVisibility(View.GONE);
                 saveBtn.setVisibility(View.GONE);
                 reloadManga();
             }else {
                 refresh();
             }
-            commentBtn.setOnClickListener(v -> {
-                Intent commentActivity = new Intent(context, CommentsActivity.class);
-                //create gson and put extra
-                Gson gson = new Gson();
-                commentActivity.putExtra("comments", gson.toJson(manga.getComments()));
-                commentActivity.putExtra("bestComments", gson.toJson(manga.getBestComments()));
-                commentActivity.putExtra("id", manga.getId());
-                startActivity(commentActivity);
-            });
         }catch(Exception e){
             e.printStackTrace();
         }
@@ -549,7 +537,6 @@ public class ViewerActivity3 extends AppCompatActivity {
     }
 
     void lockUi(boolean lock){
-        commentBtn.setEnabled(!lock);
         saveBtn.setEnabled(!lock);
         next.setEnabled(!lock);
         prev.setEnabled(!lock);
