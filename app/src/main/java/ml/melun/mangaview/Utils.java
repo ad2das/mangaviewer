@@ -193,8 +193,62 @@ public class Utils {
                 break;
         }
         ViewerWarmupManager.warmup(context, manga, manga == null ? null : manga.getTitle());
-        viewer.putExtra("manga",new Gson().toJson(manga));
+        viewer.putExtra("manga", toViewerMangaJson(manga, manga == null ? null : manga.getTitle()));
         return viewer;
+    }
+
+    public static String toViewerMangaJson(Manga manga, Title title) {
+        return new Gson().toJson(viewerMangaCopy(manga, title));
+    }
+
+    public static String toViewerTitleJson(Title title) {
+        if(title == null)
+            return null;
+        Title copy = new Title(title.minimize());
+        copy.setEps(viewerEpisodeCopies(title.getEps()));
+        return new Gson().toJson(copy);
+    }
+
+    private static Manga viewerMangaCopy(Manga source, Title title) {
+        if(source == null)
+            return null;
+        Manga copy = viewerEpisodeCopy(source);
+        List<Manga> episodes = null;
+        if(title != null && title.getEps() != null)
+            episodes = title.getEps();
+        else if(source.getEps() != null)
+            episodes = source.getEps();
+        copy.setEps(viewerEpisodeCopies(episodes));
+        if(title != null)
+            copy.setTitle(new Title(title.minimize()));
+        return copy;
+    }
+
+    private static ArrayList<Manga> viewerEpisodeCopies(List<Manga> episodes) {
+        ArrayList<Manga> copies = new ArrayList<>();
+        if(episodes == null)
+            return copies;
+        for(Manga episode : episodes) {
+            if(episode != null)
+                copies.add(viewerEpisodeCopy(episode));
+        }
+        return copies;
+    }
+
+    private static Manga viewerEpisodeCopy(Manga source) {
+        Manga copy = new Manga(source.getId(), source.getName(), source.getDate(), source.getBaseMode());
+        copy.addThumb(source.getThumb());
+        copy.setMode(source.getMode());
+        copy.setTitleId(source.getTitleId());
+        copy.setOfflinePath(source.getOfflinePath());
+        try {
+            List<String> images = source.getImgs(null);
+            if(images != null)
+                copy.setImgs(new ArrayList<>(images));
+        } catch (Exception ignored) {
+            // Offline image lists need a Context to resolve storage; the viewer can resolve them after launch.
+        }
+        return copy;
     }
 
     public static boolean queueOfflineDownload(Context context, Title title, Manga manga) {
@@ -870,7 +924,7 @@ public class Utils {
         if(returnToEpisodes)
             viewer.putExtra("returnToEpisodes", true);
         if(manga != null && manga.getTitle() != null)
-            viewer.putExtra("title", new Gson().toJson(manga.getTitle()));
+            viewer.putExtra("title", toViewerTitleJson(manga.getTitle()));
         ((Activity)context).startActivityForResult(viewer, code);
     }
 

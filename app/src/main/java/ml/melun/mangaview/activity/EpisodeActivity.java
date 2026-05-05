@@ -51,6 +51,8 @@ import static ml.melun.mangaview.Utils.getOfflineEpisodes;
 import static ml.melun.mangaview.Utils.queueOfflineDownload;
 import static ml.melun.mangaview.Utils.showCaptchaPopup;
 import static ml.melun.mangaview.Utils.showTokiCaptchaPopup;
+import static ml.melun.mangaview.Utils.toViewerMangaJson;
+import static ml.melun.mangaview.Utils.toViewerTitleJson;
 import static ml.melun.mangaview.Utils.useScopedStorageHome;
 import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
@@ -612,8 +614,8 @@ public class EpisodeActivity extends AppCompatActivity {
                 viewer = new Intent(context, ViewerActivity2.class);
                 break;
         }
-        viewer.putExtra("manga", new Gson().toJson(manga));
-        viewer.putExtra("title", new Gson().toJson(title));
+        viewer.putExtra("manga", toViewerMangaJson(manga, title));
+        viewer.putExtra("title", toViewerTitleJson(title));
         viewer.putExtra("recent",true);
         startActivityForResult(viewer, code);
     }
