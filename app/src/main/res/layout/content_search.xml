@@ -20,7 +20,7 @@
         android:contentDescription="검색어"
         android:drawableStart="@drawable/ic_search"
         android:drawablePadding="10dp"
-        android:hint="웹툰/만화 통합 검색"
+        android:hint="전체 검색"
         android:inputType="textPersonName"
         android:paddingStart="@dimen/app_space_lg"
         android:paddingEnd="@dimen/app_space_lg"
@@ -59,19 +59,21 @@
         android:orientation="horizontal"
         android:paddingStart="@dimen/app_space_lg"
         android:paddingEnd="@dimen/app_space_lg"
-        android:visibility="gone"
+        android:visibility="visible"
         app:layout_constraintTop_toBottomOf="@+id/searchBox">
 
         <androidx.appcompat.widget.AppCompatSpinner
             android:id="@+id/searchBaseMode"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
             android:entries="@array/baseOption" />
 
         <androidx.appcompat.widget.AppCompatSpinner
             android:id="@+id/searchMode"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
             android:entries="@array/searchModes" />
 
     </androidx.appcompat.widget.LinearLayoutCompat>

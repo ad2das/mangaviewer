@@ -85,6 +85,7 @@
     </string-array>
 
     <string-array name="baseOption">
+        <item>전체</item>
         <item>만화</item>
         <item>웹툰</item>
     </string-array>

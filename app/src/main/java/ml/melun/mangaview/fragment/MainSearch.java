@@ -187,6 +187,8 @@ public class MainSearch extends Fragment {
                 libraryTab.setVisibility(View.GONE);
             if(libraryMeta != null)
                 libraryMeta.setVisibility(View.GONE);
+            if(optionsPanel != null)
+                optionsPanel.setVisibility(View.VISIBLE);
             noresult.setText("검색어를 입력하면 작품을 찾아드립니다");
             noresult.setVisibility(View.VISIBLE);
         }
@@ -196,7 +198,8 @@ public class MainSearch extends Fragment {
         }
 
         searchBox.setOnFocusChangeListener((view, b) -> {
-            optionsPanel.setVisibility(View.GONE);
+            if(optionsPanel != null)
+                optionsPanel.setVisibility(onlineSearchMode || !libraryMode ? View.VISIBLE : View.GONE);
             updateAdvSearchVisibility();
         });
 
@@ -234,7 +237,7 @@ public class MainSearch extends Fragment {
         baseMode.setOnItemSelectedListener(mlistener);
         searchMode.setOnItemSelectedListener(mlistener);
 
-        baseMode.setSelection(p.getBaseMode()-1);
+        baseMode.setSelection(libraryMode ? baseModePosition(p.getBaseMode()) : 0);
         if(pendingBaseMode > 0)
             applyBaseMode(pendingBaseMode);
         if(prequery == null && libraryMode && !onlineSearchMode)
@@ -292,10 +295,31 @@ public class MainSearch extends Fragment {
     }
 
     private void applyBaseMode(int mode) {
-        int position = mode - 1;
+        int position = baseModePosition(mode);
         if(position < 0 || position >= baseMode.getCount())
             return;
         baseMode.setSelection(position);
+    }
+
+    private int baseModePosition(int mode) {
+        if(mode == MTitle.base_comic)
+            return 1;
+        if(mode == MTitle.base_webtoon)
+            return 2;
+        return 0;
+    }
+
+    private int selectedSearchBaseMode() {
+        if(baseMode == null)
+            return MTitle.base_auto;
+        switch(baseMode.getSelectedItemPosition()) {
+            case 1:
+                return MTitle.base_comic;
+            case 2:
+                return MTitle.base_webtoon;
+            default:
+                return MTitle.base_auto;
+        }
     }
 
     public void enterSearchMode() {
@@ -304,10 +328,10 @@ public class MainSearch extends Fragment {
             return;
         pendingOpenSearch = false;
         if(!libraryMode)
-            searchBox.setHint("웹툰/만화 통합 검색");
+            searchBox.setHint("전체 검색");
         searchBox.setVisibility(View.VISIBLE);
         if(optionsPanel != null)
-            optionsPanel.setVisibility(View.GONE);
+            optionsPanel.setVisibility(View.VISIBLE);
         searchBox.requestFocus();
         updateAdvSearchVisibility();
         searchBox.post(() -> {
@@ -805,7 +829,8 @@ public class MainSearch extends Fragment {
             if(noresult != null)
                 noresult.setVisibility(View.GONE);
             updateAdvSearchVisibility();
-            search = new Search(query, searchMode.getSelectedItemPosition(), MTitle.base_auto);
+            int selectedBaseMode = selectedSearchBaseMode();
+            search = new Search(query, searchMode.getSelectedItemPosition(), selectedBaseMode);
             if(searchTask != null)
                 searchTask.cancel(true);
             activeSearchKey = key;
@@ -815,10 +840,12 @@ public class MainSearch extends Fragment {
     }
 
     private String searchKey(String query) {
-        return query + "\u001f" + searchMode.getSelectedItemPosition() + "\u001f" + MTitle.base_auto;
+        return query + "\u001f" + searchMode.getSelectedItemPosition() + "\u001f" + selectedSearchBaseMode();
     }
 
     private void updateSearchChrome(boolean online) {
+        if(optionsPanel != null)
+            optionsPanel.setVisibility(online || !libraryMode ? View.VISIBLE : View.GONE);
         if(libraryTab != null)
             libraryTab.setVisibility(online ? View.GONE : View.VISIBLE);
         if(libraryMeta != null)
