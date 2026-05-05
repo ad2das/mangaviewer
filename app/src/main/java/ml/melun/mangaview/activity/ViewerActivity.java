@@ -1272,13 +1272,16 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private void saveCurrentEpisodeOffline() {
-        if(manga == null)
+        PageItem page = getFocusedVisiblePage();
+        Manga target = page != null && page.manga != null ? page.manga : manga;
+        if(target == null)
             return;
-        if(title == null)
-            title = manga.getTitle();
-        if(title != null)
-            manga.setTitle(title);
-        queueOfflineDownload(context, title, manga);
+        Title targetTitle = title != null ? title : target.getTitle();
+        if(targetTitle == null)
+            targetTitle = manga != null ? manga.getTitle() : null;
+        if(targetTitle != null)
+            target.setTitle(targetTitle);
+        queueOfflineDownload(context, targetTitle, target);
     }
 
     @Override

@@ -214,7 +214,7 @@ public class Utils {
         }
         if(title.getEps() == null)
             title.setEps(new ArrayList<>());
-        int index = title.getEps().indexOf(manga);
+        int index = findEpisodeIndex(title.getEps(), manga);
         if(index < 0) {
             manga.setTitle(title);
             title.getEps().add(manga);
@@ -247,6 +247,19 @@ public class Utils {
         }
         Toast.makeText(context,"오프라인 저장을 시작합니다.", Toast.LENGTH_LONG).show();
         return true;
+    }
+
+    private static int findEpisodeIndex(List<Manga> episodes, Manga target) {
+        if(episodes == null || target == null)
+            return -1;
+        for(int i = 0; i < episodes.size(); i++) {
+            Manga episode = episodes.get(i);
+            if(episode == null)
+                continue;
+            if(episode.getId() == target.getId() && episode.getBaseMode() == target.getBaseMode())
+                return i;
+        }
+        return episodes.indexOf(target);
     }
 
     private static boolean ensureOfflineHomeWritable(Context context) {

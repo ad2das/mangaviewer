@@ -11,6 +11,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.net.Uri;
+import android.webkit.CookieManager;
 import ml.melun.mangaview.task.LifecycleTask;
 import android.os.Build;
 import android.os.IBinder;
@@ -382,7 +383,12 @@ public class Downloader extends Service {
                             //create dir for manga
                             int realIndex = mangas.size() - mangas.indexOf(target);
                             File dir = new File(titleDir, filterFolder(new DecimalFormat("0000").format(realIndex) + "." + target.getName()) + "." + target.getId());
-                            if (!dir.exists()) dir.mkdirs();
+                            if(dir.exists())
+                                deleteRecursively(dir);
+                            if(!dir.mkdirs()) {
+                                failures++;
+                                continue;
+                            }
 
                             //create download flag
                             File downloadFlag = new File(dir, "downloading");
@@ -635,7 +641,34 @@ public class Downloader extends Service {
         connection.setReadTimeout(READ_TIMEOUT_MS);
         connection.setRequestProperty("User-Agent", httpClient.agent);
         connection.setRequestProperty("Referer", p.getUrl());
+        String cookieHeader = buildDownloadCookieHeader(url);
+        if(cookieHeader.length() > 0)
+            connection.setRequestProperty("Cookie", cookieHeader);
         return connection;
+    }
+
+    private String buildDownloadCookieHeader(URL url) {
+        StringBuilder builder = new StringBuilder();
+        appendCookieString(builder, CookieManager.getInstance().getCookie(url.toString()));
+        appendCookieString(builder, CookieManager.getInstance().getCookie(p.getUrl()));
+        String session = httpClient.getCookie("PHPSESSID");
+        if(session != null && session.length() > 0 && builder.indexOf("PHPSESSID=") < 0)
+            appendCookieString(builder, "PHPSESSID=" + session);
+        if(cookies != null)
+            for(String key : cookies.keySet()) {
+                String value = cookies.get(key);
+                if(key != null && value != null && builder.indexOf(key + "=") < 0)
+                    appendCookieString(builder, key + "=" + value);
+            }
+        return builder.toString();
+    }
+
+    private void appendCookieString(StringBuilder builder, String cookie) {
+        if(cookie == null || cookie.trim().length() == 0)
+            return;
+        if(builder.length() > 0 && builder.charAt(builder.length() - 1) != ' ')
+            builder.append("; ");
+        builder.append(cookie.trim());
     }
 
     private String normalizeDownloadUrl(String urlStr) {
