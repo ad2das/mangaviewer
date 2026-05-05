@@ -149,20 +149,36 @@
             <androidx.appcompat.widget.LinearLayoutCompat
                 android:id="@+id/TitleTagContainer"
                 android:layout_width="0dp"
-                android:layout_height="0dp"
-                android:visibility="gone"
-                app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toTopOf="parent">
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/app_space_md"
+                android:layout_marginTop="@dimen/app_space_xs"
+                android:layout_marginEnd="@dimen/app_space_sm"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                app:layout_constraintEnd_toStartOf="@+id/epsButton"
+                app:layout_constraintStart_toEndOf="@+id/thumbCard"
+                app:layout_constraintTop_toBottomOf="@+id/TitleAuthor">
 
                 <TextView
                     android:id="@+id/TitleBaseMode"
                     android:layout_width="wrap_content"
-                    android:layout_height="wrap_content" />
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="@dimen/app_space_xs"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:textColor="@color/appAccent"
+                    android:textSize="12sp"
+                    tools:text="웹툰" />
 
                 <TextView
                     android:id="@+id/TitleTag"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content" />
+                    style="@style/AppText.Caption"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    tools:text="액션 판타지 드라마" />
 
             </androidx.appcompat.widget.LinearLayoutCompat>
 

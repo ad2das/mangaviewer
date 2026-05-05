@@ -1189,9 +1189,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
             Title title = (Title) item;
             holder.name.setText(title.getName());
-            String meta = title.getRelease();
-            if((meta == null || meta.length() == 0) && title.getTags().size() > 0)
-                meta = TextUtils.join(" / ", title.getTags());
+            String meta = title.getTags().size() > 0 ? TextUtils.join(" / ", title.getTags()) : title.getRelease();
             holder.meta.setText(meta == null ? "" : meta);
 
             Glide.with(holder.thumb).clear(holder.thumb);
