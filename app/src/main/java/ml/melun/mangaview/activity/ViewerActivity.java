@@ -427,8 +427,6 @@ public class ViewerActivity extends AppCompatActivity {
             bookmarkRefresh(m);
             refreshToolbar(m);
             updateIntent(m);
-            scheduleFocusedPagePreload();
-            prefetchNextEpisode(m);
 
         }catch (Exception e){
             Utils.showCaptchaPopup(m.getUrl(), context, e, p);
@@ -525,7 +523,6 @@ public class ViewerActivity extends AppCompatActivity {
             toggleToolbar();
         });
         manager.scrollToPage(new PageItem(page.index, "", page.manga));
-        scheduleFocusedPagePreload();
     }
 
     private void updateAutoCutButtonState() {

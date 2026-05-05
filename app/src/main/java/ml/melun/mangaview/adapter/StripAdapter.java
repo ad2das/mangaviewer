@@ -18,6 +18,7 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 
 import com.bumptech.glide.Glide;
+import com.bumptech.glide.Priority;
 import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import com.bumptech.glide.request.RequestOptions;
@@ -63,6 +64,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     List<Object> items;
     private final Set<String> preloadedImages = new LinkedHashSet<>();
+    private final Set<String> displayedImages = new LinkedHashSet<>();
     private final LruCache<String, Bitmap> decodedBitmapCache;
     private final Map<String, Decoder> decoders = new HashMap<>();
 
@@ -440,6 +442,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             holder.frame.setMinimumHeight(0);
             holder.frame.setImageBitmap(cached);
             holder.refresh.setVisibility(View.GONE);
+            markDisplayedAndPreload(holder, item, pageKey);
             return;
         }
         if(cached != null && cached.isRecycled())
@@ -479,6 +482,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     decodedBitmapCache.put(cacheKey, displayBitmap);
                     holder.frame.setImageBitmap(displayBitmap);
                     holder.refresh.setVisibility(View.GONE);
+                    markDisplayedAndPreload(holder, item, pageKey);
                 }
 
                 @Override
@@ -503,6 +507,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             //set image to holder view
             Glide.with(holder.frame)
                     .asBitmap()
+                    .priority(Priority.IMMEDIATE)
                     .apply(viewerImageOptions())
                     .load(url)
                     .placeholder(R.drawable.placeholder)
@@ -521,6 +526,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     decodedBitmapCache.put(cacheKey, displayBitmap);
                     holder.frame.setImageBitmap(displayBitmap);
                     holder.refresh.setVisibility(View.GONE);
+                    markDisplayedAndPreload(holder, item, pageKey);
                 }
 
                 @Override
@@ -544,10 +550,21 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             holder.imageTarget = imageTarget;
             Glide.with(holder.frame)
                     .asBitmap()
+                    .priority(Priority.IMMEDIATE)
                     .apply(viewerImageOptions())
                     .load(url)
                     .into(imageTarget);
         }
+    }
+
+    private void markDisplayedAndPreload(ImgViewHolder holder, PageItem item, String pageKey) {
+        if(!isHolderStillBound(holder, item, pageKey))
+            return;
+        displayedImages.add(pageKey);
+        trimDisplayedTracker();
+        int layoutPos = holder.getAdapterPosition();
+        if(layoutPos != RecyclerView.NO_POSITION)
+            preloadAhead(layoutPos);
     }
 
     private RequestOptions viewerImageOptions() {
@@ -628,6 +645,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         trimPreloadTracker();
         Glide.with(mainContext)
                 .asBitmap()
+                .priority(Priority.LOW)
                 .apply(viewerImageOptions())
                 .load(getImageModel(page))
                 .preload();
@@ -686,6 +704,16 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         }
     }
 
+    private void trimDisplayedTracker() {
+        while(displayedImages.size() > PRELOAD_TRACK_LIMIT) {
+            Iterator<String> iterator = displayedImages.iterator();
+            if(!iterator.hasNext())
+                return;
+            iterator.next();
+            iterator.remove();
+        }
+    }
+
     // total number of rows
     @Override
     public int getItemCount() {
@@ -714,7 +742,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(type == IMG) {
             PageItem pi = (PageItem) items.get(layoutPos);
             current = pi;
-            preloadAhead(layoutPos);
+            if(displayedImages.contains(pageBindKey(pi)))
+                preloadAhead(layoutPos);
             if(needUpdate || currentMangaId != pi.manga.getId()){
                 needUpdate = false;
                 currentMangaId = pi.manga.getId();
