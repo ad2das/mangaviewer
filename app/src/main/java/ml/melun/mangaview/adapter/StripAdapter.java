@@ -481,8 +481,9 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 public void onResourceReady(@NonNull Bitmap bitmap, Transition<? super Bitmap> transition) {
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
+                    Bitmap displayBitmap = detachBitmap(bitmap);
                     holder.frame.setMinimumHeight(0);
-                    holder.frame.setImageBitmap(bitmap);
+                    holder.frame.setImageBitmap(displayBitmap);
                     holder.refresh.setVisibility(View.GONE);
                     markDisplayedAndPreload(holder, item, pageKey);
                 }
@@ -520,8 +521,9 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 public void onResourceReady(@NonNull Bitmap resource, @Nullable Transition<? super Bitmap> transition) {
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
+                    Bitmap displayBitmap = detachBitmap(resource);
                     holder.frame.setMinimumHeight(0);
-                    holder.frame.setImageBitmap(resource);
+                    holder.frame.setImageBitmap(displayBitmap);
                     holder.refresh.setVisibility(View.GONE);
                     markDisplayedAndPreload(holder, item, pageKey);
                 }

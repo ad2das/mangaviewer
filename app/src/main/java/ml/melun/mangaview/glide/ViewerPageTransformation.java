@@ -65,8 +65,6 @@ public class ViewerPageTransformation extends BitmapTransformation {
             displayBitmap = pool.get(Math.max(decodedWidth, 1), 1, Bitmap.Config.ARGB_8888);
             new Canvas(displayBitmap).drawColor(android.graphics.Color.TRANSPARENT);
         }
-        if(decoded != toTransform && decoded != displayBitmap && !decoded.isRecycled())
-            decoded.recycle();
         return displayBitmap;
     }
 
