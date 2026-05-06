@@ -69,6 +69,46 @@ public class MainPageWebtoonTest {
         assertEquals(401, school.get(0).getId());
     }
 
+    @Test
+    public void genreFromCategoryPath_decodesGenreFilters() {
+        assertEquals("학원", Search.genreFromCategoryPath(
+                "/cm?type1=genre&type2=%C7%D0%BF%F8&o=n", base_comic));
+        assertEquals("성인", Search.genreFromCategoryPath(
+                "/ing?type1=genre&o=n", base_webtoon));
+        assertEquals("", Search.genreFromCategoryPath(
+                "/end?type1=genre&type2=&o=f", base_webtoon));
+        assertEquals("", Search.genreFromCategoryPath(
+                "/cm?type1=complete&type2=recent&o=n", base_comic));
+    }
+
+    @Test
+    public void classificationDbGenreLookupSupportsPaging() {
+        MainPageWebtoon.clearClassificationDbForTest();
+        try {
+            MainPageWebtoon.putClassificationDbTitleForTest(1, "A", false, "action");
+            MainPageWebtoon.putClassificationDbTitleForTest(2, "B", false, "action");
+            MainPageWebtoon.putClassificationDbTitleForTest(3, "C", false, "action");
+
+            ArrayList<Title> first = MainPageWebtoon.getClassificationDbTitlesByGenre("action", 0, 2);
+            ArrayList<Title> second = MainPageWebtoon.getClassificationDbTitlesByGenre("action", 2, 2);
+
+            assertEquals(2, first.size());
+            assertEquals(1, first.get(0).getId());
+            assertEquals(2, first.get(1).getId());
+            assertEquals(1, second.size());
+            assertEquals(3, second.get(0).getId());
+
+            MainPageWebtoon.putClassificationDbTitleForTest(11, "D", true, "anime");
+
+            ArrayList<Title> comics = MainPageWebtoon.getComicClassificationDbTitlesByGenre("anime", 0, 10);
+            assertEquals(1, comics.size());
+            assertEquals(11, comics.get(0).getId());
+            assertEquals(base_comic, comics.get(0).getBaseMode());
+        } finally {
+            MainPageWebtoon.clearClassificationDbForTest();
+        }
+    }
+
     private String mixedSearchHtml() {
         return "<article class=\"searchItem\">"
                 + "<a href=\"/list?toon=101&title=%EC%9B%B9%ED%88%B0\"><h6 class=\"searchDetailTitle\">웹툰 결과</h6></a>"

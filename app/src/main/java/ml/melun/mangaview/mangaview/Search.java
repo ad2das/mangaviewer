@@ -5,6 +5,7 @@ import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 
+import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -23,6 +24,7 @@ import static ml.melun.mangaview.mangaview.MTitle.baseModeStr;
 public class Search {
     private static final long PAGE_CACHE_TTL_MS = 2 * 60 * 1000L;
     private static final int MAX_TIMEOUT_RETRIES = 2;
+    private static final int CLASSIFICATION_DB_PAGE_SIZE = 120;
 
     int baseMode;
     private final String query;
@@ -30,7 +32,10 @@ public class Search {
     int mode;
     int page = 1;
     int timeoutRetries = 0;
+    int classificationDbOffset = 0;
+    boolean classificationSourceFetched = false;
     private ArrayList<Title> result;
+    private final Set<String> seenTitleKeys = new HashSet<>();
 
     public Search(String q, int mode, int baseMode) {
         query = q;
@@ -202,15 +207,27 @@ public class Search {
         try {
             ArrayList<Title> webtoonResults = new ArrayList<>();
             if(mode == 8) {
-                appendWebtoonResults(client, webtoonResults, query, 0);
+                String genre = genreFromCategoryPath(query, base_webtoon);
+                if(!classificationSourceFetched) {
+                    appendWebtoonResults(client, webtoonResults, query, 0);
+                    classificationSourceFetched = true;
+                }
+                if(genre.length() > 0)
+                    last = appendNextClassificationDbGenreResults(webtoonResults, genre);
+                else
+                    last = true;
             } else if(mode == 2) {
-                appendWebtoonResults(client, webtoonResults, webtoonGenrePath("ing", query), 80);
-                appendWebtoonResults(client, webtoonResults, webtoonGenrePath("end", query), 80);
-                appendClassificationDbGenreResults(webtoonResults, query);
+                if(!classificationSourceFetched) {
+                    appendWebtoonResults(client, webtoonResults, webtoonGenrePath("ing", query), 80);
+                    appendWebtoonResults(client, webtoonResults, webtoonGenrePath("end", query), 80);
+                    classificationSourceFetched = true;
+                }
+                last = appendNextClassificationDbGenreResults(webtoonResults, query);
             } else if(mode == 3) {
                 String alphabet = percentEncode(alphabetValue(query), Charset.forName("EUC-KR"));
                 appendWebtoonResults(client, webtoonResults, "/ing?type1=alphabet&type2=" + alphabet + "&o=n", 80);
                 appendWebtoonResults(client, webtoonResults, "/end?type1=alphabet&type2=" + alphabet + "&o=n", 80);
+                last = true;
             } else if(mode == 4) {
                 String status = webtoonStatus(query);
                 if(status.length() > 0) {
@@ -224,15 +241,13 @@ public class Search {
                         appendWebtoonResults(client, webtoonResults, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), 80);
                     }
                 }
+                last = true;
             } else {
                 appendWebtoonResults(client, webtoonResults, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), 80);
+                last = true;
             }
 
-            Set<Integer> seen = new HashSet<>();
-            for(Title title : webtoonResults)
-                if(seen.add(title.getId()))
-                    result.add(title);
-            last = true;
+            appendNewResults(webtoonResults);
             return 0;
         } catch (Exception e) {
             e.printStackTrace();
@@ -244,26 +259,37 @@ public class Search {
         try {
             ArrayList<Title> comicResults = new ArrayList<>();
             if(mode == 8) {
-                appendWebtoonResults(client, comicResults, query, 0);
+                String genre = genreFromCategoryPath(query, base_comic);
+                if(!classificationSourceFetched) {
+                    appendWebtoonResults(client, comicResults, query, 0);
+                    classificationSourceFetched = true;
+                }
+                if(genre.length() > 0)
+                    last = appendNextClassificationDbGenreResults(comicResults, genre);
+                else
+                    last = true;
             } else if(mode == 2) {
-                appendWebtoonResults(client, comicResults, "/cm?type1=genre&type2=" + percentEncode(query, Charset.forName("EUC-KR")) + "&o=n", 120);
+                if(!classificationSourceFetched) {
+                    appendWebtoonResults(client, comicResults, "/cm?type1=genre&type2=" + percentEncode(query, Charset.forName("EUC-KR")) + "&o=n", 120);
+                    classificationSourceFetched = true;
+                }
+                last = appendNextClassificationDbGenreResults(comicResults, query);
             } else if(mode == 3) {
                 appendWebtoonResults(client, comicResults, "/cm?type1=alphabet&type2=" + percentEncode(alphabetValue(query), Charset.forName("EUC-KR")) + "&o=n", 120);
+                last = true;
             } else if(mode == 4) {
                 String type = comicType(query);
                 if(type.length() > 0)
                     appendWebtoonResults(client, comicResults, "/cm?type1=complete&type2=" + type + "&o=n", 120);
                 else
                     appendWebtoonResults(client, comicResults, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), 120);
+                last = true;
             } else {
                 appendWebtoonResults(client, comicResults, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), 120);
+                last = true;
             }
 
-            Set<Integer> seen = new HashSet<>();
-            for(Title title : comicResults)
-                if(seen.add(title.getId()))
-                    result.add(title);
-            last = true;
+            appendNewResults(comicResults);
             return 0;
         } catch (Exception e) {
             e.printStackTrace();
@@ -286,8 +312,63 @@ public class Search {
         target.addAll(parsed);
     }
 
-    private void appendClassificationDbGenreResults(ArrayList<Title> target, String genre) {
-        target.addAll(MainPageWebtoon.getClassificationDbTitlesByGenre(genre, 120));
+    private boolean appendNextClassificationDbGenreResults(ArrayList<Title> target, String genre) {
+        if(genre == null || genre.trim().length() == 0)
+            return true;
+        ArrayList<Title> dbResults;
+        if(baseMode == base_comic)
+            dbResults = MainPageWebtoon.getComicClassificationDbTitlesByGenre(genre.trim(), classificationDbOffset, CLASSIFICATION_DB_PAGE_SIZE);
+        else
+            dbResults = MainPageWebtoon.getClassificationDbTitlesByGenre(genre.trim(), classificationDbOffset, CLASSIFICATION_DB_PAGE_SIZE);
+        classificationDbOffset += dbResults.size();
+        target.addAll(dbResults);
+        return dbResults.size() < CLASSIFICATION_DB_PAGE_SIZE;
+    }
+
+    private void appendNewResults(ArrayList<Title> source) {
+        if(source == null)
+            return;
+        for(Title title : source) {
+            if(title == null)
+                continue;
+            String key = title.getBaseMode() + ":" + title.getId();
+            if(seenTitleKeys.add(key))
+                result.add(title);
+        }
+    }
+
+    static String genreFromCategoryPath(String path, int baseMode) {
+        if(path == null)
+            return "";
+        String type1 = rawQueryValue(path, "type1");
+        if(!"genre".equalsIgnoreCase(type1))
+            return "";
+        String type2 = rawQueryValue(path, "type2");
+        if(type2 == null)
+            return baseMode == base_webtoon ? "성인" : "";
+        if(type2.length() == 0)
+            return "";
+        return percentDecode(type2, Charset.forName("EUC-KR")).trim();
+    }
+
+    private static String rawQueryValue(String value, String key) {
+        int question = value.indexOf('?');
+        String query = question >= 0 ? value.substring(question + 1) : value;
+        for(String part : query.split("&")) {
+            int equals = part.indexOf('=');
+            String name = equals >= 0 ? part.substring(0, equals) : part;
+            if(name.equals(key))
+                return equals >= 0 ? part.substring(equals + 1) : "";
+        }
+        return null;
+    }
+
+    private static String percentDecode(String value, Charset charset) {
+        try {
+            return URLDecoder.decode(value, charset.name());
+        } catch (Exception e) {
+            return value;
+        }
     }
 
     private static String percentEncode(String value, Charset charset) {
