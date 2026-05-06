@@ -784,7 +784,7 @@ public class MainActivity extends AppCompatActivity
         super.onActivityResult(requestCode, resultCode, data);
         if(requestCode == FirebaseAccountManager.RC_GOOGLE_SIGN_IN) {
             FirebaseAccountManager accountManager = MainApplication.getFirebaseAccountManager();
-            if(resultCode == RESULT_OK && data != null && accountManager != null) {
+            if(data != null && accountManager != null) {
                 accountManager.handleActivityResult(data, (success, message) -> runOnUiThread(() -> {
                     if(success) {
                         accountInitialSyncStarted = true;

@@ -1688,11 +1688,13 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private class Fetcher extends LifecycleTask<Void, SectionBatch, Boolean> {
         private CustomHttpClient.RequestGroup requestGroup;
         private List<Ranking<?>> finalDataSet;
+        private boolean keepExistingRowsDuringFetch;
 
         @Override
         protected void onPreExecute() {
             super.onPreExecute();
             boolean hadInitialRows = rows != null && rows.size() > 0 && hasDisplayContent();
+            keepExistingRowsDuringFetch = hadInitialRows;
             dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
             preloadedThumbs.clear();
             preloadCount = 0;
@@ -1796,6 +1798,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
             if(loadedSections.size() == 0)
                 return;
+            if(keepExistingRowsDuringFetch) {
+                scheduleThumbnailPreload(loadedSections);
+                return;
+            }
             if(!initialRowsShown) {
                 List<Object> firstRows = buildRows(dataSet, false);
                 if(!hasHero(firstRows))
