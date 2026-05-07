@@ -364,12 +364,18 @@ public class MangaEpisodeNavigationTest {
           gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
             --jq '.[] | [.id, .tag_name, .target_commitish] | @tsv' |
           while IFS=$'\t' read -r id old_tag target; do
-            if [ "$target" = "$GITHUB_REF_NAME" ]; then
+            if [ "$target" = "$GITHUB_REF_NAME" ] || [[ "$old_tag" == "$safe_branch-v"* ]]; then
               gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
               if [ -n "$old_tag" ]; then
                 gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$old_tag" || true
               fi
             fi
+          done
+
+          gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$safe_branch-v" \
+            --jq '.[].ref' |
+          while read -r ref; do
+            [ -n "$ref" ] && gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/$ref" || true
           done
 
           gh release create "$tag" "$apk" \
