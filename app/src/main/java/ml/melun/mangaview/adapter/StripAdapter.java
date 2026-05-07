@@ -177,6 +177,15 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         return inserted;
     }
 
+    public void refreshInfoItems() {
+        if(items == null)
+            return;
+        for(int i = 0; i < items.size(); i++) {
+            if(items.get(i) instanceof InfoItem)
+                notifyItemChanged(i);
+        }
+    }
+
     public int findLastPagePosition(Manga m) {
         if(m == null || items == null)
             return RecyclerView.NO_POSITION;

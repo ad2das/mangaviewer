@@ -556,13 +556,14 @@ public class Manga {
 
     public Manga nextEp() {
         if (isOnline()) {
-            if (eps == null || eps.size() == 0) {
+            List<Manga> episodes = effectiveEpisodes();
+            if (episodes == null || episodes.size() == 0) {
                 return null;
             } else {
-                int index = findEpisodeIndex();
+                int index = findEpisodeIndex(episodes);
                 if (index < 0) return null;
                 for (int i = index - 1; i >= 0; i--) {
-                    Manga episode = eps.get(i);
+                    Manga episode = episodes.get(i);
                     if (episode != null && episode.getId() != id) return episode;
                 }
                 return null;
@@ -574,13 +575,14 @@ public class Manga {
 
     public Manga prevEp() {
         if (isOnline()) {
-            if (eps == null || eps.size() == 0) {
+            List<Manga> episodes = effectiveEpisodes();
+            if (episodes == null || episodes.size() == 0) {
                 return null;
             } else {
-                int index = findEpisodeIndex();
+                int index = findEpisodeIndex(episodes);
                 if (index < 0) return null;
-                for (int i = index + 1; i < eps.size(); i++) {
-                    Manga episode = eps.get(i);
+                for (int i = index + 1; i < episodes.size(); i++) {
+                    Manga episode = episodes.get(i);
                     if (episode != null && episode.getId() != id) return episode;
                 }
                 return null;
@@ -590,14 +592,27 @@ public class Manga {
         }
     }
 
-    private int findEpisodeIndex() {
-        if (eps == null) return -1;
-        for (int i = 0; i < eps.size(); i++) {
-            Manga episode = eps.get(i);
+    private List<Manga> effectiveEpisodes() {
+        List<Manga> titleEpisodes = title == null ? null : title.getEps();
+        int titleIndex = findEpisodeIndex(titleEpisodes);
+        int localIndex = findEpisodeIndex(eps);
+        if(titleIndex >= 0 && (localIndex < 0 || titleEpisodes.size() >= eps.size()))
+            return titleEpisodes;
+        if(localIndex >= 0)
+            return eps;
+        if(titleEpisodes != null && titleEpisodes.size() > 0 && eps == null)
+            return titleEpisodes;
+        return eps;
+    }
+
+    private int findEpisodeIndex(List<Manga> episodes) {
+        if (episodes == null) return -1;
+        for (int i = 0; i < episodes.size(); i++) {
+            Manga episode = episodes.get(i);
             if (episode == this) return i;
         }
-        for (int i = 0; i < eps.size(); i++) {
-            Manga episode = eps.get(i);
+        for (int i = 0; i < episodes.size(); i++) {
+            Manga episode = episodes.get(i);
             if (episode != null && episode.getId() == id) return i;
         }
         return -1;

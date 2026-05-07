@@ -200,7 +200,8 @@ public class ViewerActivity extends AppCompatActivity {
                 p.removeViewerBookmark(curm);
                 Manga target = curm.nextEp();
                 if(target != null) {
-                    if(hasLoadedImages(target)) {
+                    Title currentTitle = title != null ? title : target.getTitle();
+                    if(hasLoadedImages(target) && !needsFullEpisodeList(currentTitle, target)) {
                         appendMangaWhenIdle(target, ViewerActivity.this::isNextTargetStillExpected, () -> {
                             callback.nextLoaded(target);
                         });
@@ -859,7 +860,10 @@ public class ViewerActivity extends AppCompatActivity {
                 future = imageLoadExecutor.submit(() -> {
                     int result = LOAD_OK;
                     try {
-                        if(target != null && target.isOnline() && !hasLoadedImages(target))
+                        if(target != null && target.isOnline()) {
+                            result = ensureEpisodeListLoaded(target);
+                        }
+                        if(target != null && target.isOnline() && result == LOAD_OK && !hasLoadedImages(target))
                             result = ViewerWarmupManager.applyWarmupResult(target, 150);
                         if(target != null && target.isOnline() && result == LOAD_OK && !hasLoadedImages(target))
                             result = getHttpClient().runWithRequestGroup(requestGroup, () -> target.fetchForViewerInitial(getHttpClient()));
@@ -923,21 +927,12 @@ public class ViewerActivity extends AppCompatActivity {
         if(currentTitle == null)
             return LOAD_OK;
         restoreTitleEpisodes(currentTitle, target);
-        if(currentTitle.getEps() == null || currentTitle.getEps().size() <= 1) {
+        if(needsFullEpisodeList(currentTitle, target)) {
             int result = currentTitle.fetchEps(getHttpClient());
             if(result == LOAD_CAPTCHA)
                 return result;
         }
-        target.setTitle(currentTitle);
-        target.setTitleId(currentTitle.getId());
-        if(currentTitle.getEps() != null)
-            for(Manga episode : currentTitle.getEps()) {
-                if(episode != null) {
-                    episode.setTitle(currentTitle);
-                    episode.setTitleId(currentTitle.getId());
-                }
-            }
-        title = currentTitle;
+        attachEpisodeList(currentTitle, target);
         return LOAD_OK;
     }
 
@@ -948,16 +943,7 @@ public class ViewerActivity extends AppCompatActivity {
         if(currentTitle == null)
             return LOAD_OK;
         restoreTitleEpisodes(currentTitle, target);
-        target.setTitle(currentTitle);
-        target.setTitleId(currentTitle.getId());
-        if(currentTitle.getEps() != null)
-            for(Manga episode : currentTitle.getEps()) {
-                if(episode != null) {
-                    episode.setTitle(currentTitle);
-                    episode.setTitleId(currentTitle.getId());
-                }
-            }
-        title = currentTitle;
+        attachEpisodeList(currentTitle, target);
         return LOAD_OK;
     }
 
@@ -965,8 +951,9 @@ public class ViewerActivity extends AppCompatActivity {
         if(currentTitle == null || target == null)
             return;
         List<Manga> targetEpisodes = target.getEps();
-        if((currentTitle.getEps() == null || currentTitle.getEps().size() <= 1)
-                && targetEpisodes != null && targetEpisodes.size() > 1)
+        if(targetEpisodes != null && targetEpisodes.size() > 1
+                && !containsEpisode(currentTitle.getEps(), target)
+                && (currentTitle.getEps() == null || currentTitle.getEps().size() < targetEpisodes.size()))
             currentTitle.setEps(targetEpisodes);
     }
 
@@ -974,7 +961,7 @@ public class ViewerActivity extends AppCompatActivity {
         if(target == null || !target.isOnline())
             return;
         Title currentTitle = title != null ? title : target.getTitle();
-        if(currentTitle == null || (currentTitle.getEps() != null && currentTitle.getEps().size() > 1))
+        if(currentTitle == null || !needsFullEpisodeList(currentTitle, target))
             return;
         mainHandler.postDelayed(() -> {
             try {
@@ -983,22 +970,16 @@ public class ViewerActivity extends AppCompatActivity {
                         int result = currentTitle.fetchEps(getHttpClient());
                         if(result == LOAD_CAPTCHA || isFinishing())
                             return;
-                        target.setTitle(currentTitle);
-                        target.setTitleId(currentTitle.getId());
-                        if(currentTitle.getEps() != null)
-                            for(Manga episode : currentTitle.getEps()) {
-                                if(episode != null) {
-                                    episode.setTitle(currentTitle);
-                                    episode.setTitleId(currentTitle.getId());
-                                }
-                            }
-                        if(currentTitle.getEps() != null && currentTitle.getEps().size() > 0)
-                            target.setEps(currentTitle.getEps());
+                        attachEpisodeList(currentTitle, target);
                         p.addRecent(currentTitle);
                         p.setBookmark(currentTitle, target.getId());
                         mainHandler.post(() -> {
-                            if(!isFinishing() && manga != null && manga.getId() == target.getId())
+                            if(!isFinishing() && manga != null && manga.getId() == target.getId()) {
                                 refreshToolbar(target);
+                                if(stripAdapter != null)
+                                    stripAdapter.refreshInfoItems();
+                                loadEpisodeAtBoundaryIfNeeded();
+                            }
                         });
                     } catch (Exception e) {
                         if(!isFinishing())
@@ -1460,6 +1441,57 @@ public class ViewerActivity extends AppCompatActivity {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    private boolean needsFullEpisodeList(Title currentTitle, Manga target) {
+        List<Manga> titleEpisodes = currentTitle == null ? null : currentTitle.getEps();
+        List<Manga> targetEpisodes = target == null ? null : target.getEps();
+        int titleCount = titleEpisodes == null ? 0 : titleEpisodes.size();
+        int targetCount = targetEpisodes == null ? 0 : targetEpisodes.size();
+        return !containsEpisode(titleEpisodes, target) || Math.max(titleCount, targetCount) <= 3;
+    }
+
+    private void attachEpisodeList(Title currentTitle, Manga target) {
+        if(currentTitle == null)
+            return;
+        List<Manga> episodes = currentTitle.getEps();
+        if(episodes != null)
+            for(Manga episode : episodes) {
+                if(episode != null) {
+                    episode.setTitle(currentTitle);
+                    episode.setTitleId(currentTitle.getId());
+                }
+            }
+        if(target != null) {
+            target.setTitle(currentTitle);
+            target.setTitleId(currentTitle.getId());
+            if(episodes != null && episodes.size() > 0
+                    && containsEpisode(episodes, target)
+                    && !containsSameInstance(episodes, target)
+                    && (target.getEps() == null || episodes.size() >= target.getEps().size()))
+                target.setEps(episodes);
+        }
+        title = currentTitle;
+    }
+
+    private boolean containsSameInstance(List<Manga> episodes, Manga target) {
+        if(episodes == null || target == null)
+            return false;
+        for(Manga episode : episodes) {
+            if(episode == target)
+                return true;
+        }
+        return false;
+    }
+
+    private boolean containsEpisode(List<Manga> episodes, Manga target) {
+        if(episodes == null || target == null)
+            return false;
+        for(Manga episode : episodes) {
+            if(sameManga(episode, target))
+                return true;
+        }
+        return false;
     }
 
     private void preloadFirstPages(Manga target) {
