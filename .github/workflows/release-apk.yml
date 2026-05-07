@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   patch-release:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,15 +25,16 @@ jobs:
           java-version: 17
 
       - name: Patch reader episode navigation
-        shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
+          python3 <<'PY'
+          from pathlib import Path
 
-          $mangaPath = 'app/src/main/java/ml/melun/mangaview/mangaview/Manga.java'
-          $manga = Get-Content $mangaPath -Raw
-          if($manga -notmatch 'effectiveEpisodes\(\)') {
-            $manga = [regex]::Replace($manga, '(?s)    public Manga nextEp\(\) \{.*?    public void setPrevEp', @'
-    public Manga nextEp() {
+          manga_path = Path("app/src/main/java/ml/melun/mangaview/mangaview/Manga.java")
+          manga = manga_path.read_text()
+          if "effectiveEpisodes()" not in manga:
+              start = manga.index("    public Manga nextEp() {")
+              end = manga.index("    public void setPrevEp", start)
+              replacement = """    public Manga nextEp() {
         if (isOnline()) {
             List<Manga> episodes = effectiveEpisodes();
             if (episodes == null || episodes.size() == 0) {
@@ -92,29 +93,33 @@ jobs:
         return -1;
     }
 
-    public void setPrevEp
-'@)
-            Set-Content $mangaPath $manga -NoNewline
-          }
+"""
+              manga = manga[:start] + replacement + manga[end:]
+              manga_path.write_text(manga)
 
-          $viewerPath = 'app/src/main/java/ml/melun/mangaview/activity/ViewerActivity.java'
-          $viewer = Get-Content $viewerPath -Raw
-          if($viewer -notmatch 'needsFullEpisodeList\(Title currentTitle, Manga target\)') {
-            $viewer = $viewer.Replace(
-              '                    if(hasLoadedImages(target)) {',
-              "                    Title currentTitle = title != null ? title : target.getTitle();`r`n                    if(hasLoadedImages(target) && !needsFullEpisodeList(currentTitle, target)) {")
+          viewer_path = Path("app/src/main/java/ml/melun/mangaview/activity/ViewerActivity.java")
+          viewer = viewer_path.read_text()
+          if "needsFullEpisodeList(Title currentTitle, Manga target)" not in viewer:
+              viewer = viewer.replace(
+                  "                    if(hasLoadedImages(target)) {",
+                  "                    Title currentTitle = title != null ? title : target.getTitle();\n"
+                  "                    if(hasLoadedImages(target) && !needsFullEpisodeList(currentTitle, target)) {",
+                  1,
+              )
+              viewer = viewer.replace(
+                  "                        if(target != null && target.isOnline() && !hasLoadedImages(target))\n"
+                  "                            result = ViewerWarmupManager.applyWarmupResult(target, 150);",
+                  "                        if(target != null && target.isOnline()) {\n"
+                  "                            result = ensureEpisodeListLoaded(target);\n"
+                  "                        }\n"
+                  "                        if(target != null && target.isOnline() && result == LOAD_OK && !hasLoadedImages(target))\n"
+                  "                            result = ViewerWarmupManager.applyWarmupResult(target, 150);",
+                  1,
+              )
 
-            $viewer = $viewer.Replace(
-              '                        if(target != null && target.isOnline() && !hasLoadedImages(target))
-                            result = ViewerWarmupManager.applyWarmupResult(target, 150);',
-              '                        if(target != null && target.isOnline()) {
-                            result = ensureEpisodeListLoaded(target);
-                        }
-                        if(target != null && target.isOnline() && result == LOAD_OK && !hasLoadedImages(target))
-                            result = ViewerWarmupManager.applyWarmupResult(target, 150);')
-
-            $viewer = [regex]::Replace($viewer, '(?s)    private int ensureEpisodeListLoaded\(Manga target\) \{.*?    private void saveCurrentScrollBookmark', @'
-    private int ensureEpisodeListLoaded(Manga target) {
+              start = viewer.index("    private int ensureEpisodeListLoaded(Manga target) {")
+              end = viewer.index("    private void saveCurrentScrollBookmark", start)
+              middle = """    private int ensureEpisodeListLoaded(Manga target) {
         if(target == null || !target.isOnline())
             return LOAD_OK;
         Title currentTitle = title != null ? title : target.getTitle();
@@ -182,11 +187,12 @@ jobs:
         }, 350);
     }
 
-    private void saveCurrentScrollBookmark
-'@)
+"""
+              viewer = viewer[:start] + middle + viewer[end:]
 
-            $viewer = [regex]::Replace($viewer, '(?s)    private boolean hasLoadedImages\(Manga target\) \{.*?    private void preloadFirstPages', @'
-    private boolean hasLoadedImages(Manga target) {
+              start = viewer.index("    private boolean hasLoadedImages(Manga target) {")
+              end = viewer.index("    private void preloadFirstPages", start)
+              helpers = """    private boolean hasLoadedImages(Manga target) {
         try {
             if(target == null)
                 return false;
@@ -237,15 +243,13 @@ jobs:
         return false;
     }
 
-    private void preloadFirstPages
-'@)
-            Set-Content $viewerPath $viewer -NoNewline
-          }
+"""
+              viewer = viewer[:start] + helpers + viewer[end:]
+              viewer_path.write_text(viewer)
 
-          $testPath = 'app/src/test/java/ml/melun/mangaview/mangaview/MangaEpisodeNavigationTest.java'
-          if(!(Test-Path $testPath)) {
-            @'
-package ml.melun.mangaview.mangaview;
+          test_path = Path("app/src/test/java/ml/melun/mangaview/mangaview/MangaEpisodeNavigationTest.java")
+          if not test_path.exists():
+              test_path.write_text("""package ml.melun.mangaview.mangaview;
 
 import org.junit.Test;
 
@@ -307,77 +311,69 @@ public class MangaEpisodeNavigationTest {
         return title;
     }
 }
-'@ | Set-Content $testPath -NoNewline
-          }
+""")
+          PY
 
       - name: Test and build APK
-        shell: pwsh
         run: |
-          .\gradlew.bat testDebugUnitTest assembleDebug
+          chmod +x ./gradlew
+          ./gradlew testDebugUnitTest assembleDebug
 
       - name: Update release metadata
-        shell: pwsh
-        env:
-          REPO: ${{ github.repository }}
-          BRANCH: ${{ github.ref_name }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          $apk = Get-ChildItem app\build\outputs\apk\debug\*.apk | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          if(-not $apk) { throw 'APK was not produced' }
-          $versionCode = [regex]::Match($apk.BaseName, '(\d+)').Groups[1].Value
-          if(-not $versionCode) { throw "Could not parse version code from $($apk.Name)" }
-          $safeBranch = $env:BRANCH -replace '[^A-Za-z0-9._-]', '-'
-          $tag = "$safeBranch-v$versionCode"
-          $url = "https://github.com/$env:REPO/releases/download/$tag/$($apk.Name)"
-          Set-Content version.json "{`"version`":$versionCode,`"link`":`"$url`"}"
-          (Get-Content releases.html -Raw) `
-            -replace 'apk/mangaViewer_\d+-debug\.apk', $url |
-            Set-Content releases.html -NoNewline
+          python3 <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          apk = sorted(Path("app/build/outputs/apk/debug").glob("*.apk"), key=lambda p: p.stat().st_mtime)[-1]
+          version = re.search(r"(\d+)", apk.stem).group(1)
+          branch = os.environ["GITHUB_REF_NAME"]
+          safe_branch = re.sub(r"[^A-Za-z0-9._-]", "-", branch)
+          tag = f"{safe_branch}-v{version}"
+          url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}/{apk.name}"
+          Path("version.json").write_text(json.dumps({"version": int(version), "link": url}, separators=(",", ":")) + "\n")
+          releases = Path("releases.html")
+          releases.write_text(re.sub(r"apk/mangaViewer_\d+-debug\.apk", url, releases.read_text()))
+          PY
 
       - name: Commit patch
-        shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add app/src/main/java/ml/melun/mangaview/mangaview/Manga.java `
-                  app/src/main/java/ml/melun/mangaview/activity/ViewerActivity.java `
-                  app/src/test/java/ml/melun/mangaview/mangaview/MangaEpisodeNavigationTest.java `
+          git add app/src/main/java/ml/melun/mangaview/mangaview/Manga.java \
+                  app/src/main/java/ml/melun/mangaview/activity/ViewerActivity.java \
+                  app/src/test/java/ml/melun/mangaview/mangaview/MangaEpisodeNavigationTest.java \
                   version.json releases.html
-          if(git diff --cached --quiet) {
-            "No patch changes to commit"
-          } else {
+          if ! git diff --cached --quiet; then
             git commit -m "Fix continuous reader episode boundary detection"
             git push
-          }
+          fi
 
       - name: Publish single branch release
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          BRANCH: ${{ github.ref_name }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          $apk = Get-ChildItem app\build\outputs\apk\debug\*.apk | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          $versionCode = [regex]::Match($apk.BaseName, '(\d+)').Groups[1].Value
-          $safeBranch = $env:BRANCH -replace '[^A-Za-z0-9._-]', '-'
-          $tag = "$safeBranch-v$versionCode"
-          $targetSha = git rev-parse HEAD
+          apk="$(ls -t app/build/outputs/apk/debug/*.apk | head -n 1)"
+          version="$(basename "$apk" | grep -oE '[0-9]+' | head -n 1)"
+          safe_branch="$(echo "$GITHUB_REF_NAME" | sed -E 's/[^A-Za-z0-9._-]+/-/g')"
+          tag="$safe_branch-v$version"
+          target_sha="$(git rev-parse HEAD)"
 
-          $releaseRows = gh api "repos/$env:REPO/releases" --paginate --jq '.[] | [.id, .tag_name, .target_commitish] | @tsv'
-          foreach($row in @($releaseRows)) {
-            $parts = $row -split "`t"
-            if($parts.Length -ge 3 -and $parts[2] -eq $env:BRANCH) {
-              gh api -X DELETE "repos/$env:REPO/releases/$($parts[0])"
-              if($parts[1]) {
-                gh api -X DELETE "repos/$env:REPO/git/refs/tags/$($parts[1])" 2>$null
-              }
-            }
-          }
+          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq '.[] | [.id, .tag_name, .target_commitish] | @tsv' |
+          while IFS=$'\t' read -r id old_tag target; do
+            if [ "$target" = "$GITHUB_REF_NAME" ]; then
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
+              if [ -n "$old_tag" ]; then
+                gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$old_tag" || true
+              fi
+            fi
+          done
 
-          gh release create $tag $apk.FullName `
-            --repo $env:REPO `
-            --target $targetSha `
-            --title "$env:BRANCH $versionCode" `
-            --notes "Debug APK for $env:BRANCH at $targetSha"
+          gh release create "$tag" "$apk" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$target_sha" \
+            --title "$GITHUB_REF_NAME $version" \
+            --notes "Debug APK for $GITHUB_REF_NAME at $target_sha"
