@@ -1,4 +1,4 @@
-name: Patch and Release APK
+name: Build and Release APK
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  patch-release:
+  release-apk:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -23,296 +23,6 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-
-      - name: Patch reader episode navigation
-        run: |
-          python3 <<'PY'
-          from pathlib import Path
-
-          manga_path = Path("app/src/main/java/ml/melun/mangaview/mangaview/Manga.java")
-          manga = manga_path.read_text()
-          if "effectiveEpisodes()" not in manga:
-              start = manga.index("    public Manga nextEp() {")
-              end = manga.index("    public void setPrevEp", start)
-              replacement = """    public Manga nextEp() {
-        if (isOnline()) {
-            List<Manga> episodes = effectiveEpisodes();
-            if (episodes == null || episodes.size() == 0) {
-                return null;
-            } else {
-                int index = findEpisodeIndex(episodes);
-                if (index < 0) return null;
-                for (int i = index - 1; i >= 0; i--) {
-                    Manga episode = episodes.get(i);
-                    if (episode != null && episode.getId() != id) return episode;
-                }
-                return null;
-            }
-        } else {
-            return nextEp;
-        }
-    }
-
-    public Manga prevEp() {
-        if (isOnline()) {
-            List<Manga> episodes = effectiveEpisodes();
-            if (episodes == null || episodes.size() == 0) {
-                return null;
-            } else {
-                int index = findEpisodeIndex(episodes);
-                if (index < 0) return null;
-                for (int i = index + 1; i < episodes.size(); i++) {
-                    Manga episode = episodes.get(i);
-                    if (episode != null && episode.getId() != id) return episode;
-                }
-                return null;
-            }
-        } else {
-            return prevEp;
-        }
-    }
-
-    private List<Manga> effectiveEpisodes() {
-        List<Manga> titleEpisodes = title == null ? null : title.getEps();
-        if(titleEpisodes != null && titleEpisodes.size() > 0
-                && (eps == null || titleEpisodes.size() >= eps.size()))
-            return titleEpisodes;
-        return eps;
-    }
-
-    private int findEpisodeIndex(List<Manga> episodes) {
-        if (episodes == null) return -1;
-        for (int i = 0; i < episodes.size(); i++) {
-            Manga episode = episodes.get(i);
-            if (episode == this) return i;
-        }
-        for (int i = 0; i < episodes.size(); i++) {
-            Manga episode = episodes.get(i);
-            if (episode != null && episode.getId() == id) return i;
-        }
-        return -1;
-    }
-
-"""
-              manga = manga[:start] + replacement + manga[end:]
-              manga_path.write_text(manga)
-
-          viewer_path = Path("app/src/main/java/ml/melun/mangaview/activity/ViewerActivity.java")
-          viewer = viewer_path.read_text()
-          if "needsFullEpisodeList(Title currentTitle, Manga target)" not in viewer:
-              viewer = viewer.replace(
-                  "                    if(hasLoadedImages(target)) {",
-                  "                    Title currentTitle = title != null ? title : target.getTitle();\n"
-                  "                    if(hasLoadedImages(target) && !needsFullEpisodeList(currentTitle, target)) {",
-                  1,
-              )
-              viewer = viewer.replace(
-                  "                        if(target != null && target.isOnline() && !hasLoadedImages(target))\n"
-                  "                            result = ViewerWarmupManager.applyWarmupResult(target, 150);",
-                  "                        if(target != null && target.isOnline()) {\n"
-                  "                            result = ensureEpisodeListLoaded(target);\n"
-                  "                        }\n"
-                  "                        if(target != null && target.isOnline() && result == LOAD_OK && !hasLoadedImages(target))\n"
-                  "                            result = ViewerWarmupManager.applyWarmupResult(target, 150);",
-                  1,
-              )
-
-              start = viewer.index("    private int ensureEpisodeListLoaded(Manga target) {")
-              end = viewer.index("    private void saveCurrentScrollBookmark", start)
-              middle = """    private int ensureEpisodeListLoaded(Manga target) {
-        if(target == null || !target.isOnline())
-            return LOAD_OK;
-        Title currentTitle = title != null ? title : target.getTitle();
-        if(currentTitle == null)
-            return LOAD_OK;
-        restoreTitleEpisodes(currentTitle, target);
-        if(needsFullEpisodeList(currentTitle, target)) {
-            int result = currentTitle.fetchEps(getHttpClient());
-            if(result == LOAD_CAPTCHA)
-                return result;
-        }
-        attachEpisodeList(currentTitle, target);
-        return LOAD_OK;
-    }
-
-    private int prepareEpisodeIdentity(Manga target) {
-        if(target == null || !target.isOnline())
-            return LOAD_OK;
-        Title currentTitle = title != null ? title : target.getTitle();
-        if(currentTitle == null)
-            return LOAD_OK;
-        restoreTitleEpisodes(currentTitle, target);
-        attachEpisodeList(currentTitle, target);
-        return LOAD_OK;
-    }
-
-    private void restoreTitleEpisodes(Title currentTitle, Manga target) {
-        if(currentTitle == null || target == null)
-            return;
-        List<Manga> targetEpisodes = target.getEps();
-        if(targetEpisodes != null && targetEpisodes.size() > 1
-                && (currentTitle.getEps() == null || currentTitle.getEps().size() < targetEpisodes.size()))
-            currentTitle.setEps(targetEpisodes);
-    }
-
-    private void hydrateEpisodeListAfterFirstFrame(Manga target) {
-        if(target == null || !target.isOnline())
-            return;
-        Title currentTitle = title != null ? title : target.getTitle();
-        if(currentTitle == null || !needsFullEpisodeList(currentTitle, target))
-            return;
-        mainHandler.postDelayed(() -> {
-            try {
-                imageLoadExecutor.submit(() -> {
-                    try {
-                        int result = currentTitle.fetchEps(getHttpClient());
-                        if(result == LOAD_CAPTCHA || isFinishing())
-                            return;
-                        attachEpisodeList(currentTitle, target);
-                        p.addRecent(currentTitle);
-                        p.setBookmark(currentTitle, target.getId());
-                        mainHandler.post(() -> {
-                            if(!isFinishing() && manga != null && manga.getId() == target.getId())
-                                refreshToolbar(target);
-                        });
-                    } catch (Exception e) {
-                        if(!isFinishing())
-                            e.printStackTrace();
-                    }
-                });
-            } catch (RejectedExecutionException e) {
-                if(!isFinishing())
-                    e.printStackTrace();
-            }
-        }, 350);
-    }
-
-"""
-              viewer = viewer[:start] + middle + viewer[end:]
-
-              start = viewer.index("    private boolean hasLoadedImages(Manga target) {")
-              end = viewer.index("    private void preloadFirstPages", start)
-              helpers = """    private boolean hasLoadedImages(Manga target) {
-        try {
-            if(target == null)
-                return false;
-            List<String> loadedImages = target.getImgs(context);
-            return loadedImages != null && loadedImages.size() > 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private boolean needsFullEpisodeList(Title currentTitle, Manga target) {
-        List<Manga> titleEpisodes = currentTitle == null ? null : currentTitle.getEps();
-        List<Manga> targetEpisodes = target == null ? null : target.getEps();
-        int titleCount = titleEpisodes == null ? 0 : titleEpisodes.size();
-        int targetCount = targetEpisodes == null ? 0 : targetEpisodes.size();
-        return Math.max(titleCount, targetCount) <= 3;
-    }
-
-    private void attachEpisodeList(Title currentTitle, Manga target) {
-        if(currentTitle == null)
-            return;
-        List<Manga> episodes = currentTitle.getEps();
-        if(episodes != null)
-            for(Manga episode : episodes) {
-                if(episode != null) {
-                    episode.setTitle(currentTitle);
-                    episode.setTitleId(currentTitle.getId());
-                }
-            }
-        if(target != null) {
-            target.setTitle(currentTitle);
-            target.setTitleId(currentTitle.getId());
-            if(episodes != null && episodes.size() > 0
-                    && !containsSameInstance(episodes, target)
-                    && (target.getEps() == null || episodes.size() >= target.getEps().size()))
-                target.setEps(episodes);
-        }
-        title = currentTitle;
-    }
-
-    private boolean containsSameInstance(List<Manga> episodes, Manga target) {
-        if(episodes == null || target == null)
-            return false;
-        for(Manga episode : episodes) {
-            if(episode == target)
-                return true;
-        }
-        return false;
-    }
-
-"""
-              viewer = viewer[:start] + helpers + viewer[end:]
-              viewer_path.write_text(viewer)
-
-          test_path = Path("app/src/test/java/ml/melun/mangaview/mangaview/MangaEpisodeNavigationTest.java")
-          if not test_path.exists():
-              test_path.write_text("""package ml.melun.mangaview.mangaview;
-
-import org.junit.Test;
-
-import java.util.ArrayList;
-import java.util.List;
-
-import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
-
-public class MangaEpisodeNavigationTest {
-    @Test
-    public void nextEp_usesTitleEpisodesWhenCurrentEpisodeHasNoEpisodeList() {
-        Title title = titleWithEpisodes(40, 30, 20, 10);
-        Manga current = new Manga(30, "30", "", base_webtoon);
-        current.setTitle(title);
-
-        assertEquals(40, current.nextEp().getId());
-        assertEquals(20, current.prevEp().getId());
-    }
-
-    @Test
-    public void nextEp_prefersLargerTitleEpisodeListOverPartialEpisodeList() {
-        Title title = titleWithEpisodes(50, 40, 30, 20, 10);
-        Manga current = new Manga(30, "30", "", base_webtoon);
-        current.setTitle(title);
-
-        List<Manga> partial = new ArrayList<>();
-        partial.add(new Manga(40, "40", "", base_webtoon));
-        partial.add(current);
-        partial.add(new Manga(20, "20", "", base_webtoon));
-        current.setEps(partial);
-
-        assertEquals(40, current.nextEp().getId());
-        assertEquals(20, current.prevEp().getId());
-    }
-
-    @Test
-    public void nextEpAndPrevEp_returnNullAtActualBoundaries() {
-        Title title = titleWithEpisodes(30, 20, 10);
-        Manga newest = new Manga(30, "30", "", base_webtoon);
-        Manga oldest = new Manga(10, "10", "", base_webtoon);
-        newest.setTitle(title);
-        oldest.setTitle(title);
-
-        assertNull(newest.nextEp());
-        assertNull(oldest.prevEp());
-    }
-
-    private Title titleWithEpisodes(int... ids) {
-        Title title = new Title("title", "", "", new ArrayList<>(), "", 1, base_webtoon);
-        List<Manga> episodes = new ArrayList<>();
-        for(int id : ids) {
-            Manga episode = new Manga(id, String.valueOf(id), "", base_webtoon);
-            episode.setTitle(title);
-            episodes.add(episode);
-        }
-        title.setEps(episodes);
-        return title;
-    }
-}
-""")
-          PY
 
       - name: Test and build APK
         run: |
@@ -335,19 +45,16 @@ public class MangaEpisodeNavigationTest {
           url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}/{apk.name}"
           Path("version.json").write_text(json.dumps({"version": int(version), "link": url}, separators=(",", ":")) + "\n")
           releases = Path("releases.html")
-          releases.write_text(re.sub(r"apk/mangaViewer_\d+-debug\.apk", url, releases.read_text()))
+          releases.write_text(re.sub(r"(?:apk/mangaViewer_\d+-debug\.apk|https://github\.com/[^\s\"']+/releases/download/[^\s\"']+\.apk)", url, releases.read_text()))
           PY
 
-      - name: Commit patch
+      - name: Commit release metadata
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add app/src/main/java/ml/melun/mangaview/mangaview/Manga.java \
-                  app/src/main/java/ml/melun/mangaview/activity/ViewerActivity.java \
-                  app/src/test/java/ml/melun/mangaview/mangaview/MangaEpisodeNavigationTest.java \
-                  version.json releases.html
+          git add version.json releases.html
           if ! git diff --cached --quiet; then
-            git commit -m "Fix continuous reader episode boundary detection"
+            git commit -m "Update APK release metadata"
             git push
           fi
 
@@ -361,8 +68,7 @@ public class MangaEpisodeNavigationTest {
           tag="$safe_branch-v$version"
           target_sha="$(git rev-parse HEAD)"
 
-          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-            --jq '.[] | [.id, .tag_name, .target_commitish] | @tsv' |
+          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq '.[] | [.id, .tag_name, .target_commitish] | @tsv' |
           while IFS=$'\t' read -r id old_tag target; do
             if [ "$target" = "$GITHUB_REF_NAME" ] || [[ "$old_tag" == "$safe_branch-v"* ]]; then
               gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
@@ -372,8 +78,7 @@ public class MangaEpisodeNavigationTest {
             fi
           done
 
-          gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$safe_branch-v" \
-            --jq '.[].ref' |
+          gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$safe_branch-v" --jq '.[].ref' |
           while read -r ref; do
             [ -n "$ref" ] && gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/$ref" || true
           done
