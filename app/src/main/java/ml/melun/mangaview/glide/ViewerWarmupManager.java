@@ -123,9 +123,8 @@ public class ViewerWarmupManager {
                 Title currentTitle = warmupTitle != null ? warmupTitle : target.getTitle();
                 if(currentTitle != null && (currentTitle.getEps() == null || currentTitle.getEps().size() <= 1)) {
                     int result = MangaRepository.fetchEpisodes(currentTitle);
-                    if(result != LOAD_OK)
-                        return;
-                    attachTitle(currentTitle, target);
+                    if(result == LOAD_OK)
+                        attachTitle(currentTitle, target);
                 }
                 boolean skipTarget = ViewerResumeResolver.shouldResolveBeforeDirectFetch(target, currentTitle);
                 List<Manga> candidates = ViewerResumeResolver.candidates(target, currentTitle, skipTarget);
@@ -181,9 +180,8 @@ public class ViewerWarmupManager {
             Title currentTitle = title != null ? title : target.getTitle();
             if(currentTitle != null && (currentTitle.getEps() == null || currentTitle.getEps().size() <= 1)) {
                 int result = MangaRepository.fetchEpisodes(currentTitle);
-                if(result != LOAD_OK)
-                    return null;
-                attachTitle(currentTitle, target);
+                if(result == LOAD_OK)
+                    attachTitle(currentTitle, target);
             }
             boolean skipTarget = ViewerResumeResolver.shouldResolveBeforeDirectFetch(target, currentTitle);
             List<Manga> candidates = ViewerResumeResolver.candidates(target, currentTitle, skipTarget);
@@ -198,11 +196,13 @@ public class ViewerWarmupManager {
                 int result = prepareFirstFrame(appContext, candidate, currentTitle, page, width, autoCut, reverse, MangaRepository.cancellation());
                 if(result != LOAD_OK || !hasImages(candidate, appContext))
                     continue;
+                preloadLoadedImages(appContext, candidate, page, width, autoCut, reverse, p.getDataSave() ? 8 : 24, Priority.IMMEDIATE, p.getDataSave() ? 2 : 3);
                 if(hasDecodedFrame(appContext, candidate, page, width, autoCut, reverse)) {
-                    preloadLoadedImages(appContext, candidate, page, width, autoCut, reverse, p.getDataSave() ? 8 : 24, Priority.IMMEDIATE, p.getDataSave() ? 2 : 3);
                     logMetric("viewer_click_ready", candidate.getId());
-                    return candidate;
+                } else {
+                    logMetric("viewer_click_url_ready", candidate.getId());
                 }
+                return candidate;
             }
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);

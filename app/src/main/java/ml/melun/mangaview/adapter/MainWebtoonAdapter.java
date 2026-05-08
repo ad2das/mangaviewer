@@ -1787,6 +1787,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 rows = nextRows;
                 notifyItemRangeInserted(0, nextRows.size());
                 restoreScrollAnchor(anchor);
+                warmupTopContinueRows(rows);
                 if(!firstContentLogged && hasDisplayContent(rows)) {
                     firstContentLogged = true;
                     PerfTrace.end("home_first_content_ms", firstContentStartedAt);
@@ -1832,6 +1833,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             rows = nextRows;
             diff.dispatchUpdatesTo(this);
             restoreScrollAnchor(anchor);
+            warmupTopContinueRows(rows);
             if(!firstContentLogged && hasDisplayContent(rows)) {
                 firstContentLogged = true;
                 PerfTrace.end("home_first_content_ms", firstContentStartedAt);
@@ -2231,6 +2233,66 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(row instanceof HeroRow)
                 return true;
         return false;
+    }
+
+    private void warmupTopContinueRows(List<Object> candidateRows) {
+        if(candidateRows == null)
+            return;
+        for(Object row : candidateRows) {
+            if(!(row instanceof HomeSection))
+                continue;
+            HomeSection section = (HomeSection) row;
+            if(!"이어보기".equals(section.title) || section.titles == null)
+                continue;
+            int limit = Math.min(4, section.titles.size());
+            for(int i = 0; i < limit; i++) {
+                Manga manga = resolveContinueMangaForWarmup(section.titles.get(i));
+                if(manga != null)
+                    ViewerWarmupManager.warmupContinue(context, manga, section.titles.get(i));
+            }
+            return;
+        }
+    }
+
+    private Manga resolveContinueMangaForWarmup(Title item) {
+        if(item == null)
+            return null;
+        int bookmark = p.getBookmark(item);
+        if(bookmark <= 0)
+            bookmark = item.getBookmark();
+        if(bookmark <= 0)
+            bookmark = item.getBookmarkEpisodeId();
+        if(bookmark <= 0)
+            return null;
+        Manga resolved = findEpisodeByIdForWarmup(item, bookmark);
+        if(resolved == null) {
+            int progressIndex = item.getBookmarkEpisodeIndex();
+            if(progressIndex <= 0 && item.getEps() != null && bookmark <= item.getEps().size())
+                progressIndex = bookmark;
+            resolved = episodeAtForWarmup(item, progressIndex);
+        }
+        if(resolved == null)
+            resolved = new Manga(bookmark, "", "", item.getBaseMode());
+        resolved.setTitle(item);
+        resolved.setTitleId(item.getId());
+        if(item.getEps() != null && item.getEps().size() > 0)
+            resolved.setEps(item.getEps());
+        return resolved;
+    }
+
+    private Manga findEpisodeByIdForWarmup(Title item, int bookmark) {
+        if(item == null || item.getEps() == null)
+            return null;
+        for(Manga episode : item.getEps())
+            if(episode != null && episode.getId() == bookmark)
+                return episode;
+        return null;
+    }
+
+    private Manga episodeAtForWarmup(Title item, int oneBasedIndex) {
+        if(item == null || item.getEps() == null || oneBasedIndex <= 0 || oneBasedIndex > item.getEps().size())
+            return null;
+        return item.getEps().get(oneBasedIndex - 1);
     }
 
     private void scheduleContinueProgressBackfill() {
