@@ -223,6 +223,13 @@ public class Utils {
             launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes);
             return;
         }
+        Manga immediate = ViewerWarmupManager.usePreparedFirstFrame(context, manga, launchTitle, false, p.getReverse());
+        if(immediate != null) {
+            launchPreparedViewer(context, immediate, code, returnToEpisodes, online, recent,
+                    launchTitle != null ? launchTitle : immediate.getTitle(), includeTitleEpisodes);
+            return;
+        }
+        ViewerWarmupManager.warmupContinue(context, manga, launchTitle);
         Context appContext = context.getApplicationContext();
         AppDispatchers.submitUserAction(() -> {
             Manga prepared = ViewerWarmupManager.prepareClickFirstFrame(appContext, manga, launchTitle, false, p.getReverse());

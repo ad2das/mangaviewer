@@ -211,6 +211,41 @@ public class ViewerWarmupManager {
         return null;
     }
 
+    public static Manga usePreparedFirstFrame(Context context, Manga manga, Title title, boolean autoCut, boolean reverse) {
+        if(context == null || manga == null)
+            return null;
+        if(!manga.isOnline())
+            return manga;
+        if(title != null) {
+            manga.setTitle(title);
+            manga.setTitleId(title.getId());
+            if(title.getEps() != null && title.getEps().size() > 0)
+                manga.setEps(title.getEps());
+        } else {
+            title = manga.getTitle();
+        }
+        int width = viewerWidth(context);
+        int firstPage = manga.useBookmark() ? p.getViewerBookmark(manga) : 0;
+        if(firstPage < 0)
+            firstPage = 0;
+        Manga warmed = continueSnapshotManga(continueWarmupKey(manga, title, firstPage), manga);
+        if(warmed != null) {
+            if(title != null)
+                attachTitle(title, warmed);
+            if(hasDecodedFrame(context, warmed, firstPage, width, autoCut, reverse)) {
+                preloadLoadedImages(context, warmed, firstPage, width, autoCut, reverse, p.getDataSave() ? 8 : 24, Priority.IMMEDIATE, p.getDataSave() ? 2 : 3);
+                logMetric("viewer_click_immediate_snapshot", warmed.getId());
+                return warmed;
+            }
+        }
+        if(hasImages(manga, context) && hasDecodedFrame(context, manga, firstPage, width, autoCut, reverse)) {
+            preloadLoadedImages(context, manga, firstPage, width, autoCut, reverse, p.getDataSave() ? 8 : 24, Priority.IMMEDIATE, p.getDataSave() ? 2 : 3);
+            logMetric("viewer_click_immediate_decoded", manga.getId());
+            return manga;
+        }
+        return null;
+    }
+
     public static int applyWarmupResult(Manga target, long waitMs) {
         if(target == null || !target.isOnline())
             return LOAD_OK;

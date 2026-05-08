@@ -5,6 +5,7 @@ import androidx.recyclerview.widget.DiffUtil;
 import androidx.cardview.widget.CardView;
 import androidx.recyclerview.widget.RecyclerView;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Filter;
@@ -531,6 +532,17 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             progressText.setOnClickListener(clickListener);
             tagContainer.setOnClickListener(clickListener);
             resume.setOnClickListener(v -> openResume());
+            resume.setOnTouchListener((v, event) -> {
+                if(event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                    int position = getAdapterPosition();
+                    if(isValidPosition(position)) {
+                        Title title = mDataFiltered.get(position);
+                        int bookmark = resolveResumeBookmark(title);
+                        warmupResume(title, bookmark, position);
+                    }
+                }
+                return false;
+            });
             resume.setOnLongClickListener(longClickListener);
 
         }
