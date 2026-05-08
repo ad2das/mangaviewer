@@ -18,6 +18,7 @@ import ml.melun.mangaview.report.CrashReporter;
 
 public final class AppDispatchers {
     private static final ThreadPoolExecutor IO = boundedPool("manga-io", 2, 10, 256);
+    private static final ThreadPoolExecutor NETWORK_FANOUT = boundedPool("manga-net", 4, 12, 512);
     private static final ThreadPoolExecutor USER_ACTION = boundedPool("manga-action", 1, 4, 128);
     private static final ThreadPoolExecutor IMAGE_WARMUP = boundedPool("manga-image", 1, 3, 96);
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
@@ -62,7 +63,7 @@ public final class AppDispatchers {
     }
 
     public static <T> CompletionService<T> ioCompletionService() {
-        return new ExecutorCompletionService<>(IO);
+        return new ExecutorCompletionService<>(NETWORK_FANOUT);
     }
 
     public static void runOnMain(Runnable runnable) {

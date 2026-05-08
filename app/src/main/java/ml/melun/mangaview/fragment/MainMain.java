@@ -339,6 +339,7 @@ public class MainMain extends Fragment{
             if(mainComicAdapter == null) {
                 mainComicAdapter = new MainWebtoonAdapter(getContext(), base_comic);
                 mainComicAdapter.setListener(homeClickListener);
+                mainComicAdapter.setFetchStateListener(this::onHomeFetchFinished);
                 mainComicAdapter.setAnchorRecycler(comicRecycler);
                 if(comicRecycler != null)
                     comicRecycler.setAdapter(mainComicAdapter);
@@ -349,6 +350,7 @@ public class MainMain extends Fragment{
         if(mainWebtoonAdapter == null) {
             mainWebtoonAdapter = new MainWebtoonAdapter(getContext());
             mainWebtoonAdapter.setListener(homeClickListener);
+            mainWebtoonAdapter.setFetchStateListener(this::onHomeFetchFinished);
             mainWebtoonAdapter.setAnchorRecycler(webtoonRecycler);
             if(webtoonRecycler != null)
                 webtoonRecycler.setAdapter(mainWebtoonAdapter);
@@ -520,18 +522,41 @@ public class MainMain extends Fragment{
 
     private void fetchComic() {
         ensureHomeAdapter(base_comic);
-        if(mainComicAdapter != null && !comicFetched) {
-            comicFetched = true;
+        if(mainComicAdapter == null)
+            return;
+        if(mainComicAdapter.isFetching()) {
+            if(selectedBaseMode != base_comic || mainComicAdapter.hasFetchedContent())
+                return;
             mainComicAdapter.fetch();
+            return;
         }
+        if(comicFetched && mainComicAdapter.hasFetchedContent())
+            return;
+        comicFetched = false;
+        mainComicAdapter.fetch();
     }
 
     private void fetchWebtoon() {
         ensureHomeAdapter(base_webtoon);
-        if(mainWebtoonAdapter != null && !webtoonFetched) {
-            webtoonFetched = true;
+        if(mainWebtoonAdapter == null)
+            return;
+        if(mainWebtoonAdapter.isFetching()) {
+            if(selectedBaseMode != base_webtoon || mainWebtoonAdapter.hasFetchedContent())
+                return;
             mainWebtoonAdapter.fetch();
+            return;
         }
+        if(webtoonFetched && mainWebtoonAdapter.hasFetchedContent())
+            return;
+        webtoonFetched = false;
+        mainWebtoonAdapter.fetch();
+    }
+
+    private void onHomeFetchFinished(int baseMode, boolean success) {
+        if(baseMode == base_comic)
+            comicFetched = success;
+        else if(baseMode == base_webtoon)
+            webtoonFetched = success;
     }
 
     private void refreshHomeLocalState() {

@@ -23,8 +23,6 @@ import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.mangaview.UpdatedList;
 import ml.melun.mangaview.mangaview.UpdatedManga;
 import ml.melun.mangaview.mangaview.WfwfDomainResolver;
-import ml.melun.mangaview.runtime.AppDispatchers;
-
 import okhttp3.Response;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
@@ -212,7 +210,7 @@ public final class MangaRepository {
         FutureTask<Object> running = IN_FLIGHT.putIfAbsent(key, task);
         if(running == null) {
             running = task;
-            AppDispatchers.io().execute(task);
+            task.run();
         }
         try {
             Object value = running.get();

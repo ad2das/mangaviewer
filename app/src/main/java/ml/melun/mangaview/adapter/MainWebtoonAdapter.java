@@ -104,6 +104,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private int rowDiffGeneration = 0;
     private long firstContentStartedAt = PerfTrace.start("home_first_content_ms");
     private boolean firstContentLogged = false;
+    private FetchStateListener fetchStateListener;
+
+    public interface FetchStateListener {
+        void onFetchFinished(int baseMode, boolean success);
+    }
 
     public MainWebtoonAdapter(Context context){
         this(context, base_webtoon);
@@ -150,6 +155,14 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         return fetcher != null;
     }
 
+    public boolean hasFetchedContent() {
+        return collectTitles(dataSet, 1).size() > 0;
+    }
+
+    public void setFetchStateListener(FetchStateListener listener) {
+        this.fetchStateListener = listener;
+    }
+
     public void cancelFetch() {
         if(fetcher != null) {
             fetcher.cancel(true);
@@ -190,7 +203,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     public void refreshLocalState() {
-        updateRows(buildRows(dataSet, false));
+        updateRows(buildRowsForCurrentTab(false));
         scheduleContinueProgressBackfill();
     }
 
@@ -198,7 +211,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(activeHomeTab == tabPosition && rows != null && rows.size() > 0)
             return;
         activeHomeTab = tabPosition;
-        updateRows(buildRows(dataSet, false));
+        List<Object> nextRows = buildRowsForCurrentTab(fetcher != null || !hasFetchedContent());
+        if(nextRows.size() == 0 && hasDisplayContent(rows))
+            return;
+        updateRows(nextRows);
         scheduleContinueProgressBackfill();
     }
 
@@ -345,6 +361,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     private List<Object> buildRows(List<Ranking<?>> sections, boolean includeEmpty) {
         return buildRows(sections, includeEmpty, false);
+    }
+
+    private List<Object> buildRowsForCurrentTab(boolean allowPlaceholder) {
+        List<Object> nextRows = buildRows(dataSet, false);
+        if(!hasDisplayContent(nextRows) && allowPlaceholder) {
+            List<Object> placeholderRows = buildInitialPlaceholderRows();
+            if(placeholderRows.size() > 0)
+                return placeholderRows;
+        }
+        return nextRows;
     }
 
     private List<Object> buildInitialPlaceholderRows() {
@@ -2070,7 +2096,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 scheduleThumbnailPreload(loadedSections);
                 return;
             }
-            updateRows(buildRows(dataSet, false));
+            List<Object> progressRows = buildRowsForCurrentTab(true);
+            if(!hasDisplayContent(progressRows) && activeHomeTab != 3)
+                return;
+            updateRows(progressRows);
             scheduleThumbnailPreload(loadedSections);
         }
 
@@ -2080,6 +2109,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(fetcher == this)
                 fetcher = null;
             if(!hasAnyResult) {
+                notifyFetchFinished(false);
                 if(!hasDisplayContent() && listener != null)
                     listener.captchaCallback();
                 return;
@@ -2094,6 +2124,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(shouldShowTop)
                 scrollHeroToTop();
             scheduleContinueProgressBackfill();
+            notifyFetchFinished(collectTitles(dataSet, 1).size() > 0);
+        }
+
+        private void notifyFetchFinished(boolean success) {
+            if(fetchStateListener != null)
+                fetchStateListener.onFetchFinished(baseMode, success);
         }
 
         public boolean cancel(boolean mayInterruptIfRunning) {
