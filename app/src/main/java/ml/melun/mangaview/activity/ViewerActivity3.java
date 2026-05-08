@@ -34,6 +34,8 @@ import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.adapter.CustomSpinnerAdapter;
 import ml.melun.mangaview.adapter.ViewerPagerAdapter;
+import ml.melun.mangaview.glide.ViewerPreloadPolicy;
+import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.PageInterface;
 
 import ml.melun.mangaview.mangaview.Manga;
@@ -139,7 +141,7 @@ public class ViewerActivity3 extends AppCompatActivity {
         saveBtn.setOnClickListener(view -> saveCurrentEpisodeOffline());
         width = getScreenSize(getWindowManager().getDefaultDisplay());
         viewPager = this.findViewById(R.id.viewerPager);
-        viewPager.setOffscreenPageLimit(p.getDataSave() ? 1 : 2);
+        viewPager.setOffscreenPageLimit(p.getDataSave() ? 1 : 3);
         spinner = this.findViewById(R.id.toolbar_spinner);
 
         spinnerAdapter = new CustomSpinnerAdapter(context);
@@ -181,6 +183,7 @@ public class ViewerActivity3 extends AppCompatActivity {
                         toggleToolbar();
                     else if (lastPage && !toolbarshow)
                         toggleToolbar();
+                    preloadAroundCurrentPage();
                 }
             }
 
@@ -340,6 +343,7 @@ public class ViewerActivity3 extends AppCompatActivity {
     private class LoadImages {
         ProgressDialog pd;
         AppDispatchers.TaskHandle handle;
+        MangaRepository.Cancellation cancellation = MangaRepository.cancellation();
         volatile boolean cancelled;
 
         private void postProgress(String value) {
@@ -374,9 +378,15 @@ public class ViewerActivity3 extends AppCompatActivity {
             int res = ensureEpisodeListLoaded(manga);
             if(res == LOAD_CAPTCHA)
                 return res;
-            res = MangaRepository.fetchManga(manga);
-            if(title == null)
-                title = manga.getTitle();
+            try {
+                int firstPage = manga.useBookmark() ? p.getViewerBookmark(manga) : viewerBookmark;
+                res = ViewerWarmupManager.prepareFirstFrame(context, manga, title, firstPage, width, false, p.getReverse(), cancellation);
+                if(title == null)
+                    title = manga.getTitle();
+            } catch (Exception e) {
+                if(!cancelled)
+                    ml.melun.mangaview.report.CrashReporter.record(e);
+            }
             return res;
         }
 
@@ -390,12 +400,13 @@ public class ViewerActivity3 extends AppCompatActivity {
                 showTokiCaptchaPopup(context, p);
                 return;
             }
-            reloadManga();
             if(pd.isShowing()) pd.dismiss();
+            reloadManga();
         }
 
         void cancel() {
             cancelled = true;
+            cancellation.cancel();
             if(handle != null)
                 handle.cancel();
             if(imageLoad == this)
@@ -471,14 +482,12 @@ public class ViewerActivity3 extends AppCompatActivity {
             bookmarkRefresh();
             refreshToolbar();
             updateIntent();
+            preloadAroundCurrentPage();
+            prewarmAdjacentEpisodes();
             viewPager.addOnPageChangeListener(listener);
 
         }catch (Exception e){
-            StackTraceElement[] stack = e.getStackTrace();
-            StringBuilder message = new StringBuilder();
-            for(StackTraceElement s : stack){
-                message.append(s.toString()).append('\n');
-            }
+            ml.melun.mangaview.report.CrashReporter.record(e);
             Utils.showCaptchaPopup(manga.getUrl(), context, e, p);
         }
     }
@@ -549,6 +558,21 @@ public class ViewerActivity3 extends AppCompatActivity {
             prev.setAlpha(1f);
         }
         pageBtn.setText(viewerBookmark+1+"/"+imgs.size());
+    }
+
+    private void preloadAroundCurrentPage() {
+        if(manga == null || imgs == null || imgs.size() == 0 || !manga.isOnline())
+            return;
+        ViewerWarmupManager.preloadWindow(context, manga, viewerBookmark, width, false, p.getReverse(), ViewerPreloadPolicy.scrollAheadWindow(p.getDataSave()));
+    }
+
+    private void prewarmAdjacentEpisodes() {
+        if(eps == null || eps.size() == 0 || title == null)
+            return;
+        if(index > 0)
+            ViewerWarmupManager.warmup(context, eps.get(index - 1), title);
+        if(index < eps.size() - 1)
+            ViewerWarmupManager.warmup(context, eps.get(index + 1), title);
     }
 
     void lockUi(boolean lock){

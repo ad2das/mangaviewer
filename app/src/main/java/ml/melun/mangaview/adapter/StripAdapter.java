@@ -19,8 +19,11 @@ import android.widget.TextView;
 
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.Priority;
+import com.bumptech.glide.load.DataSource;
+import com.bumptech.glide.load.engine.GlideException;
 import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
+import com.bumptech.glide.request.RequestListener;
 import com.bumptech.glide.request.RequestOptions;
 import com.bumptech.glide.request.target.CustomTarget;
 import com.bumptech.glide.request.target.Target;
@@ -40,6 +43,7 @@ import static ml.melun.mangaview.Utils.getGlideUrl;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.activity.ViewerActivity;
 import ml.melun.mangaview.glide.ViewerPageTransformation;
+import ml.melun.mangaview.glide.ViewerPreloadPolicy;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.StringCallback;
 import ml.melun.mangaview.mangaview.Decoder;
@@ -59,9 +63,9 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     int width;
     int count = 0;
     final static int MaxStackSize = 3;
-    private static final int PRELOAD_AHEAD_COUNT = 12;
+    private static final int PRELOAD_AHEAD_COUNT = 18;
     private static final int DATA_SAVE_PRELOAD_AHEAD_COUNT = 6;
-    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 8;
+    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 18;
     private static final int PRELOAD_TRACK_LIMIT = 500;
     ViewerActivity.InfiniteScrollCallback callback;
     Title title;
@@ -72,6 +76,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private final LruCache<String, Bitmap> decodedBitmapCache;
     private final Map<String, Decoder> decoders = new HashMap<>();
     private final Map<String, CustomTarget<Bitmap>> decodedPreloadTargets = new HashMap<>();
+    private int lastPreloadAnchorPosition = RecyclerView.NO_POSITION;
 
     public List<Object> getItems(){
         return items;
@@ -365,14 +370,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         int start = findFirstMatchingPagePosition(page);
         if(start == RecyclerView.NO_POSITION)
             return;
-        int preloaded = 0;
-        for(int i = start; i < items.size() && preloaded <= aheadCount; i++) {
-            Object next = items.get(i);
-            if(next instanceof PageItem) {
-                preloadPage((PageItem) next);
-                preloaded++;
-            }
-        }
+        ViewerPreloadPolicy.Window policy = ViewerPreloadPolicy.scrollAheadWindow(p.getDataSave());
+        preloadDirectionalWindow(start, 1, clampWindow(policy, aheadCount));
     }
 
     public void preloadInitialAroundPage(PageItem page) {
@@ -383,19 +382,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             start = findFirstPagePosition(page.manga);
         if(start == RecyclerView.NO_POSITION)
             return;
-        int preloaded = 0;
-        int preloadLimit = p.getDataSave() ? DATA_SAVE_PRELOAD_AHEAD_COUNT : INITIAL_PRELOAD_AHEAD_COUNT;
-        int decodedLimit = p.getDataSave() ? 1 : 2;
-        for(int i = start; i < items.size() && preloaded < preloadLimit; i++) {
-            Object next = items.get(i);
-            if(next instanceof PageItem) {
-                if(preloaded < decodedLimit)
-                    preloadPageIntoDecodedCache((PageItem) next, Priority.IMMEDIATE);
-                else
-                    preloadPage((PageItem) next, Priority.HIGH);
-                preloaded++;
-            }
-        }
+        preloadDirectionalWindow(start, 1, ViewerPreloadPolicy.initialScrollWindow(p.getDataSave()));
     }
 
     final static int IMG = 0;
@@ -484,6 +471,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         String cacheKey = decodedCacheKey(item);
         Bitmap cached = decodedBitmapCache.get(cacheKey);
         if(cached != null && !cached.isRecycled() && isHolderStillBound(holder, item, pageKey)) {
+            if(item.index > 0)
+                ViewerWarmupManager.logMetric("viewer_next_page_cache_hit", 1);
             holder.frame.setMinimumHeight(0);
             holder.frame.setImageBitmap(cached);
             holder.refresh.setVisibility(View.GONE);
@@ -494,6 +483,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             decodedBitmapCache.remove(cacheKey);
         cached = ViewerWarmupManager.getDecodedBitmap(item, autoCut, reverse, width);
         if(cached != null && !cached.isRecycled() && isHolderStillBound(holder, item, pageKey)) {
+            if(item.index > 0)
+                ViewerWarmupManager.logMetric("viewer_next_page_cache_hit", 1);
             holder.frame.setMinimumHeight(0);
             holder.frame.setImageBitmap(cached);
             holder.refresh.setVisibility(View.GONE);
@@ -502,6 +493,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             return;
         }
         if (autoCut) {
+            long bindStart = android.os.SystemClock.elapsedRealtime();
             CustomTarget<Bitmap> imageTarget = new CustomTarget<Bitmap>() {
                 @Override
                 public void onResourceReady(@NonNull Bitmap bitmap, Transition<? super Bitmap> transition) {
@@ -511,6 +503,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     holder.frame.setMinimumHeight(0);
                     holder.frame.setImageBitmap(displayBitmap);
                     holder.refresh.setVisibility(View.GONE);
+                    if(item.index == 0)
+                        ViewerWarmupManager.logMetric("viewer_first_bind_ms", android.os.SystemClock.elapsedRealtime() - bindStart);
                     markDisplayedAndPreload(holder, item, pageKey);
                 }
 
@@ -542,6 +536,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     .placeholder(R.drawable.placeholder)
                     .into(imageTarget);
         } else {
+            long bindStart = android.os.SystemClock.elapsedRealtime();
             CustomTarget<Bitmap> imageTarget = new CustomTarget<Bitmap>() {
                 @Override
                 public void onResourceReady(@NonNull Bitmap resource, @Nullable Transition<? super Bitmap> transition) {
@@ -551,6 +546,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     holder.frame.setMinimumHeight(0);
                     holder.frame.setImageBitmap(displayBitmap);
                     holder.refresh.setVisibility(View.GONE);
+                    if(item.index == 0)
+                        ViewerWarmupManager.logMetric("viewer_first_bind_ms", android.os.SystemClock.elapsedRealtime() - bindStart);
                     markDisplayedAndPreload(holder, item, pageKey);
                 }
 
@@ -589,7 +586,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         trimDisplayedTracker();
         int layoutPos = holder.getAdapterPosition();
         if(layoutPos != RecyclerView.NO_POSITION)
-            preloadAhead(layoutPos);
+            preloadAroundScrollPosition(layoutPos);
     }
 
     private RequestOptions viewerImageOptions(PageItem item) {
@@ -654,16 +651,50 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 && pageKey.equals(pageBindKey((PageItem) items.get(position)));
     }
 
-    private void preloadAhead(int adapterPosition) {
+    private void preloadAroundScrollPosition(int adapterPosition) {
+        if(adapterPosition == RecyclerView.NO_POSITION)
+            return;
+        int direction = lastPreloadAnchorPosition != RecyclerView.NO_POSITION && adapterPosition < lastPreloadAnchorPosition ? -1 : 1;
+        lastPreloadAnchorPosition = adapterPosition;
+        preloadDirectionalWindow(adapterPosition, direction, ViewerPreloadPolicy.scrollAheadWindow(p.getDataSave()));
+        preloadDirectionalWindow(adapterPosition, -direction, new ViewerPreloadPolicy.Window(0, 1, 2, 2));
+    }
+
+    private void preloadDirectionalWindow(int adapterPosition, int direction, ViewerPreloadPolicy.Window window) {
+        if(items == null || window == null || direction == 0)
+            return;
         int preloaded = 0;
-        int preloadLimit = p.getDataSave() ? DATA_SAVE_PRELOAD_AHEAD_COUNT : PRELOAD_AHEAD_COUNT;
-        for(int i = adapterPosition + 1; i < items.size() && preloaded < preloadLimit; i++) {
-            Object next = items.get(i);
+        int position = adapterPosition;
+        while(position >= 0 && position < items.size() && preloaded < window.totalLimit) {
+            Object next = items.get(position);
             if(next instanceof PageItem) {
-                preloadPage((PageItem) next);
+                int tier = ViewerPreloadPolicy.tierForOffset(window, preloaded);
+                if(tier == ViewerPreloadPolicy.TIER_DECODED)
+                    preloadPageIntoDecodedCache((PageItem) next, Priority.IMMEDIATE);
+                else
+                    preloadPage((PageItem) next, priorityForTier(tier));
                 preloaded++;
             }
+            position += direction;
         }
+    }
+
+    private ViewerPreloadPolicy.Window clampWindow(ViewerPreloadPolicy.Window policy, int totalLimit) {
+        int limit = Math.max(1, Math.min(policy.totalLimit, Math.max(1, totalLimit)));
+        return new ViewerPreloadPolicy.Window(
+                Math.min(policy.decodedLimit, limit),
+                Math.min(policy.immediateLimit, limit),
+                Math.min(policy.highLimit, limit),
+                limit
+        );
+    }
+
+    private Priority priorityForTier(int tier) {
+        if(tier == ViewerPreloadPolicy.TIER_DECODED || tier == ViewerPreloadPolicy.TIER_IMMEDIATE)
+            return Priority.IMMEDIATE;
+        if(tier == ViewerPreloadPolicy.TIER_HIGH)
+            return Priority.HIGH;
+        return Priority.NORMAL;
     }
 
     private void preloadPage(PageItem page) {
@@ -672,6 +703,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     private void preloadPage(PageItem page, Priority priority) {
         String key = preloadKey(page);
+        if(key.length() == 0)
+            return;
         if(!preloadedImages.add(key))
             return;
         trimPreloadTracker();
@@ -680,6 +713,18 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 .priority(priority)
                 .apply(viewerImageOptions(page))
                 .load(getImageModel(page))
+                .listener(new RequestListener<Bitmap>() {
+                    @Override
+                    public boolean onLoadFailed(@Nullable GlideException e, Object model, Target<Bitmap> target, boolean isFirstResource) {
+                        preloadedImages.remove(key);
+                        return false;
+                    }
+
+                    @Override
+                    public boolean onResourceReady(Bitmap resource, Object model, Target<Bitmap> target, DataSource dataSource, boolean isFirstResource) {
+                        return false;
+                    }
+                })
                 .preload();
     }
 
@@ -713,6 +758,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             @Override
             public void onLoadFailed(@Nullable Drawable errorDrawable) {
                 decodedPreloadTargets.remove(requestKey);
+                preloadedImages.remove(requestKey);
             }
         };
         decodedPreloadTargets.put(requestKey, target);
@@ -832,7 +878,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             PageItem pi = (PageItem) items.get(layoutPos);
             current = pi;
             if(displayedImages.contains(pageBindKey(pi)))
-                preloadAhead(layoutPos);
+                preloadAroundScrollPosition(layoutPos);
             if(needUpdate || currentMangaId != pi.manga.getId()){
                 needUpdate = false;
                 currentMangaId = pi.manga.getId();

@@ -43,6 +43,7 @@ import com.google.gson.reflect.TypeToken;
 import java.util.List;
 
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.glide.ViewerPreloadPolicy;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.StringCallback;
 import ml.melun.mangaview.ui.StripLayoutManager;
@@ -101,11 +102,9 @@ public class ViewerActivity extends AppCompatActivity {
     boolean nextEpisodeBoundaryLoading = false;
     boolean previousEpisodeBoundaryJumpPending = false;
     boolean nextEpisodeBoundaryJumpPending = false;
-    private static final int NEXT_EPISODE_PRELOAD_LIMIT = 8;
-    private static final int DATA_SAVE_NEXT_EPISODE_PRELOAD_LIMIT = 6;
-    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 12;
-    private static final int NEXT_EPISODE_ATTACH_THRESHOLD = 16;
-    private static final int DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD = 10;
+    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 18;
+    private static final int NEXT_EPISODE_ATTACH_THRESHOLD = 22;
+    private static final int DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD = 12;
     private static final int PREVIOUS_EPISODE_PULL_THRESHOLD_DP = 36;
     float topPullStartY = 0;
     boolean topPullTriggered = false;
@@ -629,6 +628,7 @@ public class ViewerActivity extends AppCompatActivity {
             refreshToolbar(m);
             updateIntent(m);
             prefetchNextEpisode(m);
+            prefetchPreviousEpisode(m);
 
         }catch (Exception e){
             Utils.showCaptchaPopup(m.getUrl(), context, e, p);
@@ -789,14 +789,9 @@ public class ViewerActivity extends AppCompatActivity {
                 try {
                     if(m.isOnline()) {
                         result = lockui ? prepareEpisodeIdentity(m) : ensureEpisodeListLoaded(m);
-                        if(result == LOAD_OK && !hasLoadedImages(m)) {
-                            result = ViewerWarmupManager.applyWarmupResult(m, lockui ? 400 : 150);
-                        }
-                        if(result == LOAD_OK && !hasLoadedImages(m)) {
-                            result = MangaRepository.fetchViewerInitial(m, cancellation);
-                            if(result == LOAD_OK && !cancelled && !hasLoadedImages(m))
-                                result = MangaRepository.fetchViewerInitial(m, cancellation);
-                        }
+                        int firstPage = m.useBookmark() ? p.getViewerBookmark(m) : 0;
+                        if(result == LOAD_OK)
+                            result = ViewerWarmupManager.prepareFirstFrame(context, m, title, firstPage, width, autoCut, p.getReverse(), cancellation);
                     }
                 } catch (Exception e) {
                     if(!cancelled && !isFinishing())
@@ -851,22 +846,22 @@ public class ViewerActivity extends AppCompatActivity {
         MangaRepository.Cancellation cancellation = MangaRepository.cancellation();
         AppDispatchers.TaskHandle handle;
         volatile boolean cancelled = false;
+        long startedAtMs;
 
         PrefetchImagesJob(Manga target) {
             this.target = target;
         }
 
         void start() {
+            startedAtMs = android.os.SystemClock.elapsedRealtime();
             handle = AppDispatchers.submitImageWarmup(() -> {
                 int result = LOAD_OK;
                 try {
                     if(target != null && target.isOnline()) {
                         result = ensureEpisodeListLoaded(target);
                     }
-                    if(target != null && target.isOnline() && result == LOAD_OK && !hasLoadedImages(target))
-                        result = ViewerWarmupManager.applyWarmupResult(target, 150);
-                    if(target != null && target.isOnline() && result == LOAD_OK && !hasLoadedImages(target))
-                        result = MangaRepository.fetchViewerInitial(target, cancellation);
+                    if(target != null && target.isOnline() && result == LOAD_OK)
+                        result = ViewerWarmupManager.prepareFirstFrame(context, target, title, 0, width, autoCut, p.getReverse(), cancellation);
                 } catch (Exception e) {
                     if(!cancelled && !isFinishing())
                         ml.melun.mangaview.report.CrashReporter.record(e);
@@ -885,6 +880,7 @@ public class ViewerActivity extends AppCompatActivity {
             if(cancelled || isFinishing() || result == LOAD_CAPTCHA || !hasLoadedImages(target))
                 return;
             preloadFirstPages(target);
+            ViewerWarmupManager.logMetric("viewer_next_episode_ready_ms", android.os.SystemClock.elapsedRealtime() - startedAtMs);
             int attachThreshold = p.getDataSave() ? DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD : NEXT_EPISODE_ATTACH_THRESHOLD;
             if(stripAdapter != null && manager != null && manager.findLastVisibleItemPosition() >= manager.getItemCount() - attachThreshold)
                 attachNextEpisode(false);
@@ -1069,7 +1065,7 @@ public class ViewerActivity extends AppCompatActivity {
         int pageIndex = target.useBookmark() ? p.getViewerBookmark(target) : 0;
         if(pageIndex < 0 || pageIndex >= images.size())
             pageIndex = 0;
-        ViewerWarmupManager.preloadLoadedImages(context, target, pageIndex, width, autoCut, p.getReverse(), p.getDataSave() ? 3 : 5, com.bumptech.glide.Priority.IMMEDIATE);
+        ViewerWarmupManager.preloadWindow(context, target, pageIndex, width, autoCut, p.getReverse(), ViewerPreloadPolicy.firstFrameWindow(p.getDataSave()));
     }
 
     private void scheduleFocusedPagePreload() {
@@ -1410,6 +1406,15 @@ public class ViewerActivity extends AppCompatActivity {
         nextPrefetcher.start();
     }
 
+    private void prefetchPreviousEpisode(Manga current) {
+        if(current == null || !current.isOnline())
+            return;
+        Manga target = current.prevEp();
+        if(target == null || hasLoadedImages(target))
+            return;
+        ViewerWarmupManager.warmup(context, target, title);
+    }
+
     private void cancelNextPrefetcher() {
         if(nextPrefetcher != null)
             nextPrefetcher.cancel();
@@ -1490,8 +1495,7 @@ public class ViewerActivity extends AppCompatActivity {
         if(target == null || !target.isOnline())
             return;
         List<String> images = MangaRepository.imageUrls(target, context);
-        int preloadLimit = p.getDataSave() ? DATA_SAVE_NEXT_EPISODE_PRELOAD_LIMIT : NEXT_EPISODE_PRELOAD_LIMIT;
-        ViewerWarmupManager.preloadLoadedImages(context, target, 0, width, autoCut, p.getReverse(), Math.min(preloadLimit, images.size()), com.bumptech.glide.Priority.HIGH);
+        ViewerWarmupManager.preloadWindow(context, target, 0, width, autoCut, p.getReverse(), ViewerPreloadPolicy.nextEpisodeWindow(p.getDataSave()));
     }
 
     private interface EpisodeExpectation {
