@@ -26,6 +26,7 @@ public class WfwfDomainResolver {
     private static final int FORWARD_SCAN_LIMIT = 300;
     private static final int BACKWARD_SCAN_LIMIT = 5;
     private static final int PARALLEL_PROBES = 10;
+    private static final long RESOLVE_TIMEOUT_MS = 15_000L;
 
     public static String resolve(OkHttpClient client, String currentUrl, Map<String, String> headers) {
         return resolve(client, currentUrl, headers, null);
@@ -37,16 +38,16 @@ public class WfwfDomainResolver {
             current = DEFAULT_NUMBER;
 
         OkHttpClient probeClient = client.newBuilder()
-                .connectTimeout(3, TimeUnit.SECONDS)
-                .readTimeout(4, TimeUnit.SECONDS)
-                .callTimeout(5, TimeUnit.SECONDS)
+                .connectTimeout(2, TimeUnit.SECONDS)
+                .readTimeout(3, TimeUnit.SECONDS)
+                .callTimeout(4, TimeUnit.SECONDS)
                 .build();
 
         String currentRoot = "https://wfwf" + current + ".com";
         if(isAlive(probeClient, currentRoot, headers, requestGroup))
             return currentRoot;
 
-        return findAliveCandidate(probeClient, candidates(current), headers, requestGroup);
+        return findAliveCandidate(probeClient, candidates(current), headers, requestGroup, System.currentTimeMillis() + RESOLVE_TIMEOUT_MS);
     }
 
     public static boolean isWfwfUrl(String url) {
@@ -88,11 +89,14 @@ public class WfwfDomainResolver {
         return numbers;
     }
 
-    private static String findAliveCandidate(OkHttpClient client, List<Integer> candidates, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup) {
+    private static String findAliveCandidate(OkHttpClient client, List<Integer> candidates, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup, long deadlineMs) {
         ExecutorService executor = Executors.newFixedThreadPool(PARALLEL_PROBES);
         try {
             for(int start = 0; start < candidates.size(); start += PARALLEL_PROBES) {
                 if(requestGroup != null && requestGroup.isCancelled())
+                    return null;
+                long remainingMs = deadlineMs - System.currentTimeMillis();
+                if(remainingMs <= 0)
                     return null;
                 int end = Math.min(start + PARALLEL_PROBES, candidates.size());
                 ArrayList<Future<String>> futures = new ArrayList<>();
@@ -110,7 +114,17 @@ public class WfwfDomainResolver {
 
                 for(int i = start; i < end; i++) {
                     try {
-                        String resolved = completionService.take().get();
+                        long waitMs = deadlineMs - System.currentTimeMillis();
+                        if(waitMs <= 0) {
+                            cancelAll(futures);
+                            return null;
+                        }
+                        Future<String> future = completionService.poll(waitMs, TimeUnit.MILLISECONDS);
+                        if(future == null) {
+                            cancelAll(futures);
+                            return null;
+                        }
+                        String resolved = future.get();
                         if(resolved != null) {
                             cancelAll(futures);
                             return resolved;
