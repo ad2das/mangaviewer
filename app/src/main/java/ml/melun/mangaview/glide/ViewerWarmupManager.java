@@ -47,7 +47,7 @@ public class ViewerWarmupManager {
     private static final int DECODED_TARGET_LIMIT = 48;
     private static final int SNAPSHOT_LIMIT = 64;
     private static final long SNAPSHOT_TTL_MS = 2 * 60 * 1000L;
-    private static final long CONTINUE_WARMUP_DEBOUNCE_MS = 4 * 1000L;
+    private static final long CONTINUE_WARMUP_DEBOUNCE_MS = 800L;
     private static final Map<String, WarmupState> activeWarmups = new HashMap<>();
     private static final LinkedHashMap<String, WarmupSnapshot> snapshots = new LinkedHashMap<>(SNAPSHOT_LIMIT, 0.75f, true);
     private static final LinkedHashMap<String, Long> recentContinueWarmups = new LinkedHashMap<>(SNAPSHOT_LIMIT, 0.75f, true);
@@ -133,7 +133,7 @@ public class ViewerWarmupManager {
                     int page = ViewerResumeResolver.sameManga(candidate, target) ? startPage : 0;
                     int result = prepareFirstFrame(appContext, candidate, currentTitle, page, width, false, p.getReverse(), MangaRepository.cancellation());
                     if(result == LOAD_OK && hasImages(candidate, appContext)) {
-                        preloadLoadedImages(appContext, candidate, page, width, false, p.getReverse(), p.getDataSave() ? 4 : 10, Priority.IMMEDIATE, 1);
+                        preloadLoadedImages(appContext, candidate, page, width, false, p.getReverse(), p.getDataSave() ? 8 : 24, Priority.IMMEDIATE, p.getDataSave() ? 2 : 3);
                         logMetric("viewer_continue_warmup_ready", candidate.getId());
                         return;
                     }
@@ -180,7 +180,7 @@ public class ViewerWarmupManager {
         long urlStart = SystemClock.elapsedRealtime();
         boolean snapshotHit = applySnapshot(key, manga);
         if(!snapshotHit)
-            snapshotHit = waitForActiveSnapshot(key, manga, 650);
+            snapshotHit = waitForActiveSnapshot(key, manga, 220);
         int result = LOAD_OK;
         if(!snapshotHit && !hasImages(manga, context)) {
             result = MangaRepository.fetchViewerInitial(manga, cancellation);

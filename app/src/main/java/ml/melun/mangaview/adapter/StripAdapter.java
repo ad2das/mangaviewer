@@ -658,12 +658,15 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             return;
         int direction = lastPreloadAnchorPosition != RecyclerView.NO_POSITION && adapterPosition < lastPreloadAnchorPosition ? -1 : 1;
         lastPreloadAnchorPosition = adapterPosition;
+        preloadCriticalWindow(adapterPosition, direction);
         preloadDirectionalWindow(adapterPosition, direction, ViewerPreloadPolicy.scrollAheadWindow(p.getDataSave()));
         preloadDirectionalWindow(adapterPosition, -direction, new ViewerPreloadPolicy.Window(0, 1, 2, 2));
     }
 
     private void schedulePreloadAroundScrollPosition(int adapterPosition) {
         pendingPreloadPosition = adapterPosition;
+        int direction = lastPreloadAnchorPosition != RecyclerView.NO_POSITION && adapterPosition < lastPreloadAnchorPosition ? -1 : 1;
+        preloadCriticalWindow(adapterPosition, direction);
         if(scrollBusy)
             return;
         if(pendingPreloadScheduled)
@@ -676,6 +679,13 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             if(target != RecyclerView.NO_POSITION)
                 preloadAroundScrollPosition(target);
         }, 24);
+    }
+
+    private void preloadCriticalWindow(int adapterPosition, int direction) {
+        if(adapterPosition == RecyclerView.NO_POSITION)
+            return;
+        int decodedLimit = p.getDataSave() ? 2 : 3;
+        preloadDirectionalWindow(adapterPosition, direction, new ViewerPreloadPolicy.Window(decodedLimit, decodedLimit, decodedLimit, decodedLimit));
     }
 
     private void preloadDirectionalWindow(int adapterPosition, int direction, ViewerPreloadPolicy.Window window) {

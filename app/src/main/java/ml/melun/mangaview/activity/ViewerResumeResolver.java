@@ -25,11 +25,12 @@ public final class ViewerResumeResolver {
 
     public static List<Manga> candidates(Manga target, Title title, boolean skipTarget) {
         ArrayList<Manga> candidates = new ArrayList<>();
-        if(!skipTarget)
-            addCandidate(candidates, target, title);
         List<Manga> episodes = title == null ? null : title.getEps();
-        if(episodes == null || episodes.size() == 0)
+        if(episodes == null || episodes.size() == 0) {
+            if(!skipTarget)
+                addCandidate(candidates, target, title);
             return candidates;
+        }
 
         int exactIndex = findEpisodeIndex(episodes, target);
         if(exactIndex >= 0)
@@ -40,6 +41,9 @@ public final class ViewerResumeResolver {
 
         int computedIndex = title.getBookmarkIndex() - 1;
         addEpisodeAt(candidates, episodes, computedIndex, title);
+
+        if(!skipTarget)
+            addCandidate(candidates, target, title);
 
         int legacyIndex = target == null ? -1 : target.getId() - 1;
         addEpisodeAt(candidates, episodes, legacyIndex, title);

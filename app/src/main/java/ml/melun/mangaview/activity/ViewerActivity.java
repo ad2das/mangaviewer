@@ -53,6 +53,8 @@ import ml.melun.mangaview.adapter.StripAdapter;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.model.PageItem;
+import ml.melun.mangaview.repository.CacheFileStore;
+import ml.melun.mangaview.repository.CachePolicy;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.PrefetchCoordinator;
@@ -258,11 +260,12 @@ public class ViewerActivity extends AppCompatActivity {
             }
 
             toolbarTitle.setText(manga.getName());
+            toolbarTitle.setSelected(true);
 
             strip = this.findViewById(R.id.strip);
             manager = new StripLayoutManager(this);
             manager.setOrientation(LinearLayoutManager.VERTICAL);
-            strip.setItemViewCacheSize(p.getDataSave() ? 4 : 8);
+            strip.setItemViewCacheSize(p.getDataSave() ? 6 : 12);
             strip.setLayoutManager(manager);
 
             if(intent.getBooleanExtra("recent",false)){
@@ -687,6 +690,7 @@ public class ViewerActivity extends AppCompatActivity {
             if(item != null) {
                 pageBtn.setText(item.index+1 + "/" + MangaRepository.imageUrls(item.manga, context).size());
                 toolbarTitle.setText(item.manga.getName());
+                toolbarTitle.setSelected(true);
                 appbar.animate().translationY(0);
                 appbarBottom.animate().translationY(0);
                 toolbarshow = true;
@@ -1094,6 +1098,33 @@ public class ViewerActivity extends AppCompatActivity {
                 && !containsEpisode(currentTitle.getEps(), target)
                 && (currentTitle.getEps() == null || currentTitle.getEps().size() < targetEpisodes.size()))
             currentTitle.setEps(targetEpisodes);
+        if(currentTitle.getEps() == null || currentTitle.getEps().size() <= 1)
+            restoreCachedEpisodes(currentTitle);
+        attachEpisodeList(currentTitle, target);
+    }
+
+    private void restoreCachedEpisodes(Title currentTitle) {
+        try {
+            String json = CacheFileStore.read(context, episodeCacheKey(currentTitle));
+            if(json == null || json.length() == 0)
+                return;
+            CachedEpisodes cached = new Gson().fromJson(json, new TypeToken<CachedEpisodes>(){}.getType());
+            if(cached == null || !CachePolicy.isFresh(cached.savedAt, CachePolicy.EPISODE_TTL_MS)
+                    || cached.episodes == null || cached.episodes.size() == 0)
+                return;
+            currentTitle.setEps(cached.episodes);
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
+    private String episodeCacheKey(Title targetTitle) {
+        return "episodeSnapshotV1_" + (targetTitle == null ? 0 : targetTitle.getBaseMode()) + "_" + (targetTitle == null ? 0 : targetTitle.getId());
+    }
+
+    private static class CachedEpisodes {
+        long savedAt;
+        ArrayList<Manga> episodes;
     }
 
     private void hydrateEpisodeListAfterFirstFrame(Manga target) {
@@ -1550,8 +1581,12 @@ public class ViewerActivity extends AppCompatActivity {
                 && nextPrefetchEpisodeId == target.getId()
                 && nextPrefetchBaseMode == target.getBaseMode())
             return;
-        if(hasLoadedImages(target))
+        if(hasLoadedImages(target)) {
+            preloadFirstPages(target);
+            if(stripAdapter != null && manager != null && manager.findLastVisibleItemPosition() >= manager.getItemCount() - NEXT_EPISODE_ATTACH_THRESHOLD)
+                attachNextEpisode(false);
             return;
+        }
         if(nextPrefetcher != null)
             nextPrefetcher.cancel();
         nextPrefetchEpisodeId = target.getId();
@@ -1564,8 +1599,12 @@ public class ViewerActivity extends AppCompatActivity {
         if(current == null || !current.isOnline())
             return;
         Manga target = current.prevEp();
-        if(target == null || hasLoadedImages(target))
+        if(target == null)
             return;
+        if(hasLoadedImages(target)) {
+            ViewerWarmupManager.preloadWindow(context, target, 0, width, autoCut, p.getReverse(), ViewerPreloadPolicy.nextEpisodeWindow(p.getDataSave()));
+            return;
+        }
         ViewerWarmupManager.warmup(context, target, title);
     }
 
