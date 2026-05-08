@@ -145,7 +145,7 @@ public class FirebaseSyncManager {
                         int code = response.code();
                         String body = response.body() == null ? "" : response.body().string();
                         deliver(afterUpload, success, success ? null : restErrorMessage("업로드 실패", code, body));
-                    } catch (IOException e) {
+                    } catch (Exception e) {
                         deliver(afterUpload, false, errorMessage("업로드 실패", e));
                     } finally {
                         response.close();
@@ -202,7 +202,7 @@ public class FirebaseSyncManager {
                             syncing = false;
                         }
                         uploadCurrentState(afterSync);
-                    } catch (IOException e) {
+                    } catch (Exception e) {
                         deliver(afterSync, false, errorMessage("다운로드 실패", e));
                     } finally {
                         response.close();
@@ -422,7 +422,8 @@ public class FirebaseSyncManager {
             return value.optBoolean("booleanValue", false);
         if(value.has("mapValue")) {
             Map<String, Object> map = new HashMap<>();
-            JSONObject fields = value.optJSONObject("mapValue").optJSONObject("fields");
+            JSONObject mapValue = value.optJSONObject("mapValue");
+            JSONObject fields = mapValue == null ? null : mapValue.optJSONObject("fields");
             if(fields == null)
                 return map;
             Iterator<String> keys = fields.keys();
