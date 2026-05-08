@@ -1258,20 +1258,31 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 if(continueStyle && position < 8)
                     scheduleContinueViewerWarmup(item, position < 3 ? 0 : 120);
                 card.setOnClickListener(v -> {
-                    if(listener != null && item != null) {
-                        Manga manga = continueStyle ? resolveContinueManga(item) : null;
-                        if(manga != null) {
-                            ViewerWarmupManager.warmupContinueImmediate(context, manga, item);
-                            listener.clickedManga(manga);
-                        } else {
-                            listener.clickedTitle(item);
-                        }
-                    }
+                    openContinueOrTitle(item, continueStyle);
                 });
                 card.setOnTouchListener((v, event) -> {
-                    if(continueStyle && item != null && event.getActionMasked() == MotionEvent.ACTION_DOWN)
+                    if(!continueStyle || item == null)
+                        return false;
+                    if(event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                        v.setPressed(true);
                         warmupContinueViewer(item);
-                    return false;
+                        return true;
+                    }
+                    if(event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                        v.setPressed(false);
+                        return true;
+                    }
+                    if(event.getActionMasked() == MotionEvent.ACTION_UP) {
+                        v.setPressed(false);
+                        if(event.getEventTime() - event.getDownTime() >= 450) {
+                            if(listener != null)
+                                listener.longClickedContinue(v, item);
+                        } else {
+                            openContinueOrTitle(item, true);
+                        }
+                        return true;
+                    }
+                    return true;
                 });
                 card.setOnLongClickListener(v -> {
                     if(!continueStyle || listener == null || item == null)
@@ -1289,6 +1300,18 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(manga == null)
                 return;
             ViewerWarmupManager.warmupContinueImmediate(context, manga, item);
+        }
+
+        private void openContinueOrTitle(Title item, boolean continueStyle) {
+            if(listener == null || item == null)
+                return;
+            Manga manga = continueStyle ? resolveContinueManga(item) : null;
+            if(manga != null) {
+                ViewerWarmupManager.warmupContinueImmediate(context, manga, item);
+                listener.clickedManga(manga);
+            } else {
+                listener.clickedTitle(item);
+            }
         }
 
         private void scheduleContinueViewerWarmup(Title item, int delayMs) {

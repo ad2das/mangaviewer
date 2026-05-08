@@ -207,10 +207,11 @@ public class ViewerWarmupManager {
                 preloadLoadedImages(appContext, candidate, page, width, autoCut, reverse, p.getDataSave() ? 8 : 24, Priority.IMMEDIATE, p.getDataSave() ? 2 : 3);
                 if(hasDecodedFrame(appContext, candidate, page, width, autoCut, reverse)) {
                     logMetric("viewer_click_ready", candidate.getId());
+                    cacheContinueSnapshot(scheduleKey, candidate);
+                    return candidate;
                 } else {
                     logMetric("viewer_click_url_ready", candidate.getId());
                 }
-                return candidate;
             }
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
@@ -541,7 +542,7 @@ public class ViewerWarmupManager {
         }
         FutureTarget<Bitmap> target = null;
         boolean cachedResult = false;
-        long timeoutMs = firstPage ? 1600L : 700L;
+        long timeoutMs = firstPage ? 6000L : 700L;
         long decodeStart = SystemClock.elapsedRealtime();
         try {
             target = Glide.with(context)
