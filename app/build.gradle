@@ -26,7 +26,7 @@ android {
     compileSdkVersion 34
     def date = new Date()
     def formattedDate = date.format('YYMMdd')
-    def releasePatch = 3
+    def releasePatch = 2
     // integer max value is 2147483647
     def code = formattedDate.toInteger() + 2112000000 + releasePatch
     defaultConfig {
