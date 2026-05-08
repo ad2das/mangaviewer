@@ -48,6 +48,7 @@ import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 public class TagSearchActivity extends AppCompatActivity {
     private static final int THUMBNAIL_PRELOAD_AHEAD = 18;
     private static final int THUMBNAIL_PRELOAD_DELAY_MS = 80;
+    private static final int LOAD_MORE_THRESHOLD = 18;
     RecyclerView searchResult;
     int mode;
     String query;
@@ -98,6 +99,7 @@ public class TagSearchActivity extends AppCompatActivity {
                 if(newState == RecyclerView.SCROLL_STATE_IDLE)
                     Glide.with(TagSearchActivity.this).resumeRequests();
                 scheduleThumbnailPreload();
+                maybeLoadMoreSearchResults();
             }
 
             @Override
@@ -106,6 +108,7 @@ public class TagSearchActivity extends AppCompatActivity {
                 if(isFinishing() || destroyed)
                     return;
                 scheduleThumbnailPreload();
+                maybeLoadMoreSearchResults();
             }
         });
         Intent i = getIntent();
@@ -271,6 +274,7 @@ public class TagSearchActivity extends AppCompatActivity {
             }
             scheduleThumbnailPreload();
             swipe.setRefreshing(false);
+            searchResult.post(TagSearchActivity.this::maybeLoadMoreSearchResults);
         }
 
         private Integer load() {
@@ -507,6 +511,25 @@ public class TagSearchActivity extends AppCompatActivity {
             adapter.preloadThumbnails(first, preloadCount);
         if(uadapter != null)
             uadapter.preloadThumbnails(first, preloadCount);
+    }
+
+    private void maybeLoadMoreSearchResults() {
+        if(mode != 8 || search == null || searchResult == null || loadTask != null || destroyed || isFinishing())
+            return;
+        if(search.isLast())
+            return;
+        RecyclerView.LayoutManager manager = searchResult.getLayoutManager();
+        if(!(manager instanceof LinearLayoutManager))
+            return;
+        int count = adapter == null ? 0 : adapter.getItemCount();
+        if(count == 0)
+            return;
+        LinearLayoutManager layoutManager = (LinearLayoutManager) manager;
+        int lastVisible = layoutManager.findLastVisibleItemPosition();
+        if(lastVisible == RecyclerView.NO_POSITION)
+            lastVisible = 0;
+        if(lastVisible >= count - LOAD_MORE_THRESHOLD)
+            startLoad(new searchManga());
     }
 
     @Override

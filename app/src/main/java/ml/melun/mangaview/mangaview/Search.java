@@ -229,14 +229,20 @@ public class Search {
             ArrayList<Title> webtoonResults = new ArrayList<>();
             if(mode == 8) {
                 String genre = genreFromCategoryPath(query, base_webtoon);
-                if(!classificationSourceFetched) {
-                    appendWebtoonResults(client, webtoonResults, query, 0);
-                    classificationSourceFetched = true;
-                }
-                if(genre.length() > 0)
+                if(genre.length() > 0) {
                     last = appendNextClassificationDbGenreResults(webtoonResults, genre);
-                else
+                    if(webtoonResults.size() == 0 && !classificationSourceFetched) {
+                        appendWebtoonResults(client, webtoonResults, query, 0);
+                        classificationSourceFetched = true;
+                        last = true;
+                    }
+                } else {
+                    if(!classificationSourceFetched) {
+                        appendWebtoonResults(client, webtoonResults, query, 0);
+                        classificationSourceFetched = true;
+                    }
                     last = true;
+                }
             } else if(mode == 2) {
                 if(!classificationSourceFetched) {
                     appendWebtoonResults(client, webtoonResults, webtoonGenrePath("ing", query), 80);
@@ -281,14 +287,20 @@ public class Search {
             ArrayList<Title> comicResults = new ArrayList<>();
             if(mode == 8) {
                 String genre = genreFromCategoryPath(query, base_comic);
-                if(!classificationSourceFetched) {
-                    appendWebtoonResults(client, comicResults, query, 0);
-                    classificationSourceFetched = true;
-                }
-                if(genre.length() > 0)
+                if(genre.length() > 0) {
                     last = appendNextClassificationDbGenreResults(comicResults, genre);
-                else
+                    if(comicResults.size() == 0 && !classificationSourceFetched) {
+                        appendWebtoonResults(client, comicResults, query, 0);
+                        classificationSourceFetched = true;
+                        last = true;
+                    }
+                } else {
+                    if(!classificationSourceFetched) {
+                        appendWebtoonResults(client, comicResults, query, 0);
+                        classificationSourceFetched = true;
+                    }
                     last = true;
+                }
             } else if(mode == 2) {
                 if(!classificationSourceFetched) {
                     appendWebtoonResults(client, comicResults, "/cm?type1=genre&type2=" + percentEncode(query, Charset.forName("EUC-KR")) + "&o=n", 120);
