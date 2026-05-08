@@ -140,10 +140,16 @@ public class FirebaseSyncManager {
 
                 @Override
                 public void onResponse(Call call, Response response) throws IOException {
-                    boolean success = response.isSuccessful();
-                    String body = response.body() == null ? "" : response.body().string();
-                    response.close();
-                    deliver(afterUpload, success, success ? null : restErrorMessage("업로드 실패", response.code(), body));
+                    try {
+                        boolean success = response.isSuccessful();
+                        int code = response.code();
+                        String body = response.body() == null ? "" : response.body().string();
+                        deliver(afterUpload, success, success ? null : restErrorMessage("업로드 실패", code, body));
+                    } catch (IOException e) {
+                        deliver(afterUpload, false, errorMessage("업로드 실패", e));
+                    } finally {
+                        response.close();
+                    }
                 }
             });
         });
@@ -180,22 +186,27 @@ public class FirebaseSyncManager {
 
                 @Override
                 public void onResponse(Call call, Response response) throws IOException {
-                    String body = response.body() == null ? "" : response.body().string();
-                    int code = response.code();
-                    boolean success = response.isSuccessful();
-                    response.close();
-                    if(!success && code != 404) {
-                        deliver(afterSync, false, restErrorMessage("다운로드 실패", code, body));
-                        return;
-                    }
-                    syncing = true;
                     try {
-                        if(success)
-                            mergeRemote(readFirestoreDocument(body));
+                        String body = response.body() == null ? "" : response.body().string();
+                        int code = response.code();
+                        boolean success = response.isSuccessful();
+                        if(!success && code != 404) {
+                            deliver(afterSync, false, restErrorMessage("다운로드 실패", code, body));
+                            return;
+                        }
+                        syncing = true;
+                        try {
+                            if(success)
+                                mergeRemote(readFirestoreDocument(body));
+                        } finally {
+                            syncing = false;
+                        }
+                        uploadCurrentState(afterSync);
+                    } catch (IOException e) {
+                        deliver(afterSync, false, errorMessage("다운로드 실패", e));
                     } finally {
-                        syncing = false;
+                        response.close();
                     }
-                    uploadCurrentState(afterSync);
                 }
             });
         });
