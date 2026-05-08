@@ -1,7 +1,6 @@
 package ml.melun.mangaview.activity;
 
 import android.Manifest;
-import android.annotation.SuppressLint;
 import android.app.ProgressDialog;
 import android.content.BroadcastReceiver;
 import android.content.ClipData;
@@ -608,7 +607,6 @@ public class MainActivity extends AppCompatActivity
     }
 
     @Override
-    @SuppressLint("MissingSuperCall")
     public void onBackPressed() {
         DrawerLayout drawer = (DrawerLayout) findViewById(R.id.drawer_layout);
         if (drawer.isDrawerOpen(GravityCompat.START)) {

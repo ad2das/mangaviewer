@@ -601,8 +601,18 @@ public class EpisodeActivity extends AppCompatActivity {
         manga.setTitle(title);
         manga.setTitleId(title == null ? manga.getTitleId() : title.getId());
         ViewerWarmupManager.warmup(context, manga, title);
-        Intent viewer = new Intent(context, ViewerActivity.class);
-        viewer.putExtra("viewerMode", p.getViewerType());
+        Intent viewer = null;
+        switch (p.getViewerType()){
+            case 0:
+                viewer = new Intent(context, ViewerActivity.class);
+                break;
+            case 2:
+                viewer = new Intent(context, ViewerActivity3.class);
+                break;
+            case 1:
+                viewer = new Intent(context, ViewerActivity2.class);
+                break;
+        }
         viewer.putExtra("manga", toViewerMangaJson(manga, title));
         viewer.putExtra("title", toViewerTitleJson(title, !manga.isOnline()));
         viewer.putExtra("recent",true);

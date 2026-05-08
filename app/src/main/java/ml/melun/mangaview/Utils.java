@@ -59,6 +59,8 @@ import java.util.Map;
 import ml.melun.mangaview.activity.CaptchaActivity;
 import ml.melun.mangaview.activity.EpisodeActivity;
 import ml.melun.mangaview.activity.ViewerActivity;
+import ml.melun.mangaview.activity.ViewerActivity2;
+import ml.melun.mangaview.activity.ViewerActivity3;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.IntegerCallback;
 import ml.melun.mangaview.interfaces.StringCallback;
@@ -180,9 +182,18 @@ public class Utils {
     }
 
     public static Intent viewerIntent(Context context, Manga manga){
-        int viewerMode = new Preference(context).getViewerType();
-        Intent viewer = new Intent(context, ViewerActivity.class);
-        viewer.putExtra("viewerMode", viewerMode);
+        Intent viewer = null;
+        switch (new Preference(context).getViewerType()){
+            case 0:
+                viewer = new Intent(context, ViewerActivity.class);
+                break;
+            case 2:
+                viewer = new Intent(context, ViewerActivity3.class);
+                break;
+            case 1:
+                viewer = new Intent(context, ViewerActivity2.class);
+                break;
+        }
         ViewerWarmupManager.warmup(context, manga, manga == null ? null : manga.getTitle());
         viewer.putExtra("manga", toViewerMangaJson(manga, manga == null ? null : manga.getTitle()));
         return viewer;

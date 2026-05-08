@@ -85,7 +85,6 @@ public class ViewerActivity extends AppCompatActivity {
     List<Manga> eps;
 
     boolean autoCut = false;
-    int viewerMode = 0;
     List<String> imgs;
     boolean dark;
     Intent result;
@@ -131,8 +130,6 @@ public class ViewerActivity extends AppCompatActivity {
         dark = p.getDarkTheme();
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_viewer);
-        viewerMode = getIntent().getIntExtra("viewerMode", p.getViewerType());
-        autoCut = viewerMode == 2;
 
         next = this.findViewById(R.id.toolbar_next);
         prev = this.findViewById(R.id.toolbar_previous);
