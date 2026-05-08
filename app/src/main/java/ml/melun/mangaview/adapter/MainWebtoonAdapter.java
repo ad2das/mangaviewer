@@ -84,6 +84,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     Fetcher fetcher;
     RecyclerView anchorRecycler;
     RecyclerView.OnScrollListener anchorScrollListener;
+    RecyclerView.OnItemTouchListener anchorContinueTouchListener;
     private final RecyclerView.RecycledViewPool sharedHomePool = new RecyclerView.RecycledViewPool();
     List<Object> pendingRows;
     boolean initialRowsShown = false;
@@ -105,6 +106,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private long firstContentStartedAt = PerfTrace.start("home_first_content_ms");
     private boolean firstContentLogged = false;
     private FetchStateListener fetchStateListener;
+    private String lastContinueOpenKey = "";
+    private long lastContinueOpenAt = 0L;
+    private float anchorDownX;
+    private float anchorDownY;
+    private boolean anchorTouchMoved;
 
     public interface FetchStateListener {
         void onFetchFinished(int baseMode, boolean success);
@@ -126,6 +132,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         sharedHomePool.setMaxRecycledViews(STYLE_RANKING, 12);
         sharedHomePool.setMaxRecycledViews(STYLE_STANDARD, 18);
         setHasStableIds(true);
+        ViewerWarmupManager.warmupSavedContinues(context, 6);
     }
 
     public void fetch(){
@@ -197,8 +204,32 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     public void setAnchorRecycler(RecyclerView recyclerView) {
         if(this.anchorRecycler != null && anchorScrollListener != null)
             this.anchorRecycler.removeOnScrollListener(anchorScrollListener);
+        if(this.anchorRecycler != null && anchorContinueTouchListener != null)
+            this.anchorRecycler.removeOnItemTouchListener(anchorContinueTouchListener);
+        if(this.anchorRecycler != null)
+            this.anchorRecycler.setOnTouchListener(null);
         this.anchorRecycler = recyclerView;
         if(this.anchorRecycler != null) {
+            this.anchorRecycler.setOnTouchListener(this::handleAnchorContinueTouch);
+            anchorContinueTouchListener = new RecyclerView.SimpleOnItemTouchListener() {
+                @Override
+                public boolean onInterceptTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent event) {
+                    if(event.getActionMasked() == MotionEvent.ACTION_DOWN
+                            && listener != null
+                            && activeHomeTab == 0
+                            && isLikelyContinueTapZone(rv, event.getY())) {
+                        handleAnchorContinueTouch(rv, event);
+                        return true;
+                    }
+                    return false;
+                }
+
+                @Override
+                public void onTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent event) {
+                    handleAnchorContinueTouch(rv, event);
+                }
+            };
+            this.anchorRecycler.addOnItemTouchListener(anchorContinueTouchListener);
             anchorScrollListener = new RecyclerView.OnScrollListener() {
                 @Override
                 public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
@@ -214,6 +245,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             this.anchorRecycler.addOnScrollListener(anchorScrollListener);
         } else {
             anchorScrollListener = null;
+            anchorContinueTouchListener = null;
         }
     }
 
@@ -1118,6 +1150,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         TextView title;
         TextView action;
         RecyclerView list;
+        float continueDownX;
+        float continueDownY;
+        boolean continueTouchMoved;
 
         HomeSectionHolder(View itemView) {
             super(itemView);
@@ -1156,6 +1191,37 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 ((HomeTitleAdapter) adapter).setItems(section.titles);
             else
                 list.setAdapter(new HomeTitleAdapter(section.titles, section.style));
+            if(section.style == STYLE_CONTINUE)
+                list.setOnTouchListener((v, event) -> handleContinueSectionTouch(event));
+            else
+                list.setOnTouchListener(null);
+        }
+
+        private boolean handleContinueSectionTouch(MotionEvent event) {
+            RecyclerView.Adapter adapter = list.getAdapter();
+            if(!(adapter instanceof HomeTitleAdapter))
+                return false;
+            HomeTitleAdapter homeAdapter = (HomeTitleAdapter) adapter;
+            switch(event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    continueDownX = event.getX();
+                    continueDownY = event.getY();
+                    continueTouchMoved = false;
+                    homeAdapter.warmupContinueAt(list, continueDownX, continueDownY);
+                    return homeAdapter.openContinueAt(list, continueDownX, continueDownY, false);
+                case MotionEvent.ACTION_MOVE:
+                    if(Math.abs(event.getX() - continueDownX) > dp(14) || Math.abs(event.getY() - continueDownY) > dp(14))
+                        continueTouchMoved = true;
+                    return false;
+                case MotionEvent.ACTION_UP:
+                    if(!continueTouchMoved && Math.abs(event.getX() - continueDownX) <= dp(18) && Math.abs(event.getY() - continueDownY) <= dp(18))
+                        return homeAdapter.openContinueAt(list, event.getX(), event.getY(), event.getEventTime() - event.getDownTime() >= 450);
+                    return false;
+                case MotionEvent.ACTION_CANCEL:
+                    continueTouchMoved = false;
+                    return false;
+            }
+            return false;
         }
     }
 
@@ -1266,6 +1332,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     if(event.getActionMasked() == MotionEvent.ACTION_DOWN) {
                         v.setPressed(true);
                         warmupContinueViewer(item);
+                        openContinueOrTitle(item, true);
                         return true;
                     }
                     if(event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
@@ -1302,11 +1369,46 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             ViewerWarmupManager.warmupContinueImmediate(context, manga, item);
         }
 
+        void warmupContinueAt(RecyclerView recyclerView, float x, float y) {
+            if(style != STYLE_CONTINUE)
+                return;
+            warmupContinueViewer(continueItemAt(recyclerView, x, y));
+        }
+
+        boolean openContinueAt(RecyclerView recyclerView, float x, float y, boolean longPress) {
+            if(style != STYLE_CONTINUE)
+                return false;
+            Title item = continueItemAt(recyclerView, x, y);
+            if(item == null)
+                return false;
+            if(longPress) {
+                if(listener != null)
+                    listener.longClickedContinue(recyclerView, item);
+            } else {
+                openContinueOrTitle(item, true);
+            }
+            return true;
+        }
+
+        private Title continueItemAt(RecyclerView recyclerView, float x, float y) {
+            if(items == null || items.size() == 0)
+                return null;
+            View child = recyclerView == null ? null : recyclerView.findChildViewUnder(x, y);
+            if(child != null) {
+                int position = recyclerView.getChildAdapterPosition(child);
+                if(position >= 0 && position < items.size())
+                    return items.get(position);
+            }
+            return items.get(0);
+        }
+
         private void openContinueOrTitle(Title item, boolean continueStyle) {
             if(listener == null || item == null)
                 return;
             Manga manga = continueStyle ? resolveContinueManga(item) : null;
             if(manga != null) {
+                if(!markContinueOpen(item))
+                    return;
                 ViewerWarmupManager.warmupContinueImmediate(context, manga, item);
                 listener.clickedManga(manga);
             } else {
@@ -1450,6 +1552,103 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 });
             }
         }
+    }
+
+    private boolean markContinueOpen(Title item) {
+        String key = titleKey(item) + ":" + (item == null ? 0 : item.getBookmark()) + ":" + (item == null ? 0 : item.getBookmarkEpisodeId());
+        long now = System.currentTimeMillis();
+        if(key.equals(lastContinueOpenKey) && now - lastContinueOpenAt < 700)
+            return false;
+        lastContinueOpenKey = key;
+        lastContinueOpenAt = now;
+        return true;
+    }
+
+    private boolean handleAnchorContinueTouch(View view, MotionEvent event) {
+        if(listener == null || activeHomeTab != 0 || !isLikelyContinueTapZone(view, event.getY()))
+            return false;
+        switch(event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                anchorDownX = event.getX();
+                anchorDownY = event.getY();
+                anchorTouchMoved = false;
+                warmupFirstContinueTitle();
+                return openFirstContinueTitle(view, false);
+            case MotionEvent.ACTION_MOVE:
+                if(Math.abs(event.getX() - anchorDownX) > dp(14) || Math.abs(event.getY() - anchorDownY) > dp(14))
+                    anchorTouchMoved = true;
+                return false;
+            case MotionEvent.ACTION_UP:
+                if(!anchorTouchMoved && Math.abs(event.getX() - anchorDownX) <= dp(18) && Math.abs(event.getY() - anchorDownY) <= dp(18))
+                    return openFirstContinueTitle(view, event.getEventTime() - event.getDownTime() >= 450);
+                return false;
+            case MotionEvent.ACTION_CANCEL:
+                anchorTouchMoved = false;
+                return false;
+        }
+        return false;
+    }
+
+    private boolean isLikelyContinueTapZone(View view, float y) {
+        if(view == null || view.getHeight() <= 0)
+            return false;
+        return y >= Math.max(dp(700), view.getHeight() * 0.68f);
+    }
+
+    private void warmupFirstContinueTitle() {
+        Title item = firstContinueTitle();
+        Manga manga = resolveContinueMangaForWarmup(item);
+        if(manga != null)
+            ViewerWarmupManager.warmupContinueImmediate(context, manga, item);
+    }
+
+    private boolean openFirstContinueTitle(View source, boolean longPress) {
+        Title item = firstContinueTitle();
+        if(item == null)
+            return false;
+        if(longPress) {
+            listener.longClickedContinue(source, item);
+            return true;
+        }
+        Manga manga = resolveContinueMangaForWarmup(item);
+        if(manga == null)
+            return false;
+        if(!markContinueOpen(item))
+            return true;
+        ViewerWarmupManager.warmupContinueImmediate(context, manga, item);
+        listener.clickedManga(manga);
+        return true;
+    }
+
+    private Title firstContinueTitle() {
+        if(rows != null) {
+            for(Object row : rows) {
+                if(!(row instanceof HomeSection))
+                    continue;
+                HomeSection section = (HomeSection) row;
+                if(!"이어보기".equals(section.title) || section.titles == null || section.titles.size() == 0)
+                    continue;
+                return section.titles.get(0);
+            }
+        }
+        List<MTitle> recent = p.getRecent();
+        if(recent == null || recent.size() == 0)
+            return null;
+        for(MTitle item : new ArrayList<>(recent)) {
+            if(item == null || item.getId() <= 0)
+                continue;
+            Title title = item instanceof Title ? (Title) item : new Title(item);
+            int bookmark = p.getBookmark(title);
+            if(bookmark <= 0)
+                bookmark = title.getBookmark();
+            if(bookmark <= 0)
+                bookmark = item.getBookmarkEpisodeId();
+            if(bookmark <= 0)
+                continue;
+            title.setBookmark(bookmark);
+            return title;
+        }
+        return null;
     }
 
     class ActionStripHolder extends RecyclerView.ViewHolder {
@@ -1799,6 +1998,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private void updateRows(List<Object> newRows) {
         final List<Object> oldRows = rows == null ? Collections.emptyList() : new ArrayList<>(rows);
         final List<Object> nextRows = newRows == null ? new ArrayList<>() : new ArrayList<>(newRows);
+        warmupTopContinueRows(nextRows);
         if(anchorRecycler != null && anchorRecycler.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
             pendingRows = nextRows;
             return;

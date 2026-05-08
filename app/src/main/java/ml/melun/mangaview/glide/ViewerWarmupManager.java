@@ -30,6 +30,7 @@ import java.util.concurrent.TimeUnit;
 
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.activity.ViewerResumeResolver;
+import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.model.PageItem;
@@ -102,6 +103,35 @@ public class ViewerWarmupManager {
 
     public static void warmupContinueImmediate(Context context, Manga manga, Title title) {
         warmupContinue(context, manga, title, true);
+    }
+
+    public static void warmupSavedContinues(Context context, int limit) {
+        if(context == null || p == null)
+            return;
+        List<MTitle> recent = p.getRecent();
+        if(recent == null || recent.size() == 0)
+            return;
+        int warmed = 0;
+        for(MTitle item : new ArrayList<>(recent)) {
+            if(item == null || item.getId() <= 0)
+                continue;
+            Title title = item instanceof Title ? (Title) item : new Title(item);
+            int bookmark = p.getBookmark(title);
+            if(bookmark <= 0)
+                bookmark = title.getBookmark();
+            if(bookmark <= 0)
+                bookmark = item.getBookmarkEpisodeId();
+            if(bookmark <= 0)
+                continue;
+            title.setBookmark(bookmark);
+            Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
+            manga.setTitle(title);
+            manga.setTitleId(title.getId());
+            warmupContinueImmediate(context, manga, title);
+            warmed++;
+            if(limit > 0 && warmed >= limit)
+                return;
+        }
     }
 
     private static void warmupContinue(Context context, Manga manga, Title title, boolean immediate) {
