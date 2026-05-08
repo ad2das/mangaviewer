@@ -40,8 +40,12 @@ import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.model.EpisodeLoadResult;
+import ml.melun.mangaview.repository.CacheFileStore;
+import ml.melun.mangaview.repository.CachePolicy;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.repository.OfflineStore;
+import ml.melun.mangaview.runtime.PerfTrace;
+import ml.melun.mangaview.runtime.PrefetchCoordinator;
 import ml.melun.mangaview.state.UiState;
 import ml.melun.mangaview.viewmodel.EpisodeViewModel;
 
@@ -77,6 +81,8 @@ public class EpisodeActivity extends AppCompatActivity {
     boolean loaded = false;
     LinearLayoutCompat fab_container;
     EpisodeViewModel episodeViewModel;
+    long firstContentStartedAt;
+    boolean firstContentLogged = false;
 
 
     public boolean onOptionsItemSelected(MenuItem item){
@@ -185,6 +191,7 @@ public class EpisodeActivity extends AppCompatActivity {
         applyEpisodeWindowChrome();
         Intent intent = getIntent();
         title = new Gson().fromJson(intent.getStringExtra("title"),new TypeToken<Title>(){}.getType());
+        firstContentStartedAt = PerfTrace.start("episode_first_content_ms");
         online = intent.getBooleanExtra("online", true);
         if(title.useBookmark())
             bookmarkId = restoredBookmarkId(title);
@@ -221,6 +228,7 @@ public class EpisodeActivity extends AppCompatActivity {
         if(online) {
             mode = 0;
             fab_container.setVisibility(View.GONE);
+            showCachedEpisodes();
             episodeViewModel = new ViewModelProvider(this).get(EpisodeViewModel.class);
             episodeViewModel.state().observe(this, this::renderEpisodeState);
             episodeViewModel.loadEpisodes(title);
@@ -340,40 +348,13 @@ public class EpisodeActivity extends AppCompatActivity {
             startActivity(i);
         });
         warmupInitialViewerTargets();
+        markFirstContent();
     }
 
     private void warmupInitialViewerTargets() {
         if(!online || episodes == null || episodes.size() == 0)
             return;
-        int limit = p.getDataSave() ? 2 : 4;
-        List<Integer> targets = new ArrayList<>();
-        if(bookmarkIndex > 0 && bookmarkIndex <= episodes.size()) {
-            int current = bookmarkIndex - 1;
-            addWarmupIndex(targets, current, limit);
-            addWarmupIndex(targets, current + 1, limit);
-            addWarmupIndex(targets, current - 1, limit);
-        } else {
-            for(int i = episodes.size() - 1; i >= 0 && targets.size() < limit; i--)
-                addWarmupIndex(targets, i, limit);
-        }
-        for(Integer index : targets)
-            warmupEpisode(episodes.get(index));
-    }
-
-    private void addWarmupIndex(List<Integer> targets, int index, int limit) {
-        if(index < 0 || episodes == null || index >= episodes.size() || targets.size() >= limit)
-            return;
-        if(!targets.contains(index))
-            targets.add(index);
-    }
-
-    private void warmupEpisode(Manga manga) {
-        if(manga == null)
-            return;
-        manga.setMode(mode);
-        manga.setTitle(title);
-        manga.setTitleId(title == null ? manga.getTitleId() : title.getId());
-        ViewerWarmupManager.warmup(context, manga, title);
+        PrefetchCoordinator.prefetchEpisodeList(context, title, episodes, bookmarkIndex, mode);
     }
 
     private void confirmDeleteOfflineEpisode(int position, Manga manga) {
@@ -441,7 +422,7 @@ public class EpisodeActivity extends AppCompatActivity {
     @SuppressWarnings("unchecked")
     private void renderEpisodeState(UiState<EpisodeLoadResult> state) {
         if(state instanceof UiState.Loading) {
-            progress.setVisibility(View.VISIBLE);
+            progress.setVisibility(episodes == null || episodes.size() == 0 ? View.VISIBLE : View.GONE);
             return;
         }
         if(state instanceof UiState.Error) {
@@ -458,15 +439,60 @@ public class EpisodeActivity extends AppCompatActivity {
         }
         episodes = result.getEpisodes();
         if(episodes == null || episodes.size()==0){
-            showCaptchaPopup(title.getUrl(), context, p);
+            if(this.episodes == null || this.episodes.size() == 0)
+                showCaptchaPopup(title.getUrl(), context, p);
             return;
         }
+        saveEpisodeCache(episodes);
         episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
         afterLoad();
         progress.setVisibility(View.GONE);
         loaded = true;
         fab_container.setVisibility(View.GONE);
         invalidateOptionsMenu();
+    }
+
+    private void showCachedEpisodes() {
+        try {
+            String json = CacheFileStore.read(context, episodeCacheKey());
+            if(json == null || json.length() == 0)
+                return;
+            CachedEpisodes cached = new Gson().fromJson(json, new TypeToken<CachedEpisodes>(){}.getType());
+            if(cached == null || !CachePolicy.isFresh(cached.savedAt, CachePolicy.EPISODE_TTL_MS) || cached.episodes == null || cached.episodes.size() == 0)
+                return;
+            episodes = cached.episodes;
+            episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
+            afterLoad();
+            loaded = true;
+            progress.setVisibility(View.GONE);
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
+    private void saveEpisodeCache(List<Manga> episodes) {
+        if(title == null || episodes == null || episodes.size() == 0)
+            return;
+        CachedEpisodes cached = new CachedEpisodes();
+        cached.savedAt = System.currentTimeMillis();
+        cached.episodes = new ArrayList<>(episodes);
+        CacheFileStore.write(context, episodeCacheKey(), new Gson().toJson(cached));
+    }
+
+    private String episodeCacheKey() {
+        return "episodeSnapshotV1_" + (title == null ? 0 : title.getBaseMode()) + "_" + (title == null ? 0 : title.getId());
+    }
+
+    private void markFirstContent() {
+        if(firstContentLogged)
+            return;
+        firstContentLogged = true;
+        PerfTrace.end("episode_first_content_ms", firstContentStartedAt);
+    }
+
+    private static class CachedEpisodes {
+        long savedAt;
+        ArrayList<Manga> episodes;
     }
 
     public void openViewer(Manga manga, int code){

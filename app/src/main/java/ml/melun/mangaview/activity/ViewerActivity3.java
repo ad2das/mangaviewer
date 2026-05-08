@@ -1,7 +1,6 @@
 package ml.melun.mangaview.activity;
 import android.annotation.SuppressLint;
 
-import android.app.ProgressDialog;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
@@ -341,32 +340,14 @@ public class ViewerActivity3 extends AppCompatActivity {
     }
 
     private class LoadImages {
-        ProgressDialog pd;
         AppDispatchers.TaskHandle handle;
         MangaRepository.Cancellation cancellation = MangaRepository.cancellation();
         volatile boolean cancelled;
 
         private void postProgress(String value) {
-            AppDispatchers.runOnMain(() -> {
-                if(!cancelled && pd != null)
-                    pd.setMessage(value);
-            });
         }
 
         void start() {
-            if(dark) pd = new ProgressDialog(context, R.style.darkDialog);
-            else pd = new ProgressDialog(context);
-            pd.setMessage("로드중");
-            pd.setCancelable(false);
-            pd.setOnKeyListener((dialog, keyCode, event) -> {
-                if(keyCode == KeyEvent.KEYCODE_BACK){
-                    cancel();
-                    pd.dismiss();
-                    ViewerActivity3.this.finish();
-                }
-                return true;
-            });
-            pd.show();
             handle = AppDispatchers.submitIo(() -> {
                 Integer result = load();
                 AppDispatchers.runOnMain(() -> finish(result));
@@ -397,12 +378,9 @@ public class ViewerActivity3 extends AppCompatActivity {
                 imageLoad = null;
             if(res == LOAD_CAPTCHA){
                 //캡차 처리 팝업
-                if(pd != null && pd.isShowing())
-                    pd.dismiss();
                 showTokiCaptchaPopup(context, p);
                 return;
             }
-            if(pd.isShowing()) pd.dismiss();
             if(res == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !hasLoadedImages()) {
                 showViewerImagesUnavailable();
                 return;
@@ -417,8 +395,6 @@ public class ViewerActivity3 extends AppCompatActivity {
                 handle.cancel();
             if(imageLoad == this)
                 imageLoad = null;
-            if(pd != null && pd.isShowing())
-                pd.dismiss();
         }
     }
 

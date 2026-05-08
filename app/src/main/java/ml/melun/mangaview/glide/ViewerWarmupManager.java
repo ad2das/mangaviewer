@@ -33,6 +33,7 @@ import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.model.PageItem;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.PerfTrace;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
@@ -330,6 +331,7 @@ public class ViewerWarmupManager {
 
     public static void logMetric(String name, long valueMs) {
         Log.d(TAG, name + "=" + valueMs);
+        PerfTrace.mark(name, valueMs);
     }
 
     private static Bitmap detachBitmap(Bitmap source, int width) {

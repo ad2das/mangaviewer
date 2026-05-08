@@ -45,8 +45,11 @@ import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Ranking;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.repository.CacheFileStore;
+import ml.melun.mangaview.repository.CachePolicy;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.PerfTrace;
+import ml.melun.mangaview.runtime.PrefetchCoordinator;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
@@ -86,10 +89,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     boolean initialRowsShown = false;
     private final Set<String> preloadedThumbs = new LinkedHashSet<>();
     private static final int PRELOADED_THUMB_LIMIT = 120;
-    private static final int PRELOAD_THUMB_MAX_PER_FETCH = 4;
+    private static final int PRELOAD_THUMB_MAX_PER_FETCH = 24;
     private static final int SECTION_BATCH_SIZE = 4;
     private static final int FIRST_SCREEN_BATCH_SIZE = 1;
-    private static final long HOME_CACHE_TTL_MS = 24 * 60 * 60 * 1000L;
     private static final String HOME_CACHE_KEY_PREFIX = "homeSnapshotV1_";
     private static final int HOME_CACHE_MAX_SECTIONS = 6;
     private static final int HOME_CACHE_MAX_TITLES_PER_SECTION = 10;
@@ -99,6 +101,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private int activeHomeTab = 0;
     private boolean continueProgressBackfillRunning = false;
     private int rowDiffGeneration = 0;
+    private long firstContentStartedAt = PerfTrace.start("home_first_content_ms");
+    private boolean firstContentLogged = false;
 
     public MainWebtoonAdapter(Context context){
         this(context, base_webtoon);
@@ -132,12 +136,13 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return;
         dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
         List<Object> warmRows = buildRows(dataSet, false);
-        if(!hasHero(warmRows))
+        if(!hasDisplayContent(warmRows))
             warmRows = buildInitialPlaceholderRows();
-        if(hasHero(warmRows)) {
+        if(hasDisplayContent(warmRows)) {
             initialRowsShown = true;
             updateRows(warmRows);
-            scrollHeroToTop();
+            if(hasHero(warmRows))
+                scrollHeroToTop();
         }
     }
 
@@ -622,8 +627,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(json == null || json.length() == 0)
                 return null;
             HomeSnapshot snapshot = new Gson().fromJson(json, new TypeToken<HomeSnapshot>(){}.getType());
-            long now = System.currentTimeMillis();
-            if(snapshot == null || snapshot.sections == null || now - snapshot.savedAt > HOME_CACHE_TTL_MS)
+            if(snapshot == null || snapshot.sections == null || !CachePolicy.isFresh(snapshot.savedAt, CachePolicy.HOME_TTL_MS))
                 return null;
             ArrayList<Ranking<?>> restored = new ArrayList<>();
             for(CachedSection cachedSection : snapshot.sections) {
@@ -1542,7 +1546,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private void preloadThumbnails(List<Ranking<?>> sections) {
         if(save || sections == null)
             return;
-        if(preloadCount >= PRELOAD_THUMB_MAX_PER_FETCH)
+        int maxPerFetch = p.getDataSave() ? 6 : (PrefetchCoordinator.aggressiveAllowed(context) ? PRELOAD_THUMB_MAX_PER_FETCH : 12);
+        if(preloadCount >= maxPerFetch)
             return;
         for(Ranking<?> section : sections) {
             if(section == null)
@@ -1562,7 +1567,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                         .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
                         .override(dp(180), dp(220))
                         .preload();
-                if(++preloadCount >= PRELOAD_THUMB_MAX_PER_FETCH)
+                if(++preloadCount >= maxPerFetch)
                     return;
             }
         }
@@ -1587,6 +1592,22 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
         pendingRows = null;
         final ScrollAnchor anchor = captureScrollAnchor(oldRows);
+        if(oldRows.size() == 0 && nextRows.size() > 0) {
+            Runnable applyFirstContent = () -> {
+                rows = nextRows;
+                notifyItemRangeInserted(0, nextRows.size());
+                restoreScrollAnchor(anchor);
+                if(!firstContentLogged && hasDisplayContent(rows)) {
+                    firstContentLogged = true;
+                    PerfTrace.end("home_first_content_ms", firstContentStartedAt);
+                }
+            };
+            if(anchorRecycler != null)
+                anchorRecycler.post(applyFirstContent);
+            else
+                MAIN.post(applyFirstContent);
+            return;
+        }
         final int generation = ++rowDiffGeneration;
         ROW_DIFF_EXECUTOR.execute(() -> {
             DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
@@ -1621,6 +1642,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             rows = nextRows;
             diff.dispatchUpdatesTo(this);
             restoreScrollAnchor(anchor);
+            if(!firstContentLogged && hasDisplayContent(rows)) {
+                firstContentLogged = true;
+                PerfTrace.end("home_first_content_ms", firstContentStartedAt);
+            }
         };
         if(anchorRecycler != null)
             anchorRecycler.post(apply);

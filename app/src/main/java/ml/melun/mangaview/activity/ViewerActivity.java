@@ -54,6 +54,7 @@ import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.model.PageItem;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.PrefetchCoordinator;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getScreenSize;
@@ -628,6 +629,7 @@ public class ViewerActivity extends AppCompatActivity {
             updateIntent(m);
             prefetchNextEpisode(m);
             prefetchPreviousEpisode(m);
+            PrefetchCoordinator.prefetchAdjacentEpisode(context, m, title, width, autoCut, p.getReverse());
 
         }catch (Exception e){
             Utils.showCaptchaPopup(m.getUrl(), context, e, p);

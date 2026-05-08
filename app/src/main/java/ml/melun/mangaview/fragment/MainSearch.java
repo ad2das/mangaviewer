@@ -49,6 +49,7 @@ import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.repository.OfflineStore;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.PerfTrace;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
@@ -94,6 +95,7 @@ public class MainSearch extends Fragment {
     int lastTitlePopupBaseMode = -1;
     boolean pendingLibraryRefresh = false;
     boolean libraryMode = true;
+    long searchFirstStartedAt = 0L;
 
     public static MainSearch newSearchTab() {
         MainSearch fragment = new MainSearch();
@@ -285,7 +287,7 @@ public class MainSearch extends Fragment {
                 if (!search.isLast()) {
                     if(searchTask == null) {
                         activeSearchKey = null;
-                        searchTask = new SearchManga(search);
+                        searchTask = new SearchManga(search, false);
                         searchTask.start();
                     }
                 } else swipe.setRefreshing(false);
@@ -1028,12 +1030,10 @@ public class MainSearch extends Fragment {
             String key = searchKey(query);
             if(searchTask != null && key.equals(activeSearchKey))
                 return;
-            if(searchAdapter != null)
-                searchAdapter.removeAll();
-            else
+            if(searchAdapter == null)
                 searchAdapter = new TitleAdapter(getContext());
             bindOnlineAdapter();
-            if(noresult != null)
+            if(noresult != null && searchAdapter.getItemCount() == 0)
                 noresult.setVisibility(View.GONE);
             updateAdvSearchVisibility();
             int selectedBaseMode = selectedSearchBaseMode();
@@ -1041,7 +1041,8 @@ public class MainSearch extends Fragment {
             if(searchTask != null)
                 searchTask.cancel(true);
             activeSearchKey = key;
-            searchTask = new SearchManga(search);
+            searchFirstStartedAt = PerfTrace.start("search_first_result_ms");
+            searchTask = new SearchManga(search, true);
             searchTask.start();
         }
     }
@@ -1199,12 +1200,14 @@ public class MainSearch extends Fragment {
 
     private class SearchManga {
         private final Search targetSearch;
+        private final boolean replaceResults;
         private MangaRepository.Cancellation cancellation;
         private AppDispatchers.TaskHandle handle;
         private volatile boolean cancelled = false;
 
-        SearchManga(Search targetSearch) {
+        SearchManga(Search targetSearch, boolean replaceResults) {
             this.targetSearch = targetSearch;
+            this.replaceResults = replaceResults;
         }
 
         void start() {
@@ -1239,8 +1242,8 @@ public class MainSearch extends Fragment {
                 Utils.showCaptchaPopup(getContext(), 4, fragment, p);
             }
 
-            if(searchAdapter.getItemCount()==0) {
-                searchAdapter.addData(targetSearch.getResult());
+            if(replaceResults) {
+                searchAdapter.setData(targetSearch.getResult());
                 bindOnlineAdapter();
             }else{
                 searchAdapter.addData(targetSearch.getResult());
@@ -1248,6 +1251,8 @@ public class MainSearch extends Fragment {
 
             if(searchAdapter.getItemCount()>0) {
                 noresult.setVisibility(View.GONE);
+                if(replaceResults && searchFirstStartedAt > 0)
+                    PerfTrace.end("search_first_result_ms", searchFirstStartedAt);
             }else{
                 noresult.setText("\"" + targetSearch.getQuery() + "\" 검색 결과가 없습니다");
                 noresult.setVisibility(View.VISIBLE);
