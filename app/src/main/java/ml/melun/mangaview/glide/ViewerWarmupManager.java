@@ -14,6 +14,7 @@ import com.bumptech.glide.Priority;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy;
 import com.bumptech.glide.request.RequestOptions;
+import com.bumptech.glide.request.FutureTarget;
 import com.bumptech.glide.request.target.CustomTarget;
 import com.bumptech.glide.request.target.Target;
 import com.bumptech.glide.request.transition.Transition;
@@ -195,6 +196,7 @@ public class ViewerWarmupManager {
         if(result == LOAD_OK && hasImages(manga, context)) {
             normalizedPage = normalizePageIndex(manga, context, normalizedPage);
             logMetric("viewer_first_url_ms", SystemClock.elapsedRealtime() - urlStart);
+            decodeFirstPagesBlocking(context, manga, normalizedPage, width, autoCut, reverse);
             preloadWindow(context, manga, normalizedPage, width, autoCut, reverse, ViewerPreloadPolicy.firstFrameWindow(p.getDataSave()));
         } else if(result == LOAD_OK) {
             logMetric("viewer_empty_images", manga.getId());
@@ -392,6 +394,67 @@ public class ViewerWarmupManager {
                 .apply(options)
                 .load(Utils.getGlideUrl(page.img, page.manga.getBaseMode()))
                 .into(target);
+    }
+
+    private static void decodeFirstPagesBlocking(Context context, Manga manga, int pageIndex, int width, boolean autoCut, boolean reverse) {
+        List<String> images = manga == null ? null : manga.getImgs(context);
+        if(context == null || manga == null || images == null || images.size() == 0)
+            return;
+        if(pageIndex < 0 || pageIndex >= images.size())
+            pageIndex = 0;
+        int decodedLimit = p.getDataSave() ? 1 : 2;
+        int end = Math.min(images.size(), pageIndex + decodedLimit);
+        long startedAt = SystemClock.elapsedRealtime();
+        for(int i = pageIndex; i < end; i++) {
+            PageItem page = new PageItem(i, images.get(i), manga);
+            decodePageBlocking(context, page, viewerOptions(page, autoCut, reverse, width), autoCut, reverse, width, i == pageIndex);
+        }
+        logMetric("viewer_first_decode_blocking_ms", SystemClock.elapsedRealtime() - startedAt);
+    }
+
+    private static void decodePageBlocking(Context context, PageItem page, RequestOptions options,
+                                           boolean autoCut, boolean reverse, int width, boolean firstPage) {
+        if(page == null || page.manga == null || page.img == null)
+            return;
+        String key = decodedPageKey(page, autoCut, reverse, width);
+        if(key.length() == 0)
+            return;
+        synchronized (ViewerWarmupManager.class) {
+            Bitmap cached = decodedBitmapCache.get(key);
+            if(cached != null && !cached.isRecycled())
+                return;
+            if(cached != null)
+                decodedBitmapCache.remove(key);
+        }
+        FutureTarget<Bitmap> target = null;
+        boolean cachedResult = false;
+        long timeoutMs = firstPage ? 1600L : 700L;
+        long decodeStart = SystemClock.elapsedRealtime();
+        try {
+            target = Glide.with(context)
+                    .asBitmap()
+                    .priority(Priority.IMMEDIATE)
+                    .apply(options)
+                    .load(Utils.getGlideUrl(page.img, page.manga.getBaseMode()))
+                    .submit();
+            Bitmap bitmap = target.get(timeoutMs, TimeUnit.MILLISECONDS);
+            if(bitmap != null && !bitmap.isRecycled()) {
+                synchronized (ViewerWarmupManager.class) {
+                    decodedBitmapCache.put(key, bitmap);
+                }
+                cachedResult = true;
+                if(firstPage)
+                    logMetric("viewer_first_decode_sync_ms", SystemClock.elapsedRealtime() - decodeStart);
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if(target != null && !cachedResult) {
+                try {
+                    Glide.with(context).clear(target);
+                } catch (Exception ignored) {
+                }
+            }
+        }
     }
 
     private static Priority priorityForTier(int tier) {

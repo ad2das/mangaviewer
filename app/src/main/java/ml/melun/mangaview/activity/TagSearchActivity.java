@@ -259,7 +259,15 @@ public class TagSearchActivity extends AppCompatActivity {
                 adapter.setClickListener(new TitleAdapter.ItemClickListener() {
                     @Override
                     public void onResumeClick(int position, int id) {
-                        Intent viewer = viewerIntent(context, new Manga(id,"","",adapter.getItem(position).getBaseMode()));
+                        Title title = adapter.getItem(position);
+                        Manga manga = new Manga(id,"","", title == null ? baseMode : title.getBaseMode());
+                        if(title != null) {
+                            manga.setTitle(title);
+                            manga.setTitleId(title.getId());
+                            if(title.getEps() != null && title.getEps().size() > 0)
+                                manga.setEps(title.getEps());
+                        }
+                        Intent viewer = viewerIntent(context, manga);
                         viewer.putExtra("online",true);
                         startActivity(viewer);
                     }
@@ -354,7 +362,15 @@ public class TagSearchActivity extends AppCompatActivity {
                 adapter.setClickListener(new TitleAdapter.ItemClickListener() {
                     @Override
                     public void onResumeClick(int position, int id) {
-                        Intent viewer = viewerIntent(context, new Manga(id,"","", search.getBaseMode()));
+                        Title title = adapter.getItem(position);
+                        Manga manga = new Manga(id,"","", search.getBaseMode());
+                        if(title != null) {
+                            manga.setTitle(title);
+                            manga.setTitleId(title.getId());
+                            if(title.getEps() != null && title.getEps().size() > 0)
+                                manga.setEps(title.getEps());
+                        }
+                        Intent viewer = viewerIntent(context, manga);
                         viewer.putExtra("online",true);
                         startActivity(viewer);
                     }

@@ -195,7 +195,9 @@ public class Utils {
                 break;
         }
         ViewerWarmupManager.warmupContinue(context, manga, manga == null ? null : manga.getTitle());
-        viewer.putExtra("manga", toViewerMangaJson(manga, manga == null ? null : manga.getTitle()));
+        Title title = manga == null ? null : manga.getTitle();
+        viewer.putExtra("manga", toViewerMangaJson(manga, title));
+        viewer.putExtra("title", toViewerTitleJson(title, true));
         return viewer;
     }
 
