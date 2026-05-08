@@ -4,17 +4,20 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
-import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
-import ml.melun.mangaview.task.AppTask;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.IBinder;
 
-import androidx.annotation.Nullable;
+import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
+import androidx.work.ExistingWorkPolicy;
+import androidx.work.ForegroundInfo;
+import androidx.work.OneTimeWorkRequest;
+import androidx.work.WorkManager;
+import androidx.work.Worker;
+import androidx.work.WorkerParameters;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -29,7 +32,7 @@ import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 
-public class Migrator extends Service {
+public class Migrator extends Worker {
     NotificationCompat.Builder notification;
     NotificationManager notificationManager;
     public static final int nid = 16848412;
@@ -38,8 +41,10 @@ public class Migrator extends Service {
     PendingIntent pendingIntent;
     MigrationWorker mw;
     public static boolean running = false;
+    public static final String WORK_NAME = "preference-migration";
     String url = "";
     Intent resultIntent;
+    private static String lastProgressMessage = "";
 
     public static final String MIGRATE_STOP = "ml.melun.mangaview.migrator.STOP";
     public static final String MIGRATE_START = "ml.melun.mangaview.migrator.START";
@@ -48,11 +53,42 @@ public class Migrator extends Service {
     public static final String MIGRATE_PROGRESS = "ml.melun.mangaview.migrator.PROGRESS";
     public static final String MIGRATE_RESULT = "ml.melun.mangaview.migrator.RESULT";
 
-    @Override
-    public void onCreate() {
-        super.onCreate();
+    public static void start(Context context) {
         running = true;
-        notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(Migrator.class).build();
+        WorkManager.getInstance(context).enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.REPLACE, request);
+    }
+
+    public static void requestProgress(Context context) {
+        Intent intent = new Intent();
+        intent.setAction(MIGRATE_PROGRESS);
+        intent.putExtra("msg", lastProgressMessage.length() > 0 ? lastProgressMessage : "...");
+        context.sendBroadcast(intent);
+    }
+
+    public Migrator(@NonNull Context context, @NonNull WorkerParameters workerParams) {
+        super(context, workerParams);
+        serviceContext = context.getApplicationContext();
+    }
+
+    @NonNull
+    @Override
+    public Result doWork() {
+        setupWorker();
+        mw = new MigrationWorker();
+        mw.onPreExecute();
+        Integer result = mw.doInBackground();
+        if(isStopped()) {
+            running = false;
+            return Result.failure();
+        }
+        mw.onPostExecute(result);
+        return result == 0 ? Result.success() : Result.failure();
+    }
+
+    private void setupWorker() {
+        running = true;
+        notificationManager = (NotificationManager) serviceContext.getSystemService(Context.NOTIFICATION_SERVICE);
         if (Build.VERSION.SDK_INT >= 26) {
             //notificationManager.deleteNotificationChannel("mangaView");
             NotificationChannel mchannel = new NotificationChannel(channeld, "MangaView", NotificationManager.IMPORTANCE_LOW);
@@ -64,52 +100,14 @@ public class Migrator extends Service {
             mchannel.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
             notificationManager.createNotificationChannel(mchannel);
         }
-        Intent notificationIntent = new Intent(this, MainActivity.class);
-        pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE);
-        resultIntent = new Intent(this, MainActivity.class);
-        serviceContext = this;
+        Intent notificationIntent = new Intent(serviceContext, MainActivity.class);
+        pendingIntent = PendingIntent.getActivity(serviceContext, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE);
+        resultIntent = new Intent(serviceContext, MainActivity.class);
         startNotification();
     }
 
-    @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
-        running = true;
-        if(intent!=null){
-            switch (intent.getAction()) {
-                case MIGRATE_START:
-                    startNotification();
-                    if (mw == null) mw = new MigrationWorker();
-                    mw.startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
-                    break;
-                case MIGRATE_STOP:
-                    //
-                    break;
-                case MIGRATE_PROGRESS:
-                    if(mw != null){
-                        mw.onProgressUpdate("...");
-                    }
-                    break;
-            }
-        }
-        return START_STICKY;
-    }
-
-
-    @Override
-    public void onDestroy() {
-        running = false;
-        endNotification();
-        super.onDestroy();
-    }
-
-    @Nullable
-    @Override
-    public IBinder onBind(Intent intent) {
-        return null;
-    }
-
     private void startNotification() {
-        notification = new NotificationCompat.Builder(this, channeld)
+        notification = new NotificationCompat.Builder(serviceContext, channeld)
                 .setContentIntent(pendingIntent)
                 .setContentTitle("기록 업데이트중..")
                 .setContentText("진행률을 확인하려면 터치")
@@ -118,14 +116,14 @@ public class Migrator extends Service {
             notification.setSmallIcon(R.drawable.ic_logo);
         else
             notification.setSmallIcon(R.drawable.notification_logo);
-        startForeground(nid, notification.build());
+        setForegroundAsync(new ForegroundInfo(nid, notification.build()));
     }
 
 
     private void endNotification(){
         PendingIntent resultPendingIntent = PendingIntent.getActivity(serviceContext, 0, resultIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        notification = new NotificationCompat.Builder(this, channeld)
+        notification = new NotificationCompat.Builder(serviceContext, channeld)
                 .setContentIntent(resultPendingIntent)
                 .setContentTitle("기록 업데이트 완료")
                 .setContentText("결과를 확인하려면 터치")
@@ -146,10 +144,10 @@ public class Migrator extends Service {
         intent.setAction(action);
         if(msg!=null && msg.length()>0)
             intent.putExtra("msg", msg);
-        sendBroadcast(intent);
+        serviceContext.sendBroadcast(intent);
     }
 
-    private class MigrationWorker extends AppTask<Void, String, Integer> {
+    private class MigrationWorker {
 
         int sum = 0;
         int current = 0;
@@ -157,20 +155,18 @@ public class Migrator extends Service {
         List<String> failed;
         Bundle bundle;
 
-        @Override
         protected void onPreExecute() {
             startNotification();
         }
 
 
-        @Override
         protected void onProgressUpdate(String... values) {
             String msg = current +" / " + sum+"\n앱을 종료하지 말아주세요.\n";
             if(values !=null && values.length>0) msg += values[0];
+            lastProgressMessage = msg;
             sendBroadcast(MIGRATE_PROGRESS, msg);
         }
 
-        @Override
         protected Integer doInBackground(Void... voids) {
             // check domain
             MainPage mp = new MainPage(getHttpClient());
@@ -194,7 +190,7 @@ public class Migrator extends Service {
                 try {
                     current++;
                     MTitle newTitle = findTitle(recents.get(i));
-                    publishProgress(newTitle.getName());
+                    onProgressUpdate(newTitle == null ? "" : newTitle.getName());
                     if(newTitle !=null)
                         newRecents.add(newTitle);
                     else
@@ -208,7 +204,7 @@ public class Migrator extends Service {
                 try {
                     current++;
                     MTitle newTitle = findTitle(favorites.get(i));
-                    publishProgress(newTitle.getName());
+                    onProgressUpdate(newTitle == null ? "" : newTitle.getName());
                     if(newTitle !=null)
                         newFavorites.add(newTitle);
                     else
@@ -260,7 +256,6 @@ public class Migrator extends Service {
             return null;
         }
 
-        @Override
         protected void onPostExecute(Integer resCode) {
             if(resCode == 0){
                 StringBuilder builder = new StringBuilder();
@@ -280,10 +275,8 @@ public class Migrator extends Service {
                 sendBroadcast(MIGRATE_FAIL, "연결 오류 : 연결을 확인하고 다시 시도해 주세요.");
             }
             running = false;
-            stopSelf();
         }
 
-        @Override
         protected void onCancelled() {
             //todo?
         }

@@ -66,7 +66,6 @@ import ml.melun.mangaview.activity.EpisodeActivity;
 import ml.melun.mangaview.activity.ViewerActivity;
 import ml.melun.mangaview.activity.ViewerActivity2;
 import ml.melun.mangaview.activity.ViewerActivity3;
-import ml.melun.mangaview.download.DownloadQueueWorker;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.IntegerCallback;
 import ml.melun.mangaview.interfaces.StringCallback;
@@ -308,7 +307,7 @@ public class Utils {
         if(!ensureOfflineHomeWritable(context))
             return false;
         String queueId = UUID.randomUUID().toString();
-        File queueDir = new File(context.getFilesDir(), DownloadQueueWorker.QUEUE_DIR);
+        File queueDir = new File(context.getFilesDir(), Downloader.QUEUE_DIR);
         if(!queueDir.exists() && !queueDir.mkdirs()) {
             Toast.makeText(context, "다운로드 대기열을 만들지 못했습니다", Toast.LENGTH_SHORT).show();
             return false;
@@ -324,12 +323,12 @@ public class Utils {
             return false;
         }
         Data input = new Data.Builder()
-                .putString(DownloadQueueWorker.KEY_QUEUE_ID, queueId)
+                .putString(Downloader.KEY_QUEUE_ID, queueId)
                 .build();
-        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(DownloadQueueWorker.class)
+        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(Downloader.class)
                 .setInputData(input)
                 .build();
-        WorkManager.getInstance(context).enqueueUniqueWork("download-" + queueId, ExistingWorkPolicy.REPLACE, request);
+        WorkManager.getInstance(context).enqueueUniqueWork(Downloader.WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request);
         Toast.makeText(context,"오프라인 저장을 시작합니다.", Toast.LENGTH_LONG).show();
         return true;
     }

@@ -205,13 +205,7 @@ public class MainActivity extends AppCompatActivity
             infil.addAction(MIGRATE_SUCCESS);
             registerReceiver(migratorStatusReceiver, infil);
 
-            Intent pintent = new Intent(getApplicationContext(), Migrator.class);
-            pintent.setAction(MIGRATE_PROGRESS);
-            if (Build.VERSION.SDK_INT >= 26) {
-                startForegroundService(pintent);
-            } else {
-                startService(pintent);
-            }
+            Migrator.requestProgress(getApplicationContext());
 
         } else if (!p.check()) {
             //popup to fix preferences
@@ -238,13 +232,7 @@ public class MainActivity extends AppCompatActivity
 
                                     p.setUrl(url);
 
-                                    Intent intent12 = new Intent(getApplicationContext(), Migrator.class);
-                                    intent12.setAction(MIGRATE_START);
-                                    if (Build.VERSION.SDK_INT >= 26) {
-                                        startForegroundService(intent12);
-                                    } else {
-                                        startService(intent12);
-                                    }
+                                    Migrator.start(getApplicationContext());
                                     //queue title to service
                                     Toast.makeText(getApplication(), "작업을 시작합니다.", Toast.LENGTH_LONG).show();
                                     //restart activity
@@ -626,15 +614,6 @@ public class MainActivity extends AppCompatActivity
                                 //show info prompt
                                 findViewById(R.id.waiting_panel).setVisibility(View.VISIBLE);
 
-                                //stop downloader service
-                                Intent downloader = new Intent(getApplicationContext(),Downloader.class);
-                                downloader.setAction(Downloader.ACTION_FORCE_STOP);
-                                if (Build.VERSION.SDK_INT >= 26) {
-                                    startForegroundService(downloader);
-                                }else{
-                                    startService(downloader);
-                                }
-
                                 //broadcast receiver
                                 BroadcastReceiver statusReceiver = new BroadcastReceiver() {
                                     @Override
@@ -650,6 +629,7 @@ public class MainActivity extends AppCompatActivity
                                 IntentFilter infil = new IntentFilter();
                                 infil.addAction(BROADCAST_STOP);
                                 registerReceiver(statusReceiver, infil);
+                                Downloader.cancelAll(getApplicationContext());
 
                             }else{
                                 //kill application
