@@ -468,6 +468,8 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         CardView card;
         View content;
         View thumbCard;
+        long lastResumeOpenAt = 0L;
+        int lastResumeOpenPosition = RecyclerView.NO_POSITION;
 
         View tagContainer;
         View counterContainer;
@@ -534,12 +536,13 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             resume.setOnClickListener(v -> openResume());
             resume.setOnTouchListener((v, event) -> {
                 if(event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                    int position = getAdapterPosition();
-                    if(isValidPosition(position)) {
-                        Title title = mDataFiltered.get(position);
-                        int bookmark = resolveResumeBookmark(title);
-                        warmupResume(title, bookmark, position);
-                    }
+                    v.setPressed(true);
+                    openResumeImmediately();
+                    return true;
+                }
+                if(event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                    v.setPressed(false);
+                    return true;
                 }
                 return false;
             });
@@ -558,11 +561,26 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             int position = getAdapterPosition();
             if(!isValidPosition(position) || mClickListener == null)
                 return;
+            long now = android.os.SystemClock.uptimeMillis();
+            if(position == lastResumeOpenPosition && now - lastResumeOpenAt < 700)
+                return;
+            lastResumeOpenPosition = position;
+            lastResumeOpenAt = now;
             Title title = mDataFiltered.get(position);
             int bookmark = resolveResumeBookmark(title);
             if(bookmark <= 0)
                 return;
             mClickListener.onResumeClick(position, bookmark);
+        }
+
+        private void openResumeImmediately() {
+            int position = getAdapterPosition();
+            if(!isValidPosition(position))
+                return;
+            Title title = mDataFiltered.get(position);
+            int bookmark = resolveResumeBookmark(title);
+            warmupResume(title, bookmark, position);
+            openResume();
         }
     }
 
