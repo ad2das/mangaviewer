@@ -378,7 +378,7 @@ public class CustomHttpClient {
                 pageLoads.put(cacheKey, new PageLoadState());
         }
         if(activeLoad != null)
-            return waitForCachedPage(cacheKey, activeLoad, ttlMillis, staleCached);
+            return waitForCachedPage(normalized, cacheKey, activeLoad, ttlMillis, staleCached);
         String loadKey = cacheKey;
 
         PageLoadState loadState;
@@ -413,7 +413,7 @@ public class CustomHttpClient {
         }
     }
 
-    private PageResponse waitForCachedPage(String cacheKey, PageLoadState loadState, long ttlMillis, CachedPage staleCached) throws Exception {
+    private PageResponse waitForCachedPage(String normalized, String cacheKey, PageLoadState loadState, long ttlMillis, CachedPage staleCached) throws Exception {
         try {
             loadState.done.await(10, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
@@ -425,6 +425,12 @@ public class CustomHttpClient {
             CachedPage cached = pageCache.get(cacheKey);
             if(cached != null && now - cached.time < ttlMillis)
                 return new PageResponse(cached.code, cached.body, true);
+            String currentCacheKey = getBaseUrl(normalized) + normalized;
+            if(!currentCacheKey.equals(cacheKey)) {
+                cached = pageCache.get(currentCacheKey);
+                if(cached != null && now - cached.time < ttlMillis)
+                    return new PageResponse(cached.code, cached.body, true);
+            }
         }
         if(staleCached != null)
             return new PageResponse(staleCached.code, staleCached.body, true);
@@ -503,7 +509,7 @@ public class CustomHttpClient {
             customCookie = new HashMap<>();
         url = normalizePath(url);
         String baseUrl = getBaseUrl(url);
-        Map<String, String> headers = buildHeaders(baseUrl, customCookie);
+        Map<String, String> headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
 
         Response response = get(baseUrl + url, headers);
         if(shouldRetryWithResolvedDomain(response)) {
@@ -511,17 +517,19 @@ public class CustomHttpClient {
                 response.close();
             ensureWfwfDomainForRetry();
             baseUrl = getBaseUrl(url);
-            headers = buildHeaders(baseUrl, customCookie);
+            headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
             response = get(baseUrl + url, headers);
         }
         return response;
     }
 
-    private Map<String, String> buildHeaders(String baseUrl, Map<String, String> customCookie) {
-        syncCookiesFromWebView(baseUrl);
-        Map<String, String> cookie;
-        synchronized (this) {
-            cookie = new HashMap<>(this.cookies);
+    private Map<String, String> buildHeaders(String baseUrl, Boolean useDefaultCookies, Map<String, String> customCookie) {
+        Map<String, String> cookie = new HashMap<>();
+        if(Boolean.TRUE.equals(useDefaultCookies)) {
+            syncCookiesFromWebView(baseUrl);
+            synchronized (this) {
+                cookie.putAll(this.cookies);
+            }
         }
         if(customCookie != null)
             cookie.putAll(customCookie);
