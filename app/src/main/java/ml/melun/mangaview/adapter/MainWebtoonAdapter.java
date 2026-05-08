@@ -1015,7 +1015,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             String release = hero == null ? "" : hero.getRelease();
             meta.setText(release == null || release.length() == 0 ? "지금 볼만한 추천 작품" : release);
             badge.setText("추천");
-            bindTitleThumb(thumb, hero, 360, 210);
+            bindTitleThumb(thumb, hero, 240, 140);
             dots.setText(heroDots(row));
         }
 
@@ -1053,7 +1053,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             list.setItemAnimator(null);
             list.setRecycledViewPool(sharedHomePool);
             list.setItemViewCacheSize(6);
-            manager.setInitialPrefetchItemCount(2);
+            manager.setInitialPrefetchItemCount(0);
         }
 
         void bind(HomeSection section) {
@@ -1079,39 +1079,23 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     class HomeTitleAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         List<Title> items;
         int style;
+        String itemsKey;
 
         HomeTitleAdapter(List<Title> items, int style) {
             this.items = items == null ? new ArrayList<>() : items;
             this.style = style;
+            this.itemsKey = titleListKey(this.items);
             setHasStableIds(true);
         }
 
         void setItems(List<Title> items) {
-            List<Title> old = this.items == null ? new ArrayList<>() : new ArrayList<>(this.items);
             List<Title> next = items == null ? new ArrayList<>() : new ArrayList<>(items);
-            DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
-                @Override
-                public int getOldListSize() {
-                    return old.size();
-                }
-
-                @Override
-                public int getNewListSize() {
-                    return next.size();
-                }
-
-                @Override
-                public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
-                    return titleKey(old.get(oldItemPosition)).equals(titleKey(next.get(newItemPosition)));
-                }
-
-                @Override
-                public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
-                    return titleContentKey(old.get(oldItemPosition)).equals(titleContentKey(next.get(newItemPosition)));
-                }
-            }, false);
+            String nextKey = titleListKey(next);
+            if(nextKey.equals(itemsKey))
+                return;
             this.items = next;
-            diff.dispatchUpdatesTo(this);
+            this.itemsKey = nextKey;
+            notifyDataSetChanged();
         }
 
         @NonNull
@@ -1181,7 +1165,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     progress.setProgress(progressPercent);
                     percent.setText(progressPercent + "%");
                 }
-                bindTitleThumb(thumb, item, 156, 144);
+                bindTitleThumb(thumb, item, 120, 112);
                 if(continueStyle && position < 8)
                     scheduleContinueViewerWarmup(item);
                 card.setOnClickListener(v -> {
@@ -1333,7 +1317,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 title.setText(item == null ? "" : item.getName());
                 String release = item == null ? "" : item.getRelease();
                 meta.setText(release == null || release.length() == 0 ? "인기 작품" : release);
-                bindTitleThumb(thumb, item, 142, 138);
+                bindTitleThumb(thumb, item, 112, 110);
                 card.setOnClickListener(v -> {
                     if(listener != null && item != null)
                         listener.clickedTitle(item);
@@ -1523,7 +1507,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             list.setItemAnimator(null);
             list.setRecycledViewPool(sharedHomePool);
             list.setItemViewCacheSize(6);
-            manager.setInitialPrefetchItemCount(2);
+            manager.setInitialPrefetchItemCount(0);
         }
 
         void bind(Ranking<?> section) {
@@ -1546,38 +1530,22 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     class WebtoonCardAdapter extends RecyclerView.Adapter<WebtoonCardAdapter.CardHolder> {
         List<?> items;
+        String itemsKey;
 
         WebtoonCardAdapter(List<?> items) {
             this.items = items;
+            this.itemsKey = cardListKey(items);
             setHasStableIds(true);
         }
 
         void setItems(List<?> items) {
-            List<?> old = this.items == null ? new ArrayList<>() : new ArrayList<>(this.items);
             List<?> next = items == null ? new ArrayList<>() : new ArrayList<>(items);
-            DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
-                @Override
-                public int getOldListSize() {
-                    return old.size();
-                }
-
-                @Override
-                public int getNewListSize() {
-                    return next.size();
-                }
-
-                @Override
-                public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
-                    return cardKey(old.get(oldItemPosition)).equals(cardKey(next.get(newItemPosition)));
-                }
-
-                @Override
-                public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
-                    return cardContentKey(old.get(oldItemPosition)).equals(cardContentKey(next.get(newItemPosition)));
-                }
-            }, false);
+            String nextKey = cardListKey(next);
+            if(nextKey.equals(itemsKey))
+                return;
             this.items = next;
-            diff.dispatchUpdatesTo(this);
+            this.itemsKey = nextKey;
+            notifyDataSetChanged();
         }
 
         @NonNull
@@ -1601,7 +1569,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(save || thumb == null || thumb.length() == 0) {
                 bindStaticThumb(holder.thumb, "launcher", R.mipmap.ic_launcher);
             } else {
-                bindGlideThumb(holder.thumb, getGlideUrl(thumb, title.getBaseMode()), 180, 220, R.mipmap.ic_launcher);
+                bindGlideThumb(holder.thumb, getGlideUrl(thumb, title.getBaseMode()), 128, 156, R.mipmap.ic_launcher);
             }
 
             holder.card.setOnClickListener(v -> {
@@ -1672,7 +1640,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 Glide.with(context)
                         .load(getGlideUrl(thumb, ((Title) item).getBaseMode()))
                         .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                        .override(dp(180), dp(220))
+                        .override(dp(128), dp(156))
                         .preload();
                 if(++preloadCount >= maxPerFetch)
                     return;
@@ -1809,6 +1777,20 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         return title.getBaseMode() + ":" + title.getId();
     }
 
+    private String titleListKey(List<Title> titles) {
+        if(titles == null || titles.size() == 0)
+            return "";
+        StringBuilder builder = new StringBuilder();
+        int count = Math.min(titles.size(), 8);
+        for(int i = 0; i < count; i++) {
+            if(i > 0)
+                builder.append('|');
+            builder.append(titleContentKey(titles.get(i)));
+        }
+        builder.append("#").append(titles.size());
+        return builder.toString();
+    }
+
     private String titleContentKey(Title title) {
         if(title == null)
             return "";
@@ -1825,6 +1807,20 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return "mtitle:" + title.getBaseMode() + ":" + title.getId();
         }
         return String.valueOf(item == null ? "" : item.hashCode());
+    }
+
+    private String cardListKey(List<?> items) {
+        if(items == null || items.size() == 0)
+            return "";
+        StringBuilder builder = new StringBuilder();
+        int count = Math.min(items.size(), 12);
+        for(int i = 0; i < count; i++) {
+            if(i > 0)
+                builder.append('|');
+            builder.append(cardContentKey(items.get(i)));
+        }
+        builder.append("#").append(items.size());
+        return builder.toString();
     }
 
     private String cardContentKey(Object item) {

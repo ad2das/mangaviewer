@@ -11,10 +11,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
-import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.Paint;
-import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -26,17 +23,18 @@ import androidx.lifecycle.ViewModelProvider;
 import android.view.View;
 import android.view.ViewGroup;
 import com.google.android.material.bottomsheet.BottomSheetDialog;
+import com.google.android.material.bottomnavigation.BottomNavigationView;
 import com.google.android.material.navigation.NavigationView;
 import androidx.core.view.GravityCompat;
 import androidx.drawerlayout.widget.DrawerLayout;
-import androidx.fragment.app.FragmentActivity;
+import androidx.appcompat.app.ActionBarDrawerToggle;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.Toolbar;
 import androidx.fragment.app.Fragment;
 
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.WindowManager;
-import android.view.ViewStub;
-import android.view.Gravity;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -61,7 +59,6 @@ import ml.melun.mangaview.fragment.MainSearch;
 import ml.melun.mangaview.interfaces.MainActivityCallback;
 import ml.melun.mangaview.interfaces.UrlUpdateCallback;
 import ml.melun.mangaview.model.UrlUpdateResult;
-import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.state.UiState;
 import ml.melun.mangaview.viewmodel.StartupViewModel;
 
@@ -88,7 +85,7 @@ import static ml.melun.mangaview.mangaview.CustomHttpClient.WEBTOON_URL;
 
 
 
-public class MainActivity extends FragmentActivity
+public class MainActivity extends AppCompatActivity
         implements NavigationView.OnNavigationItemSelectedListener, MainActivityCallback {
 
     public static int PERMISSION_CODE = 132322;
@@ -98,13 +95,9 @@ public class MainActivity extends FragmentActivity
     String homeDirStr;
     Boolean dark;
     NavigationView navigationView;
-    View bottomNavigationView;
-    TextView bottomHome;
-    TextView bottomSearch;
-    TextView bottomLibrary;
-    TextView toolbar;
+    BottomNavigationView bottomNavigationView;
+    Toolbar toolbar;
     View progressView;
-    ViewStub navigationViewStub;
     boolean accountInitialSyncStarted = false;
     BottomSheetDialog accountSheet;
     TextView accountSheetName;
@@ -119,7 +112,6 @@ public class MainActivity extends FragmentActivity
 
 
     Fragment[] fragments = new Fragment[3];
-    boolean coreReady = false;
 
     FrameLayout content;
 
@@ -136,13 +128,14 @@ public class MainActivity extends FragmentActivity
         getSupportFragmentManager().executePendingTransactions();
         searchFragment.setBaseMode(p.getBaseMode());
         searchFragment.setSearch(query);
-        setToolbarTitle("검색");
+        if(getSupportActionBar() != null)
+            getSupportActionBar().setTitle("검색");
     }
 
     @Override
     public void navigateToTab(int index) {
-        if(changeFragment(index))
-            setToolbarTitle(getTabTitle(currentTab));
+        if(changeFragment(index) && toolbar != null)
+            toolbar.setTitle(getTabTitle(currentTab));
     }
 
     private void openSearchTab() {
@@ -154,13 +147,31 @@ public class MainActivity extends FragmentActivity
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        fragments[0] = MainMain.newInstance();
+        fragments[1] = MainSearch.newSearchTab();
+        fragments[2] = MainSearch.newLibraryTab();
+        dark = p.getDarkTheme();
+        if (dark) setTheme(R.style.AppThemeDarkNoTitle);
+        else setTheme(R.style.AppTheme_NoActionBar);
         super.onCreate(savedInstanceState);
         context = this;
         Intent intent = getIntent();
         String action = intent.getAction();
 
+
+        //check prefs
+        if (p.getSharedPref().getLong("eula2", -1)<0) {
+            p.setDefUrl(DEFAULT_COMIC_URL);
+            p.setUrl(DEFAULT_COMIC_URL);
+            p.setWebtoonUrl(WEBTOON_URL);
+            p.setAutoUrl(false);
+            p.getSharedPref().edit()
+                    .putLong("eula2", System.currentTimeMillis())
+                    .putBoolean("manamoa", false)
+                    .apply();
+        }
+
         if (Migrator.running) {
-            ensureCoreReady();
             ProgressDialog mpd;
             if (p.getDarkTheme()) mpd = new ProgressDialog(context, R.style.darkDialog);
             else mpd = new ProgressDialog(context);
@@ -201,8 +212,49 @@ public class MainActivity extends FragmentActivity
 
             Migrator.requestProgress(getApplicationContext());
 
+        } else if (!p.check()) {
+            //popup to fix preferences
+            showYesNoNeutralPopup(context, "기록 업데이트 필요",
+                    "저장된 데이터에서 더이상 지원되지 않는 이전 형식이 발견되었습니다. 정상적인 사용을 위해 업데이트가 필요합니다. 데이터를 업데이트 하시겠습니까?" +
+                            "\n(데이터 일부가 유실될 수 있습니다. 꼭 백업을 하고 진행해 주세요)",
+                    "데이터 백업",
+                    (dialogInterface, i) -> {
+                        //proceed
+                        final EditText editText = new EditText(context);
+                        editText.setHint(p.getDefUrl());
+
+                        AlertDialog.Builder builder;
+                        if (new Preference(context).getDarkTheme())
+                            builder = new AlertDialog.Builder(context, R.style.darkDialog);
+                        else builder = new AlertDialog.Builder(context);
+                        builder.setTitle("기록 업데이트")
+                                .setView(editText)
+                                .setMessage("이 작업은 되돌릴수 없습니다. 계속 하려면 유효한 주소를 입력해 주세요.")
+                                .setPositiveButton("계속", (dialogInterface15, i13) -> {
+                                    String url = editText.getText().toString();
+                                    if (url == null || url.length() < 1)
+                                        url = p.getDefUrl();
+
+                                    p.setUrl(url);
+
+                                    Migrator.start(getApplicationContext());
+                                    //queue title to service
+                                    Toast.makeText(getApplication(), "작업을 시작합니다.", Toast.LENGTH_LONG).show();
+                                    //restart activity
+                                    finish();
+                                    startActivity(getIntent());
+                                })
+                                .setNegativeButton("취소", (dialogInterface14, i12) -> finish())
+                                .setOnCancelListener(dialogInterface13 -> finish())
+                                .show();
+                    }, (dialogInterface, i) -> showPopup(context, "알림", "앱의 데이터를 초기화 하거나 데이터 업데이트를 진행하지 않으면 사용이 불가합니다.", (dialogInterface12, i1) -> finish(), dialogInterface1 -> finish()), (dialogInterface, i) -> {
+                        //backup
+                        Intent intent1 = new Intent(context, FolderSelectActivity.class);
+                        intent1.putExtra("mode", MODE_FILE_SAVE);
+                        intent1.putExtra("title", "백업");
+                        startActivityForResult(intent1, MODE_FILE_SAVE);
+                    }, dialogInterface -> finish());
         }else if(action != null && action.equals(MIGRATE_RESULT)){
-            ensureCoreReady();
             migratorEndPopup(savedInstanceState, 0, intent.getStringExtra("msg"));
         }else{
             activityInit(savedInstanceState);
@@ -210,36 +262,79 @@ public class MainActivity extends FragmentActivity
     }
 
     private void activityInit(Bundle savedInstanceState){
-        installInitialMainShellRoot();
-        progressView = null;
+        p.check2();
+        setContentView(R.layout.activity_main);
+        progressView = this.findViewById(R.id.progress_panel);
         applyMainWindowChrome();
 
-        toolbar = findViewById(R.id.toolbar);
+        toolbar = (Toolbar) findViewById(R.id.toolbar);
+        setSupportActionBar(toolbar);
 
-        navigationViewStub = null;
+        DrawerLayout drawer = (DrawerLayout) findViewById(R.id.drawer_layout);
+        ActionBarDrawerToggle toggle = new ActionBarDrawerToggle(
+                this, drawer, toolbar, R.string.navigation_drawer_open, R.string.navigation_drawer_close);
+        drawer.addDrawerListener(toggle);
+        toggle.syncState();
+        toolbar.setNavigationIcon(null);
 
-        homeDirStr = null;
+        //nav_drawer color scheme
+        navigationView = (NavigationView) findViewById(R.id.nav_view);
+        navigationView.setNavigationItemSelectedListener(this);
+        if(dark) {
+            int[][] states = new int[][]{
+                    new int[]{-android.R.attr.state_enabled}, // disabled
+                    new int[]{android.R.attr.state_enabled}, // enabled
+                    new int[]{-android.R.attr.state_checked}, // unchecked
+                    new int[]{android.R.attr.state_pressed}  // pressed
+            };
+
+            int[] colors = new int[]{
+                    Color.parseColor("#565656"),
+                    Color.parseColor("#a2a2a2"),
+                    Color.WHITE,
+                    Color.WHITE
+            };
+            ColorStateList colorStateList = new ColorStateList(states, colors);
+            navigationView.setItemTextColor(colorStateList);
+        }
+        bottomNavigationView = findViewById(R.id.bottom_nav);
+        if(bottomNavigationView != null) {
+            bottomNavigationView.setOnItemSelectedListener(item -> {
+                int index = getFragmentIndex(item.getItemId());
+                if(index < 0)
+                    return false;
+                changeFragment(index);
+                toolbar.setTitle(getTabTitle(currentTab));
+                return true;
+            });
+            bottomNavigationView.setOnItemReselectedListener(item -> {
+                int index = getFragmentIndex(item.getItemId());
+                if(index == 0 && fragments[0] instanceof MainMain)
+                    ((MainMain) fragments[0]).scrollToSelectedTab();
+                else if(index == 1 && fragments[1] instanceof MainSearch) {
+                    ((MainSearch) fragments[1]).enterSearchMode();
+                    toolbar.setTitle(getTabTitle(1));
+                } else if(index == 2 && fragments[2] instanceof MainSearch) {
+                    ((MainSearch) fragments[2]).enterLibraryMode();
+                    toolbar.setTitle(getTabTitle(2));
+                }
+            });
+        }
+
+        homeDirStr = p.getHomeDir();
 
         content = findViewById(R.id.contentHolder);
 
         // Always start a fresh app session from Home. The older startTab preference can
         // point to Library after sync/settings restore, which makes cold starts feel wrong.
         startTab = 0;
-        int targetTab = 0;
         if(savedInstanceState != null) {
             int t = savedInstanceState.getInt("currentTab", 0);
-            targetTab = t > -1 ? t : 0;
-        }
-        showFastHomeShell(targetTab);
-        int deferredTab = targetTab;
-        content.postDelayed(() -> {
-            if(!isFinishing() && !isDestroyed()) {
-                currentTab = -1;
-                changeFragment(deferredTab);
-            }
-        }, 12000);
+            changeFragment(t>-1 ? t : 0);
+        }else
+            changeFragment(0);
 
-        content.postDelayed(this::runDeferredStartupTasks, 9000);
+        content.postDelayed(this::runDeferredStartupTasks, 500);
 
         // savedInstanceState
 
@@ -248,171 +343,13 @@ public class MainActivity extends FragmentActivity
 
     }
 
-    private void ensureCoreReady() {
-        if(coreReady)
-            return;
-        MainApplication.initCoreServices();
-        fragments[0] = MainMain.newInstance();
-        fragments[1] = MainSearch.newSearchTab();
-        fragments[2] = MainSearch.newLibraryTab();
-        dark = p.getDarkTheme();
-        homeDirStr = p.getHomeDir();
-        ensureFirstLaunchDefaults();
-        coreReady = true;
-    }
-
-    private void ensureFirstLaunchDefaults() {
-        if(p.getSharedPref().getLong("eula2", -1) >= 0)
-            return;
-        p.setDefUrl(DEFAULT_COMIC_URL);
-        p.setUrl(DEFAULT_COMIC_URL);
-        p.setWebtoonUrl(WEBTOON_URL);
-        p.setAutoUrl(false);
-        p.getSharedPref().edit()
-                .putLong("eula2", System.currentTimeMillis())
-                .putBoolean("manamoa", false)
-                .apply();
-    }
-
-    private void installInitialMainShellRoot() {
-        HomeShellFrame holder = new HomeShellFrame(this);
-        holder.setId(R.id.contentHolder);
-        holder.setBackgroundColor(ContextCompat.getColor(this, R.color.appSurface));
-        setContentView(holder, new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT));
-    }
-
     private void runDeferredStartupTasks() {
         if(isFinishing() || isDestroyed())
             return;
-        ensureCoreReady();
         MainApplication.initDeferredServices();
-        inflateNavigationView();
         setupAccountHeader();
         startDeferredUrlUpdate();
         requestStartupPermissions();
-        runDeferredPreferenceMaintenance();
-    }
-
-    private void showFastHomeShell(int tab) {
-        if(content == null)
-            return;
-        currentTab = Math.max(0, Math.min(tab, 2));
-        content.setTag("shell");
-        content.removeAllViews();
-        if(content instanceof HomeShellFrame)
-            ((HomeShellFrame) content).setShellTitle(currentTab == 0 ? "MangaView" : String.valueOf(getTabTitle(currentTab)));
-        setToolbarTitle(getTabTitle(currentTab));
-        syncBottomNavigationSelection();
-    }
-
-    private static final class HomeShellFrame extends FrameLayout {
-        private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private String title = "";
-        private final int surfaceColor;
-        private final float leftPadding;
-
-        HomeShellFrame(Context context) {
-            super(context);
-            setWillNotDraw(false);
-            surfaceColor = ContextCompat.getColor(context, R.color.appSurface);
-            leftPadding = 20f * context.getResources().getDisplayMetrics().density;
-            textPaint.setColor(ContextCompat.getColor(context, R.color.appText));
-            textPaint.setTextSize(24f * context.getResources().getDisplayMetrics().scaledDensity);
-            textPaint.setTypeface(Typeface.DEFAULT_BOLD);
-        }
-
-        void setShellTitle(String title) {
-            this.title = title == null ? "" : title;
-            invalidate();
-        }
-
-        @Override
-        protected void onDraw(Canvas canvas) {
-            canvas.drawColor(surfaceColor);
-            if(title.length() > 0) {
-                Paint.FontMetrics metrics = textPaint.getFontMetrics();
-                float baseline = (getHeight() - metrics.ascent - metrics.descent) * 0.5f;
-                canvas.drawText(title, leftPadding, baseline, textPaint);
-            }
-        }
-    }
-
-    private int dp(float value) {
-        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
-    }
-
-    private void runDeferredPreferenceMaintenance() {
-        AppDispatchers.runIo(() -> {
-            p.check2();
-            if(!p.check() && !isFinishing() && !isDestroyed())
-                AppDispatchers.runOnMain(this::showMigrationRequiredPrompt);
-        });
-    }
-
-    private void showMigrationRequiredPrompt() {
-        if(isFinishing() || isDestroyed())
-            return;
-        showYesNoNeutralPopup(context, "기록 업데이트 필요",
-                "저장된 데이터에서 더이상 지원되지 않는 이전 형식이 발견되었습니다. 정상적인 사용을 위해 업데이트가 필요합니다. 데이터를 업데이트 하시겠습니까?" +
-                        "\n(데이터 일부가 유실될 수 있습니다. 꼭 백업을 하고 진행해 주세요)",
-                "데이터 백업",
-                (dialogInterface, i) -> {
-                    final EditText editText = new EditText(context);
-                    editText.setHint(p.getDefUrl());
-                    AlertDialog.Builder builder = dark
-                            ? new AlertDialog.Builder(context, R.style.darkDialog)
-                            : new AlertDialog.Builder(context);
-                    builder.setTitle("기록 업데이트")
-                            .setView(editText)
-                            .setMessage("이 작업은 되돌릴수 없습니다. 계속 하려면 유효한 주소를 입력해 주세요.")
-                            .setPositiveButton("계속", (dialogInterface15, i13) -> {
-                                String url = editText.getText().toString();
-                                if (url == null || url.length() < 1)
-                                    url = p.getDefUrl();
-                                p.setUrl(url);
-                                Migrator.start(getApplicationContext());
-                                Toast.makeText(getApplication(), "작업을 시작합니다.", Toast.LENGTH_LONG).show();
-                                finish();
-                                startActivity(getIntent());
-                            })
-                            .setNegativeButton("취소", null)
-                            .show();
-                },
-                (dialogInterface, i) -> showPopup(context, "알림", "앱의 데이터를 초기화 하거나 데이터 업데이트를 진행하지 않으면 사용이 불가합니다.", null, null),
-                (dialogInterface, i) -> {
-                    Intent intent1 = new Intent(context, FolderSelectActivity.class);
-                    intent1.putExtra("mode", MODE_FILE_SAVE);
-                    intent1.putExtra("title", "백업");
-                    startActivityForResult(intent1, MODE_FILE_SAVE);
-                }, null);
-    }
-
-    private void inflateNavigationView() {
-        if(navigationView != null)
-            return;
-        View nav = navigationViewStub == null ? findViewById(R.id.nav_view) : navigationViewStub.inflate();
-        if(!(nav instanceof NavigationView))
-            return;
-        navigationView = (NavigationView) nav;
-        navigationView.setNavigationItemSelectedListener(this);
-        if(dark) {
-            int[][] states = new int[][]{
-                    new int[]{-android.R.attr.state_enabled},
-                    new int[]{android.R.attr.state_enabled},
-                    new int[]{-android.R.attr.state_checked},
-                    new int[]{android.R.attr.state_pressed}
-            };
-            int[] colors = new int[]{
-                    Color.parseColor("#565656"),
-                    Color.parseColor("#a2a2a2"),
-                    Color.WHITE,
-                    Color.WHITE
-            };
-            navigationView.setItemTextColor(new ColorStateList(states, colors));
-        }
-        syncNavigationSelection();
     }
 
     private void startDeferredUrlUpdate() {
@@ -657,15 +594,14 @@ public class MainActivity extends FragmentActivity
     }
 
     private void applyMainWindowChrome() {
-        if(Boolean.TRUE.equals(dark))
+        if(dark)
             return;
         getWindow().setStatusBarColor(ContextCompat.getColor(this, R.color.appSurface));
+        getWindow().setNavigationBarColor(ContextCompat.getColor(this, R.color.appCard));
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
     }
 
     private void syncNavigationSelection() {
-        if(navigationView == null)
-            return;
         Menu menu = navigationView.getMenu();
         for(int i = 0; i < menu.size(); i++)
             menu.getItem(i).setChecked(false);
@@ -677,60 +613,15 @@ public class MainActivity extends FragmentActivity
     private void syncBottomNavigationSelection() {
         if(bottomNavigationView == null)
             return;
-        styleBottomTab(bottomHome, currentTab == 0);
-        styleBottomTab(bottomSearch, currentTab == 1);
-        styleBottomTab(bottomLibrary, currentTab == 2);
-    }
-
-    private void setupBottomNavigation() {
-        bottomNavigationView = findViewById(R.id.bottom_nav);
-        bottomHome = findViewById(R.id.nav_main);
-        bottomSearch = findViewById(R.id.nav_search);
-        bottomLibrary = findViewById(R.id.nav_recent);
-        bindBottomTab(bottomHome, 0);
-        bindBottomTab(bottomSearch, 1);
-        bindBottomTab(bottomLibrary, 2);
-    }
-
-    private void bindBottomTab(TextView tab, int index) {
-        if(tab == null)
-            return;
-        tab.setOnClickListener(v -> {
-            if(index == currentTab && content != null && "shell".equals(content.getTag())) {
-                currentTab = -1;
-                changeFragment(index);
-                return;
-            }
-            if(index == currentTab) {
-                if(index == 0 && fragments[0] instanceof MainMain)
-                    ((MainMain) fragments[0]).scrollToSelectedTab();
-                else if(index == 1 && fragments[1] instanceof MainSearch)
-                    ((MainSearch) fragments[1]).enterSearchMode();
-                else if(index == 2 && fragments[2] instanceof MainSearch)
-                    ((MainSearch) fragments[2]).enterLibraryMode();
-            } else {
-                changeFragment(index);
-            }
-            setToolbarTitle(getTabTitle(currentTab));
-        });
-    }
-
-    private void styleBottomTab(TextView tab, boolean selected) {
-        if(tab == null)
-            return;
-        tab.setTextColor(ContextCompat.getColor(this, selected ? R.color.appAccent : R.color.appTextSecondary));
-        tab.setTypeface(null, selected ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
-    }
-
-    private void setToolbarTitle(CharSequence title) {
-        if(toolbar != null)
-            toolbar.setText(title == null ? "" : title);
+        MenuItem item = bottomNavigationView.getMenu().findItem(getTabId(currentTab));
+        if(item != null)
+            item.setChecked(true);
     }
 
     @Override
     public void onBackPressed() {
         DrawerLayout drawer = (DrawerLayout) findViewById(R.id.drawer_layout);
-        if (drawer != null && drawer.isDrawerOpen(GravityCompat.START)) {
+        if (drawer.isDrawerOpen(GravityCompat.START)) {
             drawer.closeDrawer(GravityCompat.START);
         } else {
             if(currentTab == startTab){
@@ -745,9 +636,7 @@ public class MainActivity extends FragmentActivity
                             if(Downloader.isRunning()){
                                 //downloader is running
                                 //show info prompt
-                                View waitingPanel = findViewById(R.id.waiting_panel);
-                                if(waitingPanel != null)
-                                    waitingPanel.setVisibility(View.VISIBLE);
+                                findViewById(R.id.waiting_panel).setVisibility(View.VISIBLE);
 
                                 //broadcast receiver
                                 BroadcastReceiver statusReceiver = new BroadcastReceiver() {
@@ -788,7 +677,7 @@ public class MainActivity extends FragmentActivity
             }else{
                 changeFragment(startTab);
                 syncNavigationSelection();
-                setToolbarTitle(getTabTitle(startTab));
+                toolbar.setTitle(getTabTitle(startTab));
             }
         }
     }
@@ -826,22 +715,19 @@ public class MainActivity extends FragmentActivity
     boolean changeFragment(int index){
         if(index < 0)
             return false;
-        ensureCoreReady();
         boolean res = false;
         if(index>-1 && index != currentTab){
             if(index == 1 && fragments[1] instanceof MainSearch)
                 ((MainSearch) fragments[1]).enterSearchMode();
             currentTab = index;
             getSupportFragmentManager().beginTransaction().replace(R.id.contentHolder, (Fragment) fragments[index]).commit();
-            if(content != null)
-                content.setTag(null);
             res = true;
         } else if(index == 1 && fragments[1] instanceof MainSearch) {
             ((MainSearch) fragments[1]).enterSearchMode();
         } else if(index == 2 && fragments[2] instanceof MainSearch) {
             ((MainSearch) fragments[2]).enterLibraryMode();
         }
-        setToolbarTitle(getTabTitle(currentTab));
+        getSupportActionBar().setTitle(getTabTitle(currentTab));
         syncNavigationSelection();
         syncBottomNavigationSelection();
         invalidateOptionsMenu();
@@ -859,10 +745,9 @@ public class MainActivity extends FragmentActivity
             getSupportFragmentManager().executePendingTransactions();
             if(fragments[2] instanceof MainSearch)
                 ((MainSearch) fragments[2]).selectLibraryTab(id == R.id.nav_favorite ? 2 : 3);
-            setToolbarTitle(getTabTitle(2));
+            toolbar.setTitle(getTabTitle(2));
             DrawerLayout drawer = (DrawerLayout) findViewById(R.id.drawer_layout);
-            if(drawer != null)
-                drawer.closeDrawer(GravityCompat.START);
+            drawer.closeDrawer(GravityCompat.START);
             return true;
         }
         if (!changeFragment(getFragmentIndex(id))) {
@@ -889,14 +774,12 @@ public class MainActivity extends FragmentActivity
                 return true;
             }
             DrawerLayout drawer = (DrawerLayout) findViewById(R.id.drawer_layout);
-            if(drawer != null)
-                drawer.closeDrawer(GravityCompat.START);
+            drawer.closeDrawer(GravityCompat.START);
             return true;
         }
-        setToolbarTitle(item.getTitle());
+        toolbar.setTitle(item.getTitle());
         DrawerLayout drawer = (DrawerLayout) findViewById(R.id.drawer_layout);
-        if(drawer != null)
-            drawer.closeDrawer(GravityCompat.START);
+        drawer.closeDrawer(GravityCompat.START);
         return true;
     }
 
@@ -947,8 +830,7 @@ public class MainActivity extends FragmentActivity
     }
 
     public void hideProgressPanel(){
-        if(progressView != null)
-            progressView.setVisibility(View.GONE);
+        progressView.setVisibility(View.GONE);
     }
 
 

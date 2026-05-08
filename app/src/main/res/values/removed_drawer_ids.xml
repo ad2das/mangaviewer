@@ -2,7 +2,4 @@
 <resources>
     <item name="nav_kakao" type="id" />
     <item name="nav_donate" type="id" />
-    <item name="drawer_layout" type="id" />
-    <item name="nav_view" type="id" />
-    <item name="nav_view_stub" type="id" />
 </resources>

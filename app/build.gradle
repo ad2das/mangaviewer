@@ -35,6 +35,8 @@ android {
         versionCode code
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
+        multiDexEnabled true
+
         setProperty("archivesBaseName", "mangaViewer_" + code)
     }
     buildTypes {
@@ -44,9 +46,6 @@ android {
         }
         debug {
             signingConfig signingConfigs.debug
-            debuggable false
-            minifyEnabled true
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
     namespace 'ml.melun.mangaview'
@@ -76,6 +75,7 @@ dependencies {
         transitive = false
     }
 
+    implementation 'com.android.support:multidex:1.0.3'
     implementation 'androidx.fragment:fragment:1.5.5'
     implementation 'androidx.legacy:legacy-support-v4:1.0.0'
     implementation 'androidx.vectordrawable:vectordrawable:1.1.0'

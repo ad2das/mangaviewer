@@ -4,6 +4,10 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
-    <item android:drawable="@color/appSurface" />
+    <item android:drawable="@color/colorPrimary" />
+
+    <item>
+        <bitmap android:src="@drawable/logo_static" android:gravity="center"/>
+    </item>
 
 </layer-list>

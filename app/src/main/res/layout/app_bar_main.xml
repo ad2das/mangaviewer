@@ -1,71 +1,66 @@
 <?xml version="1.0" encoding="utf-8" standalone="no"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
+<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:background="@color/appSurface"
-    android:orientation="vertical">
+    android:layout_height="match_parent"
+    android:layout_width="match_parent"
+    tools:context=".activity.MainActivity">
 
-    <TextView
-        android:id="@+id/toolbar"
-        android:layout_width="match_parent"
-        android:layout_height="48dp"
+    <com.google.android.material.appbar.AppBarLayout
         android:background="@color/appSurface"
-        android:gravity="center_vertical"
-        android:paddingStart="20dp"
-        android:paddingEnd="20dp"
-        android:text="MangaView"
-        android:textColor="@color/appText"
-        android:textSize="21sp"
-        android:textStyle="bold" />
+        android:elevation="0dp"
+        android:layout_height="wrap_content"
+        android:layout_width="match_parent"
+        app:elevation="0dp">
+
+        <androidx.appcompat.widget.Toolbar
+            android:background="@color/appSurface"
+            android:id="@+id/toolbar"
+            android:layout_height="48dp"
+            android:layout_width="match_parent"
+            android:paddingEnd="8dp"
+            app:contentInsetStartWithNavigation="0dp"
+            app:titleTextColor="@color/appText"
+            app:titleTextAppearance="@style/AppToolbarTitle"
+            app:popupTheme="@style/AppTheme.PopupOverlay" />
+
+    </com.google.android.material.appbar.AppBarLayout>
 
     <FrameLayout
         android:id="@+id/contentHolder"
+        android:layout_height="match_parent"
+        android:layout_marginBottom="72dp"
+        android:layout_marginTop="48dp"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:background="@color/appSurface" />
+        android:background="@color/appSurface">
 
-    <LinearLayout
+    </FrameLayout>
+
+    <include
+        android:layout_height="match_parent"
+        android:layout_marginBottom="72dp"
+        android:layout_marginTop="48dp"
+        android:layout_width="match_parent"
+        android:visibility="gone"
+        layout="@layout/progress_panel" />
+
+    <com.google.android.material.bottomnavigation.BottomNavigationView
         android:id="@+id/bottom_nav"
         android:layout_width="match_parent"
-        android:layout_height="58dp"
+        android:layout_height="64dp"
+        android:layout_gravity="bottom"
         android:layout_marginStart="12dp"
         android:layout_marginEnd="12dp"
         android:layout_marginBottom="10dp"
         android:background="@drawable/app_bottom_nav_bg"
-        android:baselineAligned="false"
-        android:elevation="4dp"
-        android:gravity="center"
-        android:orientation="horizontal"
-        android:padding="4dp">
+        android:elevation="6dp"
+        app:itemIconTint="@color/app_nav_selector"
+        app:itemIconSize="24dp"
+        app:itemTextAppearanceActive="@style/AppBottomNavText.Active"
+        app:itemTextAppearanceInactive="@style/AppBottomNavText"
+        app:itemTextColor="@color/app_nav_selector"
+        app:labelVisibilityMode="labeled"
+        app:menu="@menu/activity_main_bottom" />
 
-        <TextView
-            android:id="@+id/nav_main"
-            style="@style/AppBottomNavText.Active"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:gravity="center"
-            android:text="홈" />
-
-        <TextView
-            android:id="@+id/nav_search"
-            style="@style/AppBottomNavText"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:gravity="center"
-            android:text="검색" />
-
-        <TextView
-            android:id="@+id/nav_recent"
-            style="@style/AppBottomNavText"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:gravity="center"
-            android:text="보관함" />
-
-    </LinearLayout>
-
-</LinearLayout>
+</androidx.coordinatorlayout.widget.CoordinatorLayout>
