@@ -7,7 +7,6 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
-import ml.melun.mangaview.runtime.LifecycleJob;
 import com.google.android.material.appbar.AppBarLayout;
 
 import androidx.annotation.Nullable;
@@ -40,6 +39,7 @@ import ml.melun.mangaview.interfaces.PageInterface;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.repository.MangaRepository;
+import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.ui.CustomSpinner;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -79,6 +79,7 @@ public class ViewerActivity3 extends AppCompatActivity {
     ViewPager.OnPageChangeListener listener;
     CustomSpinner spinner;
     CustomSpinnerAdapter spinnerAdapter;
+    LoadImages imageLoad;
 
 
     @Override
@@ -295,7 +296,10 @@ public class ViewerActivity3 extends AppCompatActivity {
 
     void refresh(){
         captchaChecked = false;
-        new LoadImages().start(LifecycleJob.IO);
+        if(imageLoad != null)
+            imageLoad.cancel();
+        imageLoad = new LoadImages();
+        imageLoad.start();
     }
 
 
@@ -333,32 +337,40 @@ public class ViewerActivity3 extends AppCompatActivity {
         //getWindow().setAttributes(attrs);
     }
 
-    private class LoadImages extends LifecycleJob<Void, String, Integer>{
+    private class LoadImages {
         ProgressDialog pd;
-        protected void onProgressUpdate(String... values) {
-            pd.setMessage(values[0]);
+        AppDispatchers.TaskHandle handle;
+        volatile boolean cancelled;
+
+        private void postProgress(String value) {
+            AppDispatchers.runOnMain(() -> {
+                if(!cancelled && pd != null)
+                    pd.setMessage(value);
+            });
         }
-        @Override
-        protected void onPreExecute() {
-            super.onPreExecute();
+
+        void start() {
             if(dark) pd = new ProgressDialog(context, R.style.darkDialog);
             else pd = new ProgressDialog(context);
             pd.setMessage("로드중");
             pd.setCancelable(false);
             pd.setOnKeyListener((dialog, keyCode, event) -> {
                 if(keyCode == KeyEvent.KEYCODE_BACK){
-                    LoadImages.super.cancel(true);
+                    cancel();
                     pd.dismiss();
-                    finish();
+                    ViewerActivity3.this.finish();
                 }
                 return true;
             });
             pd.show();
+            handle = AppDispatchers.submitIo(() -> {
+                Integer result = load();
+                AppDispatchers.runOnMain(() -> finish(result));
+            });
         }
 
-        @Override
-        protected Integer doInBackground(Void... voids) {
-            manga.setListener(msg -> publishProgress(msg));
+        private Integer load() {
+            manga.setListener(this::postProgress);
             int res = ensureEpisodeListLoaded(manga);
             if(res == LOAD_CAPTCHA)
                 return res;
@@ -368,9 +380,11 @@ public class ViewerActivity3 extends AppCompatActivity {
             return res;
         }
 
-        @Override
-        protected void onPostExecute(Integer res) {
-            super.onPostExecute(res);
+        private void finish(Integer res) {
+            if(cancelled)
+                return;
+            if(imageLoad == this)
+                imageLoad = null;
             if(res == LOAD_CAPTCHA){
                 //캡차 처리 팝업
                 showTokiCaptchaPopup(context, p);
@@ -378,6 +392,16 @@ public class ViewerActivity3 extends AppCompatActivity {
             }
             reloadManga();
             if(pd.isShowing()) pd.dismiss();
+        }
+
+        void cancel() {
+            cancelled = true;
+            if(handle != null)
+                handle.cancel();
+            if(imageLoad == this)
+                imageLoad = null;
+            if(pd != null && pd.isShowing())
+                pd.dismiss();
         }
     }
 
@@ -552,5 +576,14 @@ public class ViewerActivity3 extends AppCompatActivity {
         if (resultCode == RESULT_CAPTCHA) {
             refresh();
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        if(imageLoad != null) {
+            imageLoad.cancel();
+            imageLoad = null;
+        }
+        super.onDestroy();
     }
 }

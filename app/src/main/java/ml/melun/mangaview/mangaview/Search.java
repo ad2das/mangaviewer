@@ -13,10 +13,6 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 
 import okhttp3.Response;
 
@@ -167,49 +163,35 @@ public class Search {
     private int fetchAll(CustomHttpClient client) {
         int status = 0;
         ArrayList<Title> combined = new ArrayList<>();
-        ExecutorService executor = Executors.newScheduledThreadPool(2);
         try {
             Search webtoonSearch = new Search(query, mode, base_webtoon);
             Search comicSearch = new Search(query, mode, base_comic);
-            Future<SearchResult> webtoonFuture = executor.submit(fetchCallable(client, webtoonSearch));
-            Future<SearchResult> comicFuture = executor.submit(fetchCallable(client, comicSearch));
+            CustomHttpClient.RequestGroup requestGroup = client.currentRequestGroup();
 
-            SearchResult webtoonResult = webtoonFuture.get();
+            int webtoonStatus = requestGroup == null
+                    ? webtoonSearch.fetch(client)
+                    : client.runWithRequestGroup(requestGroup, () -> webtoonSearch.fetch(client));
+            SearchResult webtoonResult = new SearchResult(webtoonStatus, webtoonSearch.getResult());
             if(webtoonResult.status == 0)
                 appendUnique(combined, webtoonResult.titles);
             else
                 status = webtoonResult.status;
 
-            SearchResult comicResult = comicFuture.get();
+            int comicStatus = requestGroup == null
+                    ? comicSearch.fetch(client)
+                    : client.runWithRequestGroup(requestGroup, () -> comicSearch.fetch(client));
+            SearchResult comicResult = new SearchResult(comicStatus, comicSearch.getResult());
             if(comicResult.status == 0)
                 appendUnique(combined, comicResult.titles);
             else if(status == 0)
                 status = comicResult.status;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            status = 1;
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
             status = 1;
-        } finally {
-            executor.shutdownNow();
         }
         result.addAll(combined);
         last = true;
         return result.size() > 0 ? 0 : status;
-    }
-
-    private Callable<SearchResult> fetchCallable(CustomHttpClient client, Search search) {
-        CustomHttpClient.RequestGroup requestGroup = client.currentRequestGroup();
-        return () -> {
-            int status;
-            if(requestGroup == null) {
-                status = search.fetch(client);
-            } else {
-                status = client.runWithRequestGroup(requestGroup, () -> search.fetch(client));
-            }
-            return new SearchResult(status, search.getResult());
-        };
     }
 
     private static class SearchResult {

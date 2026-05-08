@@ -2,7 +2,6 @@ package ml.melun.mangaview.activity;
 
 import android.content.Context;
 import android.content.Intent;
-import ml.melun.mangaview.runtime.LifecycleJob;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -31,13 +30,13 @@ import ml.melun.mangaview.R;
 import ml.melun.mangaview.adapter.TitleAdapter;
 import ml.melun.mangaview.adapter.UpdatedAdapter;
 import ml.melun.mangaview.mangaview.Bookmark;
-import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.mangaview.UpdatedList;
 import ml.melun.mangaview.mangaview.UpdatedManga;
 import ml.melun.mangaview.repository.MangaRepository;
+import ml.melun.mangaview.runtime.AppDispatchers;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
@@ -61,7 +60,7 @@ public class TagSearchActivity extends AppCompatActivity {
     SwipyRefreshLayout swipe;
     Bookmark bookmark;
     int baseMode;
-    LifecycleJob<?, ?, ?> loadTask;
+    LoadOperation loadTask;
     boolean destroyed = false;
     Runnable thumbnailPreloadRunnable;
 
@@ -168,7 +167,7 @@ public class TagSearchActivity extends AppCompatActivity {
 
         }else {
             adapter = new TitleAdapter(context);
-            search = new Search(query,mode,baseMode);
+            search = MangaRepository.createSearch(query,mode,baseMode);
             startLoad(new searchManga());
             swipe.setOnRefreshListener(direction -> {
                 if (!search.isLast()) {
@@ -178,29 +177,33 @@ public class TagSearchActivity extends AppCompatActivity {
         }
     }
 
-    @SuppressWarnings("unchecked")
-    private void startLoad(LifecycleJob<?, ?, ?> task) {
+    private void startLoad(LoadOperation task) {
         if(loadTask != null) {
             swipe.setRefreshing(true);
             return;
         }
         loadTask = task;
         swipe.setRefreshing(true);
-        task.start(LifecycleJob.USER_ACTION);
+        task.start();
     }
 
-    private boolean prepareLoadResult(LifecycleJob<?, ?, ?> task) {
+    private boolean prepareLoadResult(LoadOperation task) {
         if(loadTask != task || destroyed || isFinishing())
             return false;
         loadTask = null;
         return true;
     }
 
-    private void clearLoad(LifecycleJob<?, ?, ?> task) {
+    private void clearLoad(LoadOperation task) {
         if(loadTask == task)
             loadTask = null;
         if(swipe != null)
             swipe.setRefreshing(false);
+    }
+
+    private interface LoadOperation {
+        void start();
+        void cancel();
     }
 
     public boolean onOptionsItemSelected(MenuItem item){
@@ -212,17 +215,21 @@ public class TagSearchActivity extends AppCompatActivity {
     }
 
 
-    private class getBookmarks extends LifecycleJob<Void, Void, Integer>{
-        private CustomHttpClient.RequestGroup requestGroup;
+    private class getBookmarks implements LoadOperation {
+        private MangaRepository.Cancellation cancellation;
+        private AppDispatchers.TaskHandle handle;
+        private volatile boolean cancelled;
 
-        @Override
-        protected void onPreExecute() {
-            super.onPreExecute();
+        public void start() {
+            handle = AppDispatchers.submitUserAction(() -> {
+                Integer result = load();
+                AppDispatchers.runOnMain(() -> finish(result));
+            });
         }
 
-        @Override
-        protected void onPostExecute(Integer integer) {
-            super.onPostExecute(integer);
+        private void finish(Integer integer) {
+            if(cancelled)
+                return;
             if(!prepareLoadResult(this))
                 return;
             if(integer != 0){
@@ -266,52 +273,54 @@ public class TagSearchActivity extends AppCompatActivity {
             swipe.setRefreshing(false);
         }
 
-        @Override
-        protected void onCancelled(Integer integer) {
-            super.onCancelled(integer);
-            clearLoad(this);
-        }
-
-        @Override
-        protected Integer doInBackground(Void... voids) {
-            requestGroup = new CustomHttpClient.RequestGroup();
+        private Integer load() {
+            cancellation = MangaRepository.cancellation();
             try {
-                return MangaRepository.fetchBookmark(bookmark, requestGroup);
+                return MangaRepository.fetchBookmark(bookmark, cancellation);
             } catch (Exception e) {
-                if(!isCancelled())
+                if(!cancelled)
                     ml.melun.mangaview.report.CrashReporter.record(e);
                 return 1;
             }
         }
 
-        @Override
-        public boolean cancel(boolean mayInterruptIfRunning) {
-            if(requestGroup != null)
-                requestGroup.cancel();
-            return super.cancel(mayInterruptIfRunning);
+        public void cancel() {
+            cancelled = true;
+            if(cancellation != null)
+                cancellation.cancel();
+            if(handle != null)
+                handle.cancel();
+            clearLoad(this);
         }
     }
 
 
-    private class searchManga extends LifecycleJob<Void, Void, Integer> {
-        private CustomHttpClient.RequestGroup requestGroup;
+    private class searchManga implements LoadOperation {
+        private MangaRepository.Cancellation cancellation;
+        private AppDispatchers.TaskHandle handle;
+        private volatile boolean cancelled;
 
-        protected void onPreExecute(){
-            super.onPreExecute();
+        public void start(){
+            handle = AppDispatchers.submitUserAction(() -> {
+                Integer result = load();
+                AppDispatchers.runOnMain(() -> finish(result));
+            });
         }
-        protected Integer doInBackground(Void... params){
-            requestGroup = new CustomHttpClient.RequestGroup();
+
+        private Integer load(){
+            cancellation = MangaRepository.cancellation();
             try {
-                return MangaRepository.search(search, requestGroup);
+                return MangaRepository.search(search, cancellation);
             } catch (Exception e) {
-                if(!isCancelled())
+                if(!cancelled)
                     ml.melun.mangaview.report.CrashReporter.record(e);
                 return 1;
             }
         }
-        @Override
-        protected void onPostExecute(Integer res){
-            super.onPostExecute(res);
+
+        private void finish(Integer res){
+            if(cancelled)
+                return;
             if(!prepareLoadResult(this))
                 return;
             if(res == null)
@@ -357,40 +366,43 @@ public class TagSearchActivity extends AppCompatActivity {
             swipe.setRefreshing(false);
         }
 
-        @Override
-        protected void onCancelled(Integer res) {
-            super.onCancelled(res);
+        public void cancel() {
+            cancelled = true;
+            if(cancellation != null)
+                cancellation.cancel();
+            if(handle != null)
+                handle.cancel();
             clearLoad(this);
-        }
-
-        @Override
-        public boolean cancel(boolean mayInterruptIfRunning) {
-            if(requestGroup != null)
-                requestGroup.cancel();
-            return super.cancel(mayInterruptIfRunning);
         }
     }
 
-    private class getUpdated extends LifecycleJob<Void, Void, String> {
-        private CustomHttpClient.RequestGroup requestGroup;
+    private class getUpdated implements LoadOperation {
+        private MangaRepository.Cancellation cancellation;
+        private AppDispatchers.TaskHandle handle;
+        private volatile boolean cancelled;
 
-        protected void onPreExecute(){
-            super.onPreExecute();
+        public void start(){
+            handle = AppDispatchers.submitUserAction(() -> {
+                String result = load();
+                AppDispatchers.runOnMain(() -> finish(result));
+            });
         }
-        protected String doInBackground(Void... params){
-            requestGroup = new CustomHttpClient.RequestGroup();
+
+        private String load(){
+            cancellation = MangaRepository.cancellation();
             try {
-                MangaRepository.loadUpdates(updated, requestGroup);
+                MangaRepository.loadUpdates(updated, cancellation);
                 return null;
             } catch (Exception e) {
-                if(!isCancelled())
+                if(!cancelled)
                     ml.melun.mangaview.report.CrashReporter.record(e);
                 return null;
             }
         }
-        @Override
-        protected void onPostExecute(String res){
-            super.onPostExecute(res);
+
+        private void finish(String res){
+            if(cancelled)
+                return;
             if(!prepareLoadResult(this))
                 return;
             ArrayList<UpdatedManga> result = updated.getResult();
@@ -432,17 +444,13 @@ public class TagSearchActivity extends AppCompatActivity {
             swipe.setRefreshing(false);
         }
 
-        @Override
-        protected void onCancelled(String res) {
-            super.onCancelled(res);
+        public void cancel() {
+            cancelled = true;
+            if(cancellation != null)
+                cancellation.cancel();
+            if(handle != null)
+                handle.cancel();
             clearLoad(this);
-        }
-
-        @Override
-        public boolean cancel(boolean mayInterruptIfRunning) {
-            if(requestGroup != null)
-                requestGroup.cancel();
-            return super.cancel(mayInterruptIfRunning);
         }
     }
     void popup(View view, final int position, final Title title, final int m){
@@ -515,7 +523,7 @@ public class TagSearchActivity extends AppCompatActivity {
     protected void onDestroy() {
         destroyed = true;
         if(loadTask != null) {
-            loadTask.cancel(true);
+            loadTask.cancel();
             loadTask = null;
         }
         if(searchResult != null && thumbnailPreloadRunnable != null)

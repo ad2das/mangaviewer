@@ -20,10 +20,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 
 import static ml.melun.mangaview.MainApplication.appContext;
 import static ml.melun.mangaview.MainApplication.p;
@@ -106,23 +102,13 @@ public class MainPageWebtoon {
         if(baseUrl == null || baseUrl.length()==0)
             if(getUrl(client)==null)
                 return;
-        ExecutorService executor = null;
         try {
             dataSet = new ArrayList<>();
             String[][] sections = getSections();
-            executor = Executors.newScheduledThreadPool(Math.min(4, sections.length));
-            List<Future<Ranking<?>>> futures = new ArrayList<>();
-            for(String[] section : sections) {
-                Callable<Ranking<?>> task = () -> parseWolfTitle(client, section[0], section[1], baseMode);
-                futures.add(executor.submit(task));
-            }
-            for(Future<Ranking<?>> future : futures)
-                dataSet.add(future.get());
+            for(String[] section : sections)
+                dataSet.add(parseWolfTitle(client, section[0], section[1], baseMode));
         }catch (Exception e){
             ml.melun.mangaview.report.CrashReporter.record(e);
-        } finally {
-            if(executor != null)
-                executor.shutdownNow();
         }
     }
 

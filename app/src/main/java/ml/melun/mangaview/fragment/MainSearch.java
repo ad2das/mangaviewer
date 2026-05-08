@@ -2,7 +2,7 @@ package ml.melun.mangaview.fragment;
 
 import android.content.Intent;
 import android.content.DialogInterface;
-import ml.melun.mangaview.runtime.LifecycleJob;
+import android.content.Context;
 import android.os.Bundle;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
@@ -42,13 +42,13 @@ import ml.melun.mangaview.Preference;
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.adapter.TitleAdapter;
 import ml.melun.mangaview.activity.AdvSearchActivity;
-import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.repository.OfflineStore;
+import ml.melun.mangaview.runtime.AppDispatchers;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
@@ -286,7 +286,7 @@ public class MainSearch extends Fragment {
                     if(searchTask == null) {
                         activeSearchKey = null;
                         searchTask = new SearchManga(search);
-                        searchTask.start(LifecycleJob.USER_ACTION);
+                        searchTask.start();
                     }
                 } else swipe.setRefreshing(false);
             }
@@ -447,7 +447,7 @@ public class MainSearch extends Fragment {
         ArrayList<Title> data = getLibraryTitles(tab);
         if((tab == 0 || tab == 3) && offlineTitles.size() == 0 && offlineTask == null) {
             offlineTask = new LoadOfflineTitles();
-            offlineTask.start(LifecycleJob.IO);
+            offlineTask.start();
         }
         bindLibraryData(data, libraryEmptyMessage(tab));
     }
@@ -971,7 +971,7 @@ public class MainSearch extends Fragment {
         int tab = getLibraryTabPosition();
         if((tab == 0 || tab == 3) && offlineTitles.size() == 0 && offlineTask == null) {
             offlineTask = new LoadOfflineTitles();
-            offlineTask.start(LifecycleJob.IO);
+            offlineTask.start();
         }
         ArrayList<Title> data = new ArrayList<>();
         for(Title title : getLibraryTitles(tab))
@@ -1037,12 +1037,12 @@ public class MainSearch extends Fragment {
                 noresult.setVisibility(View.GONE);
             updateAdvSearchVisibility();
             int selectedBaseMode = selectedSearchBaseMode();
-            search = new Search(query, searchMode.getSelectedItemPosition(), selectedBaseMode);
+            search = MangaRepository.createSearch(query, searchMode.getSelectedItemPosition(), selectedBaseMode);
             if(searchTask != null)
                 searchTask.cancel(true);
             activeSearchKey = key;
             searchTask = new SearchManga(search);
-            searchTask.start(LifecycleJob.USER_ACTION);
+            searchTask.start();
         }
     }
 
@@ -1158,15 +1158,26 @@ public class MainSearch extends Fragment {
         super.onDestroyView();
     }
 
-    private class LoadOfflineTitles extends LifecycleJob<Void, Void, ArrayList<Title>> {
-        @Override
-        protected ArrayList<Title> doInBackground(Void... voids) {
-            return OfflineStore.loadTitles(getContext());
+    private class LoadOfflineTitles {
+        private final Context appContext;
+        private AppDispatchers.TaskHandle handle;
+        private volatile boolean cancelled = false;
+
+        LoadOfflineTitles() {
+            Context context = getContext();
+            appContext = context == null ? null : context.getApplicationContext();
         }
 
-        @Override
-        protected void onPostExecute(ArrayList<Title> titles) {
-            super.onPostExecute(titles);
+        void start() {
+            handle = AppDispatchers.submitIo(() -> {
+                ArrayList<Title> titles = OfflineStore.loadTitles(appContext);
+                AppDispatchers.runOnMain(() -> finish(titles));
+            });
+        }
+
+        private void finish(ArrayList<Title> titles) {
+            if(cancelled)
+                return;
             if(offlineTask == this)
                 offlineTask = null;
             offlineTitles = titles == null ? new ArrayList<>() : titles;
@@ -1178,43 +1189,48 @@ public class MainSearch extends Fragment {
             }
         }
 
-        @Override
-        protected void onCancelled(ArrayList<Title> titles) {
-            super.onCancelled(titles);
+        boolean cancel(boolean mayInterruptIfRunning) {
+            cancelled = true;
             if(offlineTask == this)
                 offlineTask = null;
+            return handle == null || handle.cancel();
         }
     }
 
-    private class SearchManga extends LifecycleJob<Void, Void, Integer>{
+    private class SearchManga {
         private final Search targetSearch;
-        private CustomHttpClient.RequestGroup requestGroup;
+        private MangaRepository.Cancellation cancellation;
+        private AppDispatchers.TaskHandle handle;
+        private volatile boolean cancelled = false;
 
         SearchManga(Search targetSearch) {
             this.targetSearch = targetSearch;
         }
 
-        protected void onPreExecute(){
-            super.onPreExecute();
+        void start() {
+            handle = AppDispatchers.submitUserAction(() -> {
+                Integer result = load();
+                AppDispatchers.runOnMain(() -> finish(result));
+            });
         }
-        protected Integer doInBackground(Void... params){
-            requestGroup = new CustomHttpClient.RequestGroup();
+
+        private Integer load() {
+            cancellation = MangaRepository.cancellation();
             try {
-                return MangaRepository.search(targetSearch, requestGroup);
+                return MangaRepository.search(targetSearch, cancellation);
             } catch (Exception e) {
-                if(!isCancelled())
+                if(!cancelled)
                     ml.melun.mangaview.report.CrashReporter.record(e);
                 return 1;
             }
         }
-        @Override
-        protected void onPostExecute(Integer res){
-            super.onPostExecute(res);
+
+        private void finish(Integer res) {
             if(searchTask == this) {
                 searchTask = null;
                 activeSearchKey = null;
             }
-            if(isCancelled() || targetSearch != search || getContext() == null)
+            if(cancelled || targetSearch != search || getContext() == null)
                 return;
             if(res == null)
                 res = 1;
@@ -1240,22 +1256,17 @@ public class MainSearch extends Fragment {
             swipe.setRefreshing(false);
         }
 
-        @Override
-        protected void onCancelled(Integer res) {
-            super.onCancelled(res);
+        boolean cancel(boolean mayInterruptIfRunning) {
+            cancelled = true;
+            if(cancellation != null)
+                cancellation.cancel();
             if(searchTask == this) {
                 searchTask = null;
                 activeSearchKey = null;
                 if(swipe != null)
                     swipe.setRefreshing(false);
             }
-        }
-
-        @Override
-        public boolean cancel(boolean mayInterruptIfRunning) {
-            if(requestGroup != null)
-                requestGroup.cancel();
-            return super.cancel(mayInterruptIfRunning);
+            return handle == null || handle.cancel();
         }
     }
 }

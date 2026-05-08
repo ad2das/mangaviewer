@@ -17,12 +17,14 @@ import com.google.gson.reflect.TypeToken;
 import org.json.JSONObject;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
 import ml.melun.mangaview.mangaview.MTitle;
+import ml.melun.mangaview.repository.PreferenceStore;
 import okhttp3.Call;
 import okhttp3.Callback;
 import okhttp3.MediaType;
@@ -233,13 +235,13 @@ public class FirebaseSyncManager {
             return;
         preference.runWithoutSync(() -> {
             if(shouldMerge(remote, "recent", "recentJson", "[]")) {
-                List<MTitle> recents = gson.fromJson(readString(remote, "recentJson", "[]"), new TypeToken<List<MTitle>>(){}.getType());
-                preference.setRecents(recents);
+                List<MTitle> recents = readTitleList(remote, "recentJson");
+                PreferenceStore.setRecents(recents);
                 setLocalUpdatedAt("recent", remoteTime(remote, "recentUpdatedAt"));
             }
             if(shouldMerge(remote, "favorite", "favoriteJson", "[]")) {
-                List<MTitle> favorites = gson.fromJson(readString(remote, "favoriteJson", "[]"), new TypeToken<List<MTitle>>(){}.getType());
-                preference.setFavorites(favorites);
+                List<MTitle> favorites = readTitleList(remote, "favoriteJson");
+                PreferenceStore.setFavorites(favorites);
                 setLocalUpdatedAt("favorite", remoteTime(remote, "favoriteUpdatedAt"));
             }
             if(shouldMerge(remote, "bookmark", "bookmarkJson", "{}")) {
@@ -258,6 +260,22 @@ public class FirebaseSyncManager {
             }
             preference.backfillRecentProgress(MainApplication.getHttpClient(), 30);
         });
+    }
+
+    private List<MTitle> readTitleList(Map<String, Object> remote, String key) {
+        try {
+            List<MTitle> parsed = gson.fromJson(readString(remote, key, "[]"), new TypeToken<List<MTitle>>(){}.getType());
+            if(parsed == null)
+                return new ArrayList<>();
+            ArrayList<MTitle> sanitized = new ArrayList<>();
+            for(MTitle title : parsed)
+                if(title != null && title.getName() != null)
+                    sanitized.add(title);
+            return sanitized;
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return new ArrayList<>();
+        }
     }
 
     private JSONObject jsonObject(String source) {

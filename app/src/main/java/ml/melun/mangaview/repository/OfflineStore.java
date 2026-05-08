@@ -15,6 +15,8 @@ import java.util.List;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.repository.room.MangaRoomStore;
+import ml.melun.mangaview.runtime.AppDispatchers;
 
 import static ml.melun.mangaview.Utils.deleteRecursive;
 import static ml.melun.mangaview.Utils.documentFileFromUri;
@@ -82,6 +84,7 @@ public final class OfflineStore {
                 if(child.isDirectory())
                     titles.add(readOfflineTitle(context, child));
             }
+            mirrorOfflineIndex(context, titles);
             return titles;
         }
         File home = new File(homeDir);
@@ -92,7 +95,15 @@ public final class OfflineStore {
             if(child.isDirectory())
                 titles.add(readOfflineTitle(child));
         }
+        mirrorOfflineIndex(context, titles);
         return titles;
+    }
+
+    private static void mirrorOfflineIndex(Context context, ArrayList<Title> titles) {
+        Context appContext = context == null ? null : context.getApplicationContext();
+        if(appContext == null)
+            return;
+        AppDispatchers.submitIo(() -> MangaRoomStore.mirrorOfflineTitles(appContext, titles));
     }
 
     public static Manga resolveResumeManga(Context context, Title title, int bookmark) {

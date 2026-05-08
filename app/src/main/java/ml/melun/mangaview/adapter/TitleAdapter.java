@@ -90,8 +90,18 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
 
             @Override
             protected void publishResults(CharSequence charSequence, FilterResults filterResults) {
+                int oldSize = getItemCount();
                 mDataFiltered = (ArrayList<Title>) filterResults.values;
-                notifyItemRangeChanged(0, getItemCount());
+                int newSize = getItemCount();
+                if(oldSize == newSize) {
+                    if(newSize > 0)
+                        notifyItemRangeChanged(0, newSize);
+                } else {
+                    if(oldSize > 0)
+                        notifyItemRangeRemoved(0, oldSize);
+                    if(newSize > 0)
+                        notifyItemRangeInserted(0, newSize);
+                }
             }
         };
     }
@@ -224,9 +234,11 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     }
 
     public void clearData(){
+        int oldSize = getItemCount();
         mData.clear();
         mDataFiltered.clear();
-        notifyItemRangeChanged(0, getItemCount());
+        if(oldSize > 0)
+            notifyItemRangeRemoved(0, oldSize);
     }
 
 

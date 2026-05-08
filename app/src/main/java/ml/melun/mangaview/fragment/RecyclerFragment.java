@@ -4,7 +4,6 @@ import android.app.SearchManager;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
-import ml.melun.mangaview.runtime.LifecycleJob;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.Menu;
@@ -37,6 +36,7 @@ import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.repository.OfflineStore;
+import ml.melun.mangaview.runtime.AppDispatchers;
 
 import static android.app.Activity.RESULT_OK;
 import static ml.melun.mangaview.MainApplication.p;
@@ -55,6 +55,7 @@ public class RecyclerFragment extends Fragment {
     boolean loaded = false;
     SearchView searchView;
     Preference.LocalChangeListener localChangeListener;
+    OfflineReader offlineReader;
 
 
     @Override
@@ -223,6 +224,10 @@ public class RecyclerFragment extends Fragment {
             p.removeLocalChangeListener(localChangeListener);
             localChangeListener = null;
         }
+        if(offlineReader != null) {
+            offlineReader.cancel();
+            offlineReader = null;
+        }
         super.onDestroyView();
         mode = -1;
         loaded = false;
@@ -300,7 +305,10 @@ public class RecyclerFragment extends Fragment {
             titleAdapter.setResume(false);
             titleAdapter.setForceThumbnail(true);
             titleAdapter.clearData();
-            new OfflineReader().start(LifecycleJob.IO);
+            if(offlineReader != null)
+                offlineReader.cancel();
+            offlineReader = new OfflineReader(getContext());
+            offlineReader.start();
         }
         updateEmptyState();
     }
@@ -329,18 +337,34 @@ public class RecyclerFragment extends Fragment {
     }
 
 
-    public class OfflineReader extends LifecycleJob<Void,Void,Integer>{
-        List<Title> titles;
-        @Override
-        protected void onPostExecute(Integer integer) {
-            super.onPostExecute(integer);
+    public class OfflineReader {
+        final Context appContext;
+        AppDispatchers.TaskHandle handle;
+        volatile boolean cancelled;
+
+        OfflineReader(Context context) {
+            appContext = context == null ? null : context.getApplicationContext();
+        }
+
+        void start() {
+            handle = AppDispatchers.submitIo(() -> {
+                List<Title> titles = OfflineStore.loadTitles(appContext);
+                AppDispatchers.runOnMain(() -> finish(titles));
+            });
+        }
+
+        void finish(List<Title> titles) {
+            if(cancelled || offlineReader != this)
+                return;
+            offlineReader = null;
             titleAdapter.addData(titles);
             updateEmptyState();
         }
-        @Override
-        protected Integer doInBackground(Void... voids) {
-            titles = OfflineStore.loadTitles(getContext());
-            return null;
+
+        void cancel() {
+            cancelled = true;
+            if(handle != null)
+                handle.cancel();
         }
     }
 

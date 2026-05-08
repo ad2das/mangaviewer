@@ -3,30 +3,37 @@ package ml.melun.mangaview.runtime;
 import android.os.Handler;
 import android.os.Looper;
 
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import ml.melun.mangaview.report.CrashReporter;
 
 public final class AppDispatchers {
-    private static final ExecutorService IO = Executors.newCachedThreadPool();
-    private static final ExecutorService USER_ACTION = Executors.newCachedThreadPool();
-    private static final ExecutorService IMAGE_WARMUP = Executors.newCachedThreadPool();
+    private static final ThreadPoolExecutor IO = boundedPool("manga-io", 2, 10, 128);
+    private static final ThreadPoolExecutor USER_ACTION = boundedPool("manga-action", 1, 4, 64);
+    private static final ThreadPoolExecutor IMAGE_WARMUP = boundedPool("manga-image", 1, 3, 48);
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     private AppDispatchers() {
     }
 
-    public static ExecutorService io() {
+    public static Executor io() {
         return IO;
     }
 
-    public static ExecutorService userAction() {
+    public static Executor userAction() {
         return USER_ACTION;
     }
 
-    public static ExecutorService imageWarmup() {
+    public static Executor imageWarmup() {
         return IMAGE_WARMUP;
     }
 
@@ -42,12 +49,20 @@ public final class AppDispatchers {
         USER_ACTION.execute(safe(runnable));
     }
 
-    public static Future<?> submitImageWarmup(Runnable runnable) {
-        return IMAGE_WARMUP.submit(safe(runnable));
+    public static TaskHandle submitIo(Runnable runnable) {
+        return new TaskHandle(IO.submit(safe(runnable)));
     }
 
-    public static Future<?> submitUserAction(Runnable runnable) {
-        return USER_ACTION.submit(safe(runnable));
+    public static TaskHandle submitUserAction(Runnable runnable) {
+        return new TaskHandle(USER_ACTION.submit(safe(runnable)));
+    }
+
+    public static TaskHandle submitImageWarmup(Runnable runnable) {
+        return new TaskHandle(IMAGE_WARMUP.submit(safe(runnable)));
+    }
+
+    public static <T> CompletionService<T> ioCompletionService() {
+        return new ExecutorCompletionService<>(IO);
     }
 
     public static void runOnMain(Runnable runnable) {
@@ -55,6 +70,19 @@ public final class AppDispatchers {
             runnable.run();
         else
             MAIN.post(runnable);
+    }
+
+    public static <T> Callable<T> safeCallable(Callable<T> callable) {
+        return () -> {
+            try {
+                return callable.call();
+            } catch (Throwable throwable) {
+                CrashReporter.record(throwable);
+                if(throwable instanceof Exception)
+                    throw (Exception) throwable;
+                throw new RuntimeException(throwable);
+            }
+        };
     }
 
     private static Runnable safe(Runnable runnable) {
@@ -65,5 +93,44 @@ public final class AppDispatchers {
                 CrashReporter.record(throwable);
             }
         };
+    }
+
+    private static ThreadPoolExecutor boundedPool(String name, int core, int max, int queueSize) {
+        BlockingQueue<Runnable> queue = new LinkedBlockingQueue<>(queueSize);
+        ThreadPoolExecutor executor = new java.util.concurrent.ThreadPoolExecutor(
+                core,
+                max,
+                30L,
+                TimeUnit.SECONDS,
+                queue,
+                namedThreadFactory(name),
+                new java.util.concurrent.ThreadPoolExecutor.CallerRunsPolicy());
+        executor.allowCoreThreadTimeOut(true);
+        return executor;
+    }
+
+    private static ThreadFactory namedThreadFactory(String name) {
+        final int[] count = {0};
+        return runnable -> {
+            Thread thread = new java.lang.Thread(runnable, name + '-' + (++count[0]));
+            thread.setDaemon(true);
+            return thread;
+        };
+    }
+
+    public static final class TaskHandle {
+        private final Future future;
+
+        private TaskHandle(Future future) {
+            this.future = future;
+        }
+
+        public boolean cancel() {
+            return future == null || future.cancel(true);
+        }
+
+        public boolean isDone() {
+            return future == null || future.isDone();
+        }
     }
 }

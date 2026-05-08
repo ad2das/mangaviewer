@@ -39,9 +39,29 @@ public final class MangaRepository {
     private MangaRepository() {
     }
 
+    public static Cancellation cancellation() {
+        return new Cancellation();
+    }
+
+    public static Search createSearch(String query, int mode, int baseMode) {
+        return new Search(query, mode, baseMode);
+    }
+
+    public static MainPageWebtoon createWebtoonParser(int baseMode) {
+        return new MainPageWebtoon(baseMode);
+    }
+
+    public static MainPage loadComicHome(Cancellation cancellation) throws Exception {
+        return loadComicHome(group(cancellation));
+    }
+
     public static MainPage loadComicHome(CustomHttpClient.RequestGroup requestGroup) throws Exception {
         return cached("home:comic", HOME_TTL_MS,
                 () -> getHttpClient().runWithRequestGroup(requestGroup, () -> new MainPage(getHttpClient())));
+    }
+
+    public static int search(Search search, Cancellation cancellation) throws Exception {
+        return search(search, group(cancellation));
     }
 
     public static int search(Search search, CustomHttpClient.RequestGroup requestGroup) throws Exception {
@@ -50,10 +70,18 @@ public final class MangaRepository {
         return getHttpClient().runWithRequestGroup(requestGroup, () -> search.fetch(getHttpClient()));
     }
 
+    public static int fetchBookmark(Bookmark bookmark, Cancellation cancellation) throws Exception {
+        return fetchBookmark(bookmark, group(cancellation));
+    }
+
     public static int fetchBookmark(Bookmark bookmark, CustomHttpClient.RequestGroup requestGroup) throws Exception {
         if(requestGroup == null)
             return bookmark.fetch(getHttpClient());
         return getHttpClient().runWithRequestGroup(requestGroup, () -> bookmark.fetch(getHttpClient()));
+    }
+
+    public static ArrayList<UpdatedManga> loadUpdates(UpdatedList updated, Cancellation cancellation) throws Exception {
+        return loadUpdates(updated, group(cancellation));
     }
 
     public static ArrayList<UpdatedManga> loadUpdates(UpdatedList updated, CustomHttpClient.RequestGroup requestGroup) throws Exception {
@@ -76,10 +104,19 @@ public final class MangaRepository {
         return manga.fetch(getHttpClient());
     }
 
+    public static int fetchViewerInitial(Manga manga, Cancellation cancellation) throws Exception {
+        return fetchViewerInitial(manga, group(cancellation));
+    }
+
     public static int fetchViewerInitial(Manga manga, CustomHttpClient.RequestGroup requestGroup) throws Exception {
         if(requestGroup == null)
             return manga.fetchForViewerInitial(getHttpClient());
         return getHttpClient().runWithRequestGroup(requestGroup, () -> manga.fetchForViewerInitial(getHttpClient()));
+    }
+
+    public static Ranking<Title> loadWebtoonSection(MainPageWebtoon parser, String title, String path, int baseMode,
+                                                    Cancellation cancellation) throws Exception {
+        return loadWebtoonSection(parser, title, path, baseMode, group(cancellation));
     }
 
     public static Ranking<Title> loadWebtoonSection(MainPageWebtoon parser, String title, String path, int baseMode,
@@ -103,6 +140,25 @@ public final class MangaRepository {
 
     public static String resolveUrl(String path) {
         return getHttpClient().getUrl(path);
+    }
+
+    private static CustomHttpClient.RequestGroup group(Cancellation cancellation) {
+        return cancellation == null ? null : cancellation.group;
+    }
+
+    public static final class Cancellation {
+        private final CustomHttpClient.RequestGroup group = new CustomHttpClient.RequestGroup();
+
+        private Cancellation() {
+        }
+
+        public void cancel() {
+            group.cancel();
+        }
+
+        public boolean isCancelled() {
+            return group.isCancelled();
+        }
     }
 
     public static UrlUpdateResult updateUrl(String fetchUrl) {

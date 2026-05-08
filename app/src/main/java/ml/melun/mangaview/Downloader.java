@@ -39,11 +39,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Callable;
 import java.util.concurrent.CompletionService;
-import java.util.concurrent.ExecutorCompletionService;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 import ml.melun.mangaview.activity.MainActivity;
@@ -51,6 +47,7 @@ import ml.melun.mangaview.mangaview.Decoder;
 import ml.melun.mangaview.mangaview.DownloadTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.repository.DownloadRepository;
+import ml.melun.mangaview.runtime.AppDispatchers;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
@@ -520,13 +517,13 @@ public class Downloader extends Worker {
         if(urls == null || urls.size() == 0)
             return 0;
         int workers = Math.max(1, Math.min(PARALLEL_IMAGE_DOWNLOADS, urls.size()));
-        ExecutorService executor = Executors.newScheduledThreadPool(workers);
-        CompletionService<Boolean> completion = new ExecutorCompletionService<>(executor);
+        CompletionService<Boolean> completion = AppDispatchers.ioCompletionService();
+        ArrayList<Future> running = new ArrayList<>();
         int submitted = 0;
         try {
             for(int i = 0; i < urls.size(); i++) {
                 final int index = i;
-                completion.submit((Callable<Boolean>) () -> {
+                running.add(completion.submit(AppDispatchers.safeCallable(() -> {
                     int tries = 0;
                     while(tries < 5) {
                         if(Thread.currentThread().isInterrupted())
@@ -536,17 +533,17 @@ public class Downloader extends Worker {
                         tries++;
                     }
                     return false;
-                });
+                })));
                 submitted++;
             }
             int downloadedImages = 0;
             for(int completed = 0; completed < submitted; completed++) {
                 if(Thread.currentThread().isInterrupted() || isStopped())
                     break;
-                Future<Boolean> future = completion.take();
+                Future future = completion.take();
                 boolean imageSaved = false;
                 try {
-                    imageSaved = future.get();
+                    imageSaved = Boolean.TRUE.equals(future.get());
                 } catch (Exception e) {
                     ml.melun.mangaview.report.CrashReporter.record(e);
                 }
@@ -560,7 +557,9 @@ public class Downloader extends Worker {
             Thread.currentThread().interrupt();
             return 0;
         } finally {
-            executor.shutdownNow();
+            for(Future future : running)
+                if(future != null && !future.isDone())
+                    future.cancel(true);
         }
     }
 

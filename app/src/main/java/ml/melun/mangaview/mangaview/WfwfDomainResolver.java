@@ -6,11 +6,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorCompletionService;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -25,7 +20,6 @@ public class WfwfDomainResolver {
     private static final int DEFAULT_NUMBER = 449;
     private static final int FORWARD_SCAN_LIMIT = 300;
     private static final int BACKWARD_SCAN_LIMIT = 5;
-    private static final int PARALLEL_PROBES = 10;
     private static final long RESOLVE_TIMEOUT_MS = 15_000L;
 
     public static String resolve(OkHttpClient client, String currentUrl, Map<String, String> headers) {
@@ -90,59 +84,16 @@ public class WfwfDomainResolver {
     }
 
     private static String findAliveCandidate(OkHttpClient client, List<Integer> candidates, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup, long deadlineMs) {
-        ExecutorService executor = Executors.newScheduledThreadPool(PARALLEL_PROBES);
-        try {
-            for(int start = 0; start < candidates.size(); start += PARALLEL_PROBES) {
-                if(requestGroup != null && requestGroup.isCancelled())
-                    return null;
-                long remainingMs = deadlineMs - System.currentTimeMillis();
-                if(remainingMs <= 0)
-                    return null;
-                int end = Math.min(start + PARALLEL_PROBES, candidates.size());
-                ArrayList<Future<String>> futures = new ArrayList<>();
-                ExecutorCompletionService<String> completionService = new ExecutorCompletionService<>(executor);
-                for(int i = start; i < end; i++) {
-                    final int number = candidates.get(i);
-                    futures.add(completionService.submit(new Callable<String>() {
-                        @Override
-                        public String call() {
-                            String root = "https://wfwf" + number + ".com";
-                            return isAlive(client, root, headers, requestGroup) ? root : null;
-                        }
-                    }));
-                }
-
-                for(int i = start; i < end; i++) {
-                    try {
-                        long waitMs = deadlineMs - System.currentTimeMillis();
-                        if(waitMs <= 0) {
-                            cancelAll(futures);
-                            return null;
-                        }
-                        Future<String> future = completionService.poll(waitMs, TimeUnit.MILLISECONDS);
-                        if(future == null) {
-                            cancelAll(futures);
-                            return null;
-                        }
-                        String resolved = future.get();
-                        if(resolved != null) {
-                            cancelAll(futures);
-                            return resolved;
-                        }
-                    } catch (Exception ignored) {
-                    }
-                }
-            }
-        } catch (Exception ignored) {
-        } finally {
-            executor.shutdownNow();
+        for(Integer number : candidates) {
+            if(requestGroup != null && requestGroup.isCancelled())
+                return null;
+            if(deadlineMs - System.currentTimeMillis() <= 0)
+                return null;
+            String root = "https://wfwf" + number + ".com";
+            if(isAlive(client, root, headers, requestGroup))
+                return root;
         }
         return null;
-    }
-
-    private static void cancelAll(List<? extends Future<?>> futures) {
-        for(Future<?> future : futures)
-            future.cancel(true);
     }
 
     private static void add(List<Integer> numbers, Set<Integer> seen, int number) {

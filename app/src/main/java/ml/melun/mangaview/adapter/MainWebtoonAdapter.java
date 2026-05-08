@@ -5,7 +5,6 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
-import ml.melun.mangaview.runtime.LifecycleJob;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.LayoutInflater;
@@ -34,19 +33,18 @@ import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.ExecutorCompletionService;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.MTitle;
-import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MainPageWebtoon;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Ranking;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.repository.CacheFileStore;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
@@ -95,7 +93,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private static final String HOME_CACHE_KEY_PREFIX = "homeSnapshotV1_";
     private static final int HOME_CACHE_MAX_SECTIONS = 6;
     private static final int HOME_CACHE_MAX_TITLES_PER_SECTION = 10;
-    private static final ExecutorService ROW_DIFF_EXECUTOR = LifecycleJob.USER_ACTION;
+    private static final Executor ROW_DIFF_EXECUTOR = AppDispatchers.userAction();
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private int preloadCount = 0;
     private int activeHomeTab = 0;
@@ -124,7 +122,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(fetcher != null)
             fetcher.cancel(true);
         fetcher = new Fetcher();
-        fetcher.start(LifecycleJob.IO);
+        fetcher.start();
     }
 
     public void showInitialRows() {
@@ -156,8 +154,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     public void setLoading(){
         dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
-        rows = new ArrayList<>();
-        notifyItemRangeChanged(0, getItemCount());
+        updateRows(new ArrayList<>());
     }
 
     public void setListener(MainAdapter.onItemClick listener){
@@ -611,7 +608,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     private List<Ranking<?>> loadHomeSnapshot() {
         try {
-            String json = p.getSharedPref().getString(homeCacheKey(), "");
+            String json = CacheFileStore.read(context, homeCacheKey());
+            if(json == null || json.length() == 0) {
+                json = p.getSharedPref().getString(homeCacheKey(), "");
+                if(json != null && json.length() > 0)
+                    CacheFileStore.write(context, homeCacheKey(), json);
+            }
             if(json == null || json.length() == 0)
                 return null;
             HomeSnapshot snapshot = new Gson().fromJson(json, new TypeToken<HomeSnapshot>(){}.getType());
@@ -673,9 +675,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
             if(snapshot.sections.size() == 0)
                 return;
-            p.getSharedPref().edit()
-                    .putString(homeCacheKey(), new Gson().toJson(snapshot))
-                    .apply();
+            CacheFileStore.write(context, homeCacheKey(), new Gson().toJson(snapshot));
         } catch (Exception ignored) {
         }
     }
@@ -1027,8 +1027,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             int newSize = this.items.size();
             if(oldSize == newSize)
                 notifyItemRangeChanged(0, newSize);
-            else
-                notifyItemRangeChanged(0, getItemCount());
+            else {
+                if(oldSize > 0)
+                    notifyItemRangeRemoved(0, oldSize);
+                if(newSize > 0)
+                    notifyItemRangeInserted(0, newSize);
+            }
         }
 
         @NonNull
@@ -1427,7 +1431,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 if(newSize > 0)
                     notifyItemRangeChanged(0, newSize);
             } else {
-                notifyItemRangeChanged(0, getItemCount());
+                if(oldSize > 0)
+                    notifyItemRangeRemoved(0, oldSize);
+                if(newSize > 0)
+                    notifyItemRangeInserted(0, newSize);
             }
         }
 
@@ -1707,14 +1714,22 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
     }
 
-    private class Fetcher extends LifecycleJob<Void, SectionBatch, Boolean> {
-        private CustomHttpClient.RequestGroup requestGroup;
+    private class Fetcher {
+        private MangaRepository.Cancellation cancellation;
         private List<Ranking<?>> finalDataSet;
         private boolean keepExistingRowsDuringFetch;
+        private AppDispatchers.TaskHandle handle;
+        private volatile boolean cancelled = false;
 
-        @Override
-        protected void onPreExecute() {
-            super.onPreExecute();
+        void start() {
+            prepare();
+            handle = AppDispatchers.submitIo(() -> {
+                Boolean result = fetchSections();
+                AppDispatchers.runOnMain(() -> finish(result));
+            });
+        }
+
+        private void prepare() {
             boolean hadInitialRows = rows != null && rows.size() > 0 && hasDisplayContent();
             keepExistingRowsDuringFetch = hadInitialRows;
             dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
@@ -1732,35 +1747,30 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
         }
 
-        @Override
-        protected Boolean doInBackground(Void... params) {
-            requestGroup = new CustomHttpClient.RequestGroup();
-            return fetchSections(requestGroup);
-        }
-
-        private Boolean fetchSections(CustomHttpClient.RequestGroup requestGroup) {
+        private Boolean fetchSections() {
+            cancellation = MangaRepository.cancellation();
             String[][] sections = MainPageWebtoon.getSections(baseMode);
-            ExecutorService executor = Executors.newScheduledThreadPool(Math.min(4, sections.length));
-            ExecutorCompletionService<SectionResult> completion = new ExecutorCompletionService<>(executor);
-            MainPageWebtoon parser = new MainPageWebtoon(baseMode);
+            CompletionService<SectionResult> completion = AppDispatchers.ioCompletionService();
+            MainPageWebtoon parser = MangaRepository.createWebtoonParser(baseMode);
             List<Ranking<?>> fetchedSections = MainPageWebtoon.getBlankDataSet(baseMode);
             int submitted = 0;
             int loaded = 0;
             List<SectionResult> pendingResults = new ArrayList<>();
+            List<Future> running = new ArrayList<>();
             boolean firstScreenPublished = false;
 
             try {
                 for(int i = 0; i < sections.length; i++) {
                     final int index = i;
                     final String[] section = sections[i];
-                    completion.submit(() -> new SectionResult(index,
-                            MangaRepository.loadWebtoonSection(parser, section[0], section[1], baseMode, requestGroup)));
+                    running.add(completion.submit(AppDispatchers.safeCallable(() -> new SectionResult(index,
+                            MangaRepository.loadWebtoonSection(parser, section[0], section[1], baseMode, cancellation)))));
                     submitted++;
                 }
 
-                for(int i = 0; i < submitted && !isCancelled(); i++) {
-                    Future<SectionResult> future = completion.take();
-                    SectionResult result = future.get();
+                for(int i = 0; i < submitted && !cancelled; i++) {
+                    Future future = completion.take();
+                    SectionResult result = (SectionResult) future.get();
                     if(result != null && result.ranking != null) {
                         if(result.ranking.size() > 0)
                             loaded++;
@@ -1773,14 +1783,14 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                         pendingResults.add(result);
                         int batchSize = firstScreenPublished ? SECTION_BATCH_SIZE : FIRST_SCREEN_BATCH_SIZE;
                         if(pendingResults.size() >= batchSize) {
-                            publishProgress(new SectionBatch(new ArrayList<>(pendingResults)));
+                            postProgress(new SectionBatch(new ArrayList<>(pendingResults)));
                             pendingResults.clear();
                             firstScreenPublished = true;
                         }
                     }
                 }
                 if(pendingResults.size() > 0)
-                    publishProgress(new SectionBatch(new ArrayList<>(pendingResults)));
+                    postProgress(new SectionBatch(new ArrayList<>(pendingResults)));
                 if(baseMode == base_webtoon)
                     MainPageWebtoon.enhanceWebtoonClassification(fetchedSections);
                 else if(baseMode == base_comic)
@@ -1792,17 +1802,20 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 if(!isCancelled())
                     ml.melun.mangaview.report.CrashReporter.record(e);
             } finally {
-                executor.shutdownNow();
+                for(Future future : running)
+                    if(future != null && !future.isDone())
+                        future.cancel(true);
             }
             return loaded > 0;
         }
 
-        @Override
-        protected void onProgressUpdate(SectionBatch... values) {
-            super.onProgressUpdate(values);
-            if(values == null || values.length == 0 || values[0] == null || isCancelled())
+        private void postProgress(SectionBatch batch) {
+            AppDispatchers.runOnMain(() -> applyProgress(batch));
+        }
+
+        private void applyProgress(SectionBatch batch) {
+            if(batch == null || cancelled)
                 return;
-            SectionBatch batch = values[0];
             if(batch.results == null || batch.results.size() == 0)
                 return;
             if(dataSet == null)
@@ -1838,9 +1851,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             scheduleThumbnailPreload(loadedSections);
         }
 
-        @Override
-        protected void onPostExecute(Boolean hasAnyResult) {
-            super.onPostExecute(hasAnyResult);
+        private void finish(Boolean hasAnyResult) {
+            if(cancelled)
+                return;
             if(fetcher == this)
                 fetcher = null;
             if(!hasAnyResult) {
@@ -1860,18 +1873,17 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             scheduleContinueProgressBackfill();
         }
 
-        @Override
-        protected void onCancelled(Boolean result) {
-            super.onCancelled(result);
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            cancelled = true;
+            if(cancellation != null)
+                cancellation.cancel();
             if(fetcher == this)
                 fetcher = null;
+            return handle == null || handle.cancel();
         }
 
-        @Override
-        public boolean cancel(boolean mayInterruptIfRunning) {
-            if(requestGroup != null)
-                requestGroup.cancel();
-            return super.cancel(mayInterruptIfRunning);
+        private boolean isCancelled() {
+            return cancelled;
         }
     }
 

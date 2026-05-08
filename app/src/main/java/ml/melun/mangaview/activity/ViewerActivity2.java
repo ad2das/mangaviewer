@@ -11,7 +11,6 @@ import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.Drawable;
-import ml.melun.mangaview.runtime.LifecycleJob;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -59,6 +58,7 @@ import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.model.PageItem;
 import ml.melun.mangaview.repository.MangaRepository;
+import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.ui.CustomSpinner;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -108,6 +108,7 @@ public class ViewerActivity2 extends AppCompatActivity {
     boolean dirty = false;
     TextView info;
     int imageLoadGeneration = 0;
+    loadImages activeImageLoad;
 
     @Override
     protected void onResume() {
@@ -256,8 +257,7 @@ public class ViewerActivity2 extends AppCompatActivity {
         }else{
             //if online
             //fetch imgs
-            loadImages l = new loadImages();
-            l.start(LifecycleJob.IO);
+            refresh();
         }
 
         nextPageBtn.setOnClickListener(v -> {
@@ -781,29 +781,39 @@ public class ViewerActivity2 extends AppCompatActivity {
         return super.dispatchKeyEvent(event);
     }
 
-    private class loadImages extends LifecycleJob<Void,String,Integer> {
-        protected void onProgressUpdate(String... values) {
-            pd.setMessage(values[0]);
+    private class loadImages {
+        AppDispatchers.TaskHandle handle;
+        volatile boolean cancelled;
+
+        private void postProgress(String value) {
+            AppDispatchers.runOnMain(() -> {
+                if(!cancelled && pd != null)
+                    pd.setMessage(value);
+            });
         }
-        protected void onPreExecute() {
-            super.onPreExecute();
+
+        void start() {
             if(dark) pd = new ProgressDialog(context, R.style.darkDialog);
             else pd = new ProgressDialog(context);
             pd.setMessage("로드중");
             pd.setCancelable(false);
             pd.setOnKeyListener((dialog, keyCode, event) -> {
                 if(keyCode == KeyEvent.KEYCODE_BACK){
-                    loadImages.super.cancel(true);
+                    cancel();
                     pd.dismiss();
                     finish();
                 }
                 return true;
             });
             pd.show();
+            handle = AppDispatchers.submitIo(() -> {
+                Integer result = load();
+                AppDispatchers.runOnMain(() -> finishLoad(result));
+            });
         }
 
-        protected Integer doInBackground(Void... params) {
-            manga.setListener(msg -> publishProgress(msg));
+        private Integer load() {
+            manga.setListener(this::postProgress);
             int res = ensureEpisodeListLoaded(manga);
             if(res == LOAD_CAPTCHA)
                 return res;
@@ -813,9 +823,11 @@ public class ViewerActivity2 extends AppCompatActivity {
             return res;
         }
 
-        @Override
-        protected void onPostExecute(Integer res) {
-            super.onPostExecute(res);
+        private void finishLoad(Integer res) {
+            if(cancelled)
+                return;
+            if(activeImageLoad == this)
+                activeImageLoad = null;
 
             if(res == LOAD_CAPTCHA) {
                 //캡차 처리 팝업
@@ -845,6 +857,16 @@ public class ViewerActivity2 extends AppCompatActivity {
             if (pd.isShowing()) {
                 pd.dismiss();
             }
+        }
+
+        void cancel() {
+            cancelled = true;
+            if(handle != null)
+                handle.cancel();
+            if(activeImageLoad == this)
+                activeImageLoad = null;
+            if(pd != null && pd.isShowing())
+                pd.dismiss();
         }
     }
 
@@ -956,8 +978,10 @@ public class ViewerActivity2 extends AppCompatActivity {
 
     public void refresh(){
         captchaChecked = false;
-        loadImages l = new loadImages();
-        l.start(LifecycleJob.IO);
+        if(activeImageLoad != null)
+            activeImageLoad.cancel();
+        activeImageLoad = new loadImages();
+        activeImageLoad.start();
     }
 
     public void refreshToolbar(){
@@ -1048,6 +1072,15 @@ public class ViewerActivity2 extends AppCompatActivity {
         if(title != null)
             manga.setTitle(title);
         queueOfflineDownload(context, title, manga);
+    }
+
+    @Override
+    protected void onDestroy() {
+        if(activeImageLoad != null) {
+            activeImageLoad.cancel();
+            activeImageLoad = null;
+        }
+        super.onDestroy();
     }
 
 
