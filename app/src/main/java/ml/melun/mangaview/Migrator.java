@@ -8,7 +8,7 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
-import ml.melun.mangaview.task.LifecycleTask;
+import ml.melun.mangaview.task.AppTask;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
@@ -79,7 +79,7 @@ public class Migrator extends Service {
                 case MIGRATE_START:
                     startNotification();
                     if (mw == null) mw = new MigrationWorker();
-                    mw.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+                    mw.startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
                     break;
                 case MIGRATE_STOP:
                     //
@@ -149,7 +149,7 @@ public class Migrator extends Service {
         sendBroadcast(intent);
     }
 
-    private class MigrationWorker extends LifecycleTask<Void, String, Integer> {
+    private class MigrationWorker extends AppTask<Void, String, Integer> {
 
         int sum = 0;
         int current = 0;
@@ -200,7 +200,7 @@ public class Migrator extends Service {
                     else
                         failed.add(recents.get(i).getName());
                 }catch (Exception e){
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                     failed.add(recents.get(i).getName());
                 }
             }
@@ -214,7 +214,7 @@ public class Migrator extends Service {
                     else
                         failed.add(favorites.get(i).getName());
                 }catch (Exception e){
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                     failed.add(favorites.get(i).getName());
                 }
             }

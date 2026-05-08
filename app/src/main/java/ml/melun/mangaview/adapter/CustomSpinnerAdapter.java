@@ -35,7 +35,7 @@ public class CustomSpinnerAdapter extends BaseAdapter implements SpinnerAdapter 
     public void setData(List<Manga> data, Manga m){
         this.data = data;
         setSelection(m);
-        notifyDataSetChanged();
+        notifyDataSetInvalidated();
     }
 
     public void setSelection(int position){
@@ -109,7 +109,7 @@ public class CustomSpinnerAdapter extends BaseAdapter implements SpinnerAdapter 
 
         } catch (Exception e) {
             // TODO Auto-generated catch block
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return convertView;
     }

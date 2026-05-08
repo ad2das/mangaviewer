@@ -98,7 +98,7 @@ public class ViewerActivity extends AppCompatActivity {
     LoadImagesJob loader;
     PrefetchImagesJob nextPrefetcher;
     final Handler mainHandler = new Handler(Looper.getMainLooper());
-    final ExecutorService imageLoadExecutor = Executors.newFixedThreadPool(2);
+    final ExecutorService imageLoadExecutor = Executors.newScheduledThreadPool(2);
     int episodeLoaderGeneration = 0;
     int nextPrefetchEpisodeId = -1;
     int nextPrefetchBaseMode = -1;
@@ -317,7 +317,7 @@ public class ViewerActivity extends AppCompatActivity {
             });
 
         }catch(Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
 
         next.setOnClickListener(v -> loadManga(manga.nextEp()));
@@ -453,7 +453,7 @@ public class ViewerActivity extends AppCompatActivity {
                 });
             } catch (Exception e) {
                 if(!isFinishing())
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
             }
         });
     }
@@ -501,7 +501,7 @@ public class ViewerActivity extends AppCompatActivity {
         void replaceData(List<Manga> data, int selected) {
             this.data = data;
             this.selected = selected;
-            notifyDataSetChanged();
+            notifyItemRangeChanged(0, getItemCount());
         }
 
         @Override
@@ -627,7 +627,7 @@ public class ViewerActivity extends AppCompatActivity {
 
         }catch (Exception e){
             Utils.showCaptchaPopup(m.getUrl(), context, e, p);
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
     }
 
@@ -740,7 +740,7 @@ public class ViewerActivity extends AppCompatActivity {
             finish();
             return true;
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
             return false;
         }
     }
@@ -796,14 +796,14 @@ public class ViewerActivity extends AppCompatActivity {
                         }
                     } catch (Exception e) {
                         if(!cancelled && !isFinishing())
-                            e.printStackTrace();
+                            ml.melun.mangaview.report.CrashReporter.record(e);
                     }
                     int finalResult = result;
                     mainHandler.post(() -> finish(finalResult));
                 });
             } catch (RejectedExecutionException e) {
                 if(!cancelled && !isFinishing())
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 finish(LOAD_OK);
             }
         }
@@ -869,14 +869,14 @@ public class ViewerActivity extends AppCompatActivity {
                             result = getHttpClient().runWithRequestGroup(requestGroup, () -> target.fetchForViewerInitial(getHttpClient()));
                     } catch (Exception e) {
                         if(!cancelled && !isFinishing())
-                            e.printStackTrace();
+                            ml.melun.mangaview.report.CrashReporter.record(e);
                     }
                     int finalResult = result;
                     mainHandler.post(() -> finish(finalResult));
                 });
             } catch (RejectedExecutionException e) {
                 if(!cancelled && !isFinishing())
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 finish(LOAD_OK);
             }
         }
@@ -983,12 +983,12 @@ public class ViewerActivity extends AppCompatActivity {
                         });
                     } catch (Exception e) {
                         if(!isFinishing())
-                            e.printStackTrace();
+                            ml.melun.mangaview.report.CrashReporter.record(e);
                     }
                 });
             } catch (RejectedExecutionException e) {
                 if(!isFinishing())
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
             }
         }, 350);
     }

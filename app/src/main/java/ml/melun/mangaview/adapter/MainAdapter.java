@@ -2,7 +2,7 @@ package ml.melun.mangaview.adapter;
 
 import android.content.Context;
 import android.graphics.Color;
-import ml.melun.mangaview.task.LifecycleTask;
+import ml.melun.mangaview.task.AppTask;
 import androidx.annotation.NonNull;
 import androidx.core.content.ContextCompat;
 import androidx.cardview.widget.CardView;
@@ -88,7 +88,7 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         }
 
         setHasStableIds(true);
-        notifyDataSetChanged();
+        notifyItemRangeChanged(0, getItemCount());
         uadapter.setLoad("URL 업데이트중...");
     }
 
@@ -98,7 +98,7 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             fetcher.cancel(true);
         uadapter.setLoad();
         fetcher = new MainFetcher();
-        fetcher.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+        fetcher.startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
     }
 
     @Override
@@ -427,7 +427,7 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         default void longClickedContinue(View view, Title title) {}
     }
 
-    private class MainFetcher extends LifecycleTask<Void, Integer, MainPage> {
+    private class MainFetcher extends AppTask<Void, Integer, MainPage> {
         private CustomHttpClient.RequestGroup requestGroup;
 
         @Override
@@ -442,7 +442,7 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
                 return getHttpClient().runWithRequestGroup(requestGroup, () -> new MainPage(getHttpClient()));
             } catch (Exception e) {
                 if(!isCancelled())
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 return null;
             }
         }

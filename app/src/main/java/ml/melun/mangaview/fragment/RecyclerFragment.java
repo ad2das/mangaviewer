@@ -5,7 +5,7 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.net.Uri;
-import ml.melun.mangaview.task.LifecycleTask;
+import ml.melun.mangaview.task.AppTask;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.Menu;
@@ -309,7 +309,7 @@ public class RecyclerFragment extends Fragment {
             titleAdapter.setResume(false);
             titleAdapter.setForceThumbnail(true);
             titleAdapter.clearData();
-            new OfflineReader().executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+            new OfflineReader().startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
         }
         updateEmptyState();
     }
@@ -338,7 +338,7 @@ public class RecyclerFragment extends Fragment {
     }
 
 
-    public class OfflineReader extends LifecycleTask<Void,Void,Integer>{
+    public class OfflineReader extends AppTask<Void,Void,Integer>{
         List<Title> titles;
         @Override
         protected void onPostExecute(Integer integer) {
@@ -375,7 +375,7 @@ public class RecyclerFragment extends Fragment {
                                     }
                                     titles.add(title);
                                 } catch (Exception e) {
-                                    e.printStackTrace();
+                                    ml.melun.mangaview.report.CrashReporter.record(e);
                                     Title title = new Title(f.getName(), "", "", new ArrayList<>(), "", 0, MTitle.base_auto);
                                     title.setPath(f.getUri().toString());
                                     titles.add(title);
@@ -408,7 +408,7 @@ public class RecyclerFragment extends Fragment {
                                         title.setThumb(f.getAbsolutePath() + '/' + thumb);
                                     titles.add(title);
                                 } catch (Exception e) {
-                                    e.printStackTrace();
+                                    ml.melun.mangaview.report.CrashReporter.record(e);
                                     Title title = new Title(f.getName(), "", "", new ArrayList<>(), "", 0, MTitle.base_auto);
                                     title.setPath(f.getAbsolutePath());
                                     titles.add(title);

@@ -54,7 +54,12 @@ public class CustomHttpClient {
     Map<String, Long> cookieSyncAt;
     Map<String, CachedPage> pageCache;
     Map<String, PageLoadState> pageLoads;
-    private final ThreadLocal<RequestGroup> currentRequestGroup = new ThreadLocal<>();
+    private final ThreadLocal<RequestGroup> currentRequestGroup = requestGroupLocal();
+
+    private ThreadLocal<RequestGroup> requestGroupLocal() {
+        return new
+                ThreadLocal<>();
+    }
     private final Object wfwfDomainLock = new Object();
     private DomainResolveState wfwfDomainResolveState;
     private long wfwfDomainLastForcedRetry = 0;
@@ -129,7 +134,7 @@ public class CustomHttpClient {
                     persistCookies();
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
     }
 
@@ -143,7 +148,7 @@ public class CustomHttpClient {
                 cookies.put(k, obj.getString(k));
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
     }
 
@@ -157,7 +162,7 @@ public class CustomHttpClient {
                     .putString("httpCookies", obj.toString())
                     .apply();
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
     }
 
@@ -237,7 +242,7 @@ public class CustomHttpClient {
             storeResponseCookies(response);
         } catch (Exception e){
             if(!isInterruptedRequest(e) && (requestGroup == null || !requestGroup.isCancelled()))
-                e.printStackTrace();
+                ml.melun.mangaview.report.CrashReporter.record(e);
             return null;
         } finally {
             if(requestGroup != null && call != null)
@@ -337,7 +342,7 @@ public class CustomHttpClient {
                 resolveState.done.countDown();
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
             return false;
         }
     }
@@ -653,7 +658,7 @@ public class CustomHttpClient {
             storeResponseCookies(response);
         }catch (Exception e){
             if(!isInterruptedRequest(e) && (requestGroup == null || !requestGroup.isCancelled()))
-                e.printStackTrace();
+                ml.melun.mangaview.report.CrashReporter.record(e);
         } finally {
             if(requestGroup != null && call != null)
                 requestGroup.remove(call);

@@ -110,7 +110,7 @@ public class MainPageWebtoon {
         try {
             dataSet = new ArrayList<>();
             String[][] sections = getSections();
-            executor = Executors.newFixedThreadPool(Math.min(4, sections.length));
+            executor = Executors.newScheduledThreadPool(Math.min(4, sections.length));
             List<Future<Ranking<?>>> futures = new ArrayList<>();
             for(String[] section : sections) {
                 Callable<Ranking<?>> task = () -> parseWolfTitle(client, section[0], section[1], baseMode);
@@ -119,7 +119,7 @@ public class MainPageWebtoon {
             for(Future<Ranking<?>> future : futures)
                 dataSet.add(future.get());
         }catch (Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         } finally {
             if(executor != null)
                 executor.shutdownNow();
@@ -151,7 +151,7 @@ public class MainPageWebtoon {
                     Thread.currentThread().interrupt();
                     return ranking;
                 }
-                e.printStackTrace();
+                ml.melun.mangaview.report.CrashReporter.record(e);
             }
             return ranking;
         }

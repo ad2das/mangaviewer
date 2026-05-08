@@ -3,7 +3,7 @@ package ml.melun.mangaview.fragment;
 import android.content.Intent;
 import android.content.DialogInterface;
 import android.net.Uri;
-import ml.melun.mangaview.task.LifecycleTask;
+import ml.melun.mangaview.task.AppTask;
 import android.os.Bundle;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
@@ -298,7 +298,7 @@ public class MainSearch extends Fragment {
                     if(searchTask == null) {
                         activeSearchKey = null;
                         searchTask = new SearchManga(search);
-                        searchTask.executeOnExecutor(LifecycleTask.USER_ACTION_EXECUTOR);
+                        searchTask.startOnExecutor(AppTask.USER_ACTION_EXECUTOR);
                     }
                 } else swipe.setRefreshing(false);
             }
@@ -459,7 +459,7 @@ public class MainSearch extends Fragment {
         ArrayList<Title> data = getLibraryTitles(tab);
         if((tab == 0 || tab == 3) && offlineTitles.size() == 0 && offlineTask == null) {
             offlineTask = new LoadOfflineTitles();
-            offlineTask.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+            offlineTask.startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
         }
         bindLibraryData(data, libraryEmptyMessage(tab));
     }
@@ -862,7 +862,7 @@ public class MainSearch extends Fragment {
                     DocumentFile target = DocumentFile.fromTreeUri(getContext(), Uri.parse(path));
                     deleted = target != null && target.delete();
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 }
             } else {
                 deleted = deleteRecursive(new File(path));
@@ -889,7 +889,7 @@ public class MainSearch extends Fragment {
                 DocumentFile target = home == null ? null : home.findFile(filterFolder(title.getName()));
                 return target != null && target.delete();
             } catch (Exception e) {
-                e.printStackTrace();
+                ml.melun.mangaview.report.CrashReporter.record(e);
                 return false;
             }
         }
@@ -1076,7 +1076,7 @@ public class MainSearch extends Fragment {
         int tab = getLibraryTabPosition();
         if((tab == 0 || tab == 3) && offlineTitles.size() == 0 && offlineTask == null) {
             offlineTask = new LoadOfflineTitles();
-            offlineTask.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+            offlineTask.startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
         }
         ArrayList<Title> data = new ArrayList<>();
         for(Title title : getLibraryTitles(tab))
@@ -1147,7 +1147,7 @@ public class MainSearch extends Fragment {
                 searchTask.cancel(true);
             activeSearchKey = key;
             searchTask = new SearchManga(search);
-            searchTask.executeOnExecutor(LifecycleTask.USER_ACTION_EXECUTOR);
+            searchTask.startOnExecutor(AppTask.USER_ACTION_EXECUTOR);
         }
     }
 
@@ -1263,7 +1263,7 @@ public class MainSearch extends Fragment {
         super.onDestroyView();
     }
 
-    private class LoadOfflineTitles extends LifecycleTask<Void, Void, ArrayList<Title>> {
+    private class LoadOfflineTitles extends AppTask<Void, Void, ArrayList<Title>> {
         @Override
         protected ArrayList<Title> doInBackground(Void... voids) {
             ArrayList<Title> titles = new ArrayList<>();
@@ -1336,7 +1336,7 @@ public class MainSearch extends Fragment {
                     }
                     return title;
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 }
             }
             Title title = new Title(folder.getName(), "", "", new ArrayList<>(), "", 0, MTitle.base_auto);
@@ -1356,7 +1356,7 @@ public class MainSearch extends Fragment {
                         title.setThumb(folder.getAbsolutePath() + '/' + thumb);
                     return title;
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 }
             }
             Title title = new Title(folder.getName(), "", "", new ArrayList<>(), "", 0, MTitle.base_auto);
@@ -1365,7 +1365,7 @@ public class MainSearch extends Fragment {
         }
     }
 
-    private class SearchManga extends LifecycleTask<Void, Void, Integer>{
+    private class SearchManga extends AppTask<Void, Void, Integer>{
         private final Search targetSearch;
         private CustomHttpClient.RequestGroup requestGroup;
 
@@ -1382,7 +1382,7 @@ public class MainSearch extends Fragment {
                 return getHttpClient().runWithRequestGroup(requestGroup, () -> targetSearch.fetch(getHttpClient()));
             } catch (Exception e) {
                 if(!isCancelled())
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 return 1;
             }
         }

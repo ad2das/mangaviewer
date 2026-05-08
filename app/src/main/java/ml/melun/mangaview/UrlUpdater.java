@@ -1,7 +1,7 @@
 package ml.melun.mangaview;
 
 import android.content.Context;
-import ml.melun.mangaview.task.LifecycleTask;
+import ml.melun.mangaview.task.AppTask;
 import android.widget.Toast;
 
 import java.util.HashMap;
@@ -14,7 +14,7 @@ import ml.melun.mangaview.mangaview.WfwfDomainResolver;
 import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 
-public class UrlUpdater extends LifecycleTask<Void, Void, Boolean> {
+public class UrlUpdater extends AppTask<Void, Void, Boolean> {
     String result;
     String fetchUrl;
     boolean silent = false;
@@ -63,7 +63,7 @@ public class UrlUpdater extends LifecycleTask<Void, Void, Boolean> {
             }
 
         }catch (Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
             return false;
         }
     }

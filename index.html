@@ -29,12 +29,12 @@
         </script>
         <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
         <script>
-        var downloadlink = "apk/mangaViewer_2112260509-debug.apk";
+        var downloadlink = "apk/mangaViewer_2112260512-debug.apk";
         var releaselink = "releases.html";
         function GetLatestReleaseInfo() {
             $(".release-name").text("apk local build");
             $(".release-info").text("로컬 APK 파일을 제공합니다.");
-            $(".changelog").text("앱 내 기능과 화면을 최신 구조에 맞게 정리했습니다.");
+            $(".changelog").text("기존 XML UI와 화면 동선을 복구하고, 내부 작업 실행 구조를 AppTask/WorkManager 기반으로 재구성했습니다. 전체 작업 취소, 예외 기록, 목록 갱신 경로를 안정화했습니다.");
             $("div.button-container").fadeIn('slow');
             $("div.content").fadeIn('slow');
             $("div.footer").fadeIn('slow');

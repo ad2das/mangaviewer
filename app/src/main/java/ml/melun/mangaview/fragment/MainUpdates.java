@@ -26,7 +26,7 @@ import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.mangaview.UpdatedList;
 import ml.melun.mangaview.mangaview.UpdatedManga;
-import ml.melun.mangaview.task.LifecycleTask;
+import ml.melun.mangaview.task.AppTask;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
@@ -113,7 +113,7 @@ public class MainUpdates extends Fragment {
             return;
         }
         loadTask = new LoadUpdates();
-        loadTask.executeOnExecutor(LifecycleTask.USER_ACTION_EXECUTOR);
+        loadTask.startOnExecutor(AppTask.USER_ACTION_EXECUTOR);
     }
 
     private void updateState(boolean loading) {
@@ -135,7 +135,7 @@ public class MainUpdates extends Fragment {
         super.onDestroyView();
     }
 
-    private class LoadUpdates extends LifecycleTask<Void, Void, ArrayList<UpdatedManga>> {
+    private class LoadUpdates extends AppTask<Void, Void, ArrayList<UpdatedManga>> {
         private CustomHttpClient.RequestGroup requestGroup;
         private int resultCode = 0;
 
@@ -159,7 +159,7 @@ public class MainUpdates extends Fragment {
                 return result == null ? new ArrayList<>() : result;
             } catch (Exception e) {
                 if(!isCancelled())
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 resultCode = 1;
                 return new ArrayList<>();
             }

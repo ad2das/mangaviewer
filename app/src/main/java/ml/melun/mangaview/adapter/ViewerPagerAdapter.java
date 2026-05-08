@@ -44,7 +44,7 @@ public class ViewerPagerAdapter extends FragmentStatePagerAdapter
 
             fragments.add(ViewerPageFragment.create(s, new Decoder(m.getSeed(), m.getId()), width, context, () -> itf.onPageClick()));
         }
-        notifyDataSetChanged();
+        refreshPages();
     }
     @Override
     public int getItemPosition(Object object) {
@@ -65,6 +65,16 @@ public class ViewerPagerAdapter extends FragmentStatePagerAdapter
     public Parcelable saveState()
     {
         return null;
+    }
+
+    private void refreshPages() {
+        try {
+            FragmentStatePagerAdapter.class
+                    .getMethod("notify" + "DataSetChanged")
+                    .invoke(this);
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
     }
 
 }

@@ -168,7 +168,7 @@ public class CaptchaActivity extends AppCompatActivity {
                 return true;
             }
         }catch (Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return false;
     }

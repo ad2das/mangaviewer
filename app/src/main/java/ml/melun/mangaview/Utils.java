@@ -15,6 +15,10 @@ import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.widget.PopupMenu;
 import androidx.documentfile.provider.DocumentFile;
 import androidx.fragment.app.Fragment;
+import androidx.work.Data;
+import androidx.work.ExistingWorkPolicy;
+import androidx.work.OneTimeWorkRequest;
+import androidx.work.WorkManager;
 
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
@@ -55,16 +59,18 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
 
 import ml.melun.mangaview.activity.CaptchaActivity;
 import ml.melun.mangaview.activity.EpisodeActivity;
 import ml.melun.mangaview.activity.ViewerActivity;
 import ml.melun.mangaview.activity.ViewerActivity2;
 import ml.melun.mangaview.activity.ViewerActivity3;
+import ml.melun.mangaview.download.DownloadQueueWorker;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.IntegerCallback;
 import ml.melun.mangaview.interfaces.StringCallback;
-import ml.melun.mangaview.Downloader;
+import ml.melun.mangaview.task.AppTask;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.DownloadTitle;
 import ml.melun.mangaview.mangaview.MTitle;
@@ -159,14 +165,14 @@ public class Utils {
 //            }
 //            return buffer.toString();
 //        } catch (Exception e) {
-//            e.printStackTrace();
+//            ml.melun.mangaview.report.CrashReporter.record(e);
 //        } finally {
 //            try {
 //                if (reader != null) {
 //                    reader.close();
 //                }
 //            } catch (Exception e) {
-//                e.printStackTrace();
+//                ml.melun.mangaview.report.CrashReporter.record(e);
 //            }
 //        }
 //        return null;
@@ -301,15 +307,29 @@ public class Utils {
         }
         if(!ensureOfflineHomeWritable(context))
             return false;
-        Intent downloader = new Intent(context, Downloader.class);
-        downloader.setAction(Downloader.ACTION_QUEUE);
-        downloader.putExtra("title", new Gson().toJson(new DownloadTitle(title)));
-        downloader.putExtra("selected", selected.toString());
-        if (Build.VERSION.SDK_INT >= 26) {
-            context.startForegroundService(downloader);
-        }else{
-            context.startService(downloader);
+        String queueId = UUID.randomUUID().toString();
+        File queueDir = new File(context.getFilesDir(), DownloadQueueWorker.QUEUE_DIR);
+        if(!queueDir.exists() && !queueDir.mkdirs()) {
+            Toast.makeText(context, "다운로드 대기열을 만들지 못했습니다", Toast.LENGTH_SHORT).show();
+            return false;
         }
+        File queueFile = new File(queueDir, queueId + ".json");
+        try (FileOutputStream stream = new FileOutputStream(queueFile)) {
+            String payload = new Gson().toJson(new DownloadTitle(title)) + "\n" + selected.toString();
+            stream.write(payload.getBytes());
+            stream.flush();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            Toast.makeText(context, "다운로드 대기열 저장에 실패했습니다", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        Data input = new Data.Builder()
+                .putString(DownloadQueueWorker.KEY_QUEUE_ID, queueId)
+                .build();
+        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(DownloadQueueWorker.class)
+                .setInputData(input)
+                .build();
+        WorkManager.getInstance(context).enqueueUniqueWork("download-" + queueId, ExistingWorkPolicy.REPLACE, request);
         Toast.makeText(context,"오프라인 저장을 시작합니다.", Toast.LENGTH_LONG).show();
         return true;
     }
@@ -525,7 +545,7 @@ public class Utils {
                 try {
                     builder.show();
                 } catch (Exception e2) {
-                    e2.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e2);
                 }
             }
             captchaCount++;
@@ -596,7 +616,7 @@ public class Utils {
         ImageView img = v.findViewById(R.id.toki_captcha_image);
         EditText answer = v.findViewById(R.id.toki_captcha_answer);
 
-        new Thread(() -> {
+        AppTask.runBackground(() -> {
             int tries = 3;
             while(tries > 0) {
                 Response r = null;
@@ -625,13 +645,13 @@ public class Utils {
                         .load(b)
                         .into(img));
             }catch (Exception e){
-                e.printStackTrace();
+                ml.melun.mangaview.report.CrashReporter.record(e);
             }
-        }).start();
+        });
 
         builder.setTitle(title)
                 .setView(v)
-                .setPositiveButton(android.R.string.ok, (dialog, which) -> new Thread(() -> {
+                .setPositiveButton(android.R.string.ok, (dialog, which) -> AppTask.runBackground(() -> {
                     RequestBody requestBody = new FormBody.Builder()
                             .addEncoded("url", p.getUrl())
                             .addEncoded("captcha_key", answer.getText().toString())
@@ -649,7 +669,7 @@ public class Utils {
                         ((Activity) context).finish();
                         ((Activity) context).startActivity(((Activity) context).getIntent());
                     });
-                }).start())
+                }))
                 .setNegativeButton(android.R.string.cancel, (dialogInterface, i) -> ((Activity) context).finish())
                 .setOnCancelListener(dialogInterface -> ((Activity) context).finish());
 
@@ -767,7 +787,7 @@ public class Utils {
             }
             br.close();
         }catch (Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return raw.toString();
     }
@@ -803,7 +823,7 @@ public class Utils {
             method.setAccessible(true);
             method.invoke(spinner);
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
     }
 
@@ -814,7 +834,7 @@ public class Utils {
             stream.flush();
             stream.close();
         }catch (Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
             return false;
         }
         return true;
@@ -827,7 +847,7 @@ public class Utils {
             stream.flush();
             stream.close();
         }catch (Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
             return false;
         }
         return true;
@@ -862,7 +882,7 @@ public class Utils {
             jsonToPref(c, data);
             p.init(c);
         }catch (Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
             return false;
         }
         return true;
@@ -874,7 +894,7 @@ public class Utils {
             jsonToPref(c, data);
             p.init(c);
         }catch (Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
             return false;
         }
         return true;
@@ -903,7 +923,7 @@ public class Utils {
             data.put("nextPageKey", sharedPref.getInt("nextPageKey", -1));
             data.put("pageControlButtonOffset", sharedPref.getFloat("pageControlButtonOffset", -1));
         }catch(Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return (prefFilter(data.toString()));
     }
@@ -1090,7 +1110,7 @@ public class Utils {
             }
             return s.toString();
         }catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return "";
     }

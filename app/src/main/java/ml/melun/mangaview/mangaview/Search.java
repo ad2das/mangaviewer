@@ -140,7 +140,7 @@ public class Search {
 
                         result.add(new Title(title, thumb, author, null, release, id, baseMode));
                     }catch (Exception e2){
-                        e2.printStackTrace();
+                        ml.melun.mangaview.report.CrashReporter.record(e2);
                     }
                 }
                 if (result.size() < 35)
@@ -154,7 +154,7 @@ public class Search {
                 } catch (Exception e) {
                     page--;
                     timeoutRetries = 0;
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                     return 1;
                 }
             }
@@ -167,7 +167,7 @@ public class Search {
     private int fetchAll(CustomHttpClient client) {
         int status = 0;
         ArrayList<Title> combined = new ArrayList<>();
-        ExecutorService executor = Executors.newFixedThreadPool(2);
+        ExecutorService executor = Executors.newScheduledThreadPool(2);
         try {
             Search webtoonSearch = new Search(query, mode, base_webtoon);
             Search comicSearch = new Search(query, mode, base_comic);
@@ -189,7 +189,7 @@ public class Search {
             Thread.currentThread().interrupt();
             status = 1;
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
             status = 1;
         } finally {
             executor.shutdownNow();
@@ -289,7 +289,7 @@ public class Search {
             appendNewResults(webtoonResults);
             return 0;
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
             return 1;
         }
     }
@@ -331,7 +331,7 @@ public class Search {
             appendNewResults(comicResults);
             return 0;
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
             return 1;
         }
     }

@@ -90,7 +90,7 @@ public class WfwfDomainResolver {
     }
 
     private static String findAliveCandidate(OkHttpClient client, List<Integer> candidates, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup, long deadlineMs) {
-        ExecutorService executor = Executors.newFixedThreadPool(PARALLEL_PROBES);
+        ExecutorService executor = Executors.newScheduledThreadPool(PARALLEL_PROBES);
         try {
             for(int start = 0; start < candidates.size(); start += PARALLEL_PROBES) {
                 if(requestGroup != null && requestGroup.isCancelled())

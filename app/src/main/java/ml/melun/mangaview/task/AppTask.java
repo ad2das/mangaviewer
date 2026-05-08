@@ -14,14 +14,13 @@ import java.util.IdentityHashMap;
 import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
-public abstract class LifecycleTask<Params, Progress, Result> implements DefaultLifecycleObserver {
+import ml.melun.mangaview.report.CrashReporter;
+
+public abstract class AppTask<Params, Progress, Result> implements DefaultLifecycleObserver {
     public enum Status {
         PENDING,
         RUNNING,
@@ -29,29 +28,8 @@ public abstract class LifecycleTask<Params, Progress, Result> implements Default
     }
 
     private static final int POOL_SIZE = 5;
-    private static final int BACKGROUND_QUEUE_SIZE = 128;
-    private static final int USER_ACTION_QUEUE_SIZE = 64;
-    private static final int KEEP_ALIVE_SECONDS = 30;
-    private static final AtomicInteger THREAD_ID = new AtomicInteger(1);
-
-    public static final ExecutorService THREAD_POOL_EXECUTOR = new ThreadPoolExecutor(
-            POOL_SIZE,
-            POOL_SIZE,
-            KEEP_ALIVE_SECONDS,
-            TimeUnit.SECONDS,
-            new LinkedBlockingQueue<>(BACKGROUND_QUEUE_SIZE),
-            runnable -> new Thread(runnable, "LifecycleTask-" + THREAD_ID.getAndIncrement()),
-            new ThreadPoolExecutor.CallerRunsPolicy()
-    );
-    public static final ExecutorService USER_ACTION_EXECUTOR = new ThreadPoolExecutor(
-            3,
-            3,
-            KEEP_ALIVE_SECONDS,
-            TimeUnit.SECONDS,
-            new LinkedBlockingQueue<>(USER_ACTION_QUEUE_SIZE),
-            runnable -> new Thread(runnable, "LifecycleUserTask-" + THREAD_ID.getAndIncrement()),
-            new ThreadPoolExecutor.CallerRunsPolicy()
-    );
+    public static final ExecutorService THREAD_POOL_EXECUTOR = Executors.newScheduledThreadPool(POOL_SIZE);
+    public static final ExecutorService USER_ACTION_EXECUTOR = Executors.newScheduledThreadPool(3);
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     private final Object lifecycleCandidate;
@@ -63,11 +41,11 @@ public abstract class LifecycleTask<Params, Progress, Result> implements Default
     private volatile Status status = Status.PENDING;
     private Future<?> future;
 
-    protected LifecycleTask() {
+    protected AppTask() {
         this(null);
     }
 
-    protected LifecycleTask(Object lifecycleCandidate) {
+    protected AppTask(Object lifecycleCandidate) {
         this.lifecycleCandidate = lifecycleCandidate;
     }
 
@@ -87,11 +65,11 @@ public abstract class LifecycleTask<Params, Progress, Result> implements Default
         return result;
     }
 
-    public final LifecycleTask<Params, Progress, Result> execute(Params... params) {
-        return executeOnExecutor(THREAD_POOL_EXECUTOR, params);
+    public final AppTask<Params, Progress, Result> start(Params... params) {
+        return startOnExecutor(THREAD_POOL_EXECUTOR, params);
     }
 
-    public final LifecycleTask<Params, Progress, Result> executeOnExecutor(Executor executor, Params... params) {
+    public final AppTask<Params, Progress, Result> startOnExecutor(Executor executor, Params... params) {
         if(status != Status.PENDING)
             throw new IllegalStateException("Task can be executed only once");
         status = Status.RUNNING;
@@ -108,12 +86,34 @@ public abstract class LifecycleTask<Params, Progress, Result> implements Default
                     result = doInBackground(params == null || params.length == 0 ? null : params);
             } catch (Throwable e) {
                 if(!isCancelled())
-                    e.printStackTrace();
+                    CrashReporter.record(e);
             }
             Result finalResult = result;
             MAIN.post(() -> finish(finalResult));
         });
         return this;
+    }
+
+    public static void runBackground(Runnable runnable) {
+        THREAD_POOL_EXECUTOR.execute(safe(runnable));
+    }
+
+    public static void runUserAction(Runnable runnable) {
+        USER_ACTION_EXECUTOR.execute(safe(runnable));
+    }
+
+    public static Future<?> submitUserAction(Runnable runnable) {
+        return USER_ACTION_EXECUTOR.submit(safe(runnable));
+    }
+
+    private static Runnable safe(Runnable runnable) {
+        return () -> {
+            try {
+                runnable.run();
+            } catch (Throwable throwable) {
+                CrashReporter.record(throwable);
+            }
+        };
     }
 
     protected final void publishProgress(Progress... values) {

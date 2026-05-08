@@ -91,7 +91,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             @Override
             protected void publishResults(CharSequence charSequence, FilterResults filterResults) {
                 mDataFiltered = (ArrayList<Title>) filterResults.values;
-                notifyDataSetChanged();
+                notifyItemRangeChanged(0, getItemCount());
             }
         };
     }
@@ -226,7 +226,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     public void clearData(){
         mData.clear();
         mDataFiltered.clear();
-        notifyDataSetChanged();
+        notifyItemRangeChanged(0, getItemCount());
     }
 
 

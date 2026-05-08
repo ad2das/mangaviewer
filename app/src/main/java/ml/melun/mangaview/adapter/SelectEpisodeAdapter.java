@@ -80,7 +80,7 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
                 h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.appAccent));
             }
         }catch (Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
     }
 

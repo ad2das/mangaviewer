@@ -7,7 +7,7 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
-import ml.melun.mangaview.task.LifecycleTask;
+import ml.melun.mangaview.task.AppTask;
 import com.google.android.material.appbar.AppBarLayout;
 
 import androidx.annotation.Nullable;
@@ -232,7 +232,7 @@ public class ViewerActivity3 extends AppCompatActivity {
                 refresh();
             }
         }catch(Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
 
         pageBtn.setOnClickListener(v -> {
@@ -295,7 +295,7 @@ public class ViewerActivity3 extends AppCompatActivity {
 
     void refresh(){
         captchaChecked = false;
-        new LoadImages().executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+        new LoadImages().startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
     }
 
 
@@ -333,7 +333,7 @@ public class ViewerActivity3 extends AppCompatActivity {
         //getWindow().setAttributes(attrs);
     }
 
-    private class LoadImages extends LifecycleTask<Void, String, Integer>{
+    private class LoadImages extends AppTask<Void, String, Integer>{
         ProgressDialog pd;
         protected void onProgressUpdate(String... values) {
             pd.setMessage(values[0]);
@@ -426,7 +426,7 @@ public class ViewerActivity3 extends AppCompatActivity {
             finish();
             return true;
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
             return false;
         }
     }

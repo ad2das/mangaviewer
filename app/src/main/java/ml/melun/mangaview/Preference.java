@@ -172,7 +172,7 @@ public class Preference {
                     .remove("lastUpdateTime")
                     .apply();
         }catch(Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
     }
 
@@ -801,7 +801,7 @@ public class Preference {
                     changed = true;
                 }
             } catch (Exception e) {
-                e.printStackTrace();
+                ml.melun.mangaview.report.CrashReporter.record(e);
             }
         }
         if(changed)
@@ -906,7 +906,7 @@ public class Preference {
         try {
             this.bookmark = new JSONObject(jsonStr);
         }catch (Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
         writeBookmark();
 
@@ -925,7 +925,7 @@ public class Preference {
         try {
             this.pagebookmark = new JSONObject(jsonStr);
         }catch (Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
         writeViewerBookmark();
     }

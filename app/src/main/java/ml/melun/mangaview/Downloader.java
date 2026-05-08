@@ -12,7 +12,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.net.Uri;
 import android.webkit.CookieManager;
-import ml.melun.mangaview.task.LifecycleTask;
+import ml.melun.mangaview.task.AppTask;
 import android.os.Build;
 import android.os.IBinder;
 import androidx.annotation.Nullable;
@@ -131,7 +131,7 @@ public class Downloader extends Service {
                         JSONArray selection = new JSONArray(intent.getStringExtra("selected"));
                         queueTitle(target, selection);
                     } catch (Exception e) {
-                        e.printStackTrace();
+                        ml.melun.mangaview.report.CrashReporter.record(e);
                     }
                     break;
                 case ACTION_STOP:
@@ -159,15 +159,15 @@ public class Downloader extends Service {
         titles.add(title);
         selected.add(selection);
         updateNotification("");
-        if(dt.getStatus() == LifecycleTask.Status.PENDING || dt.getStatus() == LifecycleTask.Status.FINISHED) {
+        if(dt.getStatus() == AppTask.Status.PENDING || dt.getStatus() == AppTask.Status.FINISHED) {
             dt = new downloadTitle();
-            dt.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+            dt.startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
         }else{
             running = true;
         }
     }
 
-    private class downloadTitle extends LifecycleTask<Void,Void,Integer> {
+    private class downloadTitle extends AppTask<Void,Void,Integer> {
         protected void onPreExecute() {
             super.onPreExecute();
             cookies = new HashMap<>();
@@ -254,7 +254,7 @@ public class Downloader extends Service {
                                         stream.flush();
                                     }
                                 } catch (Exception e) {
-                                    e.printStackTrace();
+                                    ml.melun.mangaview.report.CrashReporter.record(e);
                                 }
                             }
 
@@ -338,7 +338,7 @@ public class Downloader extends Service {
                                         stream.flush();
                                     }
                                 } catch (Exception e) {
-                                    e.printStackTrace();
+                                    ml.melun.mangaview.report.CrashReporter.record(e);
                                 }
                             }
 
@@ -395,7 +395,7 @@ public class Downloader extends Service {
                 }
             }catch (Exception e){
                 //unexpected exception
-                e.printStackTrace();
+                ml.melun.mangaview.report.CrashReporter.record(e);
                 this.cancel(true);
                 return 3;
             }
@@ -458,7 +458,7 @@ public class Downloader extends Service {
                 bitmap.recycle();
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
             //retry if old image server
             return false;
         }
@@ -491,7 +491,7 @@ public class Downloader extends Service {
                 bitmap.recycle();
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
             //retry if old image server
             return false;
         }
@@ -515,7 +515,7 @@ public class Downloader extends Service {
         if(urls == null || urls.size() == 0)
             return 0;
         int workers = Math.max(1, Math.min(PARALLEL_IMAGE_DOWNLOADS, urls.size()));
-        ExecutorService executor = Executors.newFixedThreadPool(workers);
+        ExecutorService executor = Executors.newScheduledThreadPool(workers);
         CompletionService<Boolean> completion = new ExecutorCompletionService<>(executor);
         int submitted = 0;
         try {
@@ -543,7 +543,7 @@ public class Downloader extends Service {
                 try {
                     imageSaved = future.get();
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 }
                 if(imageSaved)
                     downloadedImages++;
@@ -594,7 +594,7 @@ public class Downloader extends Service {
             }
         } catch (Exception e) {
             //
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return outputFile;
     }
@@ -633,7 +633,7 @@ public class Downloader extends Service {
             }
         } catch (Exception e) {
             //
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return outputFile;
     }

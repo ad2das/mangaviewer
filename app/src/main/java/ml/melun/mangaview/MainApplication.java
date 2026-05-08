@@ -8,7 +8,7 @@ import androidx.multidex.MultiDexApplication;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MainPageWebtoon;
 import ml.melun.mangaview.report.CrashReporter;
-import ml.melun.mangaview.task.LifecycleTask;
+import ml.melun.mangaview.task.AppTask;
 
 
 
@@ -32,7 +32,7 @@ public class MainApplication extends MultiDexApplication {
         CrashReporter.install(this);
         AppCompatDelegate.setCompatVectorFromResourcesEnabled(true);
         p = new Preference(this);
-        LifecycleTask.THREAD_POOL_EXECUTOR.execute(MainPageWebtoon::preloadClassificationDbs);
+        AppTask.runBackground(MainPageWebtoon::preloadClassificationDbs);
         super.onCreate();
     }
 

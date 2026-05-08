@@ -11,7 +11,7 @@ import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.Drawable;
-import ml.melun.mangaview.task.LifecycleTask;
+import ml.melun.mangaview.task.AppTask;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -257,7 +257,7 @@ public class ViewerActivity2 extends AppCompatActivity {
             //if online
             //fetch imgs
             loadImages l = new loadImages();
-            l.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+            l.startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
         }
 
         nextPageBtn.setOnClickListener(v -> {
@@ -435,7 +435,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                         });
 
             }catch (Exception e){
-                e.printStackTrace();
+                ml.melun.mangaview.report.CrashReporter.record(e);
                 viewerBookmark--;
             }
         }
@@ -521,7 +521,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                                 }
                             });
                 }catch(Exception e) {
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                     Utils.showCaptchaPopup(manga.getUrl(), context, e, p);
                 }
                 //일단 왼쪽거 냅두다가, 오른쪽이 landscape일 경우, GONE 처리
@@ -582,7 +582,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                             }
                         });
             }catch (Exception e){
-                e.printStackTrace();
+                ml.melun.mangaview.report.CrashReporter.record(e);
                 viewerBookmark++;
             }
         }
@@ -692,7 +692,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                         }
                     });
         }catch(Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
             Utils.showCaptchaPopup(manga.getUrl(), context, e, p);
         }
     }
@@ -781,7 +781,7 @@ public class ViewerActivity2 extends AppCompatActivity {
         return super.dispatchKeyEvent(event);
     }
 
-    private class loadImages extends LifecycleTask<Void,String,Integer> {
+    private class loadImages extends AppTask<Void,String,Integer> {
         protected void onProgressUpdate(String... values) {
             pd.setMessage(values[0]);
         }
@@ -901,7 +901,7 @@ public class ViewerActivity2 extends AppCompatActivity {
             finish();
             return true;
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
             return false;
         }
     }
@@ -920,7 +920,7 @@ public class ViewerActivity2 extends AppCompatActivity {
             updateIntent();
             refreshImage();
         }catch (Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
     }
 
@@ -957,7 +957,7 @@ public class ViewerActivity2 extends AppCompatActivity {
     public void refresh(){
         captchaChecked = false;
         loadImages l = new loadImages();
-        l.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+        l.startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
     }
 
     public void refreshToolbar(){

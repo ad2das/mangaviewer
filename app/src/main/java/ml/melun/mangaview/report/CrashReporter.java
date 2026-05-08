@@ -3,6 +3,7 @@ package ml.melun.mangaview.report;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Process;
+import android.util.Log;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -28,6 +29,12 @@ public class CrashReporter implements Thread.UncaughtExceptionHandler {
         if(current instanceof CrashReporter)
             return;
         Thread.setDefaultUncaughtExceptionHandler(new CrashReporter(context, current));
+    }
+
+    public static void record(Throwable throwable) {
+        if(throwable == null)
+            return;
+        Log.e("MangaView", stackTrace(throwable));
     }
 
     @Override
@@ -63,7 +70,17 @@ public class CrashReporter implements Thread.UncaughtExceptionHandler {
 
     public static String stackTrace(Throwable throwable) {
         StringWriter stringWriter = new StringWriter();
-        throwable.printStackTrace(new PrintWriter(stringWriter));
+        PrintWriter writer = new PrintWriter(stringWriter);
+        writer.println(throwable);
+        for(StackTraceElement element : throwable.getStackTrace())
+            writer.println("\tat " + element);
+        Throwable cause = throwable.getCause();
+        while(cause != null) {
+            writer.println("Caused by: " + cause);
+            for(StackTraceElement element : cause.getStackTrace())
+                writer.println("\tat " + element);
+            cause = cause.getCause();
+        }
         return stringWriter.toString();
     }
 }

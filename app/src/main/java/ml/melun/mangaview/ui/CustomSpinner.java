@@ -60,7 +60,7 @@ public class CustomSpinner extends androidx.appcompat.widget.AppCompatSpinner {
             int offset = Math.max(0, (listView.getHeight() - rowHeight) / 2);
             listView.setSelectionFromTop(selected, offset);
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
     }
 

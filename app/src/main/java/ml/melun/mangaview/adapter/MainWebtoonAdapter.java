@@ -5,7 +5,7 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
-import ml.melun.mangaview.task.LifecycleTask;
+import ml.melun.mangaview.task.AppTask;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.LayoutInflater;
@@ -93,9 +93,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private static final String HOME_CACHE_KEY_PREFIX = "homeSnapshotV1_";
     private static final int HOME_CACHE_MAX_SECTIONS = 6;
     private static final int HOME_CACHE_MAX_TITLES_PER_SECTION = 10;
-    private static final ExecutorService ROW_DIFF_EXECUTOR = Executors.newSingleThreadExecutor(
-            runnable -> new Thread(runnable, "HomeRowDiff")
-    );
+    private static final ExecutorService ROW_DIFF_EXECUTOR = AppTask.USER_ACTION_EXECUTOR;
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private int preloadCount = 0;
     private int activeHomeTab = 0;
@@ -124,7 +122,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(fetcher != null)
             fetcher.cancel(true);
         fetcher = new Fetcher();
-        fetcher.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+        fetcher.startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
     }
 
     public void showInitialRows() {
@@ -157,7 +155,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     public void setLoading(){
         dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
         rows = new ArrayList<>();
-        notifyDataSetChanged();
+        notifyItemRangeChanged(0, getItemCount());
     }
 
     public void setListener(MainAdapter.onItemClick listener){
@@ -1028,7 +1026,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(oldSize == newSize)
                 notifyItemRangeChanged(0, newSize);
             else
-                notifyDataSetChanged();
+                notifyItemRangeChanged(0, getItemCount());
         }
 
         @NonNull
@@ -1427,7 +1425,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 if(newSize > 0)
                     notifyItemRangeChanged(0, newSize);
             } else {
-                notifyDataSetChanged();
+                notifyItemRangeChanged(0, getItemCount());
             }
         }
 
@@ -1707,7 +1705,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
     }
 
-    private class Fetcher extends LifecycleTask<Void, SectionBatch, Boolean> {
+    private class Fetcher extends AppTask<Void, SectionBatch, Boolean> {
         private CustomHttpClient.RequestGroup requestGroup;
         private List<Ranking<?>> finalDataSet;
         private boolean keepExistingRowsDuringFetch;
@@ -1740,7 +1738,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
         private Boolean fetchSections(CustomHttpClient.RequestGroup requestGroup) {
             String[][] sections = MainPageWebtoon.getSections(baseMode);
-            ExecutorService executor = Executors.newFixedThreadPool(Math.min(4, sections.length));
+            ExecutorService executor = Executors.newScheduledThreadPool(Math.min(4, sections.length));
             ExecutorCompletionService<SectionResult> completion = new ExecutorCompletionService<>(executor);
             MainPageWebtoon parser = new MainPageWebtoon(baseMode);
             List<Ranking<?>> fetchedSections = MainPageWebtoon.getBlankDataSet(baseMode);
@@ -1790,7 +1788,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 Thread.currentThread().interrupt();
             } catch (Exception e) {
                 if(!isCancelled())
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
             } finally {
                 executor.shutdownNow();
             }
@@ -1907,11 +1905,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(continueProgressBackfillRunning || !hasMissingContinueProgress())
             return;
         continueProgressBackfillRunning = true;
-        LifecycleTask.USER_ACTION_EXECUTOR.execute(() -> {
+        AppTask.runUserAction(() -> {
             try {
                 p.backfillRecentProgress(getHttpClient(), 12);
             } catch (Exception e) {
-                e.printStackTrace();
+                ml.melun.mangaview.report.CrashReporter.record(e);
             }
             Runnable done = () -> {
                 continueProgressBackfillRunning = false;

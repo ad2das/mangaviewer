@@ -60,7 +60,7 @@ public class UpdatedList {
                 timeoutRetries = 0;
                 return;
             } catch (Exception e) {
-                e.printStackTrace();
+                ml.melun.mangaview.report.CrashReporter.record(e);
                 timeoutRetries = 0;
                 return;
             }

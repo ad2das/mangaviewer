@@ -2,7 +2,7 @@ package ml.melun.mangaview.activity;
 
 import android.content.Context;
 import android.content.Intent;
-import ml.melun.mangaview.task.LifecycleTask;
+import ml.melun.mangaview.task.AppTask;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -61,7 +61,7 @@ public class TagSearchActivity extends AppCompatActivity {
     SwipyRefreshLayout swipe;
     Bookmark bookmark;
     int baseMode;
-    LifecycleTask<?, ?, ?> loadTask;
+    AppTask<?, ?, ?> loadTask;
     boolean destroyed = false;
     Runnable thumbnailPreloadRunnable;
 
@@ -179,24 +179,24 @@ public class TagSearchActivity extends AppCompatActivity {
     }
 
     @SuppressWarnings("unchecked")
-    private void startLoad(LifecycleTask<?, ?, ?> task) {
+    private void startLoad(AppTask<?, ?, ?> task) {
         if(loadTask != null) {
             swipe.setRefreshing(true);
             return;
         }
         loadTask = task;
         swipe.setRefreshing(true);
-        task.executeOnExecutor(LifecycleTask.USER_ACTION_EXECUTOR);
+        task.startOnExecutor(AppTask.USER_ACTION_EXECUTOR);
     }
 
-    private boolean prepareLoadResult(LifecycleTask<?, ?, ?> task) {
+    private boolean prepareLoadResult(AppTask<?, ?, ?> task) {
         if(loadTask != task || destroyed || isFinishing())
             return false;
         loadTask = null;
         return true;
     }
 
-    private void clearLoad(LifecycleTask<?, ?, ?> task) {
+    private void clearLoad(AppTask<?, ?, ?> task) {
         if(loadTask == task)
             loadTask = null;
         if(swipe != null)
@@ -212,7 +212,7 @@ public class TagSearchActivity extends AppCompatActivity {
     }
 
 
-    private class getBookmarks extends LifecycleTask<Void, Void, Integer>{
+    private class getBookmarks extends AppTask<Void, Void, Integer>{
         private CustomHttpClient.RequestGroup requestGroup;
 
         @Override
@@ -279,7 +279,7 @@ public class TagSearchActivity extends AppCompatActivity {
                 return getHttpClient().runWithRequestGroup(requestGroup, () -> bookmark.fetch(getHttpClient()));
             } catch (Exception e) {
                 if(!isCancelled())
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 return 1;
             }
         }
@@ -293,7 +293,7 @@ public class TagSearchActivity extends AppCompatActivity {
     }
 
 
-    private class searchManga extends LifecycleTask<Void, Void, Integer> {
+    private class searchManga extends AppTask<Void, Void, Integer> {
         private CustomHttpClient.RequestGroup requestGroup;
 
         protected void onPreExecute(){
@@ -305,7 +305,7 @@ public class TagSearchActivity extends AppCompatActivity {
                 return getHttpClient().runWithRequestGroup(requestGroup, () -> search.fetch(getHttpClient()));
             } catch (Exception e) {
                 if(!isCancelled())
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 return 1;
             }
         }
@@ -371,7 +371,7 @@ public class TagSearchActivity extends AppCompatActivity {
         }
     }
 
-    private class getUpdated extends LifecycleTask<Void, Void, String> {
+    private class getUpdated extends AppTask<Void, Void, String> {
         private CustomHttpClient.RequestGroup requestGroup;
 
         protected void onPreExecute(){
@@ -386,7 +386,7 @@ public class TagSearchActivity extends AppCompatActivity {
                 });
             } catch (Exception e) {
                 if(!isCancelled())
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 return null;
             }
         }

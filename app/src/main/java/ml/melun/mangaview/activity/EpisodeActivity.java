@@ -4,7 +4,7 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.net.Uri;
-import ml.melun.mangaview.task.LifecycleTask;
+import ml.melun.mangaview.task.AppTask;
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import androidx.appcompat.app.ActionBar;
 import androidx.appcompat.app.AlertDialog;
@@ -224,7 +224,7 @@ public class EpisodeActivity extends AppCompatActivity {
             mode = 0;
             fab_container.setVisibility(View.GONE);
             episodeTask = new getEpisodes();
-            episodeTask.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+            episodeTask.startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
         }else{
             //offline title
             //initialize eps list
@@ -496,7 +496,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 DocumentFile target = documentFileFromUri(context, path);
                 deleted = target != null && target.delete();
             } catch (Exception e) {
-                e.printStackTrace();
+                ml.melun.mangaview.report.CrashReporter.record(e);
             }
         } else {
             deleted = deleteRecursive(new File(path));
@@ -512,7 +512,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 episodeAdapter.removeEpisode(position);
             else {
                 episodes.remove(manga);
-                episodeAdapter.notifyDataSetChanged();
+                episodeAdapter.notifyItemRangeChanged(0, episodeAdapter.getItemCount());
             }
         }
         Toast.makeText(context, "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
@@ -534,7 +534,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 deleteRecursive(new File(title.getPath()));
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
     }
 
@@ -551,7 +551,7 @@ public class EpisodeActivity extends AppCompatActivity {
         return -1;
     }
 
-    private class getEpisodes extends LifecycleTask<Void,Void,Integer> {
+    private class getEpisodes extends AppTask<Void,Void,Integer> {
         protected void onPreExecute() {
             super.onPreExecute();
             progress.setVisibility(View.VISIBLE);

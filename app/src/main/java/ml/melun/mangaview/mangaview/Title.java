@@ -110,7 +110,7 @@ public class Title extends MTitle {
                         bookmarkLink = "";
                     }
                 }catch (Exception e){
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 }
 
                 //thumb
@@ -166,10 +166,10 @@ public class Title extends MTitle {
                         tmp.setMode(0);
                         eps.add(tmp);
                     }
-                }catch (Exception e){e.printStackTrace();}
+                }catch (Exception e){ml.melun.mangaview.report.CrashReporter.record(e);}
                 break;
             }catch(Exception e) {
-                e.printStackTrace();
+                ml.melun.mangaview.report.CrashReporter.record(e);
                 break;
             }
         }
@@ -235,7 +235,7 @@ public class Title extends MTitle {
             if(eps.size() == 0 && client.resolveWfwfDomainNow())
                 return fetchWolfEps(client, listPath, viewPath);
         }catch(Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return LOAD_OK;
     }

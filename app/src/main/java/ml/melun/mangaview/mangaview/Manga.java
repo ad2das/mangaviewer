@@ -227,7 +227,7 @@ public class Manga {
                 }
 
             } catch (Exception e2) {
-                e2.printStackTrace();
+                ml.melun.mangaview.report.CrashReporter.record(e2);
             }
             if (r != null) {
                 r.close();
@@ -356,7 +356,7 @@ public class Manga {
             }
             break;
             } catch (Exception e) {
-                e.printStackTrace();
+                ml.melun.mangaview.report.CrashReporter.record(e);
                 break;
             }
         }
@@ -475,7 +475,7 @@ public class Manga {
             tmp.put("name", name);
             tmp.put("date", date);
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return tmp.toString();
     }
