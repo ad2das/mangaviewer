@@ -212,12 +212,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     public void setHomeTab(int tabPosition) {
-        if(activeHomeTab == tabPosition && rows != null && rows.size() > 0)
-            return;
         activeHomeTab = tabPosition;
         List<Object> nextRows = buildRowsForCurrentTab(fetcher != null || !hasFetchedContent());
-        if(nextRows.size() == 0 && hasDisplayContent(rows))
-            return;
         updateRows(nextRows);
         scheduleContinueProgressBackfill();
     }
@@ -390,8 +386,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         List<Object> tabRows = buildTabRows(dataSet, true, activeHomeTab == 1 ? "인기순" : freshSectionTitle());
         if(tabRows.size() > 0)
             result.addAll(tabRows);
-        else
-            result.add(new CategoryPanel());
         return result;
     }
 
@@ -755,8 +749,21 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private boolean hasRequiredHomeSections(List<Ranking<?>> sections) {
         if(sections == null)
             return false;
-        return titlesFromRanking(findRanking(sections, "인기순"), 1).size() > 0
-                && titlesFromRanking(findRanking(sections, freshSectionTitle()), 1).size() > 0;
+        return hasMatchingSectionTitles(sections, "인기순")
+                && hasMatchingSectionTitles(sections, freshSectionTitle());
+    }
+
+    private boolean hasMatchingSectionTitles(List<Ranking<?>> sections, String titlePart) {
+        if(sections == null || titlePart == null)
+            return false;
+        for(Ranking<?> section : sections) {
+            if(section == null)
+                continue;
+            SectionName name = parseSectionName(section.getName());
+            if(name.title.contains(titlePart) && titlesFromRanking(section, 1).size() > 0)
+                return true;
+        }
+        return false;
     }
 
     private Ranking<?> findRanking(List<Ranking<?>> sections, String titlePart) {

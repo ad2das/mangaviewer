@@ -524,12 +524,8 @@ public class MainMain extends Fragment{
         ensureHomeAdapter(base_comic);
         if(mainComicAdapter == null)
             return;
-        if(mainComicAdapter.isFetching()) {
-            if(selectedBaseMode != base_comic || mainComicAdapter.hasRequiredHomeSections())
-                return;
-            mainComicAdapter.fetch();
+        if(mainComicAdapter.isFetching())
             return;
-        }
         if(comicFetched && mainComicAdapter.hasRequiredHomeSections())
             return;
         comicFetched = false;
@@ -540,12 +536,8 @@ public class MainMain extends Fragment{
         ensureHomeAdapter(base_webtoon);
         if(mainWebtoonAdapter == null)
             return;
-        if(mainWebtoonAdapter.isFetching()) {
-            if(selectedBaseMode != base_webtoon || mainWebtoonAdapter.hasRequiredHomeSections())
-                return;
-            mainWebtoonAdapter.fetch();
+        if(mainWebtoonAdapter.isFetching())
             return;
-        }
         if(webtoonFetched && mainWebtoonAdapter.hasRequiredHomeSections())
             return;
         webtoonFetched = false;
