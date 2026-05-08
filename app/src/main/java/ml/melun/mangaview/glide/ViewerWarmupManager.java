@@ -37,6 +37,7 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_OK;
 
 public class ViewerWarmupManager {
     private static final int ACTIVE_LIMIT = 40;
+    private static final int DECODED_TARGET_LIMIT = 32;
     private static final int SNAPSHOT_LIMIT = 64;
     private static final long SNAPSHOT_TTL_MS = 2 * 60 * 1000L;
     private static final Map<String, WarmupState> activeWarmups = new HashMap<>();
@@ -117,6 +118,23 @@ public class ViewerWarmupManager {
                 decodedBitmapCache.remove(key);
         }
         return null;
+    }
+
+    public static void clearDecodedWork(Context context) {
+        List<CustomTarget<Bitmap>> targets;
+        synchronized (ViewerWarmupManager.class) {
+            targets = new ArrayList<>(decodedTargets.values());
+            decodedTargets.clear();
+            decodedBitmapCache.evictAll();
+        }
+        if(context == null)
+            return;
+        for(CustomTarget<Bitmap> target : targets) {
+            try {
+                Glide.with(context).clear(target);
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     public static void preloadLoadedImages(Context context, Manga manga, int pageIndex, int width, boolean autoCut, boolean reverse, int limit, Priority priority) {
@@ -200,6 +218,7 @@ public class ViewerWarmupManager {
         };
         synchronized (ViewerWarmupManager.class) {
             decodedTargets.put(key, target);
+            trimDecodedTargets();
         }
         Glide.with(context)
                 .asBitmap()
@@ -276,6 +295,16 @@ public class ViewerWarmupManager {
     private static void trimSnapshots() {
         while(snapshots.size() > SNAPSHOT_LIMIT) {
             Iterator<String> iterator = snapshots.keySet().iterator();
+            if(!iterator.hasNext())
+                return;
+            iterator.next();
+            iterator.remove();
+        }
+    }
+
+    private static void trimDecodedTargets() {
+        while(decodedTargets.size() > DECODED_TARGET_LIMIT) {
+            Iterator<String> iterator = decodedTargets.keySet().iterator();
             if(!iterator.hasNext())
                 return;
             iterator.next();

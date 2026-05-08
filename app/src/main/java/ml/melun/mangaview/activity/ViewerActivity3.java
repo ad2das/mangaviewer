@@ -1,4 +1,5 @@
 package ml.melun.mangaview.activity;
+import android.annotation.SuppressLint;
 
 import android.app.ProgressDialog;
 import android.content.Context;
@@ -93,6 +94,7 @@ public class ViewerActivity3 extends AppCompatActivity {
         super.onSaveInstanceState(outState);
     }
     @Override
+    @SuppressLint("WrongViewCast")
     protected void onCreate(Bundle savedInstanceState) {
         dark = p.getDarkTheme();
         if(dark) setTheme(R.style.AppThemeDarkNoTitle);

@@ -1639,6 +1639,7 @@ public class ViewerActivity extends AppCompatActivity {
         if(loader != null)
             loader.cancel();
         cancelNextPrefetcher();
+        ViewerWarmupManager.clearDecodedWork(context);
         imageLoadExecutor.shutdownNow();
         super.onDestroy();
     }

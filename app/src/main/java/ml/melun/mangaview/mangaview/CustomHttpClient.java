@@ -21,6 +21,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
@@ -48,6 +49,7 @@ public class CustomHttpClient {
     private static final int MAX_HTTP_REQUESTS = 8;
     private static final int MAX_HTTP_REQUESTS_PER_HOST = 4;
     public OkHttpClient client;
+    private OkHttpClient unsafeFallbackClient;
     Map<String, String> cookies;
     Map<String, Long> cookieSyncAt;
     Map<String, CachedPage> pageCache;
@@ -71,32 +73,8 @@ public class CustomHttpClient {
             }
         };
         loadSavedCookies();
-        if(android.os.Build.VERSION.SDK_INT < CODE_SCOPED_STORAGE) {
-            // Necessary because our servers don't have the right cipher suites.
-            // https://github.com/square/okhttp/issues/4053
-            List<CipherSuite> cipherSuites = new ArrayList<>(ConnectionSpec.MODERN_TLS.cipherSuites());
-            cipherSuites.add(CipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA);
-            cipherSuites.add(CipherSuite.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA);
-
-            ConnectionSpec legacyTls = new ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS)
-                    .cipherSuites(cipherSuites.toArray(new CipherSuite[0]))
-                    .build();
-
-            this.client = configureDispatcher(getUnsafeOkHttpClient())
-                    .connectionSpecs(Arrays.asList(legacyTls, ConnectionSpec.CLEARTEXT))
-                    .followRedirects(false)
-                    .followSslRedirects(false)
-                    .connectTimeout(20, TimeUnit.SECONDS)
-                    .readTimeout(20, TimeUnit.SECONDS)
-                    .build();
-        }else {
-            this.client = configureDispatcher(getUnsafeOkHttpClient())
-                    .followRedirects(false)
-                    .followSslRedirects(false)
-                    .connectTimeout(20, TimeUnit.SECONDS)
-                    .readTimeout(20, TimeUnit.SECONDS)
-                    .build();
-        }
+        this.client = baseClient(new OkHttpClient.Builder()).build();
+        this.unsafeFallbackClient = baseClient(getUnsafeOkHttpClient()).build();
 
         //this.cfc = new HashMap<>();
         //this.client = new OkHttpClient.Builder().build();
@@ -222,6 +200,10 @@ public class CustomHttpClient {
         }
     }
 
+    public RequestGroup currentRequestGroup() {
+        return currentRequestGroup.get();
+    }
+
     public Response get(String url, Map<String, String> headers){
 //        System.out.println(url);
         Response response;
@@ -240,7 +222,18 @@ public class CustomHttpClient {
             call = this.client.newCall(request);
             if(requestGroup != null)
                 requestGroup.add(call);
-            response = call.execute();
+            try {
+                response = call.execute();
+            } catch (SSLException sslException) {
+                if(!allowUnsafeFallback(url))
+                    throw sslException;
+                if(requestGroup != null)
+                    requestGroup.remove(call);
+                call = this.unsafeFallbackClient.newCall(request);
+                if(requestGroup != null)
+                    requestGroup.add(call);
+                response = call.execute();
+            }
             storeResponseCookies(response);
         } catch (Exception e){
             if(!isInterruptedRequest(e) && (requestGroup == null || !requestGroup.isCancelled()))
@@ -251,6 +244,13 @@ public class CustomHttpClient {
                 requestGroup.remove(call);
         }
         return response;
+    }
+
+    private boolean allowUnsafeFallback(String url) {
+        if(url == null)
+            return false;
+        String lower = url.toLowerCase(Locale.ROOT);
+        return lower.contains("wfwf") || lower.contains("wolf");
     }
 
     public static String readBody(Response response) throws Exception {
@@ -760,6 +760,25 @@ public class CustomHttpClient {
         dispatcher.setMaxRequests(MAX_HTTP_REQUESTS);
         dispatcher.setMaxRequestsPerHost(MAX_HTTP_REQUESTS_PER_HOST);
         return builder.dispatcher(dispatcher);
+    }
+
+    private static OkHttpClient.Builder baseClient(OkHttpClient.Builder builder) {
+        OkHttpClient.Builder configured = configureDispatcher(builder)
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .connectTimeout(20, TimeUnit.SECONDS)
+                .readTimeout(20, TimeUnit.SECONDS);
+        if(android.os.Build.VERSION.SDK_INT < CODE_SCOPED_STORAGE) {
+            List<CipherSuite> cipherSuites = new ArrayList<>(ConnectionSpec.MODERN_TLS.cipherSuites());
+            cipherSuites.add(CipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA);
+            cipherSuites.add(CipherSuite.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA);
+
+            ConnectionSpec legacyTls = new ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS)
+                    .cipherSuites(cipherSuites.toArray(new CipherSuite[0]))
+                    .build();
+            configured.connectionSpecs(Arrays.asList(legacyTls, ConnectionSpec.CLEARTEXT));
+        }
+        return configured;
     }
 
 }

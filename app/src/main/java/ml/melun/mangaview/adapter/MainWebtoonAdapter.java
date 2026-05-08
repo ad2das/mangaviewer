@@ -3,6 +3,8 @@ package ml.melun.mangaview.adapter;
 import android.content.Context;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Handler;
+import android.os.Looper;
 import ml.melun.mangaview.task.LifecycleTask;
 import android.text.TextUtils;
 import android.view.Gravity;
@@ -91,9 +93,14 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private static final String HOME_CACHE_KEY_PREFIX = "homeSnapshotV1_";
     private static final int HOME_CACHE_MAX_SECTIONS = 6;
     private static final int HOME_CACHE_MAX_TITLES_PER_SECTION = 10;
+    private static final ExecutorService ROW_DIFF_EXECUTOR = Executors.newSingleThreadExecutor(
+            runnable -> new Thread(runnable, "HomeRowDiff")
+    );
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private int preloadCount = 0;
     private int activeHomeTab = 0;
     private boolean continueProgressBackfillRunning = false;
+    private int rowDiffGeneration = 0;
 
     public MainWebtoonAdapter(Context context){
         this(context, base_webtoon);
@@ -1550,30 +1557,45 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
         pendingRows = null;
         final ScrollAnchor anchor = captureScrollAnchor(oldRows);
-        DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
-            @Override
-            public int getOldListSize() {
-                return oldRows.size();
-            }
+        final int generation = ++rowDiffGeneration;
+        ROW_DIFF_EXECUTOR.execute(() -> {
+            DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
+                @Override
+                public int getOldListSize() {
+                    return oldRows.size();
+                }
 
-            @Override
-            public int getNewListSize() {
-                return nextRows.size();
-            }
+                @Override
+                public int getNewListSize() {
+                    return nextRows.size();
+                }
 
-            @Override
-            public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
-                return rowKey(oldRows.get(oldItemPosition)).equals(rowKey(nextRows.get(newItemPosition)));
-            }
+                @Override
+                public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
+                    return rowKey(oldRows.get(oldItemPosition)).equals(rowKey(nextRows.get(newItemPosition)));
+                }
 
-            @Override
-            public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
-                return rowContentKey(oldRows.get(oldItemPosition)).equals(rowContentKey(nextRows.get(newItemPosition)));
-            }
-        }, false);
-        rows = nextRows;
-        diff.dispatchUpdatesTo(this);
-        restoreScrollAnchor(anchor);
+                @Override
+                public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
+                    return rowContentKey(oldRows.get(oldItemPosition)).equals(rowContentKey(nextRows.get(newItemPosition)));
+                }
+            }, false);
+            postRowDiff(generation, nextRows, diff, anchor);
+        });
+    }
+
+    private void postRowDiff(int generation, List<Object> nextRows, DiffUtil.DiffResult diff, ScrollAnchor anchor) {
+        Runnable apply = () -> {
+            if(generation != rowDiffGeneration)
+                return;
+            rows = nextRows;
+            diff.dispatchUpdatesTo(this);
+            restoreScrollAnchor(anchor);
+        };
+        if(anchorRecycler != null)
+            anchorRecycler.post(apply);
+        else
+            MAIN.post(apply);
     }
 
     private void applyPendingRows() {

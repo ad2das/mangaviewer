@@ -1,4 +1,5 @@
 package ml.melun.mangaview.activity;
+import android.annotation.SuppressLint;
 
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
@@ -122,6 +123,7 @@ public class ViewerActivity2 extends AppCompatActivity {
     }
 
     @Override
+    @SuppressLint("WrongViewCast")
     protected void onCreate(Bundle savedInstanceState) {
         dark = p.getDarkTheme();
         super.onCreate(savedInstanceState);

@@ -1,6 +1,7 @@
 package ml.melun.mangaview.adapter;
 import android.content.Context;
 import androidx.core.content.ContextCompat;
+import androidx.recyclerview.widget.DiffUtil;
 import androidx.cardview.widget.CardView;
 import androidx.recyclerview.widget.RecyclerView;
 import android.view.LayoutInflater;
@@ -63,6 +64,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         mainContext = context;
         this.mData = new ArrayList<>();
         this.mDataFiltered = new ArrayList<>();
+        setHasStableIds(true);
         filter = new Filter() {
             @Override
             protected FilterResults performFiltering(CharSequence charSequence) {
@@ -97,7 +99,10 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
 
     @Override
     public long getItemId(int position) {
-        return position;
+        if(!isValidPosition(position))
+            return RecyclerView.NO_ID;
+        Title title = mDataFiltered.get(position);
+        return (title.getBaseMode() + ":" + title.getId()).hashCode();
     }
 
     public void removeAll(){
@@ -160,8 +165,62 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     }
 
     public void setData(List<?> t){
-        clearData();
-        addData(t);
+        ArrayList<Title> next = normalizeTitles(t);
+        final ArrayList<Title> old = new ArrayList<>(mDataFiltered);
+        DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
+            @Override
+            public int getOldListSize() {
+                return old.size();
+            }
+
+            @Override
+            public int getNewListSize() {
+                return next.size();
+            }
+
+            @Override
+            public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
+                return sameTitle(old.get(oldItemPosition), next.get(newItemPosition));
+            }
+
+            @Override
+            public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
+                return titleContentKey(old.get(oldItemPosition)).equals(titleContentKey(next.get(newItemPosition)));
+            }
+        }, false);
+        mData = next;
+        mDataFiltered = next;
+        searching = false;
+        diff.dispatchUpdatesTo(this);
+    }
+
+    private ArrayList<Title> normalizeTitles(List<?> source) {
+        ArrayList<Title> titles = new ArrayList<>();
+        if(source == null)
+            return titles;
+        for(Object d : source) {
+            Title title = null;
+            if(d instanceof Title)
+                title = (Title)d;
+            else if(d instanceof MTitle)
+                title = new Title((MTitle)d);
+            if(title == null)
+                continue;
+            applyStoredBookmark(title);
+            titles.add(title);
+        }
+        return titles;
+    }
+
+    private boolean sameTitle(Title a, Title b) {
+        return a != null && b != null && a.getId() == b.getId() && a.getBaseMode() == b.getBaseMode();
+    }
+
+    private String titleContentKey(Title title) {
+        if(title == null)
+            return "";
+        return title.getName() + "|" + title.getThumb() + "|" + title.getAuthor() + "|"
+                + title.getRelease() + "|" + title.getBookmark() + "|" + title.getTags();
     }
 
     public void clearData(){

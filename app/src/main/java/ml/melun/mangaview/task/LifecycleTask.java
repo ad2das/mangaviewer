@@ -29,6 +29,8 @@ public abstract class LifecycleTask<Params, Progress, Result> implements Default
     }
 
     private static final int POOL_SIZE = 5;
+    private static final int BACKGROUND_QUEUE_SIZE = 128;
+    private static final int USER_ACTION_QUEUE_SIZE = 64;
     private static final int KEEP_ALIVE_SECONDS = 30;
     private static final AtomicInteger THREAD_ID = new AtomicInteger(1);
 
@@ -37,16 +39,18 @@ public abstract class LifecycleTask<Params, Progress, Result> implements Default
             POOL_SIZE,
             KEEP_ALIVE_SECONDS,
             TimeUnit.SECONDS,
-            new LinkedBlockingQueue<>(),
-            runnable -> new Thread(runnable, "LifecycleTask-" + THREAD_ID.getAndIncrement())
+            new LinkedBlockingQueue<>(BACKGROUND_QUEUE_SIZE),
+            runnable -> new Thread(runnable, "LifecycleTask-" + THREAD_ID.getAndIncrement()),
+            new ThreadPoolExecutor.CallerRunsPolicy()
     );
     public static final ExecutorService USER_ACTION_EXECUTOR = new ThreadPoolExecutor(
             3,
             3,
             KEEP_ALIVE_SECONDS,
             TimeUnit.SECONDS,
-            new LinkedBlockingQueue<>(),
-            runnable -> new Thread(runnable, "LifecycleUserTask-" + THREAD_ID.getAndIncrement())
+            new LinkedBlockingQueue<>(USER_ACTION_QUEUE_SIZE),
+            runnable -> new Thread(runnable, "LifecycleUserTask-" + THREAD_ID.getAndIncrement()),
+            new ThreadPoolExecutor.CallerRunsPolicy()
     );
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
