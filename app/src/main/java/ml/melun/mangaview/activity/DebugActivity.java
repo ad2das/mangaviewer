@@ -129,7 +129,7 @@ public class DebugActivity extends AppCompatActivity {
             p.init(this);
         }catch (Exception e){
             showPopup(context,"오류",e.getMessage());
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
     }
 

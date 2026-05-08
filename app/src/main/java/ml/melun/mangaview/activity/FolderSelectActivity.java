@@ -292,7 +292,7 @@ public class FolderSelectActivity extends AppCompatActivity {
             });
             tmp.add(0, "..");
         }catch (Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
         //change actionbar text
         path.setText(currentDir.getAbsolutePath());
@@ -306,16 +306,16 @@ public class FolderSelectActivity extends AppCompatActivity {
     public void populate() {
         try {
             listContent.clear();
-            arrayAdapter.notifyDataSetChanged();
+            arrayAdapter.notifyDataSetInvalidated();
             listContent.addAll(refresh());
-            arrayAdapter.notifyDataSetChanged();
+            arrayAdapter.notifyDataSetInvalidated();
         }catch (Exception e){
             showPopup(context,"알림","접근이 불가능한 디렉토리 입니다.");
             currentDir = currentDir.getParentFile();
             listContent.clear();
-            arrayAdapter.notifyDataSetChanged();
+            arrayAdapter.notifyDataSetInvalidated();
             listContent.addAll(refresh());
-            arrayAdapter.notifyDataSetChanged();
+            arrayAdapter.notifyDataSetInvalidated();
         }
         dirList.setSelection(0);
     }

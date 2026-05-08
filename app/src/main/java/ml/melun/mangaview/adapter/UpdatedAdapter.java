@@ -101,18 +101,27 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         h.text.setText(m.getName() == null ? "" : m.getName());
         h.date.setText(m.getDate() == null ? "" : m.getDate());
         String thumb = m.getThumb();
-        Glide.with(h.thumb).clear(h.thumb);
         if(thumb != null && thumb.length()>1 && !save) {
-            Glide.with(h.thumb)
-                    .load(getGlideUrl(thumb, m.getBaseMode()))
-                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                    .override(dp(72), dp(96))
-                    .thumbnail(0.25f)
-                    .dontAnimate()
-                    .placeholder(R.drawable.app_cover_placeholder)
-                    .into(h.thumb);
+            Object source = getGlideUrl(thumb, m.getBaseMode());
+            String key = String.valueOf(source);
+            if(!key.equals(h.thumb.getTag())) {
+                Glide.with(h.thumb).clear(h.thumb);
+                h.thumb.setTag(key);
+                Glide.with(h.thumb)
+                        .load(source)
+                        .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                        .override(dp(72), dp(96))
+                        .thumbnail(0.25f)
+                        .dontAnimate()
+                        .placeholder(R.drawable.app_cover_placeholder)
+                        .into(h.thumb);
+            }
         } else {
-            h.thumb.setImageBitmap(null);
+            if(!"empty".equals(h.thumb.getTag())) {
+                Glide.with(h.thumb).clear(h.thumb);
+                h.thumb.setTag("empty");
+                h.thumb.setImageBitmap(null);
+            }
         }
         if(save) h.thumb.setVisibility(View.GONE);
         if(p.getBookmark(m.getTitle())>0)

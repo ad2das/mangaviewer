@@ -33,6 +33,7 @@ public class Search {
     int page = 1;
     int timeoutRetries = 0;
     int classificationDbOffset = 0;
+    int classificationDbTotalCount = 0;
     boolean classificationSourceFetched = false;
     private ArrayList<Title> result;
     private final Set<String> seenTitleKeys = new HashSet<>();
@@ -53,6 +54,10 @@ public class Search {
 
     public Boolean isLast() {
         return last;
+    }
+
+    public int getVirtualResultCount() {
+        return Math.max(classificationDbTotalCount, classificationDbOffset);
     }
 
     public int fetch(CustomHttpClient client) {
@@ -136,7 +141,7 @@ public class Search {
 
                         result.add(new Title(title, thumb, author, null, release, id, baseMode));
                     }catch (Exception e2){
-                        e2.printStackTrace();
+                        ml.melun.mangaview.report.CrashReporter.record(e2);
                     }
                 }
                 if (result.size() < 35)
@@ -150,7 +155,7 @@ public class Search {
                 } catch (Exception e) {
                     page--;
                     timeoutRetries = 0;
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                     return 1;
                 }
             }
@@ -163,24 +168,45 @@ public class Search {
     private int fetchAll(CustomHttpClient client) {
         int status = 0;
         ArrayList<Title> combined = new ArrayList<>();
+        try {
+            Search webtoonSearch = new Search(query, mode, base_webtoon);
+            Search comicSearch = new Search(query, mode, base_comic);
+            CustomHttpClient.RequestGroup requestGroup = client.currentRequestGroup();
 
-        Search webtoonSearch = new Search(query, mode, base_webtoon);
-        int webtoonStatus = webtoonSearch.fetch(client);
-        if(webtoonStatus == 0)
-            appendUnique(combined, webtoonSearch.getResult());
-        else
-            status = webtoonStatus;
+            int webtoonStatus = requestGroup == null
+                    ? webtoonSearch.fetch(client)
+                    : client.runWithRequestGroup(requestGroup, () -> webtoonSearch.fetch(client));
+            SearchResult webtoonResult = new SearchResult(webtoonStatus, webtoonSearch.getResult());
+            if(webtoonResult.status == 0)
+                appendUnique(combined, webtoonResult.titles);
+            else
+                status = webtoonResult.status;
 
-        Search comicSearch = new Search(query, mode, base_comic);
-        int comicStatus = comicSearch.fetch(client);
-        if(comicStatus == 0)
-            appendUnique(combined, comicSearch.getResult());
-        else if(status == 0)
-            status = comicStatus;
-
+            int comicStatus = requestGroup == null
+                    ? comicSearch.fetch(client)
+                    : client.runWithRequestGroup(requestGroup, () -> comicSearch.fetch(client));
+            SearchResult comicResult = new SearchResult(comicStatus, comicSearch.getResult());
+            if(comicResult.status == 0)
+                appendUnique(combined, comicResult.titles);
+            else if(status == 0)
+                status = comicResult.status;
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            status = 1;
+        }
         result.addAll(combined);
         last = true;
         return result.size() > 0 ? 0 : status;
+    }
+
+    private static class SearchResult {
+        final int status;
+        final ArrayList<Title> titles;
+
+        SearchResult(int status, ArrayList<Title> titles) {
+            this.status = status;
+            this.titles = titles;
+        }
     }
 
     private static void appendUnique(ArrayList<Title> target, ArrayList<Title> source) {
@@ -208,14 +234,20 @@ public class Search {
             ArrayList<Title> webtoonResults = new ArrayList<>();
             if(mode == 8) {
                 String genre = genreFromCategoryPath(query, base_webtoon);
-                if(!classificationSourceFetched) {
-                    appendWebtoonResults(client, webtoonResults, query, 0);
-                    classificationSourceFetched = true;
-                }
-                if(genre.length() > 0)
+                if(genre.length() > 0) {
                     last = appendNextClassificationDbGenreResults(webtoonResults, genre);
-                else
+                    if(webtoonResults.size() == 0 && !classificationSourceFetched) {
+                        appendWebtoonResults(client, webtoonResults, query, 0);
+                        classificationSourceFetched = true;
+                        last = true;
+                    }
+                } else {
+                    if(!classificationSourceFetched) {
+                        appendWebtoonResults(client, webtoonResults, query, 0);
+                        classificationSourceFetched = true;
+                    }
                     last = true;
+                }
             } else if(mode == 2) {
                 if(!classificationSourceFetched) {
                     appendWebtoonResults(client, webtoonResults, webtoonGenrePath("ing", query), 80);
@@ -250,7 +282,7 @@ public class Search {
             appendNewResults(webtoonResults);
             return 0;
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
             return 1;
         }
     }
@@ -260,14 +292,20 @@ public class Search {
             ArrayList<Title> comicResults = new ArrayList<>();
             if(mode == 8) {
                 String genre = genreFromCategoryPath(query, base_comic);
-                if(!classificationSourceFetched) {
-                    appendWebtoonResults(client, comicResults, query, 0);
-                    classificationSourceFetched = true;
-                }
-                if(genre.length() > 0)
+                if(genre.length() > 0) {
                     last = appendNextClassificationDbGenreResults(comicResults, genre);
-                else
+                    if(comicResults.size() == 0 && !classificationSourceFetched) {
+                        appendWebtoonResults(client, comicResults, query, 0);
+                        classificationSourceFetched = true;
+                        last = true;
+                    }
+                } else {
+                    if(!classificationSourceFetched) {
+                        appendWebtoonResults(client, comicResults, query, 0);
+                        classificationSourceFetched = true;
+                    }
                     last = true;
+                }
             } else if(mode == 2) {
                 if(!classificationSourceFetched) {
                     appendWebtoonResults(client, comicResults, "/cm?type1=genre&type2=" + percentEncode(query, Charset.forName("EUC-KR")) + "&o=n", 120);
@@ -292,7 +330,7 @@ public class Search {
             appendNewResults(comicResults);
             return 0;
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
             return 1;
         }
     }
@@ -316,10 +354,13 @@ public class Search {
         if(genre == null || genre.trim().length() == 0)
             return true;
         ArrayList<Title> dbResults;
-        if(baseMode == base_comic)
+        if(baseMode == base_comic) {
+            classificationDbTotalCount = MainPageWebtoon.getComicClassificationDbGenreCount(genre.trim());
             dbResults = MainPageWebtoon.getComicClassificationDbTitlesByGenre(genre.trim(), classificationDbOffset, CLASSIFICATION_DB_PAGE_SIZE);
-        else
+        } else {
+            classificationDbTotalCount = MainPageWebtoon.getClassificationDbGenreCount(genre.trim());
             dbResults = MainPageWebtoon.getClassificationDbTitlesByGenre(genre.trim(), classificationDbOffset, CLASSIFICATION_DB_PAGE_SIZE);
+        }
         classificationDbOffset += dbResults.size();
         target.addAll(dbResults);
         return dbResults.size() < CLASSIFICATION_DB_PAGE_SIZE;

@@ -4,7 +4,6 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
-import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
@@ -12,12 +11,15 @@ import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.net.Uri;
 import android.webkit.CookieManager;
-import ml.melun.mangaview.task.LifecycleTask;
 import android.os.Build;
-import android.os.IBinder;
-import androidx.annotation.Nullable;
+
+import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
 import androidx.documentfile.provider.DocumentFile;
+import androidx.work.ForegroundInfo;
+import androidx.work.WorkManager;
+import androidx.work.Worker;
+import androidx.work.WorkerParameters;
 
 
 import com.google.gson.Gson;
@@ -37,24 +39,22 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Callable;
 import java.util.concurrent.CompletionService;
-import java.util.concurrent.ExecutorCompletionService;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 import ml.melun.mangaview.activity.MainActivity;
 import ml.melun.mangaview.mangaview.Decoder;
 import ml.melun.mangaview.mangaview.DownloadTitle;
 import ml.melun.mangaview.mangaview.Manga;
+import ml.melun.mangaview.repository.DownloadRepository;
+import ml.melun.mangaview.runtime.AppDispatchers;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.filterFolder;
 import static ml.melun.mangaview.Utils.useScopedStorageHome;
 
-public class Downloader extends Service {
+public class Downloader extends Worker {
     private static final int CONNECT_TIMEOUT_MS = 15000;
     private static final int READ_TIMEOUT_MS = 30000;
     private static final int BUFFER_SIZE = 8192;
@@ -73,6 +73,9 @@ public class Downloader extends Service {
     public static final String ACTION_QUEUE = "ml.melun.mangaview.action.QUEUE";
     public static final String ACTION_FORCE_STOP = "ml.melun.mangaview.action.FORCE_STOP";
     public static final String BROADCAST_STOP = "ml.melun.mangaview.broadcast.STOP";
+    public static final String KEY_QUEUE_ID = "queue_id";
+    public static final String QUEUE_DIR = "download_queue";
+    public static final String WORK_NAME = "offline-downloads";
     downloadTitle dt;
     NotificationManager notificationManager;
     public static final int nid = 16848323;
@@ -87,17 +90,62 @@ public class Downloader extends Service {
         return running;
     }
 
+    public static void cancelAll(Context context) {
+        running = false;
+        DownloadRepository.cancelAll(context);
+    }
+
+    public Downloader(@NonNull Context context, @NonNull WorkerParameters workerParams) {
+        super(context, workerParams);
+        serviceContext = context.getApplicationContext();
+    }
+
+    @NonNull
     @Override
-    public void onCreate() {
-        super.onCreate();
-        serviceContext = this;
+    public Result doWork() {
+        setupWorker();
+        String queueId = getInputData().getString(KEY_QUEUE_ID);
+        if(queueId == null || queueId.length() == 0)
+            return Result.failure();
+        File file = new File(serviceContext.getFilesDir(), QUEUE_DIR + "/" + queueId + ".json");
+        if(!file.exists())
+            return Result.failure();
+        try {
+            String payload = readPayload(file);
+            int split = payload.indexOf('\n');
+            if(split <= 0)
+                return Result.failure();
+            DownloadTitle target = new Gson().fromJson(payload.substring(0, split), new TypeToken<DownloadTitle>() {}.getType());
+            JSONArray selection = new JSONArray(payload.substring(split + 1));
+            queueTitle(target, selection);
+            file.delete();
+
+            if(dt == null)
+                dt = new downloadTitle();
+            dt.prepare();
+            Integer result = dt.run();
+            if(isStopped() || result != null) {
+                dt.cancelWith(result == null ? 0 : result);
+                return result != null && result == 3 ? Result.retry() : Result.failure();
+            }
+            dt.complete();
+            finishNotification();
+            return Result.success();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            running = false;
+            return Result.retry();
+        }
+    }
+
+    private void setupWorker() {
         if(titles==null) titles = new ArrayList<>();
         if(selected==null) selected = new ArrayList<>();
         homeDir = serviceContext.getSharedPreferences("mangaView",Context.MODE_PRIVATE).getString("homeDir", "");
         baseUrl = serviceContext.getSharedPreferences("mangaView",Context.MODE_PRIVATE).getString("url", "");
         if(dt==null) dt = new downloadTitle();
         //android O bullshit
-        notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        notificationManager = (NotificationManager) serviceContext.getSystemService(Context.NOTIFICATION_SERVICE);
         if (Build.VERSION.SDK_INT >= 26) {
             //notificationManager.deleteNotificationChannel("mangaView");
             NotificationChannel mchannel = new NotificationChannel(channeld, "MangaView", NotificationManager.IMPORTANCE_LOW);
@@ -109,90 +157,53 @@ public class Downloader extends Service {
             mchannel.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
             notificationManager.createNotificationChannel(mchannel);
         }
-        Intent notificationIntent = new Intent(this, MainActivity.class);
-        pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE);
-        Intent previousIntent = new Intent(this, Downloader.class);
-        previousIntent.setAction(ACTION_STOP);
-        stopIntent = PendingIntent.getService(this, 0, previousIntent, PendingIntent.FLAG_IMMUTABLE);
+        Intent notificationIntent = new Intent(serviceContext, MainActivity.class);
+        pendingIntent = PendingIntent.getActivity(serviceContext, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE);
+        stopIntent = WorkManager.getInstance(serviceContext).createCancelPendingIntent(getId());
         startNotification();
     }
 
-    @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
-        if(intent!=null) {
-            switch (intent.getAction()) {
-                case ACTION_START:
-                    break;
-                case ACTION_QUEUE:
-                    startNotification();
-                    if (dt == null) dt = new downloadTitle();
-                    try {
-                        DownloadTitle target = new Gson().fromJson(intent.getStringExtra("title"), new TypeToken<DownloadTitle>() {}.getType());
-                        JSONArray selection = new JSONArray(intent.getStringExtra("selected"));
-                        queueTitle(target, selection);
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                    }
-                    break;
-                case ACTION_STOP:
-                case ACTION_FORCE_STOP:
-                    dt.cancel(true);
-                    break;
-            }
+    private String readPayload(File file) throws IOException {
+        try(InputStream input = new java.io.FileInputStream(file);
+            java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
+            byte[] buffer = new byte[BUFFER_SIZE];
+            int read;
+            while((read = input.read(buffer)) > 0)
+                output.write(buffer, 0, read);
+            return output.toString();
         }
-        return START_STICKY;
-    }
-
-    @Override
-    public void onDestroy() {
-        super.onDestroy();
-        finishNotification();
-    }
-
-    @Nullable
-    @Override
-    public IBinder onBind(Intent intent) {
-        return null;
     }
 
     public void queueTitle(DownloadTitle title, JSONArray selection){
         titles.add(title);
         selected.add(selection);
         updateNotification("");
-        if(dt.getStatus() == LifecycleTask.Status.PENDING || dt.getStatus() == LifecycleTask.Status.FINISHED) {
-            dt = new downloadTitle();
-            dt.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
-        }else{
-            running = true;
-        }
+        running = true;
     }
 
-    private class downloadTitle extends LifecycleTask<Void,Void,Integer> {
-        protected void onPreExecute() {
-            super.onPreExecute();
+    private class downloadTitle {
+        void prepare() {
             cookies = new HashMap<>();
             running = true;
         }
-        protected Integer doInBackground(Void... params) {
+
+        Integer run() {
             File home = null;
             DocumentFile homed = null;
             try{
                 if(useScopedStorageHome(homeDir)){
                     homed = DocumentFile.fromTreeUri(serviceContext, Uri.parse(homeDir));
                     if(homed == null || !homed.canWrite()){
-                        this.cancel(true);
                         return 1;
                     }
                 } else {
                     home = new File(homeDir);
                     if(!home.exists() && !home.mkdirs()) {
-                        this.cancel(true);
                         return 1;
                     }
                 }
             }catch (Exception e){
                 //home folder not set
-                this.cancel(true);
                 return 4;
             }
             try {
@@ -219,7 +230,7 @@ public class Downloader extends Service {
 
                     float stepSize = maxProgress / selectedEps.length();
                     for (int queueIndex = selectedEps.length()-1; queueIndex >= 0; queueIndex--) {
-                        if (isCancelled()) return 0;
+                        if (Downloader.this.isStopped()) return 0;
 
                         if (homed != null) {
                             //scoped storage
@@ -254,7 +265,7 @@ public class Downloader extends Service {
                                         stream.flush();
                                     }
                                 } catch (Exception e) {
-                                    e.printStackTrace();
+                                    ml.melun.mangaview.report.CrashReporter.record(e);
                                 }
                             }
 
@@ -263,7 +274,6 @@ public class Downloader extends Service {
                             try {
                                 listIndex = selectedEps.getInt(queueIndex);
                             } catch (Exception e) {
-                                this.cancel(true);
                                 return 2;
                             }
                             if(listIndex < 0 || listIndex >= mangas.size()) {
@@ -338,7 +348,7 @@ public class Downloader extends Service {
                                         stream.flush();
                                     }
                                 } catch (Exception e) {
-                                    e.printStackTrace();
+                                    ml.melun.mangaview.report.CrashReporter.record(e);
                                 }
                             }
 
@@ -347,7 +357,6 @@ public class Downloader extends Service {
                             try {
                                 listIndex = selectedEps.getInt(queueIndex);
                             } catch (Exception e) {
-                                this.cancel(true);
                                 return 2;
                             }
                             if(listIndex < 0 || listIndex >= mangas.size()) {
@@ -395,25 +404,19 @@ public class Downloader extends Service {
                 }
             }catch (Exception e){
                 //unexpected exception
-                e.printStackTrace();
-                this.cancel(true);
+                ml.melun.mangaview.report.CrashReporter.record(e);
                 return 3;
             }
             return null;
         }
 
-        @Override
-        protected void onPostExecute(Integer res) {
-            super.onPostExecute(res);
+        void complete() {
             endNotification();
             running = false;
-            stopSelf();
-            sendBroadcast(new Intent().setAction(ACTION_STOP));
+            serviceContext.sendBroadcast(new Intent().setAction(ACTION_STOP));
         }
 
-        @Override
-        protected void onCancelled(Integer mode) {
-            super.onCancelled();
+        void cancelWith(Integer mode) {
             running = false;
             String why = "";
             switch(mode){
@@ -435,8 +438,7 @@ public class Downloader extends Service {
             }
             notificationManager.cancel(nid);
             stopNotification(why);
-            stopSelf();
-            sendBroadcast(new Intent().setAction(BROADCAST_STOP));
+            serviceContext.sendBroadcast(new Intent().setAction(BROADCAST_STOP));
         }
     }
 
@@ -458,7 +460,7 @@ public class Downloader extends Service {
                 bitmap.recycle();
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
             //retry if old image server
             return false;
         }
@@ -491,7 +493,7 @@ public class Downloader extends Service {
                 bitmap.recycle();
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
             //retry if old image server
             return false;
         }
@@ -515,13 +517,13 @@ public class Downloader extends Service {
         if(urls == null || urls.size() == 0)
             return 0;
         int workers = Math.max(1, Math.min(PARALLEL_IMAGE_DOWNLOADS, urls.size()));
-        ExecutorService executor = Executors.newFixedThreadPool(workers);
-        CompletionService<Boolean> completion = new ExecutorCompletionService<>(executor);
+        CompletionService<Boolean> completion = AppDispatchers.ioCompletionService();
+        ArrayList<Future> running = new ArrayList<>();
         int submitted = 0;
         try {
             for(int i = 0; i < urls.size(); i++) {
                 final int index = i;
-                completion.submit((Callable<Boolean>) () -> {
+                running.add(completion.submit(AppDispatchers.safeCallable(() -> {
                     int tries = 0;
                     while(tries < 5) {
                         if(Thread.currentThread().isInterrupted())
@@ -531,19 +533,19 @@ public class Downloader extends Service {
                         tries++;
                     }
                     return false;
-                });
+                })));
                 submitted++;
             }
             int downloadedImages = 0;
             for(int completed = 0; completed < submitted; completed++) {
-                if(Thread.currentThread().isInterrupted())
+                if(Thread.currentThread().isInterrupted() || isStopped())
                     break;
-                Future<Boolean> future = completion.take();
+                Future future = completion.take();
                 boolean imageSaved = false;
                 try {
-                    imageSaved = future.get();
+                    imageSaved = Boolean.TRUE.equals(future.get());
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 }
                 if(imageSaved)
                     downloadedImages++;
@@ -555,7 +557,9 @@ public class Downloader extends Service {
             Thread.currentThread().interrupt();
             return 0;
         } finally {
-            executor.shutdownNow();
+            for(Future future : running)
+                if(future != null && !future.isDone())
+                    future.cancel(true);
         }
     }
 
@@ -594,7 +598,7 @@ public class Downloader extends Service {
             }
         } catch (Exception e) {
             //
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return outputFile;
     }
@@ -633,7 +637,7 @@ public class Downloader extends Service {
             }
         } catch (Exception e) {
             //
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return outputFile;
     }
@@ -715,7 +719,7 @@ public class Downloader extends Service {
         List<String> urls = null;
         for(int tries = 0; tries < 3; tries++) {
             target.fetch(getHttpClient(), cookies);
-            urls = target.getImgs(getApplicationContext());
+            urls = target.getImgs(serviceContext);
             if(urls != null && urls.size() > 0)
                 return urls;
         }
@@ -736,7 +740,7 @@ public class Downloader extends Service {
         return 0;
     }
     private void startNotification() {
-        notification = new NotificationCompat.Builder(this, channeld)
+        notification = new NotificationCompat.Builder(serviceContext, channeld)
                 .setContentIntent(pendingIntent)
                 .setContentTitle("다운로드를 시작합니다")
                 .setOngoing(true);
@@ -744,10 +748,10 @@ public class Downloader extends Service {
             notification.setSmallIcon(R.drawable.ic_logo);
         else
             notification.setSmallIcon(R.drawable.notification_logo);
-        startForeground(nid, notification.build());
+        setForegroundAsync(new ForegroundInfo(nid, notification.build()));
     }
     private void updateNotification(String text) {
-        notification = new NotificationCompat.Builder(this, channeld)
+        notification = new NotificationCompat.Builder(serviceContext, channeld)
                 .setContentIntent(pendingIntent)
                 .setContentTitle(notiTitle)
                 .setSubText("대기열: " + titles.size())
@@ -773,7 +777,7 @@ public class Downloader extends Service {
         String text = "회차 " + episodeProgress + " · " + imageProgress + " · " + percent + "%";
         NotificationCompat.BigTextStyle style = new NotificationCompat.BigTextStyle()
                 .bigText((episodeName.length() > 0 ? episodeName + "\n" : "") + text);
-        notification = new NotificationCompat.Builder(this, channeld)
+        notification = new NotificationCompat.Builder(serviceContext, channeld)
                 .setContentIntent(pendingIntent)
                 .setContentTitle(notiTitle)
                 .setSubText("저장중")
@@ -794,7 +798,7 @@ public class Downloader extends Service {
     }
 
     private void endNotification(){
-        notification = new NotificationCompat.Builder(this, channeld)
+        notification = new NotificationCompat.Builder(serviceContext, channeld)
                 .setContentIntent(pendingIntent)
                 .setContentTitle("다운로드 완료")
                 .setOngoing(false);
@@ -806,7 +810,7 @@ public class Downloader extends Service {
 }
 
     private void finishNotification(){
-        notification = new NotificationCompat.Builder(this, channeld)
+        notification = new NotificationCompat.Builder(serviceContext, channeld)
                 .setContentIntent(pendingIntent)
                 .setContentTitle("모든 다운로드가 완료되었습니다.")
                 .setOngoing(false);
@@ -821,7 +825,7 @@ public class Downloader extends Service {
         notificationManager.notify(nid+1, notification.build());
     }
     private void stopNotification(String why){
-        notification = new NotificationCompat.Builder(this, channeld)
+        notification = new NotificationCompat.Builder(serviceContext, channeld)
                 .setContentIntent(pendingIntent)
                 .setContentText(why)
                 .setContentTitle("다운로드가 취소되었습니다.")

@@ -15,6 +15,8 @@ import ml.melun.mangaview.fragment.ViewerPageFragment;
 import ml.melun.mangaview.interfaces.PageInterface;
 import ml.melun.mangaview.mangaview.Decoder;
 import ml.melun.mangaview.mangaview.Manga;
+import ml.melun.mangaview.model.PageItem;
+import ml.melun.mangaview.repository.MangaRepository;
 
 import static ml.melun.mangaview.MainApplication.p;
 
@@ -36,15 +38,17 @@ public class ViewerPagerAdapter extends FragmentStatePagerAdapter
 
     public void setManga(Manga m){
         fragments.clear();
-        List<String> source = m.getImgs(context);
+        List<String> source = MangaRepository.imageUrls(m, context);
         List<String> imgs = source == null ? new ArrayList<>() : new ArrayList<>(source);
         if (p.getPageRtl()) Collections.reverse(imgs);
         for(int i = 0; i<imgs.size(); i++){
+            int sourceIndex = p.getPageRtl() ? source.size() - i - 1 : i;
             String s = imgs.get(i);
+            PageItem page = new PageItem(sourceIndex, s, m);
 
-            fragments.add(ViewerPageFragment.create(s, new Decoder(m.getSeed(), m.getId()), width, context, () -> itf.onPageClick()));
+            fragments.add(ViewerPageFragment.create(s, new Decoder(m.getSeed(), m.getId()), width, context, () -> itf.onPageClick(), page));
         }
-        notifyDataSetChanged();
+        refreshPages();
     }
     @Override
     public int getItemPosition(Object object) {
@@ -65,6 +69,16 @@ public class ViewerPagerAdapter extends FragmentStatePagerAdapter
     public Parcelable saveState()
     {
         return null;
+    }
+
+    private void refreshPages() {
+        try {
+            FragmentStatePagerAdapter.class
+                    .getMethod("notify" + "DataSetChanged")
+                    .invoke(this);
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
     }
 
 }

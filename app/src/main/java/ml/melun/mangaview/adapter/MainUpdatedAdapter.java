@@ -96,23 +96,41 @@ public class MainUpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         h.title.setText(manga.getName());
         String thumb = manga.getThumb();
         h.thumb.setColorFilter(null);
-        Glide.with(h.thumb).clear(h.thumb);
-        if(thumb != null && thumb.length()==0)
-            h.thumb.setImageResource(android.R.color.transparent);
-        else if(thumb != null && thumb.equals("reload")) {
-            h.thumb.setImageDrawable(ResourcesCompat.getDrawable(res, R.drawable.ic_refresh, null));
+        if(thumb != null && thumb.length()==0) {
+            bindStatic(h.thumb, "transparent", android.R.color.transparent);
+        } else if(thumb != null && thumb.equals("reload")) {
+            if(!"reload".equals(h.thumb.getTag())) {
+                Glide.with(h.thumb).clear(h.thumb);
+                h.thumb.setTag("reload");
+                h.thumb.setImageDrawable(ResourcesCompat.getDrawable(res, R.drawable.ic_refresh, null));
+            }
             h.thumb.setColorFilter(dark ? Color.WHITE : Color.DKGRAY);
-        }else if(save)
-            h.thumb.setImageDrawable(ResourcesCompat.getDrawable(res, R.mipmap.ic_launcher, null));
-        else
-            Glide.with(h.thumb)
-                    .load(getGlideUrl(thumb, manga.getBaseMode()))
-                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                    .override(dp(96), dp(128))
-                    .thumbnail(0.25f)
-                    .dontAnimate()
-                    .placeholder(R.drawable.app_cover_placeholder)
-                    .into(h.thumb);
+        }else if(save) {
+            bindStatic(h.thumb, "launcher", R.mipmap.ic_launcher);
+        } else {
+            Object source = getGlideUrl(thumb, manga.getBaseMode());
+            String key = String.valueOf(source);
+            if(!key.equals(h.thumb.getTag())) {
+                Glide.with(h.thumb).clear(h.thumb);
+                h.thumb.setTag(key);
+                Glide.with(h.thumb)
+                        .load(source)
+                        .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                        .override(dp(96), dp(128))
+                        .thumbnail(0.25f)
+                        .dontAnimate()
+                        .placeholder(R.drawable.app_cover_placeholder)
+                        .into(h.thumb);
+            }
+        }
+    }
+
+    private void bindStatic(ImageView view, String key, int resId) {
+        if(key.equals(view.getTag()))
+            return;
+        Glide.with(view).clear(view);
+        view.setTag(key);
+        view.setImageResource(resId);
     }
 
     int dp(int value) {

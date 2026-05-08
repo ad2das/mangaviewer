@@ -53,7 +53,7 @@ public class DownloadActivity extends AppCompatActivity {
             adapter.setClickListener((view, position) -> adapter.select(position));
             eplist.setAdapter(adapter);
         }catch (Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
         Button dl = findViewById(R.id.dl_btn);
         dl.setOnClickListener(v -> {

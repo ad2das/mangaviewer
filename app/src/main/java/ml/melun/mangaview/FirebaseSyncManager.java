@@ -7,6 +7,8 @@ import android.net.NetworkInfo;
 import android.os.Handler;
 import android.os.Looper;
 
+import com.google.firebase.FirebaseApp;
+import com.google.firebase.FirebaseOptions;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseUser;
 import com.google.firebase.firestore.DocumentReference;
@@ -17,12 +19,14 @@ import com.google.gson.reflect.TypeToken;
 import org.json.JSONObject;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
 import ml.melun.mangaview.mangaview.MTitle;
+import ml.melun.mangaview.repository.PreferenceStore;
 import okhttp3.Call;
 import okhttp3.Callback;
 import okhttp3.MediaType;
@@ -61,8 +65,17 @@ public class FirebaseSyncManager {
         this.preference = preference;
         metaPref = appContext.getSharedPreferences(META_PREF, Context.MODE_PRIVATE);
         try {
-            auth = FirebaseAuth.getInstance();
-            firestore = FirebaseFirestore.getInstance();
+            FirebaseApp app;
+            if(FirebaseApp.getApps(appContext).isEmpty()) {
+                FirebaseOptions options = FirebaseOptions.fromResource(appContext);
+                app = options == null ? null : FirebaseApp.initializeApp(appContext, options);
+            } else {
+                app = FirebaseApp.getInstance();
+            }
+            if(app != null) {
+                auth = FirebaseAuth.getInstance(app);
+                firestore = FirebaseFirestore.getInstance(app);
+            }
         } catch (Exception e) {
             auth = null;
             firestore = null;
@@ -233,13 +246,13 @@ public class FirebaseSyncManager {
             return;
         preference.runWithoutSync(() -> {
             if(shouldMerge(remote, "recent", "recentJson", "[]")) {
-                List<MTitle> recents = gson.fromJson(readString(remote, "recentJson", "[]"), new TypeToken<List<MTitle>>(){}.getType());
-                preference.setRecents(recents);
+                List<MTitle> recents = readTitleList(remote, "recentJson");
+                PreferenceStore.setRecents(recents);
                 setLocalUpdatedAt("recent", remoteTime(remote, "recentUpdatedAt"));
             }
             if(shouldMerge(remote, "favorite", "favoriteJson", "[]")) {
-                List<MTitle> favorites = gson.fromJson(readString(remote, "favoriteJson", "[]"), new TypeToken<List<MTitle>>(){}.getType());
-                preference.setFavorites(favorites);
+                List<MTitle> favorites = readTitleList(remote, "favoriteJson");
+                PreferenceStore.setFavorites(favorites);
                 setLocalUpdatedAt("favorite", remoteTime(remote, "favoriteUpdatedAt"));
             }
             if(shouldMerge(remote, "bookmark", "bookmarkJson", "{}")) {
@@ -258,6 +271,22 @@ public class FirebaseSyncManager {
             }
             preference.backfillRecentProgress(MainApplication.getHttpClient(), 30);
         });
+    }
+
+    private List<MTitle> readTitleList(Map<String, Object> remote, String key) {
+        try {
+            List<MTitle> parsed = gson.fromJson(readString(remote, key, "[]"), new TypeToken<List<MTitle>>(){}.getType());
+            if(parsed == null)
+                return new ArrayList<>();
+            ArrayList<MTitle> sanitized = new ArrayList<>();
+            for(MTitle title : parsed)
+                if(title != null && title.getName() != null)
+                    sanitized.add(title);
+            return sanitized;
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return new ArrayList<>();
+        }
     }
 
     private JSONObject jsonObject(String source) {

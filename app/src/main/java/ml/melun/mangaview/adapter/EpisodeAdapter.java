@@ -137,17 +137,11 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             if(favorite) h.h_star_icon.setImageResource(R.drawable.ic_favorite);
             else h.h_star_icon.setImageResource(R.drawable.ic_favorite_border);
             h.h_bookmark.setVisibility(View.GONE);
-            Glide.with(h.h_thumb).clear(h.h_thumb);
-            if(!save && thumb.length() > 0) Glide.with(h.h_thumb)
-                    .load(isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, title.getBaseMode()))
-                    .apply(new RequestOptions().dontTransform())
-                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                    .override(dp(132), dp(176))
-                    .thumbnail(0.25f)
-                    .dontAnimate()
-                    .placeholder(R.drawable.app_cover_placeholder)
-                    .into(h.h_thumb);
-            else h.h_thumb.setImageBitmap(null);
+            if(!save && thumb.length() > 0) {
+                Object source = isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, title.getBaseMode());
+                bindThumbnail(h.h_thumb, source, dp(144), dp(192), false);
+            }
+            else bindEmptyThumbnail(h.h_thumb, false);
             if(mode == 0 || mode == 3)
                 h.h_star.setVisibility(View.VISIBLE);
             else
@@ -167,39 +161,77 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         }else {
             ViewHolder h = (ViewHolder) holder;
             int Dposition = position-1;
-            h.episode.setText(mData.get(Dposition).getName());
-            h.date.setText(mData.get(Dposition).getDate());
-            h.newBadge.setVisibility(Dposition == 0 ? View.VISIBLE : View.GONE);
-            h.action.setVisibility(mode == 0 || mode == 1 || mode == 3 || mode == 4 ? View.VISIBLE : View.GONE);
-            h.action.setImageResource(mode == 0 ? R.drawable.download : R.drawable.ic_baseline_close_24);
-            h.action.setColorFilter(ContextCompat.getColor(mainContext, mode == 0 ? R.color.appAccent : R.color.appTextSecondary));
+            Manga episode = mData.get(Dposition);
+            String rowKey = episode.getId() + ":" + episode.getName() + ":" + episode.getDate() + ":" + mode + ":" + Dposition;
+            if(!rowKey.equals(h.boundKey)) {
+                setTextIfChanged(h.episode, episode.getName());
+                setTextIfChanged(h.date, episode.getDate());
+                setVisibilityIfChanged(h.newBadge, Dposition == 0 ? View.VISIBLE : View.GONE);
+                setVisibilityIfChanged(h.action, mode == 0 || mode == 1 || mode == 3 || mode == 4 ? View.VISIBLE : View.GONE);
+                h.action.setImageResource(mode == 0 ? R.drawable.download : R.drawable.ic_baseline_close_24);
+                h.action.setColorFilter(ContextCompat.getColor(mainContext, mode == 0 ? R.color.appAccent : R.color.appTextSecondary));
+                h.boundKey = rowKey;
+            }
             String thumb = title == null ? "" : title.getThumb();
-            Glide.with(h.thumb).clear(h.thumb);
             if(!save && thumb != null && thumb.length() > 0) {
-                Glide.with(h.thumb)
-                        .load(isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, title.getBaseMode()))
-                        .apply(new RequestOptions().dontTransform())
-                        .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                        .override(dp(52), dp(70))
-                        .thumbnail(0.25f)
-                        .dontAnimate()
-                        .placeholder(R.drawable.app_cover_placeholder)
-                        .into(h.thumb);
+                Object source = isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, title.getBaseMode());
+                bindThumbnail(h.thumb, source, dp(52), dp(70), true);
             } else {
-                h.thumb.setImageResource(R.drawable.app_cover_placeholder);
+                bindEmptyThumbnail(h.thumb, true);
             }
             bindSelection(h, position);
         }
     }
 
+    private void bindThumbnail(ImageView view, Object source, int width, int height, boolean placeholderWhenEmpty) {
+        String key = String.valueOf(source);
+        if(key.equals(view.getTag()))
+            return;
+        Glide.with(view).clear(view);
+        view.setTag(key);
+        Glide.with(view)
+                .load(source)
+                .apply(new RequestOptions().dontTransform())
+                .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                .override(width, height)
+                .thumbnail(0.25f)
+                .dontAnimate()
+                .placeholder(R.drawable.app_cover_placeholder)
+                .into(view);
+    }
+
+    private void bindEmptyThumbnail(ImageView view, boolean placeholder) {
+        String key = placeholder ? "placeholder" : "empty";
+        if(key.equals(view.getTag()))
+            return;
+        Glide.with(view).clear(view);
+        view.setTag(key);
+        if(placeholder)
+            view.setImageResource(R.drawable.app_cover_placeholder);
+        else
+            view.setImageBitmap(null);
+    }
+
     private void bindSelection(ViewHolder holder, int position) {
-        if (position == bookmark) {
-            if(dark) holder.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.selectedDark));
-            else holder.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.appAccentLight));
+        int color = position == bookmark
+                ? ContextCompat.getColor(mainContext, dark ? R.color.selectedDark : R.color.appAccentLight)
+                : ContextCompat.getColor(mainContext, dark ? R.color.colorDarkBackground : R.color.appCard);
+        Object tag = holder.itemView.getTag(R.id.episode);
+        if(!(tag instanceof Integer) || ((Integer) tag) != color) {
+            holder.itemView.setBackgroundColor(color);
+            holder.itemView.setTag(R.id.episode, color);
         }
-        else{
-            holder.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, dark ? R.color.colorDarkBackground : R.color.appCard));
-        }
+    }
+
+    private void setTextIfChanged(TextView view, CharSequence text) {
+        CharSequence next = text == null ? "" : text;
+        if(!android.text.TextUtils.equals(view.getText(), next))
+            view.setText(next);
+    }
+
+    private void setVisibilityIfChanged(View view, int visibility) {
+        if(view.getVisibility() != visibility)
+            view.setVisibility(visibility);
     }
 
     int dp(int value) {
@@ -217,6 +249,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         TextView newBadge;
         ImageView thumb;
         ImageView action;
+        String boundKey;
         ViewHolder(View itemView) {
             super(itemView);
             episode = itemView.findViewById(R.id.episode);

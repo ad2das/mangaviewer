@@ -1,6 +1,7 @@
 package ml.melun.mangaview.adapter;
 import android.content.Context;
 import androidx.core.content.ContextCompat;
+import androidx.recyclerview.widget.DiffUtil;
 import androidx.cardview.widget.CardView;
 import androidx.recyclerview.widget.RecyclerView;
 import android.view.LayoutInflater;
@@ -21,7 +22,9 @@ import java.util.List;
 import java.util.Locale;
 
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.MTitle;
+import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -63,6 +66,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         mainContext = context;
         this.mData = new ArrayList<>();
         this.mDataFiltered = new ArrayList<>();
+        setHasStableIds(true);
         filter = new Filter() {
             @Override
             protected FilterResults performFiltering(CharSequence charSequence) {
@@ -88,8 +92,8 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
 
             @Override
             protected void publishResults(CharSequence charSequence, FilterResults filterResults) {
-                mDataFiltered = (ArrayList<Title>) filterResults.values;
-                notifyDataSetChanged();
+                ArrayList<Title> next = (ArrayList<Title>) filterResults.values;
+                dispatchFilteredList(next == null ? new ArrayList<>() : next);
             }
         };
     }
@@ -97,7 +101,10 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
 
     @Override
     public long getItemId(int position) {
-        return position;
+        if(!isValidPosition(position))
+            return RecyclerView.NO_ID;
+        Title title = mDataFiltered.get(position);
+        return (title.getBaseMode() + ":" + title.getId()).hashCode();
     }
 
     public void removeAll(){
@@ -153,21 +160,82 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             Glide.with(mainContext)
                     .load(source)
                     .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                    .override(dp(96), dp(124))
+                    .override(dp(126), dp(170))
                     .dontAnimate()
                     .preload();
         }
     }
 
     public void setData(List<?> t){
-        clearData();
-        addData(t);
+        ArrayList<Title> next = normalizeTitles(t);
+        mData = next;
+        searching = false;
+        dispatchFilteredList(next);
+    }
+
+    private void dispatchFilteredList(ArrayList<Title> next) {
+        final ArrayList<Title> old = new ArrayList<>(mDataFiltered);
+        final ArrayList<Title> target = new ArrayList<>(next);
+        DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
+            @Override
+            public int getOldListSize() {
+                return old.size();
+            }
+
+            @Override
+            public int getNewListSize() {
+                return target.size();
+            }
+
+            @Override
+            public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
+                return sameTitle(old.get(oldItemPosition), target.get(newItemPosition));
+            }
+
+            @Override
+            public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
+                return titleContentKey(old.get(oldItemPosition)).equals(titleContentKey(target.get(newItemPosition)));
+            }
+        }, false);
+        mDataFiltered = next;
+        diff.dispatchUpdatesTo(this);
+    }
+
+    private ArrayList<Title> normalizeTitles(List<?> source) {
+        ArrayList<Title> titles = new ArrayList<>();
+        if(source == null)
+            return titles;
+        for(Object d : source) {
+            Title title = null;
+            if(d instanceof Title)
+                title = (Title)d;
+            else if(d instanceof MTitle)
+                title = new Title((MTitle)d);
+            if(title == null)
+                continue;
+            applyStoredBookmark(title);
+            titles.add(title);
+        }
+        return titles;
+    }
+
+    private boolean sameTitle(Title a, Title b) {
+        return a != null && b != null && a.getId() == b.getId() && a.getBaseMode() == b.getBaseMode();
+    }
+
+    private String titleContentKey(Title title) {
+        if(title == null)
+            return "";
+        return title.getName() + "|" + title.getThumb() + "|" + title.getAuthor() + "|"
+                + title.getRelease() + "|" + title.getBookmark() + "|" + title.getTags();
     }
 
     public void clearData(){
+        int oldSize = getItemCount();
         mData.clear();
         mDataFiltered.clear();
-        notifyDataSetChanged();
+        if(oldSize > 0)
+            notifyItemRangeRemoved(0, oldSize);
     }
 
 
@@ -222,6 +290,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         holder.tagContainer.setVisibility(View.VISIBLE);
 
         holder.name.setText(title);
+        holder.name.setContentDescription(title);
         String meta = data.getRelease();
         if(meta == null || meta.length() == 0)
             meta = author;
@@ -247,22 +316,46 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             holder.counterContainer.setVisibility(View.GONE);
         }
 
-        Glide.with(holder.thumb).clear(holder.thumb);
         holder.thumb.setVisibility(View.VISIBLE);
         if(thumb.length()>1 && (!save || forceThumbnail)) {
             Object source = isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, data.getBaseMode());
-            Glide.with(holder.thumb)
-                    .load(source)
-                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                    .override(dp(96), dp(124))
-                    .thumbnail(0.25f)
-                    .dontAnimate()
-                    .into(holder.thumb);
+            String thumbKey = String.valueOf(source);
+            if(!thumbKey.equals(holder.thumb.getTag())) {
+                Glide.with(holder.thumb).clear(holder.thumb);
+                holder.thumb.setTag(thumbKey);
+                Glide.with(holder.thumb)
+                        .load(source)
+                        .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                        .override(dp(126), dp(170))
+                        .thumbnail(0.25f)
+                        .dontAnimate()
+                        .into(holder.thumb);
+            }
         }
-        else holder.thumb.setImageResource(R.drawable.app_cover_placeholder);
-        if(bookmark>0 && resume) holder.resume.setVisibility(View.VISIBLE);
+        else {
+            if(!"placeholder".equals(holder.thumb.getTag())) {
+                Glide.with(holder.thumb).clear(holder.thumb);
+                holder.thumb.setTag("placeholder");
+                holder.thumb.setImageResource(R.drawable.app_cover_placeholder);
+            }
+        }
+        if(bookmark>0 && resume) {
+            holder.resume.setVisibility(View.VISIBLE);
+            warmupResume(data, bookmark, position);
+        }
         else holder.resume.setVisibility(View.GONE);
 
+    }
+
+    private void warmupResume(Title title, int bookmark, int position) {
+        if(title == null || bookmark <= 0 || position > 10)
+            return;
+        Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
+        manga.setTitle(title);
+        manga.setTitleId(title.getId());
+        if(title.getEps() != null && title.getEps().size() > 0)
+            manga.setEps(title.getEps());
+        ViewerWarmupManager.warmupContinue(mainContext, manga, title);
     }
 
     int dp(int value) {

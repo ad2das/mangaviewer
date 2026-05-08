@@ -11,25 +11,25 @@ import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
+import androidx.lifecycle.ViewModelProvider;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.bumptech.glide.Glide;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout;
 
 import java.util.ArrayList;
+import java.util.List;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.adapter.UpdatedAdapter;
-import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
-import ml.melun.mangaview.mangaview.UpdatedList;
 import ml.melun.mangaview.mangaview.UpdatedManga;
-import ml.melun.mangaview.task.LifecycleTask;
+import ml.melun.mangaview.state.UiState;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
+import ml.melun.mangaview.viewmodel.UpdatesViewModel;
 
-import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
 
@@ -41,8 +41,8 @@ public class MainUpdates extends Fragment {
     TextView emptyTitle;
     TextView emptyMessage;
     UpdatedAdapter adapter;
-    UpdatedList updated;
-    LoadUpdates loadTask;
+    UpdatesViewModel viewModel;
+    boolean loading;
 
     @Nullable
     @Override
@@ -90,30 +90,26 @@ public class MainUpdates extends Fragment {
         });
         recyclerView.setAdapter(adapter);
 
-        updated = new UpdatedList(p.getBaseMode());
+        viewModel = new ViewModelProvider(this).get(UpdatesViewModel.class);
+        viewModel.reset(p.getBaseMode());
+        viewModel.state().observe(getViewLifecycleOwner(), this::renderUpdatesState);
         swipe.setOnRefreshListener(direction -> loadMore());
         loadMore();
         return root;
     }
 
     public void refreshIfEmpty() {
-        if(adapter != null && adapter.getItemCount() == 0 && loadTask == null)
+        if(adapter != null && adapter.getItemCount() == 0 && !loading)
             loadMore();
     }
 
     private void loadMore() {
-        if(loadTask != null) {
+        if(loading) {
             if(swipe != null)
                 swipe.setRefreshing(false);
             return;
         }
-        if(updated != null && updated.isLast()) {
-            if(swipe != null)
-                swipe.setRefreshing(false);
-            return;
-        }
-        loadTask = new LoadUpdates();
-        loadTask.executeOnExecutor(LifecycleTask.USER_ACTION_EXECUTOR);
+        viewModel.loadMore(p.getBaseMode());
     }
 
     private void updateState(boolean loading) {
@@ -128,73 +124,30 @@ public class MainUpdates extends Fragment {
 
     @Override
     public void onDestroyView() {
-        if(loadTask != null) {
-            loadTask.cancel(true);
-            loadTask = null;
-        }
+        if(viewModel != null)
+            viewModel.cancelActiveLoad();
         super.onDestroyView();
     }
 
-    private class LoadUpdates extends LifecycleTask<Void, Void, ArrayList<UpdatedManga>> {
-        private CustomHttpClient.RequestGroup requestGroup;
-        private int resultCode = 0;
-
-        @Override
-        protected void onPreExecute() {
-            super.onPreExecute();
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void renderUpdatesState(UiState state) {
+        if(state instanceof UiState.Loading) {
+            loading = true;
             updateState(true);
             if(swipe != null)
                 swipe.setRefreshing(true);
+            return;
         }
-
-        @Override
-        protected ArrayList<UpdatedManga> doInBackground(Void... voids) {
-            requestGroup = new CustomHttpClient.RequestGroup();
-            try {
-                getHttpClient().runWithRequestGroup(requestGroup, () -> {
-                    updated.fetch(getHttpClient());
-                    return null;
-                });
-                ArrayList<UpdatedManga> result = updated.getResult();
-                return result == null ? new ArrayList<>() : result;
-            } catch (Exception e) {
-                if(!isCancelled())
-                    e.printStackTrace();
-                resultCode = 1;
-                return new ArrayList<>();
-            }
-        }
-
-        @Override
-        protected void onPostExecute(ArrayList<UpdatedManga> result) {
-            super.onPostExecute(result);
-            if(loadTask != this || getContext() == null)
-                return;
-            loadTask = null;
-            if(resultCode != 0 && adapter.getItemCount() == 0)
-                Utils.showCaptchaPopup(getContext(), p);
+        loading = false;
+        if(state instanceof UiState.Content) {
+            List<UpdatedManga> result = (List<UpdatedManga>) ((UiState.Content) state).getValue();
             if(result != null && result.size() > 0)
-                adapter.addData(result);
-            if(swipe != null)
-                swipe.setRefreshing(false);
-            updateState(false);
+                adapter.addData(new ArrayList<>(result));
+        } else if(state instanceof UiState.Error && adapter.getItemCount() == 0 && getContext() != null) {
+            Utils.showCaptchaPopup(getContext(), p);
         }
-
-        @Override
-        protected void onCancelled(ArrayList<UpdatedManga> result) {
-            super.onCancelled(result);
-            if(loadTask == this)
-                loadTask = null;
-            if(swipe != null)
-                swipe.setRefreshing(false);
-            updateState(false);
-        }
-
-        @Override
-        public boolean cancel(boolean mayInterruptIfRunning) {
-            if(requestGroup != null)
-                requestGroup.cancel();
-            return super.cancel(mayInterruptIfRunning);
-        }
+        if(swipe != null)
+            swipe.setRefreshing(false);
+        updateState(false);
     }
 }

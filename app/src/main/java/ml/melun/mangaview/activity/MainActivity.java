@@ -13,12 +13,12 @@ import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.net.Uri;
-import ml.melun.mangaview.task.LifecycleTask;
 import android.os.Build;
 import android.os.Bundle;
 
 import androidx.core.content.ContextCompat;
 import androidx.appcompat.app.AlertDialog;
+import androidx.lifecycle.ViewModelProvider;
 
 import android.view.View;
 import android.view.ViewGroup;
@@ -56,8 +56,11 @@ import ml.melun.mangaview.R;
 import ml.melun.mangaview.fragment.MainMain;
 
 import ml.melun.mangaview.fragment.MainSearch;
-import ml.melun.mangaview.UrlUpdater;
 import ml.melun.mangaview.interfaces.MainActivityCallback;
+import ml.melun.mangaview.interfaces.UrlUpdateCallback;
+import ml.melun.mangaview.model.UrlUpdateResult;
+import ml.melun.mangaview.state.UiState;
+import ml.melun.mangaview.viewmodel.StartupViewModel;
 
 import static android.Manifest.permission.READ_EXTERNAL_STORAGE;
 import static android.Manifest.permission.WRITE_EXTERNAL_STORAGE;
@@ -103,6 +106,8 @@ public class MainActivity extends AppCompatActivity
     TextView accountSheetPrimary;
     TextView accountSheetSecondary;
     TextView accountSheetHint;
+    StartupViewModel startupViewModel;
+    UrlUpdateCallback pendingUrlUpdateCallback;
     private static final int FIRST_TIME_ACTIVITY = 9;
 
 
@@ -205,13 +210,7 @@ public class MainActivity extends AppCompatActivity
             infil.addAction(MIGRATE_SUCCESS);
             registerReceiver(migratorStatusReceiver, infil);
 
-            Intent pintent = new Intent(getApplicationContext(), Migrator.class);
-            pintent.setAction(MIGRATE_PROGRESS);
-            if (Build.VERSION.SDK_INT >= 26) {
-                startForegroundService(pintent);
-            } else {
-                startService(pintent);
-            }
+            Migrator.requestProgress(getApplicationContext());
 
         } else if (!p.check()) {
             //popup to fix preferences
@@ -238,13 +237,7 @@ public class MainActivity extends AppCompatActivity
 
                                     p.setUrl(url);
 
-                                    Intent intent12 = new Intent(getApplicationContext(), Migrator.class);
-                                    intent12.setAction(MIGRATE_START);
-                                    if (Build.VERSION.SDK_INT >= 26) {
-                                        startForegroundService(intent12);
-                                    } else {
-                                        startService(intent12);
-                                    }
+                                    Migrator.start(getApplicationContext());
                                     //queue title to service
                                     Toast.makeText(getApplication(), "작업을 시작합니다.", Toast.LENGTH_LONG).show();
                                     //restart activity
@@ -362,7 +355,26 @@ public class MainActivity extends AppCompatActivity
     private void startDeferredUrlUpdate() {
         if(!p.getAutoUrl())
             return;
-        new UrlUpdater(context, false, ((MainMain)fragments[0]).getCallback(), p.getDefUrl()).executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+        pendingUrlUpdateCallback = ((MainMain)fragments[0]).getCallback();
+        if(startupViewModel == null) {
+            startupViewModel = new ViewModelProvider(this).get(StartupViewModel.class);
+            startupViewModel.state().observe(this, this::renderStartupUrlState);
+        }
+        startupViewModel.updateUrl(p.getDefUrl());
+    }
+
+    @SuppressWarnings("rawtypes")
+    private void renderStartupUrlState(UiState state) {
+        if(state instanceof UiState.Content) {
+            UrlUpdateResult result = (UrlUpdateResult) ((UiState.Content) state).getValue();
+            if(pendingUrlUpdateCallback != null)
+                pendingUrlUpdateCallback.callback(result != null && result.getSuccess());
+            pendingUrlUpdateCallback = null;
+        } else if(state instanceof UiState.Error) {
+            if(pendingUrlUpdateCallback != null)
+                pendingUrlUpdateCallback.callback(false);
+            pendingUrlUpdateCallback = null;
+        }
     }
 
     private void requestStartupPermissions() {
@@ -626,15 +638,6 @@ public class MainActivity extends AppCompatActivity
                                 //show info prompt
                                 findViewById(R.id.waiting_panel).setVisibility(View.VISIBLE);
 
-                                //stop downloader service
-                                Intent downloader = new Intent(getApplicationContext(),Downloader.class);
-                                downloader.setAction(Downloader.ACTION_FORCE_STOP);
-                                if (Build.VERSION.SDK_INT >= 26) {
-                                    startForegroundService(downloader);
-                                }else{
-                                    startService(downloader);
-                                }
-
                                 //broadcast receiver
                                 BroadcastReceiver statusReceiver = new BroadcastReceiver() {
                                     @Override
@@ -650,6 +653,7 @@ public class MainActivity extends AppCompatActivity
                                 IntentFilter infil = new IntentFilter();
                                 infil.addAction(BROADCAST_STOP);
                                 registerReceiver(statusReceiver, infil);
+                                Downloader.cancelAll(getApplicationContext());
 
                             }else{
                                 //kill application

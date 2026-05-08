@@ -16,6 +16,7 @@ import android.widget.ImageButton;
 import android.widget.ImageView;
 
 import com.bumptech.glide.Glide;
+import com.bumptech.glide.Priority;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import com.bumptech.glide.load.model.GlideUrl;
 import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy;
@@ -25,8 +26,12 @@ import com.bumptech.glide.request.target.Target;
 import com.bumptech.glide.request.transition.Transition;
 
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.PageInterface;
 import ml.melun.mangaview.mangaview.Decoder;
+import ml.melun.mangaview.model.PageItem;
+
+import static ml.melun.mangaview.MainApplication.p;
 
 public class ViewerPageFragment extends Fragment {
     String image;
@@ -34,6 +39,7 @@ public class ViewerPageFragment extends Fragment {
     Context context;
     PageInterface i;
     int width;
+    PageItem pageItem;
 
     public ViewerPageFragment(){
 
@@ -45,8 +51,15 @@ public class ViewerPageFragment extends Fragment {
         this.context = context;
         this.i = i;
     }
+    public ViewerPageFragment(String image, Decoder decoder, int width, Context context, PageInterface i, PageItem pageItem){
+        this(image, decoder, width, context, i);
+        this.pageItem = pageItem;
+    }
     public static Fragment create(String image, Decoder decoder, int width, Context context, PageInterface i){
         return new ViewerPageFragment(image, decoder, width, context, i);
+    }
+    public static Fragment create(String image, Decoder decoder, int width, Context context, PageInterface i, PageItem pageItem){
+        return new ViewerPageFragment(image, decoder, width, context, i, pageItem);
     }
 
     public void updatePageFragment(Context context){
@@ -59,9 +72,7 @@ public class ViewerPageFragment extends Fragment {
         View rootView = inflater.inflate(R.layout.fragment_viewer, container, false);
         ImageView frame = rootView.findViewById(R.id.page);
         ImageButton refresh = rootView.findViewById(R.id.refreshButton);
-        //glide
-        frame.setImageResource(R.drawable.placeholder);
-        refresh.setVisibility(View.VISIBLE);
+        refresh.setVisibility(View.GONE);
 
         if(context != null)
             loadImage(frame, refresh);
@@ -77,9 +88,19 @@ public class ViewerPageFragment extends Fragment {
     }
 
     void loadImage(ImageView frame, ImageButton refresh){
+        Bitmap cached = pageItem == null ? null : ViewerWarmupManager.getDecodedBitmap(pageItem, false, p.getReverse(), width);
+        if(cached != null && !cached.isRecycled()) {
+            refresh.setVisibility(View.GONE);
+            frame.setImageBitmap(cached);
+            if(pageItem.index > 0)
+                ViewerWarmupManager.logMetric("viewer_next_page_cache_hit", 1);
+            return;
+        }
+        long bindStart = android.os.SystemClock.elapsedRealtime();
         Object target = image.startsWith("http") ? getGlideUrl(image) : image;
         Glide.with(frame)
                 .asBitmap()
+                .priority(Priority.IMMEDIATE)
                 .apply(viewerImageOptions())
                 .load(target)
                 .into(new CustomTarget<Bitmap>() {
@@ -88,6 +109,8 @@ public class ViewerPageFragment extends Fragment {
                         refresh.setVisibility(View.GONE);
                         bitmap = decoder.decode(bitmap,width);
                         frame.setImageBitmap(bitmap);
+                        if(pageItem != null && pageItem.index == 0)
+                            ViewerWarmupManager.logMetric("viewer_first_bind_ms", android.os.SystemClock.elapsedRealtime() - bindStart);
                     }
 
                     @Override
@@ -98,7 +121,7 @@ public class ViewerPageFragment extends Fragment {
                     @Override
                     public void onLoadFailed(@Nullable Drawable errorDrawable) {
                         if(image.length()>0) {
-                            frame.setImageResource(R.drawable.placeholder);
+                            frame.setImageDrawable(null);
                             refresh.setVisibility(View.VISIBLE);
                         }
                     }

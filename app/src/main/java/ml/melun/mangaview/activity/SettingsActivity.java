@@ -1,6 +1,7 @@
 package ml.melun.mangaview.activity;
 
 import android.app.Activity;
+import android.content.res.ColorStateList;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
@@ -33,7 +34,6 @@ import java.io.File;
 
 import ml.melun.mangaview.Preference;
 import ml.melun.mangaview.R;
-import ml.melun.mangaview.UrlUpdater;
 import ml.melun.mangaview.interfaces.StringCallback;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -70,6 +70,8 @@ public class SettingsActivity extends AppCompatActivity {
         if(dark) setTheme(R.style.AppThemeDark);
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_settings);
+        getWindow().setStatusBarColor(ContextCompat.getColor(this, dark ? R.color.colorDarkWindowBackground : R.color.appSurface));
+        getWindow().setNavigationBarColor(ContextCompat.getColor(this, dark ? R.color.colorDarkWindowBackground : android.R.color.white));
         styleSettingsScreen();
         context = this;
         s_setHomeDir = this.findViewById(R.id.setting_dir);
@@ -368,14 +370,14 @@ public class SettingsActivity extends AppCompatActivity {
             View row = findViewById(id);
             if (row == null)
                 continue;
-            row.setBackgroundResource(R.drawable.app_outline_button_bg);
+            row.setBackgroundResource(id == R.id.setting_reset ? R.drawable.app_danger_row_bg : R.drawable.app_setting_row_bg);
             row.setPadding(dp(12), 0, dp(12), 0);
-            row.setMinimumHeight(dp(56));
+            row.setMinimumHeight(dp(62));
             if (row.getLayoutParams() instanceof LinearLayout.LayoutParams) {
                 LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) row.getLayoutParams();
                 lp.width = LinearLayout.LayoutParams.MATCH_PARENT;
                 lp.height = LinearLayout.LayoutParams.WRAP_CONTENT;
-                lp.setMargins(dp(16), dp(3), dp(16), dp(3));
+                lp.setMargins(dp(16), dp(4), dp(16), dp(4));
                 row.setLayoutParams(lp);
             }
         }
@@ -389,18 +391,31 @@ public class SettingsActivity extends AppCompatActivity {
             if (sectionHeader) {
                 text.setBackgroundColor(ContextCompat.getColor(this, R.color.appSurface));
                 text.setTextColor(ContextCompat.getColor(this, R.color.appAccent));
-                text.setTextSize(13);
+                text.setTextSize(12);
                 text.setGravity(Gravity.BOTTOM | Gravity.START);
-                text.setPadding(dp(20), dp(16), dp(20), dp(6));
+                text.setAllCaps(false);
+                text.setPadding(dp(20), dp(18), dp(20), dp(7));
             } else {
                 text.setTextColor(ContextCompat.getColor(this, R.color.appText));
                 text.setTextSize(14);
                 text.setIncludeFontPadding(false);
+                text.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
             }
         }
 
         if (view instanceof Spinner)
-            view.setBackgroundResource(R.drawable.app_search_box_bg);
+            view.setBackgroundResource(R.drawable.app_search_filter_bg);
+
+        if (view instanceof Switch && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            int accent = ContextCompat.getColor(this, R.color.appAccent);
+            int muted = ContextCompat.getColor(this, R.color.appDivider);
+            int[][] states = new int[][]{
+                    new int[]{android.R.attr.state_checked},
+                    new int[]{}
+            };
+            ((Switch) view).setThumbTintList(new ColorStateList(states, new int[]{accent, ContextCompat.getColor(this, R.color.appCard)}));
+            ((Switch) view).setTrackTintList(new ColorStateList(states, new int[]{ContextCompat.getColor(this, R.color.appAccentLight), muted}));
+        }
 
         if (view instanceof LinearLayout) {
             LinearLayout layout = (LinearLayout) view;

@@ -110,7 +110,7 @@ public class Title extends MTitle {
                         bookmarkLink = "";
                     }
                 }catch (Exception e){
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 }
 
                 //thumb
@@ -166,10 +166,10 @@ public class Title extends MTitle {
                         tmp.setMode(0);
                         eps.add(tmp);
                     }
-                }catch (Exception e){e.printStackTrace();}
+                }catch (Exception e){ml.melun.mangaview.report.CrashReporter.record(e);}
                 break;
             }catch(Exception e) {
-                e.printStackTrace();
+                ml.melun.mangaview.report.CrashReporter.record(e);
                 break;
             }
         }
@@ -235,7 +235,7 @@ public class Title extends MTitle {
             if(eps.size() == 0 && client.resolveWfwfDomainNow())
                 return fetchWolfEps(client, listPath, viewPath);
         }catch(Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return LOAD_OK;
     }
@@ -279,7 +279,16 @@ public class Title extends MTitle {
 
     public MTitle minimize(){
         MTitle title = new MTitle(name, id, thumb, author, tags, release, baseMode);
-        title.setReadingProgress(getBookmark(), getBookmarkIndex(), getEpsCount());
+        int progressEpisodeId = getBookmark();
+        if(progressEpisodeId <= 0)
+            progressEpisodeId = getBookmarkEpisodeId();
+        int progressIndex = getBookmarkIndex();
+        if(progressIndex <= 0)
+            progressIndex = getBookmarkEpisodeIndex();
+        int progressCount = getEpsCount();
+        if(progressCount <= 0)
+            progressCount = getEpisodeCount();
+        title.setReadingProgress(progressEpisodeId, progressIndex, progressCount);
         title.setPath(getPath());
         return title;
     }

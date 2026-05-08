@@ -20,13 +20,6 @@
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="true">
 
-        <service
-            android:name=".Downloader"
-            android:enabled="true" />
-        <service
-            android:name=".Migrator"
-            android:enabled="true" />
-
         <activity
             android:name=".activity.MainActivity"
             android:configChanges="orientation|screenSize"

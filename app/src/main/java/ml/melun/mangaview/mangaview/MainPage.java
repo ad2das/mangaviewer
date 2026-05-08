@@ -110,7 +110,7 @@ public class MainPage {
                 return;
 
             }catch(Exception e){
-                e.printStackTrace();
+                ml.melun.mangaview.report.CrashReporter.record(e);
             }
         }
 
@@ -147,7 +147,7 @@ public class MainPage {
 
 
         }catch (Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
 */
     }

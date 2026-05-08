@@ -7,14 +7,13 @@
     android:paddingStart="@dimen/app_space_xs"
     android:paddingEnd="@dimen/app_space_xs">
 
-    <androidx.cardview.widget.CardView
+    <androidx.constraintlayout.widget.ConstraintLayout
         android:id="@+id/home_continue_card"
         android:layout_width="0dp"
         android:layout_height="226dp"
-        android:foreground="?android:attr/selectableItemBackground"
-        app:cardBackgroundColor="@color/appCard"
-        app:cardCornerRadius="8dp"
-        app:cardElevation="1dp"
+        android:background="@drawable/app_home_card_bg"
+        android:clickable="true"
+        android:focusable="true"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
@@ -60,7 +59,12 @@
                 android:layout_marginTop="12dp"
                 android:layout_marginEnd="12dp"
                 android:ellipsize="end"
+                android:lineSpacingExtra="0dp"
                 android:maxLines="2"
+                app:autoSizeMaxTextSize="14sp"
+                app:autoSizeMinTextSize="11sp"
+                app:autoSizeStepGranularity="1sp"
+                app:autoSizeTextType="uniform"
                 app:layout_constraintEnd_toEndOf="parent"
                 app:layout_constraintStart_toStartOf="parent"
                 app:layout_constraintTop_toBottomOf="@+id/home_continue_thumb"
@@ -96,6 +100,6 @@
 
         </androidx.constraintlayout.widget.ConstraintLayout>
 
-    </androidx.cardview.widget.CardView>
+    </androidx.constraintlayout.widget.ConstraintLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

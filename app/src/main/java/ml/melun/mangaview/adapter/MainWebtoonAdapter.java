@@ -3,7 +3,8 @@ package ml.melun.mangaview.adapter;
 import android.content.Context;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import ml.melun.mangaview.task.LifecycleTask;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.LayoutInflater;
@@ -15,7 +16,6 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
-import androidx.cardview.widget.CardView;
 import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.DiffUtil;
 import androidx.recyclerview.widget.LinearLayoutManager;
@@ -32,19 +32,22 @@ import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.ExecutorCompletionService;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.MTitle;
-import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MainPageWebtoon;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Ranking;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.repository.CacheFileStore;
+import ml.melun.mangaview.repository.MangaRepository;
+import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.PerfTrace;
+import ml.melun.mangaview.runtime.PrefetchCoordinator;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
@@ -62,6 +65,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private static final int ACTION_STRIP = 26;
     private static final int STYLE_CONTINUE = 1;
     private static final int STYLE_RANKING = 2;
+    private static final boolean HOME_HERO_ENABLED = true;
+    private static final int HOME_EXTRA_SECTION_LIMIT = 0;
     private static final int STYLE_STANDARD = 3;
     public static final int ACTION_UPDATES = 1;
     public static final int ACTION_BOOKMARKS = 2;
@@ -83,17 +88,27 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     List<Object> pendingRows;
     boolean initialRowsShown = false;
     private final Set<String> preloadedThumbs = new LinkedHashSet<>();
+    private final Set<String> pendingContinueWarmups = new LinkedHashSet<>();
     private static final int PRELOADED_THUMB_LIMIT = 120;
-    private static final int PRELOAD_THUMB_MAX_PER_FETCH = 4;
+    private static final int PRELOAD_THUMB_MAX_PER_FETCH = 24;
     private static final int SECTION_BATCH_SIZE = 4;
     private static final int FIRST_SCREEN_BATCH_SIZE = 1;
-    private static final long HOME_CACHE_TTL_MS = 24 * 60 * 60 * 1000L;
     private static final String HOME_CACHE_KEY_PREFIX = "homeSnapshotV1_";
     private static final int HOME_CACHE_MAX_SECTIONS = 6;
     private static final int HOME_CACHE_MAX_TITLES_PER_SECTION = 10;
+    private static final Executor ROW_DIFF_EXECUTOR = AppDispatchers.userAction();
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private int preloadCount = 0;
     private int activeHomeTab = 0;
     private boolean continueProgressBackfillRunning = false;
+    private int rowDiffGeneration = 0;
+    private long firstContentStartedAt = PerfTrace.start("home_first_content_ms");
+    private boolean firstContentLogged = false;
+    private FetchStateListener fetchStateListener;
+
+    public interface FetchStateListener {
+        void onFetchFinished(int baseMode, boolean success);
+    }
 
     public MainWebtoonAdapter(Context context){
         this(context, base_webtoon);
@@ -117,27 +132,39 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(fetcher != null)
             fetcher.cancel(true);
         fetcher = new Fetcher();
-        fetcher.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+        fetcher.start();
     }
 
     public void showInitialRows() {
         if(rows != null && rows.size() > 0)
             return;
-        if(showCachedHomeRows())
-            return;
         dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
         List<Object> warmRows = buildRows(dataSet, false);
-        if(!hasHero(warmRows))
+        if(!hasDisplayContent(warmRows))
             warmRows = buildInitialPlaceholderRows();
-        if(hasHero(warmRows)) {
+        if(hasDisplayContent(warmRows)) {
             initialRowsShown = true;
             updateRows(warmRows);
-            scrollHeroToTop();
+            if(hasHero(warmRows))
+                scrollHeroToTop();
         }
+        loadCachedHomeRowsAsync();
     }
 
     public boolean isFetching() {
         return fetcher != null;
+    }
+
+    public boolean hasFetchedContent() {
+        return collectTitles(dataSet, 1).size() > 0;
+    }
+
+    public boolean hasRequiredHomeSections() {
+        return hasRequiredHomeSections(dataSet);
+    }
+
+    public void setFetchStateListener(FetchStateListener listener) {
+        this.fetchStateListener = listener;
     }
 
     public void cancelFetch() {
@@ -149,8 +176,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     public void setLoading(){
         dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
-        rows = new ArrayList<>();
-        notifyDataSetChanged();
+        updateRows(new ArrayList<>());
     }
 
     public void setListener(MainAdapter.onItemClick listener){
@@ -181,7 +207,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     public void refreshLocalState() {
-        updateRows(buildRows(dataSet, false));
+        updateRows(buildRowsForCurrentTab(false));
         scheduleContinueProgressBackfill();
     }
 
@@ -189,7 +215,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(activeHomeTab == tabPosition && rows != null && rows.size() > 0)
             return;
         activeHomeTab = tabPosition;
-        updateRows(buildRows(dataSet, false));
+        List<Object> nextRows = buildRowsForCurrentTab(fetcher != null || !hasFetchedContent());
+        if(nextRows.size() == 0 && hasDisplayContent(rows))
+            return;
+        updateRows(nextRows);
         scheduleContinueProgressBackfill();
     }
 
@@ -245,16 +274,22 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     public boolean hasDisplayContent() {
-        if(rows == null || rows.size() == 0)
+        return hasDisplayContent(rows);
+    }
+
+    private boolean hasDisplayContent(List<Object> candidateRows) {
+        if(candidateRows == null || candidateRows.size() == 0)
             return false;
-        for(Object row : rows) {
+        for(Object row : candidateRows) {
             if(row instanceof HeroRow)
                 return true;
             if(row instanceof HomeSection && ((HomeSection) row).titles.size() > 0)
                 return true;
             if(row instanceof Ranking && ((Ranking<?>) row).size() > 0)
                 return true;
-            if(row instanceof CategoryPanel && activeHomeTab == 3)
+            if(row instanceof ActionStrip)
+                return true;
+            if(row instanceof CategoryPanel)
                 return true;
         }
         return false;
@@ -332,6 +367,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         return buildRows(sections, includeEmpty, false);
     }
 
+    private List<Object> buildRowsForCurrentTab(boolean allowPlaceholder) {
+        List<Object> nextRows = buildRows(dataSet, false);
+        if(!hasDisplayContent(nextRows) && allowPlaceholder) {
+            List<Object> placeholderRows = buildInitialPlaceholderRows();
+            if(placeholderRows.size() > 0)
+                return placeholderRows;
+        }
+        return nextRows;
+    }
+
     private List<Object> buildInitialPlaceholderRows() {
         List<Object> result = new ArrayList<>();
         if(activeHomeTab == 3) {
@@ -339,11 +384,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return result;
         }
         if(activeHomeTab == 0) {
-            Ranking<?> firstSection = firstNamedSection(dataSet, freshSectionTitle());
-            if(firstSection == null)
-                firstSection = firstNamedSection(dataSet, "인기순");
-            if(firstSection != null && firstSection.size() > 0)
-                result.add(firstSection);
+            result.add(new ActionStrip());
             return result;
         }
         List<Object> tabRows = buildTabRows(dataSet, true, activeHomeTab == 1 ? "인기순" : freshSectionTitle());
@@ -379,10 +420,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         List<Title> seedTitles = collectTitles(sections, 24);
         List<Title> recentTitles = recentTitles();
         boolean hasServerTitles = seedTitles.size() > 0;
-        if(hasServerTitles)
+        if(HOME_HERO_ENABLED && hasServerTitles)
             result.add(new HeroRow(seedTitles.subList(0, Math.min(5, seedTitles.size()))));
         List<Title> continueTitles = recentTitles;
-        if(hasServerTitles && continueTitles.size() > 0)
+        if(continueTitles.size() > 0)
             result.add(new HomeSection("이어보기", "전체보기", "", continueTitles, STYLE_CONTINUE));
         SectionPick popular = findSection(sections, "인기순");
         List<Title> popularTitles = popular == null ? new ArrayList<>() : titlesFromRanking(popular.ranking, 8);
@@ -391,7 +432,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             result.add(new HomeSection("이번 주 인기", "전체보기", popular == null ? "" : popular.name.path, popularTitles, STYLE_RANKING));
         SectionPick fresh = findSection(sections, freshSectionTitle());
         List<Title> freshTitles = fresh == null ? new ArrayList<>() : titlesFromRanking(fresh.ranking, 8);
-        boolean freshFeatured = recentTitles.size() > 0 && freshTitles.size() > 0;
+        boolean freshFeatured = freshTitles.size() > 0;
         if(freshFeatured)
             result.add(new HomeSection("신작 업데이트", "전체보기", fresh == null ? "" : fresh.name.path, freshTitles, STYLE_STANDARD));
         String lastGroup = "";
@@ -400,6 +441,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 result.add(new CategoryPanel());
             return result;
         }
+        int extraSections = 0;
         for(Ranking<?> section : sections) {
             if(section == null)
                 continue;
@@ -407,12 +449,15 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 continue;
             if((popularFeatured && section == popular.ranking) || (freshFeatured && section == fresh.ranking))
                 continue;
+            if(extraSections >= HOME_EXTRA_SECTION_LIMIT)
+                break;
             SectionName name = parseSectionName(section.getName());
             if(!name.group.equals(lastGroup)) {
                 contentRows.add(name.group);
                 lastGroup = name.group;
             }
             contentRows.add(section);
+            extraSections++;
         }
         result.addAll(contentRows);
         if(includeCategoryPanel)
@@ -592,24 +637,53 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return false;
         dataSet = cached;
         List<Object> cachedRows = buildRows(dataSet, false);
-        if(!hasHero(cachedRows))
+        if(!hasDisplayContent(cachedRows))
             return false;
         initialRowsShown = true;
         updateRows(cachedRows);
-        scrollHeroToTop();
+        if(hasHero(cachedRows))
+            scrollHeroToTop();
         scheduleThumbnailPreload(dataSet);
-        saveHomeSnapshot(dataSet);
         return true;
+    }
+
+    private void loadCachedHomeRowsAsync() {
+        AppDispatchers.submitIo(() -> {
+            List<Ranking<?>> cached = loadHomeSnapshot();
+            if(cached == null || cached.size() == 0)
+                return;
+            AppDispatchers.runOnMain(() -> applyCachedHomeRows(cached));
+        });
+    }
+
+    private void applyCachedHomeRows(List<Ranking<?>> cached) {
+        if(cached == null || cached.size() == 0)
+            return;
+        if(fetcher != null && collectTitles(dataSet, 1).size() > 0)
+            return;
+        dataSet = cached;
+        List<Object> cachedRows = buildRows(dataSet, false);
+        if(!hasDisplayContent(cachedRows))
+            return;
+        initialRowsShown = true;
+        updateRows(cachedRows);
+        if(hasHero(cachedRows))
+            scrollHeroToTop();
+        scheduleThumbnailPreload(dataSet);
     }
 
     private List<Ranking<?>> loadHomeSnapshot() {
         try {
-            String json = p.getSharedPref().getString(homeCacheKey(), "");
+            String json = CacheFileStore.read(context, homeCacheKey());
+            if(json == null || json.length() == 0) {
+                json = p.getSharedPref().getString(homeCacheKey(), "");
+                if(json != null && json.length() > 0)
+                    CacheFileStore.write(context, homeCacheKey(), json);
+            }
             if(json == null || json.length() == 0)
                 return null;
             HomeSnapshot snapshot = new Gson().fromJson(json, new TypeToken<HomeSnapshot>(){}.getType());
-            long now = System.currentTimeMillis();
-            if(snapshot == null || snapshot.sections == null || now - snapshot.savedAt > HOME_CACHE_TTL_MS)
+            if(snapshot == null || snapshot.sections == null)
                 return null;
             ArrayList<Ranking<?>> restored = new ArrayList<>();
             for(CachedSection cachedSection : snapshot.sections) {
@@ -666,9 +740,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
             if(snapshot.sections.size() == 0)
                 return;
-            p.getSharedPref().edit()
-                    .putString(homeCacheKey(), new Gson().toJson(snapshot))
-                    .apply();
+            CacheFileStore.write(context, homeCacheKey(), new Gson().toJson(snapshot));
         } catch (Exception ignored) {
         }
     }
@@ -678,6 +750,26 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return true;
         SectionName name = parseSectionName(section.getName());
         return name.title.contains("인기순") || name.title.contains(freshSectionTitle());
+    }
+
+    private boolean hasRequiredHomeSections(List<Ranking<?>> sections) {
+        if(sections == null)
+            return false;
+        return titlesFromRanking(findRanking(sections, "인기순"), 1).size() > 0
+                && titlesFromRanking(findRanking(sections, freshSectionTitle()), 1).size() > 0;
+    }
+
+    private Ranking<?> findRanking(List<Ranking<?>> sections, String titlePart) {
+        if(sections == null || titlePart == null)
+            return null;
+        for(Ranking<?> section : sections) {
+            if(section == null)
+                continue;
+            SectionName name = parseSectionName(section.getName());
+            if(name.title.contains(titlePart))
+                return section;
+        }
+        return null;
     }
 
     private List<Title> collectTitles(List<Ranking<?>> sections, int limit) {
@@ -702,6 +794,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         ArrayList<Title> titles = new ArrayList<>();
         try {
             appendRecentTitlesForCurrentMode(titles, 6);
+            if(titles.size() == 0)
+                appendRecentTitlesForAnyMode(titles, 6);
         } catch (Exception ignored) {
         }
         for(Title title : titles) {
@@ -718,6 +812,22 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return;
         for(MTitle item : recent) {
             if(item == null || item.getBaseMode() != baseMode)
+                continue;
+            Title title = item instanceof Title ? (Title) item : new Title(item);
+            if(containsTitle(target, title))
+                continue;
+            target.add(title);
+            if(limit > 0 && target.size() >= limit)
+                return;
+        }
+    }
+
+    private void appendRecentTitlesForAnyMode(List<Title> target, int limit) {
+        List<MTitle> recent = p.getRecent();
+        if(recent == null || target == null)
+            return;
+        for(MTitle item : recent) {
+            if(item == null)
                 continue;
             Title title = item instanceof Title ? (Title) item : new Title(item);
             if(containsTitle(target, title))
@@ -789,23 +899,40 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private void bindTitleThumb(ImageView thumbView, Title title, int widthDp, int heightDp) {
-        Glide.with(thumbView).clear(thumbView);
         if(title == null || save || title.getThumb() == null || title.getThumb().length() == 0) {
-            thumbView.setImageResource(R.drawable.app_cover_placeholder);
+            bindStaticThumb(thumbView, "placeholder", R.drawable.app_cover_placeholder);
             return;
         }
+        Object source = getGlideUrl(title.getThumb(), title.getBaseMode());
+        bindGlideThumb(thumbView, source, widthDp, heightDp, R.drawable.app_cover_placeholder);
+    }
+
+    private void bindGlideThumb(ImageView thumbView, Object source, int widthDp, int heightDp, int placeholderRes) {
+        String key = String.valueOf(source);
+        if(key.equals(thumbView.getTag()))
+            return;
+        Glide.with(thumbView).clear(thumbView);
+        thumbView.setTag(key);
         Glide.with(thumbView)
-                .load(getGlideUrl(title.getThumb(), title.getBaseMode()))
+                .load(source)
                 .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
                 .override(dp(widthDp), dp(heightDp))
                 .thumbnail(0.25f)
                 .dontAnimate()
-                .placeholder(R.drawable.app_cover_placeholder)
+                .placeholder(placeholderRes)
                 .into(thumbView);
     }
 
+    private void bindStaticThumb(ImageView thumbView, String key, int resId) {
+        if(key.equals(thumbView.getTag()))
+            return;
+        Glide.with(thumbView).clear(thumbView);
+        thumbView.setTag(key);
+        thumbView.setImageResource(resId);
+    }
+
     class HeroHolder extends RecyclerView.ViewHolder {
-        CardView card;
+        View card;
         ImageView thumb;
         TextView title;
         TextView badge;
@@ -943,7 +1070,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             String release = hero == null ? "" : hero.getRelease();
             meta.setText(release == null || release.length() == 0 ? "지금 볼만한 추천 작품" : release);
             badge.setText("추천");
-            bindTitleThumb(thumb, hero, 360, 210);
+            bindTitleThumb(thumb, hero, 240, 140);
             dots.setText(heroDots(row));
         }
 
@@ -981,21 +1108,24 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             list.setItemAnimator(null);
             list.setRecycledViewPool(sharedHomePool);
             list.setItemViewCacheSize(6);
-            manager.setInitialPrefetchItemCount(2);
+            manager.setInitialPrefetchItemCount(0);
         }
 
         void bind(HomeSection section) {
-            title.setText(section.title);
-            action.setText(section.action);
+            setTextIfChanged(title, section.title);
+            setTextIfChanged(action, section.action);
             boolean hasAction = section.path.length() > 0;
-            action.setVisibility(hasAction ? View.VISIBLE : View.INVISIBLE);
+            setVisibilityIfChanged(action, hasAction ? View.VISIBLE : View.INVISIBLE);
             action.setOnClickListener(v -> {
                 if(listener != null && section.path.length() > 0)
                     listener.clickedCategoryPath(section.title, section.path);
             });
             ViewGroup.LayoutParams params = list.getLayoutParams();
-            params.height = section.style == STYLE_RANKING ? dp(222) : dp(238);
-            list.setLayoutParams(params);
+            int targetHeight = section.style == STYLE_RANKING ? dp(222) : dp(238);
+            if(params.height != targetHeight) {
+                params.height = targetHeight;
+                list.setLayoutParams(params);
+            }
             RecyclerView.Adapter adapter = list.getAdapter();
             if(adapter instanceof HomeTitleAdapter && ((HomeTitleAdapter) adapter).style == section.style)
                 ((HomeTitleAdapter) adapter).setItems(section.titles);
@@ -1007,21 +1137,23 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     class HomeTitleAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         List<Title> items;
         int style;
+        String itemsKey;
 
         HomeTitleAdapter(List<Title> items, int style) {
             this.items = items == null ? new ArrayList<>() : items;
             this.style = style;
+            this.itemsKey = titleListKey(this.items);
             setHasStableIds(true);
         }
 
         void setItems(List<Title> items) {
-            int oldSize = this.items == null ? 0 : this.items.size();
-            this.items = items == null ? new ArrayList<>() : items;
-            int newSize = this.items.size();
-            if(oldSize == newSize)
-                notifyItemRangeChanged(0, newSize);
-            else
-                notifyDataSetChanged();
+            List<Title> next = items == null ? new ArrayList<>() : new ArrayList<>(items);
+            String nextKey = titleListKey(next);
+            if(nextKey.equals(itemsKey))
+                return;
+            this.items = next;
+            this.itemsKey = nextKey;
+            notifyDataSetChanged();
         }
 
         @NonNull
@@ -1044,7 +1176,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         @Override
         public int getItemCount() {
             int realCount = items == null ? 0 : items.size();
-            return Math.min(realCount, style == STYLE_RANKING ? 6 : 6);
+            return Math.min(realCount, 4);
         }
 
         @Override
@@ -1062,12 +1194,13 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         class ContinueHolder extends RecyclerView.ViewHolder {
-            CardView card;
+            View card;
             ImageView thumb;
             TextView name;
             TextView episode;
             TextView percent;
             android.widget.ProgressBar progress;
+            String boundKey;
 
             ContinueHolder(View itemView) {
                 super(itemView);
@@ -1080,30 +1213,30 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
 
             void bind(Title item, int position) {
-                name.setText(item == null ? "" : item.getName());
                 boolean continueStyle = style == STYLE_CONTINUE;
-                episode.setVisibility(continueStyle ? View.VISIBLE : View.GONE);
-                progress.setVisibility(continueStyle ? View.VISIBLE : View.GONE);
-                percent.setVisibility(continueStyle ? View.VISIBLE : View.GONE);
-                if(continueStyle) {
-                    episode.setText(progressLabel(item));
-                    int progressPercent = readingProgressPercent(item);
-                    progress.setProgress(progressPercent);
-                    percent.setText(progressPercent + "%");
+                int progressPercent = continueStyle ? readingProgressPercent(item) : 0;
+                String nextKey = titleContentKey(item) + ":" + continueStyle + ":" + progressPercent;
+                if(!nextKey.equals(boundKey)) {
+                    setTextIfChanged(name, item == null ? "" : item.getName());
+                    setVisibilityIfChanged(episode, continueStyle ? View.VISIBLE : View.GONE);
+                    setVisibilityIfChanged(progress, continueStyle ? View.VISIBLE : View.GONE);
+                    setVisibilityIfChanged(percent, continueStyle ? View.VISIBLE : View.GONE);
+                    if(continueStyle) {
+                        setTextIfChanged(episode, progressLabel(item));
+                        if(progress.getProgress() != progressPercent)
+                            progress.setProgress(progressPercent);
+                        setTextIfChanged(percent, progressPercent + "%");
+                    }
+                    boundKey = nextKey;
                 }
-                bindTitleThumb(thumb, item, 156, 144);
-                if(continueStyle && position < 3)
-                    warmupContinueViewer(item);
+                bindTitleThumb(thumb, item, 120, 112);
+                if(continueStyle && position < 8)
+                    scheduleContinueViewerWarmup(item);
                 card.setOnClickListener(v -> {
                     if(listener != null && item != null) {
-                        int bookmark = p.getBookmark(item);
-                        if(bookmark <= 0)
-                            bookmark = item.getBookmark();
-                        if(continueStyle && bookmark > 0) {
-                            Manga manga = new Manga(bookmark, "", "", item.getBaseMode());
-                            manga.setTitle(item);
-                            manga.setTitleId(item.getId());
-                            ViewerWarmupManager.warmup(context, manga, item);
+                        Manga manga = continueStyle ? resolveContinueManga(item) : null;
+                        if(manga != null) {
+                            ViewerWarmupManager.warmupContinue(context, manga, item);
                             listener.clickedManga(manga);
                         } else {
                             listener.clickedTitle(item);
@@ -1122,15 +1255,70 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         private void warmupContinueViewer(Title item) {
             if(item == null)
                 return;
+            Manga manga = resolveContinueManga(item);
+            if(manga == null)
+                return;
+            ViewerWarmupManager.warmupContinue(context, manga, item);
+        }
+
+        private void scheduleContinueViewerWarmup(Title item) {
+            if(item == null)
+                return;
+            String key = titleKey(item);
+            if(!pendingContinueWarmups.add(key))
+                return;
+            MAIN.postDelayed(() -> {
+                pendingContinueWarmups.remove(key);
+                if(anchorRecycler != null && (!anchorRecycler.isAttachedToWindow() || !anchorRecycler.isShown()))
+                    return;
+                if(anchorRecycler != null && anchorRecycler.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
+                    scheduleContinueViewerWarmup(item);
+                    return;
+                }
+                warmupContinueViewer(item);
+            }, 220);
+        }
+
+        private Manga resolveContinueManga(Title item) {
+            if(item == null)
+                return null;
             int bookmark = p.getBookmark(item);
             if(bookmark <= 0)
                 bookmark = item.getBookmark();
             if(bookmark <= 0)
-                return;
-            Manga manga = new Manga(bookmark, "", "", item.getBaseMode());
-            manga.setTitle(item);
-            manga.setTitleId(item.getId());
-            ViewerWarmupManager.warmup(context, manga, item);
+                bookmark = item.getBookmarkEpisodeId();
+            if(bookmark <= 0)
+                return null;
+
+            Manga resolved = findEpisodeById(item, bookmark);
+            if(resolved == null) {
+                int progressIndex = item.getBookmarkEpisodeIndex();
+                if(progressIndex <= 0 && bookmark > 0 && item.getEps() != null && bookmark <= item.getEps().size())
+                    progressIndex = bookmark;
+                resolved = episodeAt(item, progressIndex);
+            }
+            if(resolved == null)
+                resolved = new Manga(bookmark, "", "", item.getBaseMode());
+            resolved.setTitle(item);
+            resolved.setTitleId(item.getId());
+            if(item.getEps() != null && item.getEps().size() > 0)
+                resolved.setEps(item.getEps());
+            return resolved;
+        }
+
+        private Manga findEpisodeById(Title item, int bookmark) {
+            if(item == null || item.getEps() == null)
+                return null;
+            for(Manga episode : item.getEps())
+                if(episode != null && episode.getId() == bookmark)
+                    return episode;
+            return null;
+        }
+
+        private Manga episodeAt(Title item, int oneBasedIndex) {
+            if(item == null || item.getEps() == null || oneBasedIndex <= 0 || oneBasedIndex > item.getEps().size())
+                return null;
+            return item.getEps().get(oneBasedIndex - 1);
         }
 
         private int readingProgressPercent(Title item) {
@@ -1173,11 +1361,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         class RankHolder extends RecyclerView.ViewHolder {
-            CardView card;
+            View card;
             ImageView thumb;
             TextView index;
             TextView title;
             TextView meta;
+            String boundKey;
 
             RankHolder(View itemView) {
                 super(itemView);
@@ -1189,11 +1378,15 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
 
             void bind(Title item, int position) {
-                index.setText(String.valueOf(position + 1));
-                title.setText(item == null ? "" : item.getName());
                 String release = item == null ? "" : item.getRelease();
-                meta.setText(release == null || release.length() == 0 ? "인기 작품" : release);
-                bindTitleThumb(thumb, item, 142, 138);
+                String nextKey = titleContentKey(item) + ":" + position;
+                if(!nextKey.equals(boundKey)) {
+                    setTextIfChanged(index, String.valueOf(position + 1));
+                    setTextIfChanged(title, item == null ? "" : item.getName());
+                    setTextIfChanged(meta, release == null || release.length() == 0 ? "인기 작품" : release);
+                    boundKey = nextKey;
+                }
+                bindTitleThumb(thumb, item, 112, 110);
                 card.setOnClickListener(v -> {
                     if(listener != null && item != null)
                         listener.clickedTitle(item);
@@ -1351,6 +1544,17 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         return (int) (value * context.getResources().getDisplayMetrics().density + 0.5f);
     }
 
+    private void setTextIfChanged(TextView view, CharSequence text) {
+        CharSequence next = text == null ? "" : text;
+        if(!TextUtils.equals(view.getText(), next))
+            view.setText(next);
+    }
+
+    private void setVisibilityIfChanged(View view, int visibility) {
+        if(view.getVisibility() != visibility)
+            view.setVisibility(visibility);
+    }
+
     class GroupHolder extends RecyclerView.ViewHolder {
         TextView title;
 
@@ -1360,7 +1564,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         void bind(String group) {
-            title.setText(group);
+            setTextIfChanged(title, group);
         }
     }
 
@@ -1383,15 +1587,15 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             list.setItemAnimator(null);
             list.setRecycledViewPool(sharedHomePool);
             list.setItemViewCacheSize(6);
-            manager.setInitialPrefetchItemCount(2);
+            manager.setInitialPrefetchItemCount(0);
         }
 
         void bind(Ranking<?> section) {
             SectionName name = parseSectionName(section.getName());
-            title.setText(name.title);
-            count.setText("전체보기");
+            setTextIfChanged(title, name.title);
+            setTextIfChanged(count, "전체보기");
             boolean hasAction = name.path.length() > 0;
-            count.setVisibility(hasAction ? View.VISIBLE : View.INVISIBLE);
+            setVisibilityIfChanged(count, hasAction ? View.VISIBLE : View.INVISIBLE);
             count.setOnClickListener(v -> {
                 if(listener != null && name.path.length() > 0)
                     listener.clickedCategoryPath(name.title, name.path);
@@ -1406,22 +1610,22 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     class WebtoonCardAdapter extends RecyclerView.Adapter<WebtoonCardAdapter.CardHolder> {
         List<?> items;
+        String itemsKey;
 
         WebtoonCardAdapter(List<?> items) {
             this.items = items;
+            this.itemsKey = cardListKey(items);
             setHasStableIds(true);
         }
 
         void setItems(List<?> items) {
-            int oldSize = this.items == null ? 0 : this.items.size();
-            this.items = items;
-            int newSize = this.items == null ? 0 : this.items.size();
-            if(oldSize == newSize) {
-                if(newSize > 0)
-                    notifyItemRangeChanged(0, newSize);
-            } else {
-                notifyDataSetChanged();
-            }
+            List<?> next = items == null ? new ArrayList<>() : new ArrayList<>(items);
+            String nextKey = cardListKey(next);
+            if(nextKey.equals(itemsKey))
+                return;
+            this.items = next;
+            this.itemsKey = nextKey;
+            notifyDataSetChanged();
         }
 
         @NonNull
@@ -1437,23 +1641,19 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 return;
 
             Title title = (Title) item;
-            holder.name.setText(title.getName());
             String meta = title.getTags().size() > 0 ? TextUtils.join(" / ", title.getTags()) : title.getRelease();
-            holder.meta.setText(meta == null ? "" : meta);
+            String nextKey = cardContentKey(title);
+            if(!nextKey.equals(holder.boundKey)) {
+                setTextIfChanged(holder.name, title.getName());
+                setTextIfChanged(holder.meta, meta == null ? "" : meta);
+                holder.boundKey = nextKey;
+            }
 
-            Glide.with(holder.thumb).clear(holder.thumb);
             String thumb = title.getThumb();
             if(save || thumb == null || thumb.length() == 0) {
-                holder.thumb.setImageResource(R.mipmap.ic_launcher);
+                bindStaticThumb(holder.thumb, "launcher", R.mipmap.ic_launcher);
             } else {
-                Glide.with(holder.thumb)
-                        .load(getGlideUrl(thumb, title.getBaseMode()))
-                        .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                        .override(dp(180), dp(220))
-                        .thumbnail(0.25f)
-                        .dontAnimate()
-                        .placeholder(R.mipmap.ic_launcher)
-                        .into(holder.thumb);
+                bindGlideThumb(holder.thumb, getGlideUrl(thumb, title.getBaseMode()), 128, 156, R.mipmap.ic_launcher);
             }
 
             holder.card.setOnClickListener(v -> {
@@ -1485,10 +1685,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         class CardHolder extends RecyclerView.ViewHolder {
-            CardView card;
+            View card;
             ImageView thumb;
             TextView name;
             TextView meta;
+            String boundKey;
 
             CardHolder(View itemView) {
                 super(itemView);
@@ -1497,7 +1698,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 name = itemView.findViewById(R.id.webtoon_name);
                 meta = itemView.findViewById(R.id.webtoon_meta);
                 if(dark)
-                    card.setCardBackgroundColor(ContextCompat.getColor(context, R.color.colorDarkBackground));
+                    card.setBackgroundColor(ContextCompat.getColor(context, R.color.colorDarkBackground));
             }
         }
     }
@@ -1505,7 +1706,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private void preloadThumbnails(List<Ranking<?>> sections) {
         if(save || sections == null)
             return;
-        if(preloadCount >= PRELOAD_THUMB_MAX_PER_FETCH)
+        int maxPerFetch = p.getDataSave() ? 6 : (PrefetchCoordinator.aggressiveAllowed(context) ? PRELOAD_THUMB_MAX_PER_FETCH : 12);
+        if(preloadCount >= maxPerFetch)
             return;
         for(Ranking<?> section : sections) {
             if(section == null)
@@ -1523,9 +1725,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 Glide.with(context)
                         .load(getGlideUrl(thumb, ((Title) item).getBaseMode()))
                         .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                        .override(dp(180), dp(220))
+                        .override(dp(128), dp(156))
                         .preload();
-                if(++preloadCount >= PRELOAD_THUMB_MAX_PER_FETCH)
+                if(++preloadCount >= maxPerFetch)
                     return;
             }
         }
@@ -1550,30 +1752,65 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
         pendingRows = null;
         final ScrollAnchor anchor = captureScrollAnchor(oldRows);
-        DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
-            @Override
-            public int getOldListSize() {
-                return oldRows.size();
-            }
+        if(oldRows.size() == 0 && nextRows.size() > 0) {
+            Runnable applyFirstContent = () -> {
+                rows = nextRows;
+                notifyItemRangeInserted(0, nextRows.size());
+                restoreScrollAnchor(anchor);
+                if(!firstContentLogged && hasDisplayContent(rows)) {
+                    firstContentLogged = true;
+                    PerfTrace.end("home_first_content_ms", firstContentStartedAt);
+                }
+            };
+            if(anchorRecycler != null)
+                anchorRecycler.post(applyFirstContent);
+            else
+                MAIN.post(applyFirstContent);
+            return;
+        }
+        final int generation = ++rowDiffGeneration;
+        ROW_DIFF_EXECUTOR.execute(() -> {
+            DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
+                @Override
+                public int getOldListSize() {
+                    return oldRows.size();
+                }
 
-            @Override
-            public int getNewListSize() {
-                return nextRows.size();
-            }
+                @Override
+                public int getNewListSize() {
+                    return nextRows.size();
+                }
 
-            @Override
-            public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
-                return rowKey(oldRows.get(oldItemPosition)).equals(rowKey(nextRows.get(newItemPosition)));
-            }
+                @Override
+                public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
+                    return rowKey(oldRows.get(oldItemPosition)).equals(rowKey(nextRows.get(newItemPosition)));
+                }
 
-            @Override
-            public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
-                return rowContentKey(oldRows.get(oldItemPosition)).equals(rowContentKey(nextRows.get(newItemPosition)));
+                @Override
+                public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
+                    return rowContentKey(oldRows.get(oldItemPosition)).equals(rowContentKey(nextRows.get(newItemPosition)));
+                }
+            }, false);
+            postRowDiff(generation, nextRows, diff, anchor);
+        });
+    }
+
+    private void postRowDiff(int generation, List<Object> nextRows, DiffUtil.DiffResult diff, ScrollAnchor anchor) {
+        Runnable apply = () -> {
+            if(generation != rowDiffGeneration)
+                return;
+            rows = nextRows;
+            diff.dispatchUpdatesTo(this);
+            restoreScrollAnchor(anchor);
+            if(!firstContentLogged && hasDisplayContent(rows)) {
+                firstContentLogged = true;
+                PerfTrace.end("home_first_content_ms", firstContentStartedAt);
             }
-        }, false);
-        rows = nextRows;
-        diff.dispatchUpdatesTo(this);
-        restoreScrollAnchor(anchor);
+        };
+        if(anchorRecycler != null)
+            anchorRecycler.post(apply);
+        else
+            MAIN.post(apply);
     }
 
     private void applyPendingRows() {
@@ -1617,6 +1854,68 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
             return;
         }
+    }
+
+    private String titleKey(Title title) {
+        if(title == null)
+            return "";
+        return title.getBaseMode() + ":" + title.getId();
+    }
+
+    private String titleListKey(List<Title> titles) {
+        if(titles == null || titles.size() == 0)
+            return "";
+        StringBuilder builder = new StringBuilder();
+        int count = Math.min(titles.size(), 8);
+        for(int i = 0; i < count; i++) {
+            if(i > 0)
+                builder.append('|');
+            builder.append(titleContentKey(titles.get(i)));
+        }
+        builder.append("#").append(titles.size());
+        return builder.toString();
+    }
+
+    private String titleContentKey(Title title) {
+        if(title == null)
+            return "";
+        return titleKey(title) + ":" + title.getName() + ":" + title.getThumb() + ":"
+                + title.getBookmarkEpisodeId() + ":" + title.getBookmarkEpisodeIndex() + ":"
+                + title.getEpisodeCount() + ":" + title.getBookmark();
+    }
+
+    private String cardKey(Object item) {
+        if(item instanceof Title)
+            return "title:" + titleKey((Title)item);
+        if(item instanceof MTitle) {
+            MTitle title = (MTitle)item;
+            return "mtitle:" + title.getBaseMode() + ":" + title.getId();
+        }
+        return String.valueOf(item == null ? "" : item.hashCode());
+    }
+
+    private String cardListKey(List<?> items) {
+        if(items == null || items.size() == 0)
+            return "";
+        StringBuilder builder = new StringBuilder();
+        int count = Math.min(items.size(), 12);
+        for(int i = 0; i < count; i++) {
+            if(i > 0)
+                builder.append('|');
+            builder.append(cardContentKey(items.get(i)));
+        }
+        builder.append("#").append(items.size());
+        return builder.toString();
+    }
+
+    private String cardContentKey(Object item) {
+        if(item instanceof Title)
+            return titleContentKey((Title)item);
+        if(item instanceof MTitle) {
+            MTitle title = (MTitle)item;
+            return cardKey(item) + ":" + title.getName() + ":" + title.getThumb();
+        }
+        return String.valueOf(item);
     }
 
     private String rowKey(Object row) {
@@ -1685,60 +1984,65 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
     }
 
-    private class Fetcher extends LifecycleTask<Void, SectionBatch, Boolean> {
-        private CustomHttpClient.RequestGroup requestGroup;
+    private class Fetcher {
+        private MangaRepository.Cancellation cancellation;
         private List<Ranking<?>> finalDataSet;
         private boolean keepExistingRowsDuringFetch;
+        private AppDispatchers.TaskHandle handle;
+        private volatile boolean cancelled = false;
 
-        @Override
-        protected void onPreExecute() {
-            super.onPreExecute();
+        void start() {
+            prepare();
+            handle = AppDispatchers.submitIo(() -> {
+                Boolean result = fetchSections();
+                AppDispatchers.runOnMain(() -> finish(result));
+            });
+        }
+
+        private void prepare() {
             boolean hadInitialRows = rows != null && rows.size() > 0 && hasDisplayContent();
             keepExistingRowsDuringFetch = hadInitialRows;
-            dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
+            if(!hadInitialRows || collectTitles(dataSet, 1).size() == 0)
+                dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
             preloadedThumbs.clear();
             preloadCount = 0;
             pendingRows = null;
             initialRowsShown = hadInitialRows;
             List<Object> warmRows = buildRows(dataSet, false);
-            if(!hasHero(warmRows))
+            if(!hasDisplayContent(warmRows))
                 warmRows = buildInitialPlaceholderRows();
-            if(!initialRowsShown && hasHero(warmRows)) {
+            if(!initialRowsShown && hasDisplayContent(warmRows)) {
                 initialRowsShown = true;
                 updateRows(warmRows);
-                scrollHeroToTop();
+                if(hasHero(warmRows))
+                    scrollHeroToTop();
             }
         }
 
-        @Override
-        protected Boolean doInBackground(Void... params) {
-            requestGroup = new CustomHttpClient.RequestGroup();
-            return fetchSections(requestGroup);
-        }
-
-        private Boolean fetchSections(CustomHttpClient.RequestGroup requestGroup) {
+        private Boolean fetchSections() {
+            cancellation = MangaRepository.cancellation();
             String[][] sections = MainPageWebtoon.getSections(baseMode);
-            ExecutorService executor = Executors.newFixedThreadPool(Math.min(4, sections.length));
-            ExecutorCompletionService<SectionResult> completion = new ExecutorCompletionService<>(executor);
-            MainPageWebtoon parser = new MainPageWebtoon(baseMode);
+            CompletionService<SectionResult> completion = AppDispatchers.ioCompletionService();
+            MainPageWebtoon parser = MangaRepository.createWebtoonParser(baseMode);
             List<Ranking<?>> fetchedSections = MainPageWebtoon.getBlankDataSet(baseMode);
             int submitted = 0;
             int loaded = 0;
             List<SectionResult> pendingResults = new ArrayList<>();
+            List<Future> running = new ArrayList<>();
             boolean firstScreenPublished = false;
 
             try {
                 for(int i = 0; i < sections.length; i++) {
                     final int index = i;
                     final String[] section = sections[i];
-                    completion.submit(() -> getHttpClient().runWithRequestGroup(requestGroup, () ->
-                            new SectionResult(index, parser.parseWolfTitle(getHttpClient(), section[0], section[1], baseMode))));
+                    running.add(completion.submit(AppDispatchers.safeCallable(() -> new SectionResult(index,
+                            MangaRepository.loadWebtoonSection(parser, section[0], section[1], baseMode, cancellation)))));
                     submitted++;
                 }
 
-                for(int i = 0; i < submitted && !isCancelled(); i++) {
-                    Future<SectionResult> future = completion.take();
-                    SectionResult result = future.get();
+                for(int i = 0; i < submitted && !cancelled; i++) {
+                    Future future = completion.take();
+                    SectionResult result = (SectionResult) future.get();
                     if(result != null && result.ranking != null) {
                         if(result.ranking.size() > 0)
                             loaded++;
@@ -1751,14 +2055,14 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                         pendingResults.add(result);
                         int batchSize = firstScreenPublished ? SECTION_BATCH_SIZE : FIRST_SCREEN_BATCH_SIZE;
                         if(pendingResults.size() >= batchSize) {
-                            publishProgress(new SectionBatch(new ArrayList<>(pendingResults)));
+                            postProgress(new SectionBatch(new ArrayList<>(pendingResults)));
                             pendingResults.clear();
                             firstScreenPublished = true;
                         }
                     }
                 }
                 if(pendingResults.size() > 0)
-                    publishProgress(new SectionBatch(new ArrayList<>(pendingResults)));
+                    postProgress(new SectionBatch(new ArrayList<>(pendingResults)));
                 if(baseMode == base_webtoon)
                     MainPageWebtoon.enhanceWebtoonClassification(fetchedSections);
                 else if(baseMode == base_comic)
@@ -1768,19 +2072,22 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 Thread.currentThread().interrupt();
             } catch (Exception e) {
                 if(!isCancelled())
-                    e.printStackTrace();
+                    ml.melun.mangaview.report.CrashReporter.record(e);
             } finally {
-                executor.shutdownNow();
+                for(Future future : running)
+                    if(future != null && !future.isDone())
+                        future.cancel(true);
             }
             return loaded > 0;
         }
 
-        @Override
-        protected void onProgressUpdate(SectionBatch... values) {
-            super.onProgressUpdate(values);
-            if(values == null || values.length == 0 || values[0] == null || isCancelled())
+        private void postProgress(SectionBatch batch) {
+            AppDispatchers.runOnMain(() -> applyProgress(batch));
+        }
+
+        private void applyProgress(SectionBatch batch) {
+            if(batch == null || cancelled)
                 return;
-            SectionBatch batch = values[0];
             if(batch.results == null || batch.results.size() == 0)
                 return;
             if(dataSet == null)
@@ -1798,31 +2105,36 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
             if(loadedSections.size() == 0)
                 return;
-            if(keepExistingRowsDuringFetch) {
+            if(shouldHoldExistingRowsDuringFetch()) {
                 scheduleThumbnailPreload(loadedSections);
                 return;
             }
             if(!initialRowsShown) {
                 List<Object> firstRows = buildRows(dataSet, false);
-                if(!hasHero(firstRows))
+                if(!hasDisplayContent(firstRows))
                     return;
                 initialRowsShown = true;
                 updateRows(firstRows);
-                scrollHeroToTop();
+                if(hasHero(firstRows))
+                    scrollHeroToTop();
                 scheduleThumbnailPreload(loadedSections);
                 return;
             }
-            updateRows(buildRows(dataSet, false));
+            List<Object> progressRows = buildRowsForCurrentTab(true);
+            if(!hasDisplayContent(progressRows) && activeHomeTab != 3)
+                return;
+            updateRows(progressRows);
             scheduleThumbnailPreload(loadedSections);
         }
 
-        @Override
-        protected void onPostExecute(Boolean hasAnyResult) {
-            super.onPostExecute(hasAnyResult);
+        private void finish(Boolean hasAnyResult) {
+            if(cancelled)
+                return;
             if(fetcher == this)
                 fetcher = null;
             if(!hasAnyResult) {
-                if(listener != null)
+                notifyFetchFinished(false);
+                if(!hasDisplayContent() && listener != null)
                     listener.captchaCallback();
                 return;
             }
@@ -1836,20 +2148,29 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(shouldShowTop)
                 scrollHeroToTop();
             scheduleContinueProgressBackfill();
+            notifyFetchFinished(hasRequiredHomeSections(dataSet));
         }
 
-        @Override
-        protected void onCancelled(Boolean result) {
-            super.onCancelled(result);
+        private void notifyFetchFinished(boolean success) {
+            if(fetchStateListener != null)
+                fetchStateListener.onFetchFinished(baseMode, success);
+        }
+
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            cancelled = true;
+            if(cancellation != null)
+                cancellation.cancel();
             if(fetcher == this)
                 fetcher = null;
+            return handle == null || handle.cancel();
         }
 
-        @Override
-        public boolean cancel(boolean mayInterruptIfRunning) {
-            if(requestGroup != null)
-                requestGroup.cancel();
-            return super.cancel(mayInterruptIfRunning);
+        private boolean isCancelled() {
+            return cancelled;
+        }
+
+        private boolean shouldHoldExistingRowsDuringFetch() {
+            return keepExistingRowsDuringFetch && activeHomeTab == 0 && hasDisplayContent(rows);
         }
     }
 
@@ -1885,11 +2206,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(continueProgressBackfillRunning || !hasMissingContinueProgress())
             return;
         continueProgressBackfillRunning = true;
-        LifecycleTask.USER_ACTION_EXECUTOR.execute(() -> {
+        AppDispatchers.runUserAction(() -> {
             try {
-                p.backfillRecentProgress(getHttpClient(), 12);
+                MangaRepository.backfillRecentProgress(12);
             } catch (Exception e) {
-                e.printStackTrace();
+                ml.melun.mangaview.report.CrashReporter.record(e);
             }
             Runnable done = () -> {
                 continueProgressBackfillRunning = false;

@@ -2,7 +2,6 @@ package ml.melun.mangaview.adapter;
 
 import android.content.Context;
 import android.graphics.Color;
-import ml.melun.mangaview.task.LifecycleTask;
 import androidx.annotation.NonNull;
 import androidx.core.content.ContextCompat;
 import androidx.cardview.widget.CardView;
@@ -19,12 +18,12 @@ import java.util.List;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.R;
-import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MainPage;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.repository.MangaRepository;
+import ml.melun.mangaview.runtime.AppDispatchers;
 
-import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 
@@ -88,7 +87,6 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         }
 
         setHasStableIds(true);
-        notifyDataSetChanged();
         uadapter.setLoad("URL 업데이트중...");
     }
 
@@ -98,7 +96,7 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             fetcher.cancel(true);
         uadapter.setLoad();
         fetcher = new MainFetcher();
-        fetcher.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+        fetcher.start();
     }
 
     @Override
@@ -427,30 +425,31 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         default void longClickedContinue(View view, Title title) {}
     }
 
-    private class MainFetcher extends LifecycleTask<Void, Integer, MainPage> {
-        private CustomHttpClient.RequestGroup requestGroup;
+    private class MainFetcher {
+        private MangaRepository.Cancellation cancellation;
+        private AppDispatchers.TaskHandle handle;
+        private volatile boolean cancelled = false;
 
-        @Override
-        protected void onPreExecute() {
-            super.onPreExecute();
+        void start() {
+            handle = AppDispatchers.submitIo(() -> {
+                MainPage result = load();
+                AppDispatchers.runOnMain(() -> finish(result));
+            });
         }
 
-        @Override
-        protected MainPage doInBackground(Void... params) {
-            requestGroup = new CustomHttpClient.RequestGroup();
+        private MainPage load() {
+            cancellation = MangaRepository.cancellation();
             try {
-                return getHttpClient().runWithRequestGroup(requestGroup, () -> new MainPage(getHttpClient()));
+                return MangaRepository.loadComicHome(cancellation);
             } catch (Exception e) {
-                if(!isCancelled())
-                    e.printStackTrace();
+                if(!cancelled)
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 return null;
             }
         }
 
-        @Override
-        protected void onPostExecute(MainPage u) {
-            super.onPostExecute(u);
-            if(fetcher != this)
+        private void finish(MainPage u) {
+            if(cancelled || fetcher != this)
                 return;
             fetcher = null;
             if(u == null)
@@ -469,18 +468,13 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             replaceSection(updh, u.getFavUpdate());
         }
 
-        @Override
-        protected void onCancelled(MainPage result) {
-            super.onCancelled(result);
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            cancelled = true;
+            if(cancellation != null)
+                cancellation.cancel();
             if(fetcher == this)
                 fetcher = null;
-        }
-
-        @Override
-        public boolean cancel(boolean mayInterruptIfRunning) {
-            if(requestGroup != null)
-                requestGroup.cancel();
-            return super.cancel(mayInterruptIfRunning);
+            return handle == null || handle.cancel();
         }
     }
 

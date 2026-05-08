@@ -55,6 +55,9 @@ public class Preference {
     boolean doublepReverse;
     FirebaseSyncManager syncManager;
     boolean syncSuppressed;
+    boolean historyLoaded;
+    boolean bookmarkLoaded;
+    boolean viewerBookmarkLoaded;
     private final CopyOnWriteArrayList<LocalChangeListener> localChangeListeners = new CopyOnWriteArrayList<>();
 
     public interface LocalChangeListener {
@@ -138,14 +141,9 @@ public class Preference {
         nextPageKey = -1;
         baseMode = base_comic;
         try {
-            Gson gson = new Gson();
-            recent = safeTitleList(gson.fromJson(sharedPref.getString("recent", ""),new TypeToken<ArrayList<MTitle>>(){}.getType()));
-            favorite = safeTitleList(gson.fromJson(sharedPref.getString("favorite", ""),new TypeToken<ArrayList<MTitle>>(){}.getType()));
             homeDir = sharedPref.getString("homeDir", "");
             prevPageKey = sharedPref.getInt("prevPageKey", -1);
             nextPageKey = sharedPref.getInt("nextPageKey", -1);
-            pagebookmark = new JSONObject(sharedPref.getString("bookmark", "{}"));
-            bookmark = new JSONObject(sharedPref.getString("bookmark2", "{}"));
             darkTheme = sharedPref.getBoolean("darkTheme", false);
             viewerType = sharedPref.getInt("viewerType",0);
             reverse = sharedPref.getBoolean("pageReverse",false);
@@ -172,7 +170,46 @@ public class Preference {
                     .remove("lastUpdateTime")
                     .apply();
         }catch(Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
+    private void ensureHistoryLoaded() {
+        if(historyLoaded)
+            return;
+        historyLoaded = true;
+        try {
+            Gson gson = new Gson();
+            recent = safeTitleList(gson.fromJson(sharedPref.getString("recent", ""), new TypeToken<ArrayList<MTitle>>(){}.getType()));
+            favorite = safeTitleList(gson.fromJson(sharedPref.getString("favorite", ""), new TypeToken<ArrayList<MTitle>>(){}.getType()));
+        } catch(Exception e) {
+            recent = new ArrayList<>();
+            favorite = new ArrayList<>();
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
+    private void ensureBookmarkLoaded() {
+        if(bookmarkLoaded)
+            return;
+        bookmarkLoaded = true;
+        try {
+            bookmark = new JSONObject(sharedPref.getString("bookmark2", "{}"));
+        } catch(Exception e) {
+            bookmark = new JSONObject();
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
+    private void ensureViewerBookmarkLoaded() {
+        if(viewerBookmarkLoaded)
+            return;
+        viewerBookmarkLoaded = true;
+        try {
+            pagebookmark = new JSONObject(sharedPref.getString("bookmark", "{}"));
+        } catch(Exception e) {
+            pagebookmark = new JSONObject();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
     }
 
@@ -379,6 +416,7 @@ public class Preference {
         prefsEditor.apply();
     }
     public void removeRecent(int position){
+        ensureHistoryLoaded();
         if(position < 0 || position >= recent.size())
             return;
         MTitle title = recent.remove(position);
@@ -388,6 +426,8 @@ public class Preference {
     }
 
     public void removeRecent(MTitle title){
+        ensureHistoryLoaded();
+        ensureBookmarkLoaded();
         int position = getIndexOf(title);
         if(position < 0)
             return;
@@ -398,6 +438,7 @@ public class Preference {
     }
 
     public void addRecent(MTitle tmp){
+        ensureHistoryLoaded();
         if(tmp != null && tmp.getId()>0) {
             tmp.setPath(null);
             int position = getIndexOf(tmp);
@@ -410,6 +451,7 @@ public class Preference {
         }
     }
     public void addRecent(Title tmp){
+        ensureHistoryLoaded();
         if(tmp != null && tmp.getId()>0) {
             MTitle title = tmp.minimize();
             title.setPath(null);
@@ -444,6 +486,7 @@ public class Preference {
 
 
     public void updateRecentData(MTitle title){
+        ensureHistoryLoaded();
         if(title == null)
             return;
         MTitle tmp = title.clone();
@@ -463,6 +506,7 @@ public class Preference {
     }
 
     public void updateRecentData(Title title){
+        ensureHistoryLoaded();
         if(title == null)
             return;
         MTitle tmp = title.minimize();
@@ -482,6 +526,7 @@ public class Preference {
     }
 
     private int getIndexOf(MTitle title){
+        ensureHistoryLoaded();
         if(title != null && title.getId()>0) {
             return recent.indexOf(title);
         }
@@ -489,6 +534,7 @@ public class Preference {
     }
 
     public void setBookmark(Title title, int id){
+        ensureBookmarkLoaded();
         if(title == null)
             return;
         int titleId = title.getId();
@@ -509,6 +555,7 @@ public class Preference {
     }
 
     private void updateRecentProgress(Title title, int episodeId) {
+        ensureHistoryLoaded();
         if(title == null || episodeId <= 0)
             return;
         int index = getIndexOf(title);
@@ -537,6 +584,7 @@ public class Preference {
         writeRecent();
     }
     public int getBookmark(MTitle title){
+        ensureBookmarkLoaded();
         //return recent.mget(0).getBookmark();
         if(title == null)
             return -1;
@@ -552,6 +600,7 @@ public class Preference {
     }
 
     private void removeBookmark(MTitle title){
+        ensureBookmarkLoaded();
         if(title == null)
             return;
         int titleId = title.getId();
@@ -569,6 +618,7 @@ public class Preference {
     }
 
     public void writeBookmark(){
+        ensureBookmarkLoaded();
         prefsEditor.putString("bookmark2", bookmark.toString());
         prefsEditor.apply();
         notifyLocalChange("bookmark");
@@ -576,17 +626,20 @@ public class Preference {
     }
 
     public void resetBookmark(){
+        bookmarkLoaded = true;
         try {
             bookmark = new JSONObject("{}");
         }catch (Exception e){}
         writeBookmark();
     }
     public void resetRecent(){
+        historyLoaded = true;
         recent = new ArrayList<>();
         writeRecent();
     }
 
     public void resetFavorites(){
+        ensureHistoryLoaded();
         favorite = new ArrayList<>();
         prefsEditor.putString("favorite", new Gson().toJson(favorite));
         prefsEditor.apply();
@@ -595,6 +648,7 @@ public class Preference {
     }
 
     private void writeRecent(){
+        ensureHistoryLoaded();
         Gson gson = new Gson();
         prefsEditor.putString("recent", gson.toJson(recent));
         prefsEditor.apply();
@@ -608,6 +662,7 @@ public class Preference {
     }
 
     public void setViewerBookmark(Manga m, int index, int offset){
+        ensureViewerBookmarkLoaded();
         if(m == null)
             return;
         if(m.getId()>-1) {
@@ -633,6 +688,7 @@ public class Preference {
         }
     }
     public int getViewerBookmark(Manga m){
+        ensureViewerBookmarkLoaded();
         if(m == null)
             return 0;
         if(m.getId()>-1) {
@@ -652,6 +708,7 @@ public class Preference {
         return 0;
     }
     public int getViewerBookmarkOffset(Manga m){
+        ensureViewerBookmarkLoaded();
         if(m == null)
             return 0;
         if(m.getId()>-1) {
@@ -671,6 +728,7 @@ public class Preference {
         return 0;
     }
     public void removeViewerBookmark(Manga m){
+        ensureViewerBookmarkLoaded();
         if(m == null)
             return;
         String key = viewerBookmarkKey(m);
@@ -699,12 +757,14 @@ public class Preference {
         return m.getBaseMode() + "." + m.getId();
     }
     public void resetViewerBookmark(){
+        viewerBookmarkLoaded = true;
         try {
             pagebookmark = new JSONObject("{}");
         }catch (Exception e){}
         writeViewerBookmark();
     }
     private void writeViewerBookmark(){
+        ensureViewerBookmarkLoaded();
         prefsEditor.putString("bookmark", pagebookmark.toString());
         prefsEditor.apply();
         notifyLocalChange("pageBookmark");
@@ -718,6 +778,7 @@ public class Preference {
     }
 
     public boolean toggleFavorite(MTitle title, int position){
+        ensureHistoryLoaded();
         if(title == null)
             return false;
         int index = findFavorite(title);
@@ -741,6 +802,7 @@ public class Preference {
     }
 
     public int findFavorite(MTitle title){
+        ensureHistoryLoaded();
         if(title != null && title.getId()>0){
             return favorite.indexOf(title);
         }
@@ -748,10 +810,12 @@ public class Preference {
     }
 
     public List<MTitle> getFavorite(){
+        ensureHistoryLoaded();
         return favorite;
     }
 
     public void setFavorites(List<MTitle> fav){
+        historyLoaded = true;
         this.favorite = safeTitleList(fav);
         Gson gson = new Gson();
         prefsEditor.putString("favorite", gson.toJson(favorite));
@@ -761,11 +825,14 @@ public class Preference {
     }
 
     public void setRecents(List<MTitle> rec){
+        historyLoaded = true;
         this.recent = safeTitleList(rec);
         writeRecent();
     }
 
     public void backfillRecentProgress(CustomHttpClient client, int limit) {
+        ensureHistoryLoaded();
+        ensureBookmarkLoaded();
         if(client == null || recent == null || recent.size() == 0)
             return;
         boolean changed = false;
@@ -801,7 +868,7 @@ public class Preference {
                     changed = true;
                 }
             } catch (Exception e) {
-                e.printStackTrace();
+                ml.melun.mangaview.report.CrashReporter.record(e);
             }
         }
         if(changed)
@@ -809,24 +876,29 @@ public class Preference {
     }
 
     public List<MTitle> getRecentForSync(){
+        ensureHistoryLoaded();
         return recent == null ? new ArrayList<>() : recent;
     }
 
     public void setBookmarks(JSONObject book){
+        bookmarkLoaded = true;
         this.bookmark = book == null ? new JSONObject() : book;
         writeBookmark();
     }
 
     public void setViewerBookmarks(JSONObject book){
+        viewerBookmarkLoaded = true;
         this.pagebookmark = book == null ? new JSONObject() : book;
         writeViewerBookmark();
     }
 
     public JSONObject getViewerBookmarkObject() {
+        ensureViewerBookmarkLoaded();
         return pagebookmark;
     }
 
     public List<MTitle> getRecent(){
+        ensureHistoryLoaded();
         pruneInvalidRecents();
         return recent;
     }
@@ -878,6 +950,7 @@ public class Preference {
 //    }
 
     public boolean check(){
+        ensureHistoryLoaded();
         //returns false if needs update
         for(MTitle t: recent){
             if(t != null && isInteger(t.getRelease())) return false;
@@ -890,6 +963,8 @@ public class Preference {
 
 
     public void check2(){
+        ensureBookmarkLoaded();
+        ensureViewerBookmarkLoaded();
         //returns false if needs update
         Iterator<String> keys = bookmark.keys();
         List<String> fix = new ArrayList<>();
@@ -906,7 +981,7 @@ public class Preference {
         try {
             this.bookmark = new JSONObject(jsonStr);
         }catch (Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
         writeBookmark();
 
@@ -925,11 +1000,12 @@ public class Preference {
         try {
             this.pagebookmark = new JSONObject(jsonStr);
         }catch (Exception e){
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
         writeViewerBookmark();
     }
     public JSONObject getBookmarkObject() {
+        ensureBookmarkLoaded();
         return bookmark;
     }
 

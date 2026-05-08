@@ -109,6 +109,21 @@ public class MainPageWebtoonTest {
         }
     }
 
+    @Test
+    public void classificationDbGenreLookupUsesCaseInsensitiveIndex() {
+        MainPageWebtoon.clearClassificationDbForTest();
+        try {
+            MainPageWebtoon.putClassificationDbTitleForTest(7, "Indexed", false, "Action");
+
+            ArrayList<Title> titles = MainPageWebtoon.getClassificationDbTitlesByGenre("action", 0, 10);
+
+            assertEquals(1, titles.size());
+            assertEquals(7, titles.get(0).getId());
+        } finally {
+            MainPageWebtoon.clearClassificationDbForTest();
+        }
+    }
+
     private String mixedSearchHtml() {
         return "<article class=\"searchItem\">"
                 + "<a href=\"/list?toon=101&title=%EC%9B%B9%ED%88%B0\"><h6 class=\"searchDetailTitle\">웹툰 결과</h6></a>"

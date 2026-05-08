@@ -2,8 +2,7 @@ package ml.melun.mangaview.fragment;
 
 import android.content.Intent;
 import android.content.DialogInterface;
-import android.net.Uri;
-import ml.melun.mangaview.task.LifecycleTask;
+import android.content.Context;
 import android.os.Bundle;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
@@ -25,7 +24,6 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.widget.LinearLayoutCompat;
 import androidx.appcompat.widget.PopupMenu;
-import androidx.documentfile.provider.DocumentFile;
 import androidx.fragment.app.Fragment;
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -34,10 +32,6 @@ import com.google.android.material.tabs.TabLayout;
 import com.bumptech.glide.Glide;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayoutDirection;
-import com.google.gson.Gson;
-import com.google.gson.reflect.TypeToken;
-
-import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -48,25 +42,20 @@ import ml.melun.mangaview.Preference;
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.adapter.TitleAdapter;
 import ml.melun.mangaview.activity.AdvSearchActivity;
-import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.repository.MangaRepository;
+import ml.melun.mangaview.repository.OfflineStore;
+import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.PerfTrace;
 
-import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
-import static ml.melun.mangaview.Utils.deleteRecursive;
-import static ml.melun.mangaview.Utils.documentFileFromUri;
 import static ml.melun.mangaview.Utils.episodeIntent;
-import static ml.melun.mangaview.Utils.filterFolder;
-import static ml.melun.mangaview.Utils.getOfflineEpisodes;
 import static ml.melun.mangaview.Utils.openViewer;
 import static ml.melun.mangaview.Utils.popup;
-import static ml.melun.mangaview.Utils.readFileToString;
-import static ml.melun.mangaview.Utils.readUriToString;
 import static ml.melun.mangaview.Utils.showPopup;
-import static ml.melun.mangaview.Utils.useScopedStorageHome;
 import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 
 public class MainSearch extends Fragment {
@@ -106,6 +95,7 @@ public class MainSearch extends Fragment {
     int lastTitlePopupBaseMode = -1;
     boolean pendingLibraryRefresh = false;
     boolean libraryMode = true;
+    long searchFirstStartedAt = 0L;
 
     public static MainSearch newSearchTab() {
         MainSearch fragment = new MainSearch();
@@ -297,8 +287,8 @@ public class MainSearch extends Fragment {
                 if (!search.isLast()) {
                     if(searchTask == null) {
                         activeSearchKey = null;
-                        searchTask = new SearchManga(search);
-                        searchTask.executeOnExecutor(LifecycleTask.USER_ACTION_EXECUTOR);
+                        searchTask = new SearchManga(search, false);
+                        searchTask.start();
                     }
                 } else swipe.setRefreshing(false);
             }
@@ -459,7 +449,7 @@ public class MainSearch extends Fragment {
         ArrayList<Title> data = getLibraryTitles(tab);
         if((tab == 0 || tab == 3) && offlineTitles.size() == 0 && offlineTask == null) {
             offlineTask = new LoadOfflineTitles();
-            offlineTask.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+            offlineTask.start();
         }
         bindLibraryData(data, libraryEmptyMessage(tab));
     }
@@ -734,7 +724,7 @@ public class MainSearch extends Fragment {
     }
 
     private void openOfflineResume(Title title, int bookmark) {
-        Manga manga = resolveOfflineResumeManga(title, bookmark);
+        Manga manga = OfflineStore.resolveResumeManga(getContext(), title, bookmark);
         if(manga == null) {
             confirmOnlineResume(title, bookmark);
             return;
@@ -770,67 +760,6 @@ public class MainSearch extends Fragment {
         openViewer(getContext(), manga, -1);
     }
 
-    private Manga resolveOfflineResumeManga(Title title, int bookmark) {
-        if(title == null || title.getPath() == null)
-            return null;
-        List<Manga> episodes = title.getEps();
-        if(episodes == null)
-            episodes = new ArrayList<>();
-        title.setEps(episodes);
-        int mode = title.useBookmark() ? 3 : 4;
-        if(useScopedStorageHome(title.getPath())) {
-            DocumentFile titleDir = documentFileFromUri(getContext(), title.getPath());
-            for(DocumentFile folder : getOfflineEpisodes(titleDir)) {
-                Manga found = applyOfflineFolder(title, episodes, folder.getName(), folder.getUri().toString(), mode);
-                if(found != null && found.getId() == bookmark)
-                    return found;
-            }
-        } else {
-            for(File folder : getOfflineEpisodes(title.getPath())) {
-                Manga found = applyOfflineFolder(title, episodes, folder.getName(), folder.getAbsolutePath(), mode);
-                if(found != null && found.getId() == bookmark)
-                    return found;
-            }
-        }
-        return null;
-    }
-
-    private Manga applyOfflineFolder(Title title, List<Manga> episodes, String folderName, String path, int mode) {
-        if(folderName == null || path == null)
-            return null;
-        int id = parseOfflineEpisodeId(folderName);
-        Manga manga = null;
-        if(id > 0) {
-            for(Manga episode : episodes) {
-                if(episode != null && episode.getId() == id && episode.getBaseMode() == title.getBaseMode()) {
-                    manga = episode;
-                    break;
-                }
-            }
-            if(manga == null) {
-                manga = new Manga(id, folderName, "", title.getBaseMode());
-                episodes.add(manga);
-            }
-        } else {
-            manga = new Manga(-1, folderName, "", title.getBaseMode());
-            episodes.add(manga);
-        }
-        manga.setOfflinePath(path);
-        manga.setMode(id > 0 ? mode : 1);
-        return manga;
-    }
-
-    private int parseOfflineEpisodeId(String folderName) {
-        try {
-            int dot = folderName.lastIndexOf('.');
-            if(dot < 0 || dot >= folderName.length() - 1)
-                return -1;
-            return Integer.parseInt(folderName.substring(dot + 1));
-        } catch (Exception e) {
-            return -1;
-        }
-    }
-
     private boolean isOfflineTitle(Title title) {
         return title != null && title.getPath() != null && title.getPath().length() > 0;
     }
@@ -854,23 +783,7 @@ public class MainSearch extends Fragment {
     private void deleteOfflineTitle(Title title) {
         if(getContext() == null || title == null)
             return;
-        boolean deleted = false;
-        String path = title.getPath();
-        if(path != null && path.length() > 0) {
-            if(useScopedStorageHome(path)) {
-                try {
-                    DocumentFile target = DocumentFile.fromTreeUri(getContext(), Uri.parse(path));
-                    deleted = target != null && target.delete();
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-            } else {
-                deleted = deleteRecursive(new File(path));
-            }
-        }
-        if(!deleted)
-            deleted = deleteOfflineTitleByName(title);
-
+        boolean deleted = OfflineStore.deleteTitle(getContext(), title);
         if(deleted) {
             removeOfflineTitleFromCache(title);
             Toast.makeText(getContext(), "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
@@ -878,22 +791,6 @@ public class MainSearch extends Fragment {
         } else {
             showPopup(getContext(), "알림", "삭제를 실패했습니다");
         }
-    }
-
-    private boolean deleteOfflineTitleByName(Title title) {
-        if(getContext() == null || title == null)
-            return false;
-        if(useScopedStorageHome(p.getHomeDir())) {
-            try {
-                DocumentFile home = DocumentFile.fromTreeUri(getContext(), Uri.parse(p.getHomeDir()));
-                DocumentFile target = home == null ? null : home.findFile(filterFolder(title.getName()));
-                return target != null && target.delete();
-            } catch (Exception e) {
-                e.printStackTrace();
-                return false;
-            }
-        }
-        return deleteRecursive(new File(p.getHomeDir(), filterFolder(title.getName())));
     }
 
     private void removeOfflineTitleFromCache(Title title) {
@@ -1076,7 +973,7 @@ public class MainSearch extends Fragment {
         int tab = getLibraryTabPosition();
         if((tab == 0 || tab == 3) && offlineTitles.size() == 0 && offlineTask == null) {
             offlineTask = new LoadOfflineTitles();
-            offlineTask.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+            offlineTask.start();
         }
         ArrayList<Title> data = new ArrayList<>();
         for(Title title : getLibraryTitles(tab))
@@ -1133,21 +1030,20 @@ public class MainSearch extends Fragment {
             String key = searchKey(query);
             if(searchTask != null && key.equals(activeSearchKey))
                 return;
-            if(searchAdapter != null)
-                searchAdapter.removeAll();
-            else
+            if(searchAdapter == null)
                 searchAdapter = new TitleAdapter(getContext());
             bindOnlineAdapter();
-            if(noresult != null)
+            if(noresult != null && searchAdapter.getItemCount() == 0)
                 noresult.setVisibility(View.GONE);
             updateAdvSearchVisibility();
             int selectedBaseMode = selectedSearchBaseMode();
-            search = new Search(query, searchMode.getSelectedItemPosition(), selectedBaseMode);
+            search = MangaRepository.createSearch(query, searchMode.getSelectedItemPosition(), selectedBaseMode);
             if(searchTask != null)
                 searchTask.cancel(true);
             activeSearchKey = key;
-            searchTask = new SearchManga(search);
-            searchTask.executeOnExecutor(LifecycleTask.USER_ACTION_EXECUTOR);
+            searchFirstStartedAt = PerfTrace.start("search_first_result_ms");
+            searchTask = new SearchManga(search, true);
+            searchTask.start();
         }
     }
 
@@ -1263,46 +1159,26 @@ public class MainSearch extends Fragment {
         super.onDestroyView();
     }
 
-    private class LoadOfflineTitles extends LifecycleTask<Void, Void, ArrayList<Title>> {
-        @Override
-        protected ArrayList<Title> doInBackground(Void... voids) {
-            ArrayList<Title> titles = new ArrayList<>();
-            if(getContext() == null)
-                return titles;
-            if(useScopedStorageHome(p.getHomeDir())) {
-                Uri uri = Uri.parse(p.getHomeDir());
-                DocumentFile home;
-                try {
-                    home = DocumentFile.fromTreeUri(getContext(), uri);
-                } catch (IllegalArgumentException e) {
-                    return titles;
-                }
-                if(home == null || !home.canRead())
-                    return titles;
-                for(DocumentFile f : home.listFiles()) {
-                    if(isCancelled())
-                        return titles;
-                    if(f.isDirectory())
-                        titles.add(readOfflineTitle(f));
-                }
-            } else {
-                File homeDir = new File(p.getHomeDir());
-                File[] files = homeDir.exists() ? homeDir.listFiles() : null;
-                if(files == null)
-                    return titles;
-                for(File f : files) {
-                    if(isCancelled())
-                        return titles;
-                    if(f.isDirectory())
-                        titles.add(readOfflineTitle(f));
-                }
-            }
-            return titles;
+    private class LoadOfflineTitles {
+        private final Context appContext;
+        private AppDispatchers.TaskHandle handle;
+        private volatile boolean cancelled = false;
+
+        LoadOfflineTitles() {
+            Context context = getContext();
+            appContext = context == null ? null : context.getApplicationContext();
         }
 
-        @Override
-        protected void onPostExecute(ArrayList<Title> titles) {
-            super.onPostExecute(titles);
+        void start() {
+            handle = AppDispatchers.submitIo(() -> {
+                ArrayList<Title> titles = OfflineStore.loadTitles(appContext);
+                AppDispatchers.runOnMain(() -> finish(titles));
+            });
+        }
+
+        private void finish(ArrayList<Title> titles) {
+            if(cancelled)
+                return;
             if(offlineTask == this)
                 offlineTask = null;
             offlineTitles = titles == null ? new ArrayList<>() : titles;
@@ -1314,86 +1190,50 @@ public class MainSearch extends Fragment {
             }
         }
 
-        @Override
-        protected void onCancelled(ArrayList<Title> titles) {
-            super.onCancelled(titles);
+        boolean cancel(boolean mayInterruptIfRunning) {
+            cancelled = true;
             if(offlineTask == this)
                 offlineTask = null;
-        }
-
-        private Title readOfflineTitle(DocumentFile folder) {
-            DocumentFile data = folder.findFile("title.gson");
-            if(data != null) {
-                try {
-                    Title title = new Gson().fromJson(readUriToString(getContext(), data.getUri()), new TypeToken<Title>() {
-                    }.getType());
-                    title.setPath(folder.getUri().toString());
-                    String thumb = title.getThumb();
-                    if(thumb != null && thumb.length() > 0) {
-                        DocumentFile t = folder.findFile(thumb);
-                        if(t != null)
-                            title.setThumb(t.getUri().toString());
-                    }
-                    return title;
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-            }
-            Title title = new Title(folder.getName(), "", "", new ArrayList<>(), "", 0, MTitle.base_auto);
-            title.setPath(folder.getUri().toString());
-            return title;
-        }
-
-        private Title readOfflineTitle(File folder) {
-            File data = new File(folder, "title.gson");
-            if(data.exists()) {
-                try {
-                    Title title = new Gson().fromJson(readFileToString(data), new TypeToken<Title>() {
-                    }.getType());
-                    title.setPath(folder.getAbsolutePath());
-                    String thumb = title.getThumb();
-                    if(thumb != null && thumb.length() > 0)
-                        title.setThumb(folder.getAbsolutePath() + '/' + thumb);
-                    return title;
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-            }
-            Title title = new Title(folder.getName(), "", "", new ArrayList<>(), "", 0, MTitle.base_auto);
-            title.setPath(folder.getAbsolutePath());
-            return title;
+            return handle == null || handle.cancel();
         }
     }
 
-    private class SearchManga extends LifecycleTask<Void, Void, Integer>{
+    private class SearchManga {
         private final Search targetSearch;
-        private CustomHttpClient.RequestGroup requestGroup;
+        private final boolean replaceResults;
+        private MangaRepository.Cancellation cancellation;
+        private AppDispatchers.TaskHandle handle;
+        private volatile boolean cancelled = false;
 
-        SearchManga(Search targetSearch) {
+        SearchManga(Search targetSearch, boolean replaceResults) {
             this.targetSearch = targetSearch;
+            this.replaceResults = replaceResults;
         }
 
-        protected void onPreExecute(){
-            super.onPreExecute();
+        void start() {
+            handle = AppDispatchers.submitUserAction(() -> {
+                Integer result = load();
+                AppDispatchers.runOnMain(() -> finish(result));
+            });
         }
-        protected Integer doInBackground(Void... params){
-            requestGroup = new CustomHttpClient.RequestGroup();
+
+        private Integer load() {
+            cancellation = MangaRepository.cancellation();
             try {
-                return getHttpClient().runWithRequestGroup(requestGroup, () -> targetSearch.fetch(getHttpClient()));
+                return MangaRepository.search(targetSearch, cancellation);
             } catch (Exception e) {
-                if(!isCancelled())
-                    e.printStackTrace();
+                if(!cancelled)
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 return 1;
             }
         }
-        @Override
-        protected void onPostExecute(Integer res){
-            super.onPostExecute(res);
+
+        private void finish(Integer res) {
             if(searchTask == this) {
                 searchTask = null;
                 activeSearchKey = null;
             }
-            if(isCancelled() || targetSearch != search || getContext() == null)
+            if(cancelled || targetSearch != search || getContext() == null)
                 return;
             if(res == null)
                 res = 1;
@@ -1402,8 +1242,8 @@ public class MainSearch extends Fragment {
                 Utils.showCaptchaPopup(getContext(), 4, fragment, p);
             }
 
-            if(searchAdapter.getItemCount()==0) {
-                searchAdapter.addData(targetSearch.getResult());
+            if(replaceResults) {
+                searchAdapter.setData(targetSearch.getResult());
                 bindOnlineAdapter();
             }else{
                 searchAdapter.addData(targetSearch.getResult());
@@ -1411,6 +1251,8 @@ public class MainSearch extends Fragment {
 
             if(searchAdapter.getItemCount()>0) {
                 noresult.setVisibility(View.GONE);
+                if(replaceResults && searchFirstStartedAt > 0)
+                    PerfTrace.end("search_first_result_ms", searchFirstStartedAt);
             }else{
                 noresult.setText("\"" + targetSearch.getQuery() + "\" 검색 결과가 없습니다");
                 noresult.setVisibility(View.VISIBLE);
@@ -1419,22 +1261,17 @@ public class MainSearch extends Fragment {
             swipe.setRefreshing(false);
         }
 
-        @Override
-        protected void onCancelled(Integer res) {
-            super.onCancelled(res);
+        boolean cancel(boolean mayInterruptIfRunning) {
+            cancelled = true;
+            if(cancellation != null)
+                cancellation.cancel();
             if(searchTask == this) {
                 searchTask = null;
                 activeSearchKey = null;
                 if(swipe != null)
                     swipe.setRefreshing(false);
             }
-        }
-
-        @Override
-        public boolean cancel(boolean mayInterruptIfRunning) {
-            if(requestGroup != null)
-                requestGroup.cancel();
-            return super.cancel(mayInterruptIfRunning);
+            return handle == null || handle.cancel();
         }
     }
 }

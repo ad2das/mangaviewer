@@ -4,7 +4,6 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.net.Uri;
-import ml.melun.mangaview.task.LifecycleTask;
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import androidx.appcompat.app.ActionBar;
 import androidx.appcompat.app.AlertDialog;
@@ -15,7 +14,7 @@ import android.os.Bundle;
 
 import androidx.appcompat.widget.LinearLayoutCompat;
 import androidx.appcompat.widget.Toolbar;
-import androidx.documentfile.provider.DocumentFile;
+import androidx.lifecycle.ViewModelProvider;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.recyclerview.widget.SimpleItemAnimator;
 
@@ -24,13 +23,11 @@ import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.View;
 import android.widget.PopupMenu;
-import android.widget.ProgressBar;
 import android.widget.Toast;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
-import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -41,18 +38,22 @@ import ml.melun.mangaview.adapter.TagAdapter;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.model.EpisodeLoadResult;
+import ml.melun.mangaview.repository.CacheFileStore;
+import ml.melun.mangaview.repository.CachePolicy;
+import ml.melun.mangaview.repository.MangaRepository;
+import ml.melun.mangaview.repository.OfflineStore;
+import ml.melun.mangaview.runtime.PerfTrace;
+import ml.melun.mangaview.runtime.PrefetchCoordinator;
+import ml.melun.mangaview.state.UiState;
+import ml.melun.mangaview.viewmodel.EpisodeViewModel;
 
-import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
-import static ml.melun.mangaview.Utils.deleteRecursive;
-import static ml.melun.mangaview.Utils.documentFileFromUri;
-import static ml.melun.mangaview.Utils.getOfflineEpisodes;
 import static ml.melun.mangaview.Utils.queueOfflineDownload;
 import static ml.melun.mangaview.Utils.showCaptchaPopup;
 import static ml.melun.mangaview.Utils.showTokiCaptchaPopup;
 import static ml.melun.mangaview.Utils.toViewerMangaJson;
 import static ml.melun.mangaview.Utils.toViewerTitleJson;
-import static ml.melun.mangaview.Utils.useScopedStorageHome;
 import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
 
@@ -75,10 +76,11 @@ public class EpisodeActivity extends AppCompatActivity {
     String homeDir;
     int mode = 0;
     FloatingActionButton resumefab;
-    ProgressBar progress;
     boolean loaded = false;
     LinearLayoutCompat fab_container;
-    getEpisodes episodeTask;
+    EpisodeViewModel episodeViewModel;
+    long firstContentStartedAt;
+    boolean firstContentLogged = false;
 
 
     public boolean onOptionsItemSelected(MenuItem item){
@@ -143,7 +145,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 return "";
             if(path.startsWith("http://") || path.startsWith("https://"))
                 return path;
-            return getHttpClient().getUrl(path);
+            return MangaRepository.resolveUrl(path);
         } catch (Exception e) {
             return "";
         }
@@ -187,6 +189,7 @@ public class EpisodeActivity extends AppCompatActivity {
         applyEpisodeWindowChrome();
         Intent intent = getIntent();
         title = new Gson().fromJson(intent.getStringExtra("title"),new TypeToken<Title>(){}.getType());
+        firstContentStartedAt = PerfTrace.start("episode_first_content_ms");
         online = intent.getBooleanExtra("online", true);
         if(title.useBookmark())
             bookmarkId = restoredBookmarkId(title);
@@ -194,7 +197,6 @@ public class EpisodeActivity extends AppCompatActivity {
         favoriteResult = intent.getBooleanExtra("favorite",false);
         recentResult = intent.getBooleanExtra("recent",false);
         episodeList = this.findViewById(R.id.EpisodeList);
-        progress = this.findViewById(R.id.progress);
         episodeList.setLayoutManager(new NpaLinearLayoutManager(this));
         episodeList.setHasFixedSize(true);
         episodeList.setItemViewCacheSize(20);
@@ -223,107 +225,14 @@ public class EpisodeActivity extends AppCompatActivity {
         if(online) {
             mode = 0;
             fab_container.setVisibility(View.GONE);
-            episodeTask = new getEpisodes();
-            episodeTask.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
+            showCachedEpisodes();
+            episodeViewModel = new ViewModelProvider(this).get(EpisodeViewModel.class);
+            episodeViewModel.state().observe(this, this::renderEpisodeState);
+            episodeViewModel.loadEpisodes(title);
         }else{
-            //offline title
-            //initialize eps list
-            episodes = new ArrayList<>();
-
-            //get child folder list of title dir
-            if (useScopedStorageHome(title.getPath())) {
-                //scoped storage
-                DocumentFile titleDir = documentFileFromUri(context, title.getPath());
-                DocumentFile data = titleDir == null ? null : titleDir.findFile("title.gson");
-                if(data!=null){
-                    mode = 3;
-                    if (!title.useBookmark()) {
-                        // is migrated
-                        mode = 4;
-                    }
-
-                    episodes = title.getEps();
-                    if(episodes == null)
-                        episodes = new ArrayList<>();
-                    for(DocumentFile f : getOfflineEpisodes(titleDir)){
-                        String name = f.getName();
-                        try {
-                            int index = episodes.indexOf(new Manga(Integer.parseInt(name.substring(name.lastIndexOf('.') + 1)), "", "", title.getBaseMode()));
-                            if (index > -1) {
-                                episodes.get(index).setOfflinePath(f.getUri().toString());
-                                episodes.get(index).setMode(mode);
-                            }
-                        } catch (Exception e) {
-                            // folder name is not properly formatted
-                        }
-                    }
-                    //for loop to remove non-existing episodes
-                    if (episodes != null)
-                        for (int i = episodes.size() - 1; i >= 0; i--) {
-                            if (episodes.get(i).getOfflinePath() == null) episodes.remove(i);
-                        }
-
-                }else{
-                    mode = 1;
-                    if(titleDir != null) {
-                        for(DocumentFile f : getOfflineEpisodes(titleDir)){
-                            Manga m = new Manga(-1, f.getName(), "", title.getBaseMode());
-                            m.setMode(mode);
-                            m.setOfflinePath(f.getUri().toString());
-                            episodes.add(m);
-                        }
-                    }
-                }
-            }else {
-
-                //read ids and folder names
-                File titleDir = new File(title.getPath());
-                File data = new File(titleDir, "title.gson");
-                if (data.exists()) {
-                    mode = 3;
-
-                    if (!title.useBookmark()) {
-                        // is migrated
-                        mode = 4;
-                    }
-
-                    episodes = title.getEps();
-                    if(episodes == null)
-                        episodes = new ArrayList<>();
-                    for (File folder : getOfflineEpisodes(title.getPath())) {
-                        //get id from listContent
-                        String name = folder.getName();
-                        try {
-                            int index = episodes.indexOf(new Manga(Integer.parseInt(name.substring(name.lastIndexOf('.') + 1)), "", "", title.getBaseMode()));
-                            if (index > -1) {
-                                episodes.get(index).setOfflinePath(folder.getAbsolutePath());
-                                episodes.get(index).setMode(mode);
-                            }
-                        } catch (Exception e) {
-                            // folder name is not properly formatted
-                        }
-                    }
-                    //for loop to remove non-existing episodes
-                    if (episodes != null)
-                        for (int i = episodes.size() - 1; i >= 0; i--) {
-                            if (episodes.get(i).getOfflinePath() == null) episodes.remove(i);
-                        }
-
-                } else {
-                    mode = 1;
-                    for (File f : getOfflineEpisodes(title.getPath())) {
-                        Manga manga;
-                        manga = new Manga(-1, f.getName(), "", title.getBaseMode());
-                        manga.setMode(mode);
-                        manga.setOfflinePath(f.getAbsolutePath());
-                        //add local images to manga
-                        episodes.add(manga);
-                        // set eps to title object
-                        title.setEps(episodes);
-                    }
-                }
-            }
-            //set up adapter
+            OfflineStore.OfflineEpisodes offlineEpisodes = OfflineStore.loadEpisodes(context, title);
+            episodes = offlineEpisodes.episodes;
+            mode = offlineEpisodes.mode;
             episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
             afterLoad();
         }
@@ -436,40 +345,13 @@ public class EpisodeActivity extends AppCompatActivity {
             startActivity(i);
         });
         warmupInitialViewerTargets();
+        markFirstContent();
     }
 
     private void warmupInitialViewerTargets() {
         if(!online || episodes == null || episodes.size() == 0)
             return;
-        int limit = p.getDataSave() ? 2 : 4;
-        List<Integer> targets = new ArrayList<>();
-        if(bookmarkIndex > 0 && bookmarkIndex <= episodes.size()) {
-            int current = bookmarkIndex - 1;
-            addWarmupIndex(targets, current, limit);
-            addWarmupIndex(targets, current + 1, limit);
-            addWarmupIndex(targets, current - 1, limit);
-        } else {
-            for(int i = episodes.size() - 1; i >= 0 && targets.size() < limit; i--)
-                addWarmupIndex(targets, i, limit);
-        }
-        for(Integer index : targets)
-            warmupEpisode(episodes.get(index));
-    }
-
-    private void addWarmupIndex(List<Integer> targets, int index, int limit) {
-        if(index < 0 || episodes == null || index >= episodes.size() || targets.size() >= limit)
-            return;
-        if(!targets.contains(index))
-            targets.add(index);
-    }
-
-    private void warmupEpisode(Manga manga) {
-        if(manga == null)
-            return;
-        manga.setMode(mode);
-        manga.setTitle(title);
-        manga.setTitleId(title == null ? manga.getTitleId() : title.getId());
-        ViewerWarmupManager.warmup(context, manga, title);
+        PrefetchCoordinator.prefetchEpisodeList(context, title, episodes, bookmarkIndex, mode);
     }
 
     private void confirmDeleteOfflineEpisode(int position, Manga manga) {
@@ -489,18 +371,7 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     private void deleteOfflineEpisode(int position, Manga manga) {
-        boolean deleted = false;
-        String path = manga.getOfflinePath();
-        if(useScopedStorageHome(path)) {
-            try {
-                DocumentFile target = documentFileFromUri(context, path);
-                deleted = target != null && target.delete();
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        } else {
-            deleted = deleteRecursive(new File(path));
-        }
+        boolean deleted = OfflineStore.deleteEpisode(context, manga);
         if(!deleted) {
             Toast.makeText(context, "삭제를 실패했습니다.", Toast.LENGTH_SHORT).show();
             return;
@@ -512,7 +383,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 episodeAdapter.removeEpisode(position);
             else {
                 episodes.remove(manga);
-                episodeAdapter.notifyDataSetChanged();
+                episodeAdapter.notifyItemRangeChanged(0, episodeAdapter.getItemCount());
             }
         }
         Toast.makeText(context, "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
@@ -526,15 +397,9 @@ public class EpisodeActivity extends AppCompatActivity {
         if(title == null || title.getPath() == null || title.getPath().length() == 0)
             return;
         try {
-            if(useScopedStorageHome(title.getPath())) {
-                DocumentFile titleDir = documentFileFromUri(context, title.getPath());
-                if(titleDir != null)
-                    titleDir.delete();
-            } else {
-                deleteRecursive(new File(title.getPath()));
-            }
+            OfflineStore.deleteTitle(context, title);
         } catch (Exception e) {
-            e.printStackTrace();
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
     }
 
@@ -551,49 +416,84 @@ public class EpisodeActivity extends AppCompatActivity {
         return -1;
     }
 
-    private class getEpisodes extends LifecycleTask<Void,Void,Integer> {
-        protected void onPreExecute() {
-            super.onPreExecute();
-            progress.setVisibility(View.VISIBLE);
+    @SuppressWarnings("unchecked")
+    private void renderEpisodeState(UiState<EpisodeLoadResult> state) {
+        if(state instanceof UiState.Loading) {
+            hideProgress();
+            return;
         }
-
-        protected Integer doInBackground(Void... params) {
-            int code = title.fetchEps(getHttpClient());
-            episodes = title.getEps();
-            return code;
+        if(state instanceof UiState.Error) {
+            hideProgress();
+            showCaptchaPopup(title.getUrl(), context, p);
+            return;
         }
-
-        @Override
-        protected void onPostExecute(Integer res) {
-            super.onPostExecute(res);
-            if(episodeTask != this)
-                return;
-            episodeTask = null;
-            if(res == LOAD_CAPTCHA){
-                //캡차 처리 팝업
-                showTokiCaptchaPopup(context, p);
-                return;
-            }else if(episodes == null || episodes.size()==0){
+        if(!(state instanceof UiState.Content))
+            return;
+        EpisodeLoadResult result = ((UiState.Content<EpisodeLoadResult>) state).getValue();
+        if(result.getResultCode() == LOAD_CAPTCHA){
+            showTokiCaptchaPopup(context, p);
+            return;
+        }
+        episodes = result.getEpisodes();
+        if(episodes == null || episodes.size()==0){
+            if(this.episodes == null || this.episodes.size() == 0)
                 showCaptchaPopup(title.getUrl(), context, p);
-                return;
-            }else {
-                episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
-                afterLoad();
-                progress.setVisibility(View.GONE);
-                loaded = true;
-                fab_container.setVisibility(View.GONE);
-                invalidateOptionsMenu();
-            }
+            return;
         }
+        saveEpisodeCache(episodes);
+        episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
+        afterLoad();
+        hideProgress();
+        loaded = true;
+        fab_container.setVisibility(View.GONE);
+        invalidateOptionsMenu();
+    }
 
-        @Override
-        protected void onCancelled(Integer res) {
-            super.onCancelled(res);
-            if(episodeTask == this)
-                episodeTask = null;
-            if(progress != null)
-                progress.setVisibility(View.GONE);
+    private void showCachedEpisodes() {
+        try {
+            String json = CacheFileStore.read(context, episodeCacheKey());
+            if(json == null || json.length() == 0)
+                return;
+            CachedEpisodes cached = new Gson().fromJson(json, new TypeToken<CachedEpisodes>(){}.getType());
+            if(cached == null || !CachePolicy.isFresh(cached.savedAt, CachePolicy.EPISODE_TTL_MS) || cached.episodes == null || cached.episodes.size() == 0)
+                return;
+            episodes = cached.episodes;
+            episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
+            afterLoad();
+            loaded = true;
+            hideProgress();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
+    }
+
+    private void hideProgress() {
+        // Loading indicators are intentionally not shown on the episode screen.
+    }
+
+    private void saveEpisodeCache(List<Manga> episodes) {
+        if(title == null || episodes == null || episodes.size() == 0)
+            return;
+        CachedEpisodes cached = new CachedEpisodes();
+        cached.savedAt = System.currentTimeMillis();
+        cached.episodes = new ArrayList<>(episodes);
+        CacheFileStore.write(context, episodeCacheKey(), new Gson().toJson(cached));
+    }
+
+    private String episodeCacheKey() {
+        return "episodeSnapshotV1_" + (title == null ? 0 : title.getBaseMode()) + "_" + (title == null ? 0 : title.getId());
+    }
+
+    private void markFirstContent() {
+        if(firstContentLogged)
+            return;
+        firstContentLogged = true;
+        PerfTrace.end("episode_first_content_ms", firstContentStartedAt);
+    }
+
+    private static class CachedEpisodes {
+        long savedAt;
+        ArrayList<Manga> episodes;
     }
 
     public void openViewer(Manga manga, int code){
@@ -653,10 +553,8 @@ public class EpisodeActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
-        if(episodeTask != null) {
-            episodeTask.cancel(true);
-            episodeTask = null;
-        }
+        if(episodeViewModel != null)
+            episodeViewModel.cancelActiveLoad();
         super.onDestroy();
     }
 

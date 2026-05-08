@@ -2,7 +2,6 @@ package ml.melun.mangaview.activity;
 
 import android.content.Context;
 import android.content.Intent;
-import ml.melun.mangaview.task.LifecycleTask;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -27,18 +26,19 @@ import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayoutDirec
 import java.util.ArrayList;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
+import ml.melun.mangaview.ui.StableScrollbarRecyclerView;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.adapter.TitleAdapter;
 import ml.melun.mangaview.adapter.UpdatedAdapter;
 import ml.melun.mangaview.mangaview.Bookmark;
-import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.mangaview.UpdatedList;
 import ml.melun.mangaview.mangaview.UpdatedManga;
+import ml.melun.mangaview.repository.MangaRepository;
+import ml.melun.mangaview.runtime.AppDispatchers;
 
-import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
 import static ml.melun.mangaview.Utils.showCaptchaPopup;
@@ -49,6 +49,7 @@ import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 public class TagSearchActivity extends AppCompatActivity {
     private static final int THUMBNAIL_PRELOAD_AHEAD = 18;
     private static final int THUMBNAIL_PRELOAD_DELAY_MS = 80;
+    private static final int LOAD_MORE_THRESHOLD = 18;
     RecyclerView searchResult;
     int mode;
     String query;
@@ -58,10 +59,13 @@ public class TagSearchActivity extends AppCompatActivity {
     Search search;
     UpdatedList updated;
     TextView noresult;
+    TextView resultMetaTitle;
+    TextView resultMetaHint;
+    String resultLabel;
     SwipyRefreshLayout swipe;
     Bookmark bookmark;
     int baseMode;
-    LifecycleTask<?, ?, ?> loadTask;
+    LoadOperation loadTask;
     boolean destroyed = false;
     Runnable thumbnailPreloadRunnable;
 
@@ -84,6 +88,8 @@ public class TagSearchActivity extends AppCompatActivity {
         setSupportActionBar(toolbar);
         searchResult = this.findViewById(R.id.tagSearchResult);
         noresult = this.findViewById(R.id.tagSearchNoResult);
+        resultMetaTitle = this.findViewById(R.id.tagSearchMetaTitle);
+        resultMetaHint = this.findViewById(R.id.tagSearchMetaHint);
         LinearLayoutManager lm = new NpaLinearLayoutManager(context);
         searchResult.setLayoutManager(lm);
         searchResult.setHasFixedSize(true);
@@ -99,6 +105,7 @@ public class TagSearchActivity extends AppCompatActivity {
                 if(newState == RecyclerView.SCROLL_STATE_IDLE)
                     Glide.with(TagSearchActivity.this).resumeRequests();
                 scheduleThumbnailPreload();
+                maybeLoadMoreSearchResults();
             }
 
             @Override
@@ -107,6 +114,7 @@ public class TagSearchActivity extends AppCompatActivity {
                 if(isFinishing() || destroyed)
                     return;
                 scheduleThumbnailPreload();
+                maybeLoadMoreSearchResults();
             }
         });
         Intent i = getIntent();
@@ -121,28 +129,37 @@ public class TagSearchActivity extends AppCompatActivity {
             case 0:
                 break;
             case 1:
-                ab.setTitle("작가: "+query);
+                resultLabel = "작가: " + query;
+                ab.setTitle(resultLabel);
                 break;
             case 2:
-                ab.setTitle("태그: "+query);
+                resultLabel = "태그: " + query;
+                ab.setTitle(resultLabel);
                 break;
             case 3:
             case 4:
-                ab.setTitle("검색 결과");
+                resultLabel = "검색 결과";
+                ab.setTitle(resultLabel);
                 break;
             case 5:
-                ab.setTitle("최근 추가됨");
+                resultLabel = "최근 추가됨";
+                ab.setTitle(resultLabel);
                 break;
             case 6:
-                ab.setTitle("검색결과");
+                resultLabel = "검색 결과";
+                ab.setTitle(resultLabel);
                 break;
             case 7:
-                ab.setTitle("북마크");
+                resultLabel = "북마크";
+                ab.setTitle(resultLabel);
                 break;
         }
 
-        if(mode == 8)
-            ab.setTitle(title == null ? "분류" : title);
+        if(mode == 8) {
+            resultLabel = title == null ? "분류 결과" : title;
+            ab.setTitle(resultLabel);
+        }
+        updateResultMeta();
         ab.setDisplayHomeAsUpEnabled(true);
         swipe.setRefreshing(true);
 
@@ -168,7 +185,7 @@ public class TagSearchActivity extends AppCompatActivity {
 
         }else {
             adapter = new TitleAdapter(context);
-            search = new Search(query,mode,baseMode);
+            search = MangaRepository.createSearch(query,mode,baseMode);
             startLoad(new searchManga());
             swipe.setOnRefreshListener(direction -> {
                 if (!search.isLast()) {
@@ -178,29 +195,33 @@ public class TagSearchActivity extends AppCompatActivity {
         }
     }
 
-    @SuppressWarnings("unchecked")
-    private void startLoad(LifecycleTask<?, ?, ?> task) {
+    private void startLoad(LoadOperation task) {
         if(loadTask != null) {
             swipe.setRefreshing(true);
             return;
         }
         loadTask = task;
         swipe.setRefreshing(true);
-        task.executeOnExecutor(LifecycleTask.USER_ACTION_EXECUTOR);
+        task.start();
     }
 
-    private boolean prepareLoadResult(LifecycleTask<?, ?, ?> task) {
+    private boolean prepareLoadResult(LoadOperation task) {
         if(loadTask != task || destroyed || isFinishing())
             return false;
         loadTask = null;
         return true;
     }
 
-    private void clearLoad(LifecycleTask<?, ?, ?> task) {
+    private void clearLoad(LoadOperation task) {
         if(loadTask == task)
             loadTask = null;
         if(swipe != null)
             swipe.setRefreshing(false);
+    }
+
+    private interface LoadOperation {
+        void start();
+        void cancel();
     }
 
     public boolean onOptionsItemSelected(MenuItem item){
@@ -212,17 +233,21 @@ public class TagSearchActivity extends AppCompatActivity {
     }
 
 
-    private class getBookmarks extends LifecycleTask<Void, Void, Integer>{
-        private CustomHttpClient.RequestGroup requestGroup;
+    private class getBookmarks implements LoadOperation {
+        private MangaRepository.Cancellation cancellation;
+        private AppDispatchers.TaskHandle handle;
+        private volatile boolean cancelled;
 
-        @Override
-        protected void onPreExecute() {
-            super.onPreExecute();
+        public void start() {
+            handle = AppDispatchers.submitUserAction(() -> {
+                Integer result = load();
+                AppDispatchers.runOnMain(() -> finish(result));
+            });
         }
 
-        @Override
-        protected void onPostExecute(Integer integer) {
-            super.onPostExecute(integer);
+        private void finish(Integer integer) {
+            if(cancelled)
+                return;
             if(!prepareLoadResult(this))
                 return;
             if(integer != 0){
@@ -262,56 +287,60 @@ public class TagSearchActivity extends AppCompatActivity {
             }else{
                 noresult.setVisibility(View.VISIBLE);
             }
+            updateResultMeta();
             scheduleThumbnailPreload();
             swipe.setRefreshing(false);
+            searchResult.post(TagSearchActivity.this::maybeLoadMoreSearchResults);
         }
 
-        @Override
-        protected void onCancelled(Integer integer) {
-            super.onCancelled(integer);
-            clearLoad(this);
-        }
-
-        @Override
-        protected Integer doInBackground(Void... voids) {
-            requestGroup = new CustomHttpClient.RequestGroup();
+        private Integer load() {
+            cancellation = MangaRepository.cancellation();
             try {
-                return getHttpClient().runWithRequestGroup(requestGroup, () -> bookmark.fetch(getHttpClient()));
+                return MangaRepository.fetchBookmark(bookmark, cancellation);
             } catch (Exception e) {
-                if(!isCancelled())
-                    e.printStackTrace();
+                if(!cancelled)
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 return 1;
             }
         }
 
-        @Override
-        public boolean cancel(boolean mayInterruptIfRunning) {
-            if(requestGroup != null)
-                requestGroup.cancel();
-            return super.cancel(mayInterruptIfRunning);
+        public void cancel() {
+            cancelled = true;
+            if(cancellation != null)
+                cancellation.cancel();
+            if(handle != null)
+                handle.cancel();
+            clearLoad(this);
         }
     }
 
 
-    private class searchManga extends LifecycleTask<Void, Void, Integer> {
-        private CustomHttpClient.RequestGroup requestGroup;
+    private class searchManga implements LoadOperation {
+        private MangaRepository.Cancellation cancellation;
+        private AppDispatchers.TaskHandle handle;
+        private volatile boolean cancelled;
 
-        protected void onPreExecute(){
-            super.onPreExecute();
+        public void start(){
+            handle = AppDispatchers.submitUserAction(() -> {
+                Integer result = load();
+                AppDispatchers.runOnMain(() -> finish(result));
+            });
         }
-        protected Integer doInBackground(Void... params){
-            requestGroup = new CustomHttpClient.RequestGroup();
+
+        private Integer load(){
+            cancellation = MangaRepository.cancellation();
             try {
-                return getHttpClient().runWithRequestGroup(requestGroup, () -> search.fetch(getHttpClient()));
+                return MangaRepository.search(search, cancellation);
             } catch (Exception e) {
-                if(!isCancelled())
-                    e.printStackTrace();
+                if(!cancelled)
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 return 1;
             }
         }
-        @Override
-        protected void onPostExecute(Integer res){
-            super.onPostExecute(res);
+
+        private void finish(Integer res){
+            if(cancelled)
+                return;
             if(!prepareLoadResult(this))
                 return;
             if(res == null)
@@ -353,46 +382,49 @@ public class TagSearchActivity extends AppCompatActivity {
             }else{
                 noresult.setVisibility(View.VISIBLE);
             }
+            updateVirtualScrollbar();
+            updateResultMeta();
             scheduleThumbnailPreload();
             swipe.setRefreshing(false);
         }
 
-        @Override
-        protected void onCancelled(Integer res) {
-            super.onCancelled(res);
+        public void cancel() {
+            cancelled = true;
+            if(cancellation != null)
+                cancellation.cancel();
+            if(handle != null)
+                handle.cancel();
             clearLoad(this);
-        }
-
-        @Override
-        public boolean cancel(boolean mayInterruptIfRunning) {
-            if(requestGroup != null)
-                requestGroup.cancel();
-            return super.cancel(mayInterruptIfRunning);
         }
     }
 
-    private class getUpdated extends LifecycleTask<Void, Void, String> {
-        private CustomHttpClient.RequestGroup requestGroup;
+    private class getUpdated implements LoadOperation {
+        private MangaRepository.Cancellation cancellation;
+        private AppDispatchers.TaskHandle handle;
+        private volatile boolean cancelled;
 
-        protected void onPreExecute(){
-            super.onPreExecute();
+        public void start(){
+            handle = AppDispatchers.submitUserAction(() -> {
+                String result = load();
+                AppDispatchers.runOnMain(() -> finish(result));
+            });
         }
-        protected String doInBackground(Void... params){
-            requestGroup = new CustomHttpClient.RequestGroup();
+
+        private String load(){
+            cancellation = MangaRepository.cancellation();
             try {
-                return getHttpClient().runWithRequestGroup(requestGroup, () -> {
-                    updated.fetch(getHttpClient());
-                    return null;
-                });
+                MangaRepository.loadUpdates(updated, cancellation);
+                return null;
             } catch (Exception e) {
-                if(!isCancelled())
-                    e.printStackTrace();
+                if(!cancelled)
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 return null;
             }
         }
-        @Override
-        protected void onPostExecute(String res){
-            super.onPostExecute(res);
+
+        private void finish(String res){
+            if(cancelled)
+                return;
             if(!prepareLoadResult(this))
                 return;
             ArrayList<UpdatedManga> result = updated.getResult();
@@ -430,21 +462,18 @@ public class TagSearchActivity extends AppCompatActivity {
             }else{
                 noresult.setVisibility(View.VISIBLE);
             }
+            updateResultMeta();
             scheduleThumbnailPreload();
             swipe.setRefreshing(false);
         }
 
-        @Override
-        protected void onCancelled(String res) {
-            super.onCancelled(res);
+        public void cancel() {
+            cancelled = true;
+            if(cancellation != null)
+                cancellation.cancel();
+            if(handle != null)
+                handle.cancel();
             clearLoad(this);
-        }
-
-        @Override
-        public boolean cancel(boolean mayInterruptIfRunning) {
-            if(requestGroup != null)
-                requestGroup.cancel();
-            return super.cancel(mayInterruptIfRunning);
         }
     }
     void popup(View view, final int position, final Title title, final int m){
@@ -503,6 +532,55 @@ public class TagSearchActivity extends AppCompatActivity {
             uadapter.preloadThumbnails(first, preloadCount);
     }
 
+    private void maybeLoadMoreSearchResults() {
+        if(mode != 8 || search == null || searchResult == null || loadTask != null || destroyed || isFinishing())
+            return;
+        if(search.isLast())
+            return;
+        RecyclerView.LayoutManager manager = searchResult.getLayoutManager();
+        if(!(manager instanceof LinearLayoutManager))
+            return;
+        int count = adapter == null ? 0 : adapter.getItemCount();
+        if(count == 0)
+            return;
+        LinearLayoutManager layoutManager = (LinearLayoutManager) manager;
+        int lastVisible = layoutManager.findLastVisibleItemPosition();
+        if(lastVisible == RecyclerView.NO_POSITION)
+            lastVisible = 0;
+        if(lastVisible >= count - LOAD_MORE_THRESHOLD)
+            startLoad(new searchManga());
+    }
+
+    private void updateVirtualScrollbar() {
+        if(!(searchResult instanceof StableScrollbarRecyclerView) || search == null)
+            return;
+        ((StableScrollbarRecyclerView) searchResult).setVirtualItemCount(search.getVirtualResultCount());
+    }
+
+    private void updateResultMeta() {
+        if(resultMetaTitle == null || resultMetaHint == null)
+            return;
+        int loaded = adapter != null ? adapter.getItemCount() : (uadapter != null ? uadapter.getItemCount() : 0);
+        int total = search == null ? 0 : search.getVirtualResultCount();
+        String label;
+        if(resultLabel != null) {
+            label = resultLabel;
+        } else if(mode == 5) {
+            label = "최근 추가됨";
+        } else if(mode == 7) {
+            label = "북마크";
+        } else {
+            label = "검색 결과";
+        }
+        resultMetaTitle.setText(label);
+        if(total > loaded)
+            resultMetaHint.setText(loaded + "/" + total + "개 표시");
+        else if(loaded > 0)
+            resultMetaHint.setText(loaded + "개 표시");
+        else
+            resultMetaHint.setText("결과 준비 중");
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
@@ -517,7 +595,7 @@ public class TagSearchActivity extends AppCompatActivity {
     protected void onDestroy() {
         destroyed = true;
         if(loadTask != null) {
-            loadTask.cancel(true);
+            loadTask.cancel();
             loadTask = null;
         }
         if(searchResult != null && thumbnailPreloadRunnable != null)

@@ -5,17 +5,17 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:background="@color/appSurface"
-    android:paddingStart="@dimen/app_space_lg"
-    android:paddingTop="14dp"
-    android:paddingEnd="@dimen/app_space_lg"
-    android:paddingBottom="10dp">
+    android:paddingStart="18dp"
+    android:paddingTop="16dp"
+    android:paddingEnd="18dp"
+    android:paddingBottom="12dp">
 
     <androidx.cardview.widget.CardView
         android:id="@+id/headerCoverCard"
-        android:layout_width="118dp"
-        android:layout_height="160dp"
+        android:layout_width="132dp"
+        android:layout_height="178dp"
         app:cardCornerRadius="8dp"
-        app:cardElevation="1dp"
+        app:cardElevation="0dp"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent">
 
@@ -35,12 +35,15 @@
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginStart="@dimen/app_space_lg"
-        android:layout_marginTop="18dp"
         android:ellipsize="end"
         android:maxLines="2"
+        app:autoSizeMaxTextSize="20sp"
+        app:autoSizeMinTextSize="14sp"
+        app:autoSizeStepGranularity="1sp"
+        app:autoSizeTextType="uniform"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toEndOf="@+id/headerCoverCard"
-        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintTop_toTopOf="@+id/headerCoverCard"
         tools:text="Solo Leveling" />
 
     <TextView
@@ -76,7 +79,7 @@
         android:layout_width="0dp"
         android:layout_height="36dp"
         android:layout_marginStart="@dimen/app_space_lg"
-        android:layout_marginTop="@dimen/app_space_md"
+        android:layout_marginTop="@dimen/app_space_sm"
         android:clipToPadding="false"
         android:overScrollMode="never"
         android:scrollbars="none"
@@ -113,10 +116,13 @@
     <androidx.appcompat.widget.LinearLayoutCompat
         android:id="@+id/HeaderBtnContainer"
         android:layout_width="match_parent"
-        android:layout_height="52dp"
-        android:layout_marginTop="@dimen/app_space_xl"
+        android:layout_height="56dp"
+        android:layout_marginTop="@dimen/app_space_lg"
+        android:background="@drawable/app_info_panel_bg"
         android:gravity="center_vertical"
         android:orientation="horizontal"
+        android:paddingStart="@dimen/app_space_sm"
+        android:paddingEnd="@dimen/app_space_sm"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@+id/headerCoverCard">
@@ -125,7 +131,7 @@
             android:id="@+id/HeaderFirst"
             style="@style/AppText.Action"
             android:layout_width="0dp"
-            android:layout_height="46dp"
+            android:layout_height="44dp"
             android:layout_weight="1"
             android:background="@drawable/app_accent_button_bg"
             android:enabled="true"
@@ -138,7 +144,7 @@
         <LinearLayout
             android:id="@+id/HeaderFavorite"
             android:layout_width="46dp"
-            android:layout_height="46dp"
+            android:layout_height="44dp"
             android:layout_marginStart="@dimen/app_space_md"
             android:background="@drawable/app_outline_button_bg"
             android:foreground="?android:attr/selectableItemBackground"
@@ -155,7 +161,7 @@
         <LinearLayout
             android:id="@+id/HeaderBookmark"
             android:layout_width="46dp"
-            android:layout_height="46dp"
+            android:layout_height="44dp"
             android:layout_marginStart="@dimen/app_space_sm"
             android:background="@drawable/app_outline_button_bg"
             android:foreground="?android:attr/selectableItemBackground"
@@ -175,6 +181,8 @@
         android:id="@+id/detailTabs"
         android:layout_width="match_parent"
         android:layout_height="48dp"
+        android:layout_marginTop="@dimen/app_space_md"
+        android:background="@drawable/app_info_panel_bg"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         app:layout_constraintEnd_toEndOf="parent"
@@ -230,7 +238,9 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="@dimen/app_space_lg"
+        android:background="@drawable/app_info_panel_bg"
         android:orientation="vertical"
+        android:padding="@dimen/app_space_lg"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@+id/detailTabIndicator">
@@ -261,6 +271,11 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="20dp"
+        android:background="@drawable/app_soft_chip_bg"
+        android:paddingStart="12dp"
+        android:paddingTop="6dp"
+        android:paddingEnd="12dp"
+        android:paddingBottom="6dp"
         android:text="회차"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@+id/detailContent" />

@@ -22,19 +22,19 @@
     <androidx.appcompat.widget.LinearLayoutCompat
         android:id="@+id/dl_buttonContainer"
         android:layout_width="match_parent"
-        android:layout_height="76dp"
+        android:layout_height="82dp"
         android:background="@color/appCard"
         android:elevation="8dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingStart="12dp"
-        android:paddingEnd="12dp"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
         app:layout_constraintBottom_toBottomOf="parent">
 
         <Button
             android:id="@+id/dl_btn"
             android:layout_width="0dp"
-            android:layout_height="46dp"
+            android:layout_height="50dp"
             android:layout_weight="1"
             android:background="@drawable/app_accent_button_bg"
             android:foreground="?android:attr/selectableItemBackground"
@@ -52,7 +52,7 @@
         <Button
             android:id="@+id/dl_mode_btn"
             android:layout_width="0dp"
-            android:layout_height="46dp"
+            android:layout_height="50dp"
             android:layout_marginStart="8dp"
             android:layout_weight="1"
             android:background="@drawable/app_outline_button_bg"
@@ -70,7 +70,7 @@
         <Button
             android:id="@+id/dl_all_btn"
             android:layout_width="0dp"
-            android:layout_height="46dp"
+            android:layout_height="50dp"
             android:layout_marginStart="8dp"
             android:layout_weight="1"
             android:background="@drawable/app_outline_button_bg"
