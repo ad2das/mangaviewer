@@ -66,7 +66,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private static final int STYLE_CONTINUE = 1;
     private static final int STYLE_RANKING = 2;
     private static final boolean HOME_HERO_ENABLED = true;
-    private static final int HOME_EXTRA_SECTION_LIMIT = 0;
+    private static final int HOME_EXTRA_SECTION_LIMIT = 4;
     private static final int STYLE_STANDARD = 3;
     public static final int ACTION_UPDATES = 1;
     public static final int ACTION_BOOKMARKS = 2;
@@ -136,9 +136,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     public void showInitialRows() {
-        if(rows != null && rows.size() > 0)
+        if(rows != null && rows.size() > 0 && hasDisplayContent(rows) && hasCompleteHomeSections())
             return;
-        dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
+        if(!hasCompleteHomeSections() && showCachedHomeRows())
+            return;
+        if(rows != null && rows.size() > 0 && hasDisplayContent(rows)) {
+            loadCachedHomeRowsAsync();
+            return;
+        }
+        if(!hasFetchedContent())
+            dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
         List<Object> warmRows = buildRows(dataSet, false);
         if(!hasDisplayContent(warmRows))
             warmRows = buildInitialPlaceholderRows();
@@ -161,6 +168,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     public boolean hasRequiredHomeSections() {
         return hasRequiredHomeSections(dataSet);
+    }
+
+    public boolean hasCompleteHomeSections() {
+        return hasCompleteHomeSections(dataSet);
     }
 
     public void setFetchStateListener(FetchStateListener listener) {
@@ -653,7 +664,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private void applyCachedHomeRows(List<Ranking<?>> cached) {
         if(cached == null || cached.size() == 0)
             return;
-        if(fetcher != null && collectTitles(dataSet, 1).size() > 0)
+        if(fetcher != null && hasCompleteHomeSections(dataSet))
             return;
         dataSet = cached;
         List<Object> cachedRows = buildRows(dataSet, false);
@@ -692,7 +703,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 if(ranking.size() > 0)
                     restored.add(ranking);
             }
-            return restored.size() == 0 ? null : restored;
+            return hasCompleteHomeSections(restored) ? restored : null;
         } catch (Exception ignored) {
             return null;
         }
@@ -700,7 +711,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     private void saveHomeSnapshot(List<Ranking<?>> sections) {
         try {
-            if(sections == null || collectTitles(sections, 1).size() == 0)
+            if(!hasCompleteHomeSections(sections))
                 return;
             HomeSnapshot snapshot = new HomeSnapshot();
             snapshot.savedAt = System.currentTimeMillis();
@@ -751,6 +762,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return false;
         return hasMatchingSectionTitles(sections, "인기순")
                 && hasMatchingSectionTitles(sections, freshSectionTitle());
+    }
+
+    private boolean hasCompleteHomeSections(List<Ranking<?>> sections) {
+        return collectTitles(sections, 1).size() > 0 && hasRequiredHomeSections(sections);
     }
 
     private boolean hasMatchingSectionTitles(List<Ranking<?>> sections, String titlePart) {
@@ -1238,7 +1253,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 }
                 bindTitleThumb(thumb, item, 120, 112);
                 if(continueStyle && position < 8)
-                    scheduleContinueViewerWarmup(item);
+                    scheduleContinueViewerWarmup(item, position < 3 ? 0 : 120);
                 card.setOnClickListener(v -> {
                     if(listener != null && item != null) {
                         Manga manga = continueStyle ? resolveContinueManga(item) : null;
@@ -1268,7 +1283,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             ViewerWarmupManager.warmupContinue(context, manga, item);
         }
 
-        private void scheduleContinueViewerWarmup(Title item) {
+        private void scheduleContinueViewerWarmup(Title item, int delayMs) {
             if(item == null)
                 return;
             String key = titleKey(item);
@@ -1279,11 +1294,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 if(anchorRecycler != null && (!anchorRecycler.isAttachedToWindow() || !anchorRecycler.isShown()))
                     return;
                 if(anchorRecycler != null && anchorRecycler.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
-                    scheduleContinueViewerWarmup(item);
+                    scheduleContinueViewerWarmup(item, 120);
                     return;
                 }
                 warmupContinueViewer(item);
-            }, 220);
+            }, Math.max(0, delayMs));
         }
 
         private Manga resolveContinueManga(Title item) {
@@ -2008,13 +2023,14 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
         private void prepare() {
             boolean hadInitialRows = rows != null && rows.size() > 0 && hasDisplayContent();
-            keepExistingRowsDuringFetch = hadInitialRows;
+            boolean hadCompleteServerHome = hasCompleteHomeSections(dataSet);
+            keepExistingRowsDuringFetch = hadInitialRows && hadCompleteServerHome;
             if(!hadInitialRows || collectTitles(dataSet, 1).size() == 0)
                 dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
             preloadedThumbs.clear();
             preloadCount = 0;
             pendingRows = null;
-            initialRowsShown = hadInitialRows;
+            initialRowsShown = keepExistingRowsDuringFetch;
             List<Object> warmRows = buildRows(dataSet, false);
             if(!hasDisplayContent(warmRows))
                 warmRows = buildInitialPlaceholderRows();

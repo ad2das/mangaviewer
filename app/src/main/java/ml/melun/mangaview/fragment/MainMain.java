@@ -59,10 +59,15 @@ public class MainMain extends Fragment{
     final static int POPULAR_TAB = 1;
     final static int NEW_TAB = 2;
     final static int GENRES_TAB = 3;
+    final static int HOME_FETCH_IDLE = 0;
+    final static int HOME_FETCH_LOADING = 1;
+    final static int HOME_FETCH_PARTIAL = 2;
+    final static int HOME_FETCH_COMPLETE = 3;
+    final static int HOME_FETCH_FAILED = 4;
 
     boolean fragmentActive = false;
-    boolean comicFetched = false;
-    boolean webtoonFetched = false;
+    int comicFetchState = HOME_FETCH_IDLE;
+    int webtoonFetchState = HOME_FETCH_IDLE;
     boolean viewStarted = false;
     int scrollRequestVersion = 0;
     Preference.LocalChangeListener localChangeListener;
@@ -91,8 +96,8 @@ public class MainMain extends Fragment{
     public void initializeCallback(){
         callback = success -> {
             wait = false;
-            comicFetched = false;
-            webtoonFetched = false;
+            comicFetchState = HOME_FETCH_IDLE;
+            webtoonFetchState = HOME_FETCH_IDLE;
             if(fragmentActive)
                 fetchSelected();
         };
@@ -524,11 +529,13 @@ public class MainMain extends Fragment{
         ensureHomeAdapter(base_comic);
         if(mainComicAdapter == null)
             return;
-        if(mainComicAdapter.isFetching())
+        if(mainComicAdapter.isFetching()) {
+            comicFetchState = HOME_FETCH_LOADING;
             return;
-        if(comicFetched && mainComicAdapter.hasRequiredHomeSections())
+        }
+        if(comicFetchState == HOME_FETCH_COMPLETE && mainComicAdapter.hasCompleteHomeSections())
             return;
-        comicFetched = false;
+        comicFetchState = HOME_FETCH_LOADING;
         mainComicAdapter.fetch();
     }
 
@@ -536,26 +543,54 @@ public class MainMain extends Fragment{
         ensureHomeAdapter(base_webtoon);
         if(mainWebtoonAdapter == null)
             return;
-        if(mainWebtoonAdapter.isFetching())
+        if(mainWebtoonAdapter.isFetching()) {
+            webtoonFetchState = HOME_FETCH_LOADING;
             return;
-        if(webtoonFetched && mainWebtoonAdapter.hasRequiredHomeSections())
+        }
+        if(webtoonFetchState == HOME_FETCH_COMPLETE && mainWebtoonAdapter.hasCompleteHomeSections())
             return;
-        webtoonFetched = false;
+        webtoonFetchState = HOME_FETCH_LOADING;
         mainWebtoonAdapter.fetch();
     }
 
     private void onHomeFetchFinished(int baseMode, boolean success) {
+        MainWebtoonAdapter adapter = baseMode == base_comic ? mainComicAdapter : mainWebtoonAdapter;
+        int state;
+        if(success && adapter != null && adapter.hasCompleteHomeSections())
+            state = HOME_FETCH_COMPLETE;
+        else if(adapter != null && adapter.hasDisplayContent())
+            state = HOME_FETCH_PARTIAL;
+        else
+            state = HOME_FETCH_FAILED;
         if(baseMode == base_comic)
-            comicFetched = success;
+            comicFetchState = state;
         else if(baseMode == base_webtoon)
-            webtoonFetched = success;
+            webtoonFetchState = state;
+        if(success && state != HOME_FETCH_COMPLETE)
+            scheduleIncompleteHomeRetry(baseMode);
     }
 
     private void refreshHomeLocalState() {
-        if(mainComicAdapter != null && comicFetched)
+        if(mainComicAdapter != null && comicFetchState == HOME_FETCH_COMPLETE)
             mainComicAdapter.refreshLocalState();
-        if(mainWebtoonAdapter != null && webtoonFetched)
+        if(mainWebtoonAdapter != null && webtoonFetchState == HOME_FETCH_COMPLETE)
             mainWebtoonAdapter.refreshLocalState();
+    }
+
+    private void scheduleIncompleteHomeRetry(int baseMode) {
+        RecyclerView target = baseMode == base_comic ? comicRecycler : webtoonRecycler;
+        if(target == null)
+            target = mainRecycler;
+        if(target == null)
+            return;
+        target.postDelayed(() -> {
+            if(!isAdded() || wait || selectedBaseMode != baseMode)
+                return;
+            MainWebtoonAdapter adapter = baseMode == base_comic ? mainComicAdapter : mainWebtoonAdapter;
+            if(adapter == null || adapter.isFetching() || adapter.hasCompleteHomeSections())
+                return;
+            fetchSelected();
+        }, 350);
     }
 
     private void showContinuePopup(View view, Title title) {
@@ -612,8 +647,8 @@ public class MainMain extends Fragment{
         mainComicAdapter = null;
         mainWebtoonAdapter = null;
         homeClickListener = null;
-        comicFetched = false;
-        webtoonFetched = false;
+        comicFetchState = HOME_FETCH_IDLE;
+        webtoonFetchState = HOME_FETCH_IDLE;
     }
 
     @Override
@@ -621,9 +656,9 @@ public class MainMain extends Fragment{
         super.onActivityResult(requestCode, resultCode, data);
         if(resultCode == RESULT_CAPTCHA) {
             if(p.getBaseMode() == base_comic)
-                comicFetched = false;
+                comicFetchState = HOME_FETCH_IDLE;
             else
-                webtoonFetched = false;
+                webtoonFetchState = HOME_FETCH_IDLE;
             fetchSelected();
         }
     }

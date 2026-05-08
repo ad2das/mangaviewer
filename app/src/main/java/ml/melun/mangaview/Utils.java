@@ -201,6 +201,74 @@ public class Utils {
         return viewer;
     }
 
+    public static void openViewerPrepared(Context context, Manga manga, int code) {
+        openViewerPrepared(context, manga, code, false);
+    }
+
+    public static void openViewerPrepared(Context context, Manga manga, int code, boolean returnToEpisodes) {
+        openViewerPrepared(context, manga, code, returnToEpisodes, true, false,
+                manga == null ? null : manga.getTitle(), true);
+    }
+
+    public static void openViewerPrepared(Context context, Manga manga, int code, boolean returnToEpisodes,
+                                          boolean online, boolean recent, Title title, boolean includeTitleEpisodes) {
+        if(context == null || manga == null)
+            return;
+        Title launchTitle = title != null ? title : manga.getTitle();
+        if(launchTitle != null) {
+            manga.setTitle(launchTitle);
+            manga.setTitleId(launchTitle.getId());
+        }
+        if(!manga.isOnline()) {
+            launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes);
+            return;
+        }
+        Context appContext = context.getApplicationContext();
+        AppDispatchers.submitUserAction(() -> {
+            Manga prepared = ViewerWarmupManager.prepareClickFirstFrame(appContext, manga, launchTitle, false, p.getReverse());
+            AppDispatchers.runOnMain(() -> {
+                if(prepared == null) {
+                    if(context instanceof Activity && canUseActivity((Activity) context))
+                        Toast.makeText(context, "이미지를 불러오지 못했습니다.", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                launchPreparedViewer(context, prepared, code, returnToEpisodes, online, recent,
+                        launchTitle != null ? launchTitle : prepared.getTitle(), includeTitleEpisodes);
+            });
+        });
+    }
+
+    private static void launchPreparedViewer(Context context, Manga manga, int code, boolean returnToEpisodes,
+                                             boolean online, boolean recent, Title title, boolean includeTitleEpisodes) {
+        if(context == null || manga == null)
+            return;
+        if(context instanceof Activity && !canUseActivity((Activity) context))
+            return;
+        Intent viewer = viewerIntent(context, manga);
+        viewer.putExtra("online", online);
+        if(returnToEpisodes)
+            viewer.putExtra("returnToEpisodes", true);
+        Title launchTitle = title != null ? title : manga.getTitle();
+        if(launchTitle != null)
+            viewer.putExtra("title", toViewerTitleJson(launchTitle, includeTitleEpisodes));
+        if(recent)
+            viewer.putExtra("recent", true);
+        viewer.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        if(context instanceof Activity) {
+            ((Activity) context).startActivityForResult(viewer, code);
+            ((Activity) context).overridePendingTransition(0, 0);
+        } else {
+            viewer.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(viewer);
+        }
+    }
+
+    private static boolean canUseActivity(Activity activity) {
+        if(activity == null || activity.isFinishing())
+            return false;
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN_MR1 || !activity.isDestroyed();
+    }
+
     public static String toViewerMangaJson(Manga manga, Title title) {
         return new Gson().toJson(viewerMangaCopy(manga, title));
     }
@@ -928,13 +996,8 @@ public class Utils {
     }
 
     public static void openViewer(Context context, Manga manga, int code, boolean returnToEpisodes){
-        Intent viewer = viewerIntent(context,manga);
-        viewer.putExtra("online",true);
-        if(returnToEpisodes)
-            viewer.putExtra("returnToEpisodes", true);
-        if(manga != null && manga.getTitle() != null)
-            viewer.putExtra("title", toViewerTitleJson(manga.getTitle(), !manga.isOnline() || isMinimalOnlineViewerManga(manga)));
-        ((Activity)context).startActivityForResult(viewer, code);
+        openViewerPrepared(context, manga, code, returnToEpisodes, true, false,
+                manga == null ? null : manga.getTitle(), manga == null || !manga.isOnline() || isMinimalOnlineViewerManga(manga));
     }
 
     private static boolean isMinimalOnlineViewerManga(Manga manga) {

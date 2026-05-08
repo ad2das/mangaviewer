@@ -41,6 +41,7 @@ import ml.melun.mangaview.runtime.AppDispatchers;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
+import static ml.melun.mangaview.Utils.openViewerPrepared;
 import static ml.melun.mangaview.Utils.showCaptchaPopup;
 import static ml.melun.mangaview.Utils.viewerIntent;
 import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
@@ -267,9 +268,7 @@ public class TagSearchActivity extends AppCompatActivity {
                             if(title.getEps() != null && title.getEps().size() > 0)
                                 manga.setEps(title.getEps());
                         }
-                        Intent viewer = viewerIntent(context, manga);
-                        viewer.putExtra("online",true);
-                        startActivity(viewer);
+                        openViewerPrepared(context, manga, 0, false, true, false, title, true);
                     }
 
                     @Override
@@ -370,9 +369,7 @@ public class TagSearchActivity extends AppCompatActivity {
                             if(title.getEps() != null && title.getEps().size() > 0)
                                 manga.setEps(title.getEps());
                         }
-                        Intent viewer = viewerIntent(context, manga);
-                        viewer.putExtra("online",true);
-                        startActivity(viewer);
+                        openViewerPrepared(context, manga, 0, false, true, false, title, true);
                     }
 
                     @Override
@@ -464,9 +461,7 @@ public class TagSearchActivity extends AppCompatActivity {
                     @Override
                     public void onClick(Manga m) {
                         //open viewer
-                        Intent viewer = viewerIntent(context, m);
-                        viewer.putExtra("online", true);
-                        startActivityForResult(viewer,0);
+                        openViewerPrepared(context, m, 0, false, true, false, m == null ? null : m.getTitle(), true);
                     }
                 });
             }else{

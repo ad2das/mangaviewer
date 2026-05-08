@@ -41,6 +41,7 @@ import ml.melun.mangaview.runtime.AppDispatchers;
 import static android.app.Activity.RESULT_OK;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
+import static ml.melun.mangaview.Utils.openViewerPrepared;
 import static ml.melun.mangaview.Utils.showPopup;
 import static ml.melun.mangaview.Utils.viewerIntent;
 
@@ -401,12 +402,7 @@ public class RecyclerFragment extends Fragment {
         manga.setMode(0);
         if(title != null)
             manga.setTitle(title);
-        Intent viewer = viewerIntent(getContext(),manga);
-        if(title != null)
-            viewer.putExtra("title", new Gson().toJson(title));
-        viewer.putExtra("online",true);
-        viewer.putExtra("recent", mode == R.id.nav_recent);
-        startActivityForResult(viewer, code);
+        openViewerPrepared(getContext(), manga, code, false, true, mode == R.id.nav_recent, title, true);
     }
 
     void popup(View view, final int position, final Title title, final int m){
