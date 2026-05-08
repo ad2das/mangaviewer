@@ -82,6 +82,7 @@ public class Downloader extends Service {
     Context serviceContext;
     Map<String, String> cookies;
     int failures = 0;
+    private final Object queueLock = new Object();
 
     public static boolean isRunning(){
         return running;
@@ -119,7 +120,7 @@ public class Downloader extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if(intent!=null) {
+        if(intent!=null && intent.getAction() != null) {
             switch (intent.getAction()) {
                 case ACTION_START:
                     break;
@@ -136,7 +137,8 @@ public class Downloader extends Service {
                     break;
                 case ACTION_STOP:
                 case ACTION_FORCE_STOP:
-                    dt.cancel(true);
+                    if(dt != null)
+                        dt.cancel(true);
                     break;
             }
         }
@@ -156,14 +158,57 @@ public class Downloader extends Service {
     }
 
     public void queueTitle(DownloadTitle title, JSONArray selection){
-        titles.add(title);
-        selected.add(selection);
+        synchronized (queueLock) {
+            titles.add(title);
+            selected.add(selection);
+        }
         updateNotification("");
         if(dt.getStatus() == LifecycleTask.Status.PENDING || dt.getStatus() == LifecycleTask.Status.FINISHED) {
             dt = new downloadTitle();
             dt.executeOnExecutor(LifecycleTask.THREAD_POOL_EXECUTOR);
         }else{
             running = true;
+        }
+    }
+
+    private int queuedTitleCount() {
+        synchronized (queueLock) {
+            return titles == null ? 0 : titles.size();
+        }
+    }
+
+    private QueuedDownload peekQueuedDownload() {
+        synchronized (queueLock) {
+            if(titles == null || selected == null || titles.size() == 0 || selected.size() == 0)
+                return null;
+            return new QueuedDownload(titles.get(0), selected.get(0));
+        }
+    }
+
+    private void removeQueuedDownload(DownloadTitle title, JSONArray selection) {
+        synchronized (queueLock) {
+            if(titles == null || selected == null || titles.size() == 0 || selected.size() == 0)
+                return;
+            if(titles.get(0) == title && selected.get(0) == selection) {
+                titles.remove(0);
+                selected.remove(0);
+                return;
+            }
+            int index = titles.indexOf(title);
+            if(index >= 0 && index < selected.size() && selected.get(index) == selection) {
+                titles.remove(index);
+                selected.remove(index);
+            }
+        }
+    }
+
+    private static class QueuedDownload {
+        final DownloadTitle title;
+        final JSONArray selection;
+
+        QueuedDownload(DownloadTitle title, JSONArray selection) {
+            this.title = title;
+            this.selection = selection;
         }
     }
 
@@ -196,13 +241,16 @@ public class Downloader extends Service {
                 return 4;
             }
             try {
-                while (titles.size() > 0) {
+                while (queuedTitleCount() > 0) {
                     //reset progress
                     progress = 0;
 
                     //mget item from queue
-                    DownloadTitle title = titles.get(0);
-                    JSONArray selectedEps = selected.get(0);
+                    QueuedDownload queued = peekQueuedDownload();
+                    if(queued == null)
+                        break;
+                    DownloadTitle title = queued.title;
+                    JSONArray selectedEps = queued.selection;
 
                     notiTitle = title.getName();
                     updateNotification("준비중");
@@ -211,8 +259,7 @@ public class Downloader extends Service {
                     List<Manga> mangas = title.getEps();
                     if(mangas == null || mangas.size() == 0 || selectedEps.length() == 0) {
                         failures++;
-                        titles.remove(0);
-                        selected.remove(0);
+                        removeQueuedDownload(title, selectedEps);
                         continue;
                     }
                     //todo: minimize eps object(remove 'mode')
@@ -390,8 +437,7 @@ public class Downloader extends Service {
                             }
                         }
                     }
-                    titles.remove(0);
-                    selected.remove(0);
+                    removeQueuedDownload(title, selectedEps);
                 }
             }catch (Exception e){
                 //unexpected exception
@@ -750,7 +796,7 @@ public class Downloader extends Service {
         notification = new NotificationCompat.Builder(this, channeld)
                 .setContentIntent(pendingIntent)
                 .setContentTitle(notiTitle)
-                .setSubText("대기열: " + titles.size())
+                .setSubText("대기열: " + queuedTitleCount())
                 .setContentText(text)
                 .addAction(R.drawable.blank, "중지", stopIntent)
                 .setProgress(maxProgress, (int) progress, !(progress > 0))
