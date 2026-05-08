@@ -625,6 +625,7 @@ public class ViewerActivity extends AppCompatActivity {
                 showViewerImagesUnavailable(m);
                 return;
             }
+            releaseStripAdapter();
             stripAdapter = new StripAdapter(context, m, autoCut, width,title, infiniteScrollCallback);
             preloadInitialViewerPages(m);
 
@@ -707,7 +708,7 @@ public class ViewerActivity extends AppCompatActivity {
             return;
         autoCut = !autoCut;
         updateAutoCutButtonState();
-        stripAdapter.removeAll();
+        releaseStripAdapter();
         stripAdapter = new StripAdapter(context, page.manga, autoCut, width,title, infiniteScrollCallback);
         strip.setAdapter(stripAdapter);
         stripAdapter.setClickListener(() -> {
@@ -1828,8 +1829,14 @@ public class ViewerActivity extends AppCompatActivity {
         if(loader != null)
             loader.cancel();
         cancelNextPrefetcher();
+        releaseStripAdapter();
         ViewerWarmupManager.clearDecodedWork(context);
         super.onDestroy();
+    }
+
+    private void releaseStripAdapter() {
+        if(stripAdapter != null)
+            stripAdapter.release();
     }
 
     private void showViewerImagesUnavailable(Manga target) {

@@ -83,12 +83,15 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private int pendingPreloadPosition = RecyclerView.NO_POSITION;
     private boolean pendingPreloadScheduled = false;
     private boolean scrollBusy = false;
+    private boolean released = false;
 
     public List<Object> getItems(){
         return items;
     }
 
     public void setScrollBusy(boolean scrollBusy) {
+        if(released)
+            return;
         this.scrollBusy = scrollBusy;
         if(!scrollBusy && pendingPreloadPosition != RecyclerView.NO_POSITION)
             schedulePreloadAroundScrollPosition(pendingPreloadPosition);
@@ -426,6 +429,14 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         notifyItemRangeRemoved(0, size);
     }
 
+    public void release() {
+        released = true;
+        pendingPreloadPosition = RecyclerView.NO_POSITION;
+        pendingPreloadScheduled = false;
+        mainHandler.removeCallbacksAndMessages(null);
+        clearDecodedPageState();
+    }
+
     @Override
     @NonNull
     public RecyclerView.ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
@@ -637,6 +648,10 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         return false;
     }
 
+    private boolean canStartGlideRequest() {
+        return !released && !isContextDestroyed();
+    }
+
     private boolean isActiveHolder(ImgViewHolder holder, PageItem item, CustomTarget<Bitmap> target, String pageKey, int bindGeneration) {
         return holder.imageTarget == target
                 && holder.bindGeneration == bindGeneration
@@ -654,7 +669,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private void preloadAroundScrollPosition(int adapterPosition) {
-        if(adapterPosition == RecyclerView.NO_POSITION)
+        if(adapterPosition == RecyclerView.NO_POSITION || !canStartGlideRequest())
             return;
         int direction = lastPreloadAnchorPosition != RecyclerView.NO_POSITION && adapterPosition < lastPreloadAnchorPosition ? -1 : 1;
         lastPreloadAnchorPosition = adapterPosition;
@@ -664,6 +679,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private void schedulePreloadAroundScrollPosition(int adapterPosition) {
+        if(adapterPosition == RecyclerView.NO_POSITION || !canStartGlideRequest())
+            return;
         pendingPreloadPosition = adapterPosition;
         int direction = lastPreloadAnchorPosition != RecyclerView.NO_POSITION && adapterPosition < lastPreloadAnchorPosition ? -1 : 1;
         preloadCriticalWindow(adapterPosition, direction);
@@ -676,20 +693,20 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             int target = pendingPreloadPosition;
             pendingPreloadPosition = RecyclerView.NO_POSITION;
             pendingPreloadScheduled = false;
-            if(target != RecyclerView.NO_POSITION)
+            if(target != RecyclerView.NO_POSITION && canStartGlideRequest())
                 preloadAroundScrollPosition(target);
         }, 24);
     }
 
     private void preloadCriticalWindow(int adapterPosition, int direction) {
-        if(adapterPosition == RecyclerView.NO_POSITION)
+        if(adapterPosition == RecyclerView.NO_POSITION || !canStartGlideRequest())
             return;
         int decodedLimit = p.getDataSave() ? 2 : 3;
         preloadDirectionalWindow(adapterPosition, direction, new ViewerPreloadPolicy.Window(decodedLimit, decodedLimit, decodedLimit, decodedLimit));
     }
 
     private void preloadDirectionalWindow(int adapterPosition, int direction, ViewerPreloadPolicy.Window window) {
-        if(items == null || window == null || direction == 0)
+        if(items == null || window == null || direction == 0 || !canStartGlideRequest())
             return;
         int preloaded = 0;
         int position = adapterPosition;
@@ -730,33 +747,41 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private void preloadPage(PageItem page, Priority priority) {
+        if(!canStartGlideRequest())
+            return;
         String key = preloadKey(page);
         if(key.length() == 0)
             return;
         if(!preloadedImages.add(key))
             return;
         trimPreloadTracker();
-        Glide.with(mainContext)
-                .asBitmap()
-                .priority(priority)
-                .apply(viewerImageOptions(page))
-                .load(getImageModel(page))
-                .listener(new RequestListener<Bitmap>() {
-                    @Override
-                    public boolean onLoadFailed(@Nullable GlideException e, Object model, Target<Bitmap> target, boolean isFirstResource) {
-                        preloadedImages.remove(key);
-                        return false;
-                    }
+        try {
+            Glide.with(mainContext)
+                    .asBitmap()
+                    .priority(priority)
+                    .apply(viewerImageOptions(page))
+                    .load(getImageModel(page))
+                    .listener(new RequestListener<Bitmap>() {
+                        @Override
+                        public boolean onLoadFailed(@Nullable GlideException e, Object model, Target<Bitmap> target, boolean isFirstResource) {
+                            preloadedImages.remove(key);
+                            return false;
+                        }
 
-                    @Override
-                    public boolean onResourceReady(Bitmap resource, Object model, Target<Bitmap> target, DataSource dataSource, boolean isFirstResource) {
-                        return false;
-                    }
-                })
-                .preload();
+                        @Override
+                        public boolean onResourceReady(Bitmap resource, Object model, Target<Bitmap> target, DataSource dataSource, boolean isFirstResource) {
+                            return false;
+                        }
+                    })
+                    .preload();
+        } catch (IllegalArgumentException e) {
+            preloadedImages.remove(key);
+        }
     }
 
     private void preloadPageIntoDecodedCache(PageItem page, Priority priority) {
+        if(!canStartGlideRequest())
+            return;
         String key = decodedCacheKey(page);
         if(key == null || key.length() == 0)
             return;
@@ -790,12 +815,22 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             }
         };
         decodedPreloadTargets.put(requestKey, target);
-        Glide.with(mainContext)
-                .asBitmap()
-                .priority(priority)
-                .apply(viewerImageOptions(page))
-                .load(getImageModel(page))
-                .into(target);
+        if(!canStartGlideRequest()) {
+            decodedPreloadTargets.remove(requestKey);
+            preloadedImages.remove(requestKey);
+            return;
+        }
+        try {
+            Glide.with(mainContext)
+                    .asBitmap()
+                    .priority(priority)
+                    .apply(viewerImageOptions(page))
+                    .load(getImageModel(page))
+                    .into(target);
+        } catch (IllegalArgumentException e) {
+            decodedPreloadTargets.remove(requestKey);
+            preloadedImages.remove(requestKey);
+        }
     }
 
     private String preloadKey(PageItem page) {
