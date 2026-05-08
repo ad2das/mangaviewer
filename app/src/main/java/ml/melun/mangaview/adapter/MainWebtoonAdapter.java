@@ -290,7 +290,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         for(Object row : candidateRows) {
             if(row instanceof HeroRow)
                 return true;
-            if(row instanceof HomeSection && ((HomeSection) row).titles.size() > 0)
+            if(row instanceof HomeSection)
                 return true;
             if(row instanceof Ranking && ((Ranking<?>) row).size() > 0)
                 return true;
@@ -391,7 +391,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return result;
         }
         if(activeHomeTab == 0) {
+            result.add(new HeroRow(new ArrayList<>()));
             result.add(new ActionStrip());
+            result.add(new HomeSection("이번 주 인기", "전체보기", "", new ArrayList<>(), STYLE_RANKING));
+            result.add(new HomeSection("신작 업데이트", "전체보기", "", new ArrayList<>(), STYLE_STANDARD));
             return result;
         }
         List<Object> tabRows = buildTabRows(dataSet, true, activeHomeTab == 1 ? "인기순" : freshSectionTitle());

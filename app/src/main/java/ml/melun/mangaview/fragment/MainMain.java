@@ -262,7 +262,10 @@ public class MainMain extends Fragment{
         };
 
         selectedBaseMode = p.getBaseMode() == base_comic ? base_comic : base_webtoon;
-        ensureHomeAdapter(selectedBaseMode);
+        ensureHomeAdapter(base_webtoon);
+        ensureHomeAdapter(base_comic);
+        showInitialHomeRows(base_webtoon);
+        showInitialHomeRows(base_comic);
         modeWebtoon.setOnClickListener(v -> {
             switchBaseMode(base_webtoon);
             fetchSelected();
@@ -275,7 +278,6 @@ public class MainMain extends Fragment{
         });
         switchBaseMode(selectedBaseMode);
 
-        showInitialHomeRows();
         RecyclerView selectedRecycler = getSelectedRecycler();
         if(selectedRecycler != null) {
             selectedRecycler.postDelayed(() -> {
@@ -284,7 +286,7 @@ public class MainMain extends Fragment{
                 if(!wait)
                     fetchSelected();
                 scheduleInactivePrefetch();
-            }, 160);
+            }, 80);
         }
         return rootView;
     }
@@ -504,8 +506,8 @@ public class MainMain extends Fragment{
             fetchWebtoon();
     }
 
-    private void showInitialHomeRows() {
-        MainWebtoonAdapter adapter = getSelectedAdapter();
+    private void showInitialHomeRows(int baseMode) {
+        MainWebtoonAdapter adapter = ensureHomeAdapter(baseMode);
         if(adapter != null)
             adapter.showInitialRows();
     }
@@ -515,14 +517,14 @@ public class MainMain extends Fragment{
         if(targetRecycler == null || wait)
             return;
         final int visibleBaseMode = selectedBaseMode;
-        targetRecycler.postDelayed(() -> {
+        targetRecycler.post(() -> {
             if(!isAdded() || wait)
                 return;
             if(visibleBaseMode == base_comic)
                 fetchWebtoon();
             else
                 fetchComic();
-        }, 900);
+        });
     }
 
     private void fetchComic() {
@@ -584,12 +586,15 @@ public class MainMain extends Fragment{
         if(target == null)
             return;
         target.postDelayed(() -> {
-            if(!isAdded() || wait || selectedBaseMode != baseMode)
+            if(!isAdded() || wait)
                 return;
             MainWebtoonAdapter adapter = baseMode == base_comic ? mainComicAdapter : mainWebtoonAdapter;
             if(adapter == null || adapter.isFetching() || adapter.hasCompleteHomeSections())
                 return;
-            fetchSelected();
+            if(baseMode == base_comic)
+                fetchComic();
+            else
+                fetchWebtoon();
         }, 350);
     }
 
