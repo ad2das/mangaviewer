@@ -45,7 +45,6 @@ import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Ranking;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.repository.CacheFileStore;
-import ml.melun.mangaview.repository.CachePolicy;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.PerfTrace;
@@ -612,7 +611,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(hasHero(cachedRows))
             scrollHeroToTop();
         scheduleThumbnailPreload(dataSet);
-        saveHomeSnapshot(dataSet);
         return true;
     }
 
@@ -627,7 +625,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(json == null || json.length() == 0)
                 return null;
             HomeSnapshot snapshot = new Gson().fromJson(json, new TypeToken<HomeSnapshot>(){}.getType());
-            if(snapshot == null || snapshot.sections == null || !CachePolicy.isFresh(snapshot.savedAt, CachePolicy.HOME_TTL_MS))
+            if(snapshot == null || snapshot.sections == null)
                 return null;
             ArrayList<Ranking<?>> restored = new ArrayList<>();
             for(CachedSection cachedSection : snapshot.sections) {
@@ -1780,7 +1778,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         private void prepare() {
             boolean hadInitialRows = rows != null && rows.size() > 0 && hasDisplayContent();
             keepExistingRowsDuringFetch = hadInitialRows;
-            dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
+            if(!hadInitialRows || collectTitles(dataSet, 1).size() == 0)
+                dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
             preloadedThumbs.clear();
             preloadCount = 0;
             pendingRows = null;
