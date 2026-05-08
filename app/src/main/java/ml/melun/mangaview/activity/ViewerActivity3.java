@@ -397,10 +397,16 @@ public class ViewerActivity3 extends AppCompatActivity {
                 imageLoad = null;
             if(res == LOAD_CAPTCHA){
                 //캡차 처리 팝업
+                if(pd != null && pd.isShowing())
+                    pd.dismiss();
                 showTokiCaptchaPopup(context, p);
                 return;
             }
             if(pd.isShowing()) pd.dismiss();
+            if(res == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !hasLoadedImages()) {
+                showViewerImagesUnavailable();
+                return;
+            }
             reloadManga();
         }
 
@@ -475,7 +481,7 @@ public class ViewerActivity3 extends AppCompatActivity {
             lockUi(false);
             imgs = MangaRepository.imageUrls(manga, context);
             if(imgs == null || imgs.size()==0) {
-                showCaptchaPopup(manga.getUrl(), context, p);
+                showViewerImagesUnavailable();
                 return;
             }
             refreshAdapter();
@@ -558,6 +564,22 @@ public class ViewerActivity3 extends AppCompatActivity {
             prev.setAlpha(1f);
         }
         pageBtn.setText(viewerBookmark+1+"/"+imgs.size());
+    }
+
+    private boolean hasLoadedImages() {
+        List<String> images = MangaRepository.imageUrls(manga, context);
+        return images != null && images.size() > 0;
+    }
+
+    private void showViewerImagesUnavailable() {
+        ViewerWarmupManager.logMetric("viewer_empty_images", manga == null ? -1 : manga.getId());
+        Utils.showPopup(context, "오류", "회차 이미지를 불러오지 못했습니다.", (dialog, which) -> {
+            if(!openEpisodeListIfRequested())
+                ViewerActivity3.this.finish();
+        }, dialog -> {
+            if(!openEpisodeListIfRequested())
+                ViewerActivity3.this.finish();
+        });
     }
 
     private void preloadAroundCurrentPage() {

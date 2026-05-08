@@ -39,6 +39,7 @@ import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.mangaview.Title.LOAD_OK;
 
 public class ViewerWarmupManager {
+    public static final int LOAD_EMPTY_IMAGES = -2;
     private static final String TAG = "ViewerPerf";
     private static final int ACTIVE_LIMIT = 40;
     private static final int DECODED_TARGET_LIMIT = 48;
@@ -125,15 +126,23 @@ public class ViewerWarmupManager {
         long urlStart = SystemClock.elapsedRealtime();
         boolean snapshotHit = applySnapshot(key, manga);
         int result = LOAD_OK;
-        if(!snapshotHit && (manga.getImgs(context) == null || manga.getImgs(context).size() == 0)) {
+        if(!snapshotHit && !hasImages(manga, context)) {
             result = MangaRepository.fetchViewerInitial(manga, cancellation);
             if(result == LOAD_OK)
                 cacheSnapshot(key, manga);
         }
-        if(result == LOAD_OK) {
+        if(result == LOAD_OK && !hasImages(manga, context)) {
+            result = MangaRepository.fetchManga(manga);
+            if(result == LOAD_OK)
+                cacheSnapshot(key, manga);
+        }
+        if(result == LOAD_OK && hasImages(manga, context)) {
             normalizedPage = normalizePageIndex(manga, context, normalizedPage);
             logMetric("viewer_first_url_ms", SystemClock.elapsedRealtime() - urlStart);
             preloadWindow(context, manga, normalizedPage, width, autoCut, reverse, ViewerPreloadPolicy.firstFrameWindow(p.getDataSave()));
+        } else if(result == LOAD_OK) {
+            logMetric("viewer_empty_images", manga.getId());
+            result = LOAD_EMPTY_IMAGES;
         }
         return result;
     }
@@ -312,6 +321,11 @@ public class ViewerWarmupManager {
         if(pageIndex < 0 || pageIndex >= images.size())
             return 0;
         return pageIndex;
+    }
+
+    private static boolean hasImages(Manga manga, Context context) {
+        List<String> images = manga == null ? null : manga.getImgs(context);
+        return images != null && images.size() > 0;
     }
 
     public static void logMetric(String name, long valueMs) {

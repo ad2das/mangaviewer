@@ -587,7 +587,6 @@ public class ViewerActivity extends AppCompatActivity {
         }
         cancelActiveEpisodeLoader();
         cancelNextPrefetcher();
-        if(stripAdapter!=null) stripAdapter.removeAll();
         if(m.isOnline()) {
             if(hasLoadedImages(m)) {
                 setManga(m);
@@ -615,7 +614,7 @@ public class ViewerActivity extends AppCompatActivity {
             manga = m;
             lockUi(false);
             if(MangaRepository.imageUrls(m, context) == null || MangaRepository.imageUrls(m, context).size()==0) {
-                showCaptchaPopup(m.getUrl(), context, p);
+                showViewerImagesUnavailable(m);
                 return;
             }
             stripAdapter = new StripAdapter(context, m, autoCut, width,title, infiniteScrollCallback);
@@ -815,6 +814,12 @@ public class ViewerActivity extends AppCompatActivity {
                 if(lockui) lockUi(false);
                 resetOnBackPressed();
                 showTokiCaptchaPopup(context, p);
+                return;
+            }
+            if(res == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !hasLoadedImages(m)) {
+                if(lockui) lockUi(false);
+                resetOnBackPressed();
+                showViewerImagesUnavailable(m);
                 return;
             }
 
@@ -1637,6 +1642,17 @@ public class ViewerActivity extends AppCompatActivity {
         cancelNextPrefetcher();
         ViewerWarmupManager.clearDecodedWork(context);
         super.onDestroy();
+    }
+
+    private void showViewerImagesUnavailable(Manga target) {
+        ViewerWarmupManager.logMetric("viewer_empty_images", target == null ? -1 : target.getId());
+        showPopup(context, "오류", "회차 이미지를 불러오지 못했습니다.", (dialog, which) -> {
+            if(!openEpisodeListIfRequested())
+                ViewerActivity.this.finish();
+        }, dialog -> {
+            if(!openEpisodeListIfRequested())
+                ViewerActivity.this.finish();
+        });
     }
 
     public interface InfiniteScrollCallback{

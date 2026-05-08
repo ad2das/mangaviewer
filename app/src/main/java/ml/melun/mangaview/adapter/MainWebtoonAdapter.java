@@ -249,16 +249,20 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     public boolean hasDisplayContent() {
-        if(rows == null || rows.size() == 0)
+        return hasDisplayContent(rows);
+    }
+
+    private boolean hasDisplayContent(List<Object> candidateRows) {
+        if(candidateRows == null || candidateRows.size() == 0)
             return false;
-        for(Object row : rows) {
+        for(Object row : candidateRows) {
             if(row instanceof HeroRow)
                 return true;
             if(row instanceof HomeSection && ((HomeSection) row).titles.size() > 0)
                 return true;
-            if(row instanceof Ranking && ((Ranking<?>) row).size() > 0)
+            if(row instanceof Ranking)
                 return true;
-            if(row instanceof CategoryPanel && activeHomeTab == 3)
+            if(row instanceof CategoryPanel)
                 return true;
         }
         return false;
@@ -346,7 +350,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             Ranking<?> firstSection = firstNamedSection(dataSet, freshSectionTitle());
             if(firstSection == null)
                 firstSection = firstNamedSection(dataSet, "인기순");
-            if(firstSection != null && firstSection.size() > 0)
+            if(firstSection != null)
                 result.add(firstSection);
             return result;
         }
@@ -386,7 +390,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(hasServerTitles)
             result.add(new HeroRow(seedTitles.subList(0, Math.min(5, seedTitles.size()))));
         List<Title> continueTitles = recentTitles;
-        if(hasServerTitles && continueTitles.size() > 0)
+        if(continueTitles.size() > 0)
             result.add(new HomeSection("이어보기", "전체보기", "", continueTitles, STYLE_CONTINUE));
         SectionPick popular = findSection(sections, "인기순");
         List<Title> popularTitles = popular == null ? new ArrayList<>() : titlesFromRanking(popular.ranking, 8);
@@ -596,11 +600,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return false;
         dataSet = cached;
         List<Object> cachedRows = buildRows(dataSet, false);
-        if(!hasHero(cachedRows))
+        if(!hasDisplayContent(cachedRows))
             return false;
         initialRowsShown = true;
         updateRows(cachedRows);
-        scrollHeroToTop();
+        if(hasHero(cachedRows))
+            scrollHeroToTop();
         scheduleThumbnailPreload(dataSet);
         saveHomeSnapshot(dataSet);
         return true;
@@ -709,6 +714,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         ArrayList<Title> titles = new ArrayList<>();
         try {
             appendRecentTitlesForCurrentMode(titles, 6);
+            if(titles.size() == 0)
+                appendRecentTitlesForAnyMode(titles, 6);
         } catch (Exception ignored) {
         }
         for(Title title : titles) {
@@ -725,6 +732,22 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return;
         for(MTitle item : recent) {
             if(item == null || item.getBaseMode() != baseMode)
+                continue;
+            Title title = item instanceof Title ? (Title) item : new Title(item);
+            if(containsTitle(target, title))
+                continue;
+            target.add(title);
+            if(limit > 0 && target.size() >= limit)
+                return;
+        }
+    }
+
+    private void appendRecentTitlesForAnyMode(List<Title> target, int limit) {
+        List<MTitle> recent = p.getRecent();
+        if(recent == null || target == null)
+            return;
+        for(MTitle item : recent) {
+            if(item == null)
                 continue;
             Title title = item instanceof Title ? (Title) item : new Title(item);
             if(containsTitle(target, title))
@@ -1738,12 +1761,13 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             pendingRows = null;
             initialRowsShown = hadInitialRows;
             List<Object> warmRows = buildRows(dataSet, false);
-            if(!hasHero(warmRows))
+            if(!hasDisplayContent(warmRows))
                 warmRows = buildInitialPlaceholderRows();
-            if(!initialRowsShown && hasHero(warmRows)) {
+            if(!initialRowsShown && hasDisplayContent(warmRows)) {
                 initialRowsShown = true;
                 updateRows(warmRows);
-                scrollHeroToTop();
+                if(hasHero(warmRows))
+                    scrollHeroToTop();
             }
         }
 
@@ -1839,11 +1863,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
             if(!initialRowsShown) {
                 List<Object> firstRows = buildRows(dataSet, false);
-                if(!hasHero(firstRows))
+                if(!hasDisplayContent(firstRows))
                     return;
                 initialRowsShown = true;
                 updateRows(firstRows);
-                scrollHeroToTop();
+                if(hasHero(firstRows))
+                    scrollHeroToTop();
                 scheduleThumbnailPreload(loadedSections);
                 return;
             }
@@ -1857,7 +1882,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(fetcher == this)
                 fetcher = null;
             if(!hasAnyResult) {
-                if(listener != null)
+                if(!hasDisplayContent() && listener != null)
                     listener.captchaCallback();
                 return;
             }

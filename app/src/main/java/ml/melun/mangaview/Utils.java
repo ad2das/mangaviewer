@@ -931,8 +931,22 @@ public class Utils {
         if(returnToEpisodes)
             viewer.putExtra("returnToEpisodes", true);
         if(manga != null && manga.getTitle() != null)
-            viewer.putExtra("title", toViewerTitleJson(manga.getTitle(), !manga.isOnline()));
+            viewer.putExtra("title", toViewerTitleJson(manga.getTitle(), !manga.isOnline() || isMinimalOnlineViewerManga(manga)));
         ((Activity)context).startActivityForResult(viewer, code);
+    }
+
+    private static boolean isMinimalOnlineViewerManga(Manga manga) {
+        if(manga == null || !manga.isOnline())
+            return false;
+        String name = manga.getName();
+        if(name != null && name.length() > 0)
+            return false;
+        try {
+            List<String> images = manga.getImgs(null);
+            return images == null || images.size() == 0;
+        } catch (Exception ignored) {
+            return true;
+        }
     }
 
     public static void popup(Context context, View view, final int position, final Title title, final int m, PopupMenu.OnMenuItemClickListener listener, Preference p) {
