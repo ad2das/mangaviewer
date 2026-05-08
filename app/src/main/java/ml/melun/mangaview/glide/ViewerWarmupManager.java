@@ -97,6 +97,14 @@ public class ViewerWarmupManager {
     }
 
     public static void warmupContinue(Context context, Manga manga, Title title) {
+        warmupContinue(context, manga, title, false);
+    }
+
+    public static void warmupContinueImmediate(Context context, Manga manga, Title title) {
+        warmupContinue(context, manga, title, true);
+    }
+
+    private static void warmupContinue(Context context, Manga manga, Title title, boolean immediate) {
         if(context == null || manga == null || !manga.isOnline())
             return;
         if(title != null) {
@@ -115,7 +123,7 @@ public class ViewerWarmupManager {
             firstPage = 0;
         int startPage = firstPage;
         String scheduleKey = continueWarmupKey(manga, title, startPage);
-        if(!shouldScheduleContinueWarmup(scheduleKey))
+        if(!immediate && !shouldScheduleContinueWarmup(scheduleKey))
             return;
         AppDispatchers.submitImageWarmup(() -> {
             try {

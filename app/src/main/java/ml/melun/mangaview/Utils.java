@@ -229,18 +229,14 @@ public class Utils {
                     launchTitle != null ? launchTitle : immediate.getTitle(), includeTitleEpisodes);
             return;
         }
-        ViewerWarmupManager.warmupContinue(context, manga, launchTitle);
-        Context appContext = context.getApplicationContext();
+        ViewerWarmupManager.warmupContinueImmediate(context, manga, launchTitle);
         AppDispatchers.submitUserAction(() -> {
-            Manga prepared = ViewerWarmupManager.prepareClickFirstFrame(appContext, manga, launchTitle, false, p.getReverse());
+            Manga prepared = ViewerWarmupManager.prepareClickFirstFrame(context, manga, launchTitle, false, p.getReverse());
             AppDispatchers.runOnMain(() -> {
-                if(prepared == null) {
-                    if(context instanceof Activity && canUseActivity((Activity) context))
-                        Toast.makeText(context, "이미지를 불러오지 못했습니다.", Toast.LENGTH_SHORT).show();
-                    return;
-                }
-                launchPreparedViewer(context, prepared, code, returnToEpisodes, online, recent,
-                        launchTitle != null ? launchTitle : prepared.getTitle(), includeTitleEpisodes);
+                Manga launchManga = prepared != null ? prepared : manga;
+                Title preparedTitle = prepared == null ? launchTitle : prepared.getTitle();
+                launchPreparedViewer(context, launchManga, code, returnToEpisodes, online, recent,
+                        launchTitle != null ? launchTitle : preparedTitle, includeTitleEpisodes);
             });
         });
     }

@@ -1261,7 +1261,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     if(listener != null && item != null) {
                         Manga manga = continueStyle ? resolveContinueManga(item) : null;
                         if(manga != null) {
-                            ViewerWarmupManager.warmupContinue(context, manga, item);
+                            ViewerWarmupManager.warmupContinueImmediate(context, manga, item);
                             listener.clickedManga(manga);
                         } else {
                             listener.clickedTitle(item);
@@ -1288,7 +1288,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             Manga manga = resolveContinueManga(item);
             if(manga == null)
                 return;
-            ViewerWarmupManager.warmupContinue(context, manga, item);
+            ViewerWarmupManager.warmupContinueImmediate(context, manga, item);
         }
 
         private void scheduleContinueViewerWarmup(Title item, int delayMs) {
@@ -2248,7 +2248,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             for(int i = 0; i < limit; i++) {
                 Manga manga = resolveContinueMangaForWarmup(section.titles.get(i));
                 if(manga != null)
-                    ViewerWarmupManager.warmupContinue(context, manga, section.titles.get(i));
+                    ViewerWarmupManager.warmupContinueImmediate(context, manga, section.titles.get(i));
             }
             return;
         }

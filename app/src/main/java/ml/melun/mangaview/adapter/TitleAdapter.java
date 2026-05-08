@@ -356,7 +356,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         manga.setTitleId(title.getId());
         if(title.getEps() != null && title.getEps().size() > 0)
             manga.setEps(title.getEps());
-        ViewerWarmupManager.warmupContinue(mainContext, manga, title);
+        ViewerWarmupManager.warmupContinueImmediate(mainContext, manga, title);
     }
 
     int dp(int value) {
