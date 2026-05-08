@@ -160,7 +160,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             Glide.with(mainContext)
                     .load(source)
                     .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                    .override(dp(118), dp(154))
+                    .override(dp(126), dp(170))
                     .dontAnimate()
                     .preload();
         }
@@ -290,6 +290,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         holder.tagContainer.setVisibility(View.VISIBLE);
 
         holder.name.setText(title);
+        holder.name.setContentDescription(title);
         String meta = data.getRelease();
         if(meta == null || meta.length() == 0)
             meta = author;
@@ -325,7 +326,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                 Glide.with(holder.thumb)
                         .load(source)
                         .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                        .override(dp(118), dp(154))
+                        .override(dp(126), dp(170))
                         .thumbnail(0.25f)
                         .dontAnimate()
                         .into(holder.thumb);
