@@ -2,7 +2,7 @@ package ml.melun.mangaview.activity;
 
 import android.content.Context;
 import android.content.Intent;
-import ml.melun.mangaview.task.AppTask;
+import ml.melun.mangaview.task.TaskRunner;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -37,8 +37,8 @@ import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.mangaview.UpdatedList;
 import ml.melun.mangaview.mangaview.UpdatedManga;
+import ml.melun.mangaview.repository.MangaRepository;
 
-import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
 import static ml.melun.mangaview.Utils.showCaptchaPopup;
@@ -61,7 +61,7 @@ public class TagSearchActivity extends AppCompatActivity {
     SwipyRefreshLayout swipe;
     Bookmark bookmark;
     int baseMode;
-    AppTask<?, ?, ?> loadTask;
+    TaskRunner<?, ?, ?> loadTask;
     boolean destroyed = false;
     Runnable thumbnailPreloadRunnable;
 
@@ -179,24 +179,24 @@ public class TagSearchActivity extends AppCompatActivity {
     }
 
     @SuppressWarnings("unchecked")
-    private void startLoad(AppTask<?, ?, ?> task) {
+    private void startLoad(TaskRunner<?, ?, ?> task) {
         if(loadTask != null) {
             swipe.setRefreshing(true);
             return;
         }
         loadTask = task;
         swipe.setRefreshing(true);
-        task.startOnExecutor(AppTask.USER_ACTION_EXECUTOR);
+        task.startOnExecutor(TaskRunner.USER_ACTION_EXECUTOR);
     }
 
-    private boolean prepareLoadResult(AppTask<?, ?, ?> task) {
+    private boolean prepareLoadResult(TaskRunner<?, ?, ?> task) {
         if(loadTask != task || destroyed || isFinishing())
             return false;
         loadTask = null;
         return true;
     }
 
-    private void clearLoad(AppTask<?, ?, ?> task) {
+    private void clearLoad(TaskRunner<?, ?, ?> task) {
         if(loadTask == task)
             loadTask = null;
         if(swipe != null)
@@ -212,7 +212,7 @@ public class TagSearchActivity extends AppCompatActivity {
     }
 
 
-    private class getBookmarks extends AppTask<Void, Void, Integer>{
+    private class getBookmarks extends TaskRunner<Void, Void, Integer>{
         private CustomHttpClient.RequestGroup requestGroup;
 
         @Override
@@ -276,7 +276,7 @@ public class TagSearchActivity extends AppCompatActivity {
         protected Integer doInBackground(Void... voids) {
             requestGroup = new CustomHttpClient.RequestGroup();
             try {
-                return getHttpClient().runWithRequestGroup(requestGroup, () -> bookmark.fetch(getHttpClient()));
+                return MangaRepository.fetchBookmark(bookmark, requestGroup);
             } catch (Exception e) {
                 if(!isCancelled())
                     ml.melun.mangaview.report.CrashReporter.record(e);
@@ -293,7 +293,7 @@ public class TagSearchActivity extends AppCompatActivity {
     }
 
 
-    private class searchManga extends AppTask<Void, Void, Integer> {
+    private class searchManga extends TaskRunner<Void, Void, Integer> {
         private CustomHttpClient.RequestGroup requestGroup;
 
         protected void onPreExecute(){
@@ -302,7 +302,7 @@ public class TagSearchActivity extends AppCompatActivity {
         protected Integer doInBackground(Void... params){
             requestGroup = new CustomHttpClient.RequestGroup();
             try {
-                return getHttpClient().runWithRequestGroup(requestGroup, () -> search.fetch(getHttpClient()));
+                return MangaRepository.search(search, requestGroup);
             } catch (Exception e) {
                 if(!isCancelled())
                     ml.melun.mangaview.report.CrashReporter.record(e);
@@ -371,7 +371,7 @@ public class TagSearchActivity extends AppCompatActivity {
         }
     }
 
-    private class getUpdated extends AppTask<Void, Void, String> {
+    private class getUpdated extends TaskRunner<Void, Void, String> {
         private CustomHttpClient.RequestGroup requestGroup;
 
         protected void onPreExecute(){
@@ -380,10 +380,8 @@ public class TagSearchActivity extends AppCompatActivity {
         protected String doInBackground(Void... params){
             requestGroup = new CustomHttpClient.RequestGroup();
             try {
-                return getHttpClient().runWithRequestGroup(requestGroup, () -> {
-                    updated.fetch(getHttpClient());
-                    return null;
-                });
+                MangaRepository.loadUpdates(updated, requestGroup);
+                return null;
             } catch (Exception e) {
                 if(!isCancelled())
                     ml.melun.mangaview.report.CrashReporter.record(e);

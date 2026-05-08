@@ -26,10 +26,10 @@ import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.mangaview.UpdatedList;
 import ml.melun.mangaview.mangaview.UpdatedManga;
-import ml.melun.mangaview.task.AppTask;
+import ml.melun.mangaview.repository.MangaRepository;
+import ml.melun.mangaview.task.TaskRunner;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 
-import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
 
@@ -113,7 +113,7 @@ public class MainUpdates extends Fragment {
             return;
         }
         loadTask = new LoadUpdates();
-        loadTask.startOnExecutor(AppTask.USER_ACTION_EXECUTOR);
+        loadTask.startOnExecutor(TaskRunner.USER_ACTION_EXECUTOR);
     }
 
     private void updateState(boolean loading) {
@@ -135,7 +135,7 @@ public class MainUpdates extends Fragment {
         super.onDestroyView();
     }
 
-    private class LoadUpdates extends AppTask<Void, Void, ArrayList<UpdatedManga>> {
+    private class LoadUpdates extends TaskRunner<Void, Void, ArrayList<UpdatedManga>> {
         private CustomHttpClient.RequestGroup requestGroup;
         private int resultCode = 0;
 
@@ -151,11 +151,7 @@ public class MainUpdates extends Fragment {
         protected ArrayList<UpdatedManga> doInBackground(Void... voids) {
             requestGroup = new CustomHttpClient.RequestGroup();
             try {
-                getHttpClient().runWithRequestGroup(requestGroup, () -> {
-                    updated.fetch(getHttpClient());
-                    return null;
-                });
-                ArrayList<UpdatedManga> result = updated.getResult();
+                ArrayList<UpdatedManga> result = MangaRepository.loadUpdates(updated, requestGroup);
                 return result == null ? new ArrayList<>() : result;
             } catch (Exception e) {
                 if(!isCancelled())

@@ -4,7 +4,7 @@ import androidx.appcompat.app.AppCompatActivity;
 
 import android.app.ProgressDialog;
 import android.content.Context;
-import ml.melun.mangaview.task.AppTask;
+import ml.melun.mangaview.task.TaskRunner;
 import android.os.Bundle;
 import android.widget.EditText;
 import android.widget.Toast;
@@ -77,7 +77,7 @@ public class FirstTimeActivity extends AppCompatActivity {
                     }else{
                         urlError("주소 업데이트에 실패했습니다.");
                     }
-                }, defurl).startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
+                }, defurl).startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
             }
         });
 

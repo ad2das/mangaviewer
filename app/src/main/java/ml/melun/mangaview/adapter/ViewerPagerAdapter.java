@@ -15,6 +15,7 @@ import ml.melun.mangaview.fragment.ViewerPageFragment;
 import ml.melun.mangaview.interfaces.PageInterface;
 import ml.melun.mangaview.mangaview.Decoder;
 import ml.melun.mangaview.mangaview.Manga;
+import ml.melun.mangaview.repository.MangaRepository;
 
 import static ml.melun.mangaview.MainApplication.p;
 
@@ -36,7 +37,7 @@ public class ViewerPagerAdapter extends FragmentStatePagerAdapter
 
     public void setManga(Manga m){
         fragments.clear();
-        List<String> source = m.getImgs(context);
+        List<String> source = MangaRepository.imageUrls(m, context);
         List<String> imgs = source == null ? new ArrayList<>() : new ArrayList<>(source);
         if (p.getPageRtl()) Collections.reverse(imgs);
         for(int i = 0; i<imgs.size(); i++){

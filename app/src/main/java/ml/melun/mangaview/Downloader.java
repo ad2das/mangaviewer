@@ -50,7 +50,8 @@ import ml.melun.mangaview.activity.MainActivity;
 import ml.melun.mangaview.mangaview.Decoder;
 import ml.melun.mangaview.mangaview.DownloadTitle;
 import ml.melun.mangaview.mangaview.Manga;
-import ml.melun.mangaview.task.AppTask;
+import ml.melun.mangaview.repository.DownloadRepository;
+import ml.melun.mangaview.task.TaskRunner;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
@@ -95,8 +96,7 @@ public class Downloader extends Worker {
 
     public static void cancelAll(Context context) {
         running = false;
-        WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME);
-        context.sendBroadcast(new Intent().setAction(BROADCAST_STOP));
+        DownloadRepository.cancelAll(context);
     }
 
     public Downloader(@NonNull Context context, @NonNull WorkerParameters workerParams) {
@@ -185,7 +185,7 @@ public class Downloader extends Worker {
         running = true;
     }
 
-    private class downloadTitle extends AppTask<Void,Void,Integer> {
+    private class downloadTitle extends TaskRunner<Void,Void,Integer> {
         protected void onPreExecute() {
             super.onPreExecute();
             cookies = new HashMap<>();

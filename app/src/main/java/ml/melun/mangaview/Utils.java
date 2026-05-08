@@ -15,10 +15,6 @@ import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.widget.PopupMenu;
 import androidx.documentfile.provider.DocumentFile;
 import androidx.fragment.app.Fragment;
-import androidx.work.Data;
-import androidx.work.ExistingWorkPolicy;
-import androidx.work.OneTimeWorkRequest;
-import androidx.work.WorkManager;
 
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
@@ -59,7 +55,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.UUID;
 
 import ml.melun.mangaview.activity.CaptchaActivity;
 import ml.melun.mangaview.activity.EpisodeActivity;
@@ -69,9 +64,9 @@ import ml.melun.mangaview.activity.ViewerActivity3;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.IntegerCallback;
 import ml.melun.mangaview.interfaces.StringCallback;
-import ml.melun.mangaview.task.AppTask;
+import ml.melun.mangaview.repository.DownloadRepository;
+import ml.melun.mangaview.task.TaskRunner;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
-import ml.melun.mangaview.mangaview.DownloadTitle;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
@@ -306,29 +301,13 @@ public class Utils {
         }
         if(!ensureOfflineHomeWritable(context))
             return false;
-        String queueId = UUID.randomUUID().toString();
-        File queueDir = new File(context.getFilesDir(), Downloader.QUEUE_DIR);
-        if(!queueDir.exists() && !queueDir.mkdirs()) {
-            Toast.makeText(context, "다운로드 대기열을 만들지 못했습니다", Toast.LENGTH_SHORT).show();
-            return false;
-        }
-        File queueFile = new File(queueDir, queueId + ".json");
-        try (FileOutputStream stream = new FileOutputStream(queueFile)) {
-            String payload = new Gson().toJson(new DownloadTitle(title)) + "\n" + selected.toString();
-            stream.write(payload.getBytes());
-            stream.flush();
+        try {
+            DownloadRepository.enqueue(context, title, selected);
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
             Toast.makeText(context, "다운로드 대기열 저장에 실패했습니다", Toast.LENGTH_SHORT).show();
             return false;
         }
-        Data input = new Data.Builder()
-                .putString(Downloader.KEY_QUEUE_ID, queueId)
-                .build();
-        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(Downloader.class)
-                .setInputData(input)
-                .build();
-        WorkManager.getInstance(context).enqueueUniqueWork(Downloader.WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request);
         Toast.makeText(context,"오프라인 저장을 시작합니다.", Toast.LENGTH_LONG).show();
         return true;
     }
@@ -615,7 +594,7 @@ public class Utils {
         ImageView img = v.findViewById(R.id.toki_captcha_image);
         EditText answer = v.findViewById(R.id.toki_captcha_answer);
 
-        AppTask.runBackground(() -> {
+        TaskRunner.runBackground(() -> {
             int tries = 3;
             while(tries > 0) {
                 Response r = null;
@@ -650,7 +629,7 @@ public class Utils {
 
         builder.setTitle(title)
                 .setView(v)
-                .setPositiveButton(android.R.string.ok, (dialog, which) -> AppTask.runBackground(() -> {
+                .setPositiveButton(android.R.string.ok, (dialog, which) -> TaskRunner.runBackground(() -> {
                     RequestBody requestBody = new FormBody.Builder()
                             .addEncoded("url", p.getUrl())
                             .addEncoded("captcha_key", answer.getText().toString())

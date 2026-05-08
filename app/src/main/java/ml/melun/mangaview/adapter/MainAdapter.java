@@ -2,7 +2,7 @@ package ml.melun.mangaview.adapter;
 
 import android.content.Context;
 import android.graphics.Color;
-import ml.melun.mangaview.task.AppTask;
+import ml.melun.mangaview.task.TaskRunner;
 import androidx.annotation.NonNull;
 import androidx.core.content.ContextCompat;
 import androidx.cardview.widget.CardView;
@@ -23,8 +23,8 @@ import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MainPage;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.repository.MangaRepository;
 
-import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 
@@ -98,7 +98,7 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             fetcher.cancel(true);
         uadapter.setLoad();
         fetcher = new MainFetcher();
-        fetcher.startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
+        fetcher.startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
     }
 
     @Override
@@ -427,7 +427,7 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         default void longClickedContinue(View view, Title title) {}
     }
 
-    private class MainFetcher extends AppTask<Void, Integer, MainPage> {
+    private class MainFetcher extends TaskRunner<Void, Integer, MainPage> {
         private CustomHttpClient.RequestGroup requestGroup;
 
         @Override
@@ -439,7 +439,7 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         protected MainPage doInBackground(Void... params) {
             requestGroup = new CustomHttpClient.RequestGroup();
             try {
-                return getHttpClient().runWithRequestGroup(requestGroup, () -> new MainPage(getHttpClient()));
+                return MangaRepository.loadComicHome(requestGroup);
             } catch (Exception e) {
                 if(!isCancelled())
                     ml.melun.mangaview.report.CrashReporter.record(e);

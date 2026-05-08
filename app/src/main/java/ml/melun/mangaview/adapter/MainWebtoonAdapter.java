@@ -5,7 +5,7 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
-import ml.melun.mangaview.task.AppTask;
+import ml.melun.mangaview.task.TaskRunner;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.LayoutInflater;
@@ -47,6 +47,7 @@ import ml.melun.mangaview.mangaview.MainPageWebtoon;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Ranking;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
@@ -93,7 +94,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private static final String HOME_CACHE_KEY_PREFIX = "homeSnapshotV1_";
     private static final int HOME_CACHE_MAX_SECTIONS = 6;
     private static final int HOME_CACHE_MAX_TITLES_PER_SECTION = 10;
-    private static final ExecutorService ROW_DIFF_EXECUTOR = AppTask.USER_ACTION_EXECUTOR;
+    private static final ExecutorService ROW_DIFF_EXECUTOR = TaskRunner.USER_ACTION_EXECUTOR;
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private int preloadCount = 0;
     private int activeHomeTab = 0;
@@ -122,7 +123,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(fetcher != null)
             fetcher.cancel(true);
         fetcher = new Fetcher();
-        fetcher.startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
+        fetcher.startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
     }
 
     public void showInitialRows() {
@@ -1705,7 +1706,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
     }
 
-    private class Fetcher extends AppTask<Void, SectionBatch, Boolean> {
+    private class Fetcher extends TaskRunner<Void, SectionBatch, Boolean> {
         private CustomHttpClient.RequestGroup requestGroup;
         private List<Ranking<?>> finalDataSet;
         private boolean keepExistingRowsDuringFetch;
@@ -1751,8 +1752,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 for(int i = 0; i < sections.length; i++) {
                     final int index = i;
                     final String[] section = sections[i];
-                    completion.submit(() -> getHttpClient().runWithRequestGroup(requestGroup, () ->
-                            new SectionResult(index, parser.parseWolfTitle(getHttpClient(), section[0], section[1], baseMode))));
+                    completion.submit(() -> new SectionResult(index,
+                            MangaRepository.loadWebtoonSection(parser, section[0], section[1], baseMode, requestGroup)));
                     submitted++;
                 }
 
@@ -1905,9 +1906,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(continueProgressBackfillRunning || !hasMissingContinueProgress())
             return;
         continueProgressBackfillRunning = true;
-        AppTask.runUserAction(() -> {
+        TaskRunner.runUserAction(() -> {
             try {
-                p.backfillRecentProgress(getHttpClient(), 12);
+                MangaRepository.backfillRecentProgress(12);
             } catch (Exception e) {
                 ml.melun.mangaview.report.CrashReporter.record(e);
             }

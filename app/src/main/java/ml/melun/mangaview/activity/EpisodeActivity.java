@@ -4,7 +4,7 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.net.Uri;
-import ml.melun.mangaview.task.AppTask;
+import ml.melun.mangaview.task.TaskRunner;
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import androidx.appcompat.app.ActionBar;
 import androidx.appcompat.app.AlertDialog;
@@ -41,8 +41,8 @@ import ml.melun.mangaview.adapter.TagAdapter;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.repository.MangaRepository;
 
-import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.deleteRecursive;
 import static ml.melun.mangaview.Utils.documentFileFromUri;
@@ -143,7 +143,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 return "";
             if(path.startsWith("http://") || path.startsWith("https://"))
                 return path;
-            return getHttpClient().getUrl(path);
+            return MangaRepository.resolveUrl(path);
         } catch (Exception e) {
             return "";
         }
@@ -224,7 +224,7 @@ public class EpisodeActivity extends AppCompatActivity {
             mode = 0;
             fab_container.setVisibility(View.GONE);
             episodeTask = new getEpisodes();
-            episodeTask.startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
+            episodeTask.startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
         }else{
             //offline title
             //initialize eps list
@@ -551,14 +551,14 @@ public class EpisodeActivity extends AppCompatActivity {
         return -1;
     }
 
-    private class getEpisodes extends AppTask<Void,Void,Integer> {
+    private class getEpisodes extends TaskRunner<Void,Void,Integer> {
         protected void onPreExecute() {
             super.onPreExecute();
             progress.setVisibility(View.VISIBLE);
         }
 
         protected Integer doInBackground(Void... params) {
-            int code = title.fetchEps(getHttpClient());
+            int code = MangaRepository.fetchEpisodes(title);
             episodes = title.getEps();
             return code;
         }

@@ -46,6 +46,7 @@ import ml.melun.mangaview.mangaview.Decoder;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.model.PageItem;
+import ml.melun.mangaview.repository.MangaRepository;
 
 
 public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
@@ -131,7 +132,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(hasMangaLoaded(m))
             return;
         int prevsize = items.size();
-        List<String> imgs = m.getImgs(mainContext);
+        List<String> imgs = MangaRepository.imageUrls(m, mainContext);
         if(imgs == null || imgs.size() == 0)
             return;
         if(items.size() == 0)
@@ -157,7 +158,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(hasMangaLoaded(m))
             return 0;
         int prevsize = items.size();
-        List<String> imgs = m.getImgs(mainContext);
+        List<String> imgs = MangaRepository.imageUrls(m, mainContext);
         if(imgs == null || imgs.size() == 0)
             return 0;
         for(int i=imgs.size()-1; i>=0; i--){

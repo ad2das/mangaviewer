@@ -8,7 +8,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
 import android.os.Build;
-import android.os.Bundle;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
@@ -19,18 +18,8 @@ import androidx.work.WorkManager;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 
-import java.util.ArrayList;
-import java.util.List;
-
 import ml.melun.mangaview.activity.MainActivity;
-import ml.melun.mangaview.mangaview.MTitle;
-import ml.melun.mangaview.mangaview.MainPage;
-import ml.melun.mangaview.mangaview.Search;
-import ml.melun.mangaview.mangaview.Title;
-
-import static ml.melun.mangaview.MainApplication.getHttpClient;
-import static ml.melun.mangaview.MainApplication.p;
-import static ml.melun.mangaview.mangaview.MTitle.base_comic;
+import ml.melun.mangaview.repository.MigrationRepository;
 
 public class Migrator extends Worker {
     NotificationCompat.Builder notification;
@@ -77,13 +66,13 @@ public class Migrator extends Worker {
         setupWorker();
         mw = new MigrationWorker();
         mw.onPreExecute();
-        Integer result = mw.doInBackground();
+        MigrationRepository.MigrationResult result = mw.run();
         if(isStopped()) {
             running = false;
             return Result.failure();
         }
         mw.onPostExecute(result);
-        return result == 0 ? Result.success() : Result.failure();
+        return result.success ? Result.success() : Result.failure();
     }
 
     private void setupWorker() {
@@ -151,118 +140,33 @@ public class Migrator extends Worker {
 
         int sum = 0;
         int current = 0;
-        List<MTitle> newFavorites, newRecents;
-        List<String> failed;
-        Bundle bundle;
 
         protected void onPreExecute() {
             startNotification();
         }
 
-
-        protected void onProgressUpdate(String... values) {
+        protected void onProgressUpdate(String value) {
             String msg = current +" / " + sum+"\n앱을 종료하지 말아주세요.\n";
-            if(values !=null && values.length>0) msg += values[0];
+            if(value != null && value.length() > 0) msg += value;
             lastProgressMessage = msg;
             sendBroadcast(MIGRATE_PROGRESS, msg);
         }
 
-        protected Integer doInBackground(Void... voids) {
-            // check domain
-            MainPage mp = new MainPage(getHttpClient());
-            if(mp.getRecent().size()<1)
-                return 1;
-
-            List<MTitle> recents = p.getRecent();
-            sum += recents.size();
-            List<MTitle> favorites = p.getFavorite();
-            sum += favorites.size();
-            //recent data
-
-            removeDups(favorites);
-            removeDups(recents);
-
-            newRecents = new ArrayList<>();
-            newFavorites = new ArrayList<>();
-            failed = new ArrayList<>();
-
-            for(int i=0; i<recents.size(); i++){
-                try {
-                    current++;
-                    MTitle newTitle = findTitle(recents.get(i));
-                    onProgressUpdate(newTitle == null ? "" : newTitle.getName());
-                    if(newTitle !=null)
-                        newRecents.add(newTitle);
-                    else
-                        failed.add(recents.get(i).getName());
-                }catch (Exception e){
-                    ml.melun.mangaview.report.CrashReporter.record(e);
-                    failed.add(recents.get(i).getName());
-                }
-            }
-            for(int i=0; i<favorites.size(); i++){
-                try {
-                    current++;
-                    MTitle newTitle = findTitle(favorites.get(i));
-                    onProgressUpdate(newTitle == null ? "" : newTitle.getName());
-                    if(newTitle !=null)
-                        newFavorites.add(newTitle);
-                    else
-                        failed.add(favorites.get(i).getName());
-                }catch (Exception e){
-                    ml.melun.mangaview.report.CrashReporter.record(e);
-                    failed.add(favorites.get(i).getName());
-                }
-            }
-
-            p.setFavorites(newFavorites);
-            p.setRecents(newRecents);
-
-            //remove bookmarks
-            p.resetViewerBookmark();
-            p.resetBookmark();
-
-            return 0;
+        protected MigrationRepository.MigrationResult run() {
+            return MigrationRepository.migrate((current, total, name) -> {
+                this.current = current;
+                this.sum = total;
+                onProgressUpdate(name);
+            });
         }
 
-        void removeDups(List<MTitle> titles){
-            for(int i=0; i<titles.size(); i++){
-                MTitle target = titles.get(i);
-                for(int j =0 ; j<titles.size(); j++){
-                    if(j!=i && titles.get(j).getId() == target.getId()){
-                        titles.remove(i);
-                        i--;
-                        break;
-                    }
-                }
-            }
-        }
-
-        MTitle findTitle(String title){
-            return findTitle(new MTitle(title,-1,"", "",new ArrayList<>(),"", base_comic));
-        }
-
-        MTitle findTitle(MTitle title){
-            String name = title.getName();
-            Search s = new Search(name,0, base_comic);
-            while(!s.isLast()){
-                s.fetch(getHttpClient());
-                for(Title t : s.getResult()){
-                    if(t.getName().equals(name)){
-                        return t.minimize();
-                    }
-                }
-            }
-            return null;
-        }
-
-        protected void onPostExecute(Integer resCode) {
-            if(resCode == 0){
+        protected void onPostExecute(MigrationRepository.MigrationResult result) {
+            if(result.success){
                 StringBuilder builder = new StringBuilder();
                 builder.append("기록 업데이트 완료.\n실패한 항목: ");
-                builder.append(failed.size());
+                builder.append(result.failed.size());
                 builder.append("개\n");
-                for(String t : failed){
+                for(String t : result.failed){
                     builder.append("\n").append(t);
                 }
                 resultIntent.setAction(MIGRATE_RESULT);
@@ -270,7 +174,7 @@ public class Migrator extends Worker {
                 endNotification();
                 sendBroadcast(MIGRATE_SUCCESS, builder.toString());
             }
-            else if(resCode == 1) {
+            else if(result.connectionError) {
                 endNotification();
                 sendBroadcast(MIGRATE_FAIL, "연결 오류 : 연결을 확인하고 다시 시도해 주세요.");
             }

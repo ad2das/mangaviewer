@@ -3,7 +3,7 @@ package ml.melun.mangaview.fragment;
 import android.content.Intent;
 import android.content.DialogInterface;
 import android.net.Uri;
-import ml.melun.mangaview.task.AppTask;
+import ml.melun.mangaview.task.TaskRunner;
 import android.os.Bundle;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
@@ -53,8 +53,8 @@ import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.repository.MangaRepository;
 
-import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.deleteRecursive;
 import static ml.melun.mangaview.Utils.documentFileFromUri;
@@ -298,7 +298,7 @@ public class MainSearch extends Fragment {
                     if(searchTask == null) {
                         activeSearchKey = null;
                         searchTask = new SearchManga(search);
-                        searchTask.startOnExecutor(AppTask.USER_ACTION_EXECUTOR);
+                        searchTask.startOnExecutor(TaskRunner.USER_ACTION_EXECUTOR);
                     }
                 } else swipe.setRefreshing(false);
             }
@@ -459,7 +459,7 @@ public class MainSearch extends Fragment {
         ArrayList<Title> data = getLibraryTitles(tab);
         if((tab == 0 || tab == 3) && offlineTitles.size() == 0 && offlineTask == null) {
             offlineTask = new LoadOfflineTitles();
-            offlineTask.startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
+            offlineTask.startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
         }
         bindLibraryData(data, libraryEmptyMessage(tab));
     }
@@ -1076,7 +1076,7 @@ public class MainSearch extends Fragment {
         int tab = getLibraryTabPosition();
         if((tab == 0 || tab == 3) && offlineTitles.size() == 0 && offlineTask == null) {
             offlineTask = new LoadOfflineTitles();
-            offlineTask.startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
+            offlineTask.startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
         }
         ArrayList<Title> data = new ArrayList<>();
         for(Title title : getLibraryTitles(tab))
@@ -1147,7 +1147,7 @@ public class MainSearch extends Fragment {
                 searchTask.cancel(true);
             activeSearchKey = key;
             searchTask = new SearchManga(search);
-            searchTask.startOnExecutor(AppTask.USER_ACTION_EXECUTOR);
+            searchTask.startOnExecutor(TaskRunner.USER_ACTION_EXECUTOR);
         }
     }
 
@@ -1263,7 +1263,7 @@ public class MainSearch extends Fragment {
         super.onDestroyView();
     }
 
-    private class LoadOfflineTitles extends AppTask<Void, Void, ArrayList<Title>> {
+    private class LoadOfflineTitles extends TaskRunner<Void, Void, ArrayList<Title>> {
         @Override
         protected ArrayList<Title> doInBackground(Void... voids) {
             ArrayList<Title> titles = new ArrayList<>();
@@ -1365,7 +1365,7 @@ public class MainSearch extends Fragment {
         }
     }
 
-    private class SearchManga extends AppTask<Void, Void, Integer>{
+    private class SearchManga extends TaskRunner<Void, Void, Integer>{
         private final Search targetSearch;
         private CustomHttpClient.RequestGroup requestGroup;
 
@@ -1379,7 +1379,7 @@ public class MainSearch extends Fragment {
         protected Integer doInBackground(Void... params){
             requestGroup = new CustomHttpClient.RequestGroup();
             try {
-                return getHttpClient().runWithRequestGroup(requestGroup, () -> targetSearch.fetch(getHttpClient()));
+                return MangaRepository.search(targetSearch, requestGroup);
             } catch (Exception e) {
                 if(!isCancelled())
                     ml.melun.mangaview.report.CrashReporter.record(e);

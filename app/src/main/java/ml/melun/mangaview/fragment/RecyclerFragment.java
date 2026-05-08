@@ -5,7 +5,7 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.net.Uri;
-import ml.melun.mangaview.task.AppTask;
+import ml.melun.mangaview.task.TaskRunner;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.Menu;
@@ -309,7 +309,7 @@ public class RecyclerFragment extends Fragment {
             titleAdapter.setResume(false);
             titleAdapter.setForceThumbnail(true);
             titleAdapter.clearData();
-            new OfflineReader().startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
+            new OfflineReader().startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
         }
         updateEmptyState();
     }
@@ -338,7 +338,7 @@ public class RecyclerFragment extends Fragment {
     }
 
 
-    public class OfflineReader extends AppTask<Void,Void,Integer>{
+    public class OfflineReader extends TaskRunner<Void,Void,Integer>{
         List<Title> titles;
         @Override
         protected void onPostExecute(Integer integer) {

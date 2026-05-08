@@ -13,7 +13,7 @@ import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.net.Uri;
-import ml.melun.mangaview.task.AppTask;
+import ml.melun.mangaview.task.TaskRunner;
 import android.os.Build;
 import android.os.Bundle;
 
@@ -350,7 +350,7 @@ public class MainActivity extends AppCompatActivity
     private void startDeferredUrlUpdate() {
         if(!p.getAutoUrl())
             return;
-        new UrlUpdater(context, false, ((MainMain)fragments[0]).getCallback(), p.getDefUrl()).startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
+        new UrlUpdater(context, false, ((MainMain)fragments[0]).getCallback(), p.getDefUrl()).startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
     }
 
     private void requestStartupPermissions() {

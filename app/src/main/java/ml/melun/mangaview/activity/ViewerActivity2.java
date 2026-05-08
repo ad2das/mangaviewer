@@ -11,7 +11,7 @@ import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.Drawable;
-import ml.melun.mangaview.task.AppTask;
+import ml.melun.mangaview.task.TaskRunner;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -58,9 +58,9 @@ import ml.melun.mangaview.mangaview.Decoder;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.model.PageItem;
+import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.ui.CustomSpinner;
 
-import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getGlideUrl;
 import static ml.melun.mangaview.Utils.getScreenSize;
@@ -257,7 +257,7 @@ public class ViewerActivity2 extends AppCompatActivity {
             //if online
             //fetch imgs
             loadImages l = new loadImages();
-            l.startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
+            l.startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
         }
 
         nextPageBtn.setOnClickListener(v -> {
@@ -781,7 +781,7 @@ public class ViewerActivity2 extends AppCompatActivity {
         return super.dispatchKeyEvent(event);
     }
 
-    private class loadImages extends AppTask<Void,String,Integer> {
+    private class loadImages extends TaskRunner<Void,String,Integer> {
         protected void onProgressUpdate(String... values) {
             pd.setMessage(values[0]);
         }
@@ -807,7 +807,7 @@ public class ViewerActivity2 extends AppCompatActivity {
             int res = ensureEpisodeListLoaded(manga);
             if(res == LOAD_CAPTCHA)
                 return res;
-            res = manga.fetch(getHttpClient());
+            res = MangaRepository.fetchManga(manga);
             if(title == null)
                 title = manga.getTitle();
             return res;
@@ -863,7 +863,7 @@ public class ViewerActivity2 extends AppCompatActivity {
         if(currentTitle == null)
             return 0;
         if(currentTitle.getEps() == null || currentTitle.getEps().size() <= 1) {
-            int result = currentTitle.fetchEps(getHttpClient());
+            int result = MangaRepository.fetchEpisodes(currentTitle);
             if(result == LOAD_CAPTCHA)
                 return result;
         }
@@ -909,7 +909,7 @@ public class ViewerActivity2 extends AppCompatActivity {
     public void reloadManga(){
         try{
             lockUi(false);
-            imgs = manga.getImgs(context);
+            imgs = MangaRepository.imageUrls(manga, context);
             if(imgs == null || imgs.size()==0) {
                 showCaptchaPopup(manga.getUrl(), context, p);
                 return;
@@ -957,7 +957,7 @@ public class ViewerActivity2 extends AppCompatActivity {
     public void refresh(){
         captchaChecked = false;
         loadImages l = new loadImages();
-        l.startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
+        l.startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
     }
 
     public void refreshToolbar(){

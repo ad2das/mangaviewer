@@ -7,7 +7,7 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
-import ml.melun.mangaview.task.AppTask;
+import ml.melun.mangaview.task.TaskRunner;
 import com.google.android.material.appbar.AppBarLayout;
 
 import androidx.annotation.Nullable;
@@ -39,9 +39,9 @@ import ml.melun.mangaview.interfaces.PageInterface;
 
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.ui.CustomSpinner;
 
-import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getScreenSize;
 import static ml.melun.mangaview.Utils.hideSpinnerDropDown;
@@ -295,7 +295,7 @@ public class ViewerActivity3 extends AppCompatActivity {
 
     void refresh(){
         captchaChecked = false;
-        new LoadImages().startOnExecutor(AppTask.THREAD_POOL_EXECUTOR);
+        new LoadImages().startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
     }
 
 
@@ -333,7 +333,7 @@ public class ViewerActivity3 extends AppCompatActivity {
         //getWindow().setAttributes(attrs);
     }
 
-    private class LoadImages extends AppTask<Void, String, Integer>{
+    private class LoadImages extends TaskRunner<Void, String, Integer>{
         ProgressDialog pd;
         protected void onProgressUpdate(String... values) {
             pd.setMessage(values[0]);
@@ -362,7 +362,7 @@ public class ViewerActivity3 extends AppCompatActivity {
             int res = ensureEpisodeListLoaded(manga);
             if(res == LOAD_CAPTCHA)
                 return res;
-            res = manga.fetch(getHttpClient());
+            res = MangaRepository.fetchManga(manga);
             if(title == null)
                 title = manga.getTitle();
             return res;
@@ -388,7 +388,7 @@ public class ViewerActivity3 extends AppCompatActivity {
         if(currentTitle == null)
             return 0;
         if(currentTitle.getEps() == null || currentTitle.getEps().size() <= 1) {
-            int result = currentTitle.fetchEps(getHttpClient());
+            int result = MangaRepository.fetchEpisodes(currentTitle);
             if(result == LOAD_CAPTCHA)
                 return result;
         }
@@ -438,7 +438,7 @@ public class ViewerActivity3 extends AppCompatActivity {
     public void reloadManga(){
         try {
             lockUi(false);
-            imgs = manga.getImgs(context);
+            imgs = MangaRepository.imageUrls(manga, context);
             if(imgs == null || imgs.size()==0) {
                 showCaptchaPopup(manga.getUrl(), context, p);
                 return;
