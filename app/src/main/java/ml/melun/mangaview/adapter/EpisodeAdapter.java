@@ -137,17 +137,11 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             if(favorite) h.h_star_icon.setImageResource(R.drawable.ic_favorite);
             else h.h_star_icon.setImageResource(R.drawable.ic_favorite_border);
             h.h_bookmark.setVisibility(View.GONE);
-            Glide.with(h.h_thumb).clear(h.h_thumb);
-            if(!save && thumb.length() > 0) Glide.with(h.h_thumb)
-                    .load(isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, title.getBaseMode()))
-                    .apply(new RequestOptions().dontTransform())
-                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                    .override(dp(132), dp(176))
-                    .thumbnail(0.25f)
-                    .dontAnimate()
-                    .placeholder(R.drawable.app_cover_placeholder)
-                    .into(h.h_thumb);
-            else h.h_thumb.setImageBitmap(null);
+            if(!save && thumb.length() > 0) {
+                Object source = isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, title.getBaseMode());
+                bindThumbnail(h.h_thumb, source, dp(132), dp(176), false);
+            }
+            else bindEmptyThumbnail(h.h_thumb, false);
             if(mode == 0 || mode == 3)
                 h.h_star.setVisibility(View.VISIBLE);
             else
@@ -174,22 +168,43 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             h.action.setImageResource(mode == 0 ? R.drawable.download : R.drawable.ic_baseline_close_24);
             h.action.setColorFilter(ContextCompat.getColor(mainContext, mode == 0 ? R.color.appAccent : R.color.appTextSecondary));
             String thumb = title == null ? "" : title.getThumb();
-            Glide.with(h.thumb).clear(h.thumb);
             if(!save && thumb != null && thumb.length() > 0) {
-                Glide.with(h.thumb)
-                        .load(isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, title.getBaseMode()))
-                        .apply(new RequestOptions().dontTransform())
-                        .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                        .override(dp(52), dp(70))
-                        .thumbnail(0.25f)
-                        .dontAnimate()
-                        .placeholder(R.drawable.app_cover_placeholder)
-                        .into(h.thumb);
+                Object source = isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, title.getBaseMode());
+                bindThumbnail(h.thumb, source, dp(52), dp(70), true);
             } else {
-                h.thumb.setImageResource(R.drawable.app_cover_placeholder);
+                bindEmptyThumbnail(h.thumb, true);
             }
             bindSelection(h, position);
         }
+    }
+
+    private void bindThumbnail(ImageView view, Object source, int width, int height, boolean placeholderWhenEmpty) {
+        String key = String.valueOf(source);
+        if(key.equals(view.getTag()))
+            return;
+        Glide.with(view).clear(view);
+        view.setTag(key);
+        Glide.with(view)
+                .load(source)
+                .apply(new RequestOptions().dontTransform())
+                .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                .override(width, height)
+                .thumbnail(0.25f)
+                .dontAnimate()
+                .placeholder(R.drawable.app_cover_placeholder)
+                .into(view);
+    }
+
+    private void bindEmptyThumbnail(ImageView view, boolean placeholder) {
+        String key = placeholder ? "placeholder" : "empty";
+        if(key.equals(view.getTag()))
+            return;
+        Glide.with(view).clear(view);
+        view.setTag(key);
+        if(placeholder)
+            view.setImageResource(R.drawable.app_cover_placeholder);
+        else
+            view.setImageBitmap(null);
     }
 
     private void bindSelection(ViewHolder holder, int position) {

@@ -92,18 +92,8 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
 
             @Override
             protected void publishResults(CharSequence charSequence, FilterResults filterResults) {
-                int oldSize = getItemCount();
-                mDataFiltered = (ArrayList<Title>) filterResults.values;
-                int newSize = getItemCount();
-                if(oldSize == newSize) {
-                    if(newSize > 0)
-                        notifyItemRangeChanged(0, newSize);
-                } else {
-                    if(oldSize > 0)
-                        notifyItemRangeRemoved(0, oldSize);
-                    if(newSize > 0)
-                        notifyItemRangeInserted(0, newSize);
-                }
+                ArrayList<Title> next = (ArrayList<Title>) filterResults.values;
+                dispatchFilteredList(next == null ? new ArrayList<>() : next);
             }
         };
     }
@@ -178,7 +168,14 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
 
     public void setData(List<?> t){
         ArrayList<Title> next = normalizeTitles(t);
+        mData = next;
+        searching = false;
+        dispatchFilteredList(next);
+    }
+
+    private void dispatchFilteredList(ArrayList<Title> next) {
         final ArrayList<Title> old = new ArrayList<>(mDataFiltered);
+        final ArrayList<Title> target = new ArrayList<>(next);
         DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
             @Override
             public int getOldListSize() {
@@ -187,22 +184,20 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
 
             @Override
             public int getNewListSize() {
-                return next.size();
+                return target.size();
             }
 
             @Override
             public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
-                return sameTitle(old.get(oldItemPosition), next.get(newItemPosition));
+                return sameTitle(old.get(oldItemPosition), target.get(newItemPosition));
             }
 
             @Override
             public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
-                return titleContentKey(old.get(oldItemPosition)).equals(titleContentKey(next.get(newItemPosition)));
+                return titleContentKey(old.get(oldItemPosition)).equals(titleContentKey(target.get(newItemPosition)));
             }
         }, false);
-        mData = next;
         mDataFiltered = next;
-        searching = false;
         diff.dispatchUpdatesTo(this);
     }
 
@@ -320,19 +315,29 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             holder.counterContainer.setVisibility(View.GONE);
         }
 
-        Glide.with(holder.thumb).clear(holder.thumb);
         holder.thumb.setVisibility(View.VISIBLE);
         if(thumb.length()>1 && (!save || forceThumbnail)) {
             Object source = isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, data.getBaseMode());
-            Glide.with(holder.thumb)
-                    .load(source)
-                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                    .override(dp(96), dp(124))
-                    .thumbnail(0.25f)
-                    .dontAnimate()
-                    .into(holder.thumb);
+            String thumbKey = String.valueOf(source);
+            if(!thumbKey.equals(holder.thumb.getTag())) {
+                Glide.with(holder.thumb).clear(holder.thumb);
+                holder.thumb.setTag(thumbKey);
+                Glide.with(holder.thumb)
+                        .load(source)
+                        .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                        .override(dp(96), dp(124))
+                        .thumbnail(0.25f)
+                        .dontAnimate()
+                        .into(holder.thumb);
+            }
         }
-        else holder.thumb.setImageResource(R.drawable.app_cover_placeholder);
+        else {
+            if(!"placeholder".equals(holder.thumb.getTag())) {
+                Glide.with(holder.thumb).clear(holder.thumb);
+                holder.thumb.setTag("placeholder");
+                holder.thumb.setImageResource(R.drawable.app_cover_placeholder);
+            }
+        }
         if(bookmark>0 && resume) {
             holder.resume.setVisibility(View.VISIBLE);
             warmupResume(data, bookmark, position);

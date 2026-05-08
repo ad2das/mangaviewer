@@ -47,8 +47,10 @@ public class ViewerWarmupManager {
     private static final int DECODED_TARGET_LIMIT = 48;
     private static final int SNAPSHOT_LIMIT = 64;
     private static final long SNAPSHOT_TTL_MS = 2 * 60 * 1000L;
+    private static final long CONTINUE_WARMUP_DEBOUNCE_MS = 4 * 1000L;
     private static final Map<String, WarmupState> activeWarmups = new HashMap<>();
     private static final LinkedHashMap<String, WarmupSnapshot> snapshots = new LinkedHashMap<>(SNAPSHOT_LIMIT, 0.75f, true);
+    private static final LinkedHashMap<String, Long> recentContinueWarmups = new LinkedHashMap<>(SNAPSHOT_LIMIT, 0.75f, true);
     private static final Map<String, CustomTarget<Bitmap>> decodedTargets = new HashMap<>();
     private static final LruCache<String, Bitmap> decodedBitmapCache = new LruCache<String, Bitmap>(decodedCacheSizeKb()) {
         @Override
@@ -110,6 +112,9 @@ public class ViewerWarmupManager {
         if(firstPage < 0)
             firstPage = 0;
         int startPage = firstPage;
+        String scheduleKey = continueWarmupKey(manga, title, startPage);
+        if(!shouldScheduleContinueWarmup(scheduleKey))
+            return;
         AppDispatchers.submitImageWarmup(() -> {
             try {
                 Manga target = manga;
@@ -357,7 +362,7 @@ public class ViewerWarmupManager {
                 synchronized (ViewerWarmupManager.class) {
                     decodedTargets.remove(key);
                     if(resource != null && !resource.isRecycled())
-                        decodedBitmapCache.put(key, detachBitmap(resource, width));
+                        decodedBitmapCache.put(key, resource);
                 }
                 if(page.index == 0)
                     logMetric("viewer_first_decode_ms", SystemClock.elapsedRealtime() - decodeStart);
@@ -416,13 +421,6 @@ public class ViewerWarmupManager {
         PerfTrace.mark(name, valueMs);
     }
 
-    private static Bitmap detachBitmap(Bitmap source, int width) {
-        if(source == null)
-            return Bitmap.createBitmap(Math.max(width, 1), 1, Bitmap.Config.ARGB_8888);
-        Bitmap.Config config = source.getConfig() == null ? Bitmap.Config.ARGB_8888 : source.getConfig();
-        return source.copy(config, false);
-    }
-
     private static int viewerWidth(Context context) {
         if(context instanceof Activity)
             return Utils.getScreenSize(((Activity) context).getWindowManager().getDefaultDisplay());
@@ -467,6 +465,27 @@ public class ViewerWarmupManager {
             return false;
         }
         return snapshot.applyTo(target);
+    }
+
+    private static synchronized boolean shouldScheduleContinueWarmup(String key) {
+        long now = SystemClock.uptimeMillis();
+        Long last = recentContinueWarmups.get(key);
+        if(last != null && now - last < CONTINUE_WARMUP_DEBOUNCE_MS)
+            return false;
+        recentContinueWarmups.put(key, now);
+        while(recentContinueWarmups.size() > SNAPSHOT_LIMIT) {
+            Iterator<String> iterator = recentContinueWarmups.keySet().iterator();
+            if(!iterator.hasNext())
+                break;
+            iterator.next();
+            iterator.remove();
+        }
+        return true;
+    }
+
+    private static String continueWarmupKey(Manga manga, Title title, int startPage) {
+        int titleId = title == null ? manga.getTitleId() : title.getId();
+        return manga.getBaseMode() + ":" + titleId + ":" + manga.getId() + ":" + Math.max(0, startPage);
     }
 
     private static void trimActive() {

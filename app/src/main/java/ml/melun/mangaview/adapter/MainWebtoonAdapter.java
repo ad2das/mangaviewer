@@ -1047,17 +1047,31 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         void setItems(List<Title> items) {
-            int oldSize = this.items == null ? 0 : this.items.size();
-            this.items = items == null ? new ArrayList<>() : items;
-            int newSize = this.items.size();
-            if(oldSize == newSize)
-                notifyItemRangeChanged(0, newSize);
-            else {
-                if(oldSize > 0)
-                    notifyItemRangeRemoved(0, oldSize);
-                if(newSize > 0)
-                    notifyItemRangeInserted(0, newSize);
-            }
+            List<Title> old = this.items == null ? new ArrayList<>() : new ArrayList<>(this.items);
+            List<Title> next = items == null ? new ArrayList<>() : new ArrayList<>(items);
+            DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
+                @Override
+                public int getOldListSize() {
+                    return old.size();
+                }
+
+                @Override
+                public int getNewListSize() {
+                    return next.size();
+                }
+
+                @Override
+                public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
+                    return titleKey(old.get(oldItemPosition)).equals(titleKey(next.get(newItemPosition)));
+                }
+
+                @Override
+                public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
+                    return titleContentKey(old.get(oldItemPosition)).equals(titleContentKey(next.get(newItemPosition)));
+                }
+            }, false);
+            this.items = next;
+            diff.dispatchUpdatesTo(this);
         }
 
         @NonNull
@@ -1481,18 +1495,31 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         void setItems(List<?> items) {
-            int oldSize = this.items == null ? 0 : this.items.size();
-            this.items = items;
-            int newSize = this.items == null ? 0 : this.items.size();
-            if(oldSize == newSize) {
-                if(newSize > 0)
-                    notifyItemRangeChanged(0, newSize);
-            } else {
-                if(oldSize > 0)
-                    notifyItemRangeRemoved(0, oldSize);
-                if(newSize > 0)
-                    notifyItemRangeInserted(0, newSize);
-            }
+            List<?> old = this.items == null ? new ArrayList<>() : new ArrayList<>(this.items);
+            List<?> next = items == null ? new ArrayList<>() : new ArrayList<>(items);
+            DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
+                @Override
+                public int getOldListSize() {
+                    return old.size();
+                }
+
+                @Override
+                public int getNewListSize() {
+                    return next.size();
+                }
+
+                @Override
+                public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
+                    return cardKey(old.get(oldItemPosition)).equals(cardKey(next.get(newItemPosition)));
+                }
+
+                @Override
+                public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
+                    return cardContentKey(old.get(oldItemPosition)).equals(cardContentKey(next.get(newItemPosition)));
+                }
+            }, false);
+            this.items = next;
+            diff.dispatchUpdatesTo(this);
         }
 
         @NonNull
@@ -1724,6 +1751,40 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
             return;
         }
+    }
+
+    private String titleKey(Title title) {
+        if(title == null)
+            return "";
+        return title.getBaseMode() + ":" + title.getId();
+    }
+
+    private String titleContentKey(Title title) {
+        if(title == null)
+            return "";
+        return titleKey(title) + ":" + title.getName() + ":" + title.getThumb() + ":"
+                + title.getBookmarkEpisodeId() + ":" + title.getBookmarkEpisodeIndex() + ":"
+                + title.getEpisodeCount() + ":" + title.getBookmark();
+    }
+
+    private String cardKey(Object item) {
+        if(item instanceof Title)
+            return "title:" + titleKey((Title)item);
+        if(item instanceof MTitle) {
+            MTitle title = (MTitle)item;
+            return "mtitle:" + title.getBaseMode() + ":" + title.getId();
+        }
+        return String.valueOf(item == null ? "" : item.hashCode());
+    }
+
+    private String cardContentKey(Object item) {
+        if(item instanceof Title)
+            return titleContentKey((Title)item);
+        if(item instanceof MTitle) {
+            MTitle title = (MTitle)item;
+            return cardKey(item) + ":" + title.getName() + ":" + title.getThumb();
+        }
+        return String.valueOf(item);
     }
 
     private String rowKey(Object row) {

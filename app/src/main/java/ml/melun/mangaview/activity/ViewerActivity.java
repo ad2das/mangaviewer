@@ -104,6 +104,7 @@ public class ViewerActivity extends AppCompatActivity {
     boolean nextEpisodeBoundaryLoading = false;
     boolean previousEpisodeBoundaryJumpPending = false;
     boolean nextEpisodeBoundaryJumpPending = false;
+    long lastBoundaryCheckMs = 0L;
     private static final int INITIAL_PRELOAD_AHEAD_COUNT = 18;
     private static final int NEXT_EPISODE_ATTACH_THRESHOLD = 22;
     private static final int DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD = 12;
@@ -261,7 +262,7 @@ public class ViewerActivity extends AppCompatActivity {
             strip = this.findViewById(R.id.strip);
             manager = new StripLayoutManager(this);
             manager.setOrientation(LinearLayoutManager.VERTICAL);
-            strip.setItemViewCacheSize(4);
+            strip.setItemViewCacheSize(p.getDataSave() ? 4 : 8);
             strip.setLayoutManager(manager);
 
             if(intent.getBooleanExtra("recent",false)){
@@ -292,7 +293,7 @@ public class ViewerActivity extends AppCompatActivity {
                 @Override
                 public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
                     super.onScrolled(recyclerView, dx, dy);
-                    loadEpisodeAtBoundaryIfNeeded();
+                    loadEpisodeAtBoundaryIfNeededThrottled();
                 }
             });
             strip.addOnItemTouchListener(new RecyclerView.SimpleOnItemTouchListener() {
@@ -1240,6 +1241,14 @@ public class ViewerActivity extends AppCompatActivity {
             attachNextEpisode(false);
         if(last != RecyclerView.NO_POSITION && (last >= total - 2 || !strip.canScrollVertically(1)))
             attachNextEpisode(true);
+    }
+
+    private void loadEpisodeAtBoundaryIfNeededThrottled() {
+        long now = android.os.SystemClock.uptimeMillis();
+        if(now - lastBoundaryCheckMs < 80)
+            return;
+        lastBoundaryCheckMs = now;
+        loadEpisodeAtBoundaryIfNeeded();
     }
 
     private void handlePreviousEpisodePull(MotionEvent event) {
