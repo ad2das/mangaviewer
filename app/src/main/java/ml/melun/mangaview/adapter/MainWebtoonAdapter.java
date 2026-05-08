@@ -159,6 +159,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         return collectTitles(dataSet, 1).size() > 0;
     }
 
+    public boolean hasRequiredHomeSections() {
+        return hasRequiredHomeSections(dataSet);
+    }
+
     public void setFetchStateListener(FetchStateListener listener) {
         this.fetchStateListener = listener;
     }
@@ -428,7 +432,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             result.add(new HomeSection("이번 주 인기", "전체보기", popular == null ? "" : popular.name.path, popularTitles, STYLE_RANKING));
         SectionPick fresh = findSection(sections, freshSectionTitle());
         List<Title> freshTitles = fresh == null ? new ArrayList<>() : titlesFromRanking(fresh.ranking, 8);
-        boolean freshFeatured = recentTitles.size() > 0 && freshTitles.size() > 0;
+        boolean freshFeatured = freshTitles.size() > 0;
         if(freshFeatured)
             result.add(new HomeSection("신작 업데이트", "전체보기", fresh == null ? "" : fresh.name.path, freshTitles, STYLE_STANDARD));
         String lastGroup = "";
@@ -746,6 +750,26 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return true;
         SectionName name = parseSectionName(section.getName());
         return name.title.contains("인기순") || name.title.contains(freshSectionTitle());
+    }
+
+    private boolean hasRequiredHomeSections(List<Ranking<?>> sections) {
+        if(sections == null)
+            return false;
+        return titlesFromRanking(findRanking(sections, "인기순"), 1).size() > 0
+                && titlesFromRanking(findRanking(sections, freshSectionTitle()), 1).size() > 0;
+    }
+
+    private Ranking<?> findRanking(List<Ranking<?>> sections, String titlePart) {
+        if(sections == null || titlePart == null)
+            return null;
+        for(Ranking<?> section : sections) {
+            if(section == null)
+                continue;
+            SectionName name = parseSectionName(section.getName());
+            if(name.title.contains(titlePart))
+                return section;
+        }
+        return null;
     }
 
     private List<Title> collectTitles(List<Ranking<?>> sections, int limit) {
@@ -2124,7 +2148,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(shouldShowTop)
                 scrollHeroToTop();
             scheduleContinueProgressBackfill();
-            notifyFetchFinished(collectTitles(dataSet, 1).size() > 0);
+            notifyFetchFinished(hasRequiredHomeSections(dataSet));
         }
 
         private void notifyFetchFinished(boolean success) {

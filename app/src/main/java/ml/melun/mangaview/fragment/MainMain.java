@@ -525,12 +525,12 @@ public class MainMain extends Fragment{
         if(mainComicAdapter == null)
             return;
         if(mainComicAdapter.isFetching()) {
-            if(selectedBaseMode != base_comic || mainComicAdapter.hasFetchedContent())
+            if(selectedBaseMode != base_comic || mainComicAdapter.hasRequiredHomeSections())
                 return;
             mainComicAdapter.fetch();
             return;
         }
-        if(comicFetched && mainComicAdapter.hasFetchedContent())
+        if(comicFetched && mainComicAdapter.hasRequiredHomeSections())
             return;
         comicFetched = false;
         mainComicAdapter.fetch();
@@ -541,12 +541,12 @@ public class MainMain extends Fragment{
         if(mainWebtoonAdapter == null)
             return;
         if(mainWebtoonAdapter.isFetching()) {
-            if(selectedBaseMode != base_webtoon || mainWebtoonAdapter.hasFetchedContent())
+            if(selectedBaseMode != base_webtoon || mainWebtoonAdapter.hasRequiredHomeSections())
                 return;
             mainWebtoonAdapter.fetch();
             return;
         }
-        if(webtoonFetched && mainWebtoonAdapter.hasFetchedContent())
+        if(webtoonFetched && mainWebtoonAdapter.hasRequiredHomeSections())
             return;
         webtoonFetched = false;
         mainWebtoonAdapter.fetch();
