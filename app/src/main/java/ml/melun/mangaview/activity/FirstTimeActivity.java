@@ -1,10 +1,10 @@
 package ml.melun.mangaview.activity;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.lifecycle.ViewModelProvider;
 
 import android.app.ProgressDialog;
 import android.content.Context;
-import ml.melun.mangaview.task.TaskRunner;
 import android.os.Bundle;
 import android.widget.EditText;
 import android.widget.Toast;
@@ -13,8 +13,10 @@ import java.text.SimpleDateFormat;
 import java.util.Locale;
 
 import ml.melun.mangaview.R;
-import ml.melun.mangaview.UrlUpdater;
 import ml.melun.mangaview.mangaview.WfwfDomainResolver;
+import ml.melun.mangaview.model.UrlUpdateResult;
+import ml.melun.mangaview.state.UiState;
+import ml.melun.mangaview.viewmodel.StartupViewModel;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.showYesNoPopup;
@@ -27,6 +29,8 @@ public class FirstTimeActivity extends AppCompatActivity {
     Context context;
     EditText input;
     ProgressDialog pd;
+    StartupViewModel startupViewModel;
+    String pendingDefUrl;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -44,6 +48,8 @@ public class FirstTimeActivity extends AppCompatActivity {
         pd = new ProgressDialog(context, R.style.darkDialog);
         pd.setMessage("url 확인중...");
         pd.setCancelable(false);
+        startupViewModel = new ViewModelProvider(this).get(StartupViewModel.class);
+        startupViewModel.state().observe(this, this::renderUrlUpdateState);
 
         p.getSharedPref().edit().putLong("eula2", -1).apply();
         this.findViewById(R.id.eulaAgreeBtn).setOnClickListener(view -> {
@@ -61,23 +67,8 @@ public class FirstTimeActivity extends AppCompatActivity {
                 urlError("기본주소는 https 프로토콜을 사용해야 합니다.");
             }else{
                 //check url
-                new UrlUpdater(context, true, success -> {
-                    if(pd.isShowing())
-                        pd.dismiss();
-                    if(success){
-                        p.setDefUrl(defurl);
-                        p.setAutoUrl(true);
-                        long time = System.currentTimeMillis();
-                        p.getSharedPref().edit().putLong("eula2", time).apply();
-                        // not a migrator
-                        p.getSharedPref().edit().putBoolean("manamoa", false).apply();
-                        Toast.makeText(context, agreementMessage(time),Toast.LENGTH_LONG).show();
-                        setResult(RESULT_EULA_AGREE);
-                        finish();
-                    }else{
-                        urlError("주소 업데이트에 실패했습니다.");
-                    }
-                }, defurl).startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
+                pendingDefUrl = defurl;
+                startupViewModel.updateUrl(defurl);
             }
         });
 
@@ -114,6 +105,36 @@ public class FirstTimeActivity extends AppCompatActivity {
         Toast.makeText(context, agreementMessage(time),Toast.LENGTH_LONG).show();
         setResult(RESULT_EULA_AGREE);
         finish();
+    }
+
+    @SuppressWarnings("rawtypes")
+    private void renderUrlUpdateState(UiState state) {
+        if(state instanceof UiState.Loading)
+            return;
+        if(!(state instanceof UiState.Content)) {
+            if(state instanceof UiState.Error)
+                urlError("주소 업데이트에 실패했습니다.");
+            return;
+        }
+        if(pd.isShowing())
+            pd.dismiss();
+        UrlUpdateResult result = (UrlUpdateResult) ((UiState.Content) state).getValue();
+        if(pendingDefUrl == null)
+            return;
+        if(result != null && result.getSuccess()){
+            p.setDefUrl(pendingDefUrl);
+            p.setAutoUrl(true);
+            long time = System.currentTimeMillis();
+            p.getSharedPref().edit().putLong("eula2", time).apply();
+            p.getSharedPref().edit().putBoolean("manamoa", false).apply();
+            Toast.makeText(context, agreementMessage(time),Toast.LENGTH_LONG).show();
+            setResult(RESULT_EULA_AGREE);
+            pendingDefUrl = null;
+            finish();
+        }else{
+            pendingDefUrl = null;
+            urlError("주소 업데이트에 실패했습니다.");
+        }
     }
 
     private String trimTrailingSlash(String url){

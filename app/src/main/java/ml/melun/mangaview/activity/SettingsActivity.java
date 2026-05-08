@@ -33,7 +33,6 @@ import java.io.File;
 
 import ml.melun.mangaview.Preference;
 import ml.melun.mangaview.R;
-import ml.melun.mangaview.UrlUpdater;
 import ml.melun.mangaview.interfaces.StringCallback;
 
 import static ml.melun.mangaview.MainApplication.p;

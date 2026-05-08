@@ -51,7 +51,6 @@ import ml.melun.mangaview.mangaview.Decoder;
 import ml.melun.mangaview.mangaview.DownloadTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.repository.DownloadRepository;
-import ml.melun.mangaview.task.TaskRunner;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
@@ -126,13 +125,13 @@ public class Downloader extends Worker {
 
             if(dt == null)
                 dt = new downloadTitle();
-            dt.onPreExecute();
-            Integer result = dt.doInBackground();
+            dt.prepare();
+            Integer result = dt.run();
             if(isStopped() || result != null) {
-                dt.onCancelled(result == null ? 0 : result);
+                dt.cancelWith(result == null ? 0 : result);
                 return result != null && result == 3 ? Result.retry() : Result.failure();
             }
-            dt.onPostExecute(null);
+            dt.complete();
             finishNotification();
             return Result.success();
         } catch (Exception e) {
@@ -185,32 +184,29 @@ public class Downloader extends Worker {
         running = true;
     }
 
-    private class downloadTitle extends TaskRunner<Void,Void,Integer> {
-        protected void onPreExecute() {
-            super.onPreExecute();
+    private class downloadTitle {
+        void prepare() {
             cookies = new HashMap<>();
             running = true;
         }
-        protected Integer doInBackground(Void... params) {
+
+        Integer run() {
             File home = null;
             DocumentFile homed = null;
             try{
                 if(useScopedStorageHome(homeDir)){
                     homed = DocumentFile.fromTreeUri(serviceContext, Uri.parse(homeDir));
                     if(homed == null || !homed.canWrite()){
-                        this.cancel(true);
                         return 1;
                     }
                 } else {
                     home = new File(homeDir);
                     if(!home.exists() && !home.mkdirs()) {
-                        this.cancel(true);
                         return 1;
                     }
                 }
             }catch (Exception e){
                 //home folder not set
-                this.cancel(true);
                 return 4;
             }
             try {
@@ -237,7 +233,7 @@ public class Downloader extends Worker {
 
                     float stepSize = maxProgress / selectedEps.length();
                     for (int queueIndex = selectedEps.length()-1; queueIndex >= 0; queueIndex--) {
-                        if (isCancelled() || Downloader.this.isStopped()) return 0;
+                        if (Downloader.this.isStopped()) return 0;
 
                         if (homed != null) {
                             //scoped storage
@@ -281,7 +277,6 @@ public class Downloader extends Worker {
                             try {
                                 listIndex = selectedEps.getInt(queueIndex);
                             } catch (Exception e) {
-                                this.cancel(true);
                                 return 2;
                             }
                             if(listIndex < 0 || listIndex >= mangas.size()) {
@@ -365,7 +360,6 @@ public class Downloader extends Worker {
                             try {
                                 listIndex = selectedEps.getInt(queueIndex);
                             } catch (Exception e) {
-                                this.cancel(true);
                                 return 2;
                             }
                             if(listIndex < 0 || listIndex >= mangas.size()) {
@@ -414,23 +408,18 @@ public class Downloader extends Worker {
             }catch (Exception e){
                 //unexpected exception
                 ml.melun.mangaview.report.CrashReporter.record(e);
-                this.cancel(true);
                 return 3;
             }
             return null;
         }
 
-        @Override
-        protected void onPostExecute(Integer res) {
-            super.onPostExecute(res);
+        void complete() {
             endNotification();
             running = false;
             serviceContext.sendBroadcast(new Intent().setAction(ACTION_STOP));
         }
 
-        @Override
-        protected void onCancelled(Integer mode) {
-            super.onCancelled();
+        void cancelWith(Integer mode) {
             running = false;
             String why = "";
             switch(mode){

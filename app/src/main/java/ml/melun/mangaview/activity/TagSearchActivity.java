@@ -2,7 +2,7 @@ package ml.melun.mangaview.activity;
 
 import android.content.Context;
 import android.content.Intent;
-import ml.melun.mangaview.task.TaskRunner;
+import ml.melun.mangaview.runtime.LifecycleJob;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -61,7 +61,7 @@ public class TagSearchActivity extends AppCompatActivity {
     SwipyRefreshLayout swipe;
     Bookmark bookmark;
     int baseMode;
-    TaskRunner<?, ?, ?> loadTask;
+    LifecycleJob<?, ?, ?> loadTask;
     boolean destroyed = false;
     Runnable thumbnailPreloadRunnable;
 
@@ -179,24 +179,24 @@ public class TagSearchActivity extends AppCompatActivity {
     }
 
     @SuppressWarnings("unchecked")
-    private void startLoad(TaskRunner<?, ?, ?> task) {
+    private void startLoad(LifecycleJob<?, ?, ?> task) {
         if(loadTask != null) {
             swipe.setRefreshing(true);
             return;
         }
         loadTask = task;
         swipe.setRefreshing(true);
-        task.startOnExecutor(TaskRunner.USER_ACTION_EXECUTOR);
+        task.start(LifecycleJob.USER_ACTION);
     }
 
-    private boolean prepareLoadResult(TaskRunner<?, ?, ?> task) {
+    private boolean prepareLoadResult(LifecycleJob<?, ?, ?> task) {
         if(loadTask != task || destroyed || isFinishing())
             return false;
         loadTask = null;
         return true;
     }
 
-    private void clearLoad(TaskRunner<?, ?, ?> task) {
+    private void clearLoad(LifecycleJob<?, ?, ?> task) {
         if(loadTask == task)
             loadTask = null;
         if(swipe != null)
@@ -212,7 +212,7 @@ public class TagSearchActivity extends AppCompatActivity {
     }
 
 
-    private class getBookmarks extends TaskRunner<Void, Void, Integer>{
+    private class getBookmarks extends LifecycleJob<Void, Void, Integer>{
         private CustomHttpClient.RequestGroup requestGroup;
 
         @Override
@@ -293,7 +293,7 @@ public class TagSearchActivity extends AppCompatActivity {
     }
 
 
-    private class searchManga extends TaskRunner<Void, Void, Integer> {
+    private class searchManga extends LifecycleJob<Void, Void, Integer> {
         private CustomHttpClient.RequestGroup requestGroup;
 
         protected void onPreExecute(){
@@ -371,7 +371,7 @@ public class TagSearchActivity extends AppCompatActivity {
         }
     }
 
-    private class getUpdated extends TaskRunner<Void, Void, String> {
+    private class getUpdated extends LifecycleJob<Void, Void, String> {
         private CustomHttpClient.RequestGroup requestGroup;
 
         protected void onPreExecute(){

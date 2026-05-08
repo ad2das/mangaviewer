@@ -2,7 +2,7 @@ package ml.melun.mangaview.adapter;
 
 import android.content.Context;
 import android.graphics.Color;
-import ml.melun.mangaview.task.TaskRunner;
+import ml.melun.mangaview.runtime.LifecycleJob;
 import androidx.annotation.NonNull;
 import androidx.core.content.ContextCompat;
 import androidx.cardview.widget.CardView;
@@ -98,7 +98,7 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             fetcher.cancel(true);
         uadapter.setLoad();
         fetcher = new MainFetcher();
-        fetcher.startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
+        fetcher.start(LifecycleJob.IO);
     }
 
     @Override
@@ -427,7 +427,7 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         default void longClickedContinue(View view, Title title) {}
     }
 
-    private class MainFetcher extends TaskRunner<Void, Integer, MainPage> {
+    private class MainFetcher extends LifecycleJob<Void, Integer, MainPage> {
         private CustomHttpClient.RequestGroup requestGroup;
 
         @Override

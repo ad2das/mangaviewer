@@ -2,13 +2,14 @@ package ml.melun.mangaview.viewmodel
 
 import ml.melun.mangaview.mangaview.Manga
 import ml.melun.mangaview.mangaview.Title
+import ml.melun.mangaview.model.EpisodeLoadResult
 import ml.melun.mangaview.repository.MangaRepository
 
-class EpisodeViewModel : BaseStateViewModel<List<Manga>>() {
+class EpisodeViewModel : BaseStateViewModel<EpisodeLoadResult>() {
     fun loadEpisodes(title: Title) {
         load {
-            MangaRepository.fetchEpisodes(title)
-            title.eps
+            val code = MangaRepository.fetchEpisodes(title)
+            EpisodeLoadResult(code, title.eps ?: emptyList<Manga>())
         }
     }
 }

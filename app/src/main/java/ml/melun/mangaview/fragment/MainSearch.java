@@ -2,8 +2,7 @@ package ml.melun.mangaview.fragment;
 
 import android.content.Intent;
 import android.content.DialogInterface;
-import android.net.Uri;
-import ml.melun.mangaview.task.TaskRunner;
+import ml.melun.mangaview.runtime.LifecycleJob;
 import android.os.Bundle;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
@@ -25,7 +24,6 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.widget.LinearLayoutCompat;
 import androidx.appcompat.widget.PopupMenu;
-import androidx.documentfile.provider.DocumentFile;
 import androidx.fragment.app.Fragment;
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -34,10 +32,6 @@ import com.google.android.material.tabs.TabLayout;
 import com.bumptech.glide.Glide;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayoutDirection;
-import com.google.gson.Gson;
-import com.google.gson.reflect.TypeToken;
-
-import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -54,19 +48,13 @@ import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.repository.MangaRepository;
+import ml.melun.mangaview.repository.OfflineStore;
 
 import static ml.melun.mangaview.MainApplication.p;
-import static ml.melun.mangaview.Utils.deleteRecursive;
-import static ml.melun.mangaview.Utils.documentFileFromUri;
 import static ml.melun.mangaview.Utils.episodeIntent;
-import static ml.melun.mangaview.Utils.filterFolder;
-import static ml.melun.mangaview.Utils.getOfflineEpisodes;
 import static ml.melun.mangaview.Utils.openViewer;
 import static ml.melun.mangaview.Utils.popup;
-import static ml.melun.mangaview.Utils.readFileToString;
-import static ml.melun.mangaview.Utils.readUriToString;
 import static ml.melun.mangaview.Utils.showPopup;
-import static ml.melun.mangaview.Utils.useScopedStorageHome;
 import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 
 public class MainSearch extends Fragment {
@@ -298,7 +286,7 @@ public class MainSearch extends Fragment {
                     if(searchTask == null) {
                         activeSearchKey = null;
                         searchTask = new SearchManga(search);
-                        searchTask.startOnExecutor(TaskRunner.USER_ACTION_EXECUTOR);
+                        searchTask.start(LifecycleJob.USER_ACTION);
                     }
                 } else swipe.setRefreshing(false);
             }
@@ -459,7 +447,7 @@ public class MainSearch extends Fragment {
         ArrayList<Title> data = getLibraryTitles(tab);
         if((tab == 0 || tab == 3) && offlineTitles.size() == 0 && offlineTask == null) {
             offlineTask = new LoadOfflineTitles();
-            offlineTask.startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
+            offlineTask.start(LifecycleJob.IO);
         }
         bindLibraryData(data, libraryEmptyMessage(tab));
     }
@@ -734,7 +722,7 @@ public class MainSearch extends Fragment {
     }
 
     private void openOfflineResume(Title title, int bookmark) {
-        Manga manga = resolveOfflineResumeManga(title, bookmark);
+        Manga manga = OfflineStore.resolveResumeManga(getContext(), title, bookmark);
         if(manga == null) {
             confirmOnlineResume(title, bookmark);
             return;
@@ -770,67 +758,6 @@ public class MainSearch extends Fragment {
         openViewer(getContext(), manga, -1);
     }
 
-    private Manga resolveOfflineResumeManga(Title title, int bookmark) {
-        if(title == null || title.getPath() == null)
-            return null;
-        List<Manga> episodes = title.getEps();
-        if(episodes == null)
-            episodes = new ArrayList<>();
-        title.setEps(episodes);
-        int mode = title.useBookmark() ? 3 : 4;
-        if(useScopedStorageHome(title.getPath())) {
-            DocumentFile titleDir = documentFileFromUri(getContext(), title.getPath());
-            for(DocumentFile folder : getOfflineEpisodes(titleDir)) {
-                Manga found = applyOfflineFolder(title, episodes, folder.getName(), folder.getUri().toString(), mode);
-                if(found != null && found.getId() == bookmark)
-                    return found;
-            }
-        } else {
-            for(File folder : getOfflineEpisodes(title.getPath())) {
-                Manga found = applyOfflineFolder(title, episodes, folder.getName(), folder.getAbsolutePath(), mode);
-                if(found != null && found.getId() == bookmark)
-                    return found;
-            }
-        }
-        return null;
-    }
-
-    private Manga applyOfflineFolder(Title title, List<Manga> episodes, String folderName, String path, int mode) {
-        if(folderName == null || path == null)
-            return null;
-        int id = parseOfflineEpisodeId(folderName);
-        Manga manga = null;
-        if(id > 0) {
-            for(Manga episode : episodes) {
-                if(episode != null && episode.getId() == id && episode.getBaseMode() == title.getBaseMode()) {
-                    manga = episode;
-                    break;
-                }
-            }
-            if(manga == null) {
-                manga = new Manga(id, folderName, "", title.getBaseMode());
-                episodes.add(manga);
-            }
-        } else {
-            manga = new Manga(-1, folderName, "", title.getBaseMode());
-            episodes.add(manga);
-        }
-        manga.setOfflinePath(path);
-        manga.setMode(id > 0 ? mode : 1);
-        return manga;
-    }
-
-    private int parseOfflineEpisodeId(String folderName) {
-        try {
-            int dot = folderName.lastIndexOf('.');
-            if(dot < 0 || dot >= folderName.length() - 1)
-                return -1;
-            return Integer.parseInt(folderName.substring(dot + 1));
-        } catch (Exception e) {
-            return -1;
-        }
-    }
-
     private boolean isOfflineTitle(Title title) {
         return title != null && title.getPath() != null && title.getPath().length() > 0;
     }
@@ -854,23 +781,7 @@ public class MainSearch extends Fragment {
     private void deleteOfflineTitle(Title title) {
         if(getContext() == null || title == null)
             return;
-        boolean deleted = false;
-        String path = title.getPath();
-        if(path != null && path.length() > 0) {
-            if(useScopedStorageHome(path)) {
-                try {
-                    DocumentFile target = DocumentFile.fromTreeUri(getContext(), Uri.parse(path));
-                    deleted = target != null && target.delete();
-                } catch (Exception e) {
-                    ml.melun.mangaview.report.CrashReporter.record(e);
-                }
-            } else {
-                deleted = deleteRecursive(new File(path));
-            }
-        }
-        if(!deleted)
-            deleted = deleteOfflineTitleByName(title);
-
+        boolean deleted = OfflineStore.deleteTitle(getContext(), title);
         if(deleted) {
             removeOfflineTitleFromCache(title);
             Toast.makeText(getContext(), "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
@@ -878,22 +789,6 @@ public class MainSearch extends Fragment {
         } else {
             showPopup(getContext(), "알림", "삭제를 실패했습니다");
         }
-    }
-
-    private boolean deleteOfflineTitleByName(Title title) {
-        if(getContext() == null || title == null)
-            return false;
-        if(useScopedStorageHome(p.getHomeDir())) {
-            try {
-                DocumentFile home = DocumentFile.fromTreeUri(getContext(), Uri.parse(p.getHomeDir()));
-                DocumentFile target = home == null ? null : home.findFile(filterFolder(title.getName()));
-                return target != null && target.delete();
-            } catch (Exception e) {
-                ml.melun.mangaview.report.CrashReporter.record(e);
-                return false;
-            }
-        }
-        return deleteRecursive(new File(p.getHomeDir(), filterFolder(title.getName())));
     }
 
     private void removeOfflineTitleFromCache(Title title) {
@@ -1076,7 +971,7 @@ public class MainSearch extends Fragment {
         int tab = getLibraryTabPosition();
         if((tab == 0 || tab == 3) && offlineTitles.size() == 0 && offlineTask == null) {
             offlineTask = new LoadOfflineTitles();
-            offlineTask.startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
+            offlineTask.start(LifecycleJob.IO);
         }
         ArrayList<Title> data = new ArrayList<>();
         for(Title title : getLibraryTitles(tab))
@@ -1147,7 +1042,7 @@ public class MainSearch extends Fragment {
                 searchTask.cancel(true);
             activeSearchKey = key;
             searchTask = new SearchManga(search);
-            searchTask.startOnExecutor(TaskRunner.USER_ACTION_EXECUTOR);
+            searchTask.start(LifecycleJob.USER_ACTION);
         }
     }
 
@@ -1263,41 +1158,10 @@ public class MainSearch extends Fragment {
         super.onDestroyView();
     }
 
-    private class LoadOfflineTitles extends TaskRunner<Void, Void, ArrayList<Title>> {
+    private class LoadOfflineTitles extends LifecycleJob<Void, Void, ArrayList<Title>> {
         @Override
         protected ArrayList<Title> doInBackground(Void... voids) {
-            ArrayList<Title> titles = new ArrayList<>();
-            if(getContext() == null)
-                return titles;
-            if(useScopedStorageHome(p.getHomeDir())) {
-                Uri uri = Uri.parse(p.getHomeDir());
-                DocumentFile home;
-                try {
-                    home = DocumentFile.fromTreeUri(getContext(), uri);
-                } catch (IllegalArgumentException e) {
-                    return titles;
-                }
-                if(home == null || !home.canRead())
-                    return titles;
-                for(DocumentFile f : home.listFiles()) {
-                    if(isCancelled())
-                        return titles;
-                    if(f.isDirectory())
-                        titles.add(readOfflineTitle(f));
-                }
-            } else {
-                File homeDir = new File(p.getHomeDir());
-                File[] files = homeDir.exists() ? homeDir.listFiles() : null;
-                if(files == null)
-                    return titles;
-                for(File f : files) {
-                    if(isCancelled())
-                        return titles;
-                    if(f.isDirectory())
-                        titles.add(readOfflineTitle(f));
-                }
-            }
-            return titles;
+            return OfflineStore.loadTitles(getContext());
         }
 
         @Override
@@ -1320,52 +1184,9 @@ public class MainSearch extends Fragment {
             if(offlineTask == this)
                 offlineTask = null;
         }
-
-        private Title readOfflineTitle(DocumentFile folder) {
-            DocumentFile data = folder.findFile("title.gson");
-            if(data != null) {
-                try {
-                    Title title = new Gson().fromJson(readUriToString(getContext(), data.getUri()), new TypeToken<Title>() {
-                    }.getType());
-                    title.setPath(folder.getUri().toString());
-                    String thumb = title.getThumb();
-                    if(thumb != null && thumb.length() > 0) {
-                        DocumentFile t = folder.findFile(thumb);
-                        if(t != null)
-                            title.setThumb(t.getUri().toString());
-                    }
-                    return title;
-                } catch (Exception e) {
-                    ml.melun.mangaview.report.CrashReporter.record(e);
-                }
-            }
-            Title title = new Title(folder.getName(), "", "", new ArrayList<>(), "", 0, MTitle.base_auto);
-            title.setPath(folder.getUri().toString());
-            return title;
-        }
-
-        private Title readOfflineTitle(File folder) {
-            File data = new File(folder, "title.gson");
-            if(data.exists()) {
-                try {
-                    Title title = new Gson().fromJson(readFileToString(data), new TypeToken<Title>() {
-                    }.getType());
-                    title.setPath(folder.getAbsolutePath());
-                    String thumb = title.getThumb();
-                    if(thumb != null && thumb.length() > 0)
-                        title.setThumb(folder.getAbsolutePath() + '/' + thumb);
-                    return title;
-                } catch (Exception e) {
-                    ml.melun.mangaview.report.CrashReporter.record(e);
-                }
-            }
-            Title title = new Title(folder.getName(), "", "", new ArrayList<>(), "", 0, MTitle.base_auto);
-            title.setPath(folder.getAbsolutePath());
-            return title;
-        }
     }
 
-    private class SearchManga extends TaskRunner<Void, Void, Integer>{
+    private class SearchManga extends LifecycleJob<Void, Void, Integer>{
         private final Search targetSearch;
         private CustomHttpClient.RequestGroup requestGroup;
 

@@ -13,12 +13,12 @@ import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.net.Uri;
-import ml.melun.mangaview.task.TaskRunner;
 import android.os.Build;
 import android.os.Bundle;
 
 import androidx.core.content.ContextCompat;
 import androidx.appcompat.app.AlertDialog;
+import androidx.lifecycle.ViewModelProvider;
 
 import android.view.View;
 import android.view.ViewGroup;
@@ -56,8 +56,11 @@ import ml.melun.mangaview.R;
 import ml.melun.mangaview.fragment.MainMain;
 
 import ml.melun.mangaview.fragment.MainSearch;
-import ml.melun.mangaview.UrlUpdater;
 import ml.melun.mangaview.interfaces.MainActivityCallback;
+import ml.melun.mangaview.interfaces.UrlUpdateCallback;
+import ml.melun.mangaview.model.UrlUpdateResult;
+import ml.melun.mangaview.state.UiState;
+import ml.melun.mangaview.viewmodel.StartupViewModel;
 
 import static android.Manifest.permission.READ_EXTERNAL_STORAGE;
 import static android.Manifest.permission.WRITE_EXTERNAL_STORAGE;
@@ -103,6 +106,8 @@ public class MainActivity extends AppCompatActivity
     TextView accountSheetPrimary;
     TextView accountSheetSecondary;
     TextView accountSheetHint;
+    StartupViewModel startupViewModel;
+    UrlUpdateCallback pendingUrlUpdateCallback;
     private static final int FIRST_TIME_ACTIVITY = 9;
 
 
@@ -350,7 +355,26 @@ public class MainActivity extends AppCompatActivity
     private void startDeferredUrlUpdate() {
         if(!p.getAutoUrl())
             return;
-        new UrlUpdater(context, false, ((MainMain)fragments[0]).getCallback(), p.getDefUrl()).startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
+        pendingUrlUpdateCallback = ((MainMain)fragments[0]).getCallback();
+        if(startupViewModel == null) {
+            startupViewModel = new ViewModelProvider(this).get(StartupViewModel.class);
+            startupViewModel.state().observe(this, this::renderStartupUrlState);
+        }
+        startupViewModel.updateUrl(p.getDefUrl());
+    }
+
+    @SuppressWarnings("rawtypes")
+    private void renderStartupUrlState(UiState state) {
+        if(state instanceof UiState.Content) {
+            UrlUpdateResult result = (UrlUpdateResult) ((UiState.Content) state).getValue();
+            if(pendingUrlUpdateCallback != null)
+                pendingUrlUpdateCallback.callback(result != null && result.getSuccess());
+            pendingUrlUpdateCallback = null;
+        } else if(state instanceof UiState.Error) {
+            if(pendingUrlUpdateCallback != null)
+                pendingUrlUpdateCallback.callback(false);
+            pendingUrlUpdateCallback = null;
+        }
     }
 
     private void requestStartupPermissions() {

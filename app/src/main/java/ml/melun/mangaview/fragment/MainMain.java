@@ -21,12 +21,12 @@ import com.bumptech.glide.Glide;
 import ml.melun.mangaview.interfaces.MainActivityCallback;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Preference;
-import ml.melun.mangaview.UrlUpdater;
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.activity.MainActivity;
 import ml.melun.mangaview.activity.TagSearchActivity;
 import ml.melun.mangaview.adapter.MainAdapter;
 import ml.melun.mangaview.adapter.MainWebtoonAdapter;
+import ml.melun.mangaview.interfaces.UrlUpdateCallback;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
@@ -48,7 +48,7 @@ public class MainMain extends Fragment{
     MainAdapter.onItemClick homeClickListener;
     Fragment fragment;
     boolean wait = false;
-    UrlUpdater.UrlUpdaterCallback callback;
+    UrlUpdateCallback callback;
     MainActivityCallback mainActivityCallback;
     TabLayout mainTabLayout;
     TextView modeWebtoon;
@@ -98,7 +98,7 @@ public class MainMain extends Fragment{
         };
     }
 
-    public UrlUpdater.UrlUpdaterCallback getCallback(){
+    public UrlUpdateCallback getCallback(){
         return callback;
     }
 

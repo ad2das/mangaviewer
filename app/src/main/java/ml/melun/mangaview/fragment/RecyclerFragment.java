@@ -4,8 +4,7 @@ import android.app.SearchManager;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
-import android.net.Uri;
-import ml.melun.mangaview.task.TaskRunner;
+import ml.melun.mangaview.runtime.LifecycleJob;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.Menu;
@@ -21,17 +20,13 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.widget.PopupMenu;
 import androidx.appcompat.widget.SearchView;
-import androidx.documentfile.provider.DocumentFile;
 import androidx.fragment.app.Fragment;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.recyclerview.widget.RecyclerView.AdapterDataObserver;
 
 import com.bumptech.glide.Glide;
 import com.google.gson.Gson;
-import com.google.gson.reflect.TypeToken;
 
-import java.io.File;
-import java.util.ArrayList;
 import java.util.List;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
@@ -41,16 +36,12 @@ import ml.melun.mangaview.adapter.TitleAdapter;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.repository.OfflineStore;
 
 import static android.app.Activity.RESULT_OK;
 import static ml.melun.mangaview.MainApplication.p;
-import static ml.melun.mangaview.Utils.deleteRecursive;
 import static ml.melun.mangaview.Utils.episodeIntent;
-import static ml.melun.mangaview.Utils.filterFolder;
-import static ml.melun.mangaview.Utils.readFileToString;
-import static ml.melun.mangaview.Utils.readUriToString;
 import static ml.melun.mangaview.Utils.showPopup;
-import static ml.melun.mangaview.Utils.useScopedStorageHome;
 import static ml.melun.mangaview.Utils.viewerIntent;
 
 public class RecyclerFragment extends Fragment {
@@ -309,7 +300,7 @@ public class RecyclerFragment extends Fragment {
             titleAdapter.setResume(false);
             titleAdapter.setForceThumbnail(true);
             titleAdapter.clearData();
-            new OfflineReader().startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
+            new OfflineReader().start(LifecycleJob.IO);
         }
         updateEmptyState();
     }
@@ -338,7 +329,7 @@ public class RecyclerFragment extends Fragment {
     }
 
 
-    public class OfflineReader extends TaskRunner<Void,Void,Integer>{
+    public class OfflineReader extends LifecycleJob<Void,Void,Integer>{
         List<Title> titles;
         @Override
         protected void onPostExecute(Integer integer) {
@@ -348,82 +339,7 @@ public class RecyclerFragment extends Fragment {
         }
         @Override
         protected Integer doInBackground(Void... voids) {
-            titles = new ArrayList<>();
-            if (useScopedStorageHome(p.getHomeDir())) {
-                //scoped storage
-                Uri uri = Uri.parse(p.getHomeDir());
-                DocumentFile home;
-                try {
-                    home = DocumentFile.fromTreeUri(getContext(), uri);
-                }catch (IllegalArgumentException e){
-                    //home not set
-                    return null;
-                }
-                if(home != null && home.canRead()){
-                    for(DocumentFile f : home.listFiles()){
-                        if(f.isDirectory()) {
-                            DocumentFile d = f.findFile("title.gson");
-                            if (d != null) {
-                                try {
-                                    Title title = new Gson().fromJson(readUriToString(getContext(), d.getUri()), new TypeToken<Title>() {
-                                    }.getType());
-                                    title.setPath(f.getUri().toString());
-                                    String thumb = title.getThumb();
-                                    if (thumb != null && thumb.length() > 0) {
-                                        DocumentFile t = f.findFile(thumb);
-                                        if (t != null) title.setThumb(t.getUri().toString());
-                                    }
-                                    titles.add(title);
-                                } catch (Exception e) {
-                                    ml.melun.mangaview.report.CrashReporter.record(e);
-                                    Title title = new Title(f.getName(), "", "", new ArrayList<>(), "", 0, MTitle.base_auto);
-                                    title.setPath(f.getUri().toString());
-                                    titles.add(title);
-                                }
-                            } else {
-                                Title title = new Title(f.getName(), "", "", new ArrayList<>(), "", 0, MTitle.base_auto);
-                                title.setPath(f.getUri().toString());
-                                titles.add(title);
-                            }
-                        }
-                    }
-                }
-
-            }else {
-                File homeDir = new File(p.getHomeDir());
-                if (homeDir.exists()) {
-                    File[] files = homeDir.listFiles();
-                    if(files == null)
-                        return null;
-                    for (File f : files) {
-                        if (f.isDirectory()) {
-                            File data = new File(f, "title.gson");
-                            if (data.exists()) {
-                                try {
-                                    Title title = new Gson().fromJson(readFileToString(data), new TypeToken<Title>() {
-                                    }.getType());
-                                    title.setPath(f.getAbsolutePath());
-                                    String thumb = title.getThumb();
-                                    if (thumb != null && thumb.length() > 0)
-                                        title.setThumb(f.getAbsolutePath() + '/' + thumb);
-                                    titles.add(title);
-                                } catch (Exception e) {
-                                    ml.melun.mangaview.report.CrashReporter.record(e);
-                                    Title title = new Title(f.getName(), "", "", new ArrayList<>(), "", 0, MTitle.base_auto);
-                                    title.setPath(f.getAbsolutePath());
-                                    titles.add(title);
-                                }
-
-                            } else {
-                                Title title = new Title(f.getName(), "", "", new ArrayList<>(), "", 0, MTitle.base_auto);
-                                title.setPath(f.getAbsolutePath());
-                                titles.add(title);
-                            }
-                        }
-                    }
-                    //add titles to adapter
-                }
-            }
+            titles = OfflineStore.loadTitles(getContext());
             return null;
         }
     }
@@ -522,20 +438,10 @@ public class RecyclerFragment extends Fragment {
                     DialogInterface.OnClickListener dialogClickListener = (dialog, which) -> {
                         if (which == DialogInterface.BUTTON_POSITIVE) {
                             //Yes button clicked
-                            if (useScopedStorageHome(p.getHomeDir())) {
-                                DocumentFile f = DocumentFile.fromTreeUri(getContext(), Uri.parse(p.getHomeDir()));
-                                DocumentFile target = f == null ? null : f.findFile(filterFolder(title.getName()));
-                                if (target != null && target.delete()) {
-                                    titleAdapter.remove(position);
-                                    Toast.makeText(getContext(), "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
-                                } else showPopup(getContext(), "알림", "삭제를 실패했습니다");
-                            } else {
-                                File folder = new File(p.getHomeDir(), filterFolder(title.getName()));
-                                if (deleteRecursive(folder)) {
-                                    titleAdapter.remove(position);
-                                    Toast.makeText(getContext(), "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
-                                } else showPopup(getContext(), "알림", "삭제를 실패했습니다");
-                            }
+                            if (OfflineStore.deleteTitle(getContext(), title)) {
+                                titleAdapter.remove(position);
+                                Toast.makeText(getContext(), "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
+                            } else showPopup(getContext(), "알림", "삭제를 실패했습니다");
                         }
                     };
                     AlertDialog.Builder builder;

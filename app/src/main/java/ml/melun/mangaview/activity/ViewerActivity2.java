@@ -11,7 +11,7 @@ import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.Drawable;
-import ml.melun.mangaview.task.TaskRunner;
+import ml.melun.mangaview.runtime.LifecycleJob;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -257,7 +257,7 @@ public class ViewerActivity2 extends AppCompatActivity {
             //if online
             //fetch imgs
             loadImages l = new loadImages();
-            l.startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
+            l.start(LifecycleJob.IO);
         }
 
         nextPageBtn.setOnClickListener(v -> {
@@ -781,7 +781,7 @@ public class ViewerActivity2 extends AppCompatActivity {
         return super.dispatchKeyEvent(event);
     }
 
-    private class loadImages extends TaskRunner<Void,String,Integer> {
+    private class loadImages extends LifecycleJob<Void,String,Integer> {
         protected void onProgressUpdate(String... values) {
             pd.setMessage(values[0]);
         }
@@ -957,7 +957,7 @@ public class ViewerActivity2 extends AppCompatActivity {
     public void refresh(){
         captchaChecked = false;
         loadImages l = new loadImages();
-        l.startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
+        l.start(LifecycleJob.IO);
     }
 
     public void refreshToolbar(){

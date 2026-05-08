@@ -7,7 +7,7 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
-import ml.melun.mangaview.task.TaskRunner;
+import ml.melun.mangaview.runtime.LifecycleJob;
 import com.google.android.material.appbar.AppBarLayout;
 
 import androidx.annotation.Nullable;
@@ -295,7 +295,7 @@ public class ViewerActivity3 extends AppCompatActivity {
 
     void refresh(){
         captchaChecked = false;
-        new LoadImages().startOnExecutor(TaskRunner.THREAD_POOL_EXECUTOR);
+        new LoadImages().start(LifecycleJob.IO);
     }
 
 
@@ -333,7 +333,7 @@ public class ViewerActivity3 extends AppCompatActivity {
         //getWindow().setAttributes(attrs);
     }
 
-    private class LoadImages extends TaskRunner<Void, String, Integer>{
+    private class LoadImages extends LifecycleJob<Void, String, Integer>{
         ProgressDialog pd;
         protected void onProgressUpdate(String... values) {
             pd.setMessage(values[0]);

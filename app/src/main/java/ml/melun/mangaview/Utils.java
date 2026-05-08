@@ -65,7 +65,7 @@ import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.IntegerCallback;
 import ml.melun.mangaview.interfaces.StringCallback;
 import ml.melun.mangaview.repository.DownloadRepository;
-import ml.melun.mangaview.task.TaskRunner;
+import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
@@ -594,7 +594,7 @@ public class Utils {
         ImageView img = v.findViewById(R.id.toki_captcha_image);
         EditText answer = v.findViewById(R.id.toki_captcha_answer);
 
-        TaskRunner.runBackground(() -> {
+        AppDispatchers.runIo(() -> {
             int tries = 3;
             while(tries > 0) {
                 Response r = null;
@@ -629,7 +629,7 @@ public class Utils {
 
         builder.setTitle(title)
                 .setView(v)
-                .setPositiveButton(android.R.string.ok, (dialog, which) -> TaskRunner.runBackground(() -> {
+                .setPositiveButton(android.R.string.ok, (dialog, which) -> AppDispatchers.runIo(() -> {
                     RequestBody requestBody = new FormBody.Builder()
                             .addEncoded("url", p.getUrl())
                             .addEncoded("captcha_key", answer.getText().toString())

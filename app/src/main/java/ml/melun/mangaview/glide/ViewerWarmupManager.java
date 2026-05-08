@@ -29,7 +29,7 @@ import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.model.PageItem;
-import ml.melun.mangaview.task.TaskRunner;
+import ml.melun.mangaview.runtime.AppDispatchers;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
@@ -69,7 +69,7 @@ public class ViewerWarmupManager {
             return;
         Context appContext = context.getApplicationContext();
         int startPage = pageIndex;
-        TaskRunner.submitUserAction(() -> {
+        AppDispatchers.submitImageWarmup(() -> {
             int result = LOAD_OK;
             try {
                 if(manga.getImgs(appContext) == null || manga.getImgs(appContext).size() == 0)

@@ -3,8 +3,15 @@ package ml.melun.mangaview.repository;
 import android.content.Context;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
 
+import ml.melun.mangaview.model.UrlUpdateResult;
 import ml.melun.mangaview.mangaview.Bookmark;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MainPage;
@@ -15,16 +22,26 @@ import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.mangaview.UpdatedList;
 import ml.melun.mangaview.mangaview.UpdatedManga;
+import ml.melun.mangaview.mangaview.WfwfDomainResolver;
+import ml.melun.mangaview.runtime.AppDispatchers;
+
+import okhttp3.Response;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 
 public final class MangaRepository {
+    private static final long HOME_TTL_MS = 45_000L;
+    private static final long SECTION_TTL_MS = 2 * 60_000L;
+    private static final ConcurrentHashMap<String, CacheEntry> CACHE = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, FutureTask<Object>> IN_FLIGHT = new ConcurrentHashMap<>();
+
     private MangaRepository() {
     }
 
     public static MainPage loadComicHome(CustomHttpClient.RequestGroup requestGroup) throws Exception {
-        return getHttpClient().runWithRequestGroup(requestGroup, () -> new MainPage(getHttpClient()));
+        return cached("home:comic", HOME_TTL_MS,
+                () -> getHttpClient().runWithRequestGroup(requestGroup, () -> new MainPage(getHttpClient())));
     }
 
     public static int search(Search search, CustomHttpClient.RequestGroup requestGroup) throws Exception {
@@ -67,10 +84,13 @@ public final class MangaRepository {
 
     public static Ranking<Title> loadWebtoonSection(MainPageWebtoon parser, String title, String path, int baseMode,
                                                     CustomHttpClient.RequestGroup requestGroup) throws Exception {
-        if(requestGroup == null)
-            return parser.parseWolfTitle(getHttpClient(), title, path, baseMode);
-        return getHttpClient().runWithRequestGroup(requestGroup,
-                () -> parser.parseWolfTitle(getHttpClient(), title, path, baseMode));
+        String key = "section:" + baseMode + ':' + path;
+        return cached(key, SECTION_TTL_MS, () -> {
+            if(requestGroup == null)
+                return parser.parseWolfTitle(getHttpClient(), title, path, baseMode);
+            return getHttpClient().runWithRequestGroup(requestGroup,
+                    () -> parser.parseWolfTitle(getHttpClient(), title, path, baseMode));
+        });
     }
 
     public static List<String> imageUrls(Manga manga, Context context) {
@@ -83,5 +103,83 @@ public final class MangaRepository {
 
     public static String resolveUrl(String path) {
         return getHttpClient().getUrl(path);
+    }
+
+    public static UrlUpdateResult updateUrl(String fetchUrl) {
+        String result;
+        try {
+            Map<String, String> headers = new HashMap<>();
+            headers.put("User-Agent", getHttpClient().agent);
+            String root = WfwfDomainResolver.toRoot(fetchUrl);
+            if(WfwfDomainResolver.isWfwfUrl(root)) {
+                headers.put("Referer", root);
+                result = WfwfDomainResolver.resolve(getHttpClient().client, root, headers);
+                if(result == null)
+                    return new UrlUpdateResult(false, "");
+                String resolvedRoot = WfwfDomainResolver.toRoot(result);
+                p.setWebtoonUrl(resolvedRoot);
+                p.setDefUrl(resolvedRoot + "/cm");
+                p.setUrl(resolvedRoot + "/cm");
+                getHttpClient().resetCookie();
+                getHttpClient().clearPageCache();
+                return new UrlUpdateResult(true, result);
+            }
+
+            Response response = null;
+            try {
+                response = getHttpClient().get(fetchUrl, headers);
+                if(response == null || response.code() != 302)
+                    return new UrlUpdateResult(false, "");
+                result = response.header("Location");
+                if(result == null || result.length() == 0)
+                    return new UrlUpdateResult(false, "");
+                p.setUrl(result);
+                return new UrlUpdateResult(true, result);
+            } finally {
+                if(response != null)
+                    response.close();
+            }
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return new UrlUpdateResult(false, "");
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> T cached(String key, long ttlMs, Callable<T> loader) throws Exception {
+        long now = System.currentTimeMillis();
+        CacheEntry cached = CACHE.get(key);
+        if(cached != null && now - cached.loadedAt < ttlMs)
+            return (T) cached.value;
+
+        FutureTask<Object> task = new FutureTask<>(() -> loader.call());
+        FutureTask<Object> running = IN_FLIGHT.putIfAbsent(key, task);
+        if(running == null) {
+            running = task;
+            AppDispatchers.io().execute(task);
+        }
+        try {
+            Object value = running.get();
+            if(value != null)
+                CACHE.put(key, new CacheEntry(value, System.currentTimeMillis()));
+            return (T) value;
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if(cause instanceof Exception)
+                throw (Exception) cause;
+            throw new RuntimeException(cause);
+        } finally {
+            IN_FLIGHT.remove(key, running);
+        }
+    }
+
+    private static final class CacheEntry {
+        final Object value;
+        final long loadedAt;
+
+        CacheEntry(Object value, long loadedAt) {
+            this.value = value;
+            this.loadedAt = loadedAt;
+        }
     }
 }
