@@ -281,6 +281,8 @@ public class ViewerActivity extends AppCompatActivity {
                 @Override
                 public void onScrollStateChanged(RecyclerView recyclerView, int newState) {
                     super.onScrollStateChanged(recyclerView, newState);
+                    if(stripAdapter != null)
+                        stripAdapter.setScrollBusy(newState != RecyclerView.SCROLL_STATE_IDLE);
                     if(strip.getLayoutManager().getItemCount()>0 && newState == RecyclerView.SCROLL_STATE_DRAGGING && toolbarshow) {
                         toggleToolbar();
                     }

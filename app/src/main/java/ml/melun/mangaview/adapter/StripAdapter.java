@@ -82,9 +82,16 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private int lastPreloadAnchorPosition = RecyclerView.NO_POSITION;
     private int pendingPreloadPosition = RecyclerView.NO_POSITION;
     private boolean pendingPreloadScheduled = false;
+    private boolean scrollBusy = false;
 
     public List<Object> getItems(){
         return items;
+    }
+
+    public void setScrollBusy(boolean scrollBusy) {
+        this.scrollBusy = scrollBusy;
+        if(!scrollBusy && pendingPreloadPosition != RecyclerView.NO_POSITION)
+            schedulePreloadAroundScrollPosition(pendingPreloadPosition);
     }
 
 
@@ -657,6 +664,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     private void schedulePreloadAroundScrollPosition(int adapterPosition) {
         pendingPreloadPosition = adapterPosition;
+        if(scrollBusy)
+            return;
         if(pendingPreloadScheduled)
             return;
         pendingPreloadScheduled = true;

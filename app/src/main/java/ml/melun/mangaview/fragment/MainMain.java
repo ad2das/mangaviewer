@@ -290,7 +290,7 @@ public class MainMain extends Fragment{
         NpaLinearLayoutManager lm = new NpaLinearLayoutManager(getContext());
         recyclerView.setLayoutManager(lm);
         recyclerView.setHasFixedSize(true);
-        recyclerView.setItemViewCacheSize(8);
+        recyclerView.setItemViewCacheSize(18);
         recyclerView.setItemAnimator(null);
         recyclerView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         recyclerView.addOnScrollListener(new RecyclerView.OnScrollListener() {

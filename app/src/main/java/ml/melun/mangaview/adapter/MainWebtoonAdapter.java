@@ -16,7 +16,6 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
-import androidx.cardview.widget.CardView;
 import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.DiffUtil;
 import androidx.recyclerview.widget.LinearLayoutManager;
@@ -66,6 +65,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private static final int ACTION_STRIP = 26;
     private static final int STYLE_CONTINUE = 1;
     private static final int STYLE_RANKING = 2;
+    private static final boolean HOME_HERO_ENABLED = true;
+    private static final int HOME_EXTRA_SECTION_LIMIT = 0;
     private static final int STYLE_STANDARD = 3;
     public static final int ACTION_UPDATES = 1;
     public static final int ACTION_BOOKMARKS = 2;
@@ -389,7 +390,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         List<Title> seedTitles = collectTitles(sections, 24);
         List<Title> recentTitles = recentTitles();
         boolean hasServerTitles = seedTitles.size() > 0;
-        if(hasServerTitles)
+        if(HOME_HERO_ENABLED && hasServerTitles)
             result.add(new HeroRow(seedTitles.subList(0, Math.min(5, seedTitles.size()))));
         List<Title> continueTitles = recentTitles;
         if(continueTitles.size() > 0)
@@ -410,6 +411,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 result.add(new CategoryPanel());
             return result;
         }
+        int extraSections = 0;
         for(Ranking<?> section : sections) {
             if(section == null)
                 continue;
@@ -417,12 +419,15 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 continue;
             if((popularFeatured && section == popular.ranking) || (freshFeatured && section == fresh.ranking))
                 continue;
+            if(extraSections >= HOME_EXTRA_SECTION_LIMIT)
+                break;
             SectionName name = parseSectionName(section.getName());
             if(!name.group.equals(lastGroup)) {
                 contentRows.add(name.group);
                 lastGroup = name.group;
             }
             contentRows.add(section);
+            extraSections++;
         }
         result.addAll(contentRows);
         if(includeCategoryPanel)
@@ -877,7 +882,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     class HeroHolder extends RecyclerView.ViewHolder {
-        CardView card;
+        View card;
         ImageView thumb;
         TextView title;
         TextView badge;
@@ -1057,17 +1062,20 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         void bind(HomeSection section) {
-            title.setText(section.title);
-            action.setText(section.action);
+            setTextIfChanged(title, section.title);
+            setTextIfChanged(action, section.action);
             boolean hasAction = section.path.length() > 0;
-            action.setVisibility(hasAction ? View.VISIBLE : View.INVISIBLE);
+            setVisibilityIfChanged(action, hasAction ? View.VISIBLE : View.INVISIBLE);
             action.setOnClickListener(v -> {
                 if(listener != null && section.path.length() > 0)
                     listener.clickedCategoryPath(section.title, section.path);
             });
             ViewGroup.LayoutParams params = list.getLayoutParams();
-            params.height = section.style == STYLE_RANKING ? dp(222) : dp(238);
-            list.setLayoutParams(params);
+            int targetHeight = section.style == STYLE_RANKING ? dp(222) : dp(238);
+            if(params.height != targetHeight) {
+                params.height = targetHeight;
+                list.setLayoutParams(params);
+            }
             RecyclerView.Adapter adapter = list.getAdapter();
             if(adapter instanceof HomeTitleAdapter && ((HomeTitleAdapter) adapter).style == section.style)
                 ((HomeTitleAdapter) adapter).setItems(section.titles);
@@ -1118,7 +1126,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         @Override
         public int getItemCount() {
             int realCount = items == null ? 0 : items.size();
-            return Math.min(realCount, style == STYLE_RANKING ? 6 : 6);
+            return Math.min(realCount, 4);
         }
 
         @Override
@@ -1136,12 +1144,13 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         class ContinueHolder extends RecyclerView.ViewHolder {
-            CardView card;
+            View card;
             ImageView thumb;
             TextView name;
             TextView episode;
             TextView percent;
             android.widget.ProgressBar progress;
+            String boundKey;
 
             ContinueHolder(View itemView) {
                 super(itemView);
@@ -1154,16 +1163,21 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
 
             void bind(Title item, int position) {
-                name.setText(item == null ? "" : item.getName());
                 boolean continueStyle = style == STYLE_CONTINUE;
-                episode.setVisibility(continueStyle ? View.VISIBLE : View.GONE);
-                progress.setVisibility(continueStyle ? View.VISIBLE : View.GONE);
-                percent.setVisibility(continueStyle ? View.VISIBLE : View.GONE);
-                if(continueStyle) {
-                    episode.setText(progressLabel(item));
-                    int progressPercent = readingProgressPercent(item);
-                    progress.setProgress(progressPercent);
-                    percent.setText(progressPercent + "%");
+                int progressPercent = continueStyle ? readingProgressPercent(item) : 0;
+                String nextKey = titleContentKey(item) + ":" + continueStyle + ":" + progressPercent;
+                if(!nextKey.equals(boundKey)) {
+                    setTextIfChanged(name, item == null ? "" : item.getName());
+                    setVisibilityIfChanged(episode, continueStyle ? View.VISIBLE : View.GONE);
+                    setVisibilityIfChanged(progress, continueStyle ? View.VISIBLE : View.GONE);
+                    setVisibilityIfChanged(percent, continueStyle ? View.VISIBLE : View.GONE);
+                    if(continueStyle) {
+                        setTextIfChanged(episode, progressLabel(item));
+                        if(progress.getProgress() != progressPercent)
+                            progress.setProgress(progressPercent);
+                        setTextIfChanged(percent, progressPercent + "%");
+                    }
+                    boundKey = nextKey;
                 }
                 bindTitleThumb(thumb, item, 120, 112);
                 if(continueStyle && position < 8)
@@ -1297,11 +1311,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         class RankHolder extends RecyclerView.ViewHolder {
-            CardView card;
+            View card;
             ImageView thumb;
             TextView index;
             TextView title;
             TextView meta;
+            String boundKey;
 
             RankHolder(View itemView) {
                 super(itemView);
@@ -1313,10 +1328,14 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
 
             void bind(Title item, int position) {
-                index.setText(String.valueOf(position + 1));
-                title.setText(item == null ? "" : item.getName());
                 String release = item == null ? "" : item.getRelease();
-                meta.setText(release == null || release.length() == 0 ? "인기 작품" : release);
+                String nextKey = titleContentKey(item) + ":" + position;
+                if(!nextKey.equals(boundKey)) {
+                    setTextIfChanged(index, String.valueOf(position + 1));
+                    setTextIfChanged(title, item == null ? "" : item.getName());
+                    setTextIfChanged(meta, release == null || release.length() == 0 ? "인기 작품" : release);
+                    boundKey = nextKey;
+                }
                 bindTitleThumb(thumb, item, 112, 110);
                 card.setOnClickListener(v -> {
                     if(listener != null && item != null)
@@ -1475,6 +1494,17 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         return (int) (value * context.getResources().getDisplayMetrics().density + 0.5f);
     }
 
+    private void setTextIfChanged(TextView view, CharSequence text) {
+        CharSequence next = text == null ? "" : text;
+        if(!TextUtils.equals(view.getText(), next))
+            view.setText(next);
+    }
+
+    private void setVisibilityIfChanged(View view, int visibility) {
+        if(view.getVisibility() != visibility)
+            view.setVisibility(visibility);
+    }
+
     class GroupHolder extends RecyclerView.ViewHolder {
         TextView title;
 
@@ -1484,7 +1514,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         void bind(String group) {
-            title.setText(group);
+            setTextIfChanged(title, group);
         }
     }
 
@@ -1512,10 +1542,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
         void bind(Ranking<?> section) {
             SectionName name = parseSectionName(section.getName());
-            title.setText(name.title);
-            count.setText("전체보기");
+            setTextIfChanged(title, name.title);
+            setTextIfChanged(count, "전체보기");
             boolean hasAction = name.path.length() > 0;
-            count.setVisibility(hasAction ? View.VISIBLE : View.INVISIBLE);
+            setVisibilityIfChanged(count, hasAction ? View.VISIBLE : View.INVISIBLE);
             count.setOnClickListener(v -> {
                 if(listener != null && name.path.length() > 0)
                     listener.clickedCategoryPath(name.title, name.path);
@@ -1561,9 +1591,13 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 return;
 
             Title title = (Title) item;
-            holder.name.setText(title.getName());
             String meta = title.getTags().size() > 0 ? TextUtils.join(" / ", title.getTags()) : title.getRelease();
-            holder.meta.setText(meta == null ? "" : meta);
+            String nextKey = cardContentKey(title);
+            if(!nextKey.equals(holder.boundKey)) {
+                setTextIfChanged(holder.name, title.getName());
+                setTextIfChanged(holder.meta, meta == null ? "" : meta);
+                holder.boundKey = nextKey;
+            }
 
             String thumb = title.getThumb();
             if(save || thumb == null || thumb.length() == 0) {
@@ -1601,10 +1635,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         class CardHolder extends RecyclerView.ViewHolder {
-            CardView card;
+            View card;
             ImageView thumb;
             TextView name;
             TextView meta;
+            String boundKey;
 
             CardHolder(View itemView) {
                 super(itemView);
@@ -1613,7 +1648,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 name = itemView.findViewById(R.id.webtoon_name);
                 meta = itemView.findViewById(R.id.webtoon_meta);
                 if(dark)
-                    card.setCardBackgroundColor(ContextCompat.getColor(context, R.color.colorDarkBackground));
+                    card.setBackgroundColor(ContextCompat.getColor(context, R.color.colorDarkBackground));
             }
         }
     }
