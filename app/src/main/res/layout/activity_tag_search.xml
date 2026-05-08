@@ -22,20 +22,68 @@
 
     <TextView
         android:id="@+id/tagSearchNoResult"
+        style="@style/AppText.Body"
         android:layout_height="wrap_content"
         android:layout_marginStart="32dp"
         android:layout_marginEnd="32dp"
         android:layout_width="0dp"
+        android:background="@drawable/app_info_panel_bg"
         android:gravity="center"
+        android:paddingStart="@dimen/app_space_lg"
+        android:paddingTop="@dimen/app_space_lg"
+        android:paddingEnd="@dimen/app_space_lg"
+        android:paddingBottom="@dimen/app_space_lg"
         android:text="검색 결과가 없습니다"
         android:textColor="@color/appTextSecondary"
-        android:textSize="16sp"
         android:visibility="gone"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/tagSearchToolbar"
+        app:layout_constraintTop_toBottomOf="@id/tagSearchMeta"
         tools:visibility="visible" />
+
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/tagSearchMeta"
+        android:layout_width="0dp"
+        android:layout_height="48dp"
+        android:background="@color/appSurface"
+        android:paddingStart="20dp"
+        android:paddingEnd="20dp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tagSearchToolbar">
+
+        <TextView
+            android:id="@+id/tagSearchMetaTitle"
+            style="@style/AppText.Meta"
+            android:layout_width="0dp"
+            android:layout_height="32dp"
+            android:background="@drawable/app_soft_chip_bg"
+            android:gravity="center_vertical"
+            android:maxLines="1"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:text="결과 목록"
+            android:textColor="@color/appAccent"
+            android:textStyle="bold"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toStartOf="@+id/tagSearchMetaHint"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <TextView
+            android:id="@+id/tagSearchMetaHint"
+            style="@style/AppText.Caption"
+            android:layout_width="wrap_content"
+            android:layout_height="32dp"
+            android:layout_marginStart="@dimen/app_space_sm"
+            android:gravity="center"
+            android:text="스크롤로 계속 보기"
+            app:layout_constraintBottom_toBottomOf="@+id/tagSearchMetaTitle"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintTop_toTopOf="@+id/tagSearchMetaTitle" />
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
 
     <com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout
         android:id="@+id/tagSearchSwipe"
@@ -44,7 +92,7 @@
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/tagSearchToolbar"
+        app:layout_constraintTop_toBottomOf="@id/tagSearchMeta"
         app:srl_direction="bottom">
 
         <ml.melun.mangaview.ui.StableScrollbarRecyclerView
