@@ -521,6 +521,14 @@ public class MainPageWebtoon {
         return result;
     }
 
+    public static int getClassificationDbGenreCount(String genre) {
+        if(genre == null)
+            return 0;
+        loadClassificationDb();
+        List<DbTitle> titles = classificationGenreDb.get(normalizeClassificationTag(genre));
+        return titles == null ? 0 : titles.size();
+    }
+
     public static ArrayList<Title> getComicClassificationDbTitlesByGenre(String genre, int limit) {
         return getComicClassificationDbTitlesByGenre(genre, 0, limit);
     }
@@ -541,6 +549,14 @@ public class MainPageWebtoon {
                 break;
         }
         return result;
+    }
+
+    public static int getComicClassificationDbGenreCount(String genre) {
+        if(genre == null)
+            return 0;
+        loadComicClassificationDb();
+        List<DbTitle> titles = comicClassificationGenreDb.get(normalizeClassificationTag(genre));
+        return titles == null ? 0 : titles.size();
     }
 
     private static List<String> inferWebtoonTags(Title title) {

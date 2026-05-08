@@ -26,6 +26,7 @@ import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayoutDirec
 import java.util.ArrayList;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
+import ml.melun.mangaview.ui.StableScrollbarRecyclerView;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.adapter.TitleAdapter;
 import ml.melun.mangaview.adapter.UpdatedAdapter;
@@ -366,6 +367,7 @@ public class TagSearchActivity extends AppCompatActivity {
             }else{
                 noresult.setVisibility(View.VISIBLE);
             }
+            updateVirtualScrollbar();
             scheduleThumbnailPreload();
             swipe.setRefreshing(false);
         }
@@ -530,6 +532,12 @@ public class TagSearchActivity extends AppCompatActivity {
             lastVisible = 0;
         if(lastVisible >= count - LOAD_MORE_THRESHOLD)
             startLoad(new searchManga());
+    }
+
+    private void updateVirtualScrollbar() {
+        if(!(searchResult instanceof StableScrollbarRecyclerView) || search == null)
+            return;
+        ((StableScrollbarRecyclerView) searchResult).setVirtualItemCount(search.getVirtualResultCount());
     }
 
     @Override

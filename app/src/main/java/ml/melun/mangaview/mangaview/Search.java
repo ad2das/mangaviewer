@@ -33,6 +33,7 @@ public class Search {
     int page = 1;
     int timeoutRetries = 0;
     int classificationDbOffset = 0;
+    int classificationDbTotalCount = 0;
     boolean classificationSourceFetched = false;
     private ArrayList<Title> result;
     private final Set<String> seenTitleKeys = new HashSet<>();
@@ -53,6 +54,10 @@ public class Search {
 
     public Boolean isLast() {
         return last;
+    }
+
+    public int getVirtualResultCount() {
+        return Math.max(classificationDbTotalCount, classificationDbOffset);
     }
 
     public int fetch(CustomHttpClient client) {
@@ -349,10 +354,13 @@ public class Search {
         if(genre == null || genre.trim().length() == 0)
             return true;
         ArrayList<Title> dbResults;
-        if(baseMode == base_comic)
+        if(baseMode == base_comic) {
+            classificationDbTotalCount = MainPageWebtoon.getComicClassificationDbGenreCount(genre.trim());
             dbResults = MainPageWebtoon.getComicClassificationDbTitlesByGenre(genre.trim(), classificationDbOffset, CLASSIFICATION_DB_PAGE_SIZE);
-        else
+        } else {
+            classificationDbTotalCount = MainPageWebtoon.getClassificationDbGenreCount(genre.trim());
             dbResults = MainPageWebtoon.getClassificationDbTitlesByGenre(genre.trim(), classificationDbOffset, CLASSIFICATION_DB_PAGE_SIZE);
+        }
         classificationDbOffset += dbResults.size();
         target.addAll(dbResults);
         return dbResults.size() < CLASSIFICATION_DB_PAGE_SIZE;
