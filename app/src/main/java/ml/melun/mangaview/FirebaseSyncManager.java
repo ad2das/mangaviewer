@@ -7,6 +7,8 @@ import android.net.NetworkInfo;
 import android.os.Handler;
 import android.os.Looper;
 
+import com.google.firebase.FirebaseApp;
+import com.google.firebase.FirebaseOptions;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseUser;
 import com.google.firebase.firestore.DocumentReference;
@@ -63,8 +65,17 @@ public class FirebaseSyncManager {
         this.preference = preference;
         metaPref = appContext.getSharedPreferences(META_PREF, Context.MODE_PRIVATE);
         try {
-            auth = FirebaseAuth.getInstance();
-            firestore = FirebaseFirestore.getInstance();
+            FirebaseApp app;
+            if(FirebaseApp.getApps(appContext).isEmpty()) {
+                FirebaseOptions options = FirebaseOptions.fromResource(appContext);
+                app = options == null ? null : FirebaseApp.initializeApp(appContext, options);
+            } else {
+                app = FirebaseApp.getInstance();
+            }
+            if(app != null) {
+                auth = FirebaseAuth.getInstance(app);
+                firestore = FirebaseFirestore.getInstance(app);
+            }
         } catch (Exception e) {
             auth = null;
             firestore = null;

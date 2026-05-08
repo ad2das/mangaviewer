@@ -20,6 +20,21 @@
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="true">
 
+        <provider
+            android:name="com.google.firebase.provider.FirebaseInitProvider"
+            android:authorities="${applicationId}.firebaseinitprovider"
+            tools:node="remove" />
+
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            tools:node="remove" />
+
+        <activity
+            android:name=".activity.FastLaunchActivity"
+            android:configChanges="orientation|screenSize"
+            android:theme="@style/AppTheme.Launcher"
+            android:exported="false" />
         <activity
             android:name=".activity.MainActivity"
             android:configChanges="orientation|screenSize"

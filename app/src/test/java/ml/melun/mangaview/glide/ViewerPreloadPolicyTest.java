@@ -6,16 +6,16 @@ import static org.junit.Assert.assertEquals;
 
 public class ViewerPreloadPolicyTest {
     @Test
-    public void firstFrameWindow_prioritizesMorePagesInNormalMode() {
+    public void firstFrameWindow_decodesFirstPageAndQueuesNearbyPages() {
         ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.firstFrameWindow(false);
 
-        assertEquals(4, window.decodedLimit);
-        assertEquals(6, window.immediateLimit);
+        assertEquals(1, window.decodedLimit);
+        assertEquals(4, window.immediateLimit);
         assertEquals(18, window.highLimit);
         assertEquals(18, window.totalLimit);
         assertEquals(ViewerPreloadPolicy.TIER_DECODED, ViewerPreloadPolicy.tierForOffset(window, 0));
-        assertEquals(ViewerPreloadPolicy.TIER_IMMEDIATE, ViewerPreloadPolicy.tierForOffset(window, 4));
-        assertEquals(ViewerPreloadPolicy.TIER_HIGH, ViewerPreloadPolicy.tierForOffset(window, 6));
+        assertEquals(ViewerPreloadPolicy.TIER_IMMEDIATE, ViewerPreloadPolicy.tierForOffset(window, 1));
+        assertEquals(ViewerPreloadPolicy.TIER_HIGH, ViewerPreloadPolicy.tierForOffset(window, 4));
     }
 
     @Test
@@ -32,7 +32,7 @@ public class ViewerPreloadPolicyTest {
     public void scrollAheadWindow_decodesNearPagesOnly() {
         ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.scrollAheadWindow(false);
 
-        assertEquals(2, window.decodedLimit);
+        assertEquals(1, window.decodedLimit);
         assertEquals(4, window.immediateLimit);
         assertEquals(ViewerPreloadPolicy.TIER_NORMAL, ViewerPreloadPolicy.tierForOffset(window, 18));
     }

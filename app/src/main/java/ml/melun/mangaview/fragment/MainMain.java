@@ -279,7 +279,7 @@ public class MainMain extends Fragment{
                 if(!wait)
                     fetchSelected();
                 scheduleInactivePrefetch();
-            }, 160);
+            }, 4200);
         }
         return rootView;
     }
@@ -515,7 +515,7 @@ public class MainMain extends Fragment{
                 fetchWebtoon();
             else
                 fetchComic();
-        }, 900);
+        }, 8000);
     }
 
     private void fetchComic() {

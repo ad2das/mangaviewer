@@ -72,8 +72,6 @@ public class ViewerPageFragment extends Fragment {
         View rootView = inflater.inflate(R.layout.fragment_viewer, container, false);
         ImageView frame = rootView.findViewById(R.id.page);
         ImageButton refresh = rootView.findViewById(R.id.refreshButton);
-        //glide
-        frame.setImageResource(R.drawable.placeholder);
         refresh.setVisibility(View.GONE);
 
         if(context != null)
@@ -123,7 +121,7 @@ public class ViewerPageFragment extends Fragment {
                     @Override
                     public void onLoadFailed(@Nullable Drawable errorDrawable) {
                         if(image.length()>0) {
-                            frame.setImageResource(R.drawable.placeholder);
+                            frame.setImageDrawable(null);
                             refresh.setVisibility(View.VISIBLE);
                         }
                     }

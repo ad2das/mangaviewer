@@ -398,7 +398,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                 Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark), manga.getBaseMode()) : imgs.get(viewerBookmark);
 
                 //placeholder
-                frame.setImageResource(R.drawable.placeholder);
+                frame.setImageDrawable(null);
                 Glide.with(context)
                         .asBitmap()
                         .priority(Priority.IMMEDIATE)
@@ -431,7 +431,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                             @Override
                             public void onLoadFailed(@Nullable Drawable errorDrawable) {
                                 viewerBookmark = Math.max(0, viewerBookmark - 1);
-                                frame.setImageResource(R.drawable.placeholder);
+                                frame.setImageDrawable(null);
                                 updatePageIndex();
                             }
                         });
@@ -459,8 +459,8 @@ public class ViewerActivity2 extends AppCompatActivity {
                 viewerBookmark--;
                 frame.setVisibility(View.GONE);
                 frame2.setVisibility(View.VISIBLE);
-                frame.setImageResource(R.drawable.placeholder);
-                frame2.setImageResource(R.drawable.placeholder);
+                frame.setImageDrawable(null);
+                frame2.setImageDrawable(null);
                 //오른쪽 부터 로드
                 try {
                     Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark), manga.getBaseMode()) : imgs.get(viewerBookmark);
@@ -521,7 +521,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                                 }
                                 @Override
                                 public void onLoadFailed(@Nullable Drawable errorDrawable) {
-                                    frame.setImageResource(R.drawable.placeholder);
+                                    frame.setImageDrawable(null);
                                 }
                             });
                 }catch(Exception e) {
@@ -550,7 +550,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                 Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark), manga.getBaseMode()) : imgs.get(viewerBookmark);
 
                 //placeholder
-                frame.setImageResource(R.drawable.placeholder);
+                frame.setImageDrawable(null);
                 Glide.with(context)
                         .asBitmap()
                         .priority(Priority.IMMEDIATE)
@@ -582,7 +582,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                             @Override
                             public void onLoadFailed(@Nullable Drawable errorDrawable) {
                                 viewerBookmark = Math.min(imgs.size() - 1, viewerBookmark + 1);
-                                frame.setImageResource(R.drawable.placeholder);
+                                frame.setImageDrawable(null);
                                 updatePageIndex();
                             }
                         });
@@ -609,8 +609,8 @@ public class ViewerActivity2 extends AppCompatActivity {
         Decoder requestDecoder = d == null ? new Decoder(manga == null ? 0 : manga.getSeed(), requestMangaId) : d;
         frame.setVisibility(View.VISIBLE);
         frame2.setVisibility(View.GONE);
-        frame.setImageResource(R.drawable.placeholder);
-        if(split) frame2.setImageResource(R.drawable.placeholder);
+        frame.setImageDrawable(null);
+        if(split) frame2.setImageDrawable(null);
         //refreshbtn.setVisibility(View.VISIBLE);
         try {
             Bitmap cached = decodedPageFromWarmup(viewerBookmark);
@@ -620,7 +620,7 @@ public class ViewerActivity2 extends AppCompatActivity {
             }
             Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark), manga.getBaseMode()) : imgs.get(viewerBookmark);
             //placeholder
-            //frame.setImageResource(R.drawable.placeholder);
+            //frame.setImageDrawable(null);
             Glide.with(context)
                     .asBitmap()
                     .priority(Priority.IMMEDIATE)
@@ -640,7 +640,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                         public void onLoadFailed(@Nullable Drawable errorDrawable) {
                             if(!isActiveImageRequest(requestGeneration, requestMangaId, requestBookmark))
                                 return;
-                            frame.setImageResource(R.drawable.placeholder);
+                            frame.setImageDrawable(null);
                         }
                     });
         }catch(Exception e) {
@@ -698,7 +698,7 @@ public class ViewerActivity2 extends AppCompatActivity {
             return;
         }
         Object image2 = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark + 1), manga.getBaseMode()) : imgs.get(viewerBookmark + 1);
-        frame2.setImageResource(R.drawable.placeholder);
+        frame2.setImageDrawable(null);
         Glide.with(context)
                 .asBitmap()
                 .priority(Priority.HIGH)

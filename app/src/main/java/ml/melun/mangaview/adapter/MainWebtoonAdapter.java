@@ -132,8 +132,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     public void showInitialRows() {
         if(rows != null && rows.size() > 0)
             return;
-        if(showCachedHomeRows())
-            return;
         dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
         List<Object> warmRows = buildRows(dataSet, false);
         if(!hasDisplayContent(warmRows))
@@ -144,6 +142,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(hasHero(warmRows))
                 scrollHeroToTop();
         }
+        loadCachedHomeRowsAsync();
     }
 
     public boolean isFetching() {
@@ -265,7 +264,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 return true;
             if(row instanceof HomeSection && ((HomeSection) row).titles.size() > 0)
                 return true;
-            if(row instanceof Ranking)
+            if(row instanceof Ranking && ((Ranking<?>) row).size() > 0)
+                return true;
+            if(row instanceof ActionStrip)
                 return true;
             if(row instanceof CategoryPanel)
                 return true;
@@ -352,11 +353,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return result;
         }
         if(activeHomeTab == 0) {
-            Ranking<?> firstSection = firstNamedSection(dataSet, freshSectionTitle());
-            if(firstSection == null)
-                firstSection = firstNamedSection(dataSet, "인기순");
-            if(firstSection != null)
-                result.add(firstSection);
+            result.add(new ActionStrip());
             return result;
         }
         List<Object> tabRows = buildTabRows(dataSet, true, activeHomeTab == 1 ? "인기순" : freshSectionTitle());
@@ -613,6 +610,31 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             scrollHeroToTop();
         scheduleThumbnailPreload(dataSet);
         return true;
+    }
+
+    private void loadCachedHomeRowsAsync() {
+        AppDispatchers.submitIo(() -> {
+            List<Ranking<?>> cached = loadHomeSnapshot();
+            if(cached == null || cached.size() == 0)
+                return;
+            AppDispatchers.runOnMain(() -> applyCachedHomeRows(cached));
+        });
+    }
+
+    private void applyCachedHomeRows(List<Ranking<?>> cached) {
+        if(cached == null || cached.size() == 0)
+            return;
+        if(fetcher != null && collectTitles(dataSet, 1).size() > 0)
+            return;
+        dataSet = cached;
+        List<Object> cachedRows = buildRows(dataSet, false);
+        if(!hasDisplayContent(cachedRows))
+            return;
+        initialRowsShown = true;
+        updateRows(cachedRows);
+        if(hasHero(cachedRows))
+            scrollHeroToTop();
+        scheduleThumbnailPreload(dataSet);
     }
 
     private List<Ranking<?>> loadHomeSnapshot() {

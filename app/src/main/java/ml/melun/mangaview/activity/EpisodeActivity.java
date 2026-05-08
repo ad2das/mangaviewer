@@ -23,7 +23,6 @@ import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.View;
 import android.widget.PopupMenu;
-import android.widget.ProgressBar;
 import android.widget.Toast;
 
 import com.google.gson.Gson;
@@ -77,7 +76,6 @@ public class EpisodeActivity extends AppCompatActivity {
     String homeDir;
     int mode = 0;
     FloatingActionButton resumefab;
-    ProgressBar progress;
     boolean loaded = false;
     LinearLayoutCompat fab_container;
     EpisodeViewModel episodeViewModel;
@@ -199,7 +197,6 @@ public class EpisodeActivity extends AppCompatActivity {
         favoriteResult = intent.getBooleanExtra("favorite",false);
         recentResult = intent.getBooleanExtra("recent",false);
         episodeList = this.findViewById(R.id.EpisodeList);
-        progress = this.findViewById(R.id.progress);
         episodeList.setLayoutManager(new NpaLinearLayoutManager(this));
         episodeList.setHasFixedSize(true);
         episodeList.setItemViewCacheSize(20);
@@ -422,11 +419,11 @@ public class EpisodeActivity extends AppCompatActivity {
     @SuppressWarnings("unchecked")
     private void renderEpisodeState(UiState<EpisodeLoadResult> state) {
         if(state instanceof UiState.Loading) {
-            progress.setVisibility(View.GONE);
+            hideProgress();
             return;
         }
         if(state instanceof UiState.Error) {
-            progress.setVisibility(View.GONE);
+            hideProgress();
             showCaptchaPopup(title.getUrl(), context, p);
             return;
         }
@@ -446,7 +443,7 @@ public class EpisodeActivity extends AppCompatActivity {
         saveEpisodeCache(episodes);
         episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
         afterLoad();
-        progress.setVisibility(View.GONE);
+        hideProgress();
         loaded = true;
         fab_container.setVisibility(View.GONE);
         invalidateOptionsMenu();
@@ -464,10 +461,14 @@ public class EpisodeActivity extends AppCompatActivity {
             episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
             afterLoad();
             loaded = true;
-            progress.setVisibility(View.GONE);
+            hideProgress();
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
+    }
+
+    private void hideProgress() {
+        // Loading indicators are intentionally not shown on the episode screen.
     }
 
     private void saveEpisodeCache(List<Manga> episodes) {

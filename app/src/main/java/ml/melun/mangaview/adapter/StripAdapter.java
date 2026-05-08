@@ -496,7 +496,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             markDisplayedAndPreload(holder, item, pageKey);
             return;
         }
-        holder.frame.setImageResource(R.drawable.placeholder);
+        holder.frame.setImageDrawable(null);
         holder.refresh.setVisibility(View.GONE);
         if (autoCut) {
             long bindStart = android.os.SystemClock.elapsedRealtime();
@@ -518,7 +518,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
                     holder.frame.setMinimumHeight(Math.max(width, 1));
-                    holder.frame.setImageDrawable(placeholder);
+                    holder.frame.setImageDrawable(null);
                     holder.refresh.setVisibility(View.GONE);
                 }
 
@@ -527,7 +527,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
                     holder.frame.setMinimumHeight(Math.max(width, 1));
-                    holder.frame.setImageResource(R.drawable.placeholder);
+                    holder.frame.setImageDrawable(null);
                     holder.refresh.setVisibility(View.VISIBLE);
                 }
             };
@@ -538,7 +538,6 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     .priority(Priority.IMMEDIATE)
                     .apply(viewerImageOptions(item))
                     .load(url)
-                    .placeholder(R.drawable.placeholder)
                     .into(imageTarget);
         } else {
             long bindStart = android.os.SystemClock.elapsedRealtime();
@@ -560,7 +559,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
                     holder.frame.setMinimumHeight(Math.max(width, 1));
-                    holder.frame.setImageDrawable(placeholder);
+                    holder.frame.setImageDrawable(null);
                     holder.refresh.setVisibility(View.GONE);
                 }
 
@@ -569,7 +568,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
                     holder.frame.setMinimumHeight(Math.max(width, 1));
-                    holder.frame.setImageResource(R.drawable.placeholder);
+                    holder.frame.setImageDrawable(null);
                     holder.refresh.setVisibility(View.VISIBLE);
                 }
             };
@@ -907,7 +906,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             clearImageTarget(imageHolder);
             imageHolder.boundPageKey = null;
             imageHolder.frame.setMinimumHeight(Math.max(width, 1));
-            imageHolder.frame.setImageResource(R.drawable.placeholder);
+            imageHolder.frame.setImageDrawable(null);
             imageHolder.refresh.setVisibility(View.GONE);
         }
     }

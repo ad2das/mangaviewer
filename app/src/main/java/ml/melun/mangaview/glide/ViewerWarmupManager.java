@@ -133,7 +133,7 @@ public class ViewerWarmupManager {
                     int page = ViewerResumeResolver.sameManga(candidate, target) ? startPage : 0;
                     int result = prepareFirstFrame(appContext, candidate, currentTitle, page, width, false, p.getReverse(), MangaRepository.cancellation());
                     if(result == LOAD_OK && hasImages(candidate, appContext)) {
-                        preloadLoadedImages(appContext, candidate, page, width, false, p.getReverse(), p.getDataSave() ? 4 : 10, Priority.IMMEDIATE, p.getDataSave() ? 1 : 4);
+                        preloadLoadedImages(appContext, candidate, page, width, false, p.getReverse(), p.getDataSave() ? 4 : 10, Priority.IMMEDIATE, 1);
                         logMetric("viewer_continue_warmup_ready", candidate.getId());
                         return;
                     }
