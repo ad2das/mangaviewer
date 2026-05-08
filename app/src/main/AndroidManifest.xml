@@ -28,7 +28,7 @@
             android:enabled="true" />
 
         <activity
-            android:name=".activity.MainActivity"
+            android:name=".activity.ComposeMainActivity"
             android:configChanges="orientation|screenSize"
             android:theme="@style/AppTheme.Launcher"
             android:exported="true">
@@ -37,6 +37,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".activity.MainActivity"
+            android:configChanges="orientation|screenSize"
+            android:theme="@style/AppTheme.Launcher"
+            android:exported="false" />
         <activity
             android:name=".activity.EpisodeActivity"
             android:theme="@style/AppTheme.NoActionBar"
