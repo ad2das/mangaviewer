@@ -40,6 +40,7 @@ import android.widget.TextView;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import ml.melun.mangaview.R;
@@ -620,9 +621,9 @@ public class ViewerActivity extends AppCompatActivity {
             }
             stripAdapter = new StripAdapter(context, m, autoCut, width,title, infiniteScrollCallback);
             preloadInitialViewerPages(m);
-            prepareInitialViewerPosition(m);
 
             refreshAdapter();
+            prepareInitialViewerPosition(m);
             bookmarkRefresh(m);
             scheduleFocusedPagePreload();
             refreshToolbar(m);
@@ -769,6 +770,7 @@ public class ViewerActivity extends AppCompatActivity {
         MangaRepository.Cancellation cancellation = MangaRepository.cancellation();
         AppDispatchers.TaskHandle handle;
         volatile boolean cancelled = false;
+        Runnable timeoutGuard;
 
         public LoadImagesJob(Manga m, LoadMangaCallback callback, boolean lockui){
             this.lockui = lockui;
@@ -784,15 +786,41 @@ public class ViewerActivity extends AppCompatActivity {
                     if(!openEpisodeListIfRequested())
                         ViewerActivity.this.finish();
                 });
+                timeoutGuard = () -> {
+                    if(loader != this || cancelled || isFinishing())
+                        return;
+                    ViewerWarmupManager.logMetric("viewer_initial_load_timeout", m == null ? 0 : m.getId());
+                    cancel();
+                    showViewerImagesUnavailable(m);
+                };
+                mainHandler.postDelayed(timeoutGuard, 12000);
             }
-            handle = AppDispatchers.submitIo(() -> {
+            handle = AppDispatchers.submitUserAction(() -> {
                 int result = LOAD_OK;
                 try {
                     if(m.isOnline()) {
-                        result = lockui ? prepareEpisodeIdentity(m) : ensureEpisodeListLoaded(m);
+                        result = prepareEpisodeIdentity(m);
                         int firstPage = m.useBookmark() ? p.getViewerBookmark(m) : 0;
-                        if(result == LOAD_OK)
+                        if(result == LOAD_OK && shouldResolveResumeBeforeDirectFetch(m)) {
+                            result = ensureEpisodeListLoaded(m);
+                            PreparedManga prepared = result == LOAD_OK
+                                    ? prepareFirstAvailableManga(m, firstPage, cancellation)
+                                    : new PreparedManga(null, result);
+                            result = prepared.result;
+                            if(prepared.manga != null)
+                                m = prepared.manga;
+                        } else if(result == LOAD_OK) {
                             result = ViewerWarmupManager.prepareFirstFrame(context, m, title, firstPage, width, autoCut, p.getReverse(), cancellation);
+                        }
+                        if(result == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !hasLoadedImages(m)) {
+                            result = ensureEpisodeListLoaded(m);
+                            PreparedManga prepared = result == LOAD_OK
+                                    ? prepareFirstAvailableManga(m, firstPage, cancellation)
+                                    : new PreparedManga(null, result);
+                            result = prepared.result;
+                            if(prepared.manga != null)
+                                m = prepared.manga;
+                        }
                     }
                 } catch (Exception e) {
                     if(!cancelled && !isFinishing())
@@ -810,6 +838,8 @@ public class ViewerActivity extends AppCompatActivity {
                 return;
             if(loader != this)
                 return;
+            if(timeoutGuard != null)
+                mainHandler.removeCallbacks(timeoutGuard);
             loader = null;
             if(res == LOAD_CAPTCHA){
                 //캡차 처리 팝업
@@ -840,6 +870,8 @@ public class ViewerActivity extends AppCompatActivity {
             cancellation.cancel();
             if(handle != null)
                 handle.cancel();
+            if(timeoutGuard != null)
+                mainHandler.removeCallbacks(timeoutGuard);
             if(loader == this) {
                 loader = null;
                 if(lockui) lockUi(false);
@@ -905,10 +937,17 @@ public class ViewerActivity extends AppCompatActivity {
 
     public void bookmarkRefresh(Manga m){
         if(m.useBookmark()) {
-            PageItem page = new PageItem(p.getViewerBookmark(m), "", m);
-            if (page.index > -1) {
+            int pageIndex = p.getViewerBookmark(m);
+            List<String> images = MangaRepository.imageUrls(m, context);
+            if(images != null && images.size() > 0 && pageIndex >= images.size())
+                pageIndex = images.size() - 1;
+            if(pageIndex < 0)
+                pageIndex = 0;
+            PageItem page = new PageItem(pageIndex, "", m);
+            if(stripAdapter != null && stripAdapter.findPagePosition(page) != RecyclerView.NO_POSITION)
                 manager.scrollToPageWithOffset(page, p.getViewerBookmarkOffset(m));
-            }
+            else
+                manager.scrollToPage(new PageItem(0,"",m));
             if (m.isOnline()) {
                 // if manga is online or has title.gson
                 if (title == null) title = m.getTitle();
@@ -945,6 +984,109 @@ public class ViewerActivity extends AppCompatActivity {
         restoreTitleEpisodes(currentTitle, target);
         attachEpisodeList(currentTitle, target);
         return LOAD_OK;
+    }
+
+    private PreparedManga prepareFirstAvailableManga(Manga target, int firstPage, MangaRepository.Cancellation cancellation) throws Exception {
+        int lastResult = ViewerWarmupManager.LOAD_EMPTY_IMAGES;
+        for(Manga candidate : resumeCandidates(target, shouldResolveResumeBeforeDirectFetch(target))) {
+            if(candidate == null)
+                continue;
+            int page = sameManga(candidate, target) ? firstPage : 0;
+            int result = ViewerWarmupManager.prepareFirstFrame(context, candidate, title, page, width, autoCut, p.getReverse(), cancellation);
+            if(result == LOAD_CAPTCHA)
+                return new PreparedManga(null, result);
+            lastResult = result;
+            if(result == LOAD_OK && hasLoadedImages(candidate)) {
+                if(!sameManga(candidate, target))
+                    ViewerWarmupManager.logMetric("viewer_resume_episode_fallback", candidate.getId());
+                return new PreparedManga(candidate, LOAD_OK);
+            }
+        }
+        return new PreparedManga(null, lastResult);
+    }
+
+    private List<Manga> resumeCandidates(Manga target, boolean skipTarget) {
+        ArrayList<Manga> candidates = new ArrayList<>();
+        if(!skipTarget)
+            addResumeCandidate(candidates, target);
+        Title currentTitle = title != null ? title : target == null ? null : target.getTitle();
+        List<Manga> episodes = currentTitle == null ? null : currentTitle.getEps();
+        if(episodes == null || episodes.size() == 0)
+            return candidates;
+
+        int exactIndex = -1;
+        if(target != null) {
+            for(int i = 0; i < episodes.size(); i++) {
+                Manga episode = episodes.get(i);
+                if(episode != null && episode.getId() == target.getId() && episode.getBaseMode() == target.getBaseMode()) {
+                    exactIndex = i;
+                    addResumeCandidate(candidates, episode);
+                    break;
+                }
+            }
+        }
+
+        int progressIndex = currentTitle.getBookmarkEpisodeIndex() - 1;
+        if(progressIndex >= 0 && progressIndex < episodes.size())
+            addResumeCandidate(candidates, episodes.get(progressIndex));
+        int computedIndex = currentTitle.getBookmarkIndex() - 1;
+        if(computedIndex >= 0 && computedIndex < episodes.size())
+            addResumeCandidate(candidates, episodes.get(computedIndex));
+
+        int center = exactIndex >= 0 ? exactIndex : progressIndex;
+        for(int distance = 1; center >= 0 && distance <= 2; distance++) {
+            addEpisodeAt(candidates, episodes, center - distance);
+            addEpisodeAt(candidates, episodes, center + distance);
+        }
+        return candidates;
+    }
+
+    private boolean shouldResolveResumeBeforeDirectFetch(Manga target) {
+        if(target == null || !target.isOnline())
+            return false;
+        Title currentTitle = title != null ? title : target.getTitle();
+        if(currentTitle == null)
+            return false;
+        if(containsEpisode(currentTitle.getEps(), target))
+            return false;
+        int episodeCount = currentTitle.getEpisodeCount();
+        int progressIndex = currentTitle.getBookmarkEpisodeIndex();
+        return episodeCount > 0
+                && progressIndex > 0
+                && target.getId() > 0
+                && target.getId() <= episodeCount;
+    }
+
+    private void addEpisodeAt(List<Manga> candidates, List<Manga> episodes, int index) {
+        if(episodes == null || index < 0 || index >= episodes.size())
+            return;
+        addResumeCandidate(candidates, episodes.get(index));
+    }
+
+    private void addResumeCandidate(List<Manga> candidates, Manga candidate) {
+        if(candidate == null || !candidate.isOnline())
+            return;
+        Title currentTitle = title != null ? title : candidate.getTitle();
+        if(currentTitle != null) {
+            candidate.setTitle(currentTitle);
+            candidate.setTitleId(currentTitle.getId());
+            if(currentTitle.getEps() != null && currentTitle.getEps().size() > 0)
+                candidate.setEps(currentTitle.getEps());
+        }
+        for(Manga existing : candidates)
+            if(existing != null && existing.getId() == candidate.getId() && existing.getBaseMode() == candidate.getBaseMode())
+                return;
+        candidates.add(candidate);
+    }
+
+    private static class PreparedManga {
+        final Manga manga;
+        final int result;
+
+        PreparedManga(Manga manga, int result) {
+            this.manga = manga;
+            this.result = result;
+        }
     }
 
     private void restoreTitleEpisodes(Title currentTitle, Manga target) {

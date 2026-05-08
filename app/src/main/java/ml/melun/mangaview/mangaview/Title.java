@@ -279,7 +279,16 @@ public class Title extends MTitle {
 
     public MTitle minimize(){
         MTitle title = new MTitle(name, id, thumb, author, tags, release, baseMode);
-        title.setReadingProgress(getBookmark(), getBookmarkIndex(), getEpsCount());
+        int progressEpisodeId = getBookmark();
+        if(progressEpisodeId <= 0)
+            progressEpisodeId = getBookmarkEpisodeId();
+        int progressIndex = getBookmarkIndex();
+        if(progressIndex <= 0)
+            progressIndex = getBookmarkEpisodeIndex();
+        int progressCount = getEpsCount();
+        if(progressCount <= 0)
+            progressCount = getEpisodeCount();
+        title.setReadingProgress(progressEpisodeId, progressIndex, progressCount);
         title.setPath(getPath());
         return title;
     }

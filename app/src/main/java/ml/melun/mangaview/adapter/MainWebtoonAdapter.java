@@ -1132,13 +1132,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     warmupContinueViewer(item);
                 card.setOnClickListener(v -> {
                     if(listener != null && item != null) {
-                        int bookmark = p.getBookmark(item);
-                        if(bookmark <= 0)
-                            bookmark = item.getBookmark();
-                        if(continueStyle && bookmark > 0) {
-                            Manga manga = new Manga(bookmark, "", "", item.getBaseMode());
-                            manga.setTitle(item);
-                            manga.setTitleId(item.getId());
+                        Manga manga = continueStyle ? resolveContinueManga(item) : null;
+                        if(manga != null) {
                             ViewerWarmupManager.warmup(context, manga, item);
                             listener.clickedManga(manga);
                         } else {
@@ -1158,15 +1153,52 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         private void warmupContinueViewer(Title item) {
             if(item == null)
                 return;
+            Manga manga = resolveContinueManga(item);
+            if(manga == null)
+                return;
+            ViewerWarmupManager.warmup(context, manga, item);
+        }
+
+        private Manga resolveContinueManga(Title item) {
+            if(item == null)
+                return null;
             int bookmark = p.getBookmark(item);
             if(bookmark <= 0)
                 bookmark = item.getBookmark();
             if(bookmark <= 0)
-                return;
-            Manga manga = new Manga(bookmark, "", "", item.getBaseMode());
-            manga.setTitle(item);
-            manga.setTitleId(item.getId());
-            ViewerWarmupManager.warmup(context, manga, item);
+                bookmark = item.getBookmarkEpisodeId();
+            if(bookmark <= 0)
+                return null;
+
+            Manga resolved = findEpisodeById(item, bookmark);
+            if(resolved == null) {
+                int progressIndex = item.getBookmarkEpisodeIndex();
+                if(progressIndex <= 0 && bookmark > 0 && item.getEps() != null && bookmark <= item.getEps().size())
+                    progressIndex = bookmark;
+                resolved = episodeAt(item, progressIndex);
+            }
+            if(resolved == null)
+                resolved = new Manga(bookmark, "", "", item.getBaseMode());
+            resolved.setTitle(item);
+            resolved.setTitleId(item.getId());
+            if(item.getEps() != null && item.getEps().size() > 0)
+                resolved.setEps(item.getEps());
+            return resolved;
+        }
+
+        private Manga findEpisodeById(Title item, int bookmark) {
+            if(item == null || item.getEps() == null)
+                return null;
+            for(Manga episode : item.getEps())
+                if(episode != null && episode.getId() == bookmark)
+                    return episode;
+            return null;
+        }
+
+        private Manga episodeAt(Title item, int oneBasedIndex) {
+            if(item == null || item.getEps() == null || oneBasedIndex <= 0 || oneBasedIndex > item.getEps().size())
+                return null;
+            return item.getEps().get(oneBasedIndex - 1);
         }
 
         private int readingProgressPercent(Title item) {
