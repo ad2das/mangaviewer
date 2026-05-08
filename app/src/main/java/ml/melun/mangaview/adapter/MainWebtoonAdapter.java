@@ -2055,7 +2055,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
             if(loadedSections.size() == 0)
                 return;
-            if(keepExistingRowsDuringFetch) {
+            if(shouldHoldExistingRowsDuringFetch()) {
                 scheduleThumbnailPreload(loadedSections);
                 return;
             }
@@ -2107,6 +2107,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
         private boolean isCancelled() {
             return cancelled;
+        }
+
+        private boolean shouldHoldExistingRowsDuringFetch() {
+            return keepExistingRowsDuringFetch && activeHomeTab == 0 && hasDisplayContent(rows);
         }
     }
 
