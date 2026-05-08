@@ -422,7 +422,7 @@ public class EpisodeActivity extends AppCompatActivity {
     @SuppressWarnings("unchecked")
     private void renderEpisodeState(UiState<EpisodeLoadResult> state) {
         if(state instanceof UiState.Loading) {
-            progress.setVisibility(episodes == null || episodes.size() == 0 ? View.VISIBLE : View.GONE);
+            progress.setVisibility(View.GONE);
             return;
         }
         if(state instanceof UiState.Error) {

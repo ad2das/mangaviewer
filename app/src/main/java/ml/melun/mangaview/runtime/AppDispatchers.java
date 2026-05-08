@@ -17,9 +17,9 @@ import java.util.concurrent.TimeUnit;
 import ml.melun.mangaview.report.CrashReporter;
 
 public final class AppDispatchers {
-    private static final ThreadPoolExecutor IO = boundedPool("manga-io", 2, 10, 128);
-    private static final ThreadPoolExecutor USER_ACTION = boundedPool("manga-action", 1, 4, 64);
-    private static final ThreadPoolExecutor IMAGE_WARMUP = boundedPool("manga-image", 1, 3, 48);
+    private static final ThreadPoolExecutor IO = boundedPool("manga-io", 2, 10, 256);
+    private static final ThreadPoolExecutor USER_ACTION = boundedPool("manga-action", 1, 4, 128);
+    private static final ThreadPoolExecutor IMAGE_WARMUP = boundedPool("manga-image", 1, 3, 96);
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     private AppDispatchers() {
@@ -104,7 +104,12 @@ public final class AppDispatchers {
                 TimeUnit.SECONDS,
                 queue,
                 namedThreadFactory(name),
-                new java.util.concurrent.ThreadPoolExecutor.CallerRunsPolicy());
+                (runnable, rejectedExecutor) -> {
+                    if(rejectedExecutor == null || rejectedExecutor.isShutdown())
+                        return;
+                    Thread overflow = namedThreadFactory(name + "-overflow").newThread(() -> safe(runnable).run());
+                    overflow.start();
+                });
         executor.allowCoreThreadTimeOut(true);
         return executor;
     }

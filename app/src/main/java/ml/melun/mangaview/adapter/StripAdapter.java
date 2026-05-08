@@ -497,7 +497,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             return;
         }
         holder.frame.setImageResource(R.drawable.placeholder);
-        holder.refresh.setVisibility(View.VISIBLE);
+        holder.refresh.setVisibility(View.GONE);
         if (autoCut) {
             long bindStart = android.os.SystemClock.elapsedRealtime();
             CustomTarget<Bitmap> imageTarget = new CustomTarget<Bitmap>() {
@@ -519,7 +519,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                         return;
                     holder.frame.setMinimumHeight(Math.max(width, 1));
                     holder.frame.setImageDrawable(placeholder);
-                    holder.refresh.setVisibility(View.VISIBLE);
+                    holder.refresh.setVisibility(View.GONE);
                 }
 
                 @Override
@@ -561,7 +561,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                         return;
                     holder.frame.setMinimumHeight(Math.max(width, 1));
                     holder.frame.setImageDrawable(placeholder);
-                    holder.refresh.setVisibility(View.VISIBLE);
+                    holder.refresh.setVisibility(View.GONE);
                 }
 
                 @Override
@@ -908,7 +908,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             imageHolder.boundPageKey = null;
             imageHolder.frame.setMinimumHeight(Math.max(width, 1));
             imageHolder.frame.setImageResource(R.drawable.placeholder);
-            imageHolder.refresh.setVisibility(View.VISIBLE);
+            imageHolder.refresh.setVisibility(View.GONE);
         }
     }
 

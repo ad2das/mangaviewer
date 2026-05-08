@@ -87,6 +87,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     List<Object> pendingRows;
     boolean initialRowsShown = false;
     private final Set<String> preloadedThumbs = new LinkedHashSet<>();
+    private final Set<String> pendingContinueWarmups = new LinkedHashSet<>();
     private static final int PRELOADED_THUMB_LIMIT = 120;
     private static final int PRELOAD_THUMB_MAX_PER_FETCH = 24;
     private static final int SECTION_BATCH_SIZE = 4;
@@ -821,19 +822,36 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private void bindTitleThumb(ImageView thumbView, Title title, int widthDp, int heightDp) {
-        Glide.with(thumbView).clear(thumbView);
         if(title == null || save || title.getThumb() == null || title.getThumb().length() == 0) {
-            thumbView.setImageResource(R.drawable.app_cover_placeholder);
+            bindStaticThumb(thumbView, "placeholder", R.drawable.app_cover_placeholder);
             return;
         }
+        Object source = getGlideUrl(title.getThumb(), title.getBaseMode());
+        bindGlideThumb(thumbView, source, widthDp, heightDp, R.drawable.app_cover_placeholder);
+    }
+
+    private void bindGlideThumb(ImageView thumbView, Object source, int widthDp, int heightDp, int placeholderRes) {
+        String key = String.valueOf(source);
+        if(key.equals(thumbView.getTag()))
+            return;
+        Glide.with(thumbView).clear(thumbView);
+        thumbView.setTag(key);
         Glide.with(thumbView)
-                .load(getGlideUrl(title.getThumb(), title.getBaseMode()))
+                .load(source)
                 .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
                 .override(dp(widthDp), dp(heightDp))
                 .thumbnail(0.25f)
                 .dontAnimate()
-                .placeholder(R.drawable.app_cover_placeholder)
+                .placeholder(placeholderRes)
                 .into(thumbView);
+    }
+
+    private void bindStaticThumb(ImageView thumbView, String key, int resId) {
+        if(key.equals(thumbView.getTag()))
+            return;
+        Glide.with(thumbView).clear(thumbView);
+        thumbView.setTag(key);
+        thumbView.setImageResource(resId);
     }
 
     class HeroHolder extends RecyclerView.ViewHolder {
@@ -1143,7 +1161,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 }
                 bindTitleThumb(thumb, item, 156, 144);
                 if(continueStyle && position < 8)
-                    warmupContinueViewer(item);
+                    scheduleContinueViewerWarmup(item);
                 card.setOnClickListener(v -> {
                     if(listener != null && item != null) {
                         Manga manga = continueStyle ? resolveContinueManga(item) : null;
@@ -1171,6 +1189,24 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(manga == null)
                 return;
             ViewerWarmupManager.warmupContinue(context, manga, item);
+        }
+
+        private void scheduleContinueViewerWarmup(Title item) {
+            if(item == null)
+                return;
+            String key = titleKey(item);
+            if(!pendingContinueWarmups.add(key))
+                return;
+            MAIN.postDelayed(() -> {
+                pendingContinueWarmups.remove(key);
+                if(anchorRecycler != null && (!anchorRecycler.isAttachedToWindow() || !anchorRecycler.isShown()))
+                    return;
+                if(anchorRecycler != null && anchorRecycler.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
+                    scheduleContinueViewerWarmup(item);
+                    return;
+                }
+                warmupContinueViewer(item);
+            }, 220);
         }
 
         private Manga resolveContinueManga(Title item) {
@@ -1539,19 +1575,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             String meta = title.getTags().size() > 0 ? TextUtils.join(" / ", title.getTags()) : title.getRelease();
             holder.meta.setText(meta == null ? "" : meta);
 
-            Glide.with(holder.thumb).clear(holder.thumb);
             String thumb = title.getThumb();
             if(save || thumb == null || thumb.length() == 0) {
-                holder.thumb.setImageResource(R.mipmap.ic_launcher);
+                bindStaticThumb(holder.thumb, "launcher", R.mipmap.ic_launcher);
             } else {
-                Glide.with(holder.thumb)
-                        .load(getGlideUrl(thumb, title.getBaseMode()))
-                        .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                        .override(dp(180), dp(220))
-                        .thumbnail(0.25f)
-                        .dontAnimate()
-                        .placeholder(R.mipmap.ic_launcher)
-                        .into(holder.thumb);
+                bindGlideThumb(holder.thumb, getGlideUrl(thumb, title.getBaseMode()), 180, 220, R.mipmap.ic_launcher);
             }
 
             holder.card.setOnClickListener(v -> {

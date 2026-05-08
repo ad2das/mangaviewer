@@ -74,7 +74,7 @@ public class ViewerPageFragment extends Fragment {
         ImageButton refresh = rootView.findViewById(R.id.refreshButton);
         //glide
         frame.setImageResource(R.drawable.placeholder);
-        refresh.setVisibility(View.VISIBLE);
+        refresh.setVisibility(View.GONE);
 
         if(context != null)
             loadImage(frame, refresh);
