@@ -194,7 +194,7 @@ public class Utils {
                 viewer = new Intent(context, ViewerActivity2.class);
                 break;
         }
-        ViewerWarmupManager.warmup(context, manga, manga == null ? null : manga.getTitle());
+        ViewerWarmupManager.warmupContinue(context, manga, manga == null ? null : manga.getTitle());
         viewer.putExtra("manga", toViewerMangaJson(manga, manga == null ? null : manga.getTitle()));
         return viewer;
     }

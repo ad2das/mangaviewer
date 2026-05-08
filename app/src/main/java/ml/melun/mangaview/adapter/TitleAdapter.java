@@ -22,7 +22,9 @@ import java.util.List;
 import java.util.Locale;
 
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.MTitle;
+import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -331,9 +333,23 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                     .into(holder.thumb);
         }
         else holder.thumb.setImageResource(R.drawable.app_cover_placeholder);
-        if(bookmark>0 && resume) holder.resume.setVisibility(View.VISIBLE);
+        if(bookmark>0 && resume) {
+            holder.resume.setVisibility(View.VISIBLE);
+            warmupResume(data, bookmark, position);
+        }
         else holder.resume.setVisibility(View.GONE);
 
+    }
+
+    private void warmupResume(Title title, int bookmark, int position) {
+        if(title == null || bookmark <= 0 || position > 10)
+            return;
+        Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
+        manga.setTitle(title);
+        manga.setTitleId(title.getId());
+        if(title.getEps() != null && title.getEps().size() > 0)
+            manga.setEps(title.getEps());
+        ViewerWarmupManager.warmupContinue(mainContext, manga, title);
     }
 
     int dp(int value) {

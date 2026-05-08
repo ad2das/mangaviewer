@@ -6,13 +6,13 @@ import java.util.List;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 
-final class ViewerResumeResolver {
+public final class ViewerResumeResolver {
     private static final int MAX_BROAD_FALLBACKS = 36;
 
     private ViewerResumeResolver() {
     }
 
-    static boolean shouldResolveBeforeDirectFetch(Manga target, Title title) {
+    public static boolean shouldResolveBeforeDirectFetch(Manga target, Title title) {
         if(target == null || !target.isOnline() || title == null)
             return false;
         if(containsEpisode(title.getEps(), target))
@@ -23,7 +23,7 @@ final class ViewerResumeResolver {
         return target.getId() > 0 && episodeCount > 0 && target.getId() <= episodeCount;
     }
 
-    static List<Manga> candidates(Manga target, Title title, boolean skipTarget) {
+    public static List<Manga> candidates(Manga target, Title title, boolean skipTarget) {
         ArrayList<Manga> candidates = new ArrayList<>();
         if(!skipTarget)
             addCandidate(candidates, target, title);
@@ -62,7 +62,7 @@ final class ViewerResumeResolver {
         return candidates;
     }
 
-    static boolean sameManga(Manga a, Manga b) {
+    public static boolean sameManga(Manga a, Manga b) {
         if(a == null || b == null)
             return false;
         return a.getId() == b.getId() && a.getBaseMode() == b.getBaseMode();

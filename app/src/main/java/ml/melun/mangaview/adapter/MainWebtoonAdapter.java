@@ -1128,13 +1128,13 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     percent.setText(progressPercent + "%");
                 }
                 bindTitleThumb(thumb, item, 156, 144);
-                if(continueStyle && position < 3)
+                if(continueStyle && position < 8)
                     warmupContinueViewer(item);
                 card.setOnClickListener(v -> {
                     if(listener != null && item != null) {
                         Manga manga = continueStyle ? resolveContinueManga(item) : null;
                         if(manga != null) {
-                            ViewerWarmupManager.warmup(context, manga, item);
+                            ViewerWarmupManager.warmupContinue(context, manga, item);
                             listener.clickedManga(manga);
                         } else {
                             listener.clickedTitle(item);
@@ -1156,7 +1156,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             Manga manga = resolveContinueManga(item);
             if(manga == null)
                 return;
-            ViewerWarmupManager.warmup(context, manga, item);
+            ViewerWarmupManager.warmupContinue(context, manga, item);
         }
 
         private Manga resolveContinueManga(Title item) {

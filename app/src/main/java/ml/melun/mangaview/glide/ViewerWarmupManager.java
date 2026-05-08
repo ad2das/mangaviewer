@@ -28,6 +28,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import ml.melun.mangaview.Utils;
+import ml.melun.mangaview.activity.ViewerResumeResolver;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.model.PageItem;
@@ -91,6 +92,53 @@ public class ViewerWarmupManager {
         });
     }
 
+    public static void warmupContinue(Context context, Manga manga, Title title) {
+        if(context == null || manga == null || !manga.isOnline())
+            return;
+        if(title != null) {
+            manga.setTitle(title);
+            manga.setTitleId(title.getId());
+            if(title.getEps() != null && title.getEps().size() > 0)
+                manga.setEps(title.getEps());
+        } else {
+            title = manga.getTitle();
+        }
+        Title warmupTitle = title;
+        Context appContext = context.getApplicationContext();
+        int width = viewerWidth(context);
+        int firstPage = manga.useBookmark() ? p.getViewerBookmark(manga) : 0;
+        if(firstPage < 0)
+            firstPage = 0;
+        int startPage = firstPage;
+        AppDispatchers.submitImageWarmup(() -> {
+            try {
+                Manga target = manga;
+                Title currentTitle = warmupTitle != null ? warmupTitle : target.getTitle();
+                if(currentTitle != null && (currentTitle.getEps() == null || currentTitle.getEps().size() <= 1)) {
+                    int result = MangaRepository.fetchEpisodes(currentTitle);
+                    if(result != LOAD_OK)
+                        return;
+                    attachTitle(currentTitle, target);
+                }
+                boolean skipTarget = ViewerResumeResolver.shouldResolveBeforeDirectFetch(target, currentTitle);
+                List<Manga> candidates = ViewerResumeResolver.candidates(target, currentTitle, skipTarget);
+                if(candidates.size() == 0)
+                    candidates.add(target);
+                for(Manga candidate : candidates) {
+                    int page = ViewerResumeResolver.sameManga(candidate, target) ? startPage : 0;
+                    int result = prepareFirstFrame(appContext, candidate, currentTitle, page, width, false, p.getReverse(), MangaRepository.cancellation());
+                    if(result == LOAD_OK && hasImages(candidate, appContext)) {
+                        preloadLoadedImages(appContext, candidate, page, width, false, p.getReverse(), p.getDataSave() ? 4 : 10, Priority.IMMEDIATE, p.getDataSave() ? 1 : 4);
+                        logMetric("viewer_continue_warmup_ready", candidate.getId());
+                        return;
+                    }
+                }
+            } catch (Exception e) {
+                ml.melun.mangaview.report.CrashReporter.record(e);
+            }
+        });
+    }
+
     public static int applyWarmupResult(Manga target, long waitMs) {
         if(target == null || !target.isOnline())
             return LOAD_OK;
@@ -126,6 +174,8 @@ public class ViewerWarmupManager {
         String key = episodeKey(manga, title);
         long urlStart = SystemClock.elapsedRealtime();
         boolean snapshotHit = applySnapshot(key, manga);
+        if(!snapshotHit)
+            snapshotHit = waitForActiveSnapshot(key, manga, 650);
         int result = LOAD_OK;
         if(!snapshotHit && !hasImages(manga, context)) {
             result = MangaRepository.fetchViewerInitial(manga, cancellation);
@@ -146,6 +196,38 @@ public class ViewerWarmupManager {
             result = LOAD_EMPTY_IMAGES;
         }
         return result;
+    }
+
+    private static void attachTitle(Title title, Manga target) {
+        if(title == null || target == null)
+            return;
+        target.setTitle(title);
+        target.setTitleId(title.getId());
+        if(title.getEps() == null)
+            return;
+        target.setEps(title.getEps());
+        for(Manga episode : title.getEps()) {
+            if(episode != null) {
+                episode.setTitle(title);
+                episode.setTitleId(title.getId());
+                episode.setEps(title.getEps());
+            }
+        }
+    }
+
+    private static boolean waitForActiveSnapshot(String key, Manga target, long waitMs) {
+        WarmupState state;
+        synchronized (ViewerWarmupManager.class) {
+            state = activeWarmups.get(key);
+        }
+        if(state == null)
+            return false;
+        try {
+            state.done.await(Math.max(0, waitMs), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return applySnapshot(key, target);
     }
 
     public static Bitmap getDecodedBitmap(PageItem page, boolean autoCut, boolean reverse, int width) {
