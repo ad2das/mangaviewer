@@ -988,16 +988,17 @@ public class ViewerActivity extends AppCompatActivity {
 
     private PreparedManga prepareFirstAvailableManga(Manga target, int firstPage, MangaRepository.Cancellation cancellation) throws Exception {
         int lastResult = ViewerWarmupManager.LOAD_EMPTY_IMAGES;
-        for(Manga candidate : resumeCandidates(target, shouldResolveResumeBeforeDirectFetch(target))) {
+        Title currentTitle = title != null ? title : target == null ? null : target.getTitle();
+        for(Manga candidate : ViewerResumeResolver.candidates(target, currentTitle, shouldResolveResumeBeforeDirectFetch(target))) {
             if(candidate == null)
                 continue;
-            int page = sameManga(candidate, target) ? firstPage : 0;
+            int page = ViewerResumeResolver.sameManga(candidate, target) ? firstPage : 0;
             int result = ViewerWarmupManager.prepareFirstFrame(context, candidate, title, page, width, autoCut, p.getReverse(), cancellation);
             if(result == LOAD_CAPTCHA)
                 return new PreparedManga(null, result);
             lastResult = result;
             if(result == LOAD_OK && hasLoadedImages(candidate)) {
-                if(!sameManga(candidate, target))
+                if(!ViewerResumeResolver.sameManga(candidate, target))
                     ViewerWarmupManager.logMetric("viewer_resume_episode_fallback", candidate.getId());
                 return new PreparedManga(candidate, LOAD_OK);
             }
@@ -1047,14 +1048,7 @@ public class ViewerActivity extends AppCompatActivity {
         Title currentTitle = title != null ? title : target.getTitle();
         if(currentTitle == null)
             return false;
-        if(containsEpisode(currentTitle.getEps(), target))
-            return false;
-        int episodeCount = currentTitle.getEpisodeCount();
-        int progressIndex = currentTitle.getBookmarkEpisodeIndex();
-        return episodeCount > 0
-                && progressIndex > 0
-                && target.getId() > 0
-                && target.getId() <= episodeCount;
+        return ViewerResumeResolver.shouldResolveBeforeDirectFetch(target, currentTitle);
     }
 
     private void addEpisodeAt(List<Manga> candidates, List<Manga> episodes, int index) {

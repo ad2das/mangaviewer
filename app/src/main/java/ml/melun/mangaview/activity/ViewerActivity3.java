@@ -361,7 +361,13 @@ public class ViewerActivity3 extends AppCompatActivity {
                 return res;
             try {
                 int firstPage = manga.useBookmark() ? p.getViewerBookmark(manga) : viewerBookmark;
-                res = ViewerWarmupManager.prepareFirstFrame(context, manga, title, firstPage, width, false, p.getReverse(), cancellation);
+                if(ViewerResumeResolver.shouldResolveBeforeDirectFetch(manga, title)) {
+                    res = prepareFirstAvailableManga(firstPage, true, cancellation);
+                } else {
+                    res = ViewerWarmupManager.prepareFirstFrame(context, manga, title, firstPage, width, false, p.getReverse(), cancellation);
+                    if(res == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !hasLoadedImages())
+                        res = prepareFirstAvailableManga(firstPage, false, cancellation);
+                }
                 if(title == null)
                     title = manga.getTitle();
             } catch (Exception e) {
@@ -396,6 +402,30 @@ public class ViewerActivity3 extends AppCompatActivity {
             if(imageLoad == this)
                 imageLoad = null;
         }
+    }
+
+    private int prepareFirstAvailableManga(int firstPage, boolean skipTarget, MangaRepository.Cancellation cancellation) throws Exception {
+        int lastResult = ViewerWarmupManager.LOAD_EMPTY_IMAGES;
+        Title currentTitle = title != null ? title : manga == null ? null : manga.getTitle();
+        for(Manga candidate : ViewerResumeResolver.candidates(manga, currentTitle, skipTarget)) {
+            int page = ViewerResumeResolver.sameManga(candidate, manga) ? firstPage : 0;
+            int result = ViewerWarmupManager.prepareFirstFrame(context, candidate, currentTitle, page, width, false, p.getReverse(), cancellation);
+            if(result == LOAD_CAPTCHA)
+                return result;
+            lastResult = result;
+            List<String> images = MangaRepository.imageUrls(candidate, context);
+            if(result == 0 && images != null && images.size() > 0) {
+                if(!ViewerResumeResolver.sameManga(candidate, manga))
+                    ViewerWarmupManager.logMetric("viewer_resume_episode_fallback", candidate.getId());
+                manga = candidate;
+                id = candidate.getId();
+                name = candidate.getName();
+                if(candidate.getTitle() != null)
+                    title = candidate.getTitle();
+                return 0;
+            }
+        }
+        return lastResult;
     }
 
     private int ensureEpisodeListLoaded(Manga target) {
