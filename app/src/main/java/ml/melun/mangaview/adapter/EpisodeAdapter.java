@@ -139,7 +139,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             h.h_bookmark.setVisibility(View.GONE);
             if(!save && thumb.length() > 0) {
                 Object source = isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, title.getBaseMode());
-                bindThumbnail(h.h_thumb, source, dp(132), dp(176), false);
+                bindThumbnail(h.h_thumb, source, dp(144), dp(192), false);
             }
             else bindEmptyThumbnail(h.h_thumb, false);
             if(mode == 0 || mode == 3)

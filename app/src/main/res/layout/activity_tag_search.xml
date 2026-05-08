@@ -59,6 +59,7 @@
             android:layout_width="0dp"
             android:layout_height="32dp"
             android:background="@drawable/app_soft_chip_bg"
+            android:ellipsize="end"
             android:gravity="center_vertical"
             android:maxLines="1"
             android:paddingStart="12dp"
@@ -79,6 +80,7 @@
             android:layout_marginStart="@dimen/app_space_sm"
             android:gravity="center"
             android:text="스크롤로 계속 보기"
+            android:textColor="@color/appTextSecondary"
             app:layout_constraintBottom_toBottomOf="@+id/tagSearchMetaTitle"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintTop_toTopOf="@+id/tagSearchMetaTitle" />

@@ -59,6 +59,9 @@ public class TagSearchActivity extends AppCompatActivity {
     Search search;
     UpdatedList updated;
     TextView noresult;
+    TextView resultMetaTitle;
+    TextView resultMetaHint;
+    String resultLabel;
     SwipyRefreshLayout swipe;
     Bookmark bookmark;
     int baseMode;
@@ -85,6 +88,8 @@ public class TagSearchActivity extends AppCompatActivity {
         setSupportActionBar(toolbar);
         searchResult = this.findViewById(R.id.tagSearchResult);
         noresult = this.findViewById(R.id.tagSearchNoResult);
+        resultMetaTitle = this.findViewById(R.id.tagSearchMetaTitle);
+        resultMetaHint = this.findViewById(R.id.tagSearchMetaHint);
         LinearLayoutManager lm = new NpaLinearLayoutManager(context);
         searchResult.setLayoutManager(lm);
         searchResult.setHasFixedSize(true);
@@ -124,28 +129,37 @@ public class TagSearchActivity extends AppCompatActivity {
             case 0:
                 break;
             case 1:
-                ab.setTitle("작가: "+query);
+                resultLabel = "작가: " + query;
+                ab.setTitle(resultLabel);
                 break;
             case 2:
-                ab.setTitle("태그: "+query);
+                resultLabel = "태그: " + query;
+                ab.setTitle(resultLabel);
                 break;
             case 3:
             case 4:
-                ab.setTitle("검색 결과");
+                resultLabel = "검색 결과";
+                ab.setTitle(resultLabel);
                 break;
             case 5:
-                ab.setTitle("최근 추가됨");
+                resultLabel = "최근 추가됨";
+                ab.setTitle(resultLabel);
                 break;
             case 6:
-                ab.setTitle("검색결과");
+                resultLabel = "검색 결과";
+                ab.setTitle(resultLabel);
                 break;
             case 7:
-                ab.setTitle("북마크");
+                resultLabel = "북마크";
+                ab.setTitle(resultLabel);
                 break;
         }
 
-        if(mode == 8)
-            ab.setTitle(title == null ? "분류" : title);
+        if(mode == 8) {
+            resultLabel = title == null ? "분류 결과" : title;
+            ab.setTitle(resultLabel);
+        }
+        updateResultMeta();
         ab.setDisplayHomeAsUpEnabled(true);
         swipe.setRefreshing(true);
 
@@ -273,6 +287,7 @@ public class TagSearchActivity extends AppCompatActivity {
             }else{
                 noresult.setVisibility(View.VISIBLE);
             }
+            updateResultMeta();
             scheduleThumbnailPreload();
             swipe.setRefreshing(false);
             searchResult.post(TagSearchActivity.this::maybeLoadMoreSearchResults);
@@ -368,6 +383,7 @@ public class TagSearchActivity extends AppCompatActivity {
                 noresult.setVisibility(View.VISIBLE);
             }
             updateVirtualScrollbar();
+            updateResultMeta();
             scheduleThumbnailPreload();
             swipe.setRefreshing(false);
         }
@@ -446,6 +462,7 @@ public class TagSearchActivity extends AppCompatActivity {
             }else{
                 noresult.setVisibility(View.VISIBLE);
             }
+            updateResultMeta();
             scheduleThumbnailPreload();
             swipe.setRefreshing(false);
         }
@@ -538,6 +555,30 @@ public class TagSearchActivity extends AppCompatActivity {
         if(!(searchResult instanceof StableScrollbarRecyclerView) || search == null)
             return;
         ((StableScrollbarRecyclerView) searchResult).setVirtualItemCount(search.getVirtualResultCount());
+    }
+
+    private void updateResultMeta() {
+        if(resultMetaTitle == null || resultMetaHint == null)
+            return;
+        int loaded = adapter != null ? adapter.getItemCount() : (uadapter != null ? uadapter.getItemCount() : 0);
+        int total = search == null ? 0 : search.getVirtualResultCount();
+        String label;
+        if(resultLabel != null) {
+            label = resultLabel;
+        } else if(mode == 5) {
+            label = "최근 추가됨";
+        } else if(mode == 7) {
+            label = "북마크";
+        } else {
+            label = "검색 결과";
+        }
+        resultMetaTitle.setText(label);
+        if(total > loaded)
+            resultMetaHint.setText(loaded + "/" + total + "개 표시");
+        else if(loaded > 0)
+            resultMetaHint.setText(loaded + "개 표시");
+        else
+            resultMetaHint.setText("결과 준비 중");
     }
 
     @Override
