@@ -715,7 +715,7 @@ public class MainActivity extends AppCompatActivity
             openSearchTab();
             return true;
         }else if (id == R.id.action_settings) {
-            toggleAccountSignIn();
+            Utils.safeStartActivity(context, new Intent(context, SettingsActivity.class));
             return true;
         }
         return super.onOptionsItemSelected(item);
