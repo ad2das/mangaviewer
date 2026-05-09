@@ -126,6 +126,7 @@ public class ViewerActivity extends AppCompatActivity {
     }
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        Utils.cancelPendingViewerLaunches(this);
         dark = p.getDarkTheme();
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_viewer);
@@ -737,6 +738,9 @@ public class ViewerActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
+        Utils.cancelPendingViewerLaunches(this);
+        cancelActiveEpisodeLoader();
+        cancelNextPrefetcher();
         if(onBack != null) {
             onBack.run();
             return;
@@ -1833,6 +1837,7 @@ public class ViewerActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        Utils.cancelPendingViewerLaunches(this);
         if(loader != null)
             loader.cancel();
         cancelNextPrefetcher();

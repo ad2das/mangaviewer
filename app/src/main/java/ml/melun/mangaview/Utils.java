@@ -55,6 +55,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.WeakHashMap;
 
 import ml.melun.mangaview.activity.CaptchaActivity;
 import ml.melun.mangaview.activity.EpisodeActivity;
@@ -81,6 +82,8 @@ import static ml.melun.mangaview.activity.CaptchaActivity.REQUEST_CAPTCHA;
 import static ml.melun.mangaview.activity.SettingsActivity.urlSettingPopup;
 
 public class Utils {
+    private static final Map<Context, Integer> viewerLaunchTokens = new WeakHashMap<>();
+    private static int viewerLaunchSequence = 0;
     private static final String MANGA_STATE_V2 = "manga_state_v2";
     private static final String MANGA_ID = "manga_id";
     private static final String MANGA_NAME = "manga_name";
@@ -214,19 +217,20 @@ public class Utils {
                                           boolean online, boolean recent, Title title, boolean includeTitleEpisodes) {
         if(context == null || manga == null)
             return;
+        int launchToken = nextViewerLaunchToken(context);
         Title launchTitle = title != null ? title : manga.getTitle();
         if(launchTitle != null) {
             manga.setTitle(launchTitle);
             manga.setTitleId(launchTitle.getId());
         }
         if(!manga.isOnline()) {
-            launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes);
+            launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken);
             return;
         }
         Manga immediate = ViewerWarmupManager.usePreparedFirstFrame(context, manga, launchTitle, false, p.getReverse());
         if(immediate != null) {
             launchPreparedViewer(context, immediate, code, returnToEpisodes, online, recent,
-                    launchTitle != null ? launchTitle : immediate.getTitle(), includeTitleEpisodes);
+                    launchTitle != null ? launchTitle : immediate.getTitle(), includeTitleEpisodes, launchToken);
             return;
         }
         ViewerWarmupManager.warmupContinueImmediate(context, manga, launchTitle);
@@ -236,6 +240,8 @@ public class Utils {
                 prepared = ViewerWarmupManager.prepareClickFirstFrame(context, manga, launchTitle, false, p.getReverse());
             Manga launchManga = prepared;
             AppDispatchers.runOnMain(() -> {
+                if(!isLatestViewerLaunchToken(context, launchToken))
+                    return;
                 if(launchManga == null) {
                     if(context instanceof Activity && canUseActivity((Activity) context))
                         Toast.makeText(context, "이미지를 불러오지 못했습니다.", Toast.LENGTH_SHORT).show();
@@ -243,14 +249,17 @@ public class Utils {
                 }
                 Title preparedTitle = launchManga.getTitle();
                 launchPreparedViewer(context, launchManga, code, returnToEpisodes, online, recent,
-                        launchTitle != null ? launchTitle : preparedTitle, includeTitleEpisodes);
+                        launchTitle != null ? launchTitle : preparedTitle, includeTitleEpisodes, launchToken);
             });
         });
     }
 
     private static void launchPreparedViewer(Context context, Manga manga, int code, boolean returnToEpisodes,
-                                             boolean online, boolean recent, Title title, boolean includeTitleEpisodes) {
+                                             boolean online, boolean recent, Title title, boolean includeTitleEpisodes,
+                                             int launchToken) {
         if(context == null || manga == null)
+            return;
+        if(!isLatestViewerLaunchToken(context, launchToken))
             return;
         if(context instanceof Activity && !canUseActivity((Activity) context))
             return;
@@ -271,6 +280,27 @@ public class Utils {
             viewer.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             context.startActivity(viewer);
         }
+    }
+
+    private static synchronized int nextViewerLaunchToken(Context context) {
+        int token = ++viewerLaunchSequence;
+        viewerLaunchTokens.put(launchTokenKey(context), token);
+        return token;
+    }
+
+    public static synchronized void cancelPendingViewerLaunches(Context context) {
+        if(context == null)
+            return;
+        viewerLaunchTokens.put(launchTokenKey(context), ++viewerLaunchSequence);
+    }
+
+    private static synchronized boolean isLatestViewerLaunchToken(Context context, int token) {
+        Integer latest = viewerLaunchTokens.get(launchTokenKey(context));
+        return latest != null && latest == token;
+    }
+
+    private static Context launchTokenKey(Context context) {
+        return context == null ? null : context.getApplicationContext();
     }
 
     private static boolean canUseActivity(Activity activity) {

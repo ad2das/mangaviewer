@@ -98,6 +98,7 @@ public class ViewerActivity3 extends AppCompatActivity {
     @Override
     @SuppressLint("WrongViewCast")
     protected void onCreate(Bundle savedInstanceState) {
+        Utils.cancelPendingViewerLaunches(this);
         dark = p.getDarkTheme();
         if(dark) setTheme(R.style.AppThemeDarkNoTitle);
         super.onCreate(savedInstanceState);
@@ -457,6 +458,11 @@ public class ViewerActivity3 extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
+        Utils.cancelPendingViewerLaunches(this);
+        if(imageLoad != null) {
+            imageLoad.cancel();
+            imageLoad = null;
+        }
         if(openEpisodeListIfRequested())
             return;
         super.onBackPressed();
@@ -637,6 +643,7 @@ public class ViewerActivity3 extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        Utils.cancelPendingViewerLaunches(this);
         if(imageLoad != null) {
             imageLoad.cancel();
             imageLoad = null;
