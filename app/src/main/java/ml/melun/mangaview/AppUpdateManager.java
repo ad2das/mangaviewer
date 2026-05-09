@@ -113,8 +113,12 @@ public final class AppUpdateManager {
     }
 
     public static void checkForUpdateNow(Activity activity) {
-        if(activity == null || downloading)
+        if(activity == null)
             return;
+        if(downloading) {
+            Utils.safeToast(activity, "업데이트를 이미 다운로드 중입니다.", Toast.LENGTH_SHORT);
+            return;
+        }
         Context appContext = activity.getApplicationContext();
         Utils.safeToast(activity, "업데이트를 확인하는 중입니다.", Toast.LENGTH_SHORT);
         AppDispatchers.runIo(() -> {
@@ -128,9 +132,9 @@ public final class AppUpdateManager {
             }
             AppDispatchers.runOnMain(() -> {
                 if(info == null)
-                    Utils.safeToast(activity, "업데이트 확인에 실패했습니다.", Toast.LENGTH_LONG);
+                    showManualUpdateResult(activity, "업데이트 확인 실패", "최신 버전 정보를 가져오지 못했습니다.\n네트워크 상태를 확인한 뒤 다시 시도해 주세요.");
                 else
-                    Utils.safeToast(activity, "현재 최신 버전입니다.", Toast.LENGTH_SHORT);
+                    showManualUpdateResult(activity, "최신 버전입니다", "현재 설치된 버전: " + currentVersionCode(activity) + "\n최신 버전: " + info.version);
             });
         });
     }
@@ -248,6 +252,18 @@ public final class AppUpdateManager {
                     skipVersion(activity.getApplicationContext(), info);
                     Utils.safeToast(activity, "이 버전은 건너뜁니다.", Toast.LENGTH_SHORT);
                 });
+        Utils.safeShowDialog(builder);
+    }
+
+    private static void showManualUpdateResult(Activity activity, String title, String message) {
+        if(!Utils.canUseContextForUi(activity)) {
+            Utils.safeToast(activity, message == null ? title : message, Toast.LENGTH_LONG);
+            return;
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(activity);
+        builder.setTitle(title)
+                .setMessage(message)
+                .setPositiveButton(android.R.string.ok, null);
         Utils.safeShowDialog(builder);
     }
 
