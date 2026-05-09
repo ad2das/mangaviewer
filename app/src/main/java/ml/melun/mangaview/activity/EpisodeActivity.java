@@ -47,6 +47,7 @@ import ml.melun.mangaview.runtime.PerfTrace;
 import ml.melun.mangaview.runtime.PrefetchCoordinator;
 import ml.melun.mangaview.state.UiState;
 import ml.melun.mangaview.viewmodel.EpisodeViewModel;
+import ml.melun.mangaview.mangaview.CustomHttpClient;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.openViewerPrepared;
@@ -190,6 +191,7 @@ public class EpisodeActivity extends AppCompatActivity {
         applyEpisodeWindowChrome();
         Intent intent = getIntent();
         title = new Gson().fromJson(intent.getStringExtra("title"),new TypeToken<Title>(){}.getType());
+        switchToTitleSourceSite();
         firstContentStartedAt = PerfTrace.start("episode_first_content_ms");
         online = intent.getBooleanExtra("online", true);
         if(title.useBookmark())
@@ -416,6 +418,21 @@ public class EpisodeActivity extends AppCompatActivity {
         if(title.getBookmarkEpisodeId() > 0)
             return title.getBookmarkEpisodeId();
         return -1;
+    }
+
+    private void switchToTitleSourceSite() {
+        if(title == null || p == null)
+            return;
+        String source = title.getSourceSite();
+        if(source == null || source.length() == 0)
+            return;
+        boolean targetNtk = "ntk".equals(source);
+        if(p.isNtkSite() == targetNtk)
+            return;
+        if(targetNtk)
+            p.setSitePreset(CustomHttpClient.NTK_COMIC_URL, CustomHttpClient.NTK_WEBTOON_URL);
+        else
+            p.setSitePreset(CustomHttpClient.DEFAULT_COMIC_URL, CustomHttpClient.WEBTOON_URL);
     }
 
     private Manga quickReadEpisode() {

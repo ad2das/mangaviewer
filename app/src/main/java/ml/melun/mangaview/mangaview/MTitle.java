@@ -13,6 +13,7 @@ public class MTitle{
     List<String> tags;
     String release;
     String path;
+    String sourceSite;
     int bookmarkEpisodeId = -1;
     int bookmarkEpisodeIndex = -1;
     int episodeCount = 0;
@@ -37,6 +38,14 @@ public class MTitle{
 
     public void setPath(String path) {
         this.path = path;
+    }
+
+    public String getSourceSite() {
+        return sourceSite == null ? "" : sourceSite;
+    }
+
+    public void setSourceSite(String sourceSite) {
+        this.sourceSite = sourceSite == null ? "" : sourceSite;
     }
 
     public int getBaseMode() {
@@ -126,6 +135,7 @@ public class MTitle{
         MTitle clone = new MTitle(name, id, thumb, author, tags, release, baseMode);
         clone.setReadingProgress(bookmarkEpisodeId, bookmarkEpisodeIndex, episodeCount);
         clone.setPath(path);
+        clone.setSourceSite(sourceSite);
         return clone;
     }
 

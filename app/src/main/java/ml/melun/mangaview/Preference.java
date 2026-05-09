@@ -464,6 +464,7 @@ public class Preference {
     public void addRecent(MTitle tmp){
         ensureHistoryLoaded();
         if(tmp != null && tmp.getId()>0) {
+            ensureSourceSite(tmp);
             tmp.setPath(null);
             int position = getIndexOf(tmp);
             if (position > -1) {
@@ -478,6 +479,7 @@ public class Preference {
         ensureHistoryLoaded();
         if(tmp != null && tmp.getId()>0) {
             MTitle title = tmp.minimize();
+            ensureSourceSite(title);
             title.setPath(null);
             int position = getIndexOf(title);
             if (position > -1) {
@@ -514,6 +516,7 @@ public class Preference {
         if(title == null)
             return;
         MTitle tmp = title.clone();
+        ensureSourceSite(tmp);
         tmp.setPath(null);
         int recentIndex = getIndexOf(tmp);
         if(recentIndex > -1) {
@@ -534,6 +537,7 @@ public class Preference {
         if(title == null)
             return;
         MTitle tmp = title.minimize();
+        ensureSourceSite(tmp);
         tmp.setPath(null);
         int recentIndex = getIndexOf(tmp);
         if(recentIndex > -1) {
@@ -552,9 +556,21 @@ public class Preference {
     private int getIndexOf(MTitle title){
         ensureHistoryLoaded();
         if(title != null && title.getId()>0) {
-            return recent.indexOf(title);
+            for(int i = 0; i < recent.size(); i++)
+                if(sameTitleRecord(recent.get(i), title))
+                    return i;
         }
         return -1;
+    }
+
+    private boolean sameTitleRecord(MTitle left, MTitle right) {
+        if(left == null || right == null)
+            return false;
+        if(left.getBaseMode() != right.getBaseMode() || left.getId() != right.getId())
+            return false;
+        String leftSource = left.getSourceSite();
+        String rightSource = right.getSourceSite();
+        return leftSource.length() == 0 || rightSource.length() == 0 || leftSource.equals(rightSource);
     }
 
     public void setBookmark(Title title, int id){
@@ -563,7 +579,8 @@ public class Preference {
             return;
         int titleId = title.getId();
         if(titleId>0) {
-            String key = title.getBaseMode() + "." + title.getId();
+            ensureSourceSite(title);
+            String key = bookmarkKey(title);
             try {
                 if(bookmark.has(key) && bookmark.getInt(key) == id) {
                     updateRecentProgress(title, id);
@@ -616,12 +633,33 @@ public class Preference {
         int titleId = title.getId();
         if(titleId>0) {
             try {
-                return bookmark.getInt(title.getBaseMode()+"."+titleId);
+                String sourceKey = bookmarkKey(title);
+                if(bookmark.has(sourceKey))
+                    return bookmark.getInt(sourceKey);
+                return bookmark.getInt(legacyBookmarkKey(title));
             } catch (Exception e) {
                 //
             }
         }
         return -1;
+    }
+
+    private void ensureSourceSite(MTitle title) {
+        if(title == null || title.getSourceSite().length() > 0)
+            return;
+        title.setSourceSite(isNtkSite() ? "ntk" : "wfwf");
+    }
+
+    private String bookmarkKey(MTitle title) {
+        String legacy = legacyBookmarkKey(title);
+        String source = title == null ? "" : title.getSourceSite();
+        if(source == null || source.length() == 0)
+            return legacy;
+        return source + "." + legacy;
+    }
+
+    private String legacyBookmarkKey(MTitle title) {
+        return title.getBaseMode() + "." + title.getId();
     }
 
     private void removeBookmark(MTitle title){
@@ -631,10 +669,12 @@ public class Preference {
         int titleId = title.getId();
         if(titleId>0) {
             try {
-                String key = title.getBaseMode()+"."+titleId;
-                if(!bookmark.has(key))
+                String key = bookmarkKey(title);
+                String legacyKey = legacyBookmarkKey(title);
+                if(!bookmark.has(key) && !bookmark.has(legacyKey))
                     return;
                 bookmark.remove(key);
+                bookmark.remove(legacyKey);
             } catch (Exception e) {
                 //
             }
@@ -723,6 +763,11 @@ public class Preference {
                 //
             }
             try {
+                return pagebookmark.getInt(legacyViewerBookmarkKeyWithTitle(m));
+            } catch (Exception e) {
+                //
+            }
+            try {
                 String legacyKey = legacyViewerBookmarkKey(m);
                 if(legacyKey != null)
                     return pagebookmark.getInt(legacyKey);
@@ -743,6 +788,11 @@ public class Preference {
                 //
             }
             try {
+                return pagebookmark.getInt(legacyViewerBookmarkKeyWithTitle(m) + ".offset");
+            } catch (Exception e) {
+                //
+            }
+            try {
                 String legacyKey = legacyViewerBookmarkKey(m);
                 if(legacyKey != null)
                     return pagebookmark.getInt(legacyKey + ".offset");
@@ -758,22 +808,51 @@ public class Preference {
             return;
         String key = viewerBookmarkKey(m);
         String offsetKey = viewerBookmarkOffsetKey(m);
-        if(!pagebookmark.has(key) && !pagebookmark.has(offsetKey))
+        String legacyWithTitle = legacyViewerBookmarkKeyWithTitle(m);
+        String legacyWithTitleOffset = legacyWithTitle + ".offset";
+        String legacy = legacyViewerBookmarkKey(m);
+        String legacyOffset = legacy == null ? null : legacy + ".offset";
+        if(!pagebookmark.has(key) && !pagebookmark.has(offsetKey)
+                && !pagebookmark.has(legacyWithTitle) && !pagebookmark.has(legacyWithTitleOffset)
+                && (legacy == null || (!pagebookmark.has(legacy) && !pagebookmark.has(legacyOffset))))
             return;
         pagebookmark.remove(key);
         pagebookmark.remove(offsetKey);
+        pagebookmark.remove(legacyWithTitle);
+        pagebookmark.remove(legacyWithTitleOffset);
+        if(legacy != null) {
+            pagebookmark.remove(legacy);
+            pagebookmark.remove(legacyOffset);
+        }
         writeViewerBookmark();
     }
 
     private String viewerBookmarkKey(Manga m) {
+        String legacy = legacyViewerBookmarkKeyWithTitle(m);
+        String source = mangaSourceSite(m);
+        if(source == null || source.length() == 0)
+            return legacy;
+        return source + "." + legacy;
+    }
+
+    private String viewerBookmarkOffsetKey(Manga m) {
+        return viewerBookmarkKey(m) + ".offset";
+    }
+
+    private String legacyViewerBookmarkKeyWithTitle(Manga m) {
         int titleId = m.getTitleId();
         if(titleId > 0)
             return m.getBaseMode() + "." + titleId + "." + m.getId();
         return m.getBaseMode() + "." + m.getId();
     }
 
-    private String viewerBookmarkOffsetKey(Manga m) {
-        return viewerBookmarkKey(m) + ".offset";
+    private String mangaSourceSite(Manga m) {
+        if(m == null || m.getTitle() == null)
+            return "";
+        String source = m.getTitle().getSourceSite();
+        if(source != null && source.length() > 0)
+            return source;
+        return isNtkSite() ? "ntk" : "wfwf";
     }
 
     private String legacyViewerBookmarkKey(Manga m) {
@@ -806,6 +885,7 @@ public class Preference {
         ensureHistoryLoaded();
         if(title == null)
             return false;
+        ensureSourceSite(title);
         int index = findFavorite(title);
         if(index==-1){
             if(position < 0 || position > favorite.size())
@@ -829,7 +909,9 @@ public class Preference {
     public int findFavorite(MTitle title){
         ensureHistoryLoaded();
         if(title != null && title.getId()>0){
-            return favorite.indexOf(title);
+            for(int i = 0; i < favorite.size(); i++)
+                if(sameTitleRecord(favorite.get(i), title))
+                    return i;
         }
         return -1;
     }

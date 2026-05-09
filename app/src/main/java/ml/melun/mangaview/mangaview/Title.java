@@ -53,6 +53,7 @@ public class Title extends MTitle {
     public Title(MTitle title){
         super(title.getName(), title.getId(), title.getThumb(), title.getAuthor(), title.getTags(), title.getRelease(), title.getBaseMode());
         setPath(title.getPath());
+        setSourceSite(title.getSourceSite());
         setReadingProgress(title.getBookmarkEpisodeId(), title.getBookmarkEpisodeIndex(), title.getEpisodeCount());
         bookmark = title.getBookmarkEpisodeId();
     }
@@ -424,6 +425,7 @@ public class Title extends MTitle {
             progressCount = getEpisodeCount();
         title.setReadingProgress(progressEpisodeId, progressIndex, progressCount);
         title.setPath(getPath());
+        title.setSourceSite(getSourceSite());
         return title;
     }
 

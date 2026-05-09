@@ -28,4 +28,16 @@ public class TitleTest {
 
         assertEquals("20화", title);
     }
+
+    @Test
+    public void titleMinimizePreservesSourceSite() {
+        Title title = new Title("title", "", "", null, "", 10, MTitle.base_webtoon);
+        title.setSourceSite("ntk");
+
+        MTitle minimized = title.minimize();
+        Title restored = new Title(minimized);
+
+        assertEquals("ntk", minimized.getSourceSite());
+        assertEquals("ntk", restored.getSourceSite());
+    }
 }

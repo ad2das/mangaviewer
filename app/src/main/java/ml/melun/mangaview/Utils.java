@@ -221,6 +221,7 @@ public class Utils {
         int launchToken = nextViewerLaunchToken(context);
         Title launchTitle = title != null ? title : manga.getTitle();
         if(launchTitle != null) {
+            switchToTitleSourceSite(launchTitle);
             manga.setTitle(launchTitle);
             manga.setTitleId(launchTitle.getId());
         }
@@ -252,6 +253,21 @@ public class Utils {
                         launchTitle != null ? launchTitle : preparedTitle, includeTitleEpisodes, launchToken);
             });
         });
+    }
+
+    private static void switchToTitleSourceSite(Title title) {
+        if(title == null || p == null)
+            return;
+        String source = title.getSourceSite();
+        if(source == null || source.length() == 0)
+            return;
+        boolean targetNtk = "ntk".equals(source);
+        if(p.isNtkSite() == targetNtk)
+            return;
+        if(targetNtk)
+            p.setSitePreset(CustomHttpClient.NTK_COMIC_URL, CustomHttpClient.NTK_WEBTOON_URL);
+        else
+            p.setSitePreset(CustomHttpClient.DEFAULT_COMIC_URL, CustomHttpClient.WEBTOON_URL);
     }
 
     private static void launchPreparedViewer(Context context, Manga manga, int code, boolean returnToEpisodes,
