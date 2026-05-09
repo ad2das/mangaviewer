@@ -318,40 +318,17 @@ public class ViewerActivity2 extends AppCompatActivity {
         });
 
         next.setOnClickListener(v -> {
-            if(eps!=null && index>0) {
-                lockUi(true);
-                index--;
-                Manga target = Utils.safeGet(eps, index);
-                if(target == null) {
-                    lockUi(false);
-                    return;
-                }
-                manga = target;
-                if(title != null)
-                    manga.setTitle(title);
-                id = manga.getId();
-                name = manga.getName();
-                loadManga(manga);
-            }else
+            Manga target = nextEpisodeCandidate();
+            if(target != null) {
+                openEpisode(target);
+            } else
                 Utils.safeToast(context, "마지막화 입니다", Toast.LENGTH_SHORT);
 
         });
         prev.setOnClickListener(v -> {
-            if(eps!=null && index<eps.size()-1) {
-                lockUi(true);
-                index++;
-                Manga target = Utils.safeGet(eps, index);
-                if(target == null) {
-                    lockUi(false);
-                    return;
-                }
-                manga = target;
-                if(title != null)
-                    manga.setTitle(title);
-                id = manga.getId();
-                name = manga.getName();
-                loadManga(manga);
-            }
+            Manga target = previousEpisodeCandidate();
+            if(target != null)
+                openEpisode(target);
         });
 
         View.OnLongClickListener tbToggle = v -> {
@@ -362,6 +339,36 @@ public class ViewerActivity2 extends AppCompatActivity {
         nextPageBtn.setOnLongClickListener(tbToggle);
         prevPageBtn.setOnLongClickListener(tbToggle);
 
+    }
+
+    private Manga nextEpisodeCandidate() {
+        Manga candidate = manga == null ? null : manga.nextEp();
+        if(candidate != null)
+            return candidate;
+        if(eps != null && index > 0)
+            return Utils.safeGet(eps, index - 1);
+        return null;
+    }
+
+    private Manga previousEpisodeCandidate() {
+        Manga candidate = manga == null ? null : manga.prevEp();
+        if(candidate != null)
+            return candidate;
+        if(eps != null && index >= 0 && index < eps.size() - 1)
+            return Utils.safeGet(eps, index + 1);
+        return null;
+    }
+
+    private void openEpisode(Manga target) {
+        if(target == null)
+            return;
+        lockUi(true);
+        if(title != null)
+            target.setTitle(title);
+        manga = target;
+        id = manga.getId();
+        name = manga.getName();
+        loadManga(manga);
     }
 
     void refreshPageControlButton(){

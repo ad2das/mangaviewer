@@ -276,45 +276,48 @@ public class ViewerActivity3 extends AppCompatActivity {
             Utils.safeShowDialog(alert);
         });
         next.setOnClickListener(v -> {
-            if(eps!=null && index>0) {
-                lockUi(true);
-                index--;
-                Manga target = Utils.safeGet(eps, index);
-                if(target == null) {
-                    lockUi(false);
-                    return;
-                }
-                manga = target;
-                if(title != null)
-                    manga.setTitle(title);
-                id = manga.getId();
-                name = manga.getName();
-                if(manga.isOnline())
-                    refresh();
-                else
-                    reloadManga();
-            }
+            Manga target = nextEpisodeCandidate();
+            if(target != null)
+                openEpisode(target);
         });
         prev.setOnClickListener(v -> {
-            if(eps!=null && index<eps.size()-1) {
-                lockUi(true);
-                index++;
-                Manga target = Utils.safeGet(eps, index);
-                if(target == null) {
-                    lockUi(false);
-                    return;
-                }
-                manga = target;
-                if(title != null)
-                    manga.setTitle(title);
-                id = manga.getId();
-                name = manga.getName();
-                if(manga.isOnline())
-                    refresh();
-                else
-                    reloadManga();
-            }
+            Manga target = previousEpisodeCandidate();
+            if(target != null)
+                openEpisode(target);
         });
+    }
+
+    private Manga nextEpisodeCandidate() {
+        Manga candidate = manga == null ? null : manga.nextEp();
+        if(candidate != null)
+            return candidate;
+        if(eps != null && index > 0)
+            return Utils.safeGet(eps, index - 1);
+        return null;
+    }
+
+    private Manga previousEpisodeCandidate() {
+        Manga candidate = manga == null ? null : manga.prevEp();
+        if(candidate != null)
+            return candidate;
+        if(eps != null && index >= 0 && index < eps.size() - 1)
+            return Utils.safeGet(eps, index + 1);
+        return null;
+    }
+
+    private void openEpisode(Manga target) {
+        if(target == null)
+            return;
+        lockUi(true);
+        if(title != null)
+            target.setTitle(title);
+        manga = target;
+        id = manga.getId();
+        name = manga.getName();
+        if(manga.isOnline())
+            refresh();
+        else
+            reloadManga();
     }
 
     void refresh(){

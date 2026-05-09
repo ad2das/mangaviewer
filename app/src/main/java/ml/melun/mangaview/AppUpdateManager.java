@@ -50,7 +50,7 @@ public final class AppUpdateManager {
     private static final String APK_MIME = "application/vnd.android.package-archive";
     private static final String UPDATE_APK_PREFIX = "mangaViewer-update-";
     private static final String UPDATE_APK_SUFFIX = ".apk";
-    private static final int APK_PARALLEL_PARTS = 4;
+    private static final int APK_PARALLEL_PARTS = 8;
     private static final long APK_PARALLEL_MIN_BYTES = 8L * 1024L * 1024L;
     private static final OkHttpClient VERSION_CLIENT = new OkHttpClient.Builder()
             .connectTimeout(2, TimeUnit.SECONDS)

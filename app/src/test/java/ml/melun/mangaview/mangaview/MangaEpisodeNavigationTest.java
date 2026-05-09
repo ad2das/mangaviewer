@@ -80,6 +80,22 @@ public class MangaEpisodeNavigationTest {
         assertEquals(20, current.prevEp().getId());
     }
 
+    @Test
+    public void nextEpAndPrevEp_allowEpisodeListWithMissingTitleIds() {
+        Title title = new Title("title", "", "", new ArrayList<>(), "", 1, base_webtoon);
+        Manga current = new Manga(30, "30", "", base_webtoon);
+        current.setTitle(title);
+        current.setTitleId(title.getId());
+        List<Manga> parsedEpisodes = new ArrayList<>();
+        parsedEpisodes.add(new Manga(40, "40", "", base_webtoon));
+        parsedEpisodes.add(current);
+        parsedEpisodes.add(new Manga(20, "20", "", base_webtoon));
+        current.eps = parsedEpisodes;
+
+        assertEquals(40, current.nextEp().getId());
+        assertEquals(20, current.prevEp().getId());
+    }
+
     private Title titleWithEpisodes(int... ids) {
         Title title = new Title("title", "", "", new ArrayList<>(), "", 1, base_webtoon);
         List<Manga> episodes = new ArrayList<>();

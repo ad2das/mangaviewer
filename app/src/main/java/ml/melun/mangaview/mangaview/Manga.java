@@ -649,7 +649,7 @@ public class Manga {
         int episodeTitleId = resolvedTitleId(episode);
         if(currentTitleId > 0 && episodeTitleId > 0)
             return currentTitleId == episodeTitleId;
-        return currentTitleId <= 0 && episodeTitleId <= 0;
+        return true;
     }
 
     private static int resolvedTitleId(Manga manga) {
