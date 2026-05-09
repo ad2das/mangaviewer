@@ -372,11 +372,22 @@ public class FirebaseSyncManager {
 
     private String restDocumentUrl(String uid) {
         return "https://firestore.googleapis.com/v1/projects/"
-                + appContext.getString(R.string.project_id)
+                + getStringResource("project_id")
                 + "/databases/(default)/documents/users/"
                 + uid
                 + "/mangaView/"
                 + STATE_DOC;
+    }
+
+    private String getStringResource(String name) {
+        int id = appContext.getResources().getIdentifier(name, "string", appContext.getPackageName());
+        if(id == 0)
+            return "";
+        try {
+            return appContext.getString(id);
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     private JSONObject firestoreDocumentJson(Map<String, Object> data) {

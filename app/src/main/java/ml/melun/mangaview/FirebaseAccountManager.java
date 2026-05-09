@@ -132,7 +132,18 @@ public class FirebaseAccountManager {
     }
 
     private String getDefaultWebClientId() {
-        return appContext.getString(R.string.default_web_client_id);
+        return getStringResource("default_web_client_id");
+    }
+
+    private String getStringResource(String name) {
+        int id = appContext.getResources().getIdentifier(name, "string", appContext.getPackageName());
+        if(id == 0)
+            return "";
+        try {
+            return appContext.getString(id);
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     private String describeGoogleSignInError(ApiException e) {

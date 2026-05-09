@@ -58,6 +58,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - name: Restore Firebase resources
+        shell: bash
+        env:
+          GOOGLE_SERVICES_XML: ${{ secrets.GOOGLE_SERVICES_XML }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_XML" ]; then
+            mkdir -p app/src/main/res/values
+            printf '%s' "$GOOGLE_SERVICES_XML" > app/src/main/res/values/google_services.xml
+          fi
+
       - name: Release latest debug APK
         shell: pwsh
         run: ./tools/release_latest.ps1 -SkipTests -DeleteOldRepoApks -DeleteOldReleaseApks

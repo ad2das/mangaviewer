@@ -1,6 +1,9 @@
 # Firebase Setup
 
-`app/google-services.json` must be downloaded from Firebase. Do not use the example file as-is.
+Firebase credentials must stay out of git. Local builds may use `app/google-services.json`
+or `app/src/main/res/values/google_services.xml`, but both files are ignored by git.
+GitHub Actions restores `google_services.xml` from the `GOOGLE_SERVICES_XML` repository
+secret before building the APK.
 
 Use these Android app values in Firebase Console:
 
@@ -16,7 +19,8 @@ Steps:
 2. Add an Android app with package name `ml.melun.mangaview`.
 3. Add the SHA-1 for the APK you install to the Android app settings. Google sign-in fails with `DEVELOPER_ERROR (10)` when the installed APK signature is not registered.
 4. Download `google-services.json`.
-5. Put it at `app/google-services.json`.
+5. Put it at `app/google-services.json` for local builds, or commit nothing and set the
+   `GOOGLE_SERVICES_XML` GitHub secret for Actions builds.
 6. In Firebase Authentication, enable the Google sign-in provider.
 7. In Firestore Database, create a database and publish `firestore.rules` from this repo.
 8. Rebuild with Java 11 or newer:
