@@ -84,7 +84,7 @@ $dateCode = [int](Get-Date -Format "yyMMdd")
 $versionCode = 2112000000 + $dateCode + $nextPatch
 $apkName = "mangaViewer_${versionCode}-debug.apk"
 $apkPath = "apk/$apkName"
-$downloadUrl = "https://github.com/$Repo/releases/download/$ReleaseTag/$apkName"
+$downloadUrl = "https://raw.githubusercontent.com/$Repo/main/apk/$apkName"
 
 Write-Step "Preparing version $versionCode"
 Write-Host "releasePatch: $currentPatch -> $nextPatch"
