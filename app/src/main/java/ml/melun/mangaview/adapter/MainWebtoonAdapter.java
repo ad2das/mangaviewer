@@ -220,7 +220,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                             && activeHomeTab == 0
                             && isLikelyContinueTapZone(rv, event.getY())) {
                         handleAnchorContinueTouch(rv, event);
-                        return true;
                     }
                     return false;
                 }
@@ -1209,14 +1208,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     continueDownY = event.getY();
                     continueTouchMoved = false;
                     homeAdapter.warmupContinueAt(list, continueDownX, continueDownY);
-                    return homeAdapter.openContinueAt(list, continueDownX, continueDownY, false);
+                    return false;
                 case MotionEvent.ACTION_MOVE:
                     if(Math.abs(event.getX() - continueDownX) > dp(14) || Math.abs(event.getY() - continueDownY) > dp(14))
                         continueTouchMoved = true;
                     return false;
                 case MotionEvent.ACTION_UP:
-                    if(!continueTouchMoved && Math.abs(event.getX() - continueDownX) <= dp(18) && Math.abs(event.getY() - continueDownY) <= dp(18))
-                        return homeAdapter.openContinueAt(list, event.getX(), event.getY(), event.getEventTime() - event.getDownTime() >= 450);
                     return false;
                 case MotionEvent.ACTION_CANCEL:
                     continueTouchMoved = false;
@@ -1331,26 +1328,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     if(!continueStyle || item == null)
                         return false;
                     if(event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                        v.setPressed(true);
                         warmupContinueViewer(item);
-                        openContinueOrTitle(item, true);
-                        return true;
                     }
-                    if(event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
-                        v.setPressed(false);
-                        return true;
-                    }
-                    if(event.getActionMasked() == MotionEvent.ACTION_UP) {
-                        v.setPressed(false);
-                        if(event.getEventTime() - event.getDownTime() >= 450) {
-                            if(listener != null)
-                                listener.longClickedContinue(v, item);
-                        } else {
-                            openContinueOrTitle(item, true);
-                        }
-                        return true;
-                    }
-                    return true;
+                    return false;
                 });
                 card.setOnLongClickListener(v -> {
                     if(!continueStyle || listener == null || item == null)
@@ -1374,21 +1354,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(style != STYLE_CONTINUE)
                 return;
             warmupContinueViewer(continueItemAt(recyclerView, x, y));
-        }
-
-        boolean openContinueAt(RecyclerView recyclerView, float x, float y, boolean longPress) {
-            if(style != STYLE_CONTINUE)
-                return false;
-            Title item = continueItemAt(recyclerView, x, y);
-            if(item == null)
-                return false;
-            if(longPress) {
-                if(listener != null)
-                    listener.longClickedContinue(recyclerView, item);
-            } else {
-                openContinueOrTitle(item, true);
-            }
-            return true;
         }
 
         private Title continueItemAt(RecyclerView recyclerView, float x, float y) {
@@ -1575,14 +1540,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 anchorDownY = event.getY();
                 anchorTouchMoved = false;
                 warmupFirstContinueTitle();
-                return openFirstContinueTitle(view, false);
+                return false;
             case MotionEvent.ACTION_MOVE:
                 if(Math.abs(event.getX() - anchorDownX) > dp(14) || Math.abs(event.getY() - anchorDownY) > dp(14))
                     anchorTouchMoved = true;
                 return false;
             case MotionEvent.ACTION_UP:
-                if(!anchorTouchMoved && Math.abs(event.getX() - anchorDownX) <= dp(18) && Math.abs(event.getY() - anchorDownY) <= dp(18))
-                    return openFirstContinueTitle(view, event.getEventTime() - event.getDownTime() >= 450);
                 return false;
             case MotionEvent.ACTION_CANCEL:
                 anchorTouchMoved = false;
@@ -1602,24 +1565,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         Manga manga = resolveContinueMangaForWarmup(item);
         if(manga != null)
             ViewerWarmupManager.warmupContinueImmediate(context, manga, item);
-    }
-
-    private boolean openFirstContinueTitle(View source, boolean longPress) {
-        Title item = firstContinueTitle();
-        if(item == null)
-            return false;
-        if(longPress) {
-            listener.longClickedContinue(source, item);
-            return true;
-        }
-        Manga manga = resolveContinueMangaForWarmup(item);
-        if(manga == null)
-            return false;
-        if(!markContinueOpen(item))
-            return true;
-        ViewerWarmupManager.warmupContinueImmediate(context, manga, item);
-        listener.clickedManga(manga);
-        return true;
     }
 
     private Title firstContinueTitle() {
