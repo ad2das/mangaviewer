@@ -1034,7 +1034,7 @@ public class MainSearch extends Fragment {
             if(searchAdapter == null)
                 searchAdapter = new TitleAdapter(getContext());
             bindOnlineAdapter();
-            if(noresult != null && searchAdapter.getItemCount() == 0)
+            if(noresult != null)
                 noresult.setVisibility(View.GONE);
             updateAdvSearchVisibility();
             int selectedBaseMode = selectedSearchBaseMode();
@@ -1250,7 +1250,11 @@ public class MainSearch extends Fragment {
                 searchAdapter.addData(targetSearch.getResult());
             }
 
-            if(searchAdapter.getItemCount()>0) {
+            List<Title> latestResults = targetSearch.getResult();
+            boolean hasResults = (latestResults != null && latestResults.size() > 0)
+                    || (!replaceResults && searchAdapter.getItemCount() > 0);
+
+            if(hasResults) {
                 noresult.setVisibility(View.GONE);
                 if(replaceResults && searchFirstStartedAt > 0)
                     PerfTrace.end("search_first_result_ms", searchFirstStartedAt);

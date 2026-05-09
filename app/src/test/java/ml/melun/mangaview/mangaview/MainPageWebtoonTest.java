@@ -232,6 +232,23 @@ public class MainPageWebtoonTest {
     }
 
     @Test
+    public void wfwfGenreFiltersMatchVisibleSiteGenres() {
+        String[] webtoonGenres = MainPageWebtoon.WEBTOON_FILTER_GROUPS[3];
+        String[] comicGenres = MainPageWebtoon.COMIC_FILTER_GROUPS[2];
+
+        assertEquals(16, webtoonGenres.length);
+        assertTrue(containsFilter(webtoonGenres, "성인", "/ing?type1=genre&o=n"));
+        assertTrue(containsFilter(webtoonGenres, "스토리", "/ing?type1=genre&type2=%BD%BA%C5%E4%B8%AE&o=n"));
+        assertTrue(!containsLabel(webtoonGenres, "미분류"));
+
+        assertEquals(32, comicGenres.length);
+        assertTrue(containsFilter(comicGenres, "17", "/cm?type1=genre&type2=17&o=n"));
+        assertTrue(containsFilter(comicGenres, "이세계", "/cm?type1=genre&type2=%C0%CC%BC%BC%B0%E8&o=n"));
+        assertTrue(!containsLabel(comicGenres, "판타지"));
+        assertTrue(!containsLabel(comicGenres, "애니화"));
+    }
+
+    @Test
     public void normalizeNtkPathPreservesNtkSortAndFilterParams() {
         assertEquals("/ing?sort=hot", MainPageWebtoon.normalizeNtkPathForTest("/ing?sort=hot"));
         assertEquals("/end?sort=hot", MainPageWebtoon.normalizeNtkPathForTest("/end?sort=hot"));
@@ -305,6 +322,14 @@ public class MainPageWebtoonTest {
         String expected = "|" + label + "|" + path;
         for(String filter : filters)
             if(filter.endsWith(expected))
+                return true;
+        return false;
+    }
+
+    private boolean containsLabel(String[] filters, String label) {
+        String expected = "|" + label + "|";
+        for(String filter : filters)
+            if(filter.contains(expected))
                 return true;
         return false;
     }
