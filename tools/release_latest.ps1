@@ -33,14 +33,17 @@ function Write-Utf8NoBom($path, $content) {
     [System.IO.File]::WriteAllText((Resolve-Path $path), $content, $utf8)
 }
 
-function Invoke-Gradle($arguments) {
-    if ($IsWindows) {
-        & .\gradlew.bat @arguments
+function Invoke-Gradle([string[]]$GradleArgs) {
+    $runningOnWindows = $PSVersionTable.PSVersion.Major -lt 6 -or $IsWindows
+    if ($runningOnWindows) {
+        & .\gradlew.bat @GradleArgs
     } else {
         & chmod +x ./gradlew
-        & ./gradlew @arguments
+        & ./gradlew @GradleArgs
     }
-    return $LASTEXITCODE
+    if ($LASTEXITCODE -ne 0) {
+        throw "Gradle failed: $($GradleArgs -join ' ')"
+    }
 }
 
 Set-Location (Resolve-Path (Join-Path $PSScriptRoot ".."))
@@ -102,15 +105,11 @@ $releasesHtml = [regex]::Replace($releasesHtml, 'browser_download_url:\s*"[^"]*m
 Write-Utf8NoBom $releasesHtmlPath $releasesHtml
 
 Write-Step "Building debug APK"
-if ((Invoke-Gradle @("assembleDebug")) -ne 0) {
-    throw "assembleDebug failed"
-}
+Invoke-Gradle -GradleArgs @("assembleDebug")
 
 if (-not $SkipTests) {
     Write-Step "Running unit tests"
-    if ((Invoke-Gradle @("testDebugUnitTest")) -ne 0) {
-        throw "testDebugUnitTest failed"
-    }
+    Invoke-Gradle -GradleArgs @("testDebugUnitTest")
 }
 
 $builtApk = "app/build/outputs/apk/debug/$apkName"
