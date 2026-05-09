@@ -442,7 +442,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     private void ensureCategoryOnlyRows() {
         List<Object> categoryRows = new ArrayList<>();
-        categoryRows.add(new CategoryPanel());
+        categoryRows.add(new CategoryPanel(categoryKey()));
         updateRows(categoryRows);
     }
 
@@ -463,7 +463,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private List<Object> buildInitialPlaceholderRows() {
         List<Object> result = new ArrayList<>();
         if(activeHomeTab == 3) {
-            result.add(new CategoryPanel());
+            result.add(new CategoryPanel(categoryKey()));
             return result;
         }
         if(activeHomeTab == 0) {
@@ -495,7 +495,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private List<Object> buildRows(List<Ranking<?>> sections, boolean includeEmpty, boolean includeCategoryPanel) {
         List<Object> result = new ArrayList<>();
         if(activeHomeTab == 3) {
-            result.add(new CategoryPanel());
+            result.add(new CategoryPanel(categoryKey()));
             return result;
         }
         if(activeHomeTab == 1 || activeHomeTab == 2)
@@ -523,7 +523,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         String lastGroup = "";
         if(sections == null) {
             if(includeCategoryPanel)
-                result.add(new CategoryPanel());
+                result.add(new CategoryPanel(categoryKey()));
             return result;
         }
         int extraSections = 0;
@@ -546,7 +546,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
         result.addAll(contentRows);
         if(includeCategoryPanel)
-            result.add(new CategoryPanel());
+            result.add(new CategoryPanel(categoryKey()));
         return result;
     }
 
@@ -596,7 +596,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
     }
 
+    private String categoryKey() {
+        return baseMode + ":" + isNtkSite();
+    }
+
     static class CategoryPanel {
+        final String key;
+
+        CategoryPanel(String key) {
+            this.key = key == null ? "" : key;
+        }
     }
 
     static class ActionStrip {
@@ -2224,7 +2233,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(row instanceof ActionStrip)
             return "home:actions";
         if(row instanceof CategoryPanel)
-            return "category";
+            return "category:" + ((CategoryPanel) row).key;
         if(row instanceof String)
             return "group:" + row;
         if(row instanceof Ranking)
@@ -2269,6 +2278,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
             return builder.toString();
         }
+        if(row instanceof CategoryPanel)
+            return rowKey(row);
         return rowKey(row);
     }
 
