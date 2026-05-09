@@ -152,11 +152,8 @@ public class CustomHttpClient {
             }
 
             String cookieStr = CookieManager.getInstance().getCookie(url);
-            if(cookieStr == null || cookieStr.length() == 0) {
-                if(force)
-                    clearCloudflareCookies();
+            if(cookieStr == null || cookieStr.length() == 0)
                 return;
-            }
             Map<String, String> webViewCookies = new HashMap<>();
             for(String raw : cookieStr.split(";")){
                 String s = raw.trim();
@@ -172,15 +169,6 @@ public class CustomHttpClient {
 
             synchronized (this) {
                 boolean changed = false;
-                if(force && !webViewCookies.containsKey("cf_clearance")) {
-                    for(String key : new ArrayList<>(cookies.keySet())) {
-                        String lower = key.toLowerCase(Locale.ROOT);
-                        if(lower.startsWith("cf_") || "__cf_bm".equals(lower)) {
-                            cookies.remove(key);
-                            changed = true;
-                        }
-                    }
-                }
                 for(String key : webViewCookies.keySet()) {
                     String value = webViewCookies.get(key);
                     if(!value.equals(cookies.get(key))) {

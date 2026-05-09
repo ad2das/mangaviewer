@@ -456,18 +456,11 @@ public class SettingsActivity extends AppCompatActivity {
 
     private void switchSite(String comicUrl, String webtoonUrl, String label) {
         p.setSitePreset(comicUrl, webtoonUrl);
+        getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
+        getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
+        getHttpClient().clearPageCache();
         updateSiteToggleText();
-        Toast.makeText(context, label + " 사이트 번호를 찾는 중입니다.", Toast.LENGTH_SHORT).show();
-        AppDispatchers.runUserAction(() -> {
-            boolean changed = getHttpClient().resolveWfwfDomainNow();
-            AppDispatchers.runOnMain(() -> {
-                updateSiteToggleText();
-                String message = changed
-                        ? label + " 사이트가 " + p.getWebtoonUrl() + " 로 변경되었습니다."
-                        : label + " 사이트로 변경되었습니다.";
-                Toast.makeText(context, message, Toast.LENGTH_SHORT).show();
-            });
-        });
+        Toast.makeText(context, label + " 사이트로 변경되었습니다.", Toast.LENGTH_SHORT).show();
     }
 
     public static void urlSettingPopup(Context context, Preference p){

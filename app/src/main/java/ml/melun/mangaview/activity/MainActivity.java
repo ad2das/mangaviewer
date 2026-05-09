@@ -153,6 +153,15 @@ public class MainActivity extends AppCompatActivity
         ((MainSearch) fragments[1]).enterSearchMode();
     }
 
+    private void forceWfwfOnStartup() {
+        if(!p.isNtkSite())
+            return;
+        p.setSitePreset(DEFAULT_COMIC_URL, WEBTOON_URL);
+        MainApplication.getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
+        MainApplication.getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
+        MainApplication.getHttpClient().clearPageCache();
+    }
+
 
 
     @Override
@@ -180,6 +189,7 @@ public class MainActivity extends AppCompatActivity
                     .putBoolean("manamoa", false)
                     .apply();
         }
+        forceWfwfOnStartup();
 
         if (Migrator.running) {
             ProgressDialog mpd;
@@ -539,7 +549,14 @@ public class MainActivity extends AppCompatActivity
             Toast.makeText(context, R.string.account_google_oauth_missing, Toast.LENGTH_LONG).show();
             return;
         }
-        accountManager.signIn(this);
+        if(accountSheet != null)
+            accountSheet.dismiss();
+        accountManager.signIn(this, (success, message) -> {
+            if(!success)
+                runOnUiThread(() -> Utils.safeToast(context,
+                        message == null ? getString(R.string.account_sign_in_failed) : message,
+                        Toast.LENGTH_LONG));
+        });
     }
 
     private void toggleAccountSignIn() {
@@ -848,19 +865,10 @@ public class MainActivity extends AppCompatActivity
         MainApplication.getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
         MainApplication.getHttpClient().clearPageCache();
         invalidateOptionsMenu();
-        Toast.makeText(context, label + " 사이트로 변경 중입니다.", Toast.LENGTH_SHORT).show();
-        new Thread(() -> {
-            boolean changed = MainApplication.getHttpClient().resolveWfwfDomainNow();
-            runOnUiThread(() -> {
-                invalidateOptionsMenu();
-                UrlUpdateCallback callback = fragments[0] instanceof MainMain ? ((MainMain) fragments[0]).getCallback() : null;
-                if(callback != null)
-                    callback.callback(true);
-                Toast.makeText(context, changed
-                        ? label + " 사이트가 " + p.getWebtoonUrl() + " 로 변경되었습니다."
-                        : label + " 사이트로 변경되었습니다.", Toast.LENGTH_SHORT).show();
-            });
-        }).start();
+        UrlUpdateCallback callback = fragments[0] instanceof MainMain ? ((MainMain) fragments[0]).getCallback() : null;
+        if(callback != null)
+            callback.callback(true);
+        Toast.makeText(context, label + " 사이트로 변경되었습니다.", Toast.LENGTH_SHORT).show();
     }
 
     boolean changeFragment(int index){
@@ -938,7 +946,7 @@ public class MainActivity extends AppCompatActivity
         super.onActivityResult(requestCode, resultCode, data);
         if(requestCode == FirebaseAccountManager.RC_GOOGLE_SIGN_IN) {
             FirebaseAccountManager accountManager = MainApplication.getFirebaseAccountManager();
-            if(data != null && accountManager != null) {
+            if(accountManager != null) {
                 accountManager.handleActivityResult(data, (success, message) -> runOnUiThread(() -> {
                     if(success) {
                         accountInitialSyncStarted = true;

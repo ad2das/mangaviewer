@@ -1,6 +1,7 @@
 package ml.melun.mangaview;
 
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
@@ -14,6 +15,8 @@ import com.google.android.gms.auth.api.signin.GoogleSignInClient;
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions;
 import com.google.android.gms.auth.api.signin.GoogleSignInStatusCodes;
 import com.google.android.gms.common.api.ApiException;
+import com.google.android.gms.common.ConnectionResult;
+import com.google.android.gms.common.GoogleApiAvailability;
 import com.google.android.gms.tasks.Task;
 import com.google.firebase.FirebaseApp;
 import com.google.firebase.FirebaseOptions;
@@ -62,10 +65,39 @@ public class FirebaseAccountManager {
         return auth == null ? null : auth.getCurrentUser();
     }
 
+    public boolean signIn(Activity activity, SignInCallback callback) {
+        if(!isAvailable()) {
+            if(callback != null)
+                callback.onSignInResult(false, hasFirebaseConfig()
+                        ? "Google 로그인 설정이 없습니다."
+                        : "Firebase 설정이 필요합니다.");
+            return false;
+        }
+        int playServicesStatus = GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(activity);
+        if(playServicesStatus != ConnectionResult.SUCCESS) {
+            if(callback != null)
+                callback.onSignInResult(false, "Google Play 서비스가 필요합니다: " + playServicesStatus);
+            return false;
+        }
+        try {
+            signInClient = null;
+            activity.startActivityForResult(getSignInClient().getSignInIntent(), RC_GOOGLE_SIGN_IN);
+            return true;
+        } catch (ActivityNotFoundException e) {
+            if(callback != null)
+                callback.onSignInResult(false, "Google 로그인 화면을 열 수 없습니다.");
+            return false;
+        } catch (Exception e) {
+            if(callback != null)
+                callback.onSignInResult(false, e.getMessage() == null ? "Google 로그인 시작 실패" : e.getMessage());
+            return false;
+        }
+    }
+
     public void signIn(Activity activity) {
         if(!isAvailable())
             return;
-        activity.startActivityForResult(getSignInClient().getSignInIntent(), RC_GOOGLE_SIGN_IN);
+        signIn(activity, null);
     }
 
     public void signOut(Runnable afterSignOut) {
