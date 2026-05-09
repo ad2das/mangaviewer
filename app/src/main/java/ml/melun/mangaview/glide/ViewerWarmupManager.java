@@ -224,6 +224,11 @@ public class ViewerWarmupManager {
                 logMetric("viewer_click_continue_snapshot", warmed.getId());
                 return warmed;
             }
+            if(hasImages(warmed, appContext)) {
+                preloadLoadedImages(appContext, warmed, firstPage, width, autoCut, reverse, p.getDataSave() ? 8 : 24, Priority.IMMEDIATE, p.getDataSave() ? 2 : 3);
+                logMetric("viewer_click_continue_url_snapshot", warmed.getId());
+                return warmed;
+            }
         }
         try {
             Manga target = manga;
@@ -253,6 +258,8 @@ public class ViewerWarmupManager {
                     return candidate;
                 } else {
                     logMetric("viewer_click_url_ready", candidate.getId());
+                    cacheContinueSnapshot(appContext, scheduleKey, candidate);
+                    return candidate;
                 }
             }
         } catch (Exception e) {
