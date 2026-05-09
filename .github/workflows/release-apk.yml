@@ -48,4 +48,4 @@ jobs:
 
       - name: Release latest debug APK
         shell: pwsh
-        run: ./tools/release_latest.ps1 -DeleteOldReleaseApks
+        run: ./tools/release_latest.ps1
