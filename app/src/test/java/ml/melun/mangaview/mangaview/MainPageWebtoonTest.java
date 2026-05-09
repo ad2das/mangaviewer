@@ -206,27 +206,28 @@ public class MainPageWebtoonTest {
         String[] genres = MainPageWebtoon.NTK_WEBTOON_FILTER_GROUPS[2];
         String[] completedGenres = MainPageWebtoon.NTK_WEBTOON_FILTER_GROUPS[3];
 
-        assertEquals(18, genres.length);
-        assertEquals(18, completedGenres.length);
-        assertTrue(containsFilter(genres, "성인", "/ing?tag=%EC%84%B1%EC%9D%B8"));
-        assertTrue(containsFilter(genres, "BL", "/ing?tag=BL"));
-        assertTrue(containsFilter(genres, "BL/GL", "/ing?tag=BL%2FGL"));
-        assertTrue(containsFilter(genres, "코미디", "/ing?tag=%EC%BD%94%EB%AF%B8%EB%94%94"));
-        assertTrue(containsFilter(genres, "스토리", "/ing?tag=%EC%8A%A4%ED%86%A0%EB%A6%AC"));
-        assertTrue(containsFilter(completedGenres, "스토리", "/end?tag=%EC%8A%A4%ED%86%A0%EB%A6%AC"));
+        assertEquals(21, genres.length);
+        assertEquals(50, completedGenres.length);
+        assertTrue(containsFilter(genres, "액션", "/ing?tag=2"));
+        assertTrue(containsFilter(genres, "BL", "/ing?tag=6"));
+        assertTrue(containsFilter(genres, "연애", "/ing?tag=8"));
+        assertTrue(containsFilter(genres, "공포", "/ing?tag=15"));
+        assertTrue(containsFilter(genres, "기타", "/ing?tag=99"));
+        assertTrue(containsFilter(completedGenres, "현대판타", "/end?tag=105"));
+        assertTrue(containsFilter(completedGenres, "관계역전", "/end?tag=128"));
     }
 
     @Test
     public void ntkComicGenreFiltersExposeFullGenreList() {
         String[] genres = MainPageWebtoon.NTK_COMIC_FILTER_GROUPS[1];
 
-        assertEquals(39, genres.length);
+        assertEquals(29, genres.length);
         assertTrue(containsFilter(genres, "17", "/manhwa?g=17"));
         assertTrue(containsFilter(genres, "TS", "/manhwa?g=TS"));
-        assertTrue(containsFilter(genres, "로맨틱코미디", "/manhwa?g=%EB%A1%9C%EB%A7%A8%ED%8B%B1%EC%BD%94%EB%AF%B8%EB%94%94"));
-        assertTrue(containsFilter(genres, "BL/GL", "/manhwa?g=BL%2FGL"));
+        assertTrue(containsFilter(genres, "소년", "/manhwa?g=%EC%86%8C%EB%85%84"));
+        assertTrue(containsFilter(genres, "백합", "/manhwa?g=%EB%B0%B1%ED%95%A9"));
         assertTrue(containsFilter(genres, "이세계", "/manhwa?g=%EC%9D%B4%EC%84%B8%EA%B3%84"));
-        assertTrue(containsFilter(genres, "어드벤처", "/manhwa?g=%EC%96%B4%EB%93%9C%EB%B2%A4%EC%B2%98"));
+        assertTrue(containsFilter(genres, "무협", "/manhwa?g=%EB%AC%B4%ED%98%91"));
         assertTrue(containsFilter(genres, "애니화", "/manhwa?g=%EC%95%A0%EB%8B%88%ED%99%94"));
     }
 
