@@ -49,6 +49,7 @@ public final class AppUpdateManager {
     private static final String PREF = "appUpdate";
     private static final String KEY_VERSION = "latestVersion";
     private static final String KEY_LINK = "latestLink";
+    private static final String KEY_SKIPPED_VERSION = "skippedVersion";
     private static final String KEY_PLAN_LINK = "downloadPlanLink";
     private static final String KEY_PLAN_URL = "downloadPlanUrl";
     private static final String KEY_PLAN_LENGTH = "downloadPlanLength";
@@ -89,7 +90,7 @@ public final class AppUpdateManager {
         Context appContext = activity.getApplicationContext();
         AppDispatchers.runIo(() -> deleteStaleUpdateApks(appContext, pendingInstallApk));
         UpdateInfo cachedInfo = readCachedUpdateInfo(appContext);
-        if(isUpdateAvailable(cachedInfo) && !dialogShownThisSession) {
+        if(isUpdateAvailable(appContext, cachedInfo, true) && !dialogShownThisSession) {
             dialogShownThisSession = true;
             warmDownloadPlan(appContext, cachedInfo);
             showUpdateDialog(activity, cachedInfo);
@@ -102,9 +103,9 @@ public final class AppUpdateManager {
             if(info == null)
                 return;
             cacheUpdateInfo(appContext, info);
-            if(isUpdateAvailable(info))
+            if(isUpdateAvailable(appContext, info, true))
                 warmDownloadPlan(appContext, info);
-            if(!isUpdateAvailable(info) || dialogShownThisSession)
+            if(!isUpdateAvailable(appContext, info, true) || dialogShownThisSession)
                 return;
             dialogShownThisSession = true;
             AppDispatchers.runOnMain(() -> showUpdateDialog(activity, info));
@@ -120,7 +121,7 @@ public final class AppUpdateManager {
             UpdateInfo info = fetchUpdateInfo(appContext);
             if(info != null)
                 cacheUpdateInfo(appContext, info);
-            if(info != null && isUpdateAvailable(info)) {
+            if(info != null && isUpdateAvailable(appContext, info, false)) {
                 warmDownloadPlan(appContext, info);
                 AppDispatchers.runOnMain(() -> showUpdateDialog(activity, info));
                 return;
@@ -189,9 +190,10 @@ public final class AppUpdateManager {
         return new JSONObject(new String(decoded, StandardCharsets.UTF_8));
     }
 
-    private static boolean isUpdateAvailable(UpdateInfo info) {
-        return info != null && info.version > currentVersionCode(MainApplication.appContext)
-                && info.link != null && info.link.length() > 0;
+    private static boolean isUpdateAvailable(Context context, UpdateInfo info, boolean respectSkippedVersion) {
+        return info != null && info.version > currentVersionCode(context == null ? MainApplication.appContext : context)
+                && info.link != null && info.link.length() > 0
+                && (!respectSkippedVersion || info.version != skippedVersion(context));
     }
 
     private static UpdateInfo readCachedUpdateInfo(Context context) {
@@ -203,6 +205,22 @@ public final class AppUpdateManager {
         if(version <= 0 || link == null || link.length() == 0)
             return null;
         return new UpdateInfo(version, link);
+    }
+
+    private static int skippedVersion(Context context) {
+        if(context == null)
+            return -1;
+        return context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                .getInt(KEY_SKIPPED_VERSION, -1);
+    }
+
+    private static void skipVersion(Context context, UpdateInfo info) {
+        if(context == null || info == null)
+            return;
+        context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                .edit()
+                .putInt(KEY_SKIPPED_VERSION, info.version)
+                .apply();
     }
 
     private static void cacheUpdateInfo(Context context, UpdateInfo info) {
@@ -225,7 +243,11 @@ public final class AppUpdateManager {
         builder.setTitle("새 버전 업데이트")
                 .setMessage("새 APK가 있습니다.\n현재: " + currentVersionCode(activity) + "\n최신: " + info.version + "\n\n다운로드 후 설치 화면을 바로 열까요?")
                 .setPositiveButton("업데이트", (dialog, which) -> downloadAndInstall(activity, info))
-                .setNegativeButton("나중에", null);
+                .setNegativeButton("나중에", null)
+                .setNeutralButton("이 버전 건너뛰기", (dialog, which) -> {
+                    skipVersion(activity.getApplicationContext(), info);
+                    Utils.safeToast(activity, "이 버전은 건너뜁니다.", Toast.LENGTH_SHORT);
+                });
         Utils.safeShowDialog(builder);
     }
 
@@ -303,7 +325,7 @@ public final class AppUpdateManager {
     private static UpdateInfo latestInfoForDownload(Context context, UpdateInfo requested) {
         long started = System.currentTimeMillis();
         UpdateInfo cached = readCachedUpdateInfo(context);
-        if(cached != null && isUpdateAvailable(cached)
+        if(cached != null && isUpdateAvailable(context, cached, false)
                 && (requested == null
                 || cached.version >= requested.version
                 || !cached.link.equals(requested.link))) {
@@ -312,7 +334,7 @@ public final class AppUpdateManager {
                     + " latest=" + cached.version);
             return cached;
         }
-        if(requested != null && isUpdateAvailable(requested)) {
+        if(requested != null && isUpdateAvailable(context, requested, false)) {
             log("refreshBeforeDownload source=requested ms=" + (System.currentTimeMillis() - started)
                     + " requested=" + requested.version
                     + " latest=" + (cached == null ? -1 : cached.version));
@@ -322,7 +344,7 @@ public final class AppUpdateManager {
         log("refreshBeforeDownload source=network ms=" + (System.currentTimeMillis() - started)
                 + " requested=" + (requested == null ? -1 : requested.version)
                 + " latest=" + (latest == null ? -1 : latest.version));
-        if(latest != null && isUpdateAvailable(latest)) {
+        if(latest != null && isUpdateAvailable(context, latest, false)) {
             cacheUpdateInfo(context, latest);
             if(requested == null
                     || latest.version >= requested.version
