@@ -23,6 +23,7 @@ import okhttp3.Response;
 
 import static ml.melun.mangaview.Utils.documentFileFromUri;
 import static ml.melun.mangaview.Utils.useScopedStorageHome;
+import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.mangaview.MTitle.baseModeStr;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
@@ -119,6 +120,8 @@ public class Manga {
     }
 
     public synchronized int fetch(CustomHttpClient client, boolean doLogin, Map<String, String> cookies) {
+        if(client.isNtk())
+            return fetchNtk(client);
         if(isComicWolfSource())
             return fetchWolf(client, "/cv?toon=", "/cv?toon=");
         if(isWebtoonWolfSource())
@@ -234,6 +237,50 @@ public class Manga {
                 r.close();
             }
             tries++;
+        }
+        restoreBetterEpisodeList(previousEpisodes);
+        attachEpisodeSeriesMetadata();
+        return LOAD_OK;
+    }
+
+    private int fetchNtk(CustomHttpClient client) {
+        mode = 0;
+        List<Manga> previousEpisodes = safeEpisodeCopy(eps);
+        imgs = new ArrayList<>();
+        Set<String> seenImages = new LinkedHashSet<>();
+        eps = new ArrayList<>();
+        try {
+            int tid = titleId;
+            if(tid <= 0 && title != null)
+                tid = title.getId();
+            if(tid <= 0)
+                return LOAD_OK;
+            String segment = baseMode == MTitle.base_webtoon ? "webtoon" : "manhwa";
+            CustomHttpClient.PageResponse page = client.mgetCachedPage("/" + segment + "/" + tid + "/" + id, PAGE_CACHE_TTL_MS);
+            Document d = Jsoup.parse(page.body);
+
+            Element h1 = d.selectFirst("h1");
+            if(h1 != null)
+                name = h1.text().trim();
+
+            for(Element img : d.select("img")) {
+                String src = img.hasAttr("data-original") ? img.attr("data-original") : img.attr("src");
+                String alt = img.attr("alt").toLowerCase(Locale.ROOT);
+                if(src.length() > 0 && (alt.contains("page") || src.matches(".*\\.(jpg|jpeg|png|webp)(\\?.*)?$")))
+                    addImageIfValid(client, seenImages, src);
+            }
+
+            List<Manga> titleEpisodes = title == null ? null : safeEpisodeCopy(title.getEps());
+            if(titleEpisodes != null && titleEpisodes.size() > 0) {
+                eps = titleEpisodes;
+                for(Manga ep : eps) {
+                    ep.setMode(0);
+                    ep.setTitle(title);
+                    ep.setTitleId(tid);
+                }
+            }
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
         restoreBetterEpisodeList(previousEpisodes);
         attachEpisodeSeriesMetadata();
@@ -567,6 +614,10 @@ public class Manga {
     }
 
     public String getUrl() {
+        if(titleId > 0 && p != null && p.isNtkSite()) {
+            String segment = baseMode == MTitle.base_webtoon ? "webtoon" : "manhwa";
+            return "/" + segment + "/" + titleId + "/" + id;
+        }
         if(isComicWolfSource()) {
             int tid = titleId;
             if(tid <= 0 && title != null)

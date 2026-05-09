@@ -40,6 +40,8 @@ public class Title extends MTitle {
     }
 
     public String getUrl(){
+        if(p != null && p.isNtkSite())
+            return "/" + ntkSegment() + "/" + id;
         if(isComicWolfSource())
             return "/cl?toon=" + id;
         if(isWebtoonWolfSource())
@@ -71,6 +73,8 @@ public class Title extends MTitle {
     }
 
     public int fetchEps(CustomHttpClient client) {
+        if(client.isNtk())
+            return fetchNtkEps(client);
         if(isComicWolfSource())
             return fetchWolfEps(client, "/cl?toon=", "/cv?toon=");
         if(isWebtoonWolfSource())
@@ -174,6 +178,59 @@ public class Title extends MTitle {
             }
         }
         return LOAD_OK;
+    }
+
+    private int fetchNtkEps(CustomHttpClient client) {
+        try {
+            String segment = ntkSegment();
+            CustomHttpClient.PageResponse page = client.mgetCachedPage("/" + segment + "/" + id, PAGE_CACHE_TTL_MS);
+            Document d = Jsoup.parse(page.body);
+
+            Element h1 = d.selectFirst("h1");
+            if(h1 != null)
+                name = h1.ownText().trim();
+            Element authorElement = d.selectFirst("h1 + *");
+            if(authorElement != null)
+                author = authorElement.ownText().trim();
+
+            tags = new ArrayList<>();
+            for(Element tag : d.select("a[href*=genre], a[href*=tag], a:matchesOwn(^#)")) {
+                String text = tag.text().replace("#", "").trim();
+                if(text.length() > 0 && !tags.contains(text))
+                    tags.add(text);
+            }
+
+            Element img = d.selectFirst("img[src*=/" + id + "/], img[alt=\"" + name + "\"]");
+            if(img != null)
+                thumb = img.hasAttr("data-original") ? img.attr("data-original") : img.attr("src");
+
+            eps = new ArrayList<>();
+            Set<Integer> seenEpisodeIds = new HashSet<>();
+            for(Element link : d.select("a[href^=\"/" + segment + "/" + id + "/\"]")) {
+                String href = link.attr("href");
+                int epId = MainPageWebtoon.getSecondPathId(href, segment);
+                if(epId <= 0 || !seenEpisodeIds.add(epId))
+                    continue;
+                String epTitle = link.text().replace("▶ 보기", "").replace("›", "").trim();
+                epTitle = epTitle.replaceAll("\\s+", " ");
+                String date = "";
+                java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d{2}\\.\\d{2}\\.\\d{2})").matcher(epTitle);
+                if(matcher.find())
+                    date = matcher.group(1);
+                Manga tmp = new Manga(epId, epTitle, date, baseMode);
+                tmp.setMode(0);
+                tmp.setTitle(this);
+                tmp.setTitleId(id);
+                eps.add(tmp);
+            }
+        }catch(Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+        return LOAD_OK;
+    }
+
+    private String ntkSegment() {
+        return baseMode == MTitle.base_webtoon ? "webtoon" : "manhwa";
     }
 
     private int fetchWolfEps(CustomHttpClient client) {

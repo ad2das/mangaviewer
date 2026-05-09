@@ -41,6 +41,8 @@ import static ml.melun.mangaview.Utils.CODE_SCOPED_STORAGE;
 public class CustomHttpClient {
     public static final String DEFAULT_COMIC_URL = "https://wfwf449.com/cm";
     public static final String WEBTOON_URL = "https://wfwf449.com";
+    public static final String NTK_COMIC_URL = "https://ntk01.com/manhwa";
+    public static final String NTK_WEBTOON_URL = "https://ntk01.com";
     private static final long WFWF_DOMAIN_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L;
     private static final long WFWF_DOMAIN_FORCE_RETRY_INTERVAL_MS = 60 * 1000L;
     private static final long WFWF_DOMAIN_WAIT_TIMEOUT_MS = 6 * 1000L;
@@ -78,6 +80,7 @@ public class CustomHttpClient {
             }
         };
         loadSavedCookies();
+        loadSavedUserAgent();
         this.client = baseClient(new OkHttpClient.Builder()).build();
         this.unsafeFallbackClient = baseClient(getUnsafeOkHttpClient()).build();
 
@@ -86,8 +89,45 @@ public class CustomHttpClient {
     }
 
     public synchronized void setCookie(String k, String v){
+        if(k == null || k.length() == 0)
+            return;
+        if(v == null) {
+            cookies.remove(k);
+            persistCookies();
+            return;
+        }
         cookies.put(k, v);
         persistCookies();
+    }
+
+    public synchronized void setUserAgent(String userAgent) {
+        if(userAgent == null || userAgent.trim().length() == 0)
+            return;
+        agent = userAgent.trim();
+        context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
+                .edit()
+                .putString("httpUserAgent", agent)
+                .apply();
+    }
+    public synchronized void removeCookie(String k) {
+        cookies.remove(k);
+        persistCookies();
+    }
+    public synchronized boolean hasCloudflareClearance() {
+        String value = cookies.get("cf_clearance");
+        return value != null && value.length() > 0;
+    }
+    public synchronized void clearCloudflareCookies() {
+        boolean changed = false;
+        for(String key : new ArrayList<>(cookies.keySet())) {
+            String lower = key.toLowerCase(Locale.ROOT);
+            if(lower.startsWith("cf_") || "__cf_bm".equals(lower)) {
+                cookies.remove(key);
+                changed = true;
+            }
+        }
+        if(changed)
+            persistCookies();
     }
     public synchronized void resetCookie(){
         this.cookies = new HashMap<>();
@@ -96,11 +136,17 @@ public class CustomHttpClient {
     }
 
     public void syncCookiesFromWebView(String url){
+        syncCookiesFromWebView(url, false);
+    }
+
+    public void syncCookiesFromWebView(String url, boolean force){
         try {
+            if(url == null || url.length() == 0)
+                return;
             long now = System.currentTimeMillis();
             synchronized (this) {
                 Long lastSync = cookieSyncAt.get(url);
-                if(lastSync != null && now - lastSync < COOKIE_SYNC_INTERVAL_MS)
+                if(!force && lastSync != null && now - lastSync < COOKIE_SYNC_INTERVAL_MS)
                     return;
                 cookieSyncAt.put(url, now);
             }
@@ -152,6 +198,17 @@ public class CustomHttpClient {
         }
     }
 
+    private synchronized void loadSavedUserAgent(){
+        try {
+            SharedPreferences pref = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE);
+            String saved = pref.getString("httpUserAgent", null);
+            if(saved != null && saved.trim().length() > 0)
+                agent = saved.trim();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
     private synchronized void persistCookies(){
         try {
             JSONObject obj = new JSONObject();
@@ -190,6 +247,16 @@ public class CustomHttpClient {
 
     public synchronized String getCookie(String k){
         return cookies.get(k);
+    }
+
+    public synchronized String getCookieHeader() {
+        StringBuilder builder = new StringBuilder();
+        for(String key : cookies.keySet()) {
+            if(builder.length() > 0)
+                builder.append("; ");
+            builder.append(key).append('=').append(cookies.get(key));
+        }
+        return builder.toString();
     }
 
     public <T> T runWithRequestGroup(RequestGroup requestGroup, RequestWork<T> work) throws Exception {
@@ -255,7 +322,7 @@ public class CustomHttpClient {
         if(url == null)
             return false;
         String lower = url.toLowerCase(Locale.ROOT);
-        return lower.contains("wfwf") || lower.contains("wolf");
+        return lower.contains("wfwf") || lower.contains("wolf") || lower.contains("ntk");
     }
 
     public static String readBody(Response response) throws Exception {
@@ -279,7 +346,7 @@ public class CustomHttpClient {
     }
 
     public boolean resolveWfwfDomainNow() {
-        return ensureWfwfDomain(true);
+        return ensureNumberedDomain(true);
     }
 
     private boolean ensureWfwfDomainForRetry() {
@@ -289,14 +356,14 @@ public class CustomHttpClient {
                 return false;
             wfwfDomainLastForcedRetry = now;
         }
-        return ensureWfwfDomain(true);
+        return ensureNumberedDomain(true);
     }
 
-    private boolean ensureWfwfDomain(boolean force) {
+    private boolean ensureNumberedDomain(boolean force) {
         try {
             String webtoonUrl = getWebtoonUrl();
             String root = WfwfDomainResolver.toRoot(webtoonUrl);
-            if(!WfwfDomainResolver.isWfwfUrl(root))
+            if(!WfwfDomainResolver.isSupportedNumberedUrl(root))
                 return false;
 
             SharedPreferences pref = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE);
@@ -326,8 +393,9 @@ public class CustomHttpClient {
                 String resolved = WfwfDomainResolver.resolve(client, root, headers, currentRequestGroup.get());
                 if(resolved != null && !resolved.equals(root)) {
                     p.setWebtoonUrl(resolved);
-                    p.setUrl(resolved + "/cm");
-                    p.setDefUrl(resolved + "/cm");
+                    String comicPath = isNtkUrl(resolved) ? "/manhwa" : "/cm";
+                    p.setUrl(resolved + comicPath);
+                    p.setDefUrl(resolved + comicPath);
                     resetCookie();
                     clearPageCache();
                     changed = true;
@@ -367,7 +435,7 @@ public class CustomHttpClient {
     }
 
     public PageResponse mgetCachedPage(String url, long ttlMillis) throws Exception {
-        ensureWfwfDomain(false);
+        ensureNumberedDomain(false);
         String normalized = normalizePath(url);
         String cacheKey = getBaseUrl(normalized) + normalized;
         long now = System.currentTimeMillis();
@@ -396,6 +464,10 @@ public class CustomHttpClient {
                 throw new Exception("Request failed: " + normalized);
             int code = response.code();
             String body = readBody(response);
+            if(isCloudflareChallenge(code, body)) {
+                clearCloudflareCookies();
+                throw new Exception("Cloudflare challenge");
+            }
             if(code >= 500 && staleCached != null)
                 return new PageResponse(staleCached.code, staleCached.body, true);
             if(code >= 200 && code < 400 && body.length() > 0 && looksCacheable(body)) {
@@ -481,6 +553,14 @@ public class CustomHttpClient {
         return getRootUrl(getComicUrl());
     }
 
+    public boolean isNtk() {
+        return isNtkUrl(getWebtoonUrl()) || isNtkUrl(getComicUrl());
+    }
+
+    public boolean isNtkUrl(String url) {
+        return url != null && url.toLowerCase(Locale.ROOT).contains("://ntk");
+    }
+
     private boolean isWebtoonPath(String path){
         if(path == null)
             return false;
@@ -488,16 +568,26 @@ public class CustomHttpClient {
                 || path.startsWith("webtoon")
                 || path.startsWith("/ing")
                 || path.startsWith("/end")
+                || path.startsWith("/manhwa")
                 || path.startsWith("/list?toon=")
                 || path.startsWith("/view?toon=")
                 || path.startsWith("/search.html")
                 || path.contains("bo_table=webtoon");
     }
 
+    private boolean isNtkPagePath(String path) {
+        if(path == null)
+            return false;
+        return path.startsWith("/")
+                && !path.matches(".*\\.(jpg|jpeg|png|gif|webp|css|js|ico)(\\?.*)?$");
+    }
+
     private String getRootUrl(String url){
         String trimmed = trimTrailingSlash(url);
         if(trimmed.endsWith("/cm"))
             return trimmed.substring(0, trimmed.length() - 3);
+        if(trimmed.endsWith("/manhwa"))
+            return trimmed.substring(0, trimmed.length() - 7);
         return trimmed;
     }
 
@@ -509,7 +599,7 @@ public class CustomHttpClient {
 
 
     public Response mget(String url, Boolean useDefaultCookies, Map<String, String> customCookie){
-        ensureWfwfDomain(false);
+        ensureNumberedDomain(false);
         if(customCookie==null)
             customCookie = new HashMap<>();
         url = normalizePath(url);
@@ -553,7 +643,39 @@ public class CustomHttpClient {
         headers.put("Cookie", cbuilder.toString());
         headers.put("User-Agent", agent);
         headers.put("Referer", baseUrl);
+        if(isNtkUrl(baseUrl)) {
+            headers.put("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8");
+            headers.put("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7");
+            headers.put("Cache-Control", "max-age=0");
+            headers.put("Upgrade-Insecure-Requests", "1");
+            headers.put("Sec-Fetch-Dest", "document");
+            headers.put("Sec-Fetch-Mode", "navigate");
+            headers.put("Sec-Fetch-Site", "same-origin");
+            headers.put("Sec-Fetch-User", "?1");
+            putClientHintHeaders(headers);
+        }
         return headers;
+    }
+
+    private void putClientHintHeaders(Map<String, String> headers) {
+        int chromeMajor = chromeMajorVersion(agent);
+        String version = chromeMajor > 0 ? String.valueOf(chromeMajor) : "147";
+        headers.put("sec-ch-ua", "\"Chromium\";v=\"" + version + "\", \"Android WebView\";v=\"" + version + "\", \"Not A(Brand\";v=\"24\"");
+        headers.put("sec-ch-ua-mobile", "?1");
+        headers.put("sec-ch-ua-platform", "\"Android\"");
+    }
+
+    private static int chromeMajorVersion(String userAgent) {
+        try {
+            if(userAgent == null)
+                return -1;
+            java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("Chrome/(\\d+)").matcher(userAgent);
+            if(!matcher.find())
+                return -1;
+            return Integer.parseInt(matcher.group(1));
+        } catch (Exception e) {
+            return -1;
+        }
     }
 
     private boolean shouldRetryWithResolvedDomain(Response response) {
@@ -574,10 +696,27 @@ public class CustomHttpClient {
         return lower.contains("webtoon-list")
                 || lower.contains("searchitem")
                 || lower.contains("toon=")
+                || lower.contains("/webtoon/")
+                || lower.contains("/manhwa/")
                 || lower.contains("image-view")
                 || lower.contains("webtoon-body")
                 || lower.contains("miso-post-gallery")
                 || lower.contains("post-row");
+    }
+
+    private boolean isCloudflareChallenge(int code, String body) {
+        if(code != 403 || body == null)
+            return false;
+        String lower = body.toLowerCase(Locale.ROOT);
+        return lower.contains("cf-mitigated")
+                || lower.contains("challenges.cloudflare.com")
+                || lower.contains("cf-challenge")
+                || lower.contains("cf-turnstile")
+                || lower.contains("cf-please-wait")
+                || lower.contains("turnstile")
+                || lower.contains("__cf_bm")
+                || lower.contains("checking your browser")
+                || lower.contains("just a moment");
     }
 
     public static class PageResponse {

@@ -165,15 +165,16 @@ public final class MangaRepository {
             Map<String, String> headers = new HashMap<>();
             headers.put("User-Agent", getHttpClient().agent);
             String root = WfwfDomainResolver.toRoot(fetchUrl);
-            if(WfwfDomainResolver.isWfwfUrl(root)) {
+            if(WfwfDomainResolver.isSupportedNumberedUrl(root)) {
                 headers.put("Referer", root);
                 result = WfwfDomainResolver.resolve(getHttpClient().client, root, headers);
                 if(result == null)
                     return new UrlUpdateResult(false, "");
                 String resolvedRoot = WfwfDomainResolver.toRoot(result);
                 p.setWebtoonUrl(resolvedRoot);
-                p.setDefUrl(resolvedRoot + "/cm");
-                p.setUrl(resolvedRoot + "/cm");
+                String comicPath = resolvedRoot.contains("://ntk") ? "/manhwa" : "/cm";
+                p.setDefUrl(resolvedRoot + comicPath);
+                p.setUrl(resolvedRoot + comicPath);
                 getHttpClient().resetCookie();
                 getHttpClient().clearPageCache();
                 return new UrlUpdateResult(true, result);

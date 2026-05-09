@@ -93,6 +93,7 @@ public class Utils {
     private static final String MANGA_OFFLINE_PATH = "manga_offline_path";
 
     private static int captchaCount = 1;
+    private static long lastAutoCloudflareCaptchaAt = 0L;
 
     public static final String ReservedChars = "|\\?*<\":>+[]/'";
 
@@ -719,12 +720,14 @@ public class Utils {
 
     public static void showCaptchaPopup(String url, Context context, int code, Exception e, boolean force_close, Fragment fragment, Preference p){
         if(canUseContextForUi(context)) {
-            if (!checkConnection(context)) {
+            if (shouldOpenCloudflareCaptchaAutomatically()) {
+                startCaptchaActivity(context, code, fragment, url);
+            } else if (!checkConnection(context)) {
                 //no internet
                 //showErrorPopup(context, "네트워크 연결이 없습니다.", e, force_close);
                 safeToast(context, "네트워크 연결이 없습니다.", Toast.LENGTH_LONG);
                 if (force_close && context instanceof Activity) ((Activity) context).finish();
-            } else if (captchaCount == 0) {
+            } else if (captchaCount == 0 || getHttpClient().isNtk()) {
                 startCaptchaActivity(context, code, fragment, url);
             } else {
                 AlertDialog.Builder builder;
@@ -750,6 +753,16 @@ public class Utils {
             }
             captchaCount++;
         }
+    }
+
+    private static boolean shouldOpenCloudflareCaptchaAutomatically() {
+        if(!getHttpClient().isNtk() || getHttpClient().hasCloudflareClearance())
+            return false;
+        long now = System.currentTimeMillis();
+        if(now - lastAutoCloudflareCaptchaAt < 500L)
+            return false;
+        lastAutoCloudflareCaptchaAt = now;
+        return true;
     }
 
     static void startCaptchaActivity(Context context, int code, Fragment fragment, String url){
@@ -912,9 +925,61 @@ public class Utils {
     public static GlideUrl getGlideUrl(String image, int baseMode){
         String referer = getHttpClient().getUrl(baseMode);
         String url = normalizeImageUrl(image, baseMode);
-        return new GlideUrl(url, new LazyHeaders.Builder()
+        boolean ntkImage = getHttpClient().isNtkUrl(url) || isProtectedImageHost(url);
+        if(ntkImage)
+            referer = getSiteRoot(baseMode);
+        LazyHeaders.Builder headers = new LazyHeaders.Builder()
                 .addHeader("Referer", referer)
-                .build());
+                .addHeader("User-Agent", getHttpClient().agent);
+        String cookie = getHttpClient().getCookieHeader();
+        if(cookie != null && cookie.length() > 0)
+            headers.addHeader("Cookie", cookie);
+        if(ntkImage) {
+            headers.addHeader("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8");
+            headers.addHeader("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7");
+            headers.addHeader("Sec-Fetch-Dest", "image");
+            headers.addHeader("Sec-Fetch-Mode", "no-cors");
+            headers.addHeader("Sec-Fetch-Site", "same-origin");
+            addClientHintHeaders(headers);
+        }
+        return new GlideUrl(url, headers.build());
+    }
+
+    private static void addClientHintHeaders(LazyHeaders.Builder headers) {
+        int chromeMajor = chromeMajorVersion(getHttpClient().agent);
+        String version = chromeMajor > 0 ? String.valueOf(chromeMajor) : "147";
+        headers.addHeader("sec-ch-ua", "\"Chromium\";v=\"" + version + "\", \"Android WebView\";v=\"" + version + "\", \"Not A(Brand\";v=\"24\"");
+        headers.addHeader("sec-ch-ua-mobile", "?1");
+        headers.addHeader("sec-ch-ua-platform", "\"Android\"");
+    }
+
+    private static boolean isProtectedImageHost(String url) {
+        if(url == null)
+            return false;
+        try {
+            String host = android.net.Uri.parse(url).getHost();
+            if(host == null)
+                return false;
+            host = host.toLowerCase(Locale.ROOT);
+            return host.matches("y\\d+stm\\.com")
+                    || host.matches("w\\d+cloud\\.com")
+                    || host.matches("i\\d+\\.imgcloud\\d+\\.com");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static int chromeMajorVersion(String userAgent) {
+        try {
+            if(userAgent == null)
+                return -1;
+            java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("Chrome/(\\d+)").matcher(userAgent);
+            if(!matcher.find())
+                return -1;
+            return Integer.parseInt(matcher.group(1));
+        } catch (Exception e) {
+            return -1;
+        }
     }
 
     private static int guessImageBaseMode(String image) {
@@ -945,6 +1010,8 @@ public class Utils {
             url = url.substring(0, url.length() - 1);
         if(url.endsWith("/cm"))
             return url.substring(0, url.length() - 3);
+        if(url.endsWith("/manhwa"))
+            return url.substring(0, url.length() - 7);
         return url;
     }
 

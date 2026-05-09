@@ -257,25 +257,25 @@ public class Search {
                 last = appendNextClassificationDbGenreResults(webtoonResults, query);
             } else if(mode == 3) {
                 String alphabet = percentEncode(alphabetValue(query), Charset.forName("EUC-KR"));
-                appendWebtoonResults(client, webtoonResults, "/ing?type1=alphabet&type2=" + alphabet + "&o=n", 80);
-                appendWebtoonResults(client, webtoonResults, "/end?type1=alphabet&type2=" + alphabet + "&o=n", 80);
+                appendWebtoonResults(client, webtoonResults, ntkPath(client, "/ing?letter=" + alphabet, "/ing?type1=alphabet&type2=" + alphabet + "&o=n"), 80);
+                appendWebtoonResults(client, webtoonResults, ntkPath(client, "/end?letter=" + alphabet, "/end?type1=alphabet&type2=" + alphabet + "&o=n"), 80);
                 last = true;
             } else if(mode == 4) {
                 String status = webtoonStatus(query);
                 if(status.length() > 0) {
-                    appendWebtoonResults(client, webtoonResults, status + "?type1=day&type2=recent&o=n", 80);
+                    appendWebtoonResults(client, webtoonResults, ntkPath(client, status, status + "?type1=day&type2=recent&o=n"), 80);
                 } else {
                     String day = webtoonDay(query);
                     if(day.length() > 0) {
-                        appendWebtoonResults(client, webtoonResults, "/ing?type1=day&type2=" + day + "&o=n", 80);
-                        appendWebtoonResults(client, webtoonResults, "/end?type1=day&type2=" + day + "&o=n", 80);
+                        appendWebtoonResults(client, webtoonResults, ntkPath(client, "/ing?day=" + percentEncode(query, Charset.forName("UTF-8")), "/ing?type1=day&type2=" + day + "&o=n"), 80);
+                        appendWebtoonResults(client, webtoonResults, ntkPath(client, "/end?day=" + percentEncode(query, Charset.forName("UTF-8")), "/end?type1=day&type2=" + day + "&o=n"), 80);
                     } else {
-                        appendWebtoonResults(client, webtoonResults, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), 80);
+                        appendSearchResults(client, webtoonResults, base_webtoon, 80);
                     }
                 }
                 last = true;
             } else {
-                appendWebtoonResults(client, webtoonResults, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), 80);
+                appendSearchResults(client, webtoonResults, base_webtoon, 80);
                 last = true;
             }
 
@@ -308,22 +308,23 @@ public class Search {
                 }
             } else if(mode == 2) {
                 if(!classificationSourceFetched) {
-                    appendWebtoonResults(client, comicResults, "/cm?type1=genre&type2=" + percentEncode(query, Charset.forName("EUC-KR")) + "&o=n", 120);
+                    appendWebtoonResults(client, comicResults, comicRoot(client) + "?type1=genre&type2=" + percentEncode(query, Charset.forName("EUC-KR")) + "&o=n", 120);
                     classificationSourceFetched = true;
                 }
                 last = appendNextClassificationDbGenreResults(comicResults, query);
             } else if(mode == 3) {
-                appendWebtoonResults(client, comicResults, "/cm?type1=alphabet&type2=" + percentEncode(alphabetValue(query), Charset.forName("EUC-KR")) + "&o=n", 120);
+                String alphabet = percentEncode(alphabetValue(query), Charset.forName("EUC-KR"));
+                appendWebtoonResults(client, comicResults, ntkPath(client, "/manhwa?letter=" + alphabet, comicRoot(client) + "?type1=alphabet&type2=" + alphabet + "&o=n"), 120);
                 last = true;
             } else if(mode == 4) {
                 String type = comicType(query);
                 if(type.length() > 0)
-                    appendWebtoonResults(client, comicResults, "/cm?type1=complete&type2=" + type + "&o=n", 120);
+                    appendWebtoonResults(client, comicResults, ntkPath(client, "/manhwa?sort=recent", comicRoot(client) + "?type1=complete&type2=" + type + "&o=n"), 120);
                 else
-                    appendWebtoonResults(client, comicResults, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), 120);
+                    appendSearchResults(client, comicResults, base_comic, 120);
                 last = true;
             } else {
-                appendWebtoonResults(client, comicResults, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), 120);
+                appendSearchResults(client, comicResults, base_comic, 120);
                 last = true;
             }
 
@@ -348,6 +349,44 @@ public class Search {
             parsed = MainPageWebtoon.parseWolfTitles(Jsoup.parse(page.body), baseMode, limit);
         }
         target.addAll(parsed);
+    }
+
+    private void appendSearchResults(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {
+        if(client != null && client.isNtk()) {
+            ArrayList<Title> pool = new ArrayList<>();
+            if(targetBaseMode == base_webtoon) {
+                appendWebtoonResults(client, pool, "/ing", 0);
+                appendWebtoonResults(client, pool, "/end", 0);
+            } else {
+                appendWebtoonResults(client, pool, "/manhwa", 0);
+            }
+            String needle = normalizeSearchText(query);
+            for(Title title : pool) {
+                if(title == null)
+                    continue;
+                if(!normalizeSearchText(title.getName()).contains(needle))
+                    continue;
+                target.add(title);
+                if(limit > 0 && target.size() >= limit)
+                    return;
+            }
+            return;
+        }
+        appendWebtoonResults(client, target, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), limit);
+    }
+
+    private static String normalizeSearchText(String value) {
+        if(value == null)
+            return "";
+        return value.toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
+    }
+
+    private static String ntkPath(CustomHttpClient client, String ntkPath, String wolfPath) {
+        return client != null && client.isNtk() ? ntkPath : wolfPath;
+    }
+
+    private String comicRoot(CustomHttpClient client) {
+        return client != null && client.isNtk() ? "/manhwa" : "/cm";
     }
 
     private boolean appendNextClassificationDbGenreResults(ArrayList<Title> target, String genre) {
@@ -381,6 +420,9 @@ public class Search {
     static String genreFromCategoryPath(String path, int baseMode) {
         if(path == null)
             return "";
+        String ntkGenre = rawQueryValue(path, baseMode == base_comic ? "g" : "tag");
+        if(ntkGenre != null && ntkGenre.length() > 0)
+            return percentDecode(ntkGenre, Charset.forName("UTF-8")).trim();
         String type1 = rawQueryValue(path, "type1");
         if(!"genre".equalsIgnoreCase(type1))
             return "";

@@ -55,6 +55,19 @@ public class MainPageWebtoonTest {
     }
 
     @Test
+    public void parseWolfTitles_readsNtkLazyThumbnailAttributes() {
+        ArrayList<Title> dataSrcset = MainPageWebtoon.parseWolfTitles(
+                Jsoup.parse("<li><a href=\"/webtoon/501\"><img src=\"data:image/gif;base64,AA\" data-srcset=\"/data/webtoon/thumb-320.jpg 320w, /data/webtoon/thumb-640.jpg 640w\"><p class=\"subject\">NTK 웹툰</p></a></li>"),
+                base_webtoon, 0);
+        ArrayList<Title> background = MainPageWebtoon.parseWolfTitles(
+                Jsoup.parse("<li><a href=\"/manhwa/601\"><span style=\"background-image:url('/data/manhwa/thumb.jpg')\"></span><p class=\"subject\">NTK 만화</p></a></li>"),
+                base_comic, 0);
+
+        assertEquals("/data/webtoon/thumb-320.jpg", dataSrcset.get(0).getThumb());
+        assertEquals("/data/manhwa/thumb.jpg", background.get(0).getThumb());
+    }
+
+    @Test
     public void enhanceComicClassification_backfillsGenreSectionsFromInferredTags() {
         Ranking<Title> recent = new Ranking<>("정렬|최신순|/cm?type1=complete&type2=recent&o=n");
         recent.add(new Title("학원 러브코미디 만화", "", "", new ArrayList<>(), "", 401, base_comic));
@@ -73,6 +86,10 @@ public class MainPageWebtoonTest {
     public void genreFromCategoryPath_decodesGenreFilters() {
         assertEquals("학원", Search.genreFromCategoryPath(
                 "/cm?type1=genre&type2=%C7%D0%BF%F8&o=n", base_comic));
+        assertEquals("학원", Search.genreFromCategoryPath(
+                "/manhwa?g=%ED%95%99%EC%9B%90", base_comic));
+        assertEquals("로맨스", Search.genreFromCategoryPath(
+                "/ing?tag=%EB%A1%9C%EB%A7%A8%EC%8A%A4", base_webtoon));
         assertEquals("성인", Search.genreFromCategoryPath(
                 "/ing?type1=genre&o=n", base_webtoon));
         assertEquals("", Search.genreFromCategoryPath(

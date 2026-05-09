@@ -67,9 +67,13 @@ public class MainPageWebtoon {
 
     public static final String[][] WEBTOON_FILTER_GROUPS = buildWebtoonFilterGroups();
     public static final String[][] COMIC_FILTER_GROUPS = buildComicFilterGroups();
+    public static final String[][] NTK_WEBTOON_FILTER_GROUPS = buildNtkWebtoonFilterGroups();
+    public static final String[][] NTK_COMIC_FILTER_GROUPS = buildNtkComicFilterGroups();
 
     private static final String[][] SECTIONS = buildWebtoonSections();
     private static final String[][] COMIC_SECTIONS = buildComicSections();
+    private static final String[][] NTK_SECTIONS = buildNtkWebtoonSections();
+    private static final String[][] NTK_COMIC_SECTIONS = buildNtkComicSections();
 
     List<Ranking<?>> dataSet;
 
@@ -128,6 +132,12 @@ public class MainPageWebtoon {
     }
 
     public static String[][] getSections(int baseMode){
+        return getSections(baseMode, false);
+    }
+
+    public static String[][] getSections(int baseMode, boolean ntk){
+        if(ntk)
+            return baseMode == base_comic ? NTK_COMIC_SECTIONS : NTK_SECTIONS;
         if(baseMode == base_comic)
             return COMIC_SECTIONS;
         return SECTIONS;
@@ -137,6 +147,7 @@ public class MainPageWebtoon {
         for(int attempt = 0; attempt < 2; attempt++) {
             Ranking<Title> ranking = new Ranking<>(title);
             try{
+                path = normalizePathForClient(client, path);
                 CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
                 Document d = Jsoup.parse(page.body);
                 for(Title webtoon : parseWolfTitles(d, baseMode, MAIN_SECTION_LIMIT))
@@ -153,6 +164,81 @@ public class MainPageWebtoon {
             return ranking;
         }
         return new Ranking<>(title);
+    }
+
+    private static String normalizePathForClient(CustomHttpClient client, String path) {
+        if(client != null && client.isNtk())
+            return normalizeNtkPath(path);
+        return path;
+    }
+
+    private static String normalizeNtkPath(String path) {
+        if(path == null)
+            return path;
+        if(path.startsWith("/cm"))
+            path = "/manhwa" + path.substring(3);
+        if(path.startsWith("/ing") || path.startsWith("/end"))
+            return normalizeNtkWebtoonPath(path);
+        if(path.startsWith("/manhwa"))
+            return normalizeNtkComicPath(path);
+        return path;
+    }
+
+    private static String normalizeNtkWebtoonPath(String path) {
+        String type1 = rawQueryValue(path, "type1");
+        String type2 = rawQueryValue(path, "type2");
+        String order = rawQueryValue(path, "o");
+        String base = path.startsWith("/end") ? "/end" : "/ing";
+        ArrayList<String> params = new ArrayList<>();
+        if("f".equals(order))
+            params.add("sort=hot");
+        if("day".equals(type1) && type2 != null && type2.length() > 0)
+            params.add("day=" + type2);
+        else if("genre".equals(type1) && type2 != null && type2.length() > 0)
+            params.add("tag=" + type2);
+        else if("alphabet".equals(type1) && type2 != null && type2.length() > 0)
+            params.add("letter=" + type2);
+        return params.size() == 0 ? base : base + "?" + joinQuery(params);
+    }
+
+    private static String normalizeNtkComicPath(String path) {
+        String type1 = rawQueryValue(path, "type1");
+        String type2 = rawQueryValue(path, "type2");
+        String order = rawQueryValue(path, "o");
+        ArrayList<String> params = new ArrayList<>();
+        if("f".equals(order))
+            params.add("sort=hot");
+        if("genre".equals(type1) && type2 != null && type2.length() > 0)
+            params.add("g=" + type2);
+        else if("alphabet".equals(type1) && type2 != null && type2.length() > 0)
+            params.add("letter=" + type2);
+        else if("complete".equals(type1) && type2 != null && type2.length() > 0 && !"recent".equals(type2))
+            params.add("type=" + type2);
+        return params.size() == 0 ? "/manhwa" : "/manhwa?" + joinQuery(params);
+    }
+
+    private static String joinQuery(ArrayList<String> params) {
+        StringBuilder builder = new StringBuilder();
+        for(String param : params) {
+            if(builder.length() > 0)
+                builder.append('&');
+            builder.append(param);
+        }
+        return builder.toString();
+    }
+
+    private static String rawQueryValue(String value, String key) {
+        int question = value.indexOf('?');
+        if(question < 0)
+            return null;
+        String query = value.substring(question + 1);
+        for(String part : query.split("&")) {
+            int equals = part.indexOf('=');
+            String name = equals >= 0 ? part.substring(0, equals) : part;
+            if(name.equals(key))
+                return equals >= 0 ? part.substring(equals + 1) : "";
+        }
+        return null;
     }
 
     private static String[][] buildWebtoonSections() {
@@ -181,6 +267,41 @@ public class MainPageWebtoon {
             sections.add(section("장르별", genre, comicGenrePath(genre, "n")));
         for(int i = 0; i < ALPHABET_LABELS.length; i++)
             sections.add(section("작품별", ALPHABET_LABELS[i], comicAlphabetPath(ALPHABET_VALUES[i], "n")));
+        return sections.toArray(new String[0][]);
+    }
+
+    private static String[][] buildNtkWebtoonSections() {
+        ArrayList<String[]> sections = new ArrayList<>();
+        sections.add(section("연재웹툰", "인기순", "/ing?sort=hot"));
+        sections.add(section("연재웹툰", "신작", "/ing"));
+        sections.add(section("연재웹툰", "월", "/ing?day=%EC%9B%94"));
+        sections.add(section("연재웹툰", "화", "/ing?day=%ED%99%94"));
+        sections.add(section("연재웹툰", "수", "/ing?day=%EC%88%98"));
+        sections.add(section("연재웹툰", "목", "/ing?day=%EB%AA%A9"));
+        sections.add(section("연재웹툰", "금", "/ing?day=%EA%B8%88"));
+        sections.add(section("완결웹툰", "인기순", "/end?sort=hot"));
+        sections.add(section("완결웹툰", "최신", "/end"));
+        sections.add(section("장르별", "드라마", "/ing?tag=%EB%93%9C%EB%9D%BC%EB%A7%88"));
+        sections.add(section("장르별", "판타지", "/ing?tag=%ED%8C%90%ED%83%80%EC%A7%80"));
+        sections.add(section("장르별", "액션", "/ing?tag=%EC%95%A1%EC%85%98"));
+        sections.add(section("장르별", "로맨스", "/ing?tag=%EB%A1%9C%EB%A7%A8%EC%8A%A4"));
+        sections.add(section("장르별", "무협", "/ing?tag=%EB%AC%B4%ED%98%91"));
+        return sections.toArray(new String[0][]);
+    }
+
+    private static String[][] buildNtkComicSections() {
+        ArrayList<String[]> sections = new ArrayList<>();
+        sections.add(section("정렬", "인기순", "/manhwa?sort=hot"));
+        sections.add(section("정렬", "최신", "/manhwa"));
+        sections.add(section("장르별", "순정", "/manhwa?g=%EC%88%9C%EC%A0%95"));
+        sections.add(section("장르별", "액션", "/manhwa?g=%EC%95%A1%EC%85%98"));
+        sections.add(section("장르별", "SF", "/manhwa?g=SF"));
+        sections.add(section("장르별", "개그", "/manhwa?g=%EA%B0%9C%EA%B7%B8"));
+        sections.add(section("장르별", "러브코미디", "/manhwa?g=%EB%9F%AC%EB%B8%8C%EC%BD%94%EB%AF%B8%EB%94%94"));
+        sections.add(section("장르별", "로맨스", "/manhwa?g=%EB%A1%9C%EB%A7%A8%EC%8A%A4"));
+        sections.add(section("장르별", "스포츠", "/manhwa?g=%EC%8A%A4%ED%8F%AC%EC%B8%A0"));
+        sections.add(section("장르별", "판타지", "/manhwa?g=%ED%8C%90%ED%83%80%EC%A7%80"));
+        sections.add(section("장르별", "학원", "/manhwa?g=%ED%95%99%EC%9B%90"));
         return sections.toArray(new String[0][]);
     }
 
@@ -234,6 +355,53 @@ public class MainPageWebtoon {
         for(int i = 0; i < ALPHABET_LABELS.length; i++)
             alphabets.add(filter("작품별", ALPHABET_LABELS[i], comicAlphabetPath(ALPHABET_VALUES[i], "n")));
         groups.add(alphabets.toArray(new String[0]));
+        return groups.toArray(new String[0][]);
+    }
+
+    private static String[][] buildNtkWebtoonFilterGroups() {
+        ArrayList<String[]> groups = new ArrayList<>();
+        groups.add(new String[]{
+                filter("정렬", "연재 인기순", "/ing?sort=hot"),
+                filter("정렬", "연재 신작", "/ing"),
+                filter("정렬", "완결 인기순", "/end?sort=hot"),
+                filter("정렬", "완결 최신순", "/end")
+        });
+        groups.add(new String[]{
+                filter("연재 요일별", "월", "/ing?day=%EC%9B%94"),
+                filter("연재 요일별", "화", "/ing?day=%ED%99%94"),
+                filter("연재 요일별", "수", "/ing?day=%EC%88%98"),
+                filter("연재 요일별", "목", "/ing?day=%EB%AA%A9"),
+                filter("연재 요일별", "금", "/ing?day=%EA%B8%88"),
+                filter("연재 요일별", "토", "/ing?day=%ED%86%A0"),
+                filter("연재 요일별", "일", "/ing?day=%EC%9D%BC")
+        });
+        groups.add(new String[]{
+                filter("연재 장르별", "드라마", "/ing?tag=%EB%93%9C%EB%9D%BC%EB%A7%88"),
+                filter("연재 장르별", "판타지", "/ing?tag=%ED%8C%90%ED%83%80%EC%A7%80"),
+                filter("연재 장르별", "액션", "/ing?tag=%EC%95%A1%EC%85%98"),
+                filter("연재 장르별", "로맨스", "/ing?tag=%EB%A1%9C%EB%A7%A8%EC%8A%A4"),
+                filter("연재 장르별", "무협", "/ing?tag=%EB%AC%B4%ED%98%91")
+        });
+        return groups.toArray(new String[0][]);
+    }
+
+    private static String[][] buildNtkComicFilterGroups() {
+        ArrayList<String[]> groups = new ArrayList<>();
+        groups.add(new String[]{
+                filter("정렬", "인기순", "/manhwa?sort=hot"),
+                filter("정렬", "최신순", "/manhwa")
+        });
+        groups.add(new String[]{
+                filter("장르별", "순정", "/manhwa?g=%EC%88%9C%EC%A0%95"),
+                filter("장르별", "액션", "/manhwa?g=%EC%95%A1%EC%85%98"),
+                filter("장르별", "SF", "/manhwa?g=SF"),
+                filter("장르별", "개그", "/manhwa?g=%EA%B0%9C%EA%B7%B8"),
+                filter("장르별", "러브코미디", "/manhwa?g=%EB%9F%AC%EB%B8%8C%EC%BD%94%EB%AF%B8%EB%94%94"),
+                filter("장르별", "로맨스", "/manhwa?g=%EB%A1%9C%EB%A7%A8%EC%8A%A4"),
+                filter("장르별", "스포츠", "/manhwa?g=%EC%8A%A4%ED%8F%AC%EC%B8%A0"),
+                filter("장르별", "판타지", "/manhwa?g=%ED%8C%90%ED%83%80%EC%A7%80"),
+                filter("장르별", "학원", "/manhwa?g=%ED%95%99%EC%9B%90")
+        });
         return groups.toArray(new String[0][]);
     }
 
@@ -292,15 +460,23 @@ public class MainPageWebtoon {
 
     public static ArrayList<Title> parseWolfTitles(Document d, int baseMode, int limit){
         ArrayList<Title> titles = new ArrayList<>();
-        for(Element e : d.select("div.webtoon-list li, article.searchItem")){
+        java.util.HashSet<String> seenTitleKeys = new java.util.HashSet<>();
+        for(Element e : d.select("div.webtoon-list li, article.searchItem, a[href*=toon=], a[href*=/webtoon/], a[href*=/manhwa/]")){
             try{
-                Element link = e.selectFirst("a[href*=toon=]");
+                Element link = e.tagName().equals("a") ? e : e.selectFirst("a[href*=toon=], a[href*=/webtoon/], a[href*=/manhwa/]");
                 if(link == null) continue;
                 String href = link.attr("href");
                 int id = getQueryInt(href, "toon");
+                if(id <= 0)
+                    id = getPathId(href, "webtoon");
+                if(id <= 0)
+                    id = getPathId(href, "manhwa");
                 if(id <= 0) continue;
                 int detectedBaseMode = detectWolfBaseMode(href);
                 if(detectedBaseMode != 0 && detectedBaseMode != baseMode)
+                    continue;
+                String seenKey = baseMode + ":" + id;
+                if(!seenTitleKeys.add(seenKey))
                     continue;
 
                 String name = firstOwnText(e.selectFirst("p.subject"));
@@ -310,18 +486,19 @@ public class MainPageWebtoon {
                     name = link.attr("title");
                 if(name.length() == 0)
                     name = getQueryString(href, "title");
+                if(name.length() == 0)
+                    name = cleanNtkListText(link.text());
 
                 String thumb = "";
-                Element img = e.selectFirst("img[data-original]");
+                Element img = e.selectFirst("img");
                 if(img != null)
-                    thumb = img.attr("data-original");
-                if(thumb.length() == 0 && img != null)
-                    thumb = img.attr("src");
+                    thumb = firstImageAttr(img);
                 if(thumb.length() == 0) {
-                    Element searchPng = e.selectFirst(".searchPng[style*=background-image]");
-                    if(searchPng != null)
-                        thumb = extractBackgroundImage(searchPng.attr("style"));
+                    Element background = e.selectFirst("[style*=background-image], [style*=background]");
+                    if(background != null)
+                        thumb = extractBackgroundImage(background.attr("style"));
                 }
+                thumb = resolveCoverThumb(name, id, thumb, baseMode);
 
                 Elements infos = e.select("div.txt p");
                 List<String> tags = new ArrayList<>();
@@ -348,7 +525,8 @@ public class MainPageWebtoon {
         String normalized = href.toLowerCase(Locale.ROOT);
         if(normalized.contains("/cl?toon=")
                 || normalized.contains("/cv?toon=")
-                || normalized.contains("/cm?"))
+                || normalized.contains("/cm?")
+                || normalized.contains("/manhwa"))
             return base_comic;
         if(normalized.contains("/list?toon=")
                 || normalized.contains("/view?toon=")
@@ -357,6 +535,162 @@ public class MainPageWebtoon {
                 || normalized.contains("/end?"))
             return base_webtoon;
         return 0;
+    }
+
+    static int getPathId(String href, String segment) {
+        try {
+            if(href == null)
+                return -1;
+            String marker = "/" + segment + "/";
+            int start = href.indexOf(marker);
+            if(start < 0)
+                return -1;
+            start += marker.length();
+            int end = href.indexOf('/', start);
+            if(end < 0)
+                end = href.indexOf('?', start);
+            if(end < 0)
+                end = href.length();
+            return Integer.parseInt(href.substring(start, end));
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    static int getSecondPathId(String href, String segment) {
+        try {
+            if(href == null)
+                return -1;
+            String marker = "/" + segment + "/";
+            int start = href.indexOf(marker);
+            if(start < 0)
+                return -1;
+            start = href.indexOf('/', start + marker.length());
+            if(start < 0)
+                return -1;
+            start++;
+            int end = href.indexOf('/', start);
+            if(end < 0)
+                end = href.indexOf('?', start);
+            if(end < 0)
+                end = href.length();
+            return Integer.parseInt(href.substring(start, end));
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    private static String cleanNtkListText(String text) {
+        if(text == null)
+            return "";
+        String cleaned = text.replace("UP", "")
+                .replace("NEW", "")
+                .replace("완결", "")
+                .replace("▶ 보기", "")
+                .replace("›", " ")
+                .trim();
+        cleaned = cleaned.replaceAll("\\s+", " ");
+        cleaned = cleaned.replaceAll("\\s+\\d+화.*$", "").trim();
+        return cleaned;
+    }
+
+    private static String firstImageAttr(Element img) {
+        if(img == null)
+            return "";
+        String[] attrs = {
+                "data-original",
+                "data-src",
+                "data-lazy-src",
+                "data-url",
+                "data-image",
+                "data-img",
+                "data-thumb",
+                "data-thumbnail",
+                "data-background-image"
+        };
+        for(String attr : attrs) {
+            String value = img.attr(attr);
+            if(isUsableImageValue(value))
+                return value.trim();
+        }
+        String srcset = firstSrcsetImage(img.attr("data-srcset"));
+        if(srcset.length() == 0)
+            srcset = firstSrcsetImage(img.attr("srcset"));
+        if(srcset.length() > 0)
+            return srcset;
+        String styleImage = extractBackgroundImage(img.attr("style"));
+        if(isUsableImageValue(styleImage))
+            return styleImage;
+        String src = img.attr("src");
+        if(isUsableImageValue(src))
+            return src.trim();
+        return "";
+    }
+
+    private static String firstSrcsetImage(String srcset) {
+        if(srcset != null && srcset.trim().length() > 0) {
+            String first = srcset.split(",")[0].trim();
+            int space = first.indexOf(' ');
+            if(space > 0)
+                first = first.substring(0, space);
+            if(isUsableImageValue(first))
+                return first.trim();
+        }
+        return "";
+    }
+
+    private static boolean isUsableImageValue(String value) {
+        if(value == null)
+            return false;
+        String trimmed = value.trim();
+        return trimmed.length() > 0
+                && !trimmed.startsWith("data:")
+                && !"about:blank".equalsIgnoreCase(trimmed)
+                && !"#".equals(trimmed);
+    }
+
+    public static String resolveCoverThumb(String name, int id, String thumb, int baseMode) {
+        if(!isPlatformLogoThumb(thumb))
+            return thumb == null ? "" : thumb;
+        DbTitle dbTitle = findClassificationDbTitle(name, id, baseMode);
+        if(dbTitle != null && !isPlatformLogoThumb(dbTitle.thumb) && dbTitle.thumb != null && dbTitle.thumb.length() > 0)
+            return dbTitle.thumb;
+        return "";
+    }
+
+    public static boolean isPlatformLogoThumb(String thumb) {
+        if(thumb == null)
+            return true;
+        String normalized = thumb.trim().toLowerCase(Locale.ROOT);
+        return normalized.length() == 0
+                || normalized.startsWith("/platforms/")
+                || normalized.contains("/platforms/");
+    }
+
+    private static DbTitle findClassificationDbTitle(String name, int id, int baseMode) {
+        if(baseMode == base_comic) {
+            loadComicClassificationDb();
+            DbTitle byId = comicClassificationTitleDb.get(id);
+            if(byId != null)
+                return byId;
+            return findClassificationDbTitleByName(comicClassificationTitleDb, name);
+        }
+        loadClassificationDb();
+        DbTitle byId = classificationTitleDb.get(id);
+        if(byId != null)
+            return byId;
+        return findClassificationDbTitleByName(classificationTitleDb, name);
+    }
+
+    private static DbTitle findClassificationDbTitleByName(Map<Integer, DbTitle> titleDb, String name) {
+        String nameKey = normalizeClassificationName(name);
+        if(nameKey.length() == 0)
+            return null;
+        for(DbTitle title : titleDb.values()) {
+            if(title != null && nameKey.equals(normalizeClassificationName(title.name)))
+                return title;
+        }
+        return null;
     }
 
     public static void applyInferredWebtoonTags(Title title) {
@@ -1152,8 +1486,12 @@ public class MainPageWebtoon {
     }
 
     public static List<Ranking<?>> getBlankDataSet(int baseMode){
+        return getBlankDataSet(baseMode, false);
+    }
+
+    public static List<Ranking<?>> getBlankDataSet(int baseMode, boolean ntk){
         List<Ranking<?>> dataset = new ArrayList<>();
-        String[][] sections = getSections(baseMode);
+        String[][] sections = getSections(baseMode, ntk);
         for(String[] section : sections)
             dataset.add(new Ranking<>(section[0]));
         return dataset;

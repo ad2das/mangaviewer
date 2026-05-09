@@ -67,6 +67,7 @@ import ml.melun.mangaview.viewmodel.StartupViewModel;
 import static android.Manifest.permission.READ_EXTERNAL_STORAGE;
 import static android.Manifest.permission.WRITE_EXTERNAL_STORAGE;
 import static ml.melun.mangaview.Downloader.BROADCAST_STOP;
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Migrator.MIGRATE_FAIL;
 import static ml.melun.mangaview.Migrator.MIGRATE_PROGRESS;
@@ -78,10 +79,13 @@ import static ml.melun.mangaview.Utils.CODE_SCOPED_STORAGE;
 import static ml.melun.mangaview.Utils.showPopup;
 import static ml.melun.mangaview.Utils.showYesNoNeutralPopup;
 import static ml.melun.mangaview.Utils.writePreferenceToFile;
+import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 import static ml.melun.mangaview.activity.FirstTimeActivity.RESULT_EULA_AGREE;
 import static ml.melun.mangaview.activity.FolderSelectActivity.MODE_FILE_SAVE;
 import static ml.melun.mangaview.activity.SettingsActivity.RESULT_NEED_RESTART;
 import static ml.melun.mangaview.mangaview.CustomHttpClient.DEFAULT_COMIC_URL;
+import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_COMIC_URL;
+import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_WEBTOON_URL;
 import static ml.melun.mangaview.mangaview.CustomHttpClient.WEBTOON_URL;
 
 
@@ -113,6 +117,7 @@ public class MainActivity extends AppCompatActivity
     StartupViewModel startupViewModel;
     UrlUpdateCallback pendingUrlUpdateCallback;
     private static final int FIRST_TIME_ACTIVITY = 9;
+    private long lastNtkCaptchaLaunchAt = 0L;
 
 
     Fragment[] fragments = new Fragment[3];
@@ -340,6 +345,7 @@ public class MainActivity extends AppCompatActivity
 
         content.post(() -> AppUpdateManager.checkForUpdate(this));
         content.postDelayed(this::runDeferredStartupTasks, 500);
+        content.post(this::maybeOpenNtkCaptcha);
 
         // savedInstanceState
 
@@ -351,6 +357,8 @@ public class MainActivity extends AppCompatActivity
     private void runDeferredStartupTasks() {
         if(isFinishing() || isDestroyed())
             return;
+        if(maybeOpenNtkCaptcha())
+            return;
         MainApplication.initDeferredServices();
         setupAccountHeader();
         startDeferredUrlUpdate();
@@ -361,6 +369,24 @@ public class MainActivity extends AppCompatActivity
     protected void onResume() {
         super.onResume();
         AppUpdateManager.resumePendingInstall(this);
+        maybeOpenNtkCaptcha();
+    }
+
+    private boolean maybeOpenNtkCaptcha() {
+        if(isFinishing() || isDestroyed())
+            return false;
+        if(getHttpClient().isNtk() && !getHttpClient().hasCloudflareClearance()) {
+            getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
+            getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
+        }
+        if(!getHttpClient().isNtk() || getHttpClient().hasCloudflareClearance())
+            return false;
+        long now = System.currentTimeMillis();
+        if(now - lastNtkCaptchaLaunchAt < 1500L)
+            return true;
+        lastNtkCaptchaLaunchAt = now;
+        Utils.showCaptchaPopup(this, 3, null, p);
+        return true;
     }
 
     private void startDeferredUrlUpdate() {
@@ -722,6 +748,12 @@ public class MainActivity extends AppCompatActivity
         MenuItem search = menu.findItem(R.id.action_search);
         if(search != null)
             search.setVisible(false);
+        MenuItem site = menu.findItem(R.id.action_site_switch);
+        if(site != null) {
+            boolean ntk = p.isNtkSite();
+            site.setIcon(ntk ? R.drawable.ic_site_ntk : R.drawable.ic_site_wfwf);
+            site.setTitle(ntk ? "NTK" : "WFWF");
+        }
         return super.onPrepareOptionsMenu(menu);
     }
 
@@ -733,11 +765,41 @@ public class MainActivity extends AppCompatActivity
         if (id == R.id.action_search) {
             openSearchTab();
             return true;
+        }else if (id == R.id.action_site_switch) {
+            toggleSitePreset();
+            return true;
         }else if (id == R.id.action_settings) {
             toggleAccountSignIn();
             return true;
         }
         return super.onOptionsItemSelected(item);
+    }
+
+    private void toggleSitePreset() {
+        if(p.isNtkSite())
+            switchSitePreset(DEFAULT_COMIC_URL, WEBTOON_URL, "WFWF");
+        else
+            switchSitePreset(NTK_COMIC_URL, NTK_WEBTOON_URL, "NTK");
+    }
+
+    private void switchSitePreset(String comicUrl, String webtoonUrl, String label) {
+        p.setSitePreset(comicUrl, webtoonUrl);
+        MainApplication.getHttpClient().resetCookie();
+        MainApplication.getHttpClient().clearPageCache();
+        invalidateOptionsMenu();
+        Toast.makeText(context, label + " 사이트로 변경 중입니다.", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            boolean changed = MainApplication.getHttpClient().resolveWfwfDomainNow();
+            runOnUiThread(() -> {
+                invalidateOptionsMenu();
+                UrlUpdateCallback callback = fragments[0] instanceof MainMain ? ((MainMain) fragments[0]).getCallback() : null;
+                if(callback != null)
+                    callback.callback(true);
+                Toast.makeText(context, changed
+                        ? label + " 사이트가 " + p.getWebtoonUrl() + " 로 변경되었습니다."
+                        : label + " 사이트로 변경되었습니다.", Toast.LENGTH_SHORT).show();
+            });
+        }).start();
     }
 
     boolean changeFragment(int index){
@@ -827,6 +889,14 @@ public class MainActivity extends AppCompatActivity
                 }));
             } else {
                 Utils.safeToast(context, getString(R.string.account_sign_in_failed), Toast.LENGTH_LONG);
+            }
+            return;
+        }
+        if(resultCode == RESULT_CAPTCHA) {
+            if(fragments[0] instanceof MainMain) {
+                UrlUpdateCallback callback = ((MainMain) fragments[0]).getCallback();
+                if(callback != null)
+                    callback.callback(true);
             }
             return;
         }

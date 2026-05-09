@@ -3,6 +3,7 @@ package ml.melun.mangaview.adapter;
 import android.content.Context;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.Drawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.TextUtils;
@@ -22,7 +23,11 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.bumptech.glide.Glide;
+import com.bumptech.glide.load.DataSource;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
+import com.bumptech.glide.load.engine.GlideException;
+import com.bumptech.glide.request.RequestListener;
+import com.bumptech.glide.request.target.Target;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
@@ -131,7 +136,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         this.dark = p.getDarkTheme();
         this.save = p.getDataSave();
         inflater = LayoutInflater.from(context);
-        dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
+        dataSet = MainPageWebtoon.getBlankDataSet(baseMode, isNtkSite());
         rows = new ArrayList<>();
         sharedHomePool.setMaxRecycledViews(VIEW_TYPE_HOME_CONTINUE, 12);
         sharedHomePool.setMaxRecycledViews(VIEW_TYPE_HOME_RANKING, 12);
@@ -158,7 +163,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return;
         }
         if(!hasFetchedContent())
-            dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
+            dataSet = MainPageWebtoon.getBlankDataSet(baseMode, isNtkSite());
         List<Object> warmRows = buildRows(dataSet, false);
         if(!hasDisplayContent(warmRows))
             warmRows = buildInitialPlaceholderRows();
@@ -199,8 +204,19 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     public void setLoading(){
-        dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
+        dataSet = MainPageWebtoon.getBlankDataSet(baseMode, isNtkSite());
         updateRows(new ArrayList<>());
+    }
+
+    public void resetForSiteChange() {
+        cancelFetch();
+        dataSet = MainPageWebtoon.getBlankDataSet(baseMode, isNtkSite());
+        initialRowsShown = false;
+        pendingRows = null;
+        rowDiffGeneration++;
+        preloadedThumbs.clear();
+        preloadCount = 0;
+        updateRows(buildRowsForCurrentTab(true));
     }
 
     public void setListener(MainAdapter.onItemClick listener){
@@ -465,8 +481,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         List<Title> seedTitles = collectTitles(sections, 24);
         List<Title> recentTitles = recentTitles();
         boolean hasServerTitles = seedTitles.size() > 0;
-        if(HOME_HERO_ENABLED && hasServerTitles)
-            result.add(new HeroRow(seedTitles.subList(0, Math.min(5, seedTitles.size()))));
+        List<Title> heroTitles = titlesWithThumbnails(seedTitles, 5);
+        if(HOME_HERO_ENABLED && heroTitles.size() > 0)
+            result.add(new HeroRow(heroTitles));
         List<Title> continueTitles = recentTitles;
         if(continueTitles.size() > 0)
             result.add(new HomeSection("이어보기", "전체보기", "", continueTitles, STYLE_CONTINUE));
@@ -657,7 +674,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         CachedTitle(MTitle source, int baseMode) {
             this.name = source.getName();
             this.id = source.getId();
-            this.thumb = source.getThumb();
+            this.thumb = MainPageWebtoon.resolveCoverThumb(name, id, source.getThumb(), baseMode);
             this.author = source.getAuthor();
             this.tags = source.getTags();
             this.release = source.getRelease();
@@ -666,14 +683,18 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         Title toTitle() {
-            MTitle title = new MTitle(name, id, thumb, author, tags, release, baseMode);
+            MTitle title = new MTitle(name, id, MainPageWebtoon.resolveCoverThumb(name, id, thumb, baseMode), author, tags, release, baseMode);
             title.setPath(path);
             return new Title(title);
         }
     }
 
     private String homeCacheKey() {
-        return HOME_CACHE_KEY_PREFIX + baseMode;
+        return HOME_CACHE_KEY_PREFIX + (isNtkSite() ? "ntk_" : "wfwf_") + baseMode;
+    }
+
+    private boolean isNtkSite() {
+        return getHttpClient().isNtk();
     }
 
     private boolean showCachedHomeRows() {
@@ -846,6 +867,23 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         return titles;
     }
 
+    private List<Title> titlesWithThumbnails(List<Title> source, int limit) {
+        ArrayList<Title> titles = new ArrayList<>();
+        if(source == null)
+            return titles;
+        for(Title title : source) {
+            if(title == null)
+                continue;
+            String thumb = title.getThumb();
+            if(thumb == null || thumb.trim().length() == 0)
+                continue;
+            titles.add(title);
+            if(limit > 0 && titles.size() >= limit)
+                break;
+        }
+        return titles;
+    }
+
     private List<Title> titlesFromRanking(Ranking<?> ranking, int limit) {
         ArrayList<Title> titles = new ArrayList<>();
         appendTitles(ranking, titles, limit);
@@ -982,6 +1020,17 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 .thumbnail(0.25f)
                 .dontAnimate()
                 .placeholder(placeholderRes)
+                .listener(new RequestListener<Drawable>() {
+                    @Override
+                    public boolean onLoadFailed(GlideException e, Object model, Target<Drawable> target, boolean isFirstResource) {
+                        return false;
+                    }
+
+                    @Override
+                    public boolean onResourceReady(Drawable resource, Object model, Target<Drawable> target, DataSource dataSource, boolean isFirstResource) {
+                        return false;
+                    }
+                })
                 .into(thumbView);
     }
 
@@ -1655,13 +1704,20 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
         void bind() {
             Object tag = filterSections.getTag();
-            if(tag instanceof Integer && ((Integer) tag) == baseMode && filterSections.getChildCount() > 0)
+            String tagKey = baseMode + ":" + isNtkSite();
+            if(tagKey.equals(tag) && filterSections.getChildCount() > 0)
                 return;
-            filterSections.setTag(baseMode);
+            filterSections.setTag(tagKey);
             statusFilters.setVisibility(View.GONE);
             genreFilters.setVisibility(View.GONE);
             filterSections.removeAllViews();
-            bindFilters(baseMode == base_comic ? MainPageWebtoon.COMIC_FILTER_GROUPS : MainPageWebtoon.WEBTOON_FILTER_GROUPS);
+            bindFilters(filterGroupsForCurrentSite());
+        }
+
+        String[][] filterGroupsForCurrentSite() {
+            if(isNtkSite())
+                return baseMode == base_comic ? MainPageWebtoon.NTK_COMIC_FILTER_GROUPS : MainPageWebtoon.NTK_WEBTOON_FILTER_GROUPS;
+            return baseMode == base_comic ? MainPageWebtoon.COMIC_FILTER_GROUPS : MainPageWebtoon.WEBTOON_FILTER_GROUPS;
         }
 
         void bindFilters(String[][] groups) {
@@ -2222,7 +2278,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             boolean hadCompleteServerHome = hasCompleteHomeSections(dataSet);
             keepExistingRowsDuringFetch = hadInitialRows && hadCompleteServerHome;
             if(!hadInitialRows || collectTitles(dataSet, 1).size() == 0)
-                dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
+                dataSet = MainPageWebtoon.getBlankDataSet(baseMode, isNtkSite());
             preloadedThumbs.clear();
             preloadCount = 0;
             pendingRows = null;
@@ -2240,10 +2296,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
         private Boolean fetchSections() {
             cancellation = MangaRepository.cancellation();
-            String[][] sections = MainPageWebtoon.getSections(baseMode);
+            boolean ntk = isNtkSite();
+            String[][] sections = MainPageWebtoon.getSections(baseMode, ntk);
             CompletionService<SectionResult> completion = AppDispatchers.ioCompletionService();
             MainPageWebtoon parser = MangaRepository.createWebtoonParser(baseMode);
-            List<Ranking<?>> fetchedSections = MainPageWebtoon.getBlankDataSet(baseMode);
+            List<Ranking<?>> fetchedSections = MainPageWebtoon.getBlankDataSet(baseMode, ntk);
             int submitted = 0;
             int loaded = 0;
             List<SectionResult> pendingResults = new ArrayList<>();
@@ -2310,7 +2367,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(batch.results == null || batch.results.size() == 0)
                 return;
             if(dataSet == null)
-                dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
+                dataSet = MainPageWebtoon.getBlankDataSet(baseMode, isNtkSite());
             List<Ranking<?>> loadedSections = new ArrayList<>();
             for(SectionResult result : batch.results) {
                 if(result == null || result.index < 0)

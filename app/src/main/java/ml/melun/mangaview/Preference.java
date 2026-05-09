@@ -25,6 +25,8 @@ import static ml.melun.mangaview.mangaview.MTitle.baseModeStr;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static ml.melun.mangaview.mangaview.Title.isInteger;
 import static ml.melun.mangaview.mangaview.CustomHttpClient.DEFAULT_COMIC_URL;
+import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_COMIC_URL;
+import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_WEBTOON_URL;
 import static ml.melun.mangaview.mangaview.CustomHttpClient.WEBTOON_URL;
 
 public class Preference {
@@ -237,6 +239,10 @@ public class Preference {
         String normalized = normalizeHttpUrl(sourceUrl.trim(), DEFAULT_COMIC_URL);
         while(normalized.endsWith("/"))
             normalized = normalized.substring(0, normalized.length() - 1);
+        if(normalized.matches("https?://ntk\\d+\\.com"))
+            return normalized + "/manhwa";
+        if(normalized.matches("https?://ntk\\d+\\.com/cm"))
+            return normalized.substring(0, normalized.length() - 3) + "/manhwa";
         if(normalized.contains("manatoki"))
             return DEFAULT_COMIC_URL;
         if(normalized.equals(WEBTOON_URL))
@@ -346,6 +352,24 @@ public class Preference {
         prefsEditor.putString("webtoonUrl", this.webtoonUrl);
         prefsEditor.apply();
         notifySync("settings");
+    }
+
+    public void setSitePreset(String comicUrl, String webtoonUrl) {
+        this.defUrl = normalizeComicUrl(comicUrl);
+        this.url = this.defUrl;
+        this.webtoonUrl = normalizeWebtoonUrl(webtoonUrl);
+        prefsEditor.putString("defUrl", this.defUrl)
+                .putString("url", this.url)
+                .putString("webtoonUrl", this.webtoonUrl)
+                .putBoolean("autoUrl", false)
+                .apply();
+        autoUrl = false;
+        notifySync("settings");
+    }
+
+    public boolean isNtkSite() {
+        return NTK_COMIC_URL.equals(normalizeComicUrl(url))
+                || NTK_WEBTOON_URL.equals(normalizeWebtoonUrl(webtoonUrl));
     }
 
     public int getStartTab() {

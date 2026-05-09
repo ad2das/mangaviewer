@@ -90,10 +90,11 @@ public class FirstTimeActivity extends AppCompatActivity {
         if(pd.isShowing())
             pd.dismiss();
         String root = WfwfDomainResolver.toRoot(url);
-        if(WfwfDomainResolver.isWfwfUrl(root)) {
+        if(WfwfDomainResolver.isSupportedNumberedUrl(root)) {
             p.setWebtoonUrl(root);
-            p.setDefUrl(root + "/cm");
-            p.setUrl(root + "/cm");
+            String comicPath = root.contains("://ntk") ? "/manhwa" : "/cm";
+            p.setDefUrl(root + comicPath);
+            p.setUrl(root + comicPath);
         } else {
             p.setDefUrl(url);
             p.setUrl(url);

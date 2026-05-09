@@ -69,6 +69,8 @@ public class ViewerWarmupManager {
     public static void warmup(Context context, Manga manga, Title title) {
         if(context == null || manga == null || !manga.isOnline())
             return;
+        if(shouldSkipNtkWarmup())
+            return;
         if(title != null) {
             manga.setTitle(title);
             manga.setTitleId(title.getId());
@@ -141,6 +143,8 @@ public class ViewerWarmupManager {
     private static void warmupContinue(Context context, Manga manga, Title title, boolean immediate) {
         if(context == null || manga == null || !manga.isOnline())
             return;
+        if(shouldSkipNtkWarmup())
+            return;
         if(title != null) {
             manga.setTitle(title);
             manga.setTitleId(title.getId());
@@ -193,6 +197,8 @@ public class ViewerWarmupManager {
         if(context == null || manga == null)
             return null;
         if(!manga.isOnline())
+            return manga;
+        if(shouldSkipNtkWarmup())
             return manga;
         if(title != null) {
             manga.setTitle(title);
@@ -789,6 +795,10 @@ public class ViewerWarmupManager {
     private static String continueWarmupKey(Manga manga, Title title, int startPage) {
         int titleId = title == null ? manga.getTitleId() : title.getId();
         return manga.getBaseMode() + ":" + titleId + ":" + manga.getId() + ":" + Math.max(0, startPage);
+    }
+
+    private static boolean shouldSkipNtkWarmup() {
+        return getHttpClient().isNtk() && !getHttpClient().hasCloudflareClearance();
     }
 
     private static void trimActive() {

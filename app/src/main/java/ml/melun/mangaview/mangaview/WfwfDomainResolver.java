@@ -17,7 +17,9 @@ import okhttp3.Response;
 
 public class WfwfDomainResolver {
     private static final Pattern WFWF_PATTERN = Pattern.compile("^https?://wfwf(\\d+)\\.com(?:/cm)?/?$");
+    private static final Pattern NUMBERED_DOMAIN_PATTERN = Pattern.compile("^https?://(wfwf|ntk)(\\d+)\\.com(?:/cm)?/?$");
     private static final int DEFAULT_NUMBER = 449;
+    private static final int DEFAULT_NTK_NUMBER = 1;
     private static final int FORWARD_SCAN_LIMIT = 300;
     private static final int BACKWARD_SCAN_LIMIT = 5;
     private static final long RESOLVE_TIMEOUT_MS = 15_000L;
@@ -27,9 +29,9 @@ public class WfwfDomainResolver {
     }
 
     public static String resolve(OkHttpClient client, String currentUrl, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup) {
-        int current = getNumber(currentUrl);
-        if(current <= 0)
-            current = DEFAULT_NUMBER;
+        Domain domain = parseDomain(currentUrl);
+        if(domain == null)
+            domain = new Domain("wfwf", DEFAULT_NUMBER, 0);
 
         OkHttpClient probeClient = client.newBuilder()
                 .connectTimeout(2, TimeUnit.SECONDS)
@@ -37,15 +39,19 @@ public class WfwfDomainResolver {
                 .callTimeout(4, TimeUnit.SECONDS)
                 .build();
 
-        String currentRoot = "https://wfwf" + current + ".com";
+        String currentRoot = domain.root();
         if(isAlive(probeClient, currentRoot, headers, requestGroup))
             return currentRoot;
 
-        return findAliveCandidate(probeClient, candidates(current), headers, requestGroup, System.currentTimeMillis() + RESOLVE_TIMEOUT_MS);
+        return findAliveCandidate(probeClient, candidates(domain), headers, requestGroup, System.currentTimeMillis() + RESOLVE_TIMEOUT_MS);
     }
 
     public static boolean isWfwfUrl(String url) {
         return getNumber(url) > 0;
+    }
+
+    public static boolean isSupportedNumberedUrl(String url) {
+        return parseDomain(url) != null;
     }
 
     public static String toRoot(String url) {
@@ -70,39 +76,44 @@ public class WfwfDomainResolver {
         }
     }
 
-    private static List<Integer> candidates(int current) {
-        ArrayList<Integer> numbers = new ArrayList<>();
+    private static List<String> candidates(Domain domain) {
+        ArrayList<String> roots = new ArrayList<>();
         Set<Integer> seen = new HashSet<>();
         for(int i = 1; i <= FORWARD_SCAN_LIMIT; i++)
-            add(numbers, seen, current + i);
-        add(numbers, seen, DEFAULT_NUMBER);
+            add(roots, seen, domain, domain.number + i);
+        add(roots, seen, domain, defaultNumber(domain.prefix));
         for(int i = 1; i <= FORWARD_SCAN_LIMIT; i++)
-            add(numbers, seen, DEFAULT_NUMBER + i);
+            add(roots, seen, domain, defaultNumber(domain.prefix) + i);
         for(int i = 1; i <= BACKWARD_SCAN_LIMIT; i++)
-            add(numbers, seen, current - i);
-        return numbers;
+            add(roots, seen, domain, domain.number - i);
+        return roots;
     }
 
-    private static String findAliveCandidate(OkHttpClient client, List<Integer> candidates, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup, long deadlineMs) {
-        for(Integer number : candidates) {
+    private static String findAliveCandidate(OkHttpClient client, List<String> candidates, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup, long deadlineMs) {
+        for(String root : candidates) {
             if(requestGroup != null && requestGroup.isCancelled())
                 return null;
             if(deadlineMs - System.currentTimeMillis() <= 0)
                 return null;
-            String root = "https://wfwf" + number + ".com";
             if(isAlive(client, root, headers, requestGroup))
                 return root;
         }
         return null;
     }
 
-    private static void add(List<Integer> numbers, Set<Integer> seen, int number) {
+    private static void add(List<String> roots, Set<Integer> seen, Domain domain, int number) {
         if(number > 0 && seen.add(number))
-            numbers.add(number);
+            roots.add(domain.root(number));
+    }
+
+    private static int defaultNumber(String prefix) {
+        return "ntk".equals(prefix) ? DEFAULT_NTK_NUMBER : DEFAULT_NUMBER;
     }
 
     private static boolean isAlive(OkHttpClient client, String root, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup) {
-        return probe(client, root + "/ing", headers, requestGroup) || probe(client, root + "/cm", headers, requestGroup);
+        boolean ntk = root != null && root.contains("://ntk");
+        String comicPath = ntk ? "/manhwa" : "/cm";
+        return probe(client, root + "/ing", headers, requestGroup) || probe(client, root + comicPath, headers, requestGroup);
     }
 
     private static boolean probe(OkHttpClient client, String url, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup) {
@@ -136,6 +147,8 @@ public class WfwfDomainResolver {
         String lower = body.toLowerCase(Locale.ROOT);
         return lower.contains("webtoon-list")
                 || lower.contains("toon=")
+                || lower.contains("/webtoon/")
+                || lower.contains("/manhwa/")
                 || lower.contains("/view?toon=")
                 || lower.contains("/list?toon=")
                 || lower.contains("/cv?toon=")
@@ -147,5 +160,40 @@ public class WfwfDomainResolver {
         while(trimmed.endsWith("/"))
             trimmed = trimmed.substring(0, trimmed.length() - 1);
         return trimmed;
+    }
+
+    private static Domain parseDomain(String url) {
+        if(url == null)
+            return null;
+        Matcher matcher = NUMBERED_DOMAIN_PATTERN.matcher(trimTrailingSlash(url));
+        if(!matcher.matches())
+            return null;
+        try {
+            String digits = matcher.group(2);
+            return new Domain(matcher.group(1), Integer.parseInt(digits), digits.length());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static class Domain {
+        final String prefix;
+        final int number;
+        final int width;
+
+        Domain(String prefix, int number, int width) {
+            this.prefix = prefix;
+            this.number = number;
+            this.width = width;
+        }
+
+        String root() {
+            return root(number);
+        }
+
+        String root(int value) {
+            String digits = width > 1 ? String.format(Locale.ROOT, "%0" + width + "d", value) : String.valueOf(value);
+            return "https://" + prefix + digits + ".com";
+        }
     }
 }

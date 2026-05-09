@@ -32,6 +32,7 @@ import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 
 import static ml.melun.mangaview.MainApplication.p;
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.Utils.episodeIntent;
 import static ml.melun.mangaview.Utils.openViewer;
 import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
@@ -71,6 +72,7 @@ public class MainMain extends Fragment{
     boolean viewStarted = false;
     int scrollRequestVersion = 0;
     Preference.LocalChangeListener localChangeListener;
+    long lastNtkCaptchaLaunchAt = 0L;
 
     public void setWait(Boolean wait){
         this.wait = wait;
@@ -98,6 +100,12 @@ public class MainMain extends Fragment{
             wait = false;
             comicFetchState = HOME_FETCH_IDLE;
             webtoonFetchState = HOME_FETCH_IDLE;
+            if(mainComicAdapter != null)
+                mainComicAdapter.resetForSiteChange();
+            if(mainWebtoonAdapter != null)
+                mainWebtoonAdapter.resetForSiteChange();
+            applySelectedHomeTab();
+            scrollToSelectedTab();
             if(fragmentActive)
                 fetchSelected();
         };
@@ -282,6 +290,8 @@ public class MainMain extends Fragment{
         if(selectedRecycler != null) {
             selectedRecycler.postDelayed(() -> {
                 if(!isAdded())
+                    return;
+                if(maybeOpenNtkCaptcha())
                     return;
                 if(!wait)
                     fetchSelected();
@@ -504,10 +514,29 @@ public class MainMain extends Fragment{
     }
 
     private void fetchSelected() {
+        if(maybeOpenNtkCaptcha())
+            return;
         if(selectedBaseMode == base_comic)
             fetchComic();
         else
             fetchWebtoon();
+    }
+
+    private boolean maybeOpenNtkCaptcha() {
+        if(!isAdded() || getActivity() == null)
+            return false;
+        if(getHttpClient().isNtk() && !getHttpClient().hasCloudflareClearance()) {
+            getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
+            getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
+        }
+        if(!getHttpClient().isNtk() || getHttpClient().hasCloudflareClearance())
+            return false;
+        long now = System.currentTimeMillis();
+        if(now - lastNtkCaptchaLaunchAt < 1500L)
+            return true;
+        lastNtkCaptchaLaunchAt = now;
+        Utils.showCaptchaPopup(getActivity(), 3, this, p);
+        return true;
     }
 
     private void showInitialHomeRows(int baseMode) {
@@ -523,6 +552,8 @@ public class MainMain extends Fragment{
         final int visibleBaseMode = selectedBaseMode;
         targetRecycler.post(() -> {
             if(!isAdded() || wait)
+                return;
+            if(maybeOpenNtkCaptcha())
                 return;
             if(visibleBaseMode == base_comic)
                 fetchWebtoon();
@@ -631,6 +662,7 @@ public class MainMain extends Fragment{
         if(viewStarted)
             refreshHomeLocalState();
         viewStarted = true;
+        maybeOpenNtkCaptcha();
     }
 
     @Override
