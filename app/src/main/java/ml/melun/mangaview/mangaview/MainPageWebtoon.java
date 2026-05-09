@@ -816,13 +816,35 @@ public class MainPageWebtoon {
                 continue;
             String status = webtoonStatusFromPath(info.path);
             LinkedHashMap<Integer, Title> pool = pools.get(status);
-            if(pool == null)
-                continue;
+            if(pool != null) {
+                for(Title title : pool.values()) {
+                    if(section.size() >= MAIN_SECTION_LIMIT)
+                        break;
+                    if(!hasTag(title, info.label) || containsTitle(section, title))
+                        continue;
+                    ((Ranking<Object>) section).add(title);
+                }
+            }
 
-            for(Title title : pool.values()) {
+            for(Title title : getClassificationDbTitlesByGenre(info.label, MAIN_SECTION_LIMIT)) {
                 if(section.size() >= MAIN_SECTION_LIMIT)
                     break;
-                if(!hasTag(title, info.label) || containsTitle(section, title))
+                if(containsTitle(section, title))
+                    continue;
+                ((Ranking<Object>) section).add(title);
+            }
+        }
+
+        for(Ranking<?> section : sections) {
+            if(section == null || section.size() > 0)
+                continue;
+            SectionInfo info = parseSectionInfo(section.getName());
+            if(isWebtoonGenre(info.label))
+                continue;
+            for(Title title : getClassificationDbTitles(MAIN_SECTION_LIMIT)) {
+                if(section.size() >= MAIN_SECTION_LIMIT)
+                    break;
+                if(containsTitle(section, title))
                     continue;
                 ((Ranking<Object>) section).add(title);
             }
@@ -859,6 +881,17 @@ public class MainPageWebtoon {
         int start = Math.max(0, offset);
         for(int i = start; i < titles.size(); i++) {
             DbTitle dbTitle = titles.get(i);
+            result.add(new Title(dbTitle.name, dbTitle.thumb, "", dbTitle.tags, dbTitle.release, dbTitle.id, base_webtoon));
+            if(limit > 0 && result.size() >= limit)
+                break;
+        }
+        return result;
+    }
+
+    private static ArrayList<Title> getClassificationDbTitles(int limit) {
+        ArrayList<Title> result = new ArrayList<>();
+        loadClassificationDb();
+        for(DbTitle dbTitle : classificationTitleDb.values()) {
             result.add(new Title(dbTitle.name, dbTitle.thumb, "", dbTitle.tags, dbTitle.release, dbTitle.id, base_webtoon));
             if(limit > 0 && result.size() >= limit)
                 break;

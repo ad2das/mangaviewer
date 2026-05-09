@@ -83,6 +83,30 @@ public class MainPageWebtoonTest {
     }
 
     @Test
+    public void enhanceWebtoonClassification_backfillsEmptySectionsFromClassificationDb() {
+        MainPageWebtoon.clearClassificationDbForTest();
+        try {
+            MainPageWebtoon.putClassificationDbTitleForTest(501, "드라마 웹툰", false, "드라마");
+            MainPageWebtoon.putClassificationDbTitleForTest(502, "액션 웹툰", false, "액션");
+
+            Ranking<Title> recent = new Ranking<>("연재웹툰|신작|/ing");
+            Ranking<Title> drama = new Ranking<>("장르별|드라마|/ing?tag=%EB%93%9C%EB%9D%BC%EB%A7%88");
+            List<Ranking<?>> sections = new ArrayList<>();
+            sections.add(recent);
+            sections.add(drama);
+
+            MainPageWebtoon.enhanceWebtoonClassification(sections);
+
+            assertEquals(2, recent.size());
+            assertEquals(501, recent.get(0).getId());
+            assertEquals(1, drama.size());
+            assertEquals(501, drama.get(0).getId());
+        } finally {
+            MainPageWebtoon.clearClassificationDbForTest();
+        }
+    }
+
+    @Test
     public void genreFromCategoryPath_decodesGenreFilters() {
         assertEquals("학원", Search.genreFromCategoryPath(
                 "/cm?type1=genre&type2=%C7%D0%BF%F8&o=n", base_comic));

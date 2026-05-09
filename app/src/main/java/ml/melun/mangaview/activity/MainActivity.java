@@ -439,6 +439,8 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void checkAndFinish(android.webkit.WebView bgWebView, android.view.ViewGroup root, android.os.Handler handler, Runnable timeout) {
+        getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
+        getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
         if(getHttpClient().hasCloudflareClearance()) {
             handler.removeCallbacks(timeout);
             if(!isFinishing() && bgWebView.getParent() != null)
@@ -842,7 +844,8 @@ public class MainActivity extends AppCompatActivity
 
     private void switchSitePreset(String comicUrl, String webtoonUrl, String label) {
         p.setSitePreset(comicUrl, webtoonUrl);
-        MainApplication.getHttpClient().resetCookie();
+        MainApplication.getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
+        MainApplication.getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
         MainApplication.getHttpClient().clearPageCache();
         invalidateOptionsMenu();
         Toast.makeText(context, label + " 사이트로 변경 중입니다.", Toast.LENGTH_SHORT).show();
