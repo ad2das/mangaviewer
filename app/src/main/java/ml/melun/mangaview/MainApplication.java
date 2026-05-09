@@ -5,6 +5,7 @@ import android.content.Context;
 import androidx.appcompat.app.AppCompatDelegate;
 import androidx.multidex.MultiDexApplication;
 
+import ml.melun.mangaview.ClassificationDbUpdater;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MainPageWebtoon;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
@@ -36,6 +37,7 @@ public class MainApplication extends MultiDexApplication {
         p = new Preference(this);
         MangaRoomStore.prime(this);
         AppDispatchers.runIo(MainPageWebtoon::preloadClassificationDbs);
+        AppDispatchers.runIo(() -> ClassificationDbUpdater.updateInBackground(this));
         super.onCreate();
         ViewerWarmupManager.warmupSavedContinues(this, 6);
     }

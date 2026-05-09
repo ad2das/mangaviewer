@@ -12,6 +12,12 @@ on:
       - "tools/release_latest.ps1"
       - "tools/README_RELEASE.md"
       - ".github/workflows/release-apk.yml"
+      - "webtoon-classification.json"
+      - "comic-classification.json"
+      - "webtoon-classification-unclassified.json"
+      - "comic-classification-unclassified.json"
+      - "app/src/main/assets/webtoon-classification.json"
+      - "app/src/main/assets/comic-classification.json"
       - "*.png"
       - "*.xml"
 

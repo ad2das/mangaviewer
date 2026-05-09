@@ -95,6 +95,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No classification DB changes."
           else
-            git commit -m "Update webtoon classification DB"
+            git commit -m "Update webtoon classification DB [skip ci]"
             git push
           fi

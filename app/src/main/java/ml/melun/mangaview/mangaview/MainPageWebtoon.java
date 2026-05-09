@@ -9,6 +9,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.InterruptedIOException;
 import java.net.URLDecoder;
@@ -49,10 +51,6 @@ public class MainPageWebtoon {
     private static final LinkedHashMap<String, List<String>> inferredTagCache = new LinkedHashMap<>();
     private static boolean inferredTagCacheLoaded = false;
     private static int inferredTagCacheWrites = 0;
-    private static final String CLASSIFICATION_DB_CACHE_KEY = "webtoonClassificationDbV2";
-    private static final String CLASSIFICATION_DB_FETCHED_AT_KEY = "webtoonClassificationDbFetchedAt";
-    private static final String COMIC_CLASSIFICATION_DB_CACHE_KEY = "comicClassificationDbV1";
-    private static final String COMIC_CLASSIFICATION_DB_FETCHED_AT_KEY = "comicClassificationDbFetchedAt";
     private static final long CLASSIFICATION_DB_TTL_MS = 6 * 60 * 60 * 1000L;
     private static final Map<Integer, List<String>> classificationDb = new LinkedHashMap<>();
     private static final Map<String, List<String>> classificationNameDb = new LinkedHashMap<>();
@@ -78,6 +76,19 @@ public class MainPageWebtoon {
     public static void preloadClassificationDbs() {
         loadClassificationDb();
         loadComicClassificationDb();
+    }
+
+    public static synchronized void invalidateClassificationDbs() {
+        classificationDbLoaded = false;
+        classificationDbLoadedAt = 0;
+        comicClassificationDbLoaded = false;
+        comicClassificationDbLoadedAt = 0;
+    }
+
+    public static File classificationDbCacheDir(android.content.Context context) {
+        if(context == null)
+            return null;
+        return new File(context.getFilesDir(), "classification-db");
     }
 
     public MainPageWebtoon(CustomHttpClient client){
@@ -666,27 +677,8 @@ public class MainPageWebtoon {
             return;
         classificationDbLoaded = true;
         classificationDbLoadedAt = now;
-        String cached = "";
         try {
-            if(p != null) {
-                cached = p.getSharedPref().getString(CLASSIFICATION_DB_CACHE_KEY, "");
-                long fetchedAt = p.getSharedPref().getLong(CLASSIFICATION_DB_FETCHED_AT_KEY, 0);
-                if(cached.length() == 0 || now - fetchedAt > CLASSIFICATION_DB_TTL_MS) {
-                    String fetched = fetchClassificationDb();
-                    if(fetched.length() > 0) {
-                        cached = fetched;
-                        p.getSharedPref().edit()
-                                .putString(CLASSIFICATION_DB_CACHE_KEY, cached)
-                                .putLong(CLASSIFICATION_DB_FETCHED_AT_KEY, now)
-                                .apply();
-                    } else if(cached.length() == 0) {
-                        p.getSharedPref().edit()
-                                .putLong(CLASSIFICATION_DB_FETCHED_AT_KEY, now)
-                                .apply();
-                    }
-                }
-            }
-            parseClassificationDb(cached);
+            parseClassificationDb(readCachedClassificationDb("webtoon-classification.json"));
             if(classificationDb.size() == 0)
                 parseClassificationDb(readBundledClassificationDb());
         } catch (Exception e) {
@@ -694,14 +686,8 @@ public class MainPageWebtoon {
             classificationNameDb.clear();
             classificationTitleDb.clear();
             classificationGenreDb.clear();
-            parseClassificationDb(cached);
-            if(classificationDb.size() == 0)
-                parseClassificationDb(readBundledClassificationDb());
+            parseClassificationDb(readBundledClassificationDb());
         }
-    }
-
-    private static String fetchClassificationDb() {
-        return "";
     }
 
     private static synchronized void loadComicClassificationDb() {
@@ -710,27 +696,8 @@ public class MainPageWebtoon {
             return;
         comicClassificationDbLoaded = true;
         comicClassificationDbLoadedAt = now;
-        String cached = "";
         try {
-            if(p != null) {
-                cached = p.getSharedPref().getString(COMIC_CLASSIFICATION_DB_CACHE_KEY, "");
-                long fetchedAt = p.getSharedPref().getLong(COMIC_CLASSIFICATION_DB_FETCHED_AT_KEY, 0);
-                if(cached.length() == 0 || now - fetchedAt > CLASSIFICATION_DB_TTL_MS) {
-                    String fetched = fetchComicClassificationDb();
-                    if(fetched.length() > 0) {
-                        cached = fetched;
-                        p.getSharedPref().edit()
-                                .putString(COMIC_CLASSIFICATION_DB_CACHE_KEY, cached)
-                                .putLong(COMIC_CLASSIFICATION_DB_FETCHED_AT_KEY, now)
-                                .apply();
-                    } else if(cached.length() == 0) {
-                        p.getSharedPref().edit()
-                                .putLong(COMIC_CLASSIFICATION_DB_FETCHED_AT_KEY, now)
-                                .apply();
-                    }
-                }
-            }
-            parseComicClassificationDb(cached);
+            parseComicClassificationDb(readCachedClassificationDb("comic-classification.json"));
             if(comicClassificationDb.size() == 0)
                 parseComicClassificationDb(readBundledComicClassificationDb());
         } catch (Exception e) {
@@ -738,14 +705,8 @@ public class MainPageWebtoon {
             comicClassificationNameDb.clear();
             comicClassificationTitleDb.clear();
             comicClassificationGenreDb.clear();
-            parseComicClassificationDb(cached);
-            if(comicClassificationDb.size() == 0)
-                parseComicClassificationDb(readBundledComicClassificationDb());
+            parseComicClassificationDb(readBundledComicClassificationDb());
         }
-    }
-
-    private static String fetchComicClassificationDb() {
-        return "";
     }
 
     private static void parseClassificationDb(String json) {
@@ -865,22 +826,42 @@ public class MainPageWebtoon {
         return readBundledClassificationDb("comic-classification.json");
     }
 
+    private static String readCachedClassificationDb(String fileName) {
+        if(appContext == null)
+            return "";
+        File dir = classificationDbCacheDir(appContext);
+        if(dir == null)
+            return "";
+        File file = new File(dir, fileName);
+        if(!file.exists() || !file.isFile() || file.length() <= 0)
+            return "";
+        try(InputStream input = new FileInputStream(file)) {
+            return readUtf8(input);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
     private static String readBundledClassificationDb(String assetName) {
         if(appContext == null)
             return "";
         try(InputStream input = appContext.getAssets().open(assetName)) {
-            ByteArrayOutputStream output = new ByteArrayOutputStream();
-            byte[] buffer = new byte[8192];
-            while(true) {
-                int read = input.read(buffer);
-                if(read < 0)
-                    break;
-                output.write(buffer, 0, read);
-            }
-            return output.toString(StandardCharsets.UTF_8.name());
+            return readUtf8(input);
         } catch (Exception e) {
             return "";
         }
+    }
+
+    private static String readUtf8(InputStream input) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        while(true) {
+            int read = input.read(buffer);
+            if(read < 0)
+                break;
+            output.write(buffer, 0, read);
+        }
+        return output.toString(StandardCharsets.UTF_8.name());
     }
 
     private static ArrayList<String> readClassificationTags(JSONObject item) {
