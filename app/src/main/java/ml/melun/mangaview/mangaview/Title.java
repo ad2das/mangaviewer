@@ -206,22 +206,28 @@ public class Title extends MTitle {
                 thumb = img.hasAttr("data-original") ? img.attr("data-original") : img.attr("src");
 
             eps = new ArrayList<>();
-            Set<Integer> seenEpisodeIds = new HashSet<>();
+            Set<String> seenEpisodePaths = new HashSet<>();
             for(Element link : d.select("a[href^=\"/" + segment + "/" + id + "/\"]")) {
+                if(link.hasClass("cta"))
+                    continue;
                 String href = link.attr("href");
-                int epId = MainPageWebtoon.getSecondPathId(href, segment);
+                String epPath = normalizeNtkEpisodePath(href, segment, id);
+                if(epPath.length() == 0)
+                    continue;
+                int epId = ntkEpisodeSortId(link, epPath, segment);
                 if(epId <= 0)
                     continue;
                 String epTitle = cleanNtkEpisodeTitle(link);
                 if(isNtkEpisodeActionTitle(epTitle))
                     continue;
-                if(!seenEpisodeIds.add(epId))
+                if(!seenEpisodePaths.add(epPath))
                     continue;
                 String date = extractNtkEpisodeDate(link, epTitle);
                 Manga tmp = new Manga(epId, epTitle, date, baseMode);
                 tmp.setMode(0);
                 tmp.setTitle(this);
                 tmp.setTitleId(id);
+                tmp.setNtkEpisodePath(epPath);
                 eps.add(tmp);
             }
             eps.sort((left, right) -> Integer.compare(right.getId(), left.getId()));
@@ -240,6 +246,14 @@ public class Title extends MTitle {
 
     static String cleanNtkEpisodeTitleForTest(String html) {
         return cleanNtkEpisodeTitle(Jsoup.parseBodyFragment(html).body());
+    }
+
+    static String normalizeNtkEpisodePathForTest(String href, String segment, int titleId) {
+        return normalizeNtkEpisodePath(href, segment, titleId);
+    }
+
+    static int ntkEpisodeSortIdForTest(String html, String epPath, String segment) {
+        return ntkEpisodeSortId(Jsoup.parseBodyFragment(html).body(), epPath, segment);
     }
 
     private static String cleanNtkEpisodeTitle(Element link) {
@@ -284,6 +298,54 @@ public class Title extends MTitle {
             i += Character.charCount(codePoint);
         }
         return false;
+    }
+
+    private static String normalizeNtkEpisodePath(String href, String segment, int titleId) {
+        if(href == null)
+            return "";
+        String path = href.trim();
+        int schemeIndex = path.indexOf("://");
+        if(schemeIndex >= 0) {
+            int slash = path.indexOf('/', schemeIndex + 3);
+            path = slash >= 0 ? path.substring(slash) : "";
+        }
+        int hash = path.indexOf('#');
+        if(hash >= 0)
+            path = path.substring(0, hash);
+        int query = path.indexOf('?');
+        if(query >= 0)
+            path = path.substring(0, query);
+        if(path.length() > 0 && path.charAt(0) != '/')
+            path = "/" + path;
+        String prefix = "/" + segment + "/" + titleId + "/";
+        if(!path.startsWith(prefix))
+            return "";
+        String token = path.substring(prefix.length());
+        return token.length() == 0 ? "" : path;
+    }
+
+    private static int ntkEpisodeSortId(Element link, String epPath, String segment) {
+        Element number = link == null ? null : link.selectFirst(".ep-row-v2-no");
+        int sortId = parsePositiveInt(number == null ? "" : number.text());
+        if(sortId > 0)
+            return sortId;
+        sortId = MainPageWebtoon.getSecondPathId(epPath, segment);
+        if(sortId > 0)
+            return sortId;
+        return parsePositiveInt(cleanNtkEpisodeTitle(link));
+    }
+
+    private static int parsePositiveInt(String value) {
+        if(value == null)
+            return 0;
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d+)").matcher(value);
+        if(!matcher.find())
+            return 0;
+        try {
+            return Integer.parseInt(matcher.group(1));
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     private static String extractNtkEpisodeDate(Element link, String epTitle) {

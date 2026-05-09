@@ -867,6 +867,7 @@ public class ViewerWarmupManager {
         final int baseMode;
         final int titleId;
         final int episodeId;
+        final String episodePath;
         final String name;
         final int seed;
         final Title title;
@@ -878,6 +879,7 @@ public class ViewerWarmupManager {
             baseMode = source.getBaseMode();
             titleId = source.getTitleId();
             episodeId = source.getId();
+            episodePath = source.getNtkEpisodePath();
             name = source.getName();
             seed = source.getSeed();
             title = source.getTitle();
@@ -891,6 +893,7 @@ public class ViewerWarmupManager {
             baseMode = source.baseMode;
             titleId = source.titleId;
             episodeId = source.episodeId;
+            episodePath = source.episodePath == null ? "" : source.episodePath;
             name = source.name;
             seed = source.seed;
             title = source.title;
@@ -907,6 +910,7 @@ public class ViewerWarmupManager {
                 return false;
             Manga copy = new Manga(episodeId, name, target.getDate(), baseMode);
             copy.setTitleId(titleId);
+            copy.setNtkEpisodePath(episodePath);
             copy.setSeed(seed);
             copy.setImgs(images);
             copy.setEps(episodes);
@@ -917,6 +921,7 @@ public class ViewerWarmupManager {
         Manga toManga(Manga fallback) {
             Manga copy = new Manga(episodeId, name, fallback == null ? "" : fallback.getDate(), baseMode);
             copy.setTitleId(titleId);
+            copy.setNtkEpisodePath(episodePath);
             copy.setSeed(seed);
             copy.setImgs(images);
             copy.setEps(episodes);
@@ -929,6 +934,7 @@ public class ViewerWarmupManager {
         int baseMode;
         int titleId;
         int episodeId;
+        String episodePath;
         String name;
         int seed;
         Title title;
@@ -943,6 +949,7 @@ public class ViewerWarmupManager {
             baseMode = source.baseMode;
             titleId = source.titleId;
             episodeId = source.episodeId;
+            episodePath = source.episodePath;
             name = source.name;
             seed = source.seed;
             title = source.title == null ? null : new Title(source.title.minimize());
@@ -962,6 +969,7 @@ public class ViewerWarmupManager {
                 copy.addThumb(episode.getThumb());
                 copy.setMode(episode.getMode());
                 copy.setTitleId(episode.getTitleId());
+                copy.setNtkEpisodePath(episode.getNtkEpisodePath());
                 copies.add(copy);
             }
             return copies;

@@ -48,6 +48,7 @@ public class Manga {
 
     int baseMode = base_comic;
     int titleId = -1;
+    private String ntkEpisodePath = "";
 
     public Manga(int i, String n, String d, int baseMode) {
         id = i;
@@ -76,6 +77,14 @@ public class Manga {
         return date;
     }
 
+    public String getNtkEpisodePath() {
+        return ntkEpisodePath == null ? "" : ntkEpisodePath;
+    }
+
+    public void setNtkEpisodePath(String ntkEpisodePath) {
+        this.ntkEpisodePath = ntkEpisodePath == null ? "" : ntkEpisodePath.trim();
+    }
+
     public void setImgs(List<String> imgs) {
         this.imgs = imgs;
     }
@@ -99,6 +108,7 @@ public class Manga {
             setTitle(source.getTitle());
         else
             setTitleId(source.getTitleId());
+        setNtkEpisodePath(source.getNtkEpisodePath());
         return true;
     }
 
@@ -256,7 +266,10 @@ public class Manga {
             if(tid <= 0)
                 return LOAD_OK;
             String segment = baseMode == MTitle.base_webtoon ? "webtoon" : "manhwa";
-            CustomHttpClient.PageResponse page = client.mgetCachedPage("/" + segment + "/" + tid + "/" + id, PAGE_CACHE_TTL_MS);
+            String path = getNtkEpisodePath();
+            if(path.length() == 0)
+                path = "/" + segment + "/" + tid + "/" + id;
+            CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
             Document d = Jsoup.parse(page.body);
 
             Element h1 = d.selectFirst("h1");
@@ -699,6 +712,9 @@ public class Manga {
     }
 
     public String getUrl() {
+        String ntkPath = getNtkEpisodePath();
+        if(ntkPath.length() > 0)
+            return ntkPath;
         if(titleId > 0 && p != null && p.isNtkSite()) {
             String segment = baseMode == MTitle.base_webtoon ? "webtoon" : "manhwa";
             return "/" + segment + "/" + titleId + "/" + id;
