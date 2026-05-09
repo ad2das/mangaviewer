@@ -112,11 +112,11 @@ $releasesHtml = [regex]::Replace($releasesHtml, 'browser_download_url:\s*"[^"]*m
 Write-Utf8NoBom $releasesHtmlPath $releasesHtml
 
 Write-Step "Building debug APK"
-Invoke-Gradle -GradleArgs @("assembleDebug")
+Invoke-Gradle -GradleArgs @("--build-cache", "--parallel", "assembleDebug")
 
 if (-not $SkipTests) {
     Write-Step "Running unit tests"
-    Invoke-Gradle -GradleArgs @("testDebugUnitTest")
+    Invoke-Gradle -GradleArgs @("--build-cache", "--parallel", "testDebugUnitTest")
 }
 
 $builtApk = "app/build/outputs/apk/debug/$apkName"
