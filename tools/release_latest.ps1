@@ -46,6 +46,13 @@ function Invoke-Gradle([string[]]$GradleArgs) {
     }
 }
 
+function Add-SkipCiToken([string]$message) {
+    if ($message -match '\[(skip ci|ci skip|no ci|skip actions|actions skip)\]') {
+        return $message
+    }
+    return "$message [skip ci]"
+}
+
 Set-Location (Resolve-Path (Join-Path $PSScriptRoot ".."))
 
 Require-Command git
@@ -134,6 +141,7 @@ if (-not $NoCommit) {
     if ([string]::IsNullOrWhiteSpace($CommitMessage)) {
         $CommitMessage = "Release debug APK $versionCode"
     }
+    $CommitMessage = Add-SkipCiToken $CommitMessage
     git commit -m $CommitMessage
     if ($LASTEXITCODE -ne 0) {
         throw "git commit failed"

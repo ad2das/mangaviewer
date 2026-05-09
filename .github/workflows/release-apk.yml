@@ -20,11 +20,12 @@ permissions:
 
 concurrency:
   group: release-apk-main
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TZ: Asia/Seoul
@@ -40,6 +41,10 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Configure Git
         run: |
@@ -48,4 +53,4 @@ jobs:
 
       - name: Release latest debug APK
         shell: pwsh
-        run: ./tools/release_latest.ps1
+        run: ./tools/release_latest.ps1 -SkipTests
