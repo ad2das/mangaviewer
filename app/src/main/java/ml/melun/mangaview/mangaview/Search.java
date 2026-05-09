@@ -240,20 +240,28 @@ public class Search {
         try {
             ArrayList<Title> webtoonResults = new ArrayList<>();
             if(mode == 8) {
-                String genre = genreFromCategoryPath(query, base_webtoon);
-                if(genre.length() > 0) {
-                    last = appendNextClassificationDbGenreResults(webtoonResults, genre);
-                    if(webtoonResults.size() == 0 && !classificationSourceFetched) {
-                        appendWebtoonResults(client, webtoonResults, query, 0);
-                        classificationSourceFetched = true;
-                        last = true;
-                    }
-                } else {
+                if(client != null && client.isNtk()) {
                     if(!classificationSourceFetched) {
                         appendWebtoonResults(client, webtoonResults, query, 0);
                         classificationSourceFetched = true;
                     }
                     last = true;
+                } else {
+                    String genre = genreFromCategoryPath(query, base_webtoon);
+                    if(genre.length() > 0) {
+                        last = appendNextClassificationDbGenreResults(webtoonResults, genre);
+                        if(webtoonResults.size() == 0 && !classificationSourceFetched) {
+                            appendWebtoonResults(client, webtoonResults, query, 0);
+                            classificationSourceFetched = true;
+                            last = true;
+                        }
+                    } else {
+                        if(!classificationSourceFetched) {
+                            appendWebtoonResults(client, webtoonResults, query, 0);
+                            classificationSourceFetched = true;
+                        }
+                        last = true;
+                    }
                 }
             } else if(mode == 2) {
                 if(!classificationSourceFetched) {
@@ -298,20 +306,28 @@ public class Search {
         try {
             ArrayList<Title> comicResults = new ArrayList<>();
             if(mode == 8) {
-                String genre = genreFromCategoryPath(query, base_comic);
-                if(genre.length() > 0) {
-                    last = appendNextClassificationDbGenreResults(comicResults, genre);
-                    if(comicResults.size() == 0 && !classificationSourceFetched) {
-                        appendWebtoonResults(client, comicResults, query, 0);
-                        classificationSourceFetched = true;
-                        last = true;
-                    }
-                } else {
+                if(client != null && client.isNtk()) {
                     if(!classificationSourceFetched) {
                         appendWebtoonResults(client, comicResults, query, 0);
                         classificationSourceFetched = true;
                     }
                     last = true;
+                } else {
+                    String genre = genreFromCategoryPath(query, base_comic);
+                    if(genre.length() > 0) {
+                        last = appendNextClassificationDbGenreResults(comicResults, genre);
+                        if(comicResults.size() == 0 && !classificationSourceFetched) {
+                            appendWebtoonResults(client, comicResults, query, 0);
+                            classificationSourceFetched = true;
+                            last = true;
+                        }
+                    } else {
+                        if(!classificationSourceFetched) {
+                            appendWebtoonResults(client, comicResults, query, 0);
+                            classificationSourceFetched = true;
+                        }
+                        last = true;
+                    }
                 }
             } else if(mode == 2) {
                 if(!classificationSourceFetched) {
@@ -355,6 +371,10 @@ public class Search {
                 throw new Exception("Webtoon search failed: " + page.code);
             parsed = MainPageWebtoon.parseWolfTitles(Jsoup.parse(page.body), baseMode, limit);
         }
+        String sourceSite = client != null && client.isNtk() ? "ntk" : "wfwf";
+        for(Title title : parsed)
+            if(title != null)
+                title.setSourceSite(sourceSite);
         target.addAll(parsed);
     }
 
