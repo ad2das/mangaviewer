@@ -832,9 +832,43 @@ public class Search {
     private void appendNtkSiteSearchResults(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {
         String encoded = percentEncode(query, Charset.forName("UTF-8"));
         if(targetBaseMode == base_webtoon) {
+            int before = target.size();
             appendNtkApiKeywordSearchResults(client, target, targetBaseMode, limit);
-            return;
+            if(target.size() > before)
+                return;
         }
+        appendNtkHtmlSearchResults(client, target, targetBaseMode, limit, encoded);
+    }
+
+    private void appendNtkCommonSearchResults(CustomHttpClient client, ArrayList<Title> target, int limit) throws Exception {
+        appendNtkApiKeywordSearchResults(client, target, base_webtoon, limit);
+        if(target.size() > 0)
+            return;
+        String encoded = percentEncode(query, Charset.forName("UTF-8"));
+        String[] paths = {
+                "/search?q=" + encoded,
+                "/bbs/search.php?stx=" + encoded,
+                "/bbs/search.php?sfl=wr_subject&stx=" + encoded
+        };
+        Exception lastError = null;
+        for(String path : paths) {
+            try {
+                CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+                if(page.code >= 400)
+                    throw new Exception("NTK search failed: " + page.code);
+                Document d = Jsoup.parse(page.body);
+                appendUnique(target, MainPageWebtoon.parseWolfTitles(d, base_webtoon, limit));
+                appendUnique(target, MainPageWebtoon.parseWolfTitles(d, base_comic, limit));
+                return;
+            } catch (Exception e) {
+                lastError = e;
+            }
+        }
+        if(lastError != null)
+            throw lastError;
+    }
+
+    private void appendNtkHtmlSearchResults(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit, String encoded) throws Exception {
         String kind = targetBaseMode == base_comic ? "manhwa" : "webtoon";
         String[] paths = {
                 "/search?q=" + encoded + "&kind=" + kind,
@@ -853,10 +887,6 @@ public class Search {
         }
         if(lastError != null)
             throw lastError;
-    }
-
-    private void appendNtkCommonSearchResults(CustomHttpClient client, ArrayList<Title> target, int limit) throws Exception {
-        appendNtkApiKeywordSearchResults(client, target, base_webtoon, limit);
     }
 
     private void appendNtkApiKeywordSearchResults(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {
