@@ -280,11 +280,18 @@ public class Manga {
                 }
             }
         } catch (Exception e) {
+            if(isCloudflareChallenge(e))
+                return LOAD_CAPTCHA;
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
         restoreBetterEpisodeList(previousEpisodes);
         attachEpisodeSeriesMetadata();
         return LOAD_OK;
+    }
+
+    private static boolean isCloudflareChallenge(Exception e) {
+        String message = e == null ? null : e.getMessage();
+        return message != null && message.toLowerCase(Locale.ROOT).contains("cloudflare");
     }
 
     private int parseEpisodeId(String href, String marker) {
@@ -408,6 +415,8 @@ public class Manga {
             }
             break;
             } catch (Exception e) {
+                if(isCloudflareChallenge(e))
+                    return LOAD_CAPTCHA;
                 ml.melun.mangaview.report.CrashReporter.record(e);
                 break;
             }

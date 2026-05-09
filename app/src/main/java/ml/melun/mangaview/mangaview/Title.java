@@ -225,9 +225,16 @@ public class Title extends MTitle {
                 eps.add(tmp);
             }
         }catch(Exception e) {
+            if(isCloudflareChallenge(e))
+                return LOAD_CAPTCHA;
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return LOAD_OK;
+    }
+
+    private static boolean isCloudflareChallenge(Exception e) {
+        String message = e == null ? null : e.getMessage();
+        return message != null && message.toLowerCase(java.util.Locale.ROOT).contains("cloudflare");
     }
 
     static String cleanNtkEpisodeTitleForTest(String html) {
@@ -339,6 +346,8 @@ public class Title extends MTitle {
             if(eps.size() == 0 && client.resolveWfwfDomainNow())
                 return fetchWolfEps(client, listPath, viewPath);
         }catch(Exception e) {
+            if(isCloudflareChallenge(e))
+                return LOAD_CAPTCHA;
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return LOAD_OK;

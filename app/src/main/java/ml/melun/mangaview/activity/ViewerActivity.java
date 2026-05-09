@@ -329,8 +329,8 @@ public class ViewerActivity extends AppCompatActivity {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
 
-        next.setOnClickListener(v -> loadManga(nextEpisodeCandidate(manga)));
-        prev.setOnClickListener(v -> loadManga(previousEpisodeCandidate(manga)));
+        next.setOnClickListener(v -> loadAdjacentEpisode(true));
+        prev.setOnClickListener(v -> loadAdjacentEpisode(false));
         episodeButton.setOnClickListener(v -> showEpisodePicker());
         cut.setOnClickListener(v -> toggleAutoCut());
 
@@ -464,6 +464,48 @@ public class ViewerActivity extends AppCompatActivity {
                 candidate.setEps(episodes);
         }
         return candidate;
+    }
+
+    private void loadAdjacentEpisode(boolean nextDirection) {
+        Manga source = focusedManga();
+        Manga target = nextDirection ? nextEpisodeCandidate(source) : previousEpisodeCandidate(source);
+        if(target != null) {
+            loadManga(target);
+            return;
+        }
+        if(source == null || !source.isOnline())
+            return;
+        lockUi(true);
+        AppDispatchers.submitUserAction(() -> {
+            int result = LOAD_OK;
+            try {
+                result = ensureEpisodeListLoaded(source);
+            } catch (Exception e) {
+                ml.melun.mangaview.report.CrashReporter.record(e);
+            }
+            Manga resolved = result == LOAD_OK
+                    ? (nextDirection ? nextEpisodeCandidate(source) : previousEpisodeCandidate(source))
+                    : null;
+            int finalResult = result;
+            mainHandler.post(() -> {
+                lockUi(false);
+                if(isFinishing())
+                    return;
+                if(finalResult == LOAD_CAPTCHA) {
+                    showTokiCaptchaPopup(context, p);
+                    return;
+                }
+                if(resolved != null)
+                    loadManga(resolved);
+                else
+                    refreshToolbar(source);
+            });
+        });
+    }
+
+    private Manga focusedManga() {
+        PageItem page = getFocusedVisiblePage();
+        return page != null && page.manga != null ? page.manga : manga;
     }
 
     private List<Manga> largerEpisodeList(List<Manga> current, List<Manga> candidate) {
@@ -1577,10 +1619,18 @@ public class ViewerActivity extends AppCompatActivity {
         if(page == null || page.manga == null || !page.manga.isOnline())
             return;
         Manga target = nextEpisodeCandidate(page.manga);
-        if(target == null)
+        if(target == null) {
+            ensureEpisodeListThenAttachNext(page.manga, jumpToEpisode);
             return;
+        }
         int loadedPosition = stripAdapter.findFirstPagePosition(target);
         if(loadedPosition != RecyclerView.NO_POSITION) {
+            if(jumpToEpisode) {
+                manga = target;
+                updateIntent(target);
+                refreshToolbar(target);
+                manager.scrollToPositionWithOffset(loadedPosition, strip.getPaddingTop());
+            }
             return;
         }
         if(nextEpisodeBoundaryLoading)
@@ -1598,12 +1648,54 @@ public class ViewerActivity extends AppCompatActivity {
 
             @Override
             public void nextLoaded(Manga m) {
+                boolean shouldJump = jumpToEpisode || nextEpisodeBoundaryJumpPending;
                 nextEpisodeBoundaryLoading = false;
                 nextEpisodeBoundaryJumpPending = false;
                 if(m == null || strip == null || stripAdapter == null || isFinishing())
                     return;
+                strip.post(() -> {
+                    int position = stripAdapter.findFirstPagePosition(m);
+                    if(position == RecyclerView.NO_POSITION)
+                        return;
+                    manga = m;
+                    updateIntent(m);
+                    refreshToolbar(m);
+                    if(shouldJump)
+                        manager.scrollToPositionWithOffset(position, strip.getPaddingTop());
+                });
             }
         }, page.manga);
+    }
+
+    private void ensureEpisodeListThenAttachNext(Manga source, boolean jumpToEpisode) {
+        if(source == null || !source.isOnline() || nextEpisodeBoundaryLoading)
+            return;
+        nextEpisodeBoundaryJumpPending = jumpToEpisode;
+        nextEpisodeBoundaryLoading = true;
+        AppDispatchers.submitUserAction(() -> {
+            int result = LOAD_OK;
+            try {
+                result = ensureEpisodeListLoaded(source);
+            } catch (Exception e) {
+                ml.melun.mangaview.report.CrashReporter.record(e);
+            }
+            int finalResult = result;
+            mainHandler.post(() -> {
+                boolean shouldJump = jumpToEpisode || nextEpisodeBoundaryJumpPending;
+                nextEpisodeBoundaryLoading = false;
+                nextEpisodeBoundaryJumpPending = false;
+                if(isFinishing())
+                    return;
+                if(finalResult == LOAD_CAPTCHA) {
+                    showTokiCaptchaPopup(context, p);
+                    return;
+                }
+                if(nextEpisodeCandidate(source) != null)
+                    attachNextEpisode(shouldJump);
+                else
+                    refreshToolbar(source);
+            });
+        });
     }
 
     public void refreshToolbar(Manga m){
