@@ -122,4 +122,19 @@
         android:textStyle="bold"
         android:visibility="gone" />
 
+    <TextView
+        android:id="@+id/account_sheet_settings"
+        android:layout_width="match_parent"
+        android:layout_height="46dp"
+        android:layout_marginTop="10dp"
+        android:background="@drawable/account_sheet_secondary_bg"
+        android:clickable="true"
+        android:focusable="true"
+        android:foreground="?attr/selectableItemBackground"
+        android:gravity="center"
+        android:text="@string/account_open_settings"
+        android:textColor="@color/appText"
+        android:textSize="15sp"
+        android:textStyle="bold" />
+
 </LinearLayout>

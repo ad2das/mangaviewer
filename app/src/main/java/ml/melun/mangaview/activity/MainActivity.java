@@ -107,6 +107,7 @@ public class MainActivity extends AppCompatActivity
     TextView accountSheetStatus;
     TextView accountSheetPrimary;
     TextView accountSheetSecondary;
+    TextView accountSheetSettings;
     TextView accountSheetHint;
     StartupViewModel startupViewModel;
     UrlUpdateCallback pendingUrlUpdateCallback;
@@ -471,6 +472,7 @@ public class MainActivity extends AppCompatActivity
         accountSheetStatus = view.findViewById(R.id.account_sheet_status);
         accountSheetPrimary = view.findViewById(R.id.account_sheet_primary);
         accountSheetSecondary = view.findViewById(R.id.account_sheet_secondary);
+        accountSheetSettings = view.findViewById(R.id.account_sheet_settings);
         accountSheetHint = view.findViewById(R.id.account_sheet_hint);
         accountSheet.setContentView(view);
         accountSheet.setOnDismissListener(dialog -> clearAccountSheetRefs());
@@ -519,8 +521,15 @@ public class MainActivity extends AppCompatActivity
 
     private void updateAccountSheet(boolean syncing) {
         if(accountSheetName == null || accountSheetEmail == null || accountSheetStatus == null
-                || accountSheetPrimary == null || accountSheetSecondary == null || accountSheetHint == null)
+                || accountSheetPrimary == null || accountSheetSecondary == null
+                || accountSheetSettings == null || accountSheetHint == null)
             return;
+        accountSheetSettings.setText(R.string.account_open_settings);
+        accountSheetSettings.setOnClickListener(v -> {
+            if(accountSheet != null)
+                accountSheet.dismiss();
+            Utils.safeStartActivity(context, new Intent(context, SettingsActivity.class));
+        });
         FirebaseAccountManager accountManager = MainApplication.getFirebaseAccountManager();
         FirebaseUser user = accountManager == null ? null : accountManager.getUser();
         if(user == null) {
@@ -555,6 +564,7 @@ public class MainActivity extends AppCompatActivity
         accountSheetStatus = null;
         accountSheetPrimary = null;
         accountSheetSecondary = null;
+        accountSheetSettings = null;
         accountSheetHint = null;
     }
 
@@ -715,7 +725,7 @@ public class MainActivity extends AppCompatActivity
             openSearchTab();
             return true;
         }else if (id == R.id.action_settings) {
-            Utils.safeStartActivity(context, new Intent(context, SettingsActivity.class));
+            toggleAccountSignIn();
             return true;
         }
         return super.onOptionsItemSelected(item);
