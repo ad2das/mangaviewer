@@ -80,6 +80,7 @@ import static ml.melun.mangaview.Utils.showPopup;
 import static ml.melun.mangaview.Utils.showYesNoNeutralPopup;
 import static ml.melun.mangaview.Utils.writePreferenceToFile;
 import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
+import static ml.melun.mangaview.activity.CaptchaActivity.TURNSTILE_AUTO_JS;
 import static ml.melun.mangaview.activity.FirstTimeActivity.RESULT_EULA_AGREE;
 import static ml.melun.mangaview.activity.FolderSelectActivity.MODE_FILE_SAVE;
 import static ml.melun.mangaview.activity.SettingsActivity.RESULT_NEED_RESTART;
@@ -385,8 +386,65 @@ public class MainActivity extends AppCompatActivity
         if(now - lastNtkCaptchaLaunchAt < 1500L)
             return true;
         lastNtkCaptchaLaunchAt = now;
-        Utils.showCaptchaPopup(this, 3, null, p);
+        // Try background clearance first
+        tryBackgroundClearance();
         return true;
+    }
+
+    private void tryBackgroundClearance() {
+        final String rootUrl = p.getWebtoonUrl();
+        if(rootUrl == null || rootUrl.length() == 0)
+            return;
+        final android.webkit.WebView bgWebView = new android.webkit.WebView(this);
+        bgWebView.setLayoutParams(new android.view.ViewGroup.LayoutParams(1, 1));
+        bgWebView.setAlpha(0.0f);
+        android.view.ViewGroup root = (android.view.ViewGroup) getWindow().getDecorView().getRootView();
+        root.addView(bgWebView);
+
+        android.webkit.WebSettings settings = bgWebView.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setUserAgentString(getHttpClient().agent);
+
+        final android.webkit.CookieManager cookiem = android.webkit.CookieManager.getInstance();
+        cookiem.setAcceptCookie(true);
+        cookiem.setAcceptThirdPartyCookies(bgWebView, true);
+
+        final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+        final Runnable timeout = new Runnable() {
+            @Override
+            public void run() {
+                if(!isFinishing() && bgWebView.getParent() != null)
+                    root.removeView(bgWebView);
+                bgWebView.destroy();
+                // Fallback to visible captcha if still no clearance
+                if(getHttpClient().isNtk() && !getHttpClient().hasCloudflareClearance())
+                    Utils.showCaptchaPopup(MainActivity.this, 3, null, p);
+            }
+        };
+        handler.postDelayed(timeout, 15000);
+
+        bgWebView.setWebViewClient(new android.webkit.WebViewClient() {
+            @Override
+            public void onLoadResource(android.webkit.WebView view, String url) {
+                checkAndFinish(bgWebView, root, handler, timeout);
+            }
+            @Override
+            public void onPageFinished(android.webkit.WebView view, String url) {
+                checkAndFinish(bgWebView, root, handler, timeout);
+                view.loadUrl(CaptchaActivity.TURNSTILE_AUTO_JS);
+            }
+        });
+        bgWebView.loadUrl(rootUrl);
+    }
+
+    private void checkAndFinish(android.webkit.WebView bgWebView, android.view.ViewGroup root, android.os.Handler handler, Runnable timeout) {
+        if(getHttpClient().hasCloudflareClearance()) {
+            handler.removeCallbacks(timeout);
+            if(!isFinishing() && bgWebView.getParent() != null)
+                root.removeView(bgWebView);
+            bgWebView.destroy();
+        }
     }
 
     private void startDeferredUrlUpdate() {

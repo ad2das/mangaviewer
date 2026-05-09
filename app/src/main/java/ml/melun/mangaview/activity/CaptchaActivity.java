@@ -49,7 +49,7 @@ public class CaptchaActivity extends AppCompatActivity {
     CookieManager cookiem;
     boolean requireCloudflareClearance;
 
-    private static final String TURNSTILE_AUTO_JS = "javascript:(function autoSolve(){" +
+    public static final String TURNSTILE_AUTO_JS = "javascript:(function autoSolve(){" +
             "function clickTurnstile(){" +
             "var iframes=document.querySelectorAll('iframe[src*=\"challenges.cloudflare.com\"]');" +
             "for(var i=0;i<iframes.length;i++){" +
