@@ -4,11 +4,11 @@ import android.app.Activity;
 import android.app.ProgressDialog;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.Settings;
-import android.util.Base64;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AlertDialog;
@@ -16,10 +16,10 @@ import androidx.core.content.FileProvider;
 
 import org.json.JSONObject;
 
-import java.nio.charset.StandardCharsets;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.util.concurrent.TimeUnit;
 
 import ml.melun.mangaview.report.CrashReporter;
 import ml.melun.mangaview.runtime.AppDispatchers;
@@ -29,10 +29,18 @@ import okhttp3.Response;
 import okhttp3.ResponseBody;
 
 public final class AppUpdateManager {
-    private static final String VERSION_URL = "https://api.github.com/repos/ad2das/mangaviewer/contents/version.json?ref=main";
     private static final String RAW_VERSION_URL = "https://raw.githubusercontent.com/ad2das/mangaviewer/main/version.json";
+    private static final String PREF = "appUpdate";
+    private static final String KEY_VERSION = "latestVersion";
+    private static final String KEY_LINK = "latestLink";
     private static final String APK_MIME = "application/vnd.android.package-archive";
-    private static boolean checkedThisSession;
+    private static final OkHttpClient UPDATE_CLIENT = new OkHttpClient.Builder()
+            .connectTimeout(2, TimeUnit.SECONDS)
+            .readTimeout(3, TimeUnit.SECONDS)
+            .callTimeout(4, TimeUnit.SECONDS)
+            .build();
+    private static boolean checkStartedThisSession;
+    private static boolean dialogShownThisSession;
     private static boolean downloading;
     private static File pendingInstallApk;
 
@@ -40,16 +48,25 @@ public final class AppUpdateManager {
     }
 
     public static void checkForUpdate(Activity activity) {
-        if(activity == null || checkedThisSession || downloading)
+        if(activity == null || downloading)
             return;
         Context appContext = activity.getApplicationContext();
+        UpdateInfo cachedInfo = readCachedUpdateInfo(appContext);
+        if(isUpdateAvailable(cachedInfo) && !dialogShownThisSession) {
+            dialogShownThisSession = true;
+            showUpdateDialog(activity, cachedInfo);
+        }
+        if(checkStartedThisSession)
+            return;
+        checkStartedThisSession = true;
         AppDispatchers.runIo(() -> {
             UpdateInfo info = fetchUpdateInfo(appContext);
             if(info == null)
                 return;
-            checkedThisSession = true;
-            if(info.version <= BuildConfig.VERSION_CODE || info.link == null || info.link.length() == 0)
+            cacheUpdateInfo(appContext, info);
+            if(!isUpdateAvailable(info) || dialogShownThisSession)
                 return;
+            dialogShownThisSession = true;
             AppDispatchers.runOnMain(() -> showUpdateDialog(activity, info));
         });
     }
@@ -62,29 +79,25 @@ public final class AppUpdateManager {
     }
 
     private static UpdateInfo fetchUpdateInfo(Context context) {
-        UpdateInfo apiInfo = fetchUpdateInfoFromUrl(VERSION_URL, true);
-        if(apiInfo != null)
-            return apiInfo;
-        return fetchUpdateInfoFromUrl(RAW_VERSION_URL + "?t=" + System.currentTimeMillis(), false);
+        return fetchUpdateInfoFromUrl(RAW_VERSION_URL + "?t=" + System.currentTimeMillis());
     }
 
-    private static UpdateInfo fetchUpdateInfoFromUrl(String url, boolean allowGithubContentsEnvelope) {
+    private static UpdateInfo fetchUpdateInfoFromUrl(String url) {
         try {
-            OkHttpClient client = MainApplication.getHttpClient().client;
             Request request = new Request.Builder()
                     .url(url)
-                    .header("Accept", "application/vnd.github.raw")
                     .header("User-Agent", "MangaView")
+                    .header("Accept", "application/json, text/plain, */*")
                     .header("Cache-Control", "no-cache")
                     .header("Pragma", "no-cache")
                     .build();
-            try(Response response = client.newCall(request).execute()) {
+            try(Response response = UPDATE_CLIENT.newCall(request).execute()) {
                 if(!response.isSuccessful())
                     return null;
                 ResponseBody body = response.body();
                 if(body == null)
                     return null;
-                JSONObject json = parseVersionJson(body.string(), allowGithubContentsEnvelope);
+                JSONObject json = new JSONObject(body.string());
                 int version = json.optInt("version", -1);
                 String link = json.optString("link", "");
                 if(version <= 0 || link.length() == 0)
@@ -97,16 +110,30 @@ public final class AppUpdateManager {
         }
     }
 
-    private static JSONObject parseVersionJson(String body, boolean allowGithubContentsEnvelope) throws Exception {
-        JSONObject json = new JSONObject(body);
-        if(json.has("version") || !allowGithubContentsEnvelope)
-            return json;
-        String encoded = json.optString("content", "");
-        if(encoded.length() == 0)
-            return json;
-        String normalized = encoded.replace("\n", "");
-        byte[] decoded = Base64.decode(normalized, Base64.DEFAULT);
-        return new JSONObject(new String(decoded, StandardCharsets.UTF_8));
+    private static boolean isUpdateAvailable(UpdateInfo info) {
+        return info != null && info.version > BuildConfig.VERSION_CODE
+                && info.link != null && info.link.length() > 0;
+    }
+
+    private static UpdateInfo readCachedUpdateInfo(Context context) {
+        if(context == null)
+            return null;
+        SharedPreferences pref = context.getSharedPreferences(PREF, Context.MODE_PRIVATE);
+        int version = pref.getInt(KEY_VERSION, -1);
+        String link = pref.getString(KEY_LINK, "");
+        if(version <= 0 || link == null || link.length() == 0)
+            return null;
+        return new UpdateInfo(version, link);
+    }
+
+    private static void cacheUpdateInfo(Context context, UpdateInfo info) {
+        if(context == null || info == null)
+            return;
+        context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                .edit()
+                .putInt(KEY_VERSION, info.version)
+                .putString(KEY_LINK, info.link)
+                .apply();
     }
 
     private static void showUpdateDialog(Activity activity, UpdateInfo info) {

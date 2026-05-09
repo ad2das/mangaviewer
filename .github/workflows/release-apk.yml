@@ -60,4 +60,4 @@ jobs:
 
       - name: Release latest debug APK
         shell: pwsh
-        run: ./tools/release_latest.ps1 -SkipTests
+        run: ./tools/release_latest.ps1 -SkipTests -DeleteOldRepoApks

@@ -337,6 +337,7 @@ public class MainActivity extends AppCompatActivity
         }else
             changeFragment(0);
 
+        content.post(() -> AppUpdateManager.checkForUpdate(this));
         content.postDelayed(this::runDeferredStartupTasks, 500);
 
         // savedInstanceState
@@ -353,7 +354,6 @@ public class MainActivity extends AppCompatActivity
         setupAccountHeader();
         startDeferredUrlUpdate();
         requestStartupPermissions();
-        AppUpdateManager.checkForUpdate(this);
     }
 
     @Override

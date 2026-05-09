@@ -8,6 +8,7 @@ param(
     [switch]$NoCommit,
     [switch]$NoPush,
     [switch]$NoUpload,
+    [switch]$DeleteOldRepoApks,
     [switch]$DeleteOldReleaseApks
 )
 
@@ -128,6 +129,15 @@ Write-Step "Copying APK to apk/"
 New-Item -ItemType Directory -Force -Path "apk" | Out-Null
 Copy-Item -LiteralPath $builtApk -Destination $apkPath -Force
 
+if ($DeleteOldRepoApks) {
+    Write-Step "Deleting old repo APKs"
+    Get-ChildItem -Path "apk" -Filter "mangaViewer_*-debug.apk" -File | ForEach-Object {
+        if ($_.Name -ne $apkName) {
+            Remove-Item -LiteralPath $_.FullName -Force
+        }
+    }
+}
+
 $changedFiles = @(
     $buildGradlePath,
     $versionJsonPath,
@@ -137,7 +147,11 @@ $changedFiles = @(
 
 if (-not $NoCommit) {
     Write-Step "Committing release metadata and APK"
-    git add -- $changedFiles
+    if ($DeleteOldRepoApks) {
+        git add -- $buildGradlePath $versionJsonPath $releasesHtmlPath apk
+    } else {
+        git add -- $changedFiles
+    }
     if ([string]::IsNullOrWhiteSpace($CommitMessage)) {
         $CommitMessage = "Release debug APK $versionCode"
     }
