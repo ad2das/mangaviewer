@@ -70,6 +70,11 @@ public final class AppUpdateManager {
             .readTimeout(30, TimeUnit.SECONDS)
             .callTimeout(90, TimeUnit.SECONDS)
             .build();
+    private static final ExecutorService UPDATE_DOWNLOAD_EXECUTOR = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "manga-update-download");
+        thread.setDaemon(true);
+        return thread;
+    });
     private static boolean checkStartedThisSession;
     private static boolean dialogShownThisSession;
     private static boolean downloading;
@@ -204,6 +209,8 @@ public final class AppUpdateManager {
     private static void downloadAndInstall(Activity activity, UpdateInfo info) {
         if(activity == null || info == null || downloading)
             return;
+        long clickedAt = System.currentTimeMillis();
+        log("downloadClick version=" + info.version);
         downloading = true;
         ProgressDialog progressDialog = new ProgressDialog(activity);
         progressDialog.setTitle("업데이트 다운로드");
@@ -222,36 +229,51 @@ public final class AppUpdateManager {
 
         Context appContext = activity.getApplicationContext();
         final boolean[] firstVisibleProgressLogged = {false};
-        AppDispatchers.runIo(() -> {
-            UpdateInfo downloadInfo = latestInfoForDownload(appContext, info);
-            File apk = downloadApk(appContext, downloadInfo, progress -> AppDispatchers.runOnMain(() -> {
-                try {
-                    if(progressDialog.isShowing()) {
-                        progressDialog.setProgress(progress);
-                        if(!firstVisibleProgressLogged[0] && progress > 0) {
-                            firstVisibleProgressLogged[0] = true;
-                            log("progressVisible first=" + progress);
+        UPDATE_DOWNLOAD_EXECUTOR.execute(() -> {
+            try {
+                log("downloadWorkerStart delayMs=" + (System.currentTimeMillis() - clickedAt));
+                UpdateInfo downloadInfo = latestInfoForDownload(appContext, info);
+                File apk = downloadApk(appContext, downloadInfo, progress -> AppDispatchers.runOnMain(() -> {
+                    try {
+                        if(progressDialog.isShowing()) {
+                            progressDialog.setProgress(progress);
+                            if(!firstVisibleProgressLogged[0] && progress > 0) {
+                                firstVisibleProgressLogged[0] = true;
+                                log("progressVisible first=" + progress);
+                            }
                         }
+                    } catch (RuntimeException e) {
+                        CrashReporter.record(e);
                     }
-                } catch (RuntimeException e) {
-                    CrashReporter.record(e);
-                }
-            }));
-            AppDispatchers.runOnMain(() -> {
-                downloading = false;
-                try {
-                    if(progressDialog.isShowing())
-                        progressDialog.dismiss();
-                } catch (RuntimeException e) {
-                    CrashReporter.record(e);
-                }
-                if(apk == null) {
+                }));
+                AppDispatchers.runOnMain(() -> {
+                    downloading = false;
+                    try {
+                        if(progressDialog.isShowing())
+                            progressDialog.dismiss();
+                    } catch (RuntimeException e) {
+                        CrashReporter.record(e);
+                    }
+                    if(apk == null) {
+                        Utils.safeToast(activity, "업데이트 다운로드에 실패했습니다.", Toast.LENGTH_LONG);
+                        return;
+                    }
+                    pendingInstallApk = apk;
+                    installApk(activity, apk);
+                });
+            } catch (Throwable throwable) {
+                CrashReporter.record(throwable);
+                AppDispatchers.runOnMain(() -> {
+                    downloading = false;
+                    try {
+                        if(progressDialog.isShowing())
+                            progressDialog.dismiss();
+                    } catch (RuntimeException e) {
+                        CrashReporter.record(e);
+                    }
                     Utils.safeToast(activity, "업데이트 다운로드에 실패했습니다.", Toast.LENGTH_LONG);
-                    return;
-                }
-                pendingInstallApk = apk;
-                installApk(activity, apk);
-            });
+                });
+            }
         });
     }
 
@@ -302,10 +324,10 @@ public final class AppUpdateManager {
             deleteStaleUpdateApks(context, null);
             File apk = new File(dir, UPDATE_APK_PREFIX + info.version + UPDATE_APK_SUFFIX);
             DownloadPlan plan = readCachedDownloadPlan(context, info.link);
-            if(plan == null)
-                plan = fetchAndCacheDownloadPlan(context, info.link);
-            else
+            if(plan != null)
                 log("planCacheHit bytes=" + plan.length + " range=" + plan.supportsRange);
+            else
+                log("planCacheMiss startDirect");
             String downloadUrl = plan != null && plan.url != null && plan.url.length() > 0
                     ? plan.url
                     : info.link;
