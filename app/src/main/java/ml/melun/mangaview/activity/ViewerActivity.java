@@ -1010,13 +1010,16 @@ public class ViewerActivity extends AppCompatActivity {
                 //캡차 처리 팝업
                 if(lockui) lockUi(false);
                 resetOnBackPressed();
-                showTokiCaptchaPopup(context, p);
+                showViewerCaptchaRequired(m);
                 return;
             }
             if(res == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !hasLoadedImages(m)) {
                 if(lockui) lockUi(false);
                 resetOnBackPressed();
-                showViewerImagesUnavailable(m);
+                if(isNtkEpisode(m))
+                    showViewerCaptchaRequired(m);
+                else
+                    showViewerImagesUnavailable(m);
                 return;
             }
 
@@ -2086,6 +2089,17 @@ public class ViewerActivity extends AppCompatActivity {
             if(!openEpisodeListIfRequested())
                 ViewerActivity.this.finish();
         });
+    }
+
+    private boolean isNtkEpisode(Manga target) {
+        if(target != null && target.getTitle() != null && "ntk".equals(target.getTitle().getSourceSite()))
+            return true;
+        return p != null && p.isNtkSite();
+    }
+
+    private void showViewerCaptchaRequired(Manga target) {
+        ViewerWarmupManager.logMetric("viewer_ntk_captcha_required", target == null ? -1 : target.getId());
+        showCaptchaPopup(this, RESULT_CAPTCHA, null, p);
     }
 
     public interface InfiniteScrollCallback{
