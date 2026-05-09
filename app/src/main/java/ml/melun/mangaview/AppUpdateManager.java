@@ -215,17 +215,24 @@ public final class AppUpdateManager {
         progressDialog.setCancelable(false);
         try {
             progressDialog.show();
+            progressDialog.setProgress(1);
         } catch (RuntimeException e) {
             CrashReporter.record(e);
         }
 
         Context appContext = activity.getApplicationContext();
+        final boolean[] firstVisibleProgressLogged = {false};
         AppDispatchers.runIo(() -> {
             UpdateInfo downloadInfo = latestInfoForDownload(appContext, info);
             File apk = downloadApk(appContext, downloadInfo, progress -> AppDispatchers.runOnMain(() -> {
                 try {
-                    if(progressDialog.isShowing())
+                    if(progressDialog.isShowing()) {
                         progressDialog.setProgress(progress);
+                        if(!firstVisibleProgressLogged[0] && progress > 0) {
+                            firstVisibleProgressLogged[0] = true;
+                            log("progressVisible first=" + progress);
+                        }
+                    }
                 } catch (RuntimeException e) {
                     CrashReporter.record(e);
                 }
