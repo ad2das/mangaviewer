@@ -69,6 +69,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private static final boolean HOME_HERO_ENABLED = true;
     private static final int HOME_EXTRA_SECTION_LIMIT = 4;
     private static final int STYLE_STANDARD = 3;
+    private static final int VIEW_TYPE_HOME_CONTINUE = 101;
+    private static final int VIEW_TYPE_HOME_RANKING = 102;
+    private static final int VIEW_TYPE_HOME_STANDARD = 103;
+    private static final int VIEW_TYPE_WEBTOON_CARD = 201;
     public static final int ACTION_UPDATES = 1;
     public static final int ACTION_BOOKMARKS = 2;
     public static final int ACTION_DOWNLOADS = 3;
@@ -129,9 +133,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         inflater = LayoutInflater.from(context);
         dataSet = MainPageWebtoon.getBlankDataSet(baseMode);
         rows = new ArrayList<>();
-        sharedHomePool.setMaxRecycledViews(STYLE_CONTINUE, 12);
-        sharedHomePool.setMaxRecycledViews(STYLE_RANKING, 12);
-        sharedHomePool.setMaxRecycledViews(STYLE_STANDARD, 18);
+        sharedHomePool.setMaxRecycledViews(VIEW_TYPE_HOME_CONTINUE, 12);
+        sharedHomePool.setMaxRecycledViews(VIEW_TYPE_HOME_RANKING, 12);
+        sharedHomePool.setMaxRecycledViews(VIEW_TYPE_HOME_STANDARD, 12);
+        sharedHomePool.setMaxRecycledViews(VIEW_TYPE_WEBTOON_CARD, 18);
         setHasStableIds(true);
         ViewerWarmupManager.warmupSavedContinues(context, 6);
     }
@@ -1248,7 +1253,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         @NonNull
         @Override
         public RecyclerView.ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
-            if(style == STYLE_RANKING)
+            if(viewType == VIEW_TYPE_HOME_RANKING)
                 return new RankHolder(inflater.inflate(R.layout.item_home_rank_card, parent, false));
             return new ContinueHolder(inflater.inflate(R.layout.item_home_continue_card, parent, false));
         }
@@ -1270,7 +1275,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
         @Override
         public int getItemViewType(int position) {
-            return style;
+            if(style == STYLE_RANKING)
+                return VIEW_TYPE_HOME_RANKING;
+            if(style == STYLE_STANDARD)
+                return VIEW_TYPE_HOME_STANDARD;
+            return VIEW_TYPE_HOME_CONTINUE;
         }
 
         @Override
@@ -1872,7 +1881,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
         @Override
         public int getItemViewType(int position) {
-            return STYLE_STANDARD;
+            return VIEW_TYPE_WEBTOON_CARD;
         }
 
         @Override
