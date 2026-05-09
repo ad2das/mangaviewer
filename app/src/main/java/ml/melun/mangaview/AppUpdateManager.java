@@ -244,12 +244,15 @@ public final class AppUpdateManager {
             deleteStaleUpdateApks(context, null);
             File apk = new File(dir, UPDATE_APK_PREFIX + info.version + UPDATE_APK_SUFFIX);
             DownloadPlan plan = fetchDownloadPlan(info.link);
+            String downloadUrl = plan != null && plan.url != null && plan.url.length() > 0
+                    ? plan.url
+                    : info.link;
             if(plan != null && plan.supportsRange && plan.length >= APK_PARALLEL_MIN_BYTES) {
-                File parallelApk = downloadApkParallel(info.link, apk, plan.length, callback);
+                File parallelApk = downloadApkParallel(downloadUrl, apk, plan.length, callback);
                 if(parallelApk != null)
                     return parallelApk;
             }
-            return downloadApkSingle(info.link, apk, plan == null ? -1 : plan.length, callback);
+            return downloadApkSingle(downloadUrl, apk, plan == null ? -1 : plan.length, callback);
         } catch (Exception e) {
             CrashReporter.record(e);
             return null;
@@ -270,7 +273,7 @@ public final class AppUpdateManager {
                 long length = parseContentLength(response);
                 String ranges = response.header("Accept-Ranges", "");
                 boolean supportsRange = ranges != null && ranges.toLowerCase(Locale.US).contains("bytes");
-                return new DownloadPlan(length, supportsRange);
+                return new DownloadPlan(response.request().url().toString(), length, supportsRange);
             }
         } catch (Exception e) {
             CrashReporter.record(e);
@@ -485,10 +488,12 @@ public final class AppUpdateManager {
     }
 
     private static final class DownloadPlan {
+        final String url;
         final long length;
         final boolean supportsRange;
 
-        DownloadPlan(long length, boolean supportsRange) {
+        DownloadPlan(String url, long length, boolean supportsRange) {
+            this.url = url;
             this.length = length;
             this.supportsRange = supportsRange;
         }
