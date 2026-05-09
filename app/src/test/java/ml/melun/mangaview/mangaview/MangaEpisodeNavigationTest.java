@@ -96,6 +96,37 @@ public class MangaEpisodeNavigationTest {
         assertEquals(20, current.prevEp().getId());
     }
 
+    @Test
+    public void progressEpisodes_restoreNavigationWhenEpisodeListIsMissing() {
+        Title title = new Title("title", "", "", new ArrayList<>(), "", 1, base_webtoon);
+        title.setReadingProgress(177, 1, 177);
+        Manga current = new Manga(177, "(177/177) 176화", "", base_webtoon);
+
+        title.ensureProgressEpisodes(current);
+
+        assertNull(current.nextEp());
+        assertEquals(176, current.prevEp().getId());
+        assertEquals(177, title.getEpsCount());
+    }
+
+    @Test
+    public void progressEpisodes_replaceShortParsedListWithFullProgressList() {
+        Title title = new Title("title", "", "", new ArrayList<>(), "", 1, base_webtoon);
+        title.setReadingProgress(54, 43, 96);
+        Manga current = new Manga(54, "54화", "", base_webtoon);
+        List<Manga> partial = new ArrayList<>();
+        partial.add(new Manga(55, "55화", "", base_webtoon));
+        partial.add(current);
+        partial.add(new Manga(53, "53화", "", base_webtoon));
+        title.setEps(partial);
+
+        title.ensureProgressEpisodes(current);
+
+        assertEquals(96, title.getEpsCount());
+        assertEquals(55, current.nextEp().getId());
+        assertEquals(53, current.prevEp().getId());
+    }
+
     private Title titleWithEpisodes(int... ids) {
         Title title = new Title("title", "", "", new ArrayList<>(), "", 1, base_webtoon);
         List<Manga> episodes = new ArrayList<>();

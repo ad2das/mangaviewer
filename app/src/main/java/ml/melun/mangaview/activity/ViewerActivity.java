@@ -167,7 +167,7 @@ public class ViewerActivity extends AppCompatActivity {
             @Override
             public Manga prevEp(InfiniteLoadCallback callback, Manga curm) {
                 p.removeViewerBookmark(curm);
-                Manga target = curm.prevEp();
+                Manga target = previousEpisodeCandidate(curm);
                 if(target != null) {
                     cancelActiveEpisodeLoader();
                     cancelNextPrefetcher(target);
@@ -198,7 +198,7 @@ public class ViewerActivity extends AppCompatActivity {
             @Override
             public Manga nextEp(InfiniteLoadCallback callback, Manga curm) {
                 p.removeViewerBookmark(curm);
-                Manga target = curm.nextEp();
+                Manga target = nextEpisodeCandidate(curm);
                 if(target != null) {
                     Title currentTitle = title != null ? title : target.getTitle();
                     if(hasLoadedImages(target) && !needsFullEpisodeList(currentTitle, target)) {
@@ -323,8 +323,8 @@ public class ViewerActivity extends AppCompatActivity {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
 
-        next.setOnClickListener(v -> loadManga(manga.nextEp()));
-        prev.setOnClickListener(v -> loadManga(manga.prevEp()));
+        next.setOnClickListener(v -> loadManga(nextEpisodeCandidate(manga)));
+        prev.setOnClickListener(v -> loadManga(previousEpisodeCandidate(manga)));
         episodeButton.setOnClickListener(v -> showEpisodePicker());
         cut.setOnClickListener(v -> toggleAutoCut());
 
@@ -404,13 +404,60 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private List<Manga> currentEpisodeList() {
+        return episodeListFor(manga);
+    }
+
+    private List<Manga> episodeListFor(Manga current) {
         List<Manga> data = null;
-        if(manga != null)
-            data = largerEpisodeList(data, Utils.snapshotEpisodes(manga));
+        if(current != null)
+            data = largerEpisodeList(data, Utils.snapshotEpisodes(current));
         data = largerEpisodeList(data, eps);
-        if(title != null)
-            data = largerEpisodeList(data, Utils.snapshotEpisodes(title));
+        Title currentTitle = title != null ? title : (current == null ? null : current.getTitle());
+        if(currentTitle != null)
+            currentTitle.ensureProgressEpisodes(current);
+        if(currentTitle != null)
+            data = largerEpisodeList(data, Utils.snapshotEpisodes(currentTitle));
         return data;
+    }
+
+    private Manga nextEpisodeCandidate(Manga current) {
+        if(current == null)
+            return null;
+        Manga candidate = current.nextEp();
+        if(candidate != null)
+            return prepareEpisodeCandidate(candidate, current);
+        List<Manga> data = episodeListFor(current);
+        int index = findEpisodeIndex(data, current);
+        if(index > 0)
+            return prepareEpisodeCandidate(Utils.safeGet(data, index - 1), current);
+        return null;
+    }
+
+    private Manga previousEpisodeCandidate(Manga current) {
+        if(current == null)
+            return null;
+        Manga candidate = current.prevEp();
+        if(candidate != null)
+            return prepareEpisodeCandidate(candidate, current);
+        List<Manga> data = episodeListFor(current);
+        int index = findEpisodeIndex(data, current);
+        if(data != null && index >= 0 && index < data.size() - 1)
+            return prepareEpisodeCandidate(Utils.safeGet(data, index + 1), current);
+        return null;
+    }
+
+    private Manga prepareEpisodeCandidate(Manga candidate, Manga source) {
+        if(candidate == null)
+            return null;
+        Title currentTitle = title != null ? title : (source == null ? null : source.getTitle());
+        if(currentTitle != null) {
+            candidate.setTitle(currentTitle);
+            candidate.setTitleId(currentTitle.getId());
+            List<Manga> episodes = episodeListFor(source);
+            if(episodes != null && episodes.size() > 0)
+                candidate.setEps(episodes);
+        }
+        return candidate;
     }
 
     private List<Manga> largerEpisodeList(List<Manga> current, List<Manga> candidate) {
@@ -989,6 +1036,7 @@ public class ViewerActivity extends AppCompatActivity {
             if(result == LOAD_CAPTCHA)
                 return result;
         }
+        currentTitle.ensureProgressEpisodes(target);
         attachEpisodeList(currentTitle, target);
         return LOAD_OK;
     }
@@ -1000,6 +1048,7 @@ public class ViewerActivity extends AppCompatActivity {
         if(currentTitle == null)
             return LOAD_OK;
         restoreTitleEpisodes(currentTitle, target);
+        currentTitle.ensureProgressEpisodes(target);
         attachEpisodeList(currentTitle, target);
         return LOAD_OK;
     }
@@ -1423,7 +1472,7 @@ public class ViewerActivity extends AppCompatActivity {
         PageItem page = getFirstVisiblePage();
         if(page == null || page.manga == null || !page.manga.isOnline())
             return;
-        Manga target = page.manga.prevEp();
+        Manga target = previousEpisodeCandidate(page.manga);
         if(target == null)
             return;
         int loadedPosition = stripAdapter.findLastPagePosition(target);
@@ -1514,7 +1563,7 @@ public class ViewerActivity extends AppCompatActivity {
         PageItem page = getLastVisiblePage();
         if(page == null || page.manga == null || !page.manga.isOnline())
             return;
-        Manga target = page.manga.nextEp();
+        Manga target = nextEpisodeCandidate(page.manga);
         if(target == null)
             return;
         int loadedPosition = stripAdapter.findFirstPagePosition(target);
@@ -1559,7 +1608,7 @@ public class ViewerActivity extends AppCompatActivity {
         toolbarTitle.setText(m.getName());
         toolbarTitle.setSelected(true);
 
-        if(m.nextEp() == null){
+        if(nextEpisodeCandidate(m) == null){
             next.setEnabled(false);
             next.clearColorFilter();
             next.setAlpha(0.38f);
@@ -1569,7 +1618,7 @@ public class ViewerActivity extends AppCompatActivity {
             next.clearColorFilter();
             next.setAlpha(1f);
         }
-        if(m.prevEp() == null) {
+        if(previousEpisodeCandidate(m) == null) {
             prev.setEnabled(false);
             prev.clearColorFilter();
             prev.setAlpha(0.38f);
@@ -1587,7 +1636,7 @@ public class ViewerActivity extends AppCompatActivity {
     private void prefetchNextEpisode(Manga current) {
         if(current == null || !current.isOnline())
             return;
-        Manga target = current.nextEp();
+        Manga target = nextEpisodeCandidate(current);
         if(target == null)
             return;
         if(nextPrefetcher != null
@@ -1611,7 +1660,7 @@ public class ViewerActivity extends AppCompatActivity {
     private void prefetchPreviousEpisode(Manga current) {
         if(current == null || !current.isOnline())
             return;
-        Manga target = current.prevEp();
+        Manga target = previousEpisodeCandidate(current);
         if(target == null)
             return;
         if(hasLoadedImages(target)) {
@@ -1657,6 +1706,7 @@ public class ViewerActivity extends AppCompatActivity {
     private void attachEpisodeList(Title currentTitle, Manga target) {
         if(currentTitle == null)
             return;
+        currentTitle.ensureProgressEpisodes(target);
         List<Manga> episodes = Utils.snapshotEpisodes(currentTitle);
         if(episodes != null)
             for(Manga episode : episodes) {
@@ -1785,12 +1835,12 @@ public class ViewerActivity extends AppCompatActivity {
 
     private boolean isPreviousTargetStillExpected(Manga target) {
         PageItem first = getFirstVisiblePage();
-        return first != null && sameManga(first.manga != null ? first.manga.prevEp() : null, target);
+        return first != null && sameManga(first.manga != null ? previousEpisodeCandidate(first.manga) : null, target);
     }
 
     private boolean isNextTargetStillExpected(Manga target) {
         PageItem last = getLastVisiblePage();
-        return last != null && sameManga(last.manga != null ? last.manga.nextEp() : null, target);
+        return last != null && sameManga(last.manga != null ? nextEpisodeCandidate(last.manga) : null, target);
     }
 
     private boolean sameManga(Manga a, Manga b) {

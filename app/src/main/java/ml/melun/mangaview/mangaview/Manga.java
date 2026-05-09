@@ -125,6 +125,7 @@ public class Manga {
             return fetchWolf(client, "/view?toon=", "/view?toon=");
 
         mode = 0;
+        List<Manga> previousEpisodes = safeEpisodeCopy(eps);
         imgs = new ArrayList<>();
         Set<String> seenImages = new LinkedHashSet<>();
         eps = new ArrayList<>();
@@ -234,6 +235,7 @@ public class Manga {
             }
             tries++;
         }
+        restoreBetterEpisodeList(previousEpisodes);
         attachEpisodeSeriesMetadata();
         return LOAD_OK;
     }
@@ -304,6 +306,7 @@ public class Manga {
 
     private int fetchWolf(CustomHttpClient client, String viewPath, String epPath) {
         mode = 0;
+        List<Manga> previousEpisodes = safeEpisodeCopy(eps);
         imgs = new ArrayList<>();
         Set<String> seenImages = new LinkedHashSet<>();
         eps = new ArrayList<>();
@@ -362,7 +365,28 @@ public class Manga {
                 break;
             }
         }
+        restoreBetterEpisodeList(previousEpisodes);
+        attachEpisodeSeriesMetadata();
         return LOAD_OK;
+    }
+
+    private void restoreBetterEpisodeList(List<Manga> previousEpisodes) {
+        if(previousEpisodes == null || previousEpisodes.size() == 0)
+            return;
+        if(!containsEpisodeId(previousEpisodes, id))
+            return;
+        int currentSize = eps == null ? 0 : eps.size();
+        if(previousEpisodes.size() > currentSize)
+            eps = new ArrayList<>(previousEpisodes);
+    }
+
+    private boolean containsEpisodeId(List<Manga> episodes, int episodeId) {
+        if(episodes == null)
+            return false;
+        for(Manga episode : episodes)
+            if(episode != null && episode.getId() == episodeId && episode.getBaseMode() == getBaseMode())
+                return true;
+        return false;
     }
 
     private boolean addImageIfValid(CustomHttpClient client, Set<String> seenImages, String img) {

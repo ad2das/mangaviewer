@@ -257,6 +257,37 @@ public class Title extends MTitle {
         eps = list;
     }
 
+    public boolean ensureProgressEpisodes(Manga current) {
+        int count = episodeCount;
+        if(count <= 0)
+            count = bookmarkEpisodeIndex;
+        int currentEpisodeId = current == null ? bookmark : current.getId();
+        if(count <= 1 || currentEpisodeId <= 0 || currentEpisodeId > count)
+            return false;
+        if(eps != null && eps.size() >= count)
+            return false;
+
+        ArrayList<Manga> generated = new ArrayList<>();
+        for(int episodeId = count; episodeId >= 1; episodeId--) {
+            String episodeName = episodeId + "화";
+            if(current != null && current.getId() == episodeId
+                    && current.getName() != null && current.getName().length() > 0)
+                episodeName = current.getName();
+            Manga episode = new Manga(episodeId, episodeName, "", baseMode);
+            episode.setMode(0);
+            episode.setTitle(this);
+            episode.setTitleId(id);
+            generated.add(episode);
+        }
+        eps = generated;
+        if(current != null) {
+            current.setTitle(this);
+            current.setTitleId(id);
+            current.setEps(eps);
+        }
+        return true;
+    }
+
     public void removeEps(){
         if(eps!=null) eps.clear();
     }

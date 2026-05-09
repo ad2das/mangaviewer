@@ -1021,6 +1021,7 @@ public class ViewerActivity2 extends AppCompatActivity {
             if(result == LOAD_CAPTCHA)
                 return result;
         }
+        currentTitle.ensureProgressEpisodes(target);
         target.setTitle(currentTitle);
         target.setTitleId(currentTitle.getId());
         List<Manga> episodes = Utils.snapshotEpisodes(currentTitle);
