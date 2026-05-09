@@ -830,6 +830,11 @@ public class Search {
 
     private void appendNtkSiteSearchResults(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {
         String encoded = percentEncode(query, Charset.forName("UTF-8"));
+        if(targetBaseMode == base_webtoon) {
+            appendNtkApiKeywordSearchResults(client, target, targetBaseMode, limit);
+            if(target.size() > 0)
+                return;
+        }
         String kind = targetBaseMode == base_comic ? "manhwa" : "webtoon";
         String[] paths = {
                 "/search?q=" + encoded + "&kind=" + kind,
@@ -852,6 +857,9 @@ public class Search {
 
     private void appendNtkCommonSearchResults(CustomHttpClient client, ArrayList<Title> target, int limit) throws Exception {
         String encoded = percentEncode(query, Charset.forName("UTF-8"));
+        appendNtkApiKeywordSearchResults(client, target, base_webtoon, limit);
+        if(target.size() > 0)
+            return;
         String[] paths = {
                 "/search?q=" + encoded,
                 "/bbs/search.php?stx=" + encoded,
@@ -873,6 +881,60 @@ public class Search {
         }
         if(lastError != null)
             throw lastError;
+    }
+
+    private void appendNtkApiKeywordSearchResults(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {
+        if(client == null || targetBaseMode != base_webtoon)
+            return;
+        int pageSize = limit > 0 ? Math.max(30, Math.min(200, limit * 3)) : 120;
+        String path = "/api/works?keyword=" + percentEncode(query, Charset.forName("UTF-8"))
+                + "&page=1&pageSize=" + pageSize + "&withTotal=1";
+        CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+        if(page.code >= 400)
+            return;
+        PageTitles parsed = parseNtkApiPage(page.body, path, targetBaseMode, 0, 1);
+        ArrayList<Title> filtered = filterNtkKeywordResults(parsed.titles, query, limit);
+        appendUnique(target, filtered);
+    }
+
+    static ArrayList<Title> filterNtkKeywordResultsForTest(ArrayList<Title> titles, String query, int limit) {
+        return filterNtkKeywordResults(titles, query, limit);
+    }
+
+    private static ArrayList<Title> filterNtkKeywordResults(ArrayList<Title> titles, String query, int limit) {
+        ArrayList<Title> filtered = new ArrayList<>();
+        if(titles == null)
+            return filtered;
+        String normalized = normalizeSearchText(query);
+        for(Title title : titles) {
+            if(title == null)
+                continue;
+            if(normalized.length() > 0 && !matchesNtkKeyword(title, normalized))
+                continue;
+            filtered.add(title);
+            if(limit > 0 && filtered.size() >= limit)
+                break;
+        }
+        return filtered;
+    }
+
+    private static boolean matchesNtkKeyword(Title title, String normalizedQuery) {
+        if(normalizedQuery.length() == 0)
+            return true;
+        if(normalizeSearchText(title.getName()).contains(normalizedQuery))
+            return true;
+        if(normalizeSearchText(title.getRelease()).contains(normalizedQuery))
+            return true;
+        for(String tag : title.getTags())
+            if(normalizeSearchText(tag).contains(normalizedQuery))
+                return true;
+        return false;
+    }
+
+    private static String normalizeSearchText(String value) {
+        if(value == null)
+            return "";
+        return value.toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
     }
 
     private static String ntkPath(CustomHttpClient client, String ntkPath, String wolfPath) {

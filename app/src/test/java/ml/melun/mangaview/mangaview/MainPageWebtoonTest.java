@@ -147,6 +147,36 @@ public class MainPageWebtoonTest {
     }
 
     @Test
+    public void ntkKeywordApiSearchFiltersUnrelatedWorks() throws Exception {
+        String apiBody =
+                "{\"works\":["
+                        + "{\"sourceWorkId\":\"15538\",\"title\":\"건객\",\"thumbnailUrl\":\"/covers/15538.png\",\"genre\":\"액션/무협\",\"ep\":\"74화\"},"
+                        + "{\"sourceWorkId\":\"17801\",\"title\":\"아티팩트 먹는 플레이어\",\"thumbnailUrl\":\"/covers/17801.jpg\",\"genre\":\"액션/판타지\",\"ep\":\"42화\"}"
+                        + "],\"page\":1,\"hasMore\":true,\"pageSize\":30,\"total\":2}";
+        ArrayList<Title> parsed = Search.parseNtkApiTitlesForTest(apiBody, base_webtoon);
+        ArrayList<Title> filtered = Search.filterNtkKeywordResultsForTest(parsed, "건객", 0);
+
+        assertEquals(1, filtered.size());
+        assertEquals(15538, filtered.get(0).getId());
+        assertEquals("건객", filtered.get(0).getName());
+    }
+
+    @Test
+    public void parseWolfTitlesReadsNtkSearchResultCards() {
+        ArrayList<Title> titles = MainPageWebtoon.parseWolfTitles(
+                Jsoup.parse("<a class=\"card\" href=\"/webtoon/15538\">"
+                        + "<div class=\"thumb\"><img src=\"https://i.toonflix.app/blacktoon/thumbs/15538.png?v2\" alt=\"건객\"></div>"
+                        + "<div class=\"info\"><p class=\"subject\">건객</p><p class=\"genre\">액션/무협</p><p class=\"ep\">74화</p></div>"
+                        + "</a>"),
+                base_webtoon, 0);
+
+        assertEquals(1, titles.size());
+        assertEquals(15538, titles.get(0).getId());
+        assertEquals("건객", titles.get(0).getName());
+        assertEquals(base_webtoon, titles.get(0).getBaseMode());
+    }
+
+    @Test
     public void enhanceComicClassification_backfillsGenreSectionsFromInferredTags() {
         Ranking<Title> recent = new Ranking<>("정렬|최신순|/cm?type1=complete&type2=recent&o=n");
         recent.add(new Title("학원 러브코미디 만화", "", "", new ArrayList<>(), "", 401, base_comic));
