@@ -42,8 +42,8 @@ public class CaptchaActivity extends AppCompatActivity {
     public static final int REQUEST_CAPTCHA = 32;
     String domain;
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private static final long TURNSTILE_CHECK_DELAY_MS = 500;
-    private static final long TURNSTILE_CHECK_INTERVAL_MS = 500;
+    private static final long TURNSTILE_CHECK_DELAY_MS = 200;
+    private static final long TURNSTILE_CHECK_INTERVAL_MS = 200;
     private static final long TURNSTILE_MAX_WAIT_MS = 30000;
     public static final String TURNSTILE_AUTO_JS = "(function() {" +
             "   var mc = document.querySelector('.main-content');" +
@@ -63,6 +63,8 @@ public class CaptchaActivity extends AppCompatActivity {
             "   return JSON.stringify({type:'none'});" +
             "})();";
     private long pageFinishedTime = 0;
+    private long lastAttemptTime = 0;
+    private static final long MIN_ATTEMPT_INTERVAL_MS = 300;
     private boolean isFinishing = false;
 
     @Override
@@ -159,6 +161,12 @@ public class CaptchaActivity extends AppCompatActivity {
                 if(readCookiesAndFinish(cookiem, purl))
                     return;
 
+                // Attempt click immediately when resources load (Turnstile iframe appears mid-load)
+                long now = System.currentTimeMillis();
+                if(pageFinishedTime > 0 && now - lastAttemptTime > MIN_ATTEMPT_INTERVAL_MS) {
+                    attemptTurnstileClick();
+                }
+
                 super.onLoadResource(view, url);
             }
 
@@ -213,6 +221,10 @@ public class CaptchaActivity extends AppCompatActivity {
 
     private void attemptTurnstileClick() {
         if(webView == null) return;
+
+        long now = System.currentTimeMillis();
+        if(now - lastAttemptTime < MIN_ATTEMPT_INTERVAL_MS) return;
+        lastAttemptTime = now;
 
         webView.evaluateJavascript(TURNSTILE_AUTO_JS, result -> {
             android.util.Log.d("CaptchaActivity", "Turnstile check result: " + result);
