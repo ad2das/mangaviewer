@@ -27,7 +27,7 @@ import okhttp3.Response;
 import okhttp3.ResponseBody;
 
 public final class AppUpdateManager {
-    private static final String VERSION_URL = "https://raw.githubusercontent.com/ad2das/mangaviewer/main/version.json";
+    private static final String VERSION_URL = "https://api.github.com/repos/ad2das/mangaviewer/contents/version.json?ref=main";
     private static final String APK_MIME = "application/vnd.android.package-archive";
     private static boolean checkedThisSession;
     private static boolean downloading;
@@ -61,6 +61,8 @@ public final class AppUpdateManager {
             OkHttpClient client = MainApplication.getHttpClient().client;
             Request request = new Request.Builder()
                     .url(VERSION_URL)
+                    .header("Accept", "application/vnd.github.raw")
+                    .header("User-Agent", "MangaView")
                     .header("Cache-Control", "no-cache")
                     .build();
             try(Response response = client.newCall(request).execute()) {
