@@ -302,6 +302,8 @@ public class CaptchaActivity extends AppCompatActivity {
         try {
             boolean hasClearance = false;
             for(String cookieUrl : cookieReadUrls(purl, currentUrl)) {
+                if(cookieUrl == null || cookieUrl.length() == 0)
+                    continue;
                 String cookieStr = cookiem.getCookie(cookieUrl);
                 if(cookieStr == null || cookieStr.length() == 0)
                     continue;
@@ -313,10 +315,11 @@ public class CaptchaActivity extends AppCompatActivity {
                     String k = cookie.substring(0, eq);
                     String v = cookie.substring(eq + 1);
                     getHttpClient().setCookie(k, v);
-                    if("cf_clearance".equals(k))
+                    if("cf_clearance".equalsIgnoreCase(k))
                         hasClearance = true;
                 }
             }
+            hasClearance = hasClearance || getHttpClient().hasCloudflareClearance();
 
             if(hasClearance) {
                 cookiem.flush();

@@ -114,8 +114,14 @@ public class CustomHttpClient {
         persistCookies();
     }
     public synchronized boolean hasCloudflareClearance() {
-        String value = cookies.get("cf_clearance");
-        return value != null && value.length() > 0;
+        for(String key : cookies.keySet()) {
+            if(!"cf_clearance".equalsIgnoreCase(key))
+                continue;
+            String value = cookies.get(key);
+            if(value != null && value.length() > 0)
+                return true;
+        }
+        return false;
     }
     public synchronized void clearCloudflareCookies() {
         boolean changed = false;
