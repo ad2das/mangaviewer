@@ -20,7 +20,7 @@ android {
     }
 
     compileSdkVersion 34
-    def defaultReleasePatch = 55
+    def defaultReleasePatch = 56
     def formattedDate = project.hasProperty("releaseDateCode")
             ? project.property("releaseDateCode").toString()
             : new Date().format('YYMMdd')
