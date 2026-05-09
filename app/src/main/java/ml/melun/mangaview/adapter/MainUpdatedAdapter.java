@@ -28,6 +28,7 @@ import ml.melun.mangaview.mangaview.Manga;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getGlideUrl;
+import static ml.melun.mangaview.Utils.safeGlideClear;
 import static ml.melun.mangaview.mangaview.MTitle.base_auto;
 
 public class MainUpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
@@ -100,7 +101,7 @@ public class MainUpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             bindStatic(h.thumb, "transparent", android.R.color.transparent);
         } else if(thumb != null && thumb.equals("reload")) {
             if(!"reload".equals(h.thumb.getTag())) {
-                Glide.with(h.thumb).clear(h.thumb);
+                safeGlideClear(h.thumb);
                 h.thumb.setTag("reload");
                 h.thumb.setImageDrawable(ResourcesCompat.getDrawable(res, R.drawable.ic_refresh, null));
             }
@@ -111,16 +112,21 @@ public class MainUpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             Object source = getGlideUrl(thumb, manga.getBaseMode());
             String key = String.valueOf(source);
             if(!key.equals(h.thumb.getTag())) {
-                Glide.with(h.thumb).clear(h.thumb);
+                safeGlideClear(h.thumb);
                 h.thumb.setTag(key);
-                Glide.with(h.thumb)
-                        .load(source)
-                        .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                        .override(dp(96), dp(128))
-                        .thumbnail(0.25f)
-                        .dontAnimate()
-                        .placeholder(R.drawable.app_cover_placeholder)
-                        .into(h.thumb);
+                try {
+                    Glide.with(h.thumb)
+                            .load(source)
+                            .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                            .override(dp(96), dp(128))
+                            .thumbnail(0.25f)
+                            .dontAnimate()
+                            .placeholder(R.drawable.app_cover_placeholder)
+                            .into(h.thumb);
+                } catch (RuntimeException e) {
+                    ml.melun.mangaview.report.CrashReporter.record(e);
+                    h.thumb.setImageResource(R.drawable.app_cover_placeholder);
+                }
             }
         }
     }
@@ -128,7 +134,7 @@ public class MainUpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private void bindStatic(ImageView view, String key, int resId) {
         if(key.equals(view.getTag()))
             return;
-        Glide.with(view).clear(view);
+        safeGlideClear(view);
         view.setTag(key);
         view.setImageResource(resId);
     }

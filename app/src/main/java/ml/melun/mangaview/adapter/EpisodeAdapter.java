@@ -33,6 +33,7 @@ import ml.melun.mangaview.mangaview.Title;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getGlideUrl;
 import static ml.melun.mangaview.Utils.isLocalMediaPath;
+import static ml.melun.mangaview.Utils.safeGlideClear;
 
 
 public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
@@ -187,24 +188,29 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         String key = String.valueOf(source);
         if(key.equals(view.getTag()))
             return;
-        Glide.with(view).clear(view);
+        safeGlideClear(view);
         view.setTag(key);
-        Glide.with(view)
-                .load(source)
-                .apply(new RequestOptions().dontTransform())
-                .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                .override(width, height)
-                .thumbnail(0.25f)
-                .dontAnimate()
-                .placeholder(R.drawable.app_cover_placeholder)
-                .into(view);
+        try {
+            Glide.with(view)
+                    .load(source)
+                    .apply(new RequestOptions().dontTransform())
+                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                    .override(width, height)
+                    .thumbnail(0.25f)
+                    .dontAnimate()
+                    .placeholder(R.drawable.app_cover_placeholder)
+                    .into(view);
+        } catch (RuntimeException e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            view.setImageResource(R.drawable.app_cover_placeholder);
+        }
     }
 
     private void bindEmptyThumbnail(ImageView view, boolean placeholder) {
         String key = placeholder ? "placeholder" : "empty";
         if(key.equals(view.getTag()))
             return;
-        Glide.with(view).clear(view);
+        safeGlideClear(view);
         view.setTag(key);
         if(placeholder)
             view.setImageResource(R.drawable.app_cover_placeholder);

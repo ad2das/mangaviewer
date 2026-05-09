@@ -24,7 +24,9 @@ import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.mangaview.UpdatedManga;
 
 import static ml.melun.mangaview.MainApplication.p;
+import static ml.melun.mangaview.Utils.canUseContextForUi;
 import static ml.melun.mangaview.Utils.getGlideUrl;
+import static ml.melun.mangaview.Utils.safeGlideClear;
 
 public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     Context context;
@@ -64,7 +66,7 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     }
 
     public void preloadThumbnails(int startPosition, int count) {
-        if(mData == null || count <= 0 || save)
+        if(mData == null || count <= 0 || save || !canUseContextForUi(context))
             return;
         int start = Math.max(0, startPosition);
         int end = Math.min(mData.size(), start + count);
@@ -75,12 +77,17 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             String thumb = manga.getThumb();
             if(thumb == null || thumb.length() <= 1)
                 continue;
-            Glide.with(context)
-                    .load(getGlideUrl(thumb, manga.getBaseMode()))
-                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                    .override(dp(72), dp(96))
-                    .dontAnimate()
-                    .preload();
+            try {
+                Glide.with(context)
+                        .load(getGlideUrl(thumb, manga.getBaseMode()))
+                        .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                        .override(dp(72), dp(96))
+                        .dontAnimate()
+                        .preload();
+            } catch (RuntimeException e) {
+                ml.melun.mangaview.report.CrashReporter.record(e);
+                return;
+            }
         }
     }
 
@@ -105,20 +112,25 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             Object source = getGlideUrl(thumb, m.getBaseMode());
             String key = String.valueOf(source);
             if(!key.equals(h.thumb.getTag())) {
-                Glide.with(h.thumb).clear(h.thumb);
+                safeGlideClear(h.thumb);
                 h.thumb.setTag(key);
-                Glide.with(h.thumb)
-                        .load(source)
-                        .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                        .override(dp(72), dp(96))
-                        .thumbnail(0.25f)
-                        .dontAnimate()
-                        .placeholder(R.drawable.app_cover_placeholder)
-                        .into(h.thumb);
+                try {
+                    Glide.with(h.thumb)
+                            .load(source)
+                            .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                            .override(dp(72), dp(96))
+                            .thumbnail(0.25f)
+                            .dontAnimate()
+                            .placeholder(R.drawable.app_cover_placeholder)
+                            .into(h.thumb);
+                } catch (RuntimeException e) {
+                    ml.melun.mangaview.report.CrashReporter.record(e);
+                    h.thumb.setImageResource(R.drawable.app_cover_placeholder);
+                }
             }
         } else {
             if(!"empty".equals(h.thumb.getTag())) {
-                Glide.with(h.thumb).clear(h.thumb);
+                safeGlideClear(h.thumb);
                 h.thumb.setTag("empty");
                 h.thumb.setImageBitmap(null);
             }

@@ -357,7 +357,7 @@ public class Utils {
     }
 
     public static void safeGlideClear(View view) {
-        if(view == null)
+        if(view == null || !canUseContextForUi(view.getContext()))
             return;
         try {
             Glide.with(view).clear(view);
@@ -367,7 +367,7 @@ public class Utils {
     }
 
     public static void safeGlideLoad(ImageView view, Object model, int placeholderResId) {
-        if(view == null)
+        if(view == null || !canUseContextForUi(view.getContext()))
             return;
         try {
             if(placeholderResId != 0)

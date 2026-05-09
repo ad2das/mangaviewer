@@ -32,6 +32,7 @@ import ml.melun.mangaview.mangaview.Title;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getGlideUrl;
 import static ml.melun.mangaview.Utils.isLocalMediaPath;
+import static ml.melun.mangaview.Utils.safeGlideClear;
 
 public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> implements Filterable {
 
@@ -323,20 +324,25 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             Object source = isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, data.getBaseMode());
             String thumbKey = String.valueOf(source);
             if(!thumbKey.equals(holder.thumb.getTag())) {
-                Glide.with(holder.thumb).clear(holder.thumb);
+                safeGlideClear(holder.thumb);
                 holder.thumb.setTag(thumbKey);
-                Glide.with(holder.thumb)
-                        .load(source)
-                        .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                        .override(dp(126), dp(170))
-                        .thumbnail(0.25f)
-                        .dontAnimate()
-                        .into(holder.thumb);
+                try {
+                    Glide.with(holder.thumb)
+                            .load(source)
+                            .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                            .override(dp(126), dp(170))
+                            .thumbnail(0.25f)
+                            .dontAnimate()
+                            .into(holder.thumb);
+                } catch (RuntimeException e) {
+                    ml.melun.mangaview.report.CrashReporter.record(e);
+                    holder.thumb.setImageResource(R.drawable.app_cover_placeholder);
+                }
             }
         }
         else {
             if(!"placeholder".equals(holder.thumb.getTag())) {
-                Glide.with(holder.thumb).clear(holder.thumb);
+                safeGlideClear(holder.thumb);
                 holder.thumb.setTag("placeholder");
                 holder.thumb.setImageResource(R.drawable.app_cover_placeholder);
             }
