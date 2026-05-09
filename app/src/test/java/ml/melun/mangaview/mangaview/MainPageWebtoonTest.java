@@ -180,6 +180,25 @@ public class MainPageWebtoonTest {
     }
 
     @Test
+    public void parseWolfTitlesKeepsNtkSearchCardsSeparate() {
+        ArrayList<Title> titles = MainPageWebtoon.parseWolfTitles(
+                Jsoup.parse("<div class=\"grid\">"
+                        + "<a class=\"card\" href=\"/manhwa/2\"><div class=\"thumb\"><img src=\"/data/toon_category/2.webp\" alt=\"원피스(ONE PIECE)\"></div><div class=\"info\"><p class=\"subject\">원피스(ONE PIECE)</p><p class=\"genre\">애니화,액션,판타지</p><p class=\"ep\">1292화</p></div></a>"
+                        + "<a class=\"card\" href=\"/manhwa/34801\"><div class=\"thumb\"><img src=\"/data/toon_category/34801.webp\" alt=\"원피스 학원\"></div><div class=\"info\"><p class=\"subject\">원피스 학원</p><p class=\"genre\">개그,액션</p><p class=\"ep\">78화</p></div></a>"
+                        + "<a class=\"card\" href=\"/manhwa/24969\"><div class=\"thumb\"><img src=\"/data/toon_category/24969.webp\" alt=\"원피스 episode A(에이스)\"></div><div class=\"info\"><p class=\"subject\">원피스 episode A(에이스)</p><p class=\"genre\">액션,판타지</p><p class=\"ep\">8화</p></div></a>"
+                        + "</div>"),
+                base_comic, 0);
+
+        assertEquals(3, titles.size());
+        assertEquals("원피스(ONE PIECE)", titles.get(0).getName());
+        assertEquals("/data/toon_category/2.webp", titles.get(0).getThumb());
+        assertEquals("원피스 학원", titles.get(1).getName());
+        assertEquals("/data/toon_category/34801.webp", titles.get(1).getThumb());
+        assertEquals("원피스 episode A(에이스)", titles.get(2).getName());
+        assertEquals("/data/toon_category/24969.webp", titles.get(2).getThumb());
+    }
+
+    @Test
     public void ntkSearchPathsMatchSiteKindFilters() {
         assertEquals("/search?q=%EC%9B%90%ED%94%BC",
                 Search.ntkSearchPathForTest("원피", MTitle.base_auto, 1));

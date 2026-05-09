@@ -610,18 +610,24 @@ public class MainPageWebtoon {
     private static Element titleCardContext(Element root, Element link) {
         if(root != null && !root.tagName().equals("a"))
             return root;
+        if(hasTitleCardData(link))
+            return link;
         Element best = link;
         Element current = link == null ? null : link.parent();
         for(int depth = 0; current != null && depth < 5; depth++, current = current.parent()) {
             int titleLinks = current.select("a[href*=/webtoon/], a[href*=/manhwa/], a[href*=toon=]").size();
-            boolean hasCardData = current.selectFirst("img, [style*=background-image], [style*=background], .subject, .wr-subject, .post-title, .title, .name, h2, h3, h4, h5, h6") != null;
-            if(hasCardData && titleLinks <= 3)
+            if(hasTitleCardData(current) && titleLinks <= 1)
                 best = current;
             String tag = current.tagName();
             if("li".equals(tag) || "article".equals(tag))
                 break;
         }
         return best == null ? link : best;
+    }
+
+    private static boolean hasTitleCardData(Element element) {
+        return element != null
+                && element.selectFirst("img, [style*=background-image], [style*=background], .subject, .wr-subject, .post-title, .title, .name, h2, h3, h4, h5, h6") != null;
     }
 
     private static boolean isEpisodePath(String href, String segment) {
