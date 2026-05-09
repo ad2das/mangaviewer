@@ -37552,15 +37552,6 @@
         "미스터리"
       ]
     },
-    "4148": {
-      "name": "음란한 그녀와의 순정만화",
-      "thumb": "https://i5.bacloud2.com/4148/8272be3944a807b05470ec1d477f2a6f5da13077d83a721128f3b5a8c433e60e.jpg",
-      "release": "",
-      "sourceTags": [
-        "성인",
-        "로맨스"
-      ]
-    },
     "4149": {
       "name": "원킬",
       "thumb": "https://i5.bacloud2.com/4149/d40dbd08aa300f1eb8e3f7c38defc8cb809a76577e0877f17f15147d823a7b0e.jpg",
@@ -45367,14 +45358,6 @@
       "match": "normalized-title",
       "matchScore": 1.0
     },
-    "5001": {
-      "name": "4주애인",
-      "thumb": "https://i6.bacloud2.com/5001/b48457954c2108770b554525d13ca9c6c32d843005a40cfcb7e454a45856b2b7.jpg",
-      "release": "",
-      "sourceTags": [
-        "BL"
-      ]
-    },
     "5002": {
       "name": "흰 사슴 잉그리드",
       "thumb": "https://i6.bacloud2.com/5002/40e93e4a3c8c9034dd671b940c4d840172d72ef7a25bdeddca28b612b4515055.jpg",
@@ -52576,8 +52559,8 @@
       ],
       "tags": [
         "스토리",
-        "드라마",
-        "로맨스"
+        "로맨스",
+        "드라마"
       ],
       "naverTitleId": 761102,
       "naverName": "바른탕진 프로젝트",
@@ -64663,15 +64646,6 @@
         "로맨스"
       ]
     },
-    "7170": {
-      "name": "10만 년째 오늘을 살던 놈",
-      "thumb": "https://i8.ba7cloud.com/7170/7763263c3130b1aaf8a9324705ff6ff3061e8bc752ef82917a2764f12a193142.jpg",
-      "release": "",
-      "sourceTags": [
-        "무협",
-        "액션"
-      ]
-    },
     "7171": {
       "name": "공녀님은 이상형과 결혼하기",
       "thumb": "https://i8.ba7cloud.com/7171/733626408aea67bb431c193120046e966b49cf87682f7b36f646a5fc9fdd781c.jpg",
@@ -68893,7 +68867,7 @@
         "로맨스"
       ],
       "naverTitleId": 843898,
-      "naverName": "DARK MOON: 두 개의 달",
+      "naverName": "DARK MOON: 두 개의 달 HYBE",
       "match": "normalized-title",
       "matchScore": 1.0
     },
@@ -71407,15 +71381,6 @@
       "sourceTags": [
         "로맨스",
         "순정"
-      ]
-    },
-    "7918": {
-      "name": "70억분의 1의 이레귤러",
-      "thumb": "https://i9.ao9cloud.com/7918/5f24285bf7907b9838cbb2104d9cc7995635936fc62e99bc1f9cc224e6bcccc5.jpg",
-      "release": "",
-      "sourceTags": [
-        "무협",
-        "액션"
       ]
     },
     "7919": {
@@ -80441,7 +80406,7 @@
         "액션"
       ],
       "naverTitleId": 843898,
-      "naverName": "DARK MOON: 두 개의 달",
+      "naverName": "DARK MOON: 두 개의 달 HYBE",
       "match": "normalized-title",
       "matchScore": 1.0
     },
@@ -92182,14 +92147,6 @@
         "BL"
       ]
     },
-    "70279": {
-      "name": "1to10 (원투텐)",
-      "thumb": "https://w11cloud.com/70279/35fb401b4f51a2fa40e5c11b56be25ef8dab51d28b6ee4b2a5fa04b20a2cfedd.jpg",
-      "release": "",
-      "sourceTags": [
-        "BL"
-      ]
-    },
     "70280": {
       "name": "기적의 물리치료사",
       "thumb": "https://w11cloud.com/70280/2451ff0c5391c3208828d10248c275c6b4bed1245a3ae2691dd1d12a57de0463.jpg",
@@ -97165,8 +97122,8 @@
       ],
       "tags": [
         "스토리",
-        "드라마",
-        "로맨스"
+        "로맨스",
+        "드라마"
       ],
       "naverTitleId": 816636,
       "naverName": "2023 루키 단편선",
@@ -103935,6 +103892,14 @@
         "판타지"
       ]
     },
+    "71577": {
+      "name": "이름 없는 꽃",
+      "thumb": "https://v13st.com/71577/9f3cec6c3ce3e7d9beb7369680d609f01ae5c6d41e1c7acf4b1eac4262dc75aa.jpg",
+      "release": "",
+      "sourceTags": [
+        "BL"
+      ]
+    },
     "71578": {
       "name": "불시착!x공주님",
       "thumb": "https://v12st.com/71578/0af45f6586b2b1e7798174f014b9c03c5025f0a3512c6f005c995731e131467e.jpg",
@@ -105506,6 +105471,14 @@
         "성인"
       ]
     },
+    "71754": {
+      "name": "같이가용",
+      "thumb": "https://v12st.com/71754/de9073ba25a0dbaa748b798c092e226e7758e5e1bf68cefb89bd923716ff4209.jpg?v=1",
+      "release": "",
+      "sourceTags": [
+        "BL"
+      ]
+    },
     "71755": {
       "name": "창문 속 남자",
       "thumb": "https://v13st.com/71755/2c219c8ddb8740a8bf5f0763c1a1624bceba2bc6c8aff366db3814ad863522fd.jpg",
@@ -106283,6 +106256,14 @@
         "BL"
       ]
     },
+    "71834": {
+      "name": "치치 시리즈",
+      "thumb": "https://v12st.com/71834/074d5a3898ccbbc2717b51c6f54c671452190c93d891bb845cf22cdda66c08dd.jpg?v=1",
+      "release": "",
+      "sourceTags": [
+        "BL"
+      ]
+    },
     "71835": {
       "name": "무쌍",
       "thumb": "https://v13st.com/71835/ef47878a7070493e0854af0b0c71c3f454189beb5559b2c5e60f00256d2f4666.jpg",
@@ -106883,6 +106864,14 @@
       "match": "normalized-title",
       "matchScore": 1.0
     },
+    "71894": {
+      "name": "옆집 형",
+      "thumb": "https://v12st.com/71894/2c5e843e71327f8c7eccf92fd6bc20f67b89b0628c3ea40d5778e44947c13d18.jpg",
+      "release": "",
+      "sourceTags": [
+        "BL"
+      ]
+    },
     "71895": {
       "name": "악녀는 조용히 살고싶을 뿐인",
       "thumb": "https://v12st.com/71895/9d707df8e0591ae20e1b81e0e6c237188e74cf61e540d174fb2e9de20ae72f8b.jpg?v=1",
@@ -107188,6 +107177,14 @@
     "71928": {
       "name": "[허니B] 행복하게 해줄게,",
       "thumb": "https://v12st.com/71928/1a6abb267cb04742c7668dddce1c6903ae1f0aff62264194d971bc3cb7606598.jpg?v=1",
+      "release": "",
+      "sourceTags": [
+        "BL"
+      ]
+    },
+    "71929": {
+      "name": "완벽한 개새끼",
+      "thumb": "https://v12st.com/71929/0d993029a280205fcbe8ab453d7026fde4dbdf200ddbbd5ab94bf15dec46373c.jpg?v=1",
       "release": "",
       "sourceTags": [
         "BL"
@@ -108080,6 +108077,14 @@
       "naverName": "강한 누나",
       "match": "normalized-title",
       "matchScore": 1.0
+    },
+    "72022": {
+      "name": "체리보이 졸업일지",
+      "thumb": "https://v12st.com/72022/fe221f4d4d77b42e8da4766ca13e2f20e71d64461d34250f476eae5326954c05.jpg",
+      "release": "",
+      "sourceTags": [
+        "BL"
+      ]
     },
     "72023": {
       "name": "해와 달의 공생관계",
@@ -110240,6 +110245,14 @@
       "release": "",
       "sourceTags": [
         "드라마"
+      ]
+    },
+    "72249": {
+      "name": "입실론",
+      "thumb": "https://vv14cloud.com/72249/fm2bk3apfsgxwhqdcldrep6celwcj7xpi0.jpg?v=1",
+      "release": "",
+      "sourceTags": [
+        "BL"
       ]
     },
     "72250": {
@@ -112747,14 +112760,6 @@
         "무협"
       ]
     },
-    "72508": {
-      "name": "러브스트럭",
-      "thumb": "https://y17stm.com/72508/zy2ou1bxjvx89keluqjuah3tl9ylj8e2wq.jpg",
-      "release": "",
-      "sourceTags": [
-        "BL"
-      ]
-    },
     "72509": {
       "name": "나는 참지 못한다",
       "thumb": "https://vv14cloud.com/72509/9jg2p62mkbkgwvvfljbfqyulrc23pgodge.jpg?v=1",
@@ -114037,6 +114042,14 @@
       "release": "",
       "sourceTags": [
         "드라마"
+      ]
+    },
+    "72651": {
+      "name": "꿀 발린 S급 가이드",
+      "thumb": "https://vv14cloud.com/72651/hxt7zmekuluno33a9qehplvengep1wcsw2.jpg",
+      "release": "",
+      "sourceTags": [
+        "BL"
       ]
     },
     "72652": {
@@ -118201,6 +118214,14 @@
       "match": "normalized-title",
       "matchScore": 1.0
     },
+    "73064": {
+      "name": "왕관을 찾아줘",
+      "thumb": "https://vv14cloud.com/73064/boelagrjyi3eluh8t0fms5opmj0vrancyb.jpg",
+      "release": "",
+      "sourceTags": [
+        "로맨스"
+      ]
+    },
     "73065": {
       "name": "오, 담에 핀 꽃",
       "thumb": "https://vv14cloud.com/73065/tfidzmwjrntiylbyeueoo2hewrjwrdgrlf.jpg",
@@ -120330,14 +120351,6 @@
         "BL"
       ]
     },
-    "73284": {
-      "name": "텔미러브미",
-      "thumb": "https://y17stm.com/73284/a0yzk0nesm2zzhyvwc9a5wxbzzpg41l2hh.jpg",
-      "release": "",
-      "sourceTags": [
-        "BL"
-      ]
-    },
     "73285": {
       "name": "찰방찰방",
       "thumb": "https://y17stm.com/73285/ml8vkdaeffgusmiy5zwslnbnkx9jogktxo.jpg",
@@ -122235,6 +122248,14 @@
     "73473": {
       "name": "악녀는 모든 게 피곤하다",
       "thumb": "https://vv14cloud.com/73473/irqzui7zyx0h7onw9n6ls3ghff3zayckrb.jpg",
+      "release": "",
+      "sourceTags": [
+        "로맨스"
+      ]
+    },
+    "73474": {
+      "name": "엔드리스 서머",
+      "thumb": "https://vv14cloud.com/73474/w0so68nm0ftqdfe13grzcle474ven860cu.jpg",
       "release": "",
       "sourceTags": [
         "로맨스"
@@ -124169,6 +124190,14 @@
         "판타지"
       ]
     },
+    "73661": {
+      "name": "첫눈에 반한 건 아니지만",
+      "thumb": "https://vv14cloud.com/73661/r96feldcrvtfbny3ga58sht67suy1dxxmk.jpg",
+      "release": "",
+      "sourceTags": [
+        "로맨스"
+      ]
+    },
     "73662": {
       "name": "녹아웃 베이비",
       "thumb": "https://vv14cloud.com/73662/pqqqugyek9vtmfpcugzoxglofgqy8ewb0u.jpg",
@@ -124779,8 +124808,8 @@
         "스토리"
       ],
       "tags": [
-        "무협",
         "스토리",
+        "무협",
         "액션"
       ],
       "naverTitleId": 839568,
@@ -125098,6 +125127,14 @@
         "판타지"
       ]
     },
+    "73752": {
+      "name": "간절히 원하면 우주가 들어줄",
+      "thumb": "https://vv14cloud.com/73752/bz85uiwzkaz4ypsfqvh1hxdbng86hpm1g1.jpg",
+      "release": "",
+      "sourceTags": [
+        "로맨스"
+      ]
+    },
     "73753": {
       "name": "시프트",
       "thumb": "https://vv14cloud.com/73753/enwe4xc1e7sqlqyv1tqd3j3czdopacyeif.jpg",
@@ -125318,14 +125355,6 @@
       "sourceTags": [
         "BL",
         "성인"
-      ]
-    },
-    "73774": {
-      "name": "명품시대",
-      "thumb": "https://vv14cloud.com/73774/ida8pm77wnertc6gxwxvjpwhmohhz2u4jl.jpg",
-      "release": "",
-      "sourceTags": [
-        "드라마"
       ]
     },
     "73775": {
@@ -125780,15 +125809,6 @@
         "개그"
       ]
     },
-    "73821": {
-      "name": "테디베어는 죽지 않아",
-      "thumb": "https://y17stm.com/73821/dmecyvwsbzvcijfmdqvc9qgjq17lne7z0t.jpg",
-      "release": "",
-      "sourceTags": [
-        "드라마",
-        "공포"
-      ]
-    },
     "73822": {
       "name": "돌쇠전",
       "thumb": "https://vv14cloud.com/73822/jxn42gs6ftdgstwigqedxbmb0guytwsoye.jpg",
@@ -126051,6 +126071,14 @@
       "release": "",
       "sourceTags": [
         "로맨스"
+      ]
+    },
+    "73849": {
+      "name": "울어라 마왕",
+      "thumb": "https://vv14cloud.com/73849/1pllvobsab7btdurqodworr3brssgycrly.jpg",
+      "release": "",
+      "sourceTags": [
+        "BL"
       ]
     },
     "73850": {
@@ -126389,6 +126417,14 @@
       "match": "normalized-title",
       "matchScore": 1.0
     },
+    "73881": {
+      "name": "첫사랑 그녀를 뺏겠습니다!",
+      "thumb": "https://vv14cloud.com/73881/oifhxy1sor9uhiug9jj6fkraib0oevyoit.jpg",
+      "release": "",
+      "sourceTags": [
+        "로맨스"
+      ]
+    },
     "73882": {
       "name": "거유 왁싱샵 실장님들",
       "thumb": "https://vv14cloud.com/73882/aui8wn6o9ffvmbjhyhon63xpe6tguhww96.jpg",
@@ -126520,8 +126556,8 @@
         "공포"
       ],
       "tags": [
-        "드라마",
         "스토리",
+        "드라마",
         "공포"
       ],
       "naverTitleId": 839959,
@@ -127715,8 +127751,8 @@
         "개그"
       ],
       "tags": [
-        "개그",
-        "스토리"
+        "스토리",
+        "개그"
       ],
       "naverTitleId": 840332,
       "naverName": "용사생활기록부",
@@ -128039,14 +128075,6 @@
       "sourceTags": [
         "개그",
         "일상"
-      ]
-    },
-    "74044": {
-      "name": "러브시그니처",
-      "thumb": "https://y17stm.com/74044/h7uo82ljjiul8ezbaudlq3qw5qazdssaei.jpg",
-      "release": "",
-      "sourceTags": [
-        "BL"
       ]
     },
     "74045": {
@@ -128645,14 +128673,6 @@
       "sourceTags": [
         "BL",
         "성인"
-      ]
-    },
-    "74111": {
-      "name": "탑알바입니다",
-      "thumb": "https://y17stm.com/74111/ifilbddhtuwalssqhtivwdt35xkdr3fwco.jpg",
-      "release": "",
-      "sourceTags": [
-        "BL"
       ]
     },
     "74112": {
@@ -130780,6 +130800,14 @@
       "sourceTags": [
         "드라마",
         "성인"
+      ]
+    },
+    "74314": {
+      "name": "결혼의 목적",
+      "thumb": "https://vv14cloud.com/74314/2ge0myny4ozbipfkabmvaiccrjfkbuptwj.jpg",
+      "release": "",
+      "sourceTags": [
+        "로맨스"
       ]
     },
     "74315": {
@@ -133048,6 +133076,7 @@
         "스릴러"
       ],
       "tags": [
+        "스토리",
         "스릴러",
         "공포"
       ],
@@ -133562,14 +133591,6 @@
         "로맨스"
       ]
     },
-    "74587": {
-      "name": "메디컬 탑 써전",
-      "thumb": "https://vv14cloud.com/74587/bsvyk8aryouj2nqtpv5iejginswsz8l8b7.jpg",
-      "release": "",
-      "sourceTags": [
-        "드라마"
-      ]
-    },
     "74588": {
       "name": "이물질은 나였다",
       "thumb": "https://vv14cloud.com/74588/jy8jrutlbq3woothdcfhf0n4vohyvzervs.jpg",
@@ -133594,6 +133615,14 @@
       "sourceTags": [
         "BL",
         "성인"
+      ]
+    },
+    "74591": {
+      "name": "가면극",
+      "thumb": "https://vv14cloud.com/74591/0rry9dsdyevukqfgncsnmdqsoeye3mzikz.jpg",
+      "release": "",
+      "sourceTags": [
+        "BL"
       ]
     },
     "74592": {
@@ -135580,6 +135609,7 @@
         "로맨스"
       ],
       "tags": [
+        "스토리",
         "판타지",
         "로맨스"
       ],
@@ -136675,6 +136705,7 @@
         "공포"
       ],
       "tags": [
+        "스토리",
         "스릴러",
         "공포"
       ],
@@ -140061,8 +140092,8 @@
         "공포"
       ],
       "tags": [
-        "스릴러",
         "스토리",
+        "스릴러",
         "드라마",
         "공포"
       ],
@@ -141139,28 +141170,6 @@
       ],
       "naverTitleId": 842620,
       "naverName": "해골전령 이야기",
-      "match": "normalized-title",
-      "matchScore": 1.0
-    },
-    "75301": {
-      "name": "2025 루키 단편선",
-      "thumb": "https://y17stm.com/75301/ifspsx1f4l2ohpdqa0nltd0fhorr3h6wmk.jpg",
-      "release": "",
-      "externalTags": [
-        "스토리",
-        "드라마",
-        "로맨스"
-      ],
-      "sourceTags": [
-        "드라마"
-      ],
-      "tags": [
-        "스토리",
-        "드라마",
-        "로맨스"
-      ],
-      "naverTitleId": 842453,
-      "naverName": "2025 루키 단편선",
       "match": "normalized-title",
       "matchScore": 1.0
     },
@@ -144654,7 +144663,7 @@
         "로맨스"
       ],
       "naverTitleId": 843898,
-      "naverName": "DARK MOON: 두 개의 달",
+      "naverName": "DARK MOON: 두 개의 달 HYBE",
       "match": "normalized-title",
       "matchScore": 1.0
     },
