@@ -120,7 +120,6 @@ public class CaptchaActivity extends AppCompatActivity {
         CookieManager cookiem = CookieManager.getInstance();
         cookiem.setAcceptCookie(true);
         cookiem.setAcceptThirdPartyCookies(webView, true);
-        cookiem.removeAllCookies(null);
 
         // WebChromeClient for JS console and alerts
         webView.setWebChromeClient(new WebChromeClient() {
@@ -158,7 +157,7 @@ public class CaptchaActivity extends AppCompatActivity {
             @Override
             public void onLoadResource(WebView view, String url) {
                 if(isFinishing) return;
-                if(readCookiesAndFinish(cookiem, purl))
+                if(readCookiesAndFinish(cookiem, purl, url))
                     return;
 
                 // Attempt click immediately when resources load (Turnstile iframe appears mid-load)
@@ -173,7 +172,7 @@ public class CaptchaActivity extends AppCompatActivity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 if(isFinishing) return;
-                if(readCookiesAndFinish(cookiem, purl))
+                if(readCookiesAndFinish(cookiem, purl, url))
                     return;
 
                 pageFinishedTime = System.currentTimeMillis();
@@ -207,7 +206,7 @@ public class CaptchaActivity extends AppCompatActivity {
                 }
 
                 // Check cookies first
-                if(readCookiesAndFinish(CookieManager.getInstance(), p.getUrl())) {
+                if(readCookiesAndFinish(CookieManager.getInstance(), p.getUrl(), webView == null ? null : webView.getUrl())) {
                     return;
                 }
 
@@ -298,26 +297,34 @@ public class CaptchaActivity extends AppCompatActivity {
         android.util.Log.d("CaptchaActivity", "Touch completed at: " + targetX + "," + targetY);
     }
 
-    private boolean readCookiesAndFinish(CookieManager cookiem, String purl){
+    private boolean readCookiesAndFinish(CookieManager cookiem, String purl, String currentUrl){
         if(isFinishing) return false;
         try {
-            String cookieStr = cookiem.getCookie(purl);
-            if(cookieStr == null || cookieStr.length() == 0)
-                return false;
-
             boolean hasClearance = false;
-            for (String s : cookieStr.split("; ")) {
-                int eq = s.indexOf("=");
-                if(eq <= 0)
+            for(String cookieUrl : cookieReadUrls(purl, currentUrl)) {
+                String cookieStr = cookiem.getCookie(cookieUrl);
+                if(cookieStr == null || cookieStr.length() == 0)
                     continue;
-                String k = s.substring(0, eq);
-                String v = s.substring(eq + 1);
-                getHttpClient().setCookie(k, v);
-                if("cf_clearance".equals(k))
-                    hasClearance = true;
+                for (String s : cookieStr.split(";")) {
+                    String cookie = s.trim();
+                    int eq = cookie.indexOf("=");
+                    if(eq <= 0)
+                        continue;
+                    String k = cookie.substring(0, eq);
+                    String v = cookie.substring(eq + 1);
+                    getHttpClient().setCookie(k, v);
+                    if("cf_clearance".equals(k))
+                        hasClearance = true;
+                }
             }
 
             if(hasClearance) {
+                cookiem.flush();
+                getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
+                getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
+                getHttpClient().syncCookiesFromWebView(purl, true);
+                if(currentUrl != null)
+                    getHttpClient().syncCookiesFromWebView(currentUrl, true);
                 isFinishing = true;
                 handler.removeCallbacksAndMessages(null);
                 Intent resultIntent = new Intent();
@@ -329,6 +336,17 @@ public class CaptchaActivity extends AppCompatActivity {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return false;
+    }
+
+    private String[] cookieReadUrls(String purl, String currentUrl) {
+        return new String[]{
+                currentUrl,
+                purl,
+                p.getWebtoonUrl(),
+                p.getUrl(),
+                "https://ntk01.com",
+                "https://ntk01.com/manhwa"
+        };
     }
 
     @Override

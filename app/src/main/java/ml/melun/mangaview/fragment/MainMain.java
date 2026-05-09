@@ -725,6 +725,8 @@ public class MainMain extends Fragment{
     public void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if(resultCode == RESULT_CAPTCHA) {
+            getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
+            getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
             if(p.getBaseMode() == base_comic)
                 comicFetchState = HOME_FETCH_IDLE;
             else

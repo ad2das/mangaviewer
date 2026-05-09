@@ -61,6 +61,7 @@ import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.PrefetchCoordinator;
 
 import static ml.melun.mangaview.MainApplication.p;
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.Utils.getScreenSize;
 import static ml.melun.mangaview.Utils.queueOfflineDownload;
 import static ml.melun.mangaview.Utils.showCaptchaPopup;
@@ -2060,6 +2061,8 @@ public class ViewerActivity extends AppCompatActivity {
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (resultCode == RESULT_CAPTCHA) {
+            getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
+            getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
             refresh();
         }
     }
