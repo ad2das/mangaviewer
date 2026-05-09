@@ -224,6 +224,7 @@ public class Title extends MTitle {
                 tmp.setTitleId(id);
                 eps.add(tmp);
             }
+            eps.sort((left, right) -> Integer.compare(right.getId(), left.getId()));
         }catch(Exception e) {
             if(isCloudflareChallenge(e))
                 return LOAD_CAPTCHA;
@@ -256,6 +257,8 @@ public class Title extends MTitle {
                 .trim();
         text = text.replaceAll("\\d{2}\\.\\d{2}\\.\\d{2}", " ").trim();
         text = text.replaceAll("\\s+", " ");
+        if(!hasLetterOrDigit(text))
+            return "";
         return text;
     }
 
@@ -264,10 +267,23 @@ public class Title extends MTitle {
             return true;
         String normalized = title.replaceAll("\\s+", "");
         return normalized.length() == 0
+                || !hasLetterOrDigit(normalized)
                 || "보기".equals(normalized)
                 || "첫화부터정주행".equals(normalized)
                 || "첫화부터".equals(normalized)
                 || "정주행".equals(normalized);
+    }
+
+    private static boolean hasLetterOrDigit(String value) {
+        if(value == null)
+            return false;
+        for(int i = 0; i < value.length();) {
+            int codePoint = value.codePointAt(i);
+            if(Character.isLetterOrDigit(codePoint))
+                return true;
+            i += Character.charCount(codePoint);
+        }
+        return false;
     }
 
     private static String extractNtkEpisodeDate(Element link, String epTitle) {

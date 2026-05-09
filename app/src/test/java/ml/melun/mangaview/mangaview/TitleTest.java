@@ -22,6 +22,14 @@ public class TitleTest {
     }
 
     @Test
+    public void cleanNtkEpisodeTitleIgnoresEmojiOnlyReadFromFirstEpisodeAction() {
+        String title = Title.cleanNtkEpisodeTitleForTest(
+                "<a href=\"/manhwa/10/1\">📖 첫화부터 정주행</a>");
+
+        assertEquals("", title);
+    }
+
+    @Test
     public void cleanNtkEpisodeTitleRemovesDateAndBadges() {
         String title = Title.cleanNtkEpisodeTitleForTest(
                 "<a href=\"/manhwa/10/20\">NEW 20화 26.05.09 ▶ 보기</a>");
