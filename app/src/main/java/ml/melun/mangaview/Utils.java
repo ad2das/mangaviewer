@@ -186,6 +186,10 @@ public class Utils {
     }
 
     public static Intent viewerIntent(Context context, Manga manga){
+        return viewerIntent(context, manga, true);
+    }
+
+    private static Intent viewerIntent(Context context, Manga manga, boolean warmupContinue){
         Intent viewer = null;
         switch (new Preference(context).getViewerType()){
             case 0:
@@ -198,7 +202,8 @@ public class Utils {
                 viewer = new Intent(context, ViewerActivity2.class);
                 break;
         }
-        ViewerWarmupManager.warmupContinue(context, manga, manga == null ? null : manga.getTitle());
+        if(warmupContinue)
+            ViewerWarmupManager.warmupContinue(context, manga, manga == null ? null : manga.getTitle());
         Title title = manga == null ? null : manga.getTitle();
         viewer.putExtra("manga", toViewerMangaJson(manga, title));
         viewer.putExtra("title", toViewerTitleJson(title, true));
@@ -216,6 +221,12 @@ public class Utils {
 
     public static void openViewerPrepared(Context context, Manga manga, int code, boolean returnToEpisodes,
                                           boolean online, boolean recent, Title title, boolean includeTitleEpisodes) {
+        openViewerPrepared(context, manga, code, returnToEpisodes, online, recent, title, includeTitleEpisodes, false);
+    }
+
+    public static void openViewerPrepared(Context context, Manga manga, int code, boolean returnToEpisodes,
+                                          boolean online, boolean recent, Title title, boolean includeTitleEpisodes,
+                                          boolean exactEpisode) {
         if(context == null || manga == null)
             return;
         int launchToken = nextViewerLaunchToken(context);
@@ -226,7 +237,11 @@ public class Utils {
             manga.setTitleId(launchTitle.getId());
         }
         if(!manga.isOnline()) {
-            launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken);
+            launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken, exactEpisode);
+            return;
+        }
+        if(exactEpisode) {
+            launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken, true);
             return;
         }
         Manga immediate = ViewerWarmupManager.usePreparedFirstFrame(context, manga, launchTitle, false, p.getReverse());
@@ -273,14 +288,22 @@ public class Utils {
     private static void launchPreparedViewer(Context context, Manga manga, int code, boolean returnToEpisodes,
                                              boolean online, boolean recent, Title title, boolean includeTitleEpisodes,
                                              int launchToken) {
+        launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, title, includeTitleEpisodes, launchToken, false);
+    }
+
+    private static void launchPreparedViewer(Context context, Manga manga, int code, boolean returnToEpisodes,
+                                             boolean online, boolean recent, Title title, boolean includeTitleEpisodes,
+                                             int launchToken, boolean exactEpisode) {
         if(context == null || manga == null)
             return;
         if(!isLatestViewerLaunchToken(context, launchToken))
             return;
         if(context instanceof Activity && !canUseActivity((Activity) context))
             return;
-        Intent viewer = viewerIntent(context, manga);
+        Intent viewer = viewerIntent(context, manga, !exactEpisode);
         viewer.putExtra("online", online);
+        if(exactEpisode)
+            viewer.putExtra(ViewerActivity.EXTRA_EXACT_EPISODE, true);
         if(returnToEpisodes)
             viewer.putExtra("returnToEpisodes", true);
         Title launchTitle = title != null ? title : manga.getTitle();

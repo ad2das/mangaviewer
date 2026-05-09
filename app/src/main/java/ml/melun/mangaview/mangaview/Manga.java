@@ -423,7 +423,7 @@ public class Manga {
     private void addWolfImageCandidates(CustomHttpClient client, Document document, Set<String> seenImages) {
         if(document == null)
             return;
-        Elements images = document.select("div.image-view img, div.view-padding img, article img, main img, img");
+        Elements images = document.select("div.image-view img, div.view-padding img, section.webtoon-body img, div.toon-view img, article img, main img");
         for(Element img : images) {
             for(String attr : new String[]{"data-original", "data-src", "data-lazy-src", "data-url", "src"}) {
                 String src = img.attr(attr);
@@ -442,20 +442,54 @@ public class Manga {
                 || lower.contains("logo")
                 || lower.contains("banner")
                 || lower.contains("advert")
+                || lower.contains("sponsor")
+                || lower.contains("popup")
                 || lower.contains("/ad/")
+                || lower.contains("/ads/")
                 || lower.contains("blank")
                 || lower.contains("loading"))
             return false;
+        if(hasWolfAdToken(lower))
+            return false;
         String cls = img == null ? "" : img.className().toLowerCase(Locale.ROOT);
+        String id = img == null ? "" : img.id().toLowerCase(Locale.ROOT);
         String alt = img == null ? "" : img.attr("alt").toLowerCase(Locale.ROOT);
-        if(cls.contains("logo") || cls.contains("banner") || cls.contains("ad")
-                || alt.contains("logo") || alt.contains("banner") || alt.contains("ad"))
+        if(cls.contains("logo") || cls.contains("banner") || hasWolfAdToken(cls)
+                || id.contains("logo") || id.contains("banner") || hasWolfAdToken(id)
+                || alt.contains("logo") || alt.contains("banner") || hasWolfAdToken(alt)
+                || hasWolfBlockedAncestor(img))
             return false;
         return lower.matches(".*\\.(jpg|jpeg|png|webp|gif)(\\?.*)?$")
                 || lower.contains("/data/")
                 || lower.contains("/toon/")
                 || lower.contains("/webtoon/")
                 || lower.contains("/comic/");
+    }
+
+    private boolean hasWolfBlockedAncestor(Element img) {
+        if(img == null)
+            return false;
+        for(Element parent = img.parent(); parent != null; parent = parent.parent()) {
+            String context = (parent.id() + " " + parent.className()).toLowerCase(Locale.ROOT);
+            if(context.contains("banner")
+                    || context.contains("advert")
+                    || context.contains("sponsor")
+                    || context.contains("popup")
+                    || context.contains("광고")
+                    || hasWolfAdToken(context))
+                return true;
+            if("body".equals(parent.tagName()))
+                break;
+        }
+        return false;
+    }
+
+    private boolean hasWolfAdToken(String value) {
+        if(value == null)
+            return false;
+        return Pattern.compile("(^|[^a-z0-9가-힣])(ad|ads|advert|sponsor|popup|광고)([^a-z0-9가-힣]|$)")
+                .matcher(value.toLowerCase(Locale.ROOT))
+                .find();
     }
 
     private void restoreBetterEpisodeList(List<Manga> previousEpisodes) {

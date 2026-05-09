@@ -314,7 +314,7 @@ public class EpisodeActivity extends AppCompatActivity {
             @Override
             public void onItemClick(int position, Manga selected) {
                 //add local images to manga
-                openViewer(selected,0);
+                openViewer(selected,0, true);
             }
             @Override
             public void onStarClick(){
@@ -550,11 +550,16 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     public void openViewer(Manga manga, int code){
+        openViewer(manga, code, false);
+    }
+
+    public void openViewer(Manga manga, int code, boolean exactEpisode){
         manga.setMode(mode);
         manga.setTitle(title);
         manga.setTitleId(title == null ? manga.getTitleId() : title.getId());
-        ViewerWarmupManager.warmup(context, manga, title);
-        openViewerPrepared(context, manga, code, false, online, true, title, !manga.isOnline());
+        if(!exactEpisode)
+            ViewerWarmupManager.warmup(context, manga, title);
+        openViewerPrepared(context, manga, code, false, online, true, title, !manga.isOnline(), exactEpisode);
     }
 
     @Override
