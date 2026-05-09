@@ -169,6 +169,13 @@ public class Search {
         int status = 0;
         ArrayList<Title> combined = new ArrayList<>();
         try {
+            if(client != null && client.isNtk() && mode == 0) {
+                appendNtkCommonSearchResults(client, combined, 200);
+                result.addAll(combined);
+                last = true;
+                return 0;
+            }
+
             Search webtoonSearch = new Search(query, mode, base_webtoon);
             Search comicSearch = new Search(query, mode, base_comic);
             CustomHttpClient.RequestGroup requestGroup = client.currentRequestGroup();
@@ -264,19 +271,19 @@ public class Search {
                 String status = webtoonStatus(query);
                 if(status.length() > 0) {
                     appendWebtoonResults(client, webtoonResults, ntkPath(client, status, status + "?type1=day&type2=recent&o=n"), 80);
+                    last = true;
                 } else {
                     String day = webtoonDay(query);
                     if(day.length() > 0) {
                         appendWebtoonResults(client, webtoonResults, ntkPath(client, "/ing?day=" + percentEncode(query, Charset.forName("UTF-8")), "/ing?type1=day&type2=" + day + "&o=n"), 80);
                         appendWebtoonResults(client, webtoonResults, ntkPath(client, "/end?day=" + percentEncode(query, Charset.forName("UTF-8")), "/end?type1=day&type2=" + day + "&o=n"), 80);
+                        last = true;
                     } else {
-                        appendSearchResults(client, webtoonResults, base_webtoon, 80);
+                        last = appendSearchResults(client, webtoonResults, base_webtoon, 80);
                     }
                 }
-                last = true;
             } else {
-                appendSearchResults(client, webtoonResults, base_webtoon, 80);
-                last = true;
+                last = appendSearchResults(client, webtoonResults, base_webtoon, 80);
             }
 
             appendNewResults(webtoonResults);
@@ -318,14 +325,14 @@ public class Search {
                 last = true;
             } else if(mode == 4) {
                 String type = comicType(query);
-                if(type.length() > 0)
+                if(type.length() > 0) {
                     appendWebtoonResults(client, comicResults, ntkPath(client, "/manhwa?sort=recent", comicRoot(client) + "?type1=complete&type2=" + type + "&o=n"), 120);
-                else
-                    appendSearchResults(client, comicResults, base_comic, 120);
-                last = true;
+                    last = true;
+                } else {
+                    last = appendSearchResults(client, comicResults, base_comic, 120);
+                }
             } else {
-                appendSearchResults(client, comicResults, base_comic, 120);
-                last = true;
+                last = appendSearchResults(client, comicResults, base_comic, 120);
             }
 
             appendNewResults(comicResults);
@@ -351,34 +358,60 @@ public class Search {
         target.addAll(parsed);
     }
 
-    private void appendSearchResults(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {
+    private boolean appendSearchResults(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {
         if(client != null && client.isNtk()) {
-            ArrayList<Title> pool = new ArrayList<>();
-            if(targetBaseMode == base_webtoon) {
-                appendWebtoonResults(client, pool, "/ing", 0);
-                appendWebtoonResults(client, pool, "/end", 0);
-            } else {
-                appendWebtoonResults(client, pool, "/manhwa", 0);
-            }
-            String needle = normalizeSearchText(query);
-            for(Title title : pool) {
-                if(title == null)
-                    continue;
-                if(!normalizeSearchText(title.getName()).contains(needle))
-                    continue;
-                target.add(title);
-                if(limit > 0 && target.size() >= limit)
-                    return;
-            }
-            return;
+            appendNtkSiteSearchResults(client, target, targetBaseMode, limit);
+            return true;
         }
         appendWebtoonResults(client, target, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), limit);
+        return true;
     }
 
-    private static String normalizeSearchText(String value) {
-        if(value == null)
-            return "";
-        return value.toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
+    private void appendNtkSiteSearchResults(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {
+        String encoded = percentEncode(query, Charset.forName("UTF-8"));
+        String kind = targetBaseMode == base_comic ? "manhwa" : "webtoon";
+        String[] paths = {
+                "/search?q=" + encoded + "&kind=" + kind,
+                "/search?q=" + encoded,
+                "/bbs/search.php?stx=" + encoded,
+                "/bbs/search.php?sfl=wr_subject&stx=" + encoded
+        };
+        Exception lastError = null;
+        for(String path : paths) {
+            try {
+                appendWebtoonResults(client, target, path, limit);
+                return;
+            } catch (Exception e) {
+                lastError = e;
+            }
+        }
+        if(lastError != null)
+            throw lastError;
+    }
+
+    private void appendNtkCommonSearchResults(CustomHttpClient client, ArrayList<Title> target, int limit) throws Exception {
+        String encoded = percentEncode(query, Charset.forName("UTF-8"));
+        String[] paths = {
+                "/search?q=" + encoded,
+                "/bbs/search.php?stx=" + encoded,
+                "/bbs/search.php?sfl=wr_subject&stx=" + encoded
+        };
+        Exception lastError = null;
+        for(String path : paths) {
+            try {
+                CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+                if(page.code >= 400)
+                    throw new Exception("NTK search failed: " + page.code);
+                Document d = Jsoup.parse(page.body);
+                appendUnique(target, MainPageWebtoon.parseWolfTitles(d, base_webtoon, limit));
+                appendUnique(target, MainPageWebtoon.parseWolfTitles(d, base_comic, limit));
+                return;
+            } catch (Exception e) {
+                lastError = e;
+            }
+        }
+        if(lastError != null)
+            throw lastError;
     }
 
     private static String ntkPath(CustomHttpClient client, String ntkPath, String wolfPath) {
