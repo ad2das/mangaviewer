@@ -49,11 +49,17 @@ public final class AppUpdateManager {
     private static final String PREF = "appUpdate";
     private static final String KEY_VERSION = "latestVersion";
     private static final String KEY_LINK = "latestLink";
+    private static final String KEY_PLAN_LINK = "downloadPlanLink";
+    private static final String KEY_PLAN_URL = "downloadPlanUrl";
+    private static final String KEY_PLAN_LENGTH = "downloadPlanLength";
+    private static final String KEY_PLAN_RANGE = "downloadPlanRange";
+    private static final String KEY_PLAN_FETCHED_AT = "downloadPlanFetchedAt";
     private static final String APK_MIME = "application/vnd.android.package-archive";
     private static final String UPDATE_APK_PREFIX = "mangaViewer-update-";
     private static final String UPDATE_APK_SUFFIX = ".apk";
     private static final int APK_PARALLEL_PARTS = 8;
     private static final long APK_PARALLEL_MIN_BYTES = 8L * 1024L * 1024L;
+    private static final long DOWNLOAD_PLAN_TTL_MS = 10 * 60_000L;
     private static final OkHttpClient VERSION_CLIENT = new OkHttpClient.Builder()
             .connectTimeout(2, TimeUnit.SECONDS)
             .readTimeout(5, TimeUnit.SECONDS)
@@ -80,6 +86,7 @@ public final class AppUpdateManager {
         UpdateInfo cachedInfo = readCachedUpdateInfo(appContext);
         if(isUpdateAvailable(cachedInfo) && !dialogShownThisSession) {
             dialogShownThisSession = true;
+            warmDownloadPlan(appContext, cachedInfo);
             showUpdateDialog(activity, cachedInfo);
         }
         if(checkStartedThisSession)
@@ -90,6 +97,8 @@ public final class AppUpdateManager {
             if(info == null)
                 return;
             cacheUpdateInfo(appContext, info);
+            if(isUpdateAvailable(info))
+                warmDownloadPlan(appContext, info);
             if(!isUpdateAvailable(info) || dialogShownThisSession)
                 return;
             dialogShownThisSession = true;
@@ -201,6 +210,8 @@ public final class AppUpdateManager {
         progressDialog.setMessage("APK를 받는 중입니다...");
         progressDialog.setIndeterminate(false);
         progressDialog.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
+        progressDialog.setMax(100);
+        progressDialog.setProgress(1);
         progressDialog.setCancelable(false);
         try {
             progressDialog.show();
@@ -239,8 +250,24 @@ public final class AppUpdateManager {
 
     private static UpdateInfo latestInfoForDownload(Context context, UpdateInfo requested) {
         long started = System.currentTimeMillis();
+        UpdateInfo cached = readCachedUpdateInfo(context);
+        if(cached != null && isUpdateAvailable(cached)
+                && (requested == null
+                || cached.version >= requested.version
+                || !cached.link.equals(requested.link))) {
+            log("refreshBeforeDownload source=cache ms=" + (System.currentTimeMillis() - started)
+                    + " requested=" + (requested == null ? -1 : requested.version)
+                    + " latest=" + cached.version);
+            return cached;
+        }
+        if(requested != null && isUpdateAvailable(requested)) {
+            log("refreshBeforeDownload source=requested ms=" + (System.currentTimeMillis() - started)
+                    + " requested=" + requested.version
+                    + " latest=" + (cached == null ? -1 : cached.version));
+            return requested;
+        }
         UpdateInfo latest = fetchUpdateInfo(context);
-        log("refreshBeforeDownload ms=" + (System.currentTimeMillis() - started)
+        log("refreshBeforeDownload source=network ms=" + (System.currentTimeMillis() - started)
                 + " requested=" + (requested == null ? -1 : requested.version)
                 + " latest=" + (latest == null ? -1 : latest.version));
         if(latest != null && isUpdateAvailable(latest)) {
@@ -259,6 +286,7 @@ public final class AppUpdateManager {
                 return null;
             long started = System.currentTimeMillis();
             log("downloadStart version=" + info.version + " url=" + info.link);
+            callback.onProgress(1);
             File dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
             if(dir == null)
                 dir = context.getCacheDir();
@@ -266,7 +294,11 @@ public final class AppUpdateManager {
                 return null;
             deleteStaleUpdateApks(context, null);
             File apk = new File(dir, UPDATE_APK_PREFIX + info.version + UPDATE_APK_SUFFIX);
-            DownloadPlan plan = fetchDownloadPlan(info.link);
+            DownloadPlan plan = readCachedDownloadPlan(context, info.link);
+            if(plan == null)
+                plan = fetchAndCacheDownloadPlan(context, info.link);
+            else
+                log("planCacheHit bytes=" + plan.length + " range=" + plan.supportsRange);
             String downloadUrl = plan != null && plan.url != null && plan.url.length() > 0
                     ? plan.url
                     : info.link;
@@ -291,6 +323,56 @@ public final class AppUpdateManager {
             log("downloadException " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return null;
         }
+    }
+
+    private static void warmDownloadPlan(Context context, UpdateInfo info) {
+        if(context == null || info == null || info.link == null || info.link.length() == 0)
+            return;
+        if(readCachedDownloadPlan(context, info.link) != null)
+            return;
+        AppDispatchers.runIo(() -> fetchAndCacheDownloadPlan(context, info.link));
+    }
+
+    private static DownloadPlan fetchAndCacheDownloadPlan(Context context, String link) {
+        DownloadPlan plan = fetchDownloadPlan(link);
+        if(plan != null)
+            cacheDownloadPlan(context, link, plan);
+        return plan;
+    }
+
+    private static DownloadPlan readCachedDownloadPlan(Context context, String link) {
+        if(context == null || link == null || link.length() == 0)
+            return null;
+        try {
+            SharedPreferences pref = context.getSharedPreferences(PREF, Context.MODE_PRIVATE);
+            if(!link.equals(pref.getString(KEY_PLAN_LINK, "")))
+                return null;
+            long fetchedAt = pref.getLong(KEY_PLAN_FETCHED_AT, 0L);
+            if(System.currentTimeMillis() - fetchedAt > DOWNLOAD_PLAN_TTL_MS)
+                return null;
+            String url = pref.getString(KEY_PLAN_URL, "");
+            long length = pref.getLong(KEY_PLAN_LENGTH, -1L);
+            boolean supportsRange = pref.getBoolean(KEY_PLAN_RANGE, false);
+            if(url == null || url.length() == 0 || length <= 0)
+                return null;
+            return new DownloadPlan(url, length, supportsRange);
+        } catch (RuntimeException e) {
+            CrashReporter.record(e);
+            return null;
+        }
+    }
+
+    private static void cacheDownloadPlan(Context context, String link, DownloadPlan plan) {
+        if(context == null || link == null || plan == null || plan.url == null || plan.url.length() == 0)
+            return;
+        context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                .edit()
+                .putString(KEY_PLAN_LINK, link)
+                .putString(KEY_PLAN_URL, plan.url)
+                .putLong(KEY_PLAN_LENGTH, plan.length)
+                .putBoolean(KEY_PLAN_RANGE, plan.supportsRange)
+                .putLong(KEY_PLAN_FETCHED_AT, System.currentTimeMillis())
+                .apply();
     }
 
     private static DownloadPlan fetchDownloadPlan(String url) {
