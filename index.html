@@ -1,87 +1,114 @@
-﻿<html>
-    <head>
-        <title>Manga View Android</title>
-        <meta name="description" content="오픈소스 마나토끼 안드로이드 뷰어">
-        <meta name="author" content="MangaView">
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <link rel="icon" href="web/favicon.png">
-        <link rel="stylesheet" type="text/css" href="web/style.css">
-        <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/gh/moonspam/NanumSquare@1.0/nanumsquare.css">
-        <!-- Global site tag (gtag.js) - Google Analytics -->
-        <script async src="https://www.googletagmanager.com/gtag/js?id=UA-48545626-3"></script>
-        <script data-ad-client="ca-pub-1967308958954015" async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
-        <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
-        <script>
-          (adsbygoogle = window.adsbygoogle || []).push({
-            google_ad_client: "ca-pub-1967308958954015",
-            enable_page_level_ads: true
-          });
-        </script>
-        <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1967308958954015"
-     crossorigin="anonymous"></script>
-        <script>
-          window.dataLayer = window.dataLayer || [];
-          function gtag(){dataLayer.push(arguments);}
-          gtag('js', new Date());
-
-          gtag('config', 'UA-48545626-3');
-        </script>
-        <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
-        <script>
-        var downloadlink = "apk/mangaViewer_2112260512-debug.apk";
-        var releaselink = "releases.html";
-        function GetLatestReleaseInfo() {
-            $(".release-name").text("apk local build");
-            $(".release-info").text("로컬 APK 파일을 제공합니다.");
-            $(".changelog").text("기존 XML UI와 화면 동선을 복구하고, 내부 작업 실행 구조를 AppTask/WorkManager 기반으로 재구성했습니다. 전체 작업 취소, 예외 기록, 목록 갱신 경로를 안정화했습니다.");
-            $("div.button-container").fadeIn('slow');
-            $("div.content").fadeIn('slow');
-            $("div.footer").fadeIn('slow');
-        }
-        window.onload = function() {
-            setTimeout(function (){
-                $("div.title").fadeIn('slow');
-                GetLatestReleaseInfo();
-            }, 800);
-        }
-        </script>
-    </head>
-    <body>
-        <div class="header">
-            <img style="width:100%;max-width:31.5em;padding-top:120px;padding-bottom:80px" src="web/logo.svg"/>
-            <br>
-            <div class="title" style="display:none; width:auto">
-                <h1> Manga View Android </h1>
-                <p> 마나토끼 안드로이드 뷰어 </p>
-            </div>
-            <br>
-            <div class="button-container" style="display:none;width:auto;">
-                <button class="download" onclick="location.href = downloadlink;">
-                    <div class="dlbtn">
-                        <p>다운로드</p>
-                        <p class="release-name"></p>
-                    </div>
+﻿<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="오픈소스 마나토끼 안드로이드 뷰어">
+    <meta name="author" content="MangaView">
+    <title>Manga View Android</title>
+    <link rel="icon" href="web/favicon.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="web/style.css">
+    <!-- Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-48545626-3"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag() { dataLayer.push(arguments); }
+        gtag('js', new Date());
+        gtag('config', 'UA-48545626-3');
+    </script>
+    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1967308958954015" crossorigin="anonymous"></script>
+</head>
+<body>
+    <!-- Navbar -->
+    <nav class="navbar">
+        <div class="container navbar-inner">
+            <a class="navbar-brand" href="index.html">
+                <img src="web/favicon.png" alt="MangaView" width="32" height="32">
+                <span>MangaView</span>
+            </a>
+            <div class="navbar-actions">
+                <a href="releases.html" class="btn btn-sm btn-outline">이전 버전</a>
+                <button class="theme-toggle" id="themeToggle" aria-label="테마 전환">
+                    <span id="themeIcon">🌙</span>
                 </button>
-                <br>
-                <button style="margin:0;" onclick="location.href='releases.html';">이전 버전</button>
-                <p class="release-info"></p>
-                <br>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero -->
+    <header class="hero">
+        <div class="container">
+            <img class="hero-logo" src="web/logo.svg" alt="Manga View Android Logo">
+            <h1 class="hero-title">Manga View Android</h1>
+            <p class="hero-subtitle">마나토끼 안드로이드 뷰어</p>
+
+            <div class="download-section">
+                <a id="downloadBtn" class="btn btn-primary btn-lg" href="#">
+                    <span>다운로드</span>
+                    <span class="download-version" id="releaseName">apk local build</span>
+                </a>
+                <p class="download-meta" id="releaseInfo">로컬 APK 파일을 제공합니다.</p>
+            </div>
+        </div>
+    </header>
+
+    <!-- Changelog Section -->
+    <section class="section section-alt">
+        <div class="container">
+            <h2 class="section-title">체인지 로그</h2>
+            <div class="card">
+                <pre class="changelog" id="changelog">기존 XML UI와 화면 동선을 복구하고, 내부 작업 실행 구조를 AppTask/WorkManager 기반으로 재구성했습니다. 전체 작업 취소, 예외 기록, 목록 갱신 경로를 안정화했습니다.</pre>
             </div>
 
+            <div class="flex flex-wrap justify-center gap-3 mt-3">
+                <a href="releases.html" class="btn btn-outline">이전 버전 보기</a>
+                <a href="https://blog.naver.com/imaginaly" class="btn btn-outline" target="_blank" rel="noopener">블로그 방문</a>
+            </div>
         </div>
+    </section>
 
-        <div class="content" style="display:none;">
-            <!-- put body content here -->
-            <h1> 체인지 로그 </h1>
-            <pre class="changelog"></pre>
-            <br>
-            <button onclick="location.href = releaselink;"> 이전 버전 </button>
-            <button onclick="location.href = 'https://blog.naver.com/imaginaly';"> 블로그 </button>
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <p>MangaView</p>
         </div>
-        <div class="footer" style="display:none;">
-            <!-- footer -->
-            <p style="display:inline-block;">MangaView</p>
-        </div>
-    </body>
+    </footer>
+
+    <script>
+        // Theme Toggle
+        const themeToggle = document.getElementById('themeToggle');
+        const themeIcon = document.getElementById('themeIcon');
+        const savedTheme = localStorage.getItem('theme');
+
+        function applyTheme(theme) {
+            if (theme === 'dark') {
+                document.documentElement.setAttribute('data-theme', 'dark');
+                themeIcon.textContent = '☀️';
+            } else {
+                document.documentElement.removeAttribute('data-theme');
+                themeIcon.textContent = '🌙';
+            }
+        }
+
+        if (savedTheme) {
+            applyTheme(savedTheme);
+        } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+            applyTheme('dark');
+        }
+
+        themeToggle.addEventListener('click', () => {
+            const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+            const newTheme = isDark ? 'light' : 'dark';
+            applyTheme(newTheme);
+            localStorage.setItem('theme', newTheme);
+        });
+
+        // Download Link
+        const downloadlink = "apk/mangaViewer_2112260512-debug.apk";
+        document.getElementById('downloadBtn').href = downloadlink;
+    </script>
+</body>
 </html>

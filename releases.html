@@ -1,112 +1,149 @@
-<html>
-    <head>
-        <title>Manga View Android</title>
-        <meta name="description" content="마나토끼 안드로이드 뷰어 - 릴리즈">
-        <meta name="author" content="MangaView">
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <link rel="icon" href="web/favicon.png">
-        <link rel="stylesheet" type="text/css" href="web/style.css">
-        <!-- Global site tag (gtag.js) - Google Analytics -->
-        <script async src="https://www.googletagmanager.com/gtag/js?id=UA-48545626-3"></script>
-        <script data-ad-client="ca-pub-1967308958954015" async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
-        <script>
-          window.dataLayer = window.dataLayer || [];
-          function gtag(){dataLayer.push(arguments);}
-          gtag('js', new Date());
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="마나토끼 안드로이드 뷰어 - 릴리즈">
+    <meta name="author" content="MangaView">
+    <title>모든 릴리즈 - Manga View Android</title>
+    <link rel="icon" href="web/favicon.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="web/style.css">
+    <!-- Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-48545626-3"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag() { dataLayer.push(arguments); }
+        gtag('js', new Date());
+        gtag('config', 'UA-48545626-3');
+    </script>
+</head>
+<body>
+    <!-- Navbar -->
+    <nav class="navbar">
+        <div class="container navbar-inner">
+            <a class="navbar-brand" href="index.html">
+                <img src="web/favicon.png" alt="MangaView" width="32" height="32">
+                <span>MangaView</span>
+            </a>
+            <div class="navbar-actions">
+                <a href="index.html" class="btn btn-sm btn-outline">홈</a>
+                <button class="theme-toggle" id="themeToggle" aria-label="테마 전환">
+                    <span id="themeIcon">🌙</span>
+                </button>
+            </div>
+        </div>
+    </nav>
 
-          gtag('config', 'UA-48545626-3');
-        </script>
-        <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/gh/moonspam/NanumSquare@1.0/nanumsquare.css">
-        <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
-        <script src="https://momentjs.com/downloads/moment.js"></script>
-        <script>
-        var page=0;
-        var last=false;
-        var totalDownloadCount = 0;
-        function GetReleases() {
-            if(!last){
-                ++page;
-                var asset = {
-                    tag_name: "2112260563",
-                    file_size: "16.0 MB",
-                    download_count: "-",
-                    updated_at: "현재 작업공간",
-                    browser_download_url: "https://github.com/ad2das/mangaviewer/releases/download/codex/perf-stability-max-core-rewrite-v2112260512/mangaViewer_2112260563-debug.apk"
-                };
-                $(".table-downloads tbody")
-                    .append($("<tr>")
-                        .append($("<td>").text(asset.tag_name))
-                        .append($("<td>").text(asset.file_size))
-                        .append($("<td>").text(asset.download_count))
-                        .append($("<td>").text(asset.updated_at))
-                        .append($("<td>")
-                            .append($("<button>")
-                                .attr("onclick", "location.href='"+asset.browser_download_url+"';")
-                                .text("다운로드")
-                            )
-                        )
-                    );
-                    $("table-downloads").fadeIn();
-                    last = true;
-                    document.getElementById("more").style.display = "none";
+    <!-- Releases Section -->
+    <section class="section">
+        <div class="container">
+            <h2 class="section-title">모든 릴리즈</h2>
+
+            <div class="table-wrap">
+                <table class="table-downloads">
+                    <thead>
+                        <tr>
+                            <th>버전 코드</th>
+                            <th>크기</th>
+                            <th>다운로드 횟수</th>
+                            <th>게시 날짜</th>
+                            <th>다운로드</th>
+                        </tr>
+                    </thead>
+                    <tbody id="releasesBody">
+                        <!-- JS로 채워집니다 -->
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="text-center mt-3" id="moreWrap">
+                <button class="btn btn-outline" id="moreBtn" onclick="loadMore()">더보기</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <p>MangaView</p>
+        </div>
+    </footer>
+
+    <script>
+        // Theme Toggle
+        const themeToggle = document.getElementById('themeToggle');
+        const themeIcon = document.getElementById('themeIcon');
+        const savedTheme = localStorage.getItem('theme');
+
+        function applyTheme(theme) {
+            if (theme === 'dark') {
+                document.documentElement.setAttribute('data-theme', 'dark');
+                themeIcon.textContent = '☀️';
+            } else {
+                document.documentElement.removeAttribute('data-theme');
+                themeIcon.textContent = '🌙';
             }
         }
 
-        function GetParameterByName(name, url) {
-            if (!url) url = window.location.href;
-            name = name.replace(/[\[\]]/g, "\\$&");
-            var regex = new RegExp("[?&]" + name + "(=([^&#]*)|&|#|$)");
-            var results = regex.exec(url);
-            if (!results) return null;
-            if (!results[2]) return "";
-            return decodeURIComponent(results[2].replace(/\+/g, " "));
+        if (savedTheme) {
+            applyTheme(savedTheme);
+        } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+            applyTheme('dark');
         }
-        window.onload = function() {
-            setTimeout(function (){
-                $("div.title").fadeIn('slow');
-                $("div.content").fadeIn('slow');
-                $("div.footer").fadeIn('slow');
-                GetReleases();
-            }, 800);
-        }
-        </script>
-    </head>
-    <body>
-        <div class="header" onclick="location.href = 'index.html';">
-            <img style="width:100%;max-width:31.5em;padding-top:120px;padding-bottom:80px" src="web/logo.svg"/>
-            <br>
-            <div class="title" style="display:none;">
-                <h1> Manga View Android </h1>
-                <p> 마나토끼 안드로이드 뷰어 </p>
-            </div>
-            <br>
-        </div>
 
-        <div class="content" style="display:none;">
-            <h1> 모든 릴리즈 </h1>
-            <br>
-            <!-- put body content here -->
-            <table class="table-downloads">
-                <thead>
-                    <tr>
-                        <th>버전 코드</th>
-                        <th>크기</th>
-                        <th>다운로드 횟수</th>
-                        <th>게시 날짜</th>
-                        <th>-</th>
-                    </tr>
-                </thead>
-                <tbody>
-                </tbody>
-            </table>
-            <center>
-                <button style="margin-top:20px;" id="more" disabled="true" onclick="GetReleases(); this.disabled=true;">더보기</button>
-            </center>
-        </div>
-        <div class="footer" style="display:none;">
-            <!-- footer -->
-            <p style="display:inline-block;">MangaView</p>
-        </div>
-    </body>
+        themeToggle.addEventListener('click', () => {
+            const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+            const newTheme = isDark ? 'light' : 'dark';
+            applyTheme(newTheme);
+            localStorage.setItem('theme', newTheme);
+        });
+
+        // Releases Data
+        const releases = [
+            {
+                tag_name: "2112260563",
+                file_size: "16.0 MB",
+                download_count: "-",
+                updated_at: "현재 작업공간",
+                browser_download_url: "https://github.com/ad2das/mangaviewer/releases/download/codex/perf-stability-max-core-rewrite-v2112260512/mangaViewer_2112260563-debug.apk"
+            }
+        ];
+
+        let loaded = 0;
+        const perPage = 10;
+
+        function renderReleases() {
+            const tbody = document.getElementById('releasesBody');
+            const slice = releases.slice(loaded, loaded + perPage);
+
+            slice.forEach(asset => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${asset.tag_name}</td>
+                    <td>${asset.file_size}</td>
+                    <td>${asset.download_count}</td>
+                    <td>${asset.updated_at}</td>
+                    <td><a class="btn btn-sm btn-primary" href="${asset.browser_download_url}">다운로드</a></td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            loaded += slice.length;
+
+            if (loaded >= releases.length) {
+                document.getElementById('moreWrap').style.display = 'none';
+            }
+        }
+
+        function loadMore() {
+            renderReleases();
+        }
+
+        // Initial load
+        renderReleases();
+    </script>
+</body>
 </html>
