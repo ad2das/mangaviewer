@@ -16,6 +16,7 @@ import java.io.FileInputStream;
 import java.io.ByteArrayOutputStream;
 
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.report.CrashReporter;
 
 public class CrashReportActivity extends Activity {
@@ -68,13 +69,18 @@ public class CrashReportActivity extends Activity {
         intent.setType("text/plain");
         intent.putExtra(Intent.EXTRA_SUBJECT, "[MangaView Crash] " + firstCrashLine(report));
         intent.putExtra(Intent.EXTRA_TEXT, limit(report, MAX_BODY_LENGTH));
-        startActivity(Intent.createChooser(intent, "오류 리포트 공유"));
+        if(!Utils.safeStartActivity(this, Intent.createChooser(intent, "오류 리포트 공유")))
+            Utils.safeToast(this, "공유 화면을 열지 못했습니다.", Toast.LENGTH_SHORT);
     }
 
     private void copyReport(String report) {
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if(clipboard == null) {
+            Utils.safeToast(this, "클립보드를 사용할 수 없습니다.", Toast.LENGTH_SHORT);
+            return;
+        }
         clipboard.setPrimaryClip(ClipData.newPlainText("mangaview_crash_report", report));
-        Toast.makeText(this, "오류 리포트를 복사했습니다.", Toast.LENGTH_SHORT).show();
+        Utils.safeToast(this, "오류 리포트를 복사했습니다.", Toast.LENGTH_SHORT);
     }
 
     private String firstCrashLine(String report) {
