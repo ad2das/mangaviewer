@@ -84,27 +84,31 @@
                 android:id="@+id/TitleProgress"
                 style="?android:attr/progressBarStyleHorizontal"
                 android:layout_width="0dp"
-                android:layout_height="4dp"
+                android:layout_height="5dp"
                 android:layout_marginStart="14dp"
-                android:layout_marginEnd="@dimen/app_space_lg"
-                android:layout_marginBottom="16dp"
+                android:layout_marginEnd="10dp"
                 android:max="100"
                 android:progressDrawable="@drawable/app_progress_bar"
                 android:visibility="gone"
-                app:layout_constraintBottom_toBottomOf="parent"
+                app:layout_constraintBottom_toBottomOf="@+id/TitleProgressText"
                 app:layout_constraintEnd_toStartOf="@+id/TitleProgressText"
-                app:layout_constraintStart_toEndOf="@+id/thumbCard" />
+                app:layout_constraintStart_toEndOf="@+id/thumbCard"
+                app:layout_constraintTop_toTopOf="@+id/TitleProgressText" />
 
             <TextView
                 android:id="@+id/TitleProgressText"
                 style="@style/AppText.Caption"
-                android:layout_width="86dp"
-                android:layout_height="wrap_content"
+                android:layout_width="52dp"
+                android:layout_height="22dp"
                 android:gravity="end"
+                android:includeFontPadding="false"
+                android:textColor="@color/appTextSecondary"
+                android:textStyle="bold"
                 android:visibility="gone"
-                app:layout_constraintBottom_toBottomOf="@+id/TitleProgress"
+                app:layout_constraintBottom_toBottomOf="@+id/thumbCard"
                 app:layout_constraintEnd_toStartOf="@+id/epsButton"
-                app:layout_constraintTop_toTopOf="@+id/TitleProgress"
+                app:layout_constraintTop_toBottomOf="@+id/TitleTagContainer"
+                app:layout_constraintVertical_bias="1"
                 tools:text="" />
 
             <ImageButton

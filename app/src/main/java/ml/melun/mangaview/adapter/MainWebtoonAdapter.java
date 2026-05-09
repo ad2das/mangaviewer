@@ -1457,8 +1457,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 return 0;
             int watchedCount = watchedEpisodeCount(item);
             int episodeCount = totalEpisodeCount(item);
-            if(watchedCount > 0 && episodeCount > 0)
-                return Math.max(1, Math.min(100, Math.round(watchedCount * 100f / episodeCount)));
+            if(watchedCount > 0 && episodeCount > 0) {
+                if(watchedCount >= episodeCount)
+                    return 100;
+                return Math.max(1, Math.min(99, (int) Math.floor(watchedCount * 100f / episodeCount)));
+            }
             return 0;
         }
 
