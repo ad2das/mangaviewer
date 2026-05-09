@@ -161,7 +161,7 @@ public class MainMain extends Fragment{
         comicRecycler = rootView.findViewById(R.id.main_comic_recycler);
         configureHomeRecycler(webtoonRecycler);
         configureHomeRecycler(comicRecycler);
-        mainRecycler = webtoonRecycler;
+        mainRecycler = null;
         localChangeListener = scope -> {
             if(!"recent".equals(scope) && !"bookmark".equals(scope))
                 return;
@@ -439,17 +439,23 @@ public class MainMain extends Fragment{
     private void showSelectedRecycler(RecyclerView previousRecycler, RecyclerView selectedRecycler) {
         if(selectedRecycler == null)
             return;
+        selectedRecycler.setVisibility(View.VISIBLE);
         selectedRecycler.setAlpha(1f);
         selectedRecycler.setEnabled(true);
+        selectedRecycler.setClickable(true);
         selectedRecycler.bringToFront();
         RecyclerView inactiveRecycler = selectedRecycler == comicRecycler ? webtoonRecycler : comicRecycler;
         if(inactiveRecycler != null && inactiveRecycler != selectedRecycler) {
             inactiveRecycler.setAlpha(0f);
             inactiveRecycler.setEnabled(false);
+            inactiveRecycler.setClickable(false);
+            inactiveRecycler.setVisibility(View.GONE);
         }
         if(previousRecycler != null && previousRecycler != selectedRecycler) {
             previousRecycler.setAlpha(0f);
             previousRecycler.setEnabled(false);
+            previousRecycler.setClickable(false);
+            previousRecycler.setVisibility(View.GONE);
         }
     }
 
