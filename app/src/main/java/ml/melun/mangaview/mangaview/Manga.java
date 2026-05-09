@@ -382,13 +382,7 @@ public class Manga {
                     name = header.ownText();
             }catch (Exception e){}
 
-            for(Element img : d.select("div.image-view img.v-img")) {
-                String src = img.attr("data-original");
-                if(src == null || src.length() == 0)
-                    src = img.attr("src");
-                if(src.length() > 0 && !src.contains("sprite.png"))
-                    addImageIfValid(client, seenImages, src);
-            }
+            addWolfImageCandidates(client, d, seenImages);
 
             List<Manga> titleEpisodes = title == null ? null : safeEpisodeCopy(title.getEps());
             if(titleEpisodes != null && titleEpisodes.size() > 0) {
@@ -424,6 +418,44 @@ public class Manga {
         restoreBetterEpisodeList(previousEpisodes);
         attachEpisodeSeriesMetadata();
         return LOAD_OK;
+    }
+
+    private void addWolfImageCandidates(CustomHttpClient client, Document document, Set<String> seenImages) {
+        if(document == null)
+            return;
+        Elements images = document.select("div.image-view img, div.view-padding img, article img, main img, img");
+        for(Element img : images) {
+            for(String attr : new String[]{"data-original", "data-src", "data-lazy-src", "data-url", "src"}) {
+                String src = img.attr(attr);
+                if(isWolfPageImage(img, src))
+                    addImageIfValid(client, seenImages, src);
+            }
+        }
+    }
+
+    private boolean isWolfPageImage(Element img, String src) {
+        if(src == null)
+            return false;
+        String lower = src.toLowerCase(Locale.ROOT);
+        if(lower.length() == 0
+                || lower.contains("sprite")
+                || lower.contains("logo")
+                || lower.contains("banner")
+                || lower.contains("advert")
+                || lower.contains("/ad/")
+                || lower.contains("blank")
+                || lower.contains("loading"))
+            return false;
+        String cls = img == null ? "" : img.className().toLowerCase(Locale.ROOT);
+        String alt = img == null ? "" : img.attr("alt").toLowerCase(Locale.ROOT);
+        if(cls.contains("logo") || cls.contains("banner") || cls.contains("ad")
+                || alt.contains("logo") || alt.contains("banner") || alt.contains("ad"))
+            return false;
+        return lower.matches(".*\\.(jpg|jpeg|png|webp|gif)(\\?.*)?$")
+                || lower.contains("/data/")
+                || lower.contains("/toon/")
+                || lower.contains("/webtoon/")
+                || lower.contains("/comic/");
     }
 
     private void restoreBetterEpisodeList(List<Manga> previousEpisodes) {
