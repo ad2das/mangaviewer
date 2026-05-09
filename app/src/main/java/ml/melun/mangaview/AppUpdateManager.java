@@ -12,6 +12,7 @@ import android.os.Build;
 import android.os.Environment;
 import android.provider.Settings;
 import android.util.Base64;
+import android.util.Log;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AlertDialog;
@@ -42,6 +43,7 @@ import okhttp3.Response;
 import okhttp3.ResponseBody;
 
 public final class AppUpdateManager {
+    private static final String TAG = "AppUpdate";
     private static final String VERSION_API_URL = "https://api.github.com/repos/ad2das/mangaviewer/contents/version.json?ref=main";
     private static final String RAW_VERSION_URL = "https://raw.githubusercontent.com/ad2das/mangaviewer/main/version.json";
     private static final String PREF = "appUpdate";
@@ -208,7 +210,8 @@ public final class AppUpdateManager {
 
         Context appContext = activity.getApplicationContext();
         AppDispatchers.runIo(() -> {
-            File apk = downloadApk(appContext, info, progress -> AppDispatchers.runOnMain(() -> {
+            UpdateInfo downloadInfo = latestInfoForDownload(appContext, info);
+            File apk = downloadApk(appContext, downloadInfo, progress -> AppDispatchers.runOnMain(() -> {
                 try {
                     if(progressDialog.isShowing())
                         progressDialog.setProgress(progress);
@@ -234,8 +237,28 @@ public final class AppUpdateManager {
         });
     }
 
+    private static UpdateInfo latestInfoForDownload(Context context, UpdateInfo requested) {
+        long started = System.currentTimeMillis();
+        UpdateInfo latest = fetchUpdateInfo(context);
+        log("refreshBeforeDownload ms=" + (System.currentTimeMillis() - started)
+                + " requested=" + (requested == null ? -1 : requested.version)
+                + " latest=" + (latest == null ? -1 : latest.version));
+        if(latest != null && isUpdateAvailable(latest)) {
+            cacheUpdateInfo(context, latest);
+            if(requested == null
+                    || latest.version >= requested.version
+                    || !latest.link.equals(requested.link))
+                return latest;
+        }
+        return requested;
+    }
+
     private static File downloadApk(Context context, UpdateInfo info, ProgressCallback callback) {
         try {
+            if(info == null || info.link == null || info.link.length() == 0)
+                return null;
+            long started = System.currentTimeMillis();
+            log("downloadStart version=" + info.version + " url=" + info.link);
             File dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
             if(dir == null)
                 dir = context.getCacheDir();
@@ -249,18 +272,30 @@ public final class AppUpdateManager {
                     : info.link;
             if(plan != null && plan.supportsRange && plan.length >= APK_PARALLEL_MIN_BYTES) {
                 File parallelApk = downloadApkParallel(downloadUrl, apk, plan.length, callback);
-                if(parallelApk != null)
+                if(parallelApk != null) {
+                    log("downloadDone mode=parallel ms=" + (System.currentTimeMillis() - started)
+                            + " bytes=" + parallelApk.length());
                     return parallelApk;
+                }
+                log("parallelFailed retrySingle version=" + info.version);
             }
-            return downloadApkSingle(downloadUrl, apk, plan == null ? -1 : plan.length, callback);
+            File singleApk = downloadApkSingle(info.link, apk, plan == null ? -1 : plan.length, callback);
+            if(singleApk != null)
+                log("downloadDone mode=single ms=" + (System.currentTimeMillis() - started)
+                        + " bytes=" + singleApk.length());
+            else
+                log("downloadFailed ms=" + (System.currentTimeMillis() - started));
+            return singleApk;
         } catch (Exception e) {
             CrashReporter.record(e);
+            log("downloadException " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return null;
         }
     }
 
     private static DownloadPlan fetchDownloadPlan(String url) {
         try {
+            long started = System.currentTimeMillis();
             Request request = new Request.Builder()
                     .url(url)
                     .head()
@@ -268,15 +303,23 @@ public final class AppUpdateManager {
                     .header("Accept", APK_MIME + ", application/octet-stream, */*")
                     .build();
             try(Response response = APK_CLIENT.newCall(request).execute()) {
-                if(!response.isSuccessful())
+                if(!response.isSuccessful()) {
+                    log("planFailed code=" + response.code() + " ms=" + (System.currentTimeMillis() - started));
                     return null;
+                }
                 long length = parseContentLength(response);
                 String ranges = response.header("Accept-Ranges", "");
                 boolean supportsRange = ranges != null && ranges.toLowerCase(Locale.US).contains("bytes");
+                log("plan code=" + response.code()
+                        + " ms=" + (System.currentTimeMillis() - started)
+                        + " bytes=" + length
+                        + " range=" + supportsRange
+                        + " finalHost=" + response.request().url().host());
                 return new DownloadPlan(response.request().url().toString(), length, supportsRange);
             }
         } catch (Exception e) {
             CrashReporter.record(e);
+            log("planException " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return null;
         }
     }
@@ -332,8 +375,10 @@ public final class AppUpdateManager {
                     .header("Range", "bytes=" + start + "-" + end)
                     .build();
             try(Response response = APK_CLIENT.newCall(request).execute()) {
-                if(response.code() != 206 || response.body() == null)
+                if(response.code() != 206 || response.body() == null) {
+                    log("segmentFailed start=" + start + " end=" + end + " code=" + response.code());
                     return false;
+                }
                 try(InputStream input = response.body().byteStream();
                     RandomAccessFile output = new RandomAccessFile(temp, "rw")) {
                     output.seek(start);
@@ -363,8 +408,10 @@ public final class AppUpdateManager {
                     .header("Accept", APK_MIME + ", application/octet-stream, */*")
                     .build();
             try(Response response = APK_CLIENT.newCall(request).execute()) {
-                if(!response.isSuccessful() || response.body() == null)
+                if(!response.isSuccessful() || response.body() == null) {
+                    log("singleFailed code=" + response.code());
                     return null;
+                }
                 long total = expectedLength > 0 ? expectedLength : response.body().contentLength();
                 try(InputStream input = response.body().byteStream();
                     FileOutputStream output = new FileOutputStream(apk)) {
@@ -391,6 +438,10 @@ public final class AppUpdateManager {
             CrashReporter.record(e);
             return null;
         }
+    }
+
+    private static void log(String message) {
+        Log.d(TAG, message);
     }
 
     private static long parseContentLength(Response response) {
