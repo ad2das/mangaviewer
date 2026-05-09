@@ -2,11 +2,6 @@ name: Release APK
 
 on:
   workflow_dispatch:
-    inputs:
-      build_run_id:
-        description: "Build APK Artifact run id to promote. Leave empty to use the latest successful run."
-        required: false
-        type: string
   push:
     branches:
       - main
@@ -25,7 +20,6 @@ on:
       - "*.xml"
 
 permissions:
-  actions: read
   contents: write
 
 concurrency:
@@ -35,11 +29,10 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 15
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TZ: Asia/Seoul
-      BUILD_RUN_ID: ${{ inputs.build_run_id }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -48,6 +41,32 @@ jobs:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Promote APK artifact
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-cleanup: never
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Restore Firebase resources
+        shell: bash
+        env:
+          GOOGLE_SERVICES_XML: ${{ secrets.GOOGLE_SERVICES_XML }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_XML" ]; then
+            mkdir -p app/src/main/res/values
+            printf '%s' "$GOOGLE_SERVICES_XML" > app/src/main/res/values/google_services.xml
+          fi
+
+      - name: Release latest debug APK
         shell: pwsh
-        run: ./tools/promote_release_artifact.ps1 -BuildRunId "$env:BUILD_RUN_ID"
+        run: ./tools/release_latest.ps1 -SkipTests -DeleteOldReleaseApks
