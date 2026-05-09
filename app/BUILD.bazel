@@ -75,7 +75,6 @@ android_binary(
     assets_dir = "src/main/assets",
     custom_package = "ml.melun.mangaview",
     manifest = "src/bazel/AndroidManifest.xml",
-    multidex = "native",
     deps = [
         ":app_lib",
     ],
