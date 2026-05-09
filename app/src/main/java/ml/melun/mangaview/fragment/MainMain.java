@@ -272,22 +272,20 @@ public class MainMain extends Fragment{
         selectedBaseMode = p.getBaseMode() == base_comic ? base_comic : base_webtoon;
         ensureHomeAdapter(base_webtoon);
         ensureHomeAdapter(base_comic);
-        showInitialHomeRows(base_webtoon);
-        showInitialHomeRows(base_comic);
+        showInitialHomeRows(selectedBaseMode);
         modeWebtoon.setOnClickListener(v -> {
             switchBaseMode(base_webtoon);
-            fetchSelected();
-            scheduleInactivePrefetch();
+            scheduleSelectedFetch();
         });
         modeComic.setOnClickListener(v -> {
             switchBaseMode(base_comic);
-            fetchSelected();
-            scheduleInactivePrefetch();
+            scheduleSelectedFetch();
         });
         switchBaseMode(selectedBaseMode);
 
         RecyclerView selectedRecycler = getSelectedRecycler();
         if(selectedRecycler != null) {
+            final int initialBaseMode = selectedBaseMode;
             selectedRecycler.postDelayed(() -> {
                 if(!isAdded())
                     return;
@@ -296,6 +294,7 @@ public class MainMain extends Fragment{
                 if(!wait)
                     fetchSelected();
                 scheduleInactivePrefetch();
+                showInitialHomeRows(initialBaseMode == base_comic ? base_webtoon : base_comic);
             }, 80);
         }
         return rootView;
@@ -397,6 +396,7 @@ public class MainMain extends Fragment{
         p.setBaseMode(baseMode);
         ensureHomeAdapter(baseMode);
         updateModeToggle();
+        applySelectedHomeTab();
         MainWebtoonAdapter selectedAdapter = getSelectedAdapter();
         if(selectedAdapter != null)
             selectedAdapter.showInitialRows();
@@ -408,8 +408,22 @@ public class MainMain extends Fragment{
             showSelectedRecycler(previousRecycler, mainRecycler);
             scrollHomeToTop();
         }
-        applySelectedHomeTab();
-        scrollToSelectedTab();
+    }
+
+    private void scheduleSelectedFetch() {
+        RecyclerView recyclerView = getSelectedRecycler();
+        if(recyclerView == null) {
+            fetchSelected();
+            scheduleInactivePrefetch();
+            return;
+        }
+        final int requestBaseMode = selectedBaseMode;
+        recyclerView.post(() -> {
+            if(!isAdded() || requestBaseMode != selectedBaseMode)
+                return;
+            fetchSelected();
+            scheduleInactivePrefetch();
+        });
     }
 
     private RecyclerView getSelectedRecycler() {

@@ -156,21 +156,18 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     public void showInitialRows() {
-        if(refreshSiteSnapshot())
-            return;
+        refreshSiteSnapshot();
         if(rows != null && rows.size() > 0 && hasDisplayContent(rows) && hasCompleteHomeSections())
-            return;
-        if(!hasCompleteHomeSections() && showCachedHomeRows())
             return;
         if(rows != null && rows.size() > 0 && hasDisplayContent(rows)) {
             loadCachedHomeRowsAsync();
             return;
         }
         if(!hasFetchedContent())
-            dataSet = MainPageWebtoon.getBlankDataSet(baseMode, isNtkSite());
-        List<Object> warmRows = buildRows(dataSet, false);
+            dataSet = MainPageWebtoon.getBlankDataSet(baseMode, siteNtkSnapshot);
+        List<Object> warmRows = buildInitialPlaceholderRows();
         if(!hasDisplayContent(warmRows))
-            warmRows = buildInitialPlaceholderRows();
+            warmRows = buildRows(dataSet, false);
         if(hasDisplayContent(warmRows)) {
             initialRowsShown = true;
             updateRows(warmRows);
