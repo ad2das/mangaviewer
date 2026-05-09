@@ -1,20 +1,44 @@
 <resources>
-    <!-- Default screen margins, per the Android Design guidelines. -->
+    <!-- Default screen margins -->
     <dimen name="activity_horizontal_margin">16dp</dimen>
     <dimen name="activity_vertical_margin">16dp</dimen>
     <dimen name="nav_header_vertical_spacing">8dp</dimen>
     <dimen name="nav_header_height">176dp</dimen>
     <dimen name="fab_margin">16dp</dimen>
     <dimen name="appbar_padding_top">8dp</dimen>
-    <dimen name="toolbar_height">48dp</dimen>
+    <dimen name="toolbar_height">56dp</dimen>
+
+    <!-- Spacing Scale -->
     <dimen name="app_space_xs">4dp</dimen>
     <dimen name="app_space_sm">8dp</dimen>
     <dimen name="app_space_md">12dp</dimen>
     <dimen name="app_space_lg">16dp</dimen>
     <dimen name="app_space_xl">24dp</dimen>
+    <dimen name="app_space_2xl">32dp</dimen>
+
+    <!-- Text Sizes -->
     <dimen name="app_text_caption">11sp</dimen>
     <dimen name="app_text_meta">12sp</dimen>
     <dimen name="app_text_body">14sp</dimen>
     <dimen name="app_text_title">17sp</dimen>
-    <dimen name="app_text_header">19sp</dimen>
+    <dimen name="app_text_header">20sp</dimen>
+    <dimen name="app_text_hero">28sp</dimen>
+
+    <!-- Corner Radius -->
+    <dimen name="app_radius_sm">6dp</dimen>
+    <dimen name="app_radius_md">10dp</dimen>
+    <dimen name="app_radius_lg">16dp</dimen>
+    <dimen name="app_radius_xl">24dp</dimen>
+    <dimen name="app_radius_full">999dp</dimen>
+
+    <!-- Elevation -->
+    <dimen name="app_elevation_none">0dp</dimen>
+    <dimen name="app_elevation_sm">1dp</dimen>
+    <dimen name="app_elevation_md">2dp</dimen>
+    <dimen name="app_elevation_lg">4dp</dimen>
+    <dimen name="app_elevation_xl">8dp</dimen>
+
+    <!-- Card -->
+    <dimen name="app_card_padding">16dp</dimen>
+    <dimen name="app_card_margin">12dp</dimen>
 </resources>

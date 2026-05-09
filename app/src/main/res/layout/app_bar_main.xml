@@ -17,9 +17,10 @@
         <androidx.appcompat.widget.Toolbar
             android:background="@color/appSurface"
             android:id="@+id/toolbar"
-            android:layout_height="48dp"
+            android:layout_height="56dp"
             android:layout_width="match_parent"
-            android:paddingEnd="8dp"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
             app:contentInsetStartWithNavigation="0dp"
             app:titleTextColor="@color/appText"
             app:titleTextAppearance="@style/AppToolbarTitle"
@@ -31,7 +32,7 @@
         android:id="@+id/contentHolder"
         android:layout_height="match_parent"
         android:layout_marginBottom="72dp"
-        android:layout_marginTop="48dp"
+        android:layout_marginTop="56dp"
         android:layout_width="match_parent"
         android:background="@color/appSurface">
 
@@ -40,7 +41,7 @@
     <include
         android:layout_height="match_parent"
         android:layout_marginBottom="72dp"
-        android:layout_marginTop="48dp"
+        android:layout_marginTop="56dp"
         android:layout_width="match_parent"
         android:visibility="gone"
         layout="@layout/progress_panel" />
@@ -50,11 +51,11 @@
         android:layout_width="match_parent"
         android:layout_height="64dp"
         android:layout_gravity="bottom"
-        android:layout_marginStart="12dp"
-        android:layout_marginEnd="12dp"
-        android:layout_marginBottom="10dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="12dp"
         android:background="@drawable/app_bottom_nav_bg"
-        android:elevation="6dp"
+        android:elevation="4dp"
         app:itemIconTint="@color/app_nav_selector"
         app:itemIconSize="24dp"
         app:itemTextAppearanceActive="@style/AppBottomNavText.Active"
