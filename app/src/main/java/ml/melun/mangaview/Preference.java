@@ -647,7 +647,26 @@ public class Preference {
     private void ensureSourceSite(MTitle title) {
         if(title == null || title.getSourceSite().length() > 0)
             return;
-        title.setSourceSite(isNtkSite() ? "ntk" : "wfwf");
+        title.setSourceSite(resolveSourceSite(title));
+    }
+
+    public void ensureSourceSiteForTitle(MTitle title) {
+        ensureSourceSite(title);
+    }
+
+    public String resolveSourceSite(MTitle title) {
+        String source = title == null ? "" : title.getSourceSite();
+        if(source != null && source.length() > 0)
+            return source;
+        if(title != null && title.getId() > 0) {
+            ensureBookmarkLoaded();
+            String legacy = legacyBookmarkKey(title);
+            if(bookmark.has("wfwf." + legacy))
+                return "wfwf";
+            if(bookmark.has("ntk." + legacy))
+                return "ntk";
+        }
+        return isNtkSite() ? "ntk" : "wfwf";
     }
 
     private String bookmarkKey(MTitle title) {

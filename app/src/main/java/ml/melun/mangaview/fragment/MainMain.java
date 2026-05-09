@@ -1,5 +1,6 @@
 package ml.melun.mangaview.fragment;
 
+import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
 import android.view.LayoutInflater;
@@ -103,6 +104,8 @@ public class MainMain extends Fragment{
                 mainComicAdapter.resetForSiteChange();
             if(mainWebtoonAdapter != null)
                 mainWebtoonAdapter.resetForSiteChange();
+            if(!canUseHomeUi())
+                return;
             applySelectedHomeTab();
             scrollToSelectedTab();
             if(fragmentActive)
@@ -347,9 +350,12 @@ public class MainMain extends Fragment{
     }
 
     private MainWebtoonAdapter ensureHomeAdapter(int baseMode) {
+        Context context = getContext();
+        if(context == null || !isAdded())
+            return baseMode == base_comic ? mainComicAdapter : mainWebtoonAdapter;
         if(baseMode == base_comic) {
             if(mainComicAdapter == null) {
-                mainComicAdapter = new MainWebtoonAdapter(getContext(), base_comic);
+                mainComicAdapter = new MainWebtoonAdapter(context, base_comic);
                 mainComicAdapter.setListener(homeClickListener);
                 mainComicAdapter.setFetchStateListener(this::onHomeFetchFinished);
                 mainComicAdapter.setAnchorRecycler(comicRecycler);
@@ -360,7 +366,7 @@ public class MainMain extends Fragment{
             return mainComicAdapter;
         }
         if(mainWebtoonAdapter == null) {
-            mainWebtoonAdapter = new MainWebtoonAdapter(getContext());
+            mainWebtoonAdapter = new MainWebtoonAdapter(context);
             mainWebtoonAdapter.setListener(homeClickListener);
             mainWebtoonAdapter.setFetchStateListener(this::onHomeFetchFinished);
             mainWebtoonAdapter.setAnchorRecycler(webtoonRecycler);
@@ -376,6 +382,10 @@ public class MainMain extends Fragment{
         return selectedBaseMode == base_comic ? mainComicAdapter : mainWebtoonAdapter;
     }
 
+    private boolean canUseHomeUi() {
+        return isAdded() && getContext() != null && webtoonRecycler != null && comicRecycler != null;
+    }
+
     private int getSelectedTabPosition() {
         if(mainTabLayout == null || mainTabLayout.getSelectedTabPosition() < 0)
             return FOR_YOU_TAB;
@@ -383,6 +393,8 @@ public class MainMain extends Fragment{
     }
 
     private void switchBaseMode(int baseMode) {
+        if(!canUseHomeUi())
+            return;
         RecyclerView previousRecycler = mainRecycler;
         RecyclerView targetRecycler = baseMode == base_comic ? comicRecycler : webtoonRecycler;
         if(selectedBaseMode == baseMode && mainRecycler == targetRecycler)

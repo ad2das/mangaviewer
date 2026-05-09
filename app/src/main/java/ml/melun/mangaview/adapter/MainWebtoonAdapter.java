@@ -1487,6 +1487,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         private Manga resolveContinueManga(Title item) {
             if(item == null)
                 return null;
+            p.ensureSourceSiteForTitle(item);
             int bookmark = p.getBookmark(item);
             if(bookmark <= 0)
                 bookmark = item.getBookmark();

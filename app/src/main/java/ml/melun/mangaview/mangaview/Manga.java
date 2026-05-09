@@ -423,7 +423,17 @@ public class Manga {
     private void addWolfImageCandidates(CustomHttpClient client, Document document, Set<String> seenImages) {
         if(document == null)
             return;
+        int before = imgs == null ? 0 : imgs.size();
         Elements images = document.select("div.image-view img, div.view-padding img, section.webtoon-body img, div.toon-view img, article img, main img");
+        addWolfImageElements(client, images, seenImages);
+        int afterPrimary = imgs == null ? 0 : imgs.size();
+        if(afterPrimary == before)
+            addWolfImageElements(client, document.select("body img"), seenImages);
+    }
+
+    private void addWolfImageElements(CustomHttpClient client, Elements images, Set<String> seenImages) {
+        if(images == null)
+            return;
         for(Element img : images) {
             for(String attr : new String[]{"data-original", "data-src", "data-lazy-src", "data-url", "src"}) {
                 String src = img.attr(attr);

@@ -167,6 +167,7 @@ public class MainActivity extends AppCompatActivity
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        forceWfwfOnStartup();
         fragments[0] = MainMain.newInstance();
         fragments[1] = MainSearch.newSearchTab();
         fragments[2] = MainSearch.newLibraryTab();
@@ -191,8 +192,6 @@ public class MainActivity extends AppCompatActivity
                     .putBoolean("manamoa", false)
                     .apply();
         }
-        forceWfwfOnStartup();
-
         if (Migrator.running) {
             ProgressDialog mpd;
             if (p.getDarkTheme()) mpd = new ProgressDialog(context, R.style.darkDialog);
