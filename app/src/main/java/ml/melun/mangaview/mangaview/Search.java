@@ -42,6 +42,7 @@ public class Search {
     int classificationDbTotalCount = 0;
     boolean classificationSourceFetched = false;
     String ntkCategoryNextPath = null;
+    String ntkSearchNextPath = null;
     private ArrayList<Title> result;
     private final Set<String> seenTitleKeys = new HashSet<>();
 
@@ -177,9 +178,8 @@ public class Search {
         ArrayList<Title> combined = new ArrayList<>();
         try {
             if(client != null && client.isNtk() && mode == 0) {
-                appendNtkCommonSearchResults(client, combined, 200);
+                last = appendNextNtkSearchPage(client, combined, base_auto, 200);
                 result.addAll(combined);
-                last = true;
                 return 0;
             }
 
@@ -822,11 +822,55 @@ public class Search {
 
     private boolean appendSearchResults(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {
         if(client != null && client.isNtk()) {
-            appendNtkSiteSearchResults(client, target, targetBaseMode, limit);
-            return true;
+            return appendNextNtkSearchPage(client, target, targetBaseMode, limit);
         }
         appendWebtoonResults(client, target, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), limit);
         return true;
+    }
+
+    private boolean appendNextNtkSearchPage(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {
+        String path = ntkSearchNextPath;
+        if(path == null || path.length() == 0)
+            path = ntkSearchPath(query, targetBaseMode, page);
+        PageTitles pageTitles = fetchNtkSearchResults(client, path, targetBaseMode, limit, page);
+        int added = appendUniquePageTitles(target, pageTitles.titles);
+        ntkSearchNextPath = pageTitles.nextPath;
+        page++;
+        return pageTitles.nextPath == null || pageTitles.nextPath.length() == 0 || added == 0;
+    }
+
+    private PageTitles fetchNtkSearchResults(CustomHttpClient client, String path, int targetBaseMode, int limit, int currentPage) throws Exception {
+        CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+        if(page.code >= 400)
+            throw new Exception("NTK search failed: " + page.code);
+        Document d = Jsoup.parse(page.body);
+        ArrayList<Title> parsed = new ArrayList<>();
+        if(targetBaseMode == base_auto || targetBaseMode == base_webtoon)
+            appendUnique(parsed, MainPageWebtoon.parseWolfTitles(d, base_webtoon, limit));
+        if(targetBaseMode == base_auto || targetBaseMode == base_comic)
+            appendUnique(parsed, MainPageWebtoon.parseWolfTitles(d, base_comic, limit));
+        for(Title title : parsed)
+            if(title != null)
+                title.setSourceSite("ntk");
+        String nextPath = findNtkNextPagePath(d, path, currentPage + 1);
+        return new PageTitles(parsed, nextPath);
+    }
+
+    static String ntkSearchPathForTest(String query, int targetBaseMode, int page) {
+        return ntkSearchPath(query, targetBaseMode, page);
+    }
+
+    private static String ntkSearchPath(String query, int targetBaseMode, int page) {
+        String encoded = percentEncode(query, Charset.forName("UTF-8"));
+        ArrayList<String> params = new ArrayList<>();
+        params.add("q=" + encoded);
+        if(targetBaseMode == base_comic)
+            params.add("kind=manhwa");
+        else if(targetBaseMode == base_webtoon)
+            params.add("kind=webtoon");
+        if(page > 1)
+            params.add("page=" + page);
+        return "/search?" + String.join("&", params);
     }
 
     private void appendNtkSiteSearchResults(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {

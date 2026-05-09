@@ -174,6 +174,21 @@ public class MainPageWebtoonTest {
         assertEquals(15538, titles.get(0).getId());
         assertEquals("건객", titles.get(0).getName());
         assertEquals(base_webtoon, titles.get(0).getBaseMode());
+        assertEquals("74화", titles.get(0).getRelease());
+        assertTrue(titles.get(0).getTags().contains("액션"));
+        assertTrue(titles.get(0).getTags().contains("무협"));
+    }
+
+    @Test
+    public void ntkSearchPathsMatchSiteKindFilters() {
+        assertEquals("/search?q=%EC%9B%90%ED%94%BC",
+                Search.ntkSearchPathForTest("원피", MTitle.base_auto, 1));
+        assertEquals("/search?q=%EC%9B%90%ED%94%BC&kind=manhwa",
+                Search.ntkSearchPathForTest("원피", base_comic, 1));
+        assertEquals("/search?q=%EC%9B%90%ED%94%BC&kind=webtoon",
+                Search.ntkSearchPathForTest("원피", base_webtoon, 1));
+        assertEquals("/search?q=%EC%9B%90%ED%94%BC&kind=manhwa&page=2",
+                Search.ntkSearchPathForTest("원피", base_comic, 2));
     }
 
     @Test

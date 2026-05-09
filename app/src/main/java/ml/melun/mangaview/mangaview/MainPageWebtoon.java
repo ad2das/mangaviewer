@@ -560,10 +560,18 @@ public class MainPageWebtoon {
                 if(infos.size() > 1)
                     for(String tag : cleanTextWithoutChildren(infos.get(1)).split("/"))
                         if(tag.trim().length() > 0) tags.add(tag.trim());
+                if(tags.size() == 0) {
+                    String genreText = cleanText(context.selectFirst("p.genre, .genre"));
+                    if(genreText.length() > 0)
+                        for(String tag : genreText.split("[,/]+"))
+                            if(tag.trim().length() > 0) tags.add(tag.trim());
+                }
 
                 String release = "";
                 if(infos.size() > 2)
                     release = cleanTextWithoutChildren(infos.get(2));
+                if(release.length() == 0)
+                    release = cleanText(context.selectFirst("p.ep, .ep, .episode-count, .latest-episode"));
 
                 titles.add(new Title(name, thumb, "", tags, release, id, baseMode));
                 applyInferredSearchTags(titles.get(titles.size() - 1));
