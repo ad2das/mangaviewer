@@ -1445,35 +1445,36 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(bookmark <= 0)
                 return null;
 
-            Manga resolved = findEpisodeById(item, bookmark);
+            List<Manga> eps = snapshotEpisodes(item);
+            Manga resolved = findEpisodeById(eps, bookmark);
             if(resolved == null) {
                 int progressIndex = item.getBookmarkEpisodeIndex();
-                if(progressIndex <= 0 && bookmark > 0 && item.getEps() != null && bookmark <= item.getEps().size())
+                if(progressIndex <= 0 && bookmark > 0 && eps != null && bookmark <= eps.size())
                     progressIndex = bookmark;
-                resolved = episodeAt(item, progressIndex);
+                resolved = episodeAt(eps, progressIndex);
             }
             if(resolved == null)
                 resolved = new Manga(bookmark, "", "", item.getBaseMode());
             resolved.setTitle(item);
             resolved.setTitleId(item.getId());
-            if(item.getEps() != null && item.getEps().size() > 0)
-                resolved.setEps(item.getEps());
+            if(eps != null && eps.size() > 0)
+                resolved.setEps(eps);
             return resolved;
         }
 
-        private Manga findEpisodeById(Title item, int bookmark) {
-            if(item == null || item.getEps() == null)
+        private Manga findEpisodeById(List<Manga> eps, int bookmark) {
+            if(eps == null)
                 return null;
-            for(Manga episode : item.getEps())
+            for(Manga episode : eps)
                 if(episode != null && episode.getId() == bookmark)
                     return episode;
             return null;
         }
 
-        private Manga episodeAt(Title item, int oneBasedIndex) {
-            if(item == null || item.getEps() == null || oneBasedIndex <= 0 || oneBasedIndex > item.getEps().size())
+        private Manga episodeAt(List<Manga> eps, int oneBasedIndex) {
+            if(eps == null || oneBasedIndex <= 0 || oneBasedIndex > eps.size())
                 return null;
-            return item.getEps().get(oneBasedIndex - 1);
+            return eps.get(oneBasedIndex - 1);
         }
 
         private int readingProgressPercent(Title item) {
@@ -1649,6 +1650,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return title;
         }
         return null;
+    }
+
+    private List<Manga> snapshotEpisodes(Title item) {
+        if(item == null || item.getEps() == null)
+            return null;
+        try {
+            return new ArrayList<>(item.getEps());
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 
     class ActionStripHolder extends RecyclerView.ViewHolder {
@@ -2487,35 +2498,36 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             bookmark = item.getBookmarkEpisodeId();
         if(bookmark <= 0)
             return null;
-        Manga resolved = findEpisodeByIdForWarmup(item, bookmark);
+        List<Manga> eps = snapshotEpisodes(item);
+        Manga resolved = findEpisodeByIdForWarmup(eps, bookmark);
         if(resolved == null) {
             int progressIndex = item.getBookmarkEpisodeIndex();
-            if(progressIndex <= 0 && item.getEps() != null && bookmark <= item.getEps().size())
+            if(progressIndex <= 0 && eps != null && bookmark <= eps.size())
                 progressIndex = bookmark;
-            resolved = episodeAtForWarmup(item, progressIndex);
+            resolved = episodeAtForWarmup(eps, progressIndex);
         }
         if(resolved == null)
             resolved = new Manga(bookmark, "", "", item.getBaseMode());
         resolved.setTitle(item);
         resolved.setTitleId(item.getId());
-        if(item.getEps() != null && item.getEps().size() > 0)
-            resolved.setEps(item.getEps());
+        if(eps != null && eps.size() > 0)
+            resolved.setEps(eps);
         return resolved;
     }
 
-    private Manga findEpisodeByIdForWarmup(Title item, int bookmark) {
-        if(item == null || item.getEps() == null)
+    private Manga findEpisodeByIdForWarmup(List<Manga> eps, int bookmark) {
+        if(eps == null)
             return null;
-        for(Manga episode : item.getEps())
+        for(Manga episode : eps)
             if(episode != null && episode.getId() == bookmark)
                 return episode;
         return null;
     }
 
-    private Manga episodeAtForWarmup(Title item, int oneBasedIndex) {
-        if(item == null || item.getEps() == null || oneBasedIndex <= 0 || oneBasedIndex > item.getEps().size())
+    private Manga episodeAtForWarmup(List<Manga> eps, int oneBasedIndex) {
+        if(eps == null || oneBasedIndex <= 0 || oneBasedIndex > eps.size())
             return null;
-        return item.getEps().get(oneBasedIndex - 1);
+        return eps.get(oneBasedIndex - 1);
     }
 
     private void scheduleContinueProgressBackfill() {
