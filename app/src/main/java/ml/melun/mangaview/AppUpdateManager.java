@@ -341,6 +341,18 @@ public final class AppUpdateManager {
 
     private static UpdateInfo latestInfoForDownload(Context context, UpdateInfo requested) {
         long started = System.currentTimeMillis();
+        UpdateInfo latest = fetchUpdateInfo(context);
+        if(latest != null && isUpdateAvailable(context, latest, false)) {
+            cacheUpdateInfo(context, latest);
+            if(requested == null
+                    || latest.version >= requested.version
+                    || !latest.link.equals(requested.link)) {
+                log("refreshBeforeDownload source=network ms=" + (System.currentTimeMillis() - started)
+                        + " requested=" + (requested == null ? -1 : requested.version)
+                        + " latest=" + latest.version);
+                return latest;
+            }
+        }
         UpdateInfo cached = readCachedUpdateInfo(context);
         if(cached != null && isUpdateAvailable(context, cached, false)
                 && (requested == null
@@ -357,17 +369,9 @@ public final class AppUpdateManager {
                     + " latest=" + (cached == null ? -1 : cached.version));
             return requested;
         }
-        UpdateInfo latest = fetchUpdateInfo(context);
-        log("refreshBeforeDownload source=network ms=" + (System.currentTimeMillis() - started)
+        log("refreshBeforeDownload source=none ms=" + (System.currentTimeMillis() - started)
                 + " requested=" + (requested == null ? -1 : requested.version)
                 + " latest=" + (latest == null ? -1 : latest.version));
-        if(latest != null && isUpdateAvailable(context, latest, false)) {
-            cacheUpdateInfo(context, latest);
-            if(requested == null
-                    || latest.version >= requested.version
-                    || !latest.link.equals(requested.link))
-                return latest;
-        }
         return requested;
     }
 
