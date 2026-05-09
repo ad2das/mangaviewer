@@ -1,13 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<layer-list xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent">
-
-    <item android:drawable="@color/colorPrimary" />
-
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape>
+            <gradient
+                android:angle="135"
+                android:startColor="#6366F1"
+                android:endColor="#8B5CF6"
+                android:type="linear" />
+        </shape>
+    </item>
     <item>
         <bitmap android:src="@drawable/logo_static" android:gravity="center"/>
     </item>
-
 </layer-list>
