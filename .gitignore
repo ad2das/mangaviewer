@@ -31,6 +31,7 @@ release/
 app/release/
 app/google-services.json
 app/src/main/res/values/google_services.xml
+apk/*.apk
 
 *.iml
 *.p12

@@ -91,7 +91,6 @@ $nextPatch = if ($ReleasePatch -ge 0) { $ReleasePatch } else { $currentPatch + 1
 $dateCode = [int](Get-Date -Format "yyMMdd")
 $versionCode = 2112000000 + $dateCode + $nextPatch
 $apkName = "mangaViewer_${versionCode}-debug.apk"
-$apkPath = "apk/$apkName"
 $downloadUrl = "https://github.com/$Repo/releases/download/$ReleaseTag/$apkName"
 
 Write-Step "Preparing version $versionCode"
@@ -125,33 +124,15 @@ if (-not (Test-Path $builtApk)) {
     throw "Built APK not found: $builtApk"
 }
 
-Write-Step "Copying APK to apk/"
-New-Item -ItemType Directory -Force -Path "apk" | Out-Null
-Copy-Item -LiteralPath $builtApk -Destination $apkPath -Force
-
-if ($DeleteOldRepoApks) {
-    Write-Step "Deleting old repo APKs"
-    Get-ChildItem -Path "apk" -Filter "mangaViewer_*-debug.apk" -File | ForEach-Object {
-        if ($_.Name -ne $apkName) {
-            Remove-Item -LiteralPath $_.FullName -Force
-        }
-    }
-}
-
 $changedFiles = @(
     $buildGradlePath,
     $versionJsonPath,
-    $releasesHtmlPath,
-    $apkPath
+    $releasesHtmlPath
 )
 
 if (-not $NoCommit) {
-    Write-Step "Committing release metadata and APK"
-    if ($DeleteOldRepoApks) {
-        git add -- $buildGradlePath $versionJsonPath $releasesHtmlPath apk
-    } else {
-        git add -- $changedFiles
-    }
+    Write-Step "Committing release metadata"
+    git add -- $changedFiles
     if ([string]::IsNullOrWhiteSpace($CommitMessage)) {
         $CommitMessage = "Release debug APK $versionCode"
     }
@@ -172,7 +153,7 @@ if (-not $NoCommit) {
 
 if (-not $NoUpload) {
     Write-Step "Uploading APK release asset"
-    gh release upload $ReleaseTag $apkPath --clobber --repo $Repo
+    gh release upload $ReleaseTag $builtApk --clobber --repo $Repo
     if ($LASTEXITCODE -ne 0) {
         throw "gh release upload failed"
     }
@@ -196,5 +177,5 @@ if (-not $NoUpload) {
 
 Write-Step "Done"
 Write-Host "versionCode=$versionCode"
-Write-Host "apk=$apkPath"
+Write-Host "apk=$builtApk"
 Write-Host "url=$downloadUrl"
