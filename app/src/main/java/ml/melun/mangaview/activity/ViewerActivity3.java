@@ -41,6 +41,7 @@ import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.ui.CustomSpinner;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -86,8 +87,15 @@ public class ViewerActivity3 extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        PerformanceMonitor.resume();
         if(toolbarshow) getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
         else getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN);
+    }
+
+    @Override
+    protected void onPause() {
+        PerformanceMonitor.pause();
+        super.onPause();
     }
 
     @Override
@@ -102,6 +110,8 @@ public class ViewerActivity3 extends AppCompatActivity {
         dark = p.getDarkTheme();
         if(dark) setTheme(R.style.AppThemeDarkNoTitle);
         super.onCreate(savedInstanceState);
+        PerformanceMonitor.attach(this);
+        PerformanceMonitor.screen("viewer");
 
         setContentView(R.layout.activity_viewer3);
         context = this;

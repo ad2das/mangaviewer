@@ -19,7 +19,6 @@ import android.view.MenuItem;
 import android.view.View;
 import android.widget.TextView;
 
-import com.bumptech.glide.Glide;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayoutDirection;
 
@@ -38,6 +37,7 @@ import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.mangaview.UpdatedList;
 import ml.melun.mangaview.mangaview.UpdatedManga;
 import ml.melun.mangaview.repository.MangaRepository;
+import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.AppDispatchers;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -49,7 +49,7 @@ import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 
 public class TagSearchActivity extends AppCompatActivity {
-    private static final int THUMBNAIL_PRELOAD_AHEAD = 18;
+    private static final int THUMBNAIL_PRELOAD_AHEAD = 6;
     private static final int THUMBNAIL_PRELOAD_DELAY_MS = 80;
     private static final int LOAD_MORE_THRESHOLD = 18;
     RecyclerView searchResult;
@@ -76,6 +76,8 @@ public class TagSearchActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         if(p.getDarkTheme()) setTheme(R.style.AppThemeDark);
         super.onCreate(savedInstanceState);
+        PerformanceMonitor.attach(this);
+        PerformanceMonitor.screen("search");
         setContentView(R.layout.activity_tag_search);
         if(!p.getDarkTheme()) {
             getWindow().setStatusBarColor(ContextCompat.getColor(this, R.color.appSurface));
@@ -104,8 +106,9 @@ public class TagSearchActivity extends AppCompatActivity {
                 super.onScrollStateChanged(recyclerView, newState);
                 if(isFinishing() || destroyed)
                     return;
+                PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
                 if(newState == RecyclerView.SCROLL_STATE_IDLE)
-                    Glide.with(TagSearchActivity.this).resumeRequests();
+                    PerformanceMonitor.reportNow("tag_search_scroll_idle");
                 scheduleThumbnailPreload();
                 maybeLoadMoreSearchResults();
             }
@@ -195,6 +198,18 @@ public class TagSearchActivity extends AppCompatActivity {
                 } else swipe.setRefreshing(false);
             });
         }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        PerformanceMonitor.resume();
+    }
+
+    @Override
+    protected void onPause() {
+        PerformanceMonitor.pause();
+        super.onPause();
     }
 
     private void startLoad(LoadOperation task) {

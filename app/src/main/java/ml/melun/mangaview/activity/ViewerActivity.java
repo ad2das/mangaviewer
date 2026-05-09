@@ -57,6 +57,7 @@ import ml.melun.mangaview.repository.CacheFileStore;
 import ml.melun.mangaview.repository.CachePolicy;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.PrefetchCoordinator;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -129,6 +130,8 @@ public class ViewerActivity extends AppCompatActivity {
         Utils.cancelPendingViewerLaunches(this);
         dark = p.getDarkTheme();
         super.onCreate(savedInstanceState);
+        PerformanceMonitor.attach(this);
+        PerformanceMonitor.screen("viewer");
         setContentView(R.layout.activity_viewer);
 
         next = this.findViewById(R.id.toolbar_next);
@@ -285,6 +288,7 @@ public class ViewerActivity extends AppCompatActivity {
                 @Override
                 public void onScrollStateChanged(RecyclerView recyclerView, int newState) {
                     super.onScrollStateChanged(recyclerView, newState);
+                    PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
                     if(stripAdapter != null)
                         stripAdapter.setScrollBusy(newState != RecyclerView.SCROLL_STATE_IDLE);
                     if(strip.getLayoutManager().getItemCount()>0 && newState == RecyclerView.SCROLL_STATE_DRAGGING && toolbarshow) {
@@ -294,6 +298,8 @@ public class ViewerActivity extends AppCompatActivity {
                         loadEpisodeAtBoundaryIfNeeded();
                     if(newState == RecyclerView.SCROLL_STATE_IDLE)
                         saveCurrentScrollBookmark();
+                    if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                        PerformanceMonitor.reportNow("viewer_scroll_idle");
                 }
 
                 @Override
@@ -721,8 +727,15 @@ public class ViewerActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        PerformanceMonitor.resume();
         if(toolbarshow) getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
         else getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN);
+    }
+
+    @Override
+    protected void onPause() {
+        PerformanceMonitor.pause();
+        super.onPause();
     }
 
     @Override

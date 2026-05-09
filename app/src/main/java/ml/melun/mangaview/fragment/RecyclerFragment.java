@@ -23,7 +23,6 @@ import androidx.fragment.app.Fragment;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.recyclerview.widget.RecyclerView.AdapterDataObserver;
 
-import com.bumptech.glide.Glide;
 import com.google.gson.Gson;
 
 import java.util.List;
@@ -38,6 +37,7 @@ import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.repository.OfflineStore;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.PerformanceMonitor;
 
 import static android.app.Activity.RESULT_OK;
 import static ml.melun.mangaview.MainApplication.p;
@@ -93,14 +93,9 @@ public class RecyclerFragment extends Fragment {
                 super.onScrollStateChanged(recyclerView, newState);
                 if(getContext() == null || !isAdded())
                     return;
-                try {
-                    if(newState == RecyclerView.SCROLL_STATE_IDLE)
-                        Glide.with(RecyclerFragment.this).resumeRequests();
-                    else
-                        Glide.with(RecyclerFragment.this).pauseRequests();
-                } catch (RuntimeException e) {
-                    ml.melun.mangaview.report.CrashReporter.record(e);
-                }
+                PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
+                if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                    PerformanceMonitor.reportNow("recycler_scroll_idle");
             }
         });
         localChangeListener = scope -> {

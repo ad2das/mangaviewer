@@ -5,6 +5,7 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.net.Uri;
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.ActionBar;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
@@ -44,6 +45,7 @@ import ml.melun.mangaview.repository.CachePolicy;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.repository.OfflineStore;
 import ml.melun.mangaview.runtime.PerfTrace;
+import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.PrefetchCoordinator;
 import ml.melun.mangaview.state.UiState;
 import ml.melun.mangaview.viewmodel.EpisodeViewModel;
@@ -187,6 +189,8 @@ public class EpisodeActivity extends AppCompatActivity {
         dark = p.getDarkTheme();
         if(dark) setTheme(R.style.AppThemeDarkNoTitle);
         super.onCreate(savedInstanceState);
+        PerformanceMonitor.attach(this);
+        PerformanceMonitor.screen("episode");
         setContentView(R.layout.activity_episode);
         applyEpisodeWindowChrome();
         Intent intent = getIntent();
@@ -205,6 +209,15 @@ public class EpisodeActivity extends AppCompatActivity {
         episodeList.setItemViewCacheSize(20);
         episodeList.setItemAnimator(null);
         episodeList.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        episodeList.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
+                super.onScrollStateChanged(recyclerView, newState);
+                PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
+                if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                    PerformanceMonitor.reportNow("episode_scroll_idle");
+            }
+        });
         homeDir = p.getHomeDir();
         resumefab = this.findViewById(R.id.resumefab);
         fab_container = findViewById(R.id.fab_container);
@@ -574,6 +587,18 @@ public class EpisodeActivity extends AppCompatActivity {
             resultIntent.putExtra("favorite", favorite);
             setResult(RESULT_OK, resultIntent);
         }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        PerformanceMonitor.resume();
+    }
+
+    @Override
+    protected void onPause() {
+        PerformanceMonitor.pause();
+        super.onPause();
     }
 
     @Override

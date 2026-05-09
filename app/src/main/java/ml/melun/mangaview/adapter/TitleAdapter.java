@@ -21,6 +21,7 @@ import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.Executor;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
@@ -28,6 +29,7 @@ import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.runtime.AppDispatchers;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getGlideUrl;
@@ -50,6 +52,8 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     String path = "";
     Filter filter;
     boolean searching = false;
+    private final Executor diffExecutor = AppDispatchers.userAction();
+    private int diffGeneration = 0;
 
     public TitleAdapter(Context context) {
         init(context);
@@ -74,8 +78,9 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             @Override
             protected FilterResults performFiltering(CharSequence charSequence) {
                 String query = charSequence.toString();
+                ArrayList<Title> next;
                 if(query.isEmpty() || query.length() == 0){
-                    mDataFiltered = mData;
+                    next = new ArrayList<>(mData);
                     searching = false;
                 }else{
                     searching = true;
@@ -86,10 +91,10 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                                 || t.getAuthor().toLowerCase(Locale.ROOT).contains(normalizedQuery))
                             filtered.add(t);
                     }
-                    mDataFiltered = filtered;
+                    next = filtered;
                 }
                 FilterResults res = new FilterResults();
-                res.values = mDataFiltered;
+                res.values = next;
                 return res;
             }
 
@@ -111,6 +116,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     }
 
     public void removeAll(){
+        diffGeneration++;
         int originSize = mData.size();
         mData.clear();
         mDataFiltered.clear();
@@ -151,7 +157,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(mDataFiltered == null || count <= 0 || (save && !forceThumbnail))
             return;
         int start = Math.max(0, startPosition);
-        int end = Math.min(mDataFiltered.size(), start + count);
+        int end = Math.min(mDataFiltered.size(), start + Math.min(count, 8));
         for(int i = start; i < end; i++) {
             Title data = mDataFiltered.get(i);
             if(data == null)
@@ -179,29 +185,36 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     private void dispatchFilteredList(ArrayList<Title> next) {
         final ArrayList<Title> old = new ArrayList<>(mDataFiltered);
         final ArrayList<Title> target = new ArrayList<>(next);
-        DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
-            @Override
-            public int getOldListSize() {
-                return old.size();
-            }
+        final int generation = ++diffGeneration;
+        diffExecutor.execute(() -> {
+            DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
+                @Override
+                public int getOldListSize() {
+                    return old.size();
+                }
 
-            @Override
-            public int getNewListSize() {
-                return target.size();
-            }
+                @Override
+                public int getNewListSize() {
+                    return target.size();
+                }
 
-            @Override
-            public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
-                return sameTitle(old.get(oldItemPosition), target.get(newItemPosition));
-            }
+                @Override
+                public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
+                    return sameTitle(old.get(oldItemPosition), target.get(newItemPosition));
+                }
 
-            @Override
-            public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
-                return titleContentKey(old.get(oldItemPosition)).equals(titleContentKey(target.get(newItemPosition)));
-            }
-        }, false);
-        mDataFiltered = next;
-        diff.dispatchUpdatesTo(this);
+                @Override
+                public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
+                    return titleContentKey(old.get(oldItemPosition)).equals(titleContentKey(target.get(newItemPosition)));
+                }
+            }, false);
+            AppDispatchers.runOnMain(() -> {
+                if(generation != diffGeneration)
+                    return;
+                mDataFiltered = target;
+                diff.dispatchUpdatesTo(this);
+            });
+        });
     }
 
     private ArrayList<Title> normalizeTitles(List<?> source) {
@@ -349,7 +362,6 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         }
         if(bookmark>0 && resume) {
             holder.resume.setVisibility(View.VISIBLE);
-            warmupResume(data, bookmark, position);
         }
         else holder.resume.setVisibility(View.GONE);
 

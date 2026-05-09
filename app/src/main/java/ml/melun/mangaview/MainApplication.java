@@ -8,7 +8,6 @@ import androidx.multidex.MultiDexApplication;
 import ml.melun.mangaview.ClassificationDbUpdater;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MainPageWebtoon;
-import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.report.CrashReporter;
 import ml.melun.mangaview.repository.room.MangaRoomStore;
 import ml.melun.mangaview.runtime.AppDispatchers;
@@ -39,7 +38,6 @@ public class MainApplication extends MultiDexApplication {
         AppDispatchers.runIo(MainPageWebtoon::preloadClassificationDbs);
         AppDispatchers.runIo(() -> ClassificationDbUpdater.updateInBackground(this));
         super.onCreate();
-        ViewerWarmupManager.warmupSavedContinues(this, 6);
     }
 
     public static synchronized CustomHttpClient getHttpClient() {

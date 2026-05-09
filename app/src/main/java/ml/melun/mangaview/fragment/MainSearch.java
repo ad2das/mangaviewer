@@ -29,7 +29,6 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import com.google.android.material.tabs.TabLayout;
-import com.bumptech.glide.Glide;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayoutDirection;
 import java.util.ArrayList;
@@ -49,6 +48,7 @@ import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.repository.OfflineStore;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.PerfTrace;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -142,15 +142,10 @@ public class MainSearch extends Fragment {
                 super.onScrollStateChanged(recyclerView, newState);
                 if(getContext() == null || !isAdded())
                     return;
-                try {
-                    if(newState == RecyclerView.SCROLL_STATE_IDLE) {
-                        Glide.with(MainSearch.this).resumeRequests();
-                        applyPendingLibraryRefreshIfIdle();
-                    } else {
-                        Glide.with(MainSearch.this).pauseRequests();
-                    }
-                } catch (RuntimeException e) {
-                    ml.melun.mangaview.report.CrashReporter.record(e);
+                PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
+                if(newState == RecyclerView.SCROLL_STATE_IDLE) {
+                    applyPendingLibraryRefreshIfIdle();
+                    PerformanceMonitor.reportNow(libraryMode && !onlineSearchMode ? "library_scroll_idle" : "search_scroll_idle");
                 }
             }
         });

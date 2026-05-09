@@ -52,8 +52,8 @@ import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.repository.CacheFileStore;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.PerfTrace;
-import ml.melun.mangaview.runtime.PrefetchCoordinator;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
@@ -99,9 +99,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     List<Object> pendingRows;
     boolean initialRowsShown = false;
     private final Set<String> preloadedThumbs = new LinkedHashSet<>();
-    private final Set<String> pendingContinueWarmups = new LinkedHashSet<>();
-    private static final int PRELOADED_THUMB_LIMIT = 120;
-    private static final int PRELOAD_THUMB_MAX_PER_FETCH = 24;
+    private static final int PRELOADED_THUMB_LIMIT = 64;
+    private static final int PRELOAD_THUMB_MAX_PER_FETCH = 8;
     private static final int SECTION_BATCH_SIZE = 4;
     private static final int FIRST_SCREEN_BATCH_SIZE = 1;
     private static final String HOME_CACHE_KEY_PREFIX = "homeSnapshotV1_";
@@ -145,7 +144,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         sharedHomePool.setMaxRecycledViews(VIEW_TYPE_HOME_STANDARD, 12);
         sharedHomePool.setMaxRecycledViews(VIEW_TYPE_WEBTOON_CARD, 18);
         setHasStableIds(true);
-        ViewerWarmupManager.warmupSavedContinues(context, 6);
     }
 
     public void fetch(){
@@ -275,11 +273,14 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 @Override
                 public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
                     super.onScrollStateChanged(recyclerView, newState);
+                    PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
                     if(newState == RecyclerView.SCROLL_STATE_IDLE)
                         recyclerView.postDelayed(() -> {
                             if(anchorRecycler == recyclerView
-                                    && recyclerView.getScrollState() == RecyclerView.SCROLL_STATE_IDLE)
+                                    && recyclerView.getScrollState() == RecyclerView.SCROLL_STATE_IDLE) {
                                 applyPendingRows();
+                                PerformanceMonitor.reportNow("home_scroll_idle");
+                            }
                         }, 250);
                 }
             };
@@ -1422,8 +1423,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     boundKey = nextKey;
                 }
                 bindTitleThumb(thumb, item, 120, 112);
-                if(continueStyle && position < 8)
-                    scheduleContinueViewerWarmup(item, position < 3 ? 0 : 120);
                 card.setOnClickListener(v -> {
                     openContinueOrTitle(item, continueStyle);
                 });
@@ -1483,24 +1482,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             } else {
                 listener.clickedTitle(item);
             }
-        }
-
-        private void scheduleContinueViewerWarmup(Title item, int delayMs) {
-            if(item == null)
-                return;
-            String key = titleKey(item);
-            if(!pendingContinueWarmups.add(key))
-                return;
-            MAIN.postDelayed(() -> {
-                pendingContinueWarmups.remove(key);
-                if(anchorRecycler != null && (!anchorRecycler.isAttachedToWindow() || !anchorRecycler.isShown()))
-                    return;
-                if(anchorRecycler != null && anchorRecycler.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
-                    scheduleContinueViewerWarmup(item, 120);
-                    return;
-                }
-                warmupContinueViewer(item);
-            }, Math.max(0, delayMs));
         }
 
         private Manga resolveContinueManga(Title item) {
@@ -2022,7 +2003,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private void preloadThumbnails(List<Ranking<?>> sections) {
         if(save || sections == null)
             return;
-        int maxPerFetch = p.getDataSave() ? 6 : (PrefetchCoordinator.aggressiveAllowed(context) ? PRELOAD_THUMB_MAX_PER_FETCH : 12);
+        int maxPerFetch = p.getDataSave() ? 4 : PRELOAD_THUMB_MAX_PER_FETCH;
         if(preloadCount >= maxPerFetch)
             return;
         for(Ranking<?> section : sections) {
@@ -2062,7 +2043,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private void updateRows(List<Object> newRows) {
         final List<Object> oldRows = rows == null ? Collections.emptyList() : new ArrayList<>(rows);
         final List<Object> nextRows = newRows == null ? new ArrayList<>() : new ArrayList<>(newRows);
-        warmupTopContinueRows(nextRows);
         if(anchorRecycler != null && anchorRecycler.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
             pendingRows = nextRows;
             return;
@@ -2074,7 +2054,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 rows = nextRows;
                 notifyItemRangeInserted(0, nextRows.size());
                 restoreScrollAnchor(anchor);
-                warmupTopContinueRows(rows);
                 if(!firstContentLogged && hasDisplayContent(rows)) {
                     firstContentLogged = true;
                     PerfTrace.end("home_first_content_ms", firstContentStartedAt);
@@ -2120,7 +2099,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             rows = nextRows;
             diff.dispatchUpdatesTo(this);
             restoreScrollAnchor(anchor);
-            warmupTopContinueRows(rows);
             if(!firstContentLogged && hasDisplayContent(rows)) {
                 firstContentLogged = true;
                 PerfTrace.end("home_first_content_ms", firstContentStartedAt);
@@ -2543,25 +2521,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(row instanceof HeroRow)
                 return true;
         return false;
-    }
-
-    private void warmupTopContinueRows(List<Object> candidateRows) {
-        if(candidateRows == null)
-            return;
-        for(Object row : candidateRows) {
-            if(!(row instanceof HomeSection))
-                continue;
-            HomeSection section = (HomeSection) row;
-            if(!"이어보기".equals(section.title) || section.titles == null)
-                continue;
-            int limit = Math.min(4, section.titles.size());
-            for(int i = 0; i < limit; i++) {
-                Manga manga = resolveContinueMangaForWarmup(section.titles.get(i));
-                if(manga != null)
-                    ViewerWarmupManager.warmupContinueImmediate(context, manga, section.titles.get(i));
-            }
-            return;
-        }
     }
 
     private Manga resolveContinueMangaForWarmup(Title item) {

@@ -61,6 +61,7 @@ import ml.melun.mangaview.fragment.MainSearch;
 import ml.melun.mangaview.interfaces.MainActivityCallback;
 import ml.melun.mangaview.interfaces.UrlUpdateCallback;
 import ml.melun.mangaview.model.UrlUpdateResult;
+import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.state.UiState;
 import ml.melun.mangaview.viewmodel.StartupViewModel;
 
@@ -173,6 +174,7 @@ public class MainActivity extends AppCompatActivity
         if (dark) setTheme(R.style.AppThemeDarkNoTitle);
         else setTheme(R.style.AppTheme_NoActionBar);
         super.onCreate(savedInstanceState);
+        PerformanceMonitor.attach(this);
         context = this;
         Intent intent = getIntent();
         String action = intent.getAction();
@@ -379,8 +381,15 @@ public class MainActivity extends AppCompatActivity
     @Override
     protected void onResume() {
         super.onResume();
+        PerformanceMonitor.resume();
         AppUpdateManager.resumePendingInstall(this);
         maybeOpenNtkCaptcha();
+    }
+
+    @Override
+    protected void onPause() {
+        PerformanceMonitor.pause();
+        super.onPause();
     }
 
     private boolean maybeOpenNtkCaptcha() {
@@ -879,18 +888,29 @@ public class MainActivity extends AppCompatActivity
             if(index == 1 && fragments[1] instanceof MainSearch)
                 ((MainSearch) fragments[1]).enterSearchMode();
             currentTab = index;
+            PerformanceMonitor.screen(performanceScreenName(index));
             getSupportFragmentManager().beginTransaction().replace(R.id.contentHolder, (Fragment) fragments[index]).commit();
             res = true;
         } else if(index == 1 && fragments[1] instanceof MainSearch) {
             ((MainSearch) fragments[1]).enterSearchMode();
+            PerformanceMonitor.screen("search");
         } else if(index == 2 && fragments[2] instanceof MainSearch) {
             ((MainSearch) fragments[2]).enterLibraryMode();
+            PerformanceMonitor.screen("library");
         }
         getSupportActionBar().setTitle(getTabTitle(currentTab));
         syncNavigationSelection();
         syncBottomNavigationSelection();
         invalidateOptionsMenu();
         return res;
+    }
+
+    private String performanceScreenName(int index) {
+        if(index == 1)
+            return "search";
+        if(index == 2)
+            return "library";
+        return "home";
     }
 
 

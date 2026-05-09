@@ -16,8 +16,6 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.material.tabs.TabLayout;
-import com.bumptech.glide.Glide;
-
 import ml.melun.mangaview.interfaces.MainActivityCallback;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Preference;
@@ -29,6 +27,7 @@ import ml.melun.mangaview.adapter.MainWebtoonAdapter;
 import ml.melun.mangaview.interfaces.UrlUpdateCallback;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -313,14 +312,9 @@ public class MainMain extends Fragment{
                 super.onScrollStateChanged(recyclerView, newState);
                 if(getContext() == null || !isAdded())
                     return;
-                try {
-                    if(newState == RecyclerView.SCROLL_STATE_IDLE)
-                        Glide.with(MainMain.this).resumeRequests();
-                    else
-                        Glide.with(MainMain.this).pauseRequests();
-                } catch (RuntimeException e) {
-                    ml.melun.mangaview.report.CrashReporter.record(e);
-                }
+                PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
+                if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                    PerformanceMonitor.reportNow("home_scroll_idle");
             }
         });
     }
@@ -395,6 +389,7 @@ public class MainMain extends Fragment{
             return;
         selectedBaseMode = baseMode;
         p.setBaseMode(baseMode);
+        PerformanceMonitor.updateSiteMode();
         ensureHomeAdapter(baseMode);
         updateModeToggle();
         MainWebtoonAdapter selectedAdapter = getSelectedAdapter();
