@@ -5,6 +5,8 @@ import android.app.ProgressDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -149,7 +151,7 @@ public final class AppUpdateManager {
     }
 
     private static boolean isUpdateAvailable(UpdateInfo info) {
-        return info != null && info.version > BuildConfig.VERSION_CODE
+        return info != null && info.version > currentVersionCode(MainApplication.appContext)
                 && info.link != null && info.link.length() > 0;
     }
 
@@ -182,7 +184,7 @@ public final class AppUpdateManager {
             return;
         AlertDialog.Builder builder = new AlertDialog.Builder(activity);
         builder.setTitle("새 버전 업데이트")
-                .setMessage("새 APK가 있습니다.\n현재: " + BuildConfig.VERSION_CODE + "\n최신: " + info.version + "\n\n다운로드 후 설치 화면을 바로 열까요?")
+                .setMessage("새 APK가 있습니다.\n현재: " + currentVersionCode(activity) + "\n최신: " + info.version + "\n\n다운로드 후 설치 화면을 바로 열까요?")
                 .setPositiveButton("업데이트", (dialog, which) -> downloadAndInstall(activity, info))
                 .setNegativeButton("나중에", null);
         Utils.safeShowDialog(builder);
@@ -445,7 +447,7 @@ public final class AppUpdateManager {
         }
         try {
             Uri apkUri = FileProvider.getUriForFile(activity,
-                    BuildConfig.APPLICATION_ID + ".fileprovider",
+                    activity.getPackageName() + ".fileprovider",
                     apk);
             Intent intent = new Intent(Intent.ACTION_VIEW);
             intent.setDataAndType(apkUri, APK_MIME);
@@ -463,6 +465,19 @@ public final class AppUpdateManager {
         if(Build.VERSION.SDK_INT < Build.VERSION_CODES.O)
             return true;
         return context.getPackageManager().canRequestPackageInstalls();
+    }
+
+    private static long currentVersionCode(Context context) {
+        if(context == null)
+            return -1;
+        try {
+            PackageInfo info = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
+            if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+                return info.getLongVersionCode();
+            return info.versionCode;
+        } catch (PackageManager.NameNotFoundException e) {
+            return -1;
+        }
     }
 
     private interface ProgressCallback {

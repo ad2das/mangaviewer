@@ -2,6 +2,8 @@ package ml.melun.mangaview.report;
 
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.os.Process;
 import android.util.Log;
 
@@ -10,7 +12,6 @@ import java.io.FileOutputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 
-import ml.melun.mangaview.BuildConfig;
 import ml.melun.mangaview.activity.CrashReportActivity;
 
 public class CrashReporter implements Thread.UncaughtExceptionHandler {
@@ -58,14 +59,31 @@ public class CrashReporter implements Thread.UncaughtExceptionHandler {
         File file = new File(context.getFilesDir(), CRASH_REPORT_FILE);
         try(FileOutputStream stream = new FileOutputStream(file);
             PrintWriter writer = new PrintWriter(stream)) {
-            writer.println("App version: " + BuildConfig.VERSION_NAME);
-            writer.println("Version code: " + BuildConfig.VERSION_CODE);
+            PackageInfo packageInfo = packageInfo();
+            writer.println("App version: " + (packageInfo == null ? "unknown" : packageInfo.versionName));
+            writer.println("Version code: " + versionCode(packageInfo));
             writer.println("Android: " + android.os.Build.VERSION.RELEASE + " (SDK " + android.os.Build.VERSION.SDK_INT + ")");
             writer.println("Device: " + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL);
             writer.println("Thread: " + thread.getName());
             writer.println();
             writer.println(stackTrace(throwable));
         }
+    }
+
+    private PackageInfo packageInfo() {
+        try {
+            return context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
+        } catch (PackageManager.NameNotFoundException e) {
+            return null;
+        }
+    }
+
+    private long versionCode(PackageInfo packageInfo) {
+        if(packageInfo == null)
+            return -1;
+        if(android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P)
+            return packageInfo.getLongVersionCode();
+        return packageInfo.versionCode;
     }
 
     public static String stackTrace(Throwable throwable) {
