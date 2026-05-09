@@ -8,6 +8,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.Settings;
+import android.util.Base64;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AlertDialog;
@@ -15,6 +16,7 @@ import androidx.core.content.FileProvider;
 
 import org.json.JSONObject;
 
+import java.nio.charset.StandardCharsets;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -28,6 +30,7 @@ import okhttp3.ResponseBody;
 
 public final class AppUpdateManager {
     private static final String VERSION_URL = "https://api.github.com/repos/ad2das/mangaviewer/contents/version.json?ref=main";
+    private static final String RAW_VERSION_URL = "https://raw.githubusercontent.com/ad2das/mangaviewer/main/version.json";
     private static final String APK_MIME = "application/vnd.android.package-archive";
     private static boolean checkedThisSession;
     private static boolean downloading;
@@ -39,11 +42,13 @@ public final class AppUpdateManager {
     public static void checkForUpdate(Activity activity) {
         if(activity == null || checkedThisSession || downloading)
             return;
-        checkedThisSession = true;
         Context appContext = activity.getApplicationContext();
         AppDispatchers.runIo(() -> {
             UpdateInfo info = fetchUpdateInfo(appContext);
-            if(info == null || info.version <= BuildConfig.VERSION_CODE || info.link == null || info.link.length() == 0)
+            if(info == null)
+                return;
+            checkedThisSession = true;
+            if(info.version <= BuildConfig.VERSION_CODE || info.link == null || info.link.length() == 0)
                 return;
             AppDispatchers.runOnMain(() -> showUpdateDialog(activity, info));
         });
@@ -57,13 +62,21 @@ public final class AppUpdateManager {
     }
 
     private static UpdateInfo fetchUpdateInfo(Context context) {
+        UpdateInfo apiInfo = fetchUpdateInfoFromUrl(VERSION_URL, true);
+        if(apiInfo != null)
+            return apiInfo;
+        return fetchUpdateInfoFromUrl(RAW_VERSION_URL + "?t=" + System.currentTimeMillis(), false);
+    }
+
+    private static UpdateInfo fetchUpdateInfoFromUrl(String url, boolean allowGithubContentsEnvelope) {
         try {
             OkHttpClient client = MainApplication.getHttpClient().client;
             Request request = new Request.Builder()
-                    .url(VERSION_URL)
+                    .url(url)
                     .header("Accept", "application/vnd.github.raw")
                     .header("User-Agent", "MangaView")
                     .header("Cache-Control", "no-cache")
+                    .header("Pragma", "no-cache")
                     .build();
             try(Response response = client.newCall(request).execute()) {
                 if(!response.isSuccessful())
@@ -71,7 +84,7 @@ public final class AppUpdateManager {
                 ResponseBody body = response.body();
                 if(body == null)
                     return null;
-                JSONObject json = new JSONObject(body.string());
+                JSONObject json = parseVersionJson(body.string(), allowGithubContentsEnvelope);
                 int version = json.optInt("version", -1);
                 String link = json.optString("link", "");
                 if(version <= 0 || link.length() == 0)
@@ -82,6 +95,18 @@ public final class AppUpdateManager {
             CrashReporter.record(e);
             return null;
         }
+    }
+
+    private static JSONObject parseVersionJson(String body, boolean allowGithubContentsEnvelope) throws Exception {
+        JSONObject json = new JSONObject(body);
+        if(json.has("version") || !allowGithubContentsEnvelope)
+            return json;
+        String encoded = json.optString("content", "");
+        if(encoded.length() == 0)
+            return json;
+        String normalized = encoded.replace("\n", "");
+        byte[] decoded = Base64.decode(normalized, Base64.DEFAULT);
+        return new JSONObject(new String(decoded, StandardCharsets.UTF_8));
     }
 
     private static void showUpdateDialog(Activity activity, UpdateInfo info) {
@@ -142,7 +167,11 @@ public final class AppUpdateManager {
     private static File downloadApk(Context context, UpdateInfo info, ProgressCallback callback) {
         try {
             OkHttpClient client = MainApplication.getHttpClient().client;
-            Request request = new Request.Builder().url(info.link).build();
+            Request request = new Request.Builder()
+                    .url(info.link)
+                    .header("User-Agent", "MangaView")
+                    .header("Accept", APK_MIME + ", application/octet-stream, */*")
+                    .build();
             try(Response response = client.newCall(request).execute()) {
                 if(!response.isSuccessful() || response.body() == null)
                     return null;
