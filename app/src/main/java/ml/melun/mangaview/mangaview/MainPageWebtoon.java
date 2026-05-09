@@ -40,14 +40,14 @@ public class MainPageWebtoon {
     private static final String[] WEBTOON_DAY_LABELS = {"최신", "신작", "월", "화", "수", "목", "금", "토", "일", "열흘"};
     private static final String[] WEBTOON_DAY_VALUES = {"recent", "new", "1", "2", "3", "4", "5", "6", "7", "10"};
     private static final String[] WEBTOON_GENRES = {"성인", "드라마", "판타지", "액션", "로맨스", "일상", "개그", "미스터리", "순정", "스포츠", "BL", "스릴러", "무협", "학원", "공포", "스토리", "미분류"};
-    private static final String[] NTK_WEBTOON_GENRES = {"성인", "드라마", "판타지", "액션", "로맨스", "일상", "개그", "미스터리", "순정", "스포츠", "BL", "스릴러", "무협", "학원", "공포", "스토리"};
+    private static final String[] NTK_WEBTOON_GENRES = {"성인", "드라마", "판타지", "액션", "로맨스", "일상", "개그", "코미디", "미스터리", "순정", "스포츠", "BL", "BL/GL", "스릴러", "무협", "학원", "공포", "스토리"};
     private static final String[] ALPHABET_LABELS = {"ㄱ", "ㄴ", "ㄷ", "ㄹ", "ㅁ", "ㅂ", "ㅅ", "ㅇ", "ㅈ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ", "A-Z", "0-9"};
     private static final String[] ALPHABET_VALUES = {"ㄱ", "ㄴ", "ㄷ", "ㄹ", "ㅁ", "ㅂ", "ㅅ", "ㅇ", "ㅈ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ", "a", "0"};
 
     private static final String[] COMIC_DAY_LABELS = {"최신", "주간", "격주", "월간", "단편", "완결", "단행본", "비정기", "미분류"};
     private static final String[] COMIC_DAY_VALUES = {"recent", "10", "11", "12", "14", "16", "15", "13", "20"};
     private static final String[] COMIC_GENRES = {"17", "드라마", "액션", "SF", "TS", "개그", "게임", "공포", "도박", "호러", "라노벨", "러브코미디", "로맨스", "먹방", "미스터리", "백합", "붕탁", "성인", "순정", "스릴러", "스포츠", "시대", "판타지", "학원", "BL", "여장", "역사", "요리", "음악", "이세계", "일상", "전생", "추리", "애니화"};
-    private static final String[] NTK_COMIC_GENRES = {"17", "드라마", "액션", "SF", "TS", "개그", "게임", "공포", "도박", "호러", "라노벨", "러브코미디", "로맨스", "먹방", "미스터리", "백합", "붕탁", "성인", "순정", "스릴러", "스포츠", "시대", "판타지", "학원", "BL", "여장", "역사", "요리", "음악", "이세계", "일상", "전생", "추리", "애니화"};
+    private static final String[] NTK_COMIC_GENRES = {"17", "드라마", "액션", "SF", "TS", "개그", "코미디", "게임", "공포", "도박", "호러", "라노벨", "러브코미디", "로맨틱코미디", "로맨스", "매니아", "먹방", "미스터리", "백합", "붕탁", "성인", "순정", "스릴러", "스포츠", "시대", "판타지", "학원", "BL", "BL/GL", "여장", "역사", "요리", "음악", "이세계", "일상", "전생", "추리", "어드벤처", "애니화"};
     private static final String INFERRED_TAG_CACHE_KEY = "webtoonInferredTagCacheV1";
     private static final int INFERRED_TAG_CACHE_LIMIT = 800;
     private static final LinkedHashMap<String, List<String>> inferredTagCache = new LinkedHashMap<>();
@@ -317,11 +317,10 @@ public class MainPageWebtoon {
         sections.add(section("연재웹툰", "금", "/ing?day=%EA%B8%88"));
         sections.add(section("완결웹툰", "인기순", "/end?sort=hot"));
         sections.add(section("완결웹툰", "최신", "/end"));
-        sections.add(section("장르별", "드라마", "/ing?tag=%EB%93%9C%EB%9D%BC%EB%A7%88"));
-        sections.add(section("장르별", "판타지", "/ing?tag=%ED%8C%90%ED%83%80%EC%A7%80"));
-        sections.add(section("장르별", "액션", "/ing?tag=%EC%95%A1%EC%85%98"));
-        sections.add(section("장르별", "로맨스", "/ing?tag=%EB%A1%9C%EB%A7%A8%EC%8A%A4"));
-        sections.add(section("장르별", "무협", "/ing?tag=%EB%AC%B4%ED%98%91"));
+        for(String genre : NTK_WEBTOON_GENRES)
+            sections.add(section("연재 장르별", genre, ntkWebtoonGenrePath("ing", genre)));
+        for(String genre : NTK_WEBTOON_GENRES)
+            sections.add(section("완결 장르별", genre, ntkWebtoonGenrePath("end", genre)));
         return sections.toArray(new String[0][]);
     }
 
@@ -329,15 +328,8 @@ public class MainPageWebtoon {
         ArrayList<String[]> sections = new ArrayList<>();
         sections.add(section("정렬", "인기순", "/manhwa?sort=hot"));
         sections.add(section("정렬", "최신", "/manhwa"));
-        sections.add(section("장르별", "순정", "/manhwa?g=%EC%88%9C%EC%A0%95"));
-        sections.add(section("장르별", "액션", "/manhwa?g=%EC%95%A1%EC%85%98"));
-        sections.add(section("장르별", "SF", "/manhwa?g=SF"));
-        sections.add(section("장르별", "개그", "/manhwa?g=%EA%B0%9C%EA%B7%B8"));
-        sections.add(section("장르별", "러브코미디", "/manhwa?g=%EB%9F%AC%EB%B8%8C%EC%BD%94%EB%AF%B8%EB%94%94"));
-        sections.add(section("장르별", "로맨스", "/manhwa?g=%EB%A1%9C%EB%A7%A8%EC%8A%A4"));
-        sections.add(section("장르별", "스포츠", "/manhwa?g=%EC%8A%A4%ED%8F%AC%EC%B8%A0"));
-        sections.add(section("장르별", "판타지", "/manhwa?g=%ED%8C%90%ED%83%80%EC%A7%80"));
-        sections.add(section("장르별", "학원", "/manhwa?g=%ED%95%99%EC%9B%90"));
+        for(String genre : NTK_COMIC_GENRES)
+            sections.add(section("장르별", genre, ntkComicGenrePath(genre)));
         return sections.toArray(new String[0][]);
     }
 
@@ -411,10 +403,14 @@ public class MainPageWebtoon {
                 filter("연재 요일별", "토", "/ing?day=%ED%86%A0"),
                 filter("연재 요일별", "일", "/ing?day=%EC%9D%BC")
         });
-        ArrayList<String> genres = new ArrayList<>();
+        ArrayList<String> ingGenres = new ArrayList<>();
         for(String genre : NTK_WEBTOON_GENRES)
-            genres.add(filter("연재 장르별", genre, ntkWebtoonGenrePath("ing", genre)));
-        groups.add(genres.toArray(new String[0]));
+            ingGenres.add(filter("연재 장르별", genre, ntkWebtoonGenrePath("ing", genre)));
+        groups.add(ingGenres.toArray(new String[0]));
+        ArrayList<String> endGenres = new ArrayList<>();
+        for(String genre : NTK_WEBTOON_GENRES)
+            endGenres.add(filter("완결 장르별", genre, ntkWebtoonGenrePath("end", genre)));
+        groups.add(endGenres.toArray(new String[0]));
         return groups.toArray(new String[0][]);
     }
 
