@@ -234,6 +234,7 @@ public class Manga {
             }
             tries++;
         }
+        attachEpisodeSeriesMetadata();
         return LOAD_OK;
     }
 
@@ -421,6 +422,10 @@ public class Manga {
 
     public void setEps(List<Manga> eps) {
         this.eps = eps;
+        attachEpisodeSeriesMetadata();
+    }
+
+    private void attachEpisodeSeriesMetadata() {
         if(eps == null)
             return;
         int currentTitleId = resolvedTitleId(this);
@@ -499,10 +504,12 @@ public class Manga {
         this.title = title;
         if(title != null)
             titleId = title.getId();
+        attachEpisodeSeriesMetadata();
     }
 
     public void setTitleId(int titleId) {
         this.titleId = titleId;
+        attachEpisodeSeriesMetadata();
     }
 
     @Override
