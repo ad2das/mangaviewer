@@ -34,6 +34,8 @@ public final class AppUpdateManager {
     private static final String KEY_VERSION = "latestVersion";
     private static final String KEY_LINK = "latestLink";
     private static final String APK_MIME = "application/vnd.android.package-archive";
+    private static final String UPDATE_APK_PREFIX = "mangaViewer-update-";
+    private static final String UPDATE_APK_SUFFIX = ".apk";
     private static final OkHttpClient UPDATE_CLIENT = new OkHttpClient.Builder()
             .connectTimeout(2, TimeUnit.SECONDS)
             .readTimeout(3, TimeUnit.SECONDS)
@@ -51,6 +53,7 @@ public final class AppUpdateManager {
         if(activity == null || downloading)
             return;
         Context appContext = activity.getApplicationContext();
+        AppDispatchers.runIo(() -> deleteStaleUpdateApks(appContext, pendingInstallApk));
         UpdateInfo cachedInfo = readCachedUpdateInfo(appContext);
         if(isUpdateAvailable(cachedInfo) && !dialogShownThisSession) {
             dialogShownThisSession = true;
@@ -207,7 +210,8 @@ public final class AppUpdateManager {
                     dir = context.getCacheDir();
                 if(!dir.exists() && !dir.mkdirs())
                     return null;
-                File apk = new File(dir, "mangaViewer-update-" + info.version + ".apk");
+                deleteStaleUpdateApks(context, null);
+                File apk = new File(dir, UPDATE_APK_PREFIX + info.version + UPDATE_APK_SUFFIX);
                 long total = response.body().contentLength();
                 try(InputStream input = response.body().byteStream();
                     FileOutputStream output = new FileOutputStream(apk)) {
@@ -233,6 +237,38 @@ public final class AppUpdateManager {
         } catch (Exception e) {
             CrashReporter.record(e);
             return null;
+        }
+    }
+
+    private static void deleteStaleUpdateApks(Context context, File keep) {
+        if(context == null)
+            return;
+        deleteStaleUpdateApksInDir(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), keep);
+        deleteStaleUpdateApksInDir(context.getCacheDir(), keep);
+    }
+
+    private static void deleteStaleUpdateApksInDir(File dir, File keep) {
+        if(dir == null || !dir.exists() || !dir.isDirectory())
+            return;
+        File[] files = dir.listFiles((parent, name) ->
+                name != null && name.startsWith(UPDATE_APK_PREFIX) && name.endsWith(UPDATE_APK_SUFFIX));
+        if(files == null)
+            return;
+        String keepPath = null;
+        try {
+            keepPath = keep == null ? null : keep.getCanonicalPath();
+        } catch (Exception e) {
+            CrashReporter.record(e);
+        }
+        for(File file : files) {
+            try {
+                if(keepPath != null && keepPath.equals(file.getCanonicalPath()))
+                    continue;
+                if(file.exists() && !file.delete())
+                    CrashReporter.record(new IllegalStateException("Failed to delete update APK: " + file.getAbsolutePath()));
+            } catch (Exception e) {
+                CrashReporter.record(e);
+            }
         }
     }
 
