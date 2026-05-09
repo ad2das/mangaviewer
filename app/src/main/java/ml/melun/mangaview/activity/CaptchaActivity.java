@@ -1,8 +1,6 @@
 package ml.melun.mangaview.activity;
 
 import android.content.Context;
-import android.content.ClipData;
-import android.content.ClipboardManager;
 import android.content.Intent;
 
 import androidx.annotation.Nullable;
@@ -12,11 +10,11 @@ import androidx.constraintlayout.widget.ConstraintLayout;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.View;
 import android.webkit.CookieManager;
-import android.webkit.CookieSyncManager;
-import android.webkit.ConsoleMessage;
+import android.webkit.JsResult;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -28,7 +26,7 @@ import android.widget.TextView;
 
 import java.net.MalformedURLException;
 import java.net.URL;
-import java.util.Locale;
+import java.util.Random;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
@@ -43,32 +41,29 @@ public class CaptchaActivity extends AppCompatActivity {
     public static final int RESULT_CAPTCHA = 15;
     public static final int REQUEST_CAPTCHA = 32;
     String domain;
-    String purl;
-    String rootUrl;
-    String currentUrl;
-    CookieManager cookiem;
-    boolean requireCloudflareClearance;
-
-    public static final String TURNSTILE_AUTO_JS = "javascript:(function autoSolve(){" +
-            "function clickTurnstile(){" +
-            "var iframes=document.querySelectorAll('iframe[src*=\"challenges.cloudflare.com\"]');" +
-            "for(var i=0;i<iframes.length;i++){" +
-            "var iframe=iframes[i];try{" +
-            "var rect=iframe.getBoundingClientRect();" +
-            "if(rect.width>0&&rect.height>0){" +
-            "var evt=new MouseEvent('click',{bubbles:true,cancelable:true,view:window});" +
-            "iframe.dispatchEvent(evt);" +
-            "}" +
-            "}catch(e){}" +
-            "}" +
-            "var widgets=document.querySelectorAll('.cf-turnstile,.turnstile-widget,[data-cf-turnstile]');" +
-            "for(var j=0;j<widgets.length;j++){try{widgets[j].click();}catch(e){}}" +
-            "}" +
-            "clickTurnstile();" +
-            "setTimeout(clickTurnstile,500);" +
-            "setTimeout(clickTurnstile,1200);" +
-            "setTimeout(clickTurnstile,2500);" +
-            "})()";
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private static final long TURNSTILE_CHECK_DELAY_MS = 500;
+    private static final long TURNSTILE_CHECK_INTERVAL_MS = 500;
+    private static final long TURNSTILE_MAX_WAIT_MS = 30000;
+    public static final String TURNSTILE_AUTO_JS = "(function() {" +
+            "   var mc = document.querySelector('.main-content');" +
+            "   if(!mc) return JSON.stringify({type:'none'});" +
+            "   for(var i=0; i<mc.children.length; i++) {" +
+            "       var wrapper = mc.children[i];" +
+            "       var host = wrapper.querySelector('div > div');" +
+            "       if(host) {" +
+            "           var rect = host.getBoundingClientRect();" +
+            "           if(rect.width > 50 && rect.height > 50) {" +
+            "               var x = rect.left + rect.width * 0.22;" +
+            "               var y = rect.top + rect.height/2;" +
+            "               return JSON.stringify({type:'iframe', x:x, y:y, w:rect.width*0.45, h:rect.height});" +
+            "           }" +
+            "       }" +
+            "   }" +
+            "   return JSON.stringify({type:'none'});" +
+            "})();";
+    private long pageFinishedTime = 0;
+    private boolean isFinishing = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -77,21 +72,17 @@ public class CaptchaActivity extends AppCompatActivity {
         Context context = this;
         setContentView(R.layout.activity_captcha);
 
-        purl = p.getUrl();
-        rootUrl = p.getWebtoonUrl();
-        requireCloudflareClearance = (rootUrl != null && rootUrl.toLowerCase(java.util.Locale.ROOT).contains("://ntk"))
-                || (purl != null && purl.toLowerCase(java.util.Locale.ROOT).contains("://ntk"));
+        String purl = p.getUrl();
 
         Intent intent = getIntent();
         String path = intent.getStringExtra("url");
         String url;
         if(path == null)
-            url = getCaptchaStartUrl(purl, rootUrl);
+            url = purl;
         else if(path.startsWith("http://") || path.startsWith("https://"))
             url = path;
         else
-            url = getCaptchaStartUrl(purl, rootUrl) + path;
-        currentUrl = url;
+            url = purl + path;
 
         TextView infoText = this.findViewById(R.id.infoText);
         try {
@@ -106,31 +97,44 @@ public class CaptchaActivity extends AppCompatActivity {
         }
 
         webView = this.findViewById(R.id.captchaWebView);
+        webView.setWebContentsDebuggingEnabled(true);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
-        settings.setJavaScriptCanOpenWindowsAutomatically(true);
         settings.setDomStorageEnabled(true);
-        settings.setDatabaseEnabled(true);
-        settings.setLoadWithOverviewMode(true);
-        settings.setUseWideViewPort(true);
-        settings.setAllowFileAccess(true);
-        settings.setAllowContentAccess(true);
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        settings.setLoadsImagesAutomatically(true);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
-        settings.setMediaPlaybackRequiresUserGesture(false);
+        settings.setJavaScriptCanOpenWindowsAutomatically(true);
         settings.setSupportMultipleWindows(true);
-        if(android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP)
-            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-        String webViewUserAgent = settings.getUserAgentString();
-        settings.setUserAgentString(webViewUserAgent);
-        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-        getHttpClient().setUserAgent(webViewUserAgent);
-        CookieSyncManager.createInstance(this);
-        cookiem = CookieManager.getInstance();
+
+        // Use real Chrome Mobile UA, remove "wv" indicator
+        String realChromeUA = getHttpClient().agent;
+        if(realChromeUA == null || realChromeUA.length() == 0) {
+            realChromeUA = "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36";
+        }
+        settings.setUserAgentString(realChromeUA);
+
+        CookieManager cookiem = CookieManager.getInstance();
         cookiem.setAcceptCookie(true);
         cookiem.setAcceptThirdPartyCookies(webView, true);
-        getHttpClient().syncCookiesFromWebView(purl, true);
-        getHttpClient().syncCookiesFromWebView(rootUrl, true);
+        cookiem.removeAllCookies(null);
+
+        // WebChromeClient for JS console and alerts
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onConsoleMessage(android.webkit.ConsoleMessage consoleMessage) {
+                android.util.Log.d("CaptchaActivity", "JS Console [" + consoleMessage.sourceId() + ":" + consoleMessage.lineNumber() + "] " + consoleMessage.message());
+                return true;
+            }
+
+            @Override
+            public boolean onJsAlert(WebView view, String url, String message, JsResult result) {
+                android.util.Log.d("CaptchaActivity", "JS Alert: " + message);
+                result.confirm();
+                return true;
+            }
+        });
 
         WebViewClient client = new WebViewClient() {
 
@@ -145,58 +149,34 @@ public class CaptchaActivity extends AppCompatActivity {
             @Nullable
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                String userAgent = request.getRequestHeaders().get("User-Agent");
-                if(userAgent != null && userAgent.length() > 0)
-                    getHttpClient().setUserAgent(userAgent);
+                getHttpClient().agent = request.getRequestHeaders().get("User-Agent");
                 return super.shouldInterceptRequest(view, request);
             }
 
             @Override
             public void onLoadResource(WebView view, String url) {
-                if(readCookiesAndFinish(true))
+                if(isFinishing) return;
+                if(readCookiesAndFinish(cookiem, purl))
                     return;
 
-                if(url.contains("bootstrap") || url.contains("jquery") || url.contains("cloudflare") || url.contains("turnstile")){
-                    try {
-                        if(syncCookies(cookiem, requireCloudflareClearance, purl, rootUrl, currentUrl)) {
-                            Intent resultIntent = new Intent();
-                            setResult(RESULT_CAPTCHA, resultIntent);
-                            finish();
-                            return;
-                        }
-                    }catch (Exception e){
-                        Utils.showErrorPopup(context, "인증 도중 오류가 발생했습니다. 네트워크 연결 상태를 확인해주세요.", e, true);
-                    }
-                }
-                view.loadUrl(TURNSTILE_AUTO_JS);
                 super.onLoadResource(view, url);
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
-                currentUrl = url;
-                view.loadUrl(TURNSTILE_AUTO_JS);
-                if(readCookiesAndFinish(true))
+                if(isFinishing) return;
+                if(readCookiesAndFinish(cookiem, purl))
                     return;
+
+                pageFinishedTime = System.currentTimeMillis();
+                // Start Turnstile auto-click routine
+                startTurnstileAutoClick();
+
                 super.onPageFinished(view, url);
             }
         };
 
         webView.setWebViewClient(client);
-        webView.setWebChromeClient(new WebChromeClient() {
-            @Override
-            public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
-                if(consoleMessage != null)
-                    android.util.Log.d("MangaViewCaptcha", consoleMessage.message());
-                return super.onConsoleMessage(consoleMessage);
-            }
-        });
-        findViewById(R.id.captchaReload).setOnClickListener(v -> webView.reload());
-        findViewById(R.id.captchaCheckCookie).setOnClickListener(v -> {
-            readCookiesAndFinish(false);
-        });
-        findViewById(R.id.captchaPasteCookie).setOnClickListener(v -> importCookieFromClipboard(context));
-        findViewById(R.id.captchaClose).setOnClickListener(v -> finish());
 
 //        webView.setOnTouchListener((view, motionEvent) -> true);
 
@@ -206,44 +186,115 @@ public class CaptchaActivity extends AppCompatActivity {
 
     }
 
-    private String getCaptchaStartUrl(String purl, String rootUrl) {
-        if(rootUrl != null && rootUrl.toLowerCase(java.util.Locale.ROOT).contains("://ntk"))
-            return rootUrl;
-        return purl;
-    }
+    private void startTurnstileAutoClick() {
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if(isFinishing || isDestroyed()) return;
 
-    private boolean readCookiesAndFinish(boolean silent){
-        try {
-            boolean ready = syncCookies(cookiem, requireCloudflareClearance, purl, rootUrl, currentUrl);
-            if(!ready) {
-                if(!silent)
-                    showPopup(this, "인증 대기", requireCloudflareClearance
-                            ? "아직 Cloudflare 인증 쿠키가 없습니다. 인증 화면이 완료된 뒤 다시 확인해 주세요."
-                            : "아직 저장된 인증 쿠키가 없습니다. 페이지 로드가 끝난 뒤 다시 확인해 주세요.");
-                return false;
+                // Check if we've been waiting too long
+                if(System.currentTimeMillis() - pageFinishedTime > TURNSTILE_MAX_WAIT_MS) {
+                    android.util.Log.w("CaptchaActivity", "Turnstile max wait exceeded");
+                    return;
+                }
+
+                // Check cookies first
+                if(readCookiesAndFinish(CookieManager.getInstance(), p.getUrl())) {
+                    return;
+                }
+
+                attemptTurnstileClick();
+
+                // Schedule next check
+                handler.postDelayed(this, TURNSTILE_CHECK_INTERVAL_MS);
             }
-
-            Intent resultIntent = new Intent();
-            setResult(RESULT_CAPTCHA, resultIntent);
-            finish();
-            return true;
-        }catch (Exception e){
-            ml.melun.mangaview.report.CrashReporter.record(e);
-        }
-        return false;
+        }, TURNSTILE_CHECK_DELAY_MS);
     }
 
-    private boolean syncCookies(CookieManager cookiem, boolean requireClearance, String... urls) {
-        boolean hasClearance = false;
-        boolean hasAnyCookie = false;
-        for(String url : urls) {
-            if(url == null || url.length() == 0)
-                continue;
-            String cookieStr = cookiem.getCookie(url);
+    private void attemptTurnstileClick() {
+        if(webView == null) return;
+
+        webView.evaluateJavascript(TURNSTILE_AUTO_JS, result -> {
+            android.util.Log.d("CaptchaActivity", "Turnstile check result: " + result);
+            if(result == null || result.equals("null")) return;
+
+            try {
+                String clean = result.replaceAll("^\"|\"$", "").replace("\\\"", "\"");
+                org.json.JSONObject obj = new org.json.JSONObject(clean);
+                String type = obj.optString("type");
+
+                if("iframe".equals(type)) {
+                    final float x = (float) obj.getDouble("x");
+                    final float y = (float) obj.getDouble("y");
+                    final float w = (float) obj.optDouble("w", 60);
+                    final float h = (float) obj.optDouble("h", 60);
+                    android.util.Log.d("CaptchaActivity", "Turnstile iframe found at: " + x + "," + y + " size:" + w + "x" + h);
+
+                    webView.post(() -> simulateTouch(webView, x, y, w, h));
+                }
+            } catch(Exception e) {
+                android.util.Log.e("CaptchaActivity", "Failed to parse turnstile result", e);
+            }
+        });
+    }
+
+    private void simulateTouch(View view, float centerX, float centerY, float width, float height) {
+        if(view == null) return;
+
+        Random random = new Random();
+        float density = getResources().getDisplayMetrics().density;
+
+        // Convert CSS pixels to physical pixels and apply WebView offset
+        int[] location = new int[2];
+        view.getLocationOnScreen(location);
+
+        float baseX = location[0] + (centerX * density);
+        float baseY = location[1] + (centerY * density);
+        float physW = width * density;
+        float physH = height * density;
+
+        // Random target within element (not exact center)
+        float targetX = baseX + (random.nextFloat() - 0.5f) * physW * 0.5f;
+        float targetY = baseY + (random.nextFloat() - 0.5f) * physH * 0.5f;
+
+        // Clamp to view bounds
+        int vw = view.getWidth();
+        int vh = view.getHeight();
+        targetX = Math.max(5, Math.min(vw - 5, targetX));
+        targetY = Math.max(5, Math.min(vh - 5, targetY));
+
+        long downTime = SystemClock.uptimeMillis();
+        long eventTime = downTime;
+
+        android.util.Log.d("CaptchaActivity", "Simulating touch at local: " + targetX + "," + targetY);
+
+        MotionEvent downEvent = MotionEvent.obtain(downTime, eventTime, MotionEvent.ACTION_DOWN, targetX, targetY, 0);
+        downEvent.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+        view.dispatchTouchEvent(downEvent);
+        downEvent.recycle();
+
+        // Random hold time (80-200ms)
+        long holdTime = 80 + random.nextInt(121);
+        SystemClock.sleep(holdTime);
+        eventTime += holdTime;
+
+        MotionEvent upEvent = MotionEvent.obtain(downTime, eventTime, MotionEvent.ACTION_UP, targetX, targetY, 0);
+        upEvent.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+        view.dispatchTouchEvent(upEvent);
+        upEvent.recycle();
+
+        android.util.Log.d("CaptchaActivity", "Touch completed at: " + targetX + "," + targetY);
+    }
+
+    private boolean readCookiesAndFinish(CookieManager cookiem, String purl){
+        if(isFinishing) return false;
+        try {
+            String cookieStr = cookiem.getCookie(purl);
             if(cookieStr == null || cookieStr.length() == 0)
-                continue;
-            hasAnyCookie = true;
-            for(String s : cookieStr.split("; ")) {
+                return false;
+
+            boolean hasClearance = false;
+            for (String s : cookieStr.split("; ")) {
                 int eq = s.indexOf("=");
                 if(eq <= 0)
                     continue;
@@ -253,88 +304,39 @@ public class CaptchaActivity extends AppCompatActivity {
                 if("cf_clearance".equals(k))
                     hasClearance = true;
             }
-        }
-        CookieManager.getInstance().flush();
-        if(hasClearance) {
-            getHttpClient().syncCookiesFromWebView(purl, true);
-            getHttpClient().syncCookiesFromWebView(rootUrl, true);
-            if(currentUrl != null)
-                getHttpClient().syncCookiesFromWebView(currentUrl, true);
-            // Save WebView UA for perfect sync
-            String webViewUA = webView.getSettings().getUserAgentString();
-            if(webViewUA != null && webViewUA.length() > 0) {
-                getHttpClient().setUserAgent(webViewUA);
-            }
-        }
-        return requireClearance ? hasClearance : hasAnyCookie;
-    }
 
-    private void importCookieFromClipboard(Context context) {
-        try {
-            ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-            if(clipboard == null || !clipboard.hasPrimaryClip()) {
-                showPopup(context, "쿠키 없음", "클립보드에 cf_clearance 쿠키를 복사한 뒤 다시 눌러 주세요.");
-                return;
+            if(hasClearance) {
+                isFinishing = true;
+                handler.removeCallbacksAndMessages(null);
+                Intent resultIntent = new Intent();
+                setResult(RESULT_CAPTCHA, resultIntent);
+                finish();
+                return true;
             }
-            ClipData data = clipboard.getPrimaryClip();
-            if(data == null || data.getItemCount() == 0) {
-                showPopup(context, "쿠키 없음", "클립보드에 cf_clearance 쿠키를 복사한 뒤 다시 눌러 주세요.");
-                return;
-            }
-            CharSequence text = data.getItemAt(0).coerceToText(context);
-            if(text == null || text.toString().trim().length() == 0) {
-                showPopup(context, "쿠키 없음", "클립보드에 cf_clearance 쿠키를 복사한 뒤 다시 눌러 주세요.");
-                return;
-            }
-            if(!saveCookieString(text.toString())) {
-                showPopup(context, "쿠키 인식 실패", "cf_clearance=... 형식의 쿠키를 복사한 뒤 다시 시도해 주세요.");
-                return;
-            }
-            Intent resultIntent = new Intent();
-            setResult(RESULT_CAPTCHA, resultIntent);
-            finish();
-        } catch (Exception e) {
-            Utils.showErrorPopup(context, "쿠키를 가져오지 못했습니다.", e, true);
+        }catch (Exception e){
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
-    }
-
-    private boolean saveCookieString(String raw) {
-        boolean hasClearance = false;
-        String normalized = raw.replace("\n", ";").replace("\r", ";");
-        if(normalized.trim().startsWith("cf_clearance="))
-            normalized = normalized.trim();
-        for(String part : normalized.split(";")) {
-            String cookie = part.trim();
-            int eq = cookie.indexOf("=");
-            if(eq <= 0)
-                continue;
-            String key = cookie.substring(0, eq).trim();
-            String value = cookie.substring(eq + 1).trim();
-            String lower = key.toLowerCase(Locale.ROOT);
-            if(value.length() == 0)
-                continue;
-            if("cf_clearance".equals(lower))
-                hasClearance = true;
-            if("cf_clearance".equals(lower) || lower.startsWith("cf_") || "__cf_bm".equals(lower) || lower.contains("session"))
-                getHttpClient().setCookie(key, value);
-        }
-        return hasClearance;
+        return false;
     }
 
     @Override
     protected void onDestroy() {
+        isFinishing = true;
+        handler.removeCallbacksAndMessages(null);
         super.onDestroy();
         //destroy webview
         ((ConstraintLayout) findViewById(R.id.captchaContainer)).removeAllViews();
-        if(webView == null)
-            return;
-        webView.clearHistory();
-        webView.clearCache(true);
-        webView.destroy();
+        if(webView != null) {
+            webView.clearHistory();
+            webView.clearCache(true);
+            webView.destroy();
+        }
     }
 
     @Override
     public void finish() {
+        isFinishing = true;
+        handler.removeCallbacksAndMessages(null);
         super.finish();
         this.overridePendingTransition(R.anim.fade_in, R.anim.fade_out);
     }

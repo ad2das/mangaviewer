@@ -432,7 +432,7 @@ public class MainActivity extends AppCompatActivity
             @Override
             public void onPageFinished(android.webkit.WebView view, String url) {
                 checkAndFinish(bgWebView, root, handler, timeout);
-                view.loadUrl(CaptchaActivity.TURNSTILE_AUTO_JS);
+                view.loadUrl("javascript:" + CaptchaActivity.TURNSTILE_AUTO_JS);
             }
         });
         bgWebView.loadUrl(rootUrl);
