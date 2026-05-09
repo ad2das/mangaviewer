@@ -111,6 +111,29 @@ public final class AppUpdateManager {
         });
     }
 
+    public static void checkForUpdateNow(Activity activity) {
+        if(activity == null || downloading)
+            return;
+        Context appContext = activity.getApplicationContext();
+        Utils.safeToast(activity, "업데이트를 확인하는 중입니다.", Toast.LENGTH_SHORT);
+        AppDispatchers.runIo(() -> {
+            UpdateInfo info = fetchUpdateInfo(appContext);
+            if(info != null)
+                cacheUpdateInfo(appContext, info);
+            if(info != null && isUpdateAvailable(info)) {
+                warmDownloadPlan(appContext, info);
+                AppDispatchers.runOnMain(() -> showUpdateDialog(activity, info));
+                return;
+            }
+            AppDispatchers.runOnMain(() -> {
+                if(info == null)
+                    Utils.safeToast(activity, "업데이트 확인에 실패했습니다.", Toast.LENGTH_LONG);
+                else
+                    Utils.safeToast(activity, "현재 최신 버전입니다.", Toast.LENGTH_SHORT);
+            });
+        });
+    }
+
     public static void resumePendingInstall(Activity activity) {
         if(activity == null || pendingInstallApk == null || !pendingInstallApk.exists())
             return;

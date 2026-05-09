@@ -108,6 +108,7 @@ public class MainActivity extends AppCompatActivity
     TextView accountSheetPrimary;
     TextView accountSheetSecondary;
     TextView accountSheetSettings;
+    TextView accountSheetUpdate;
     TextView accountSheetHint;
     StartupViewModel startupViewModel;
     UrlUpdateCallback pendingUrlUpdateCallback;
@@ -473,6 +474,7 @@ public class MainActivity extends AppCompatActivity
         accountSheetPrimary = view.findViewById(R.id.account_sheet_primary);
         accountSheetSecondary = view.findViewById(R.id.account_sheet_secondary);
         accountSheetSettings = view.findViewById(R.id.account_sheet_settings);
+        accountSheetUpdate = view.findViewById(R.id.account_sheet_update);
         accountSheetHint = view.findViewById(R.id.account_sheet_hint);
         accountSheet.setContentView(view);
         accountSheet.setOnDismissListener(dialog -> clearAccountSheetRefs());
@@ -522,13 +524,19 @@ public class MainActivity extends AppCompatActivity
     private void updateAccountSheet(boolean syncing) {
         if(accountSheetName == null || accountSheetEmail == null || accountSheetStatus == null
                 || accountSheetPrimary == null || accountSheetSecondary == null
-                || accountSheetSettings == null || accountSheetHint == null)
+                || accountSheetSettings == null || accountSheetUpdate == null || accountSheetHint == null)
             return;
         accountSheetSettings.setText(R.string.account_open_settings);
         accountSheetSettings.setOnClickListener(v -> {
             if(accountSheet != null)
                 accountSheet.dismiss();
             Utils.safeStartActivity(context, new Intent(context, SettingsActivity.class));
+        });
+        accountSheetUpdate.setText(R.string.account_check_update);
+        accountSheetUpdate.setOnClickListener(v -> {
+            if(accountSheet != null)
+                accountSheet.dismiss();
+            AppUpdateManager.checkForUpdateNow(this);
         });
         FirebaseAccountManager accountManager = MainApplication.getFirebaseAccountManager();
         FirebaseUser user = accountManager == null ? null : accountManager.getUser();
@@ -565,6 +573,7 @@ public class MainActivity extends AppCompatActivity
         accountSheetPrimary = null;
         accountSheetSecondary = null;
         accountSheetSettings = null;
+        accountSheetUpdate = null;
         accountSheetHint = null;
     }
 
