@@ -123,6 +123,36 @@ public class MainPageWebtoonTest {
     }
 
     @Test
+    public void ntkWebtoonGenreFiltersExposeFullGenreList() {
+        String[] genres = MainPageWebtoon.NTK_WEBTOON_FILTER_GROUPS[2];
+
+        assertEquals(16, genres.length);
+        assertTrue(containsFilter(genres, "성인", "/ing?tag=%EC%84%B1%EC%9D%B8"));
+        assertTrue(containsFilter(genres, "BL", "/ing?tag=BL"));
+        assertTrue(containsFilter(genres, "스토리", "/ing?tag=%EC%8A%A4%ED%86%A0%EB%A6%AC"));
+    }
+
+    @Test
+    public void ntkComicGenreFiltersExposeFullGenreList() {
+        String[] genres = MainPageWebtoon.NTK_COMIC_FILTER_GROUPS[1];
+
+        assertEquals(34, genres.length);
+        assertTrue(containsFilter(genres, "17", "/manhwa?g=17"));
+        assertTrue(containsFilter(genres, "TS", "/manhwa?g=TS"));
+        assertTrue(containsFilter(genres, "이세계", "/manhwa?g=%EC%9D%B4%EC%84%B8%EA%B3%84"));
+        assertTrue(containsFilter(genres, "애니화", "/manhwa?g=%EC%95%A0%EB%8B%88%ED%99%94"));
+    }
+
+    @Test
+    public void normalizeNtkPathPreservesNtkSortAndFilterParams() {
+        assertEquals("/ing?sort=hot", MainPageWebtoon.normalizeNtkPathForTest("/ing?sort=hot"));
+        assertEquals("/end?sort=hot", MainPageWebtoon.normalizeNtkPathForTest("/end?sort=hot"));
+        assertEquals("/manhwa?sort=hot", MainPageWebtoon.normalizeNtkPathForTest("/manhwa?sort=hot"));
+        assertEquals("/ing?tag=%EB%A1%9C%EB%A7%A8%EC%8A%A4", MainPageWebtoon.normalizeNtkPathForTest("/ing?tag=%EB%A1%9C%EB%A7%A8%EC%8A%A4"));
+        assertEquals("/manhwa?g=%EC%9D%B4%EC%84%B8%EA%B3%84", MainPageWebtoon.normalizeNtkPathForTest("/manhwa?g=%EC%9D%B4%EC%84%B8%EA%B3%84"));
+    }
+
+    @Test
     public void classificationDbGenreLookupSupportsPaging() {
         MainPageWebtoon.clearClassificationDbForTest();
         try {
@@ -181,5 +211,13 @@ public class MainPageWebtoonTest {
                 + "<a href=\"" + href + "\"><h6 class=\"searchDetailTitle\">" + title + "</h6></a>"
                 + "<div class=\"searchPng\" style=\"background-image:url('/thumb.jpg')\"></div>"
                 + "</article>";
+    }
+
+    private boolean containsFilter(String[] filters, String label, String path) {
+        String expected = "|" + label + "|" + path;
+        for(String filter : filters)
+            if(filter.endsWith(expected))
+                return true;
+        return false;
     }
 }
