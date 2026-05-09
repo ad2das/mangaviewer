@@ -30,6 +30,7 @@ public class Search {
     private static final int MAX_TIMEOUT_RETRIES = 2;
     private static final int CLASSIFICATION_DB_PAGE_SIZE = 120;
     private static final int NTK_CATEGORY_PAGE_SIZE = 30;
+    private static final int NTK_KEYWORD_PAGE_SIZE = 30;
 
     int baseMode;
     private final String query;
@@ -832,8 +833,7 @@ public class Search {
         String encoded = percentEncode(query, Charset.forName("UTF-8"));
         if(targetBaseMode == base_webtoon) {
             appendNtkApiKeywordSearchResults(client, target, targetBaseMode, limit);
-            if(target.size() > 0)
-                return;
+            return;
         }
         String kind = targetBaseMode == base_comic ? "manhwa" : "webtoon";
         String[] paths = {
@@ -856,39 +856,15 @@ public class Search {
     }
 
     private void appendNtkCommonSearchResults(CustomHttpClient client, ArrayList<Title> target, int limit) throws Exception {
-        String encoded = percentEncode(query, Charset.forName("UTF-8"));
         appendNtkApiKeywordSearchResults(client, target, base_webtoon, limit);
-        if(target.size() > 0)
-            return;
-        String[] paths = {
-                "/search?q=" + encoded,
-                "/bbs/search.php?stx=" + encoded,
-                "/bbs/search.php?sfl=wr_subject&stx=" + encoded
-        };
-        Exception lastError = null;
-        for(String path : paths) {
-            try {
-                CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
-                if(page.code >= 400)
-                    throw new Exception("NTK search failed: " + page.code);
-                Document d = Jsoup.parse(page.body);
-                appendUnique(target, MainPageWebtoon.parseWolfTitles(d, base_webtoon, limit));
-                appendUnique(target, MainPageWebtoon.parseWolfTitles(d, base_comic, limit));
-                return;
-            } catch (Exception e) {
-                lastError = e;
-            }
-        }
-        if(lastError != null)
-            throw lastError;
     }
 
     private void appendNtkApiKeywordSearchResults(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {
         if(client == null || targetBaseMode != base_webtoon)
             return;
-        int pageSize = limit > 0 ? Math.max(30, Math.min(200, limit * 3)) : 120;
+        int pageSize = limit > 0 ? Math.min(NTK_KEYWORD_PAGE_SIZE, Math.max(10, limit)) : NTK_KEYWORD_PAGE_SIZE;
         String path = "/api/works?keyword=" + percentEncode(query, Charset.forName("UTF-8"))
-                + "&page=1&pageSize=" + pageSize + "&withTotal=1";
+                + "&page=1&pageSize=" + pageSize;
         CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
         if(page.code >= 400)
             return;
