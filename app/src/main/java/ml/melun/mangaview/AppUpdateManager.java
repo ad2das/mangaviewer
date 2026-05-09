@@ -20,8 +20,17 @@ import org.json.JSONObject;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import ml.melun.mangaview.report.CrashReporter;
 import ml.melun.mangaview.runtime.AppDispatchers;
@@ -39,6 +48,8 @@ public final class AppUpdateManager {
     private static final String APK_MIME = "application/vnd.android.package-archive";
     private static final String UPDATE_APK_PREFIX = "mangaViewer-update-";
     private static final String UPDATE_APK_SUFFIX = ".apk";
+    private static final int APK_PARALLEL_PARTS = 4;
+    private static final long APK_PARALLEL_MIN_BYTES = 4L * 1024L * 1024L;
     private static final OkHttpClient VERSION_CLIENT = new OkHttpClient.Builder()
             .connectTimeout(2, TimeUnit.SECONDS)
             .readTimeout(5, TimeUnit.SECONDS)
@@ -223,22 +234,133 @@ public final class AppUpdateManager {
 
     private static File downloadApk(Context context, UpdateInfo info, ProgressCallback callback) {
         try {
+            File dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+            if(dir == null)
+                dir = context.getCacheDir();
+            if(!dir.exists() && !dir.mkdirs())
+                return null;
+            deleteStaleUpdateApks(context, null);
+            File apk = new File(dir, UPDATE_APK_PREFIX + info.version + UPDATE_APK_SUFFIX);
+            DownloadPlan plan = fetchDownloadPlan(info.link);
+            if(plan != null && plan.supportsRange && plan.length >= APK_PARALLEL_MIN_BYTES) {
+                File parallelApk = downloadApkParallel(info.link, apk, plan.length, callback);
+                if(parallelApk != null)
+                    return parallelApk;
+            }
+            return downloadApkSingle(info.link, apk, plan == null ? -1 : plan.length, callback);
+        } catch (Exception e) {
+            CrashReporter.record(e);
+            return null;
+        }
+    }
+
+    private static DownloadPlan fetchDownloadPlan(String url) {
+        try {
             Request request = new Request.Builder()
-                    .url(info.link)
+                    .url(url)
+                    .head()
+                    .header("User-Agent", "MangaView")
+                    .header("Accept", APK_MIME + ", application/octet-stream, */*")
+                    .build();
+            try(Response response = APK_CLIENT.newCall(request).execute()) {
+                if(!response.isSuccessful())
+                    return null;
+                long length = parseContentLength(response);
+                String ranges = response.header("Accept-Ranges", "");
+                boolean supportsRange = ranges != null && ranges.toLowerCase(Locale.US).contains("bytes");
+                return new DownloadPlan(length, supportsRange);
+            }
+        } catch (Exception e) {
+            CrashReporter.record(e);
+            return null;
+        }
+    }
+
+    private static File downloadApkParallel(String url, File apk, long total, ProgressCallback callback) {
+        ExecutorService executor = Executors.newFixedThreadPool(APK_PARALLEL_PARTS);
+        List<Future<Boolean>> futures = new ArrayList<>();
+        File temp = new File(apk.getParentFile(), apk.getName() + ".part");
+        AtomicLong downloaded = new AtomicLong(0);
+        try {
+            if(temp.exists() && !temp.delete())
+                return null;
+            try(RandomAccessFile file = new RandomAccessFile(temp, "rw")) {
+                file.setLength(total);
+            }
+            long partSize = (total + APK_PARALLEL_PARTS - 1) / APK_PARALLEL_PARTS;
+            for(int i = 0; i < APK_PARALLEL_PARTS; i++) {
+                long start = i * partSize;
+                long end = Math.min(total - 1, start + partSize - 1);
+                if(start > end)
+                    continue;
+                futures.add(executor.submit(segmentDownloadTask(url, temp, start, end, total, downloaded, callback)));
+            }
+            for(Future<Boolean> future : futures) {
+                if(!future.get())
+                    return null;
+            }
+            if(apk.exists() && !apk.delete())
+                return null;
+            if(!temp.renameTo(apk))
+                return null;
+            callback.onProgress(100);
+            return apk.exists() && apk.length() == total ? apk : null;
+        } catch (Exception e) {
+            CrashReporter.record(e);
+            return null;
+        } finally {
+            executor.shutdownNow();
+            if(temp.exists() && (!apk.exists() || apk.length() != total)) {
+                //noinspection ResultOfMethodCallIgnored
+                temp.delete();
+            }
+        }
+    }
+
+    private static Callable<Boolean> segmentDownloadTask(String url, File temp, long start, long end, long total,
+                                                         AtomicLong downloaded, ProgressCallback callback) {
+        return () -> {
+            Request request = new Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "MangaView")
+                    .header("Accept", APK_MIME + ", application/octet-stream, */*")
+                    .header("Range", "bytes=" + start + "-" + end)
+                    .build();
+            try(Response response = APK_CLIENT.newCall(request).execute()) {
+                if(response.code() != 206 || response.body() == null)
+                    return false;
+                try(InputStream input = response.body().byteStream();
+                    RandomAccessFile output = new RandomAccessFile(temp, "rw")) {
+                    output.seek(start);
+                    byte[] buffer = new byte[256 * 1024];
+                    int read;
+                    int lastProgress = -1;
+                    while((read = input.read(buffer)) != -1) {
+                        output.write(buffer, 0, read);
+                        long done = downloaded.addAndGet(read);
+                        int progress = (int) Math.min(100, (done * 100) / total);
+                        if(progress != lastProgress) {
+                            lastProgress = progress;
+                            callback.onProgress(progress);
+                        }
+                    }
+                }
+                return true;
+            }
+        };
+    }
+
+    private static File downloadApkSingle(String url, File apk, long expectedLength, ProgressCallback callback) {
+        try {
+            Request request = new Request.Builder()
+                    .url(url)
                     .header("User-Agent", "MangaView")
                     .header("Accept", APK_MIME + ", application/octet-stream, */*")
                     .build();
             try(Response response = APK_CLIENT.newCall(request).execute()) {
                 if(!response.isSuccessful() || response.body() == null)
                     return null;
-                File dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
-                if(dir == null)
-                    dir = context.getCacheDir();
-                if(!dir.exists() && !dir.mkdirs())
-                    return null;
-                deleteStaleUpdateApks(context, null);
-                File apk = new File(dir, UPDATE_APK_PREFIX + info.version + UPDATE_APK_SUFFIX);
-                long total = response.body().contentLength();
+                long total = expectedLength > 0 ? expectedLength : response.body().contentLength();
                 try(InputStream input = response.body().byteStream();
                     FileOutputStream output = new FileOutputStream(apk)) {
                     byte[] buffer = new byte[256 * 1024];
@@ -263,6 +385,17 @@ public final class AppUpdateManager {
         } catch (Exception e) {
             CrashReporter.record(e);
             return null;
+        }
+    }
+
+    private static long parseContentLength(Response response) {
+        String value = response.header("Content-Length");
+        if(value == null || value.length() == 0)
+            return -1;
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException e) {
+            return -1;
         }
     }
 
@@ -334,6 +467,16 @@ public final class AppUpdateManager {
 
     private interface ProgressCallback {
         void onProgress(int progress);
+    }
+
+    private static final class DownloadPlan {
+        final long length;
+        final boolean supportsRange;
+
+        DownloadPlan(long length, boolean supportsRange) {
+            this.length = length;
+            this.supportsRange = supportsRange;
+        }
     }
 
     private static final class UpdateInfo {
