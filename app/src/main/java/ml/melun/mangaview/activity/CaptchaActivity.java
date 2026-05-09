@@ -260,6 +260,11 @@ public class CaptchaActivity extends AppCompatActivity {
             getHttpClient().syncCookiesFromWebView(rootUrl, true);
             if(currentUrl != null)
                 getHttpClient().syncCookiesFromWebView(currentUrl, true);
+            // Save WebView UA for perfect sync
+            String webViewUA = webView.getSettings().getUserAgentString();
+            if(webViewUA != null && webViewUA.length() > 0) {
+                getHttpClient().setUserAgent(webViewUA);
+            }
         }
         return requireClearance ? hasClearance : hasAnyCookie;
     }

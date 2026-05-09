@@ -47,7 +47,7 @@ public class CustomHttpClient {
     private static final long WFWF_DOMAIN_FORCE_RETRY_INTERVAL_MS = 60 * 1000L;
     private static final long WFWF_DOMAIN_WAIT_TIMEOUT_MS = 6 * 1000L;
     private static final long COOKIE_SYNC_INTERVAL_MS = 30 * 1000L;
-    private static final int PAGE_CACHE_MAX_ENTRIES = 80;
+    private static final int PAGE_CACHE_MAX_ENTRIES = 200;
     private static final int MAX_HTTP_REQUESTS = 8;
     private static final int MAX_HTTP_REQUESTS_PER_HOST = 4;
     public OkHttpClient client;
@@ -277,7 +277,7 @@ public class CustomHttpClient {
     }
 
     public Response get(String url, Map<String, String> headers){
-//        System.out.println(url);
+        applyJitterIfNeeded(url);
         Response response;
         Call call = null;
         RequestGroup requestGroup = currentRequestGroup.get();
@@ -323,6 +323,20 @@ public class CustomHttpClient {
             return false;
         String lower = url.toLowerCase(Locale.ROOT);
         return lower.contains("wfwf") || lower.contains("wolf") || lower.contains("ntk");
+    }
+
+    private void applyJitterIfNeeded(String url) {
+        if(url == null)
+            return;
+        String lower = url.toLowerCase(Locale.ROOT);
+        boolean isImage = lower.matches(".*\\.(jpg|jpeg|png|gif|webp|css|js|ico)(\\?.*)?$") || lower.contains("imgcloud") || lower.contains("stm.com") || lower.contains("cloud.com");
+        if(isImage)
+            return;
+        try {
+            Thread.sleep(100 + (int)(Math.random() * 300));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     public static String readBody(Response response) throws Exception {
@@ -439,6 +453,8 @@ public class CustomHttpClient {
         String normalized = normalizePath(url);
         String cacheKey = getBaseUrl(normalized) + normalized;
         long now = System.currentTimeMillis();
+        if(isNtk())
+            ttlMillis *= 5;
         PageLoadState activeLoad = null;
         CachedPage staleCached = null;
         synchronized (this) {
@@ -466,6 +482,26 @@ public class CustomHttpClient {
             String body = readBody(response);
             if(isCloudflareChallenge(code, body)) {
                 clearCloudflareCookies();
+                // NTK: retry once after clearing cookies
+                if(isNtk()) {
+                    try { Thread.sleep(1000 + (int)(Math.random() * 500)); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                    response = mget(normalized, true, null);
+                    if(response != null) {
+                        code = response.code();
+                        body = readBody(response);
+                        if(!isCloudflareChallenge(code, body)) {
+                            if(code >= 500 && staleCached != null)
+                                return new PageResponse(staleCached.code, staleCached.body, true);
+                            if(code >= 200 && code < 400 && body.length() > 0 && looksCacheable(body)) {
+                                cacheKey = getBaseUrl(normalized) + normalized;
+                                synchronized (this) {
+                                    pageCache.put(cacheKey, new CachedPage(code, body, now));
+                                }
+                            }
+                            return new PageResponse(code, body, false);
+                        }
+                    }
+                }
                 throw new Exception("Cloudflare challenge");
             }
             if(code >= 500 && staleCached != null)
