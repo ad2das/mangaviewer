@@ -2,6 +2,12 @@ name: Build APK Artifact
 
 on:
   workflow_dispatch:
+    inputs:
+      refresh_gradle_cache:
+        description: "Save an updated Gradle cache after the build. Leave off for the fastest APK build."
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -33,6 +39,7 @@ jobs:
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
         with:
+          cache-read-only: ${{ !inputs.refresh_gradle_cache }}
           cache-cleanup: never
 
       - name: Restore Firebase resources
@@ -66,7 +73,7 @@ jobs:
           ./gradlew --build-cache --parallel \
             -PreleasePatch="${release_patch}" \
             -PreleaseDateCode="${date_code}" \
-            assembleDebug
+            :app:assembleDebug
 
           test -f "${apk_path}"
           mkdir -p release-artifact
