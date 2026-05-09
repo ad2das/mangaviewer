@@ -1,0 +1,82 @@
+load("@rules_android//rules:rules.bzl", "android_binary")
+load("@rules_kotlin//kotlin:android.bzl", "kt_android_library")
+
+package(default_visibility = ["//visibility:public"])
+
+java_plugin(
+    name = "glide_processor",
+    processor_class = "com.bumptech.glide.annotation.compiler.GlideAnnotationProcessor",
+    deps = [
+        "@maven//:com_github_bumptech_glide_compiler",
+    ],
+)
+
+java_plugin(
+    name = "room_processor",
+    processor_class = "androidx.room.RoomProcessor",
+    deps = [
+        "@maven//:androidx_room_room_compiler",
+    ],
+)
+
+kt_android_library(
+    name = "app_lib",
+    srcs = glob([
+        "src/main/java/**/*.java",
+        "src/main/java/**/*.kt",
+    ]),
+    custom_package = "ml.melun.mangaview",
+    manifest = "src/bazel/LibraryManifest.xml",
+    plugins = [
+        ":glide_processor",
+        ":room_processor",
+    ],
+    resource_files = glob(["src/main/res/**"]),
+    deps = [
+        "@maven//:androidx_appcompat_appcompat",
+        "@maven//:androidx_cardview_cardview",
+        "@maven//:androidx_constraintlayout_constraintlayout",
+        "@maven//:androidx_core_core",
+        "@maven//:androidx_documentfile_documentfile",
+        "@maven//:androidx_drawerlayout_drawerlayout",
+        "@maven//:androidx_fragment_fragment",
+        "@maven//:androidx_legacy_legacy_support_v4",
+        "@maven//:androidx_lifecycle_lifecycle_livedata_ktx",
+        "@maven//:androidx_lifecycle_lifecycle_viewmodel_ktx",
+        "@maven//:androidx_multidex_multidex",
+        "@maven//:androidx_recyclerview_recyclerview",
+        "@maven//:androidx_room_room_runtime",
+        "@maven//:androidx_swiperefreshlayout_swiperefreshlayout",
+        "@maven//:androidx_vectordrawable_vectordrawable",
+        "@maven//:androidx_viewpager_viewpager",
+        "@maven//:androidx_work_work_runtime",
+        "@maven//:com_github_bumptech_glide_annotations",
+        "@maven//:com_github_bumptech_glide_glide",
+        "@maven//:com_github_bumptech_glide_okhttp3_integration",
+        "@maven//:com_github_bumptech_glide_recyclerview_integration",
+        "@maven//:com_github_omadahealth_swipy",
+        "@maven//:com_google_android_flexbox_flexbox",
+        "@maven//:com_google_android_gms_play_services_auth",
+        "@maven//:com_google_android_material_material",
+        "@maven//:com_google_code_gson_gson",
+        "@maven//:com_google_firebase_firebase_auth",
+        "@maven//:com_google_firebase_firebase_firestore",
+        "@maven//:com_google_guava_guava",
+        "@maven//:com_squareup_okhttp3_okhttp",
+        "@maven//:org_apache_commons_commons_text",
+        "@maven//:org_jetbrains_kotlinx_kotlinx_coroutines_android",
+        "@maven//:org_jsoup_jsoup",
+    ],
+)
+
+android_binary(
+    name = "experimental_bazel_apk",
+    assets = glob(["src/main/assets/**"]),
+    assets_dir = "src/main/assets",
+    custom_package = "ml.melun.mangaview",
+    manifest = "src/bazel/AndroidManifest.xml",
+    multidex = "native",
+    deps = [
+        ":app_lib",
+    ],
+)

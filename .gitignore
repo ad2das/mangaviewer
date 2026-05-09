@@ -31,7 +31,11 @@ release/
 app/release/
 app/google-services.json
 app/src/main/res/values/google_services.xml
+app/src/bazel/AndroidManifest.xml
+app/src/bazel/LibraryManifest.xml
 apk/*.apk
+
+bazel-*
 
 *.iml
 *.p12

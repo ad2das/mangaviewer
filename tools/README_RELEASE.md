@@ -9,6 +9,8 @@ The fast release job does not start Gradle. It downloads the already-built artif
 
 `Build APK Artifact` defaults to a read-only Gradle cache so the manual build skips the slower cache-save post step. Turn on `refresh_gradle_cache` only when dependencies or Gradle inputs changed and the cache needs to be warmed again.
 
+`Experimental Bazel APK` is a manual-only proof of concept for testing whether a Bazel Android build can beat the hosted Gradle path. It uploads `mangaviewer-bazel-debug-apk` and is not connected to the release promotion workflow.
+
 Manual local full release is still available from the repository root:
 
 ```powershell

@@ -1,0 +1,121 @@
+name: Experimental Bazel APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: experimental-bazel-apk-main
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TZ: Asia/Seoul
+      RELEASE_TAG: codex/perf-stability-max-core-rewrite-v2112260512
+      REPO_NAME: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Bazelisk
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL \
+            https://github.com/bazelbuild/bazelisk/releases/download/v1.26.0/bazelisk-linux-amd64 \
+            -o "$HOME/.local/bin/bazel"
+          chmod +x "$HOME/.local/bin/bazel"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Bazel state
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/bazel
+            ~/.cache/bazelisk
+            ~/.cache/bazel-disk
+          key: bazel-apk-${{ runner.os }}-${{ hashFiles('.bazelversion', '.bazelrc', 'MODULE.bazel', 'BUILD.bazel', 'app/BUILD.bazel', 'app/src/main/**') }}
+          restore-keys: |
+            bazel-apk-${{ runner.os }}-
+
+      - name: Restore Firebase resources
+        shell: bash
+        env:
+          GOOGLE_SERVICES_XML: ${{ secrets.GOOGLE_SERVICES_XML }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_XML" ]; then
+            mkdir -p app/src/main/res/values
+            printf '%s' "$GOOGLE_SERVICES_XML" > app/src/main/res/values/google_services.xml
+          fi
+
+      - name: Build experimental Bazel APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          patch_base="$(sed -nE 's/^[[:space:]]*def defaultReleasePatch = ([0-9]+).*$/\1/p' app/build.gradle | head -n 1)"
+          if [ -z "${patch_base}" ]; then
+            echo "Could not find defaultReleasePatch in app/build.gradle" >&2
+            exit 1
+          fi
+          release_patch=$((patch_base + ${{ github.run_number }}))
+          date_code="$(date +%y%m%d)"
+          version_code=$((2112000000 + 10#$date_code + release_patch))
+          version_name="4.6-${version_code}"
+          apk_name="mangaViewer_${version_code}-bazel-debug.apk"
+          download_url="https://github.com/${REPO_NAME}/releases/download/${RELEASE_TAG}/${apk_name}"
+
+          python3 tools/prepare_bazel_manifest.py \
+            --version-code "${version_code}" \
+            --version-name "${version_name}"
+
+          start_epoch="$(date +%s)"
+          bazel build \
+            --config=experimental_apk \
+            --disk_cache="$HOME/.cache/bazel-disk" \
+            //app:experimental_bazel_apk
+          end_epoch="$(date +%s)"
+          duration_seconds=$((end_epoch - start_epoch))
+
+          test -f bazel-bin/app/experimental_bazel_apk.apk
+          mkdir -p release-artifact
+          cp bazel-bin/app/experimental_bazel_apk.apk "release-artifact/${apk_name}"
+          cat > release-artifact/release-metadata.json <<JSON
+          {
+            "versionCode": ${version_code},
+            "versionName": "${version_name}",
+            "apkName": "${apk_name}",
+            "downloadUrl": "${download_url}",
+            "releaseTag": "${RELEASE_TAG}",
+            "releasePatch": ${release_patch},
+            "releasePatchBase": ${patch_base},
+            "dateCode": "${date_code}",
+            "headSha": "${{ github.sha }}",
+            "buildRunId": "${{ github.run_id }}",
+            "workflowRunNumber": "${{ github.run_number }}",
+            "builder": "bazel",
+            "bazelBuildSeconds": ${duration_seconds}
+          }
+          JSON
+
+      - name: Upload experimental APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mangaviewer-bazel-debug-apk
+          path: release-artifact/*
+          if-no-files-found: error
+          retention-days: 7
