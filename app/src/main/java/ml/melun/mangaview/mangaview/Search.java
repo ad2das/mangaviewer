@@ -35,6 +35,7 @@ public class Search {
     int classificationDbOffset = 0;
     int classificationDbTotalCount = 0;
     boolean classificationSourceFetched = false;
+    String ntkCategoryNextPath = null;
     private ArrayList<Title> result;
     private final Set<String> seenTitleKeys = new HashSet<>();
 
@@ -352,10 +353,10 @@ public class Search {
     }
 
     private void appendWebtoonResults(CustomHttpClient client, ArrayList<Title> target, String path, int limit) throws Exception {
-        target.addAll(fetchWebtoonResults(client, path, limit));
+        target.addAll(fetchWebtoonResults(client, path, limit, 1).titles);
     }
 
-    private ArrayList<Title> fetchWebtoonResults(CustomHttpClient client, String path, int limit) throws Exception {
+    private PageTitles fetchWebtoonResults(CustomHttpClient client, String path, int limit, int currentPage) throws Exception {
         CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
         if(page.code >= 400)
             throw new Exception("Webtoon search failed: " + page.code);
@@ -365,18 +366,23 @@ public class Search {
             page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
             if(page.code >= 400)
                 throw new Exception("Webtoon search failed: " + page.code);
-            parsed = MainPageWebtoon.parseWolfTitles(Jsoup.parse(page.body), baseMode, limit);
+            d = Jsoup.parse(page.body);
+            parsed = MainPageWebtoon.parseWolfTitles(d, baseMode, limit);
         }
         String sourceSite = client != null && client.isNtk() ? "ntk" : "wfwf";
         for(Title title : parsed)
             if(title != null)
                 title.setSourceSite(sourceSite);
-        return parsed;
+        String nextPath = client != null && client.isNtk() ? findNtkNextPagePath(d, path, currentPage + 1) : null;
+        return new PageTitles(parsed, nextPath);
     }
 
     private boolean appendNextNtkCategoryPage(CustomHttpClient client, ArrayList<Title> target, String path, int limit) throws Exception {
-        String pagePath = ntkPagePath(path, page);
-        ArrayList<Title> parsed = fetchWebtoonResults(client, pagePath, limit);
+        String pagePath = ntkCategoryNextPath != null && ntkCategoryNextPath.length() > 0
+                ? ntkCategoryNextPath
+                : ntkPagePath(path, page);
+        PageTitles pageTitles = fetchWebtoonResults(client, pagePath, limit, page);
+        ArrayList<Title> parsed = pageTitles.titles;
         int added = 0;
         HashSet<String> pageKeys = new HashSet<>();
         for(Title title : parsed) {
@@ -389,8 +395,79 @@ public class Search {
             added++;
         }
         page++;
+        ntkCategoryNextPath = pageTitles.nextPath;
         classificationSourceFetched = true;
-        return parsed.size() == 0 || added == 0;
+        return parsed.size() == 0 || (ntkCategoryNextPath == null && added == 0);
+    }
+
+    private static class PageTitles {
+        final ArrayList<Title> titles;
+        final String nextPath;
+
+        PageTitles(ArrayList<Title> titles, String nextPath) {
+            this.titles = titles == null ? new ArrayList<>() : titles;
+            this.nextPath = nextPath;
+        }
+    }
+
+    private static String findNtkNextPagePath(Document document, String currentPath, int nextPage) {
+        if(document == null || nextPage <= 1)
+            return null;
+        String nextPageText = String.valueOf(nextPage);
+        for(Element link : document.select("a[href]")) {
+            String href = link.attr("href");
+            if(href == null || href.length() == 0)
+                continue;
+            String text = link.text() == null ? "" : link.text().trim();
+            String rel = link.attr("rel");
+            String className = link.className();
+            boolean looksNext = "next".equalsIgnoreCase(rel)
+                    || className.toLowerCase(Locale.ROOT).contains("next")
+                    || text.equals(nextPageText)
+                    || text.equals("다음")
+                    || text.equals("›")
+                    || text.equals("»")
+                    || text.equals(">");
+            if(!looksNext)
+                continue;
+            String resolved = resolveNtkHref(currentPath, href);
+            if(resolved == null || resolved.length() == 0)
+                continue;
+            if(resolved.equals(currentPath))
+                continue;
+            return resolved;
+        }
+        return null;
+    }
+
+    private static String resolveNtkHref(String currentPath, String href) {
+        if(href == null)
+            return null;
+        String value = href.trim();
+        if(value.length() == 0 || value.startsWith("#") || value.toLowerCase(Locale.ROOT).startsWith("javascript:"))
+            return null;
+        if(value.startsWith("http://") || value.startsWith("https://")) {
+            try {
+                java.net.URI uri = java.net.URI.create(value);
+                String path = uri.getRawPath();
+                String query = uri.getRawQuery();
+                if(path == null || path.length() == 0)
+                    path = "/";
+                return query == null || query.length() == 0 ? path : path + "?" + query;
+            } catch (Exception e) {
+                return null;
+            }
+        }
+        if(value.startsWith("/"))
+            return value;
+        if(value.startsWith("?")) {
+            String route = currentPath == null ? "" : currentPath.split("\\?", 2)[0];
+            return route + value;
+        }
+        String route = currentPath == null ? "" : currentPath.split("\\?", 2)[0];
+        int slash = route.lastIndexOf('/');
+        String parent = slash >= 0 ? route.substring(0, slash + 1) : "/";
+        return parent + value;
     }
 
     static String ntkPagePathForTest(String path, int page) {
