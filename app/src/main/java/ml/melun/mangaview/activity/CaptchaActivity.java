@@ -42,8 +42,8 @@ public class CaptchaActivity extends AppCompatActivity {
     public static final int REQUEST_CAPTCHA = 32;
     String domain;
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private static final long TURNSTILE_CHECK_DELAY_MS = 200;
-    private static final long TURNSTILE_CHECK_INTERVAL_MS = 200;
+    private static final long TURNSTILE_CHECK_DELAY_MS = 0;
+    private static final long TURNSTILE_CHECK_INTERVAL_MS = 100;
     private static final long TURNSTILE_MAX_WAIT_MS = 30000;
     public static final String TURNSTILE_AUTO_JS = "(function() {" +
             "   var mc = document.querySelector('.main-content');" +
