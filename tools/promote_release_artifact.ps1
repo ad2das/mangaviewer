@@ -116,6 +116,21 @@ if (-not $NoUpload) {
     Invoke-Checked {
         gh release upload $ReleaseTag $apkPath --clobber --repo $Repo
     } "gh release upload failed"
+
+    Write-Step "Deleting old APK release assets"
+    $assetsJson = gh release view $ReleaseTag --repo $Repo --json assets
+    if ($LASTEXITCODE -ne 0) {
+        throw "gh release view failed"
+    }
+    $releaseInfo = $assetsJson | ConvertFrom-Json
+    foreach ($asset in $releaseInfo.assets) {
+        $assetName = [string]$asset.name
+        if ($assetName -match '^mangaViewer_\d+-debug\.apk$' -and $assetName -ne $apkName) {
+            Invoke-Checked {
+                gh release delete-asset $ReleaseTag $assetName --repo $Repo -y
+            } "Failed to delete old release asset $assetName"
+        }
+    }
 }
 
 $versionJsonPath = "version.json"

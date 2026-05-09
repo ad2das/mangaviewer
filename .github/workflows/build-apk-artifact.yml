@@ -68,7 +68,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          release_patch="${{ github.run_number }}"
+          patch_base="$(sed -nE 's/^[[:space:]]*def defaultReleasePatch = ([0-9]+).*$/\1/p' app/build.gradle | head -n 1)"
+          if [ -z "${patch_base}" ]; then
+            echo "Could not find defaultReleasePatch in app/build.gradle" >&2
+            exit 1
+          fi
+          release_patch=$((patch_base + ${{ github.run_number }}))
           date_code="$(date +%y%m%d)"
           version_code=$((2112000000 + 10#$date_code + release_patch))
           apk_name="mangaViewer_${version_code}-debug.apk"
@@ -92,6 +97,7 @@ jobs:
             "downloadUrl": "${download_url}",
             "releaseTag": "${RELEASE_TAG}",
             "releasePatch": ${release_patch},
+            "releasePatchBase": ${patch_base},
             "dateCode": "${date_code}",
             "headSha": "${{ github.sha }}",
             "buildRunId": "${{ github.run_id }}",
