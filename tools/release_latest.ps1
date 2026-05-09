@@ -173,12 +173,16 @@ if (-not $NoUpload) {
 
     if ($DeleteOldReleaseApks) {
         Write-Step "Deleting old APK release assets"
-        $assetNames = gh release view $ReleaseTag --repo $Repo --json assets --jq ".assets[].name"
-        foreach ($asset in $assetNames) {
-            if ($asset -match '^mangaViewer_\d+-(debug|release)\.apk$' -and $asset -ne $apkName) {
-                gh release delete-asset $ReleaseTag $asset --repo $Repo --yes
-                if ($LASTEXITCODE -ne 0) {
-                    throw "Failed to delete old release asset: $asset"
+        $releaseTags = gh api "repos/$Repo/releases" --paginate --jq ".[].tag_name"
+        foreach ($tag in $releaseTags) {
+            $assetNames = gh release view $tag --repo $Repo --json assets --jq ".assets[].name"
+            foreach ($asset in $assetNames) {
+                $isCurrentAsset = $tag -eq $ReleaseTag -and $asset -eq $apkName
+                if (-not $isCurrentAsset -and $asset -match '^mangaViewer_\d+-(debug|release)\.apk$') {
+                    gh release delete-asset $tag $asset --repo $Repo --yes
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Failed to delete old release asset: $tag/$asset"
+                    }
                 }
             }
         }
