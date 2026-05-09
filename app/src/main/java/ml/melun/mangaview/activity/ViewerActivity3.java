@@ -240,6 +240,10 @@ public class ViewerActivity3 extends AppCompatActivity {
         }
 
         pageBtn.setOnClickListener(v -> {
+            if(imgs == null || imgs.size() == 0) {
+                showViewerImagesUnavailable();
+                return;
+            }
             AlertDialog.Builder alert;
             if(dark) alert = new AlertDialog.Builder(context,R.style.darkDialog);
             else alert = new AlertDialog.Builder(context);
@@ -252,7 +256,13 @@ public class ViewerActivity3 extends AppCompatActivity {
             alert.setPositiveButton("이동", (dialog, button) -> {
                 //이동 시
                 if (input.getText().length() > 0) {
-                    int page = Integer.parseInt(input.getText().toString());
+                    int page;
+                    try {
+                        page = Integer.parseInt(input.getText().toString());
+                    } catch(NumberFormatException e) {
+                        ml.melun.mangaview.report.CrashReporter.record(e);
+                        return;
+                    }
                     if (page < 1) page = 1;
                     if (page > imgs.size()) page = imgs.size();
                     viewerBookmark = page - 1;
@@ -263,13 +273,18 @@ public class ViewerActivity3 extends AppCompatActivity {
             alert.setNegativeButton("취소", (dialog, button) -> {
                 //취소 시
             });
-            alert.show();
+            Utils.safeShowDialog(alert);
         });
         next.setOnClickListener(v -> {
             if(eps!=null && index>0) {
                 lockUi(true);
                 index--;
-                manga = eps.get(index);
+                Manga target = Utils.safeGet(eps, index);
+                if(target == null) {
+                    lockUi(false);
+                    return;
+                }
+                manga = target;
                 if(title != null)
                     manga.setTitle(title);
                 id = manga.getId();
@@ -284,7 +299,12 @@ public class ViewerActivity3 extends AppCompatActivity {
             if(eps!=null && index<eps.size()-1) {
                 lockUi(true);
                 index++;
-                manga = eps.get(index);
+                Manga target = Utils.safeGet(eps, index);
+                if(target == null) {
+                    lockUi(false);
+                    return;
+                }
+                manga = target;
                 if(title != null)
                     manga.setTitle(title);
                 id = manga.getId();
@@ -379,7 +399,7 @@ public class ViewerActivity3 extends AppCompatActivity {
         }
 
         private void finish(Integer res) {
-            if(cancelled)
+            if(cancelled || isFinishing())
                 return;
             if(imageLoad == this)
                 imageLoad = null;
@@ -478,7 +498,8 @@ public class ViewerActivity3 extends AppCompatActivity {
             Intent episodeIntent = new Intent(context, EpisodeActivity.class);
             episodeIntent.putExtra("title", new Gson().toJson(new Title(targetTitle.minimize())));
             episodeIntent.putExtra("online", true);
-            startActivity(episodeIntent);
+            if(!Utils.safeStartActivity(context, episodeIntent))
+                return false;
             finish();
             return true;
         } catch (Exception e) {
@@ -488,7 +509,11 @@ public class ViewerActivity3 extends AppCompatActivity {
     }
 
     public void goPage(int item, boolean smoothScroll) {
-        viewPager.setCurrentItem(p.getPageRtl() ? pageAdapter.getCount() - item - 1 : item, smoothScroll);
+        int count = pageAdapter == null ? 0 : pageAdapter.getCount();
+        int target = Utils.clampIndex(item, count);
+        if(target < 0)
+            return;
+        viewPager.setCurrentItem(p.getPageRtl() ? count - target - 1 : target, smoothScroll);
     }
 
     public void reloadManga(){
@@ -522,6 +547,8 @@ public class ViewerActivity3 extends AppCompatActivity {
             }
         }else
             viewerBookmark = 0;
+        if(imgs != null && imgs.size() > 0)
+            viewerBookmark = Utils.clampIndex(viewerBookmark, imgs.size());
         goPage(viewerBookmark, false);
     }
 
@@ -545,8 +572,10 @@ public class ViewerActivity3 extends AppCompatActivity {
         }
         if(eps == null)
             eps = new java.util.ArrayList<>();
+        index = -1;
         for(int i=0; i<eps.size(); i++){
-            if(eps.get(i).equals(manga)){
+            Manga episode = Utils.safeGet(eps, i);
+            if(episode != null && episode.equals(manga)){
                 index = i;
                 break;
             }
@@ -560,7 +589,7 @@ public class ViewerActivity3 extends AppCompatActivity {
         toolbarTitle.setSingleLine(true);
         toolbarTitle.setSelected(true);
 
-        if(index==0){
+        if(index <= 0){
             next.setEnabled(false);
             next.clearColorFilter();
             next.setAlpha(0.38f);
@@ -570,7 +599,7 @@ public class ViewerActivity3 extends AppCompatActivity {
             next.clearColorFilter();
             next.setAlpha(1f);
         }
-        if(index==eps.size()-1) {
+        if(index < 0 || index==eps.size()-1) {
             prev.setEnabled(false);
             prev.clearColorFilter();
             prev.setAlpha(0.38f);
@@ -580,7 +609,7 @@ public class ViewerActivity3 extends AppCompatActivity {
             prev.clearColorFilter();
             prev.setAlpha(1f);
         }
-        pageBtn.setText(viewerBookmark+1+"/"+imgs.size());
+        pageBtn.setText(imgs == null || imgs.size() == 0 ? "-/-" : viewerBookmark+1+"/"+imgs.size());
     }
 
     private boolean hasLoadedImages() {
@@ -608,10 +637,12 @@ public class ViewerActivity3 extends AppCompatActivity {
     private void prewarmAdjacentEpisodes() {
         if(eps == null || eps.size() == 0 || title == null)
             return;
-        if(index > 0)
-            ViewerWarmupManager.warmup(context, eps.get(index - 1), title);
-        if(index < eps.size() - 1)
-            ViewerWarmupManager.warmup(context, eps.get(index + 1), title);
+        Manga previous = Utils.safeGet(eps, index - 1);
+        Manga nextEpisode = Utils.safeGet(eps, index + 1);
+        if(previous != null)
+            ViewerWarmupManager.warmup(context, previous, title);
+        if(nextEpisode != null)
+            ViewerWarmupManager.warmup(context, nextEpisode, title);
     }
 
     void lockUi(boolean lock){

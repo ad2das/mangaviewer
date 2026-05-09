@@ -283,6 +283,10 @@ public class ViewerActivity2 extends AppCompatActivity {
         });
 
         pageBtn.setOnClickListener(v -> {
+            if(imgs == null || imgs.size() == 0) {
+                showViewerImagesUnavailable();
+                return;
+            }
             if(dark) alert = new AlertDialog.Builder(context,R.style.darkDialog);
             else alert = new AlertDialog.Builder(context);
 
@@ -294,7 +298,13 @@ public class ViewerActivity2 extends AppCompatActivity {
             alert.setPositiveButton("이동", (dialog, button) -> {
                 //이동 시
                 if (input.getText().length() > 0) {
-                    int page = Integer.parseInt(input.getText().toString());
+                    int page;
+                    try {
+                        page = Integer.parseInt(input.getText().toString());
+                    } catch(NumberFormatException e) {
+                        ml.melun.mangaview.report.CrashReporter.record(e);
+                        return;
+                    }
                     if (page < 1) page = 1;
                     if (page > imgs.size()) page = imgs.size();
                     viewerBookmark = page - 1;
@@ -304,28 +314,38 @@ public class ViewerActivity2 extends AppCompatActivity {
             alert.setNegativeButton("취소", (dialog, button) -> {
                 //취소 시
             });
-            alert.show();
+            Utils.safeShowDialog(alert);
         });
 
         next.setOnClickListener(v -> {
             if(eps!=null && index>0) {
                 lockUi(true);
                 index--;
-                manga = eps.get(index);
+                Manga target = Utils.safeGet(eps, index);
+                if(target == null) {
+                    lockUi(false);
+                    return;
+                }
+                manga = target;
                 if(title != null)
                     manga.setTitle(title);
                 id = manga.getId();
                 name = manga.getName();
                 loadManga(manga);
             }else
-                Toast.makeText(context, "마지막화 입니다", Toast.LENGTH_SHORT).show();
+                Utils.safeToast(context, "마지막화 입니다", Toast.LENGTH_SHORT);
 
         });
         prev.setOnClickListener(v -> {
             if(eps!=null && index<eps.size()-1) {
                 lockUi(true);
                 index++;
-                manga = eps.get(index);
+                Manga target = Utils.safeGet(eps, index);
+                if(target == null) {
+                    lockUi(false);
+                    return;
+                }
+                manga = target;
                 if(title != null)
                     manga.setTitle(title);
                 id = manga.getId();
@@ -355,6 +375,10 @@ public class ViewerActivity2 extends AppCompatActivity {
 
 
     void nextPage(){
+        if(imgs == null || imgs.size() == 0) {
+            showViewerImagesUnavailable();
+            return;
+        }
         //refreshbtn.setVisibility(View.VISIBLE);
         if(split) {
             if(viewerBookmark+type-1 == imgs.size()-1){
@@ -396,7 +420,12 @@ public class ViewerActivity2 extends AppCompatActivity {
             //has to check if twopage
             viewerBookmark++;
             try {
-                Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark), manga.getBaseMode()) : imgs.get(viewerBookmark);
+                Object image = pageImageAt(viewerBookmark);
+                if(image == null) {
+                    viewerBookmark = Math.max(0, viewerBookmark - 1);
+                    updatePageIndex();
+                    return;
+                }
 
                 //placeholder
                 frame.setImageDrawable(null);
@@ -451,6 +480,10 @@ public class ViewerActivity2 extends AppCompatActivity {
     }
 
     void prevPage(){
+        if(imgs == null || imgs.size() == 0) {
+            showViewerImagesUnavailable();
+            return;
+        }
         //refreshbtn.setVisibility(View.VISIBLE);
         if(nextEpisodeVisible){
             toggleNextEpisode();
@@ -464,7 +497,9 @@ public class ViewerActivity2 extends AppCompatActivity {
                 frame2.setImageDrawable(null);
                 //오른쪽 부터 로드
                 try {
-                    Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark), manga.getBaseMode()) : imgs.get(viewerBookmark);
+                    Object image = pageImageAt(viewerBookmark);
+                    if(image == null)
+                        return;
                     //placeholder
                     Glide.with(context)
                             .asBitmap()
@@ -489,7 +524,9 @@ public class ViewerActivity2 extends AppCompatActivity {
                                         type = 1;
                                         if(viewerBookmark > 0){
                                             //이전 페이지 로드하고 landscape 인지 확인, portrait일 경우에만 보여주기
-                                            Object image2 = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark-1), manga.getBaseMode()) : imgs.get(viewerBookmark-1);
+                                            Object image2 = pageImageAt(viewerBookmark - 1);
+                                            if(image2 == null)
+                                                return;
                                             Glide.with(context)
                                                     .asBitmap()
                                                     .priority(Priority.HIGH)
@@ -548,7 +585,12 @@ public class ViewerActivity2 extends AppCompatActivity {
             //has to check if twopage
             viewerBookmark--;
             try {
-                Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark), manga.getBaseMode()) : imgs.get(viewerBookmark);
+                Object image = pageImageAt(viewerBookmark);
+                if(image == null) {
+                    viewerBookmark = Math.min(imgs.size() - 1, viewerBookmark + 1);
+                    updatePageIndex();
+                    return;
+                }
 
                 //placeholder
                 frame.setImageDrawable(null);
@@ -604,6 +646,13 @@ public class ViewerActivity2 extends AppCompatActivity {
 
 
     void refreshImage(){
+        if(imgs == null || imgs.size() == 0) {
+            showViewerImagesUnavailable();
+            return;
+        }
+        viewerBookmark = Utils.clampIndex(viewerBookmark, imgs.size());
+        if(viewerBookmark < 0)
+            return;
         int requestGeneration = ++imageLoadGeneration;
         int requestMangaId = manga == null ? -1 : manga.getId();
         int requestBookmark = viewerBookmark;
@@ -619,7 +668,9 @@ public class ViewerActivity2 extends AppCompatActivity {
                 renderPrimaryBitmap(cached, requestGeneration, requestMangaId, requestBookmark, requestDecoder, true);
                 return;
             }
-            Object image = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark), manga.getBaseMode()) : imgs.get(viewerBookmark);
+            Object image = pageImageAt(viewerBookmark);
+            if(image == null)
+                return;
             //placeholder
             //frame.setImageDrawable(null);
             Glide.with(context)
@@ -653,7 +704,10 @@ public class ViewerActivity2 extends AppCompatActivity {
     private Bitmap decodedPageFromWarmup(int pageIndex) {
         if(manga == null || imgs == null || pageIndex < 0 || pageIndex >= imgs.size())
             return null;
-        return ViewerWarmupManager.getDecodedBitmap(new PageItem(pageIndex, imgs.get(pageIndex), manga), false, reverse, swidth);
+        String url = Utils.safeGet(imgs, pageIndex);
+        if(url == null)
+            return null;
+        return ViewerWarmupManager.getDecodedBitmap(new PageItem(pageIndex, url, manga), false, reverse, swidth);
     }
 
     private void renderPrimaryBitmap(Bitmap bitmap, int requestGeneration, int requestMangaId, int requestBookmark,
@@ -698,7 +752,9 @@ public class ViewerActivity2 extends AppCompatActivity {
             maybeShowSecondSplitPage(cached, requestGeneration, requestMangaId, requestBookmark, true, requestDecoder);
             return;
         }
-        Object image2 = manga.isOnline() ? getGlideUrl(imgs.get(viewerBookmark + 1), manga.getBaseMode()) : imgs.get(viewerBookmark + 1);
+        Object image2 = pageImageAt(viewerBookmark + 1);
+        if(image2 == null)
+            return;
         frame2.setImageDrawable(null);
         Glide.with(context)
                 .asBitmap()
@@ -741,7 +797,9 @@ public class ViewerActivity2 extends AppCompatActivity {
         int limit = p.getDataSave() ? 6 : 18;
         int preloaded = 0;
         for(int i = viewerBookmark + 1; manga != null && imgs != null && i < imgs.size() && preloaded < limit; i++, preloaded++) {
-            Object image = manga.isOnline() ? getGlideUrl(imgs.get(i), manga.getBaseMode()) : imgs.get(i);
+            Object image = pageImageAt(i);
+            if(image == null)
+                continue;
             Glide.with(context)
                     .asBitmap()
                     .priority(preloaded < 2 ? Priority.HIGH : Priority.NORMAL)
@@ -768,6 +826,11 @@ public class ViewerActivity2 extends AppCompatActivity {
                 .override(Math.max(swidth, 1), Target.SIZE_ORIGINAL);
     }
     void updatePageIndex(){
+        if(imgs == null || imgs.size() == 0) {
+            pageBtn.setText("-/-");
+            return;
+        }
+        viewerBookmark = Utils.clampIndex(viewerBookmark, imgs.size());
         pageBtn.setText(viewerBookmark+1+"/"+imgs.size());
         boolean lastPage = viewerBookmark == imgs.size()-1;
         boolean firstPage = viewerBookmark == 0;
@@ -863,7 +926,7 @@ public class ViewerActivity2 extends AppCompatActivity {
         }
 
         private void finishLoad(Integer res) {
-            if(cancelled)
+            if(cancelled || isFinishing())
                 return;
             if(activeImageLoad == this)
                 activeImageLoad = null;
@@ -989,7 +1052,8 @@ public class ViewerActivity2 extends AppCompatActivity {
             Intent episodeIntent = new Intent(context, EpisodeActivity.class);
             episodeIntent.putExtra("title", new Gson().toJson(new Title(targetTitle.minimize())));
             episodeIntent.putExtra("online", true);
-            startActivity(episodeIntent);
+            if(!Utils.safeStartActivity(context, episodeIntent))
+                return false;
             finish();
             return true;
         } catch (Exception e) {
@@ -1027,6 +1091,8 @@ public class ViewerActivity2 extends AppCompatActivity {
             }
         }else
             viewerBookmark = 0;
+        if(imgs != null && imgs.size() > 0)
+            viewerBookmark = Utils.clampIndex(viewerBookmark, imgs.size());
     }
 
     public void updateIntent(){
@@ -1079,8 +1145,10 @@ public class ViewerActivity2 extends AppCompatActivity {
         }
         if(eps == null)
             eps = new java.util.ArrayList<>();
+        index = -1;
         for(int i=0; i<eps.size(); i++){
-            if(eps.get(i).equals(manga)){
+            Manga episode = Utils.safeGet(eps, i);
+            if(episode != null && episode.equals(manga)){
                 index = i;
                 break;
             }
@@ -1095,7 +1163,7 @@ public class ViewerActivity2 extends AppCompatActivity {
         toolbarTitle.setSingleLine(true);
         toolbarTitle.setSelected(true);
 
-        if(index==0){
+        if(index <= 0){
             next.setEnabled(false);
             next.clearColorFilter();
             next.setAlpha(0.38f);
@@ -1105,7 +1173,7 @@ public class ViewerActivity2 extends AppCompatActivity {
             next.clearColorFilter();
             next.setAlpha(1f);
         }
-        if(index==eps.size()-1) {
+        if(index < 0 || index==eps.size()-1) {
             prev.setEnabled(false);
             prev.clearColorFilter();
             prev.setAlpha(0.38f);
@@ -1116,16 +1184,25 @@ public class ViewerActivity2 extends AppCompatActivity {
             prev.setAlpha(1f);
         }
 
-        pageBtn.setText(viewerBookmark+1+"/"+imgs.size());
+        pageBtn.setText(imgs == null || imgs.size() == 0 ? "-/-" : viewerBookmark+1+"/"+imgs.size());
+    }
+
+    private Object pageImageAt(int pageIndex) {
+        String url = Utils.safeGet(imgs, pageIndex);
+        if(url == null || manga == null)
+            return null;
+        return manga.isOnline() ? getGlideUrl(url, manga.getBaseMode()) : url;
     }
 
     private void prewarmAdjacentEpisodes() {
         if(eps == null || eps.size() == 0 || title == null)
             return;
-        if(index > 0)
-            ViewerWarmupManager.warmup(context, eps.get(index - 1), title);
-        if(index < eps.size() - 1)
-            ViewerWarmupManager.warmup(context, eps.get(index + 1), title);
+        Manga previous = Utils.safeGet(eps, index - 1);
+        Manga nextEpisode = Utils.safeGet(eps, index + 1);
+        if(previous != null)
+            ViewerWarmupManager.warmup(context, previous, title);
+        if(nextEpisode != null)
+            ViewerWarmupManager.warmup(context, nextEpisode, title);
     }
 
     @Override

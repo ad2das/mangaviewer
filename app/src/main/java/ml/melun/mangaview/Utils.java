@@ -243,8 +243,7 @@ public class Utils {
                 if(!isLatestViewerLaunchToken(context, launchToken))
                     return;
                 if(launchManga == null) {
-                    if(context instanceof Activity && canUseActivity((Activity) context))
-                        Toast.makeText(context, "이미지를 불러오지 못했습니다.", Toast.LENGTH_SHORT).show();
+                    safeToast(context, "이미지를 불러오지 못했습니다.", Toast.LENGTH_SHORT);
                     return;
                 }
                 Title preparedTitle = launchManga.getTitle();
@@ -273,12 +272,16 @@ public class Utils {
         if(recent)
             viewer.putExtra("recent", true);
         viewer.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
-        if(context instanceof Activity) {
-            ((Activity) context).startActivityForResult(viewer, code);
-            ((Activity) context).overridePendingTransition(0, 0);
-        } else {
-            viewer.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            context.startActivity(viewer);
+        try {
+            if(context instanceof Activity) {
+                ((Activity) context).startActivityForResult(viewer, code);
+                ((Activity) context).overridePendingTransition(0, 0);
+            } else {
+                viewer.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(viewer);
+            }
+        } catch(RuntimeException e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
         }
     }
 
@@ -309,6 +312,75 @@ public class Utils {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN_MR1 || !activity.isDestroyed();
     }
 
+    public static boolean canUseContextForUi(Context context) {
+        if(context == null)
+            return false;
+        if(context instanceof Activity)
+            return canUseActivity((Activity) context);
+        return true;
+    }
+
+    public static void safeToast(Context context, String message, int duration) {
+        if(!canUseContextForUi(context) || message == null)
+            return;
+        try {
+            Toast.makeText(context, message, duration).show();
+        } catch (RuntimeException e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
+    public static boolean safeStartActivity(Context context, Intent intent) {
+        if(!canUseContextForUi(context) || intent == null)
+            return false;
+        try {
+            if(!(context instanceof Activity))
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(intent);
+            return true;
+        } catch (RuntimeException e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return false;
+        }
+    }
+
+    public static boolean safeShowDialog(AlertDialog.Builder builder) {
+        if(builder == null)
+            return false;
+        try {
+            builder.show();
+            return true;
+        } catch (RuntimeException e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return false;
+        }
+    }
+
+    public static void safeGlideClear(View view) {
+        if(view == null)
+            return;
+        try {
+            Glide.with(view).clear(view);
+        } catch (RuntimeException e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
+    public static void safeGlideLoad(ImageView view, Object model, int placeholderResId) {
+        if(view == null)
+            return;
+        try {
+            if(placeholderResId != 0)
+                Glide.with(view).load(model).placeholder(placeholderResId).into(view);
+            else
+                Glide.with(view).load(model).into(view);
+        } catch (RuntimeException e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            if(placeholderResId != 0)
+                view.setImageResource(placeholderResId);
+        }
+    }
+
     public static <T> ArrayList<T> snapshotList(List<T> source) {
         if(source == null)
             return new ArrayList<>();
@@ -326,6 +398,23 @@ public class Utils {
 
     public static ArrayList<Manga> snapshotEpisodes(Manga manga) {
         return manga == null ? new ArrayList<>() : snapshotList(manga.getEps());
+    }
+
+    public static <T> T safeGet(List<T> source, int index) {
+        if(source == null || index < 0 || index >= source.size())
+            return null;
+        try {
+            return source.get(index);
+        } catch (RuntimeException e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return null;
+        }
+    }
+
+    public static int clampIndex(int index, int size) {
+        if(size <= 0)
+            return -1;
+        return Math.max(0, Math.min(index, size - 1));
     }
 
     public static String toViewerMangaJson(Manga manga, Title title) {
@@ -462,24 +551,24 @@ public class Utils {
             }
         }
         if(homeDir == null || homeDir.length() == 0) {
-            Toast.makeText(context,"오프라인 저장 폴더를 먼저 설정해 주세요", Toast.LENGTH_LONG).show();
+            safeToast(context,"오프라인 저장 폴더를 먼저 설정해 주세요", Toast.LENGTH_LONG);
             return false;
         }
         if(useScopedStorageHome(homeDir)) {
             DocumentFile home = DocumentFile.fromTreeUri(context, Uri.parse(homeDir));
             if(home == null || !home.canWrite()) {
-                Toast.makeText(context,"오프라인 저장 폴더 권한을 다시 설정해 주세요", Toast.LENGTH_LONG).show();
+                safeToast(context,"오프라인 저장 폴더 권한을 다시 설정해 주세요", Toast.LENGTH_LONG);
                 return false;
             }
             return true;
         }
         File home = new File(homeDir);
         if(!home.exists() && !home.mkdirs()) {
-            Toast.makeText(context,"오프라인 저장 폴더를 만들 수 없습니다", Toast.LENGTH_LONG).show();
+            safeToast(context,"오프라인 저장 폴더를 만들 수 없습니다", Toast.LENGTH_LONG);
             return false;
         }
         if(!home.canWrite()) {
-            Toast.makeText(context,"오프라인 저장 폴더에 쓸 수 없습니다", Toast.LENGTH_LONG).show();
+            safeToast(context,"오프라인 저장 폴더에 쓸 수 없습니다", Toast.LENGTH_LONG);
             return false;
         }
         return true;
@@ -528,20 +617,24 @@ public class Utils {
         return null;
     }
     public static void showPopup(Context context, String title, String content, DialogInterface.OnClickListener clickListener, DialogInterface.OnCancelListener cancelListener){
+        if(!canUseContextForUi(context))
+            return;
         AlertDialog.Builder builder;
         if (new Preference(context).getDarkTheme()) builder = new AlertDialog.Builder(context, R.style.darkDialog);
         else builder = new AlertDialog.Builder(context);
         builder.setTitle(title)
                 .setMessage(content)
                 .setPositiveButton("확인", clickListener)
-                .setOnCancelListener(cancelListener)
-                .show();
+                .setOnCancelListener(cancelListener);
+        safeShowDialog(builder);
     }
 
     public static void showYesNoPopup(Context context, String title, String content,
                                       DialogInterface.OnClickListener posClickListener,
                                       DialogInterface.OnClickListener negClickListener,
                                       DialogInterface.OnCancelListener cancelListener){
+        if(!canUseContextForUi(context))
+            return;
 
         AlertDialog.Builder builder;
         if (new Preference(context).getDarkTheme()) builder = new AlertDialog.Builder(context, R.style.darkDialog);
@@ -550,14 +643,16 @@ public class Utils {
                 .setMessage(content)
                 .setPositiveButton("예", posClickListener)
                 .setNegativeButton("아니오", negClickListener)
-                .setOnCancelListener(cancelListener)
-                .show();
+                .setOnCancelListener(cancelListener);
+        safeShowDialog(builder);
     }
 
     public static void showYesNoPopup(boolean dark, Context context, String title, String content,
                                       DialogInterface.OnClickListener posClickListener,
                                       DialogInterface.OnClickListener negClickListener,
                                       DialogInterface.OnCancelListener cancelListener){
+        if(!canUseContextForUi(context))
+            return;
 
         AlertDialog.Builder builder;
         if (dark) builder = new AlertDialog.Builder(context, R.style.darkDialog);
@@ -566,8 +661,8 @@ public class Utils {
                 .setMessage(content)
                 .setPositiveButton("예", posClickListener)
                 .setNegativeButton("아니오", negClickListener)
-                .setOnCancelListener(cancelListener)
-                .show();
+                .setOnCancelListener(cancelListener);
+        safeShowDialog(builder);
     }
 
     public static void showYesNoNeutralPopup(Context context, String title, String content, String neutral,
@@ -575,6 +670,8 @@ public class Utils {
                                              DialogInterface.OnClickListener negClickListener,
                                              DialogInterface.OnClickListener neuClickListener,
                                              DialogInterface.OnCancelListener cancelListener){
+        if(!canUseContextForUi(context))
+            return;
 
         AlertDialog.Builder builder;
         if (new Preference(context).getDarkTheme()) builder = new AlertDialog.Builder(context, R.style.darkDialog);
@@ -584,11 +681,13 @@ public class Utils {
                 .setPositiveButton("예", posClickListener)
                 .setNegativeButton("아니오", negClickListener)
                 .setNeutralButton(neutral, neuClickListener)
-                .setOnCancelListener(cancelListener)
-                .show();
+                .setOnCancelListener(cancelListener);
+        safeShowDialog(builder);
     }
 
     public static void showErrorPopup(Context context, String message, Exception e, boolean force_close){
+        if(!canUseContextForUi(context))
+            return;
         AlertDialog.Builder builder;
         String title = "오류";
         if (new Preference(context).getDarkTheme()) builder = new AlertDialog.Builder(context, R.style.darkDialog);
@@ -604,11 +703,11 @@ public class Utils {
         if(e != null) {
             builder.setNeutralButton("자세히", (dialog, which) -> showStackTrace(context, e));
         }
-        builder.show();
+        safeShowDialog(builder);
     }
 
     public static boolean checkConnection(Context context){
-        if(context != null) {
+        if(context instanceof Activity && canUseActivity((Activity) context)) {
             ConnectivityManager connectivityManager
                     = (ConnectivityManager) ((Activity) context).getSystemService(Context.CONNECTIVITY_SERVICE);
             NetworkInfo activeNetworkInfo = connectivityManager.getActiveNetworkInfo();
@@ -619,12 +718,12 @@ public class Utils {
 
 
     public static void showCaptchaPopup(String url, Context context, int code, Exception e, boolean force_close, Fragment fragment, Preference p){
-        if(context != null) {
+        if(canUseContextForUi(context)) {
             if (!checkConnection(context)) {
                 //no internet
                 //showErrorPopup(context, "네트워크 연결이 없습니다.", e, force_close);
-                Toast.makeText(context, "네트워크 연결이 없습니다.", Toast.LENGTH_LONG).show();
-                if (force_close) ((Activity) context).finish();
+                safeToast(context, "네트워크 연결이 없습니다.", Toast.LENGTH_LONG);
+                if (force_close && context instanceof Activity) ((Activity) context).finish();
             } else if (captchaCount == 0) {
                 startCaptchaActivity(context, code, fragment, url);
             } else {
@@ -647,33 +746,41 @@ public class Utils {
                 if (e != null) {
                     builder.setNeutralButton("자세히", (dialog, which) -> showStackTrace(context, e));
                 }
-                try {
-                    builder.show();
-                } catch (Exception e2) {
-                    ml.melun.mangaview.report.CrashReporter.record(e2);
-                }
+                safeShowDialog(builder);
             }
             captchaCount++;
         }
     }
 
     static void startCaptchaActivity(Context context, int code, Fragment fragment, String url){
+        if(!canUseContextForUi(context))
+            return;
         Intent captchaIntent = new Intent(context, CaptchaActivity.class);
         if(url != null && url.startsWith("/"))
             url = getHttpClient().getUrl(url) + url;
         captchaIntent.putExtra("url", url);
-        if(fragment == null)
-            ((Activity)context).startActivityForResult(captchaIntent, code);
-        else
-            fragment.startActivityForResult(captchaIntent, code);
+        try {
+            if(fragment == null && context instanceof Activity)
+                ((Activity)context).startActivityForResult(captchaIntent, code);
+            else if(fragment != null && fragment.isAdded())
+                fragment.startActivityForResult(captchaIntent, code);
+        } catch (RuntimeException e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
     }
 
     static void startCaptchaActivity(Context context, int code, Fragment fragment){
+        if(!canUseContextForUi(context))
+            return;
         Intent captchaIntent = new Intent(context, CaptchaActivity.class);
-        if(fragment == null)
-            ((Activity)context).startActivityForResult(captchaIntent, code);
-        else
-            fragment.startActivityForResult(captchaIntent, code);
+        try {
+            if(fragment == null && context instanceof Activity)
+                ((Activity)context).startActivityForResult(captchaIntent, code);
+            else if(fragment != null && fragment.isAdded())
+                fragment.startActivityForResult(captchaIntent, code);
+        } catch (RuntimeException e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
     }
 
     public static void showCaptchaPopup(String url, Context context, int code, Exception e, boolean force_close, Preference p) {
@@ -711,6 +818,8 @@ public class Utils {
 
 
     public static void showTokiCaptchaPopup(Context context, Preference p){
+        if(!(context instanceof Activity) || !canUseActivity((Activity) context))
+            return;
         AlertDialog.Builder builder;
         String title = "캡차 인증";
         if (new Preference(context).getDarkTheme())
@@ -785,10 +894,16 @@ public class Utils {
                         ((Activity) context).startActivity(((Activity) context).getIntent());
                     });
                 }))
-                .setNegativeButton(android.R.string.cancel, (dialogInterface, i) -> ((Activity) context).finish())
-                .setOnCancelListener(dialogInterface -> ((Activity) context).finish());
+                .setNegativeButton(android.R.string.cancel, (dialogInterface, i) -> {
+                    if(canUseActivity((Activity) context))
+                        ((Activity) context).finish();
+                })
+                .setOnCancelListener(dialogInterface -> {
+                    if(canUseActivity((Activity) context))
+                        ((Activity) context).finish();
+                });
 
-        builder.show();
+        safeShowDialog(builder);
     }
     public static GlideUrl getGlideUrl(String image){
         return getGlideUrl(image, guessImageBaseMode(image));

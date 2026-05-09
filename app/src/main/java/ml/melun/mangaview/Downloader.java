@@ -212,8 +212,16 @@ public class Downloader extends Worker {
                     progress = 0;
 
                     //mget item from queue
-                    DownloadTitle title = titles.get(0);
-                    JSONArray selectedEps = selected.get(0);
+                    DownloadTitle title = Utils.safeGet(titles, 0);
+                    JSONArray selectedEps = Utils.safeGet(selected, 0);
+                    if(title == null || selectedEps == null) {
+                        failures++;
+                        if(titles.size() > 0)
+                            titles.remove(0);
+                        if(selected.size() > 0)
+                            selected.remove(0);
+                        continue;
+                    }
 
                     notiTitle = title.getName();
                     updateNotification("준비중");
@@ -274,7 +282,9 @@ public class Downloader extends Worker {
                             try {
                                 listIndex = selectedEps.getInt(queueIndex);
                             } catch (Exception e) {
-                                return 2;
+                                ml.melun.mangaview.report.CrashReporter.record(e);
+                                failures++;
+                                continue;
                             }
                             if(listIndex < 0 || listIndex >= mangas.size()) {
                                 failures++;
@@ -357,7 +367,9 @@ public class Downloader extends Worker {
                             try {
                                 listIndex = selectedEps.getInt(queueIndex);
                             } catch (Exception e) {
-                                return 2;
+                                ml.melun.mangaview.report.CrashReporter.record(e);
+                                failures++;
+                                continue;
                             }
                             if(listIndex < 0 || listIndex >= mangas.size()) {
                                 failures++;

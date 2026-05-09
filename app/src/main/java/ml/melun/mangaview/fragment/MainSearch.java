@@ -825,6 +825,8 @@ public class MainSearch extends Fragment {
             return;
         pendingListLongPress = () -> {
             pendingListLongPress = null;
+            if(!isAdded() || getContext() == null || searchResult == null || searchAdapter == null)
+                return;
             if(!listMovedBeyondTapSlop)
                 listLongPressHandled = handleTitleListLongPress(listDownX, listDownY);
         };
@@ -873,9 +875,9 @@ public class MainSearch extends Fragment {
         if(isOfflineTitle(title)) {
             Intent episodeView = episodeIntent(getContext(), title);
             episodeView.putExtra("online", false);
-            startActivity(episodeView);
+            Utils.safeStartActivity(getContext(), episodeView);
         } else if(title.getId() > 0) {
-            startActivity(episodeIntent(getContext(), title));
+            Utils.safeStartActivity(getContext(), episodeIntent(getContext(), title));
         }
     }
 

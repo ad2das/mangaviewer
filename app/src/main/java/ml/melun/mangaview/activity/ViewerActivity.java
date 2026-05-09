@@ -760,7 +760,8 @@ public class ViewerActivity extends AppCompatActivity {
             Intent episodeIntent = new Intent(context, EpisodeActivity.class);
             episodeIntent.putExtra("title", new Gson().toJson(new Title(targetTitle.minimize())));
             episodeIntent.putExtra("online", true);
-            startActivity(episodeIntent);
+            if(!Utils.safeStartActivity(context, episodeIntent))
+                return false;
             finish();
             return true;
         } catch (Exception e) {

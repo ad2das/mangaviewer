@@ -53,6 +53,7 @@ import ml.melun.mangaview.MainApplication;
 import ml.melun.mangaview.Migrator;
 import ml.melun.mangaview.Preference;
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.fragment.MainMain;
 
 import ml.melun.mangaview.fragment.MainSearch;
@@ -755,16 +756,15 @@ public class MainActivity extends AppCompatActivity
             if(id==R.id.nav_kakao){
 
                 View layout = getLayoutInflater().inflate(R.layout.content_kakao_popup, null);
-                layout.findViewById(R.id.kakao_notice).setOnClickListener(view -> startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(getResources().getString(R.string.kakao_notice)))));
-                layout.findViewById(R.id.kakao_chat).setOnClickListener(view -> startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(getResources().getString(R.string.kakao_chat)))));
-                layout.findViewById(R.id.kakao_direct).setOnClickListener(view -> startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(getResources().getString(R.string.kakao_direct)))));
+                layout.findViewById(R.id.kakao_notice).setOnClickListener(view -> Utils.safeStartActivity(context, new Intent(Intent.ACTION_VIEW, Uri.parse(getResources().getString(R.string.kakao_notice)))));
+                layout.findViewById(R.id.kakao_chat).setOnClickListener(view -> Utils.safeStartActivity(context, new Intent(Intent.ACTION_VIEW, Uri.parse(getResources().getString(R.string.kakao_chat)))));
+                layout.findViewById(R.id.kakao_direct).setOnClickListener(view -> Utils.safeStartActivity(context, new Intent(Intent.ACTION_VIEW, Uri.parse(getResources().getString(R.string.kakao_direct)))));
 
                 AlertDialog.Builder builder;
                 if(dark) builder = new AlertDialog.Builder(context,R.style.darkDialog);
                 else builder = new AlertDialog.Builder(context);
-                builder.setTitle("오픈 카톡 참가")
-                        .setView(layout)
-                        .show();
+                Utils.safeShowDialog(builder.setTitle("오픈 카톡 참가")
+                        .setView(layout));
 
 //                Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://open.kakao.com/o/gL4yY57"));
 //                startActivity(browserIntent);
@@ -795,11 +795,11 @@ public class MainActivity extends AppCompatActivity
                         setupAccountHeader();
                         syncAccount(true);
                     } else {
-                        Toast.makeText(context, message == null ? getString(R.string.account_sign_in_failed) : message, Toast.LENGTH_LONG).show();
+                        Utils.safeToast(context, message == null ? getString(R.string.account_sign_in_failed) : message, Toast.LENGTH_LONG);
                     }
                 }));
             } else {
-                Toast.makeText(context, R.string.account_sign_in_failed, Toast.LENGTH_LONG).show();
+                Utils.safeToast(context, getString(R.string.account_sign_in_failed), Toast.LENGTH_LONG);
             }
             return;
         }
@@ -815,17 +815,17 @@ public class MainActivity extends AppCompatActivity
                 path = data.getStringExtra("path");
             if(path != null){
                 if(writePreferenceToFile(context, new File(path))) {
-                    Toast.makeText(context, "백업 완료!", Toast.LENGTH_LONG).show();
-                }else Toast.makeText(context, "백업 실패", Toast.LENGTH_LONG).show();
-            }else Toast.makeText(context, "백업 실패", Toast.LENGTH_LONG).show();
+                    Utils.safeToast(context, "백업 완료!", Toast.LENGTH_LONG);
+                }else Utils.safeToast(context, "백업 실패", Toast.LENGTH_LONG);
+            }else Utils.safeToast(context, "백업 실패", Toast.LENGTH_LONG);
 
             finish();
-            startActivity(getIntent());
+            Utils.safeStartActivity(context, getIntent());
         }
         if(resultCode == RESULT_NEED_RESTART){
             Intent intent = getIntent();
             finish();
-            startActivity(intent);
+            Utils.safeStartActivity(context, intent);
         }
     }
 

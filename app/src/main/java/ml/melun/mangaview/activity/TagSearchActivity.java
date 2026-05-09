@@ -600,8 +600,8 @@ public class TagSearchActivity extends AppCompatActivity {
         super.onActivityResult(requestCode, resultCode, data);
         if(resultCode == RESULT_CAPTCHA){
             //captcha
-            finish();
-            startActivity(getIntent());
+            if(Utils.safeStartActivity(context, getIntent()))
+                finish();
         }
     }
 
