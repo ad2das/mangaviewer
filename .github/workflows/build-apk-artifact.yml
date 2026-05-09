@@ -1,0 +1,108 @@
+name: Build APK Artifact
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "apk/**"
+      - "releases.html"
+      - "version.json"
+      - "tools/promote_release_artifact.ps1"
+      - "tools/README_RELEASE.md"
+      - ".github/workflows/release-apk.yml"
+      - "webtoon-classification.json"
+      - "comic-classification.json"
+      - "webtoon-classification-unclassified.json"
+      - "comic-classification-unclassified.json"
+      - "app/src/main/assets/webtoon-classification.json"
+      - "app/src/main/assets/comic-classification.json"
+      - "*.png"
+      - "*.xml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-apk-artifact-main
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: Asia/Seoul
+      RELEASE_TAG: codex/perf-stability-max-core-rewrite-v2112260512
+      REPO_NAME: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-cleanup: never
+
+      - name: Restore Firebase resources
+        shell: bash
+        env:
+          GOOGLE_SERVICES_XML: ${{ secrets.GOOGLE_SERVICES_XML }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_XML" ]; then
+            mkdir -p app/src/main/res/values
+            printf '%s' "$GOOGLE_SERVICES_XML" > app/src/main/res/values/google_services.xml
+          fi
+
+      - name: Build debug APK artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_patch="${{ github.run_number }}"
+          date_code="$(date +%y%m%d)"
+          version_code=$((2112000000 + 10#$date_code + release_patch))
+          apk_name="mangaViewer_${version_code}-debug.apk"
+          apk_path="app/build/outputs/apk/debug/${apk_name}"
+          download_url="https://github.com/${REPO_NAME}/releases/download/${RELEASE_TAG}/${apk_name}"
+
+          chmod +x ./gradlew
+          ./gradlew --build-cache --parallel \
+            -PreleasePatch="${release_patch}" \
+            -PreleaseDateCode="${date_code}" \
+            assembleDebug
+
+          test -f "${apk_path}"
+          mkdir -p release-artifact
+          cp "${apk_path}" "release-artifact/${apk_name}"
+          cat > release-artifact/release-metadata.json <<JSON
+          {
+            "versionCode": ${version_code},
+            "versionName": "4.6-${version_code}",
+            "apkName": "${apk_name}",
+            "downloadUrl": "${download_url}",
+            "releaseTag": "${RELEASE_TAG}",
+            "releasePatch": ${release_patch},
+            "dateCode": "${date_code}",
+            "headSha": "${{ github.sha }}",
+            "buildRunId": "${{ github.run_id }}",
+            "workflowRunNumber": "${{ github.run_number }}"
+          }
+          JSON
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mangaviewer-debug-apk
+          path: release-artifact/*
+          if-no-files-found: error
+          retention-days: 14

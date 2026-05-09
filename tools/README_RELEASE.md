@@ -1,33 +1,26 @@
 # Release Automation
 
-Run this from the repository root after code changes are ready:
+GitHub Actions uses a two-step release flow:
+
+1. `Build APK Artifact` builds the debug APK on pushes to `main` and uploads `mangaviewer-debug-apk`.
+2. `Release APK` promotes the newest successful artifact by uploading it to the existing Latest release and committing `version.json` plus `releases.html`.
+
+The fast release job does not start Gradle. It downloads the already-built artifact and should stay much closer to the 30-second target on GitHub-hosted runners.
+
+Manual local full release is still available from the repository root:
 
 ```powershell
 .\tools\release_latest.ps1
 ```
 
-Normal releases are automated by GitHub Actions. After a code change lands on `main`, `.github/workflows/release-apk.yml` runs this script, bumps the APK version, updates `version.json`, commits the release metadata, pushes it back to `main`, and uploads the APK to the existing Latest release.
-
-The script:
-
-- increments `releasePatch` in `app/build.gradle`
-- computes the new `versionCode`
-- updates `version.json` and `releases.html`
-- runs `assembleDebug`
-- runs `testDebugUnitTest`
-- copies the APK into `apk/`
-- commits the release files
-- pushes `main`
-- uploads the APK to the existing Latest GitHub release
-
-To keep only the newest APK asset in the release:
+Promote an already downloaded artifact directory without committing or uploading:
 
 ```powershell
-.\tools\release_latest.ps1 -DeleteOldReleaseApks
+.\tools\promote_release_artifact.ps1 -ArtifactDir .\release-artifact -NoCommit -NoUpload
 ```
 
-Useful dry-run-ish mode for checking metadata/build without committing or uploading:
+Promote the latest successful GitHub artifact manually:
 
 ```powershell
-.\tools\release_latest.ps1 -NoCommit -NoUpload
+.\tools\promote_release_artifact.ps1
 ```

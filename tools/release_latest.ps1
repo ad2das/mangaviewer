@@ -81,14 +81,15 @@ $versionJsonPath = "version.json"
 $releasesHtmlPath = "releases.html"
 
 $buildGradle = Read-Utf8 $buildGradlePath
-$patchMatch = [regex]::Match($buildGradle, "def\s+releasePatch\s*=\s*(\d+)")
+$patchMatch = [regex]::Match($buildGradle, "def\s+defaultReleasePatch\s*=\s*(\d+)")
 if (-not $patchMatch.Success) {
-    throw "Could not find releasePatch in $buildGradlePath"
+    throw "Could not find defaultReleasePatch in $buildGradlePath"
 }
 
 $currentPatch = [int]$patchMatch.Groups[1].Value
 $nextPatch = if ($ReleasePatch -ge 0) { $ReleasePatch } else { $currentPatch + 1 }
-$dateCode = [int](Get-Date -Format "yyMMdd")
+$dateCodeText = Get-Date -Format "yyMMdd"
+$dateCode = [int]$dateCodeText
 $versionCode = 2112000000 + $dateCode + $nextPatch
 $apkName = "mangaViewer_${versionCode}-debug.apk"
 $downloadUrl = "https://github.com/$Repo/releases/download/$ReleaseTag/$apkName"
@@ -96,9 +97,6 @@ $downloadUrl = "https://github.com/$Repo/releases/download/$ReleaseTag/$apkName"
 Write-Step "Preparing version $versionCode"
 Write-Host "releasePatch: $currentPatch -> $nextPatch"
 Write-Host "apk: $apkName"
-
-$buildGradle = [regex]::Replace($buildGradle, "def\s+releasePatch\s*=\s*\d+", "def releasePatch = $nextPatch", 1)
-Write-Utf8NoBom $buildGradlePath $buildGradle
 
 $versionJson = @{
     version = $versionCode
@@ -112,17 +110,20 @@ $releasesHtml = [regex]::Replace($releasesHtml, 'browser_download_url:\s*"[^"]*m
 Write-Utf8NoBom $releasesHtmlPath $releasesHtml
 
 Write-Step "Building debug APK"
-Invoke-Gradle -GradleArgs @("--build-cache", "--parallel", "assembleDebug")
+Invoke-Gradle -GradleArgs @("--build-cache", "--parallel", "-PreleasePatch=$nextPatch", "-PreleaseDateCode=$dateCodeText", "assembleDebug")
 
 if (-not $SkipTests) {
     Write-Step "Running unit tests"
-    Invoke-Gradle -GradleArgs @("--build-cache", "--parallel", "testDebugUnitTest")
+    Invoke-Gradle -GradleArgs @("--build-cache", "--parallel", "-PreleasePatch=$nextPatch", "-PreleaseDateCode=$dateCodeText", "testDebugUnitTest")
 }
 
 $builtApk = "app/build/outputs/apk/debug/$apkName"
 if (-not (Test-Path $builtApk)) {
     throw "Built APK not found: $builtApk"
 }
+
+$buildGradle = [regex]::Replace($buildGradle, "def\s+defaultReleasePatch\s*=\s*\d+", "def defaultReleasePatch = $nextPatch", 1)
+Write-Utf8NoBom $buildGradlePath $buildGradle
 
 $changedFiles = @(
     $buildGradlePath,
