@@ -241,11 +241,7 @@ public class Search {
             ArrayList<Title> webtoonResults = new ArrayList<>();
             if(mode == 8) {
                 if(client != null && client.isNtk()) {
-                    if(!classificationSourceFetched) {
-                        appendWebtoonResults(client, webtoonResults, query, 0);
-                        classificationSourceFetched = true;
-                    }
-                    last = true;
+                    last = appendNextNtkCategoryPage(client, webtoonResults, query, 0);
                 } else {
                     String genre = genreFromCategoryPath(query, base_webtoon);
                     if(genre.length() > 0) {
@@ -307,11 +303,7 @@ public class Search {
             ArrayList<Title> comicResults = new ArrayList<>();
             if(mode == 8) {
                 if(client != null && client.isNtk()) {
-                    if(!classificationSourceFetched) {
-                        appendWebtoonResults(client, comicResults, query, 0);
-                        classificationSourceFetched = true;
-                    }
-                    last = true;
+                    last = appendNextNtkCategoryPage(client, comicResults, query, 0);
                 } else {
                     String genre = genreFromCategoryPath(query, base_comic);
                     if(genre.length() > 0) {
@@ -360,6 +352,10 @@ public class Search {
     }
 
     private void appendWebtoonResults(CustomHttpClient client, ArrayList<Title> target, String path, int limit) throws Exception {
+        target.addAll(fetchWebtoonResults(client, path, limit));
+    }
+
+    private ArrayList<Title> fetchWebtoonResults(CustomHttpClient client, String path, int limit) throws Exception {
         CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
         if(page.code >= 400)
             throw new Exception("Webtoon search failed: " + page.code);
@@ -375,7 +371,51 @@ public class Search {
         for(Title title : parsed)
             if(title != null)
                 title.setSourceSite(sourceSite);
-        target.addAll(parsed);
+        return parsed;
+    }
+
+    private boolean appendNextNtkCategoryPage(CustomHttpClient client, ArrayList<Title> target, String path, int limit) throws Exception {
+        String pagePath = ntkPagePath(path, page);
+        ArrayList<Title> parsed = fetchWebtoonResults(client, pagePath, limit);
+        int added = 0;
+        HashSet<String> pageKeys = new HashSet<>();
+        for(Title title : parsed) {
+            if(title == null)
+                continue;
+            String key = title.getBaseMode() + ":" + title.getId();
+            if(seenTitleKeys.contains(key) || !pageKeys.add(key))
+                continue;
+            target.add(title);
+            added++;
+        }
+        page++;
+        classificationSourceFetched = true;
+        return parsed.size() == 0 || added == 0;
+    }
+
+    static String ntkPagePathForTest(String path, int page) {
+        return ntkPagePath(path, page);
+    }
+
+    private static String ntkPagePath(String path, int page) {
+        if(path == null || page <= 1)
+            return path;
+        int hash = path.indexOf('#');
+        String fragment = hash >= 0 ? path.substring(hash) : "";
+        String base = hash >= 0 ? path.substring(0, hash) : path;
+        String[] split = base.split("\\?", 2);
+        String route = split[0];
+        String query = split.length > 1 ? split[1] : "";
+        ArrayList<String> params = new ArrayList<>();
+        if(query.length() > 0) {
+            for(String param : query.split("&")) {
+                if(param.length() == 0 || param.startsWith("page="))
+                    continue;
+                params.add(param);
+            }
+        }
+        params.add("page=" + page);
+        return route + "?" + String.join("&", params) + fragment;
     }
 
     private boolean appendSearchResults(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {
