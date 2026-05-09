@@ -405,10 +405,10 @@ public class ViewerActivity extends AppCompatActivity {
     private List<Manga> currentEpisodeList() {
         List<Manga> data = null;
         if(manga != null)
-            data = largerEpisodeList(data, manga.getEps());
+            data = largerEpisodeList(data, Utils.snapshotEpisodes(manga));
         data = largerEpisodeList(data, eps);
         if(title != null)
-            data = largerEpisodeList(data, title.getEps());
+            data = largerEpisodeList(data, Utils.snapshotEpisodes(title));
         return data;
     }
 
@@ -425,14 +425,15 @@ public class ViewerActivity extends AppCompatActivity {
         if(currentTitle == null || manga == null || !manga.isOnline())
             return;
         List<Manga> current = currentEpisodeList();
-        if(currentTitle.getEps() != null && currentTitle.getEps().size() >= (current == null ? 0 : current.size()) && currentTitle.getEps().size() > 3)
+        List<Manga> existingEpisodes = Utils.snapshotEpisodes(currentTitle);
+        if(existingEpisodes.size() >= (current == null ? 0 : current.size()) && existingEpisodes.size() > 3)
             return;
         AppDispatchers.submitIo(() -> {
             try {
                 int result = MangaRepository.fetchEpisodes(currentTitle);
                 if(result == LOAD_CAPTCHA || isFinishing())
                     return;
-                List<Manga> loaded = currentTitle.getEps();
+                List<Manga> loaded = Utils.snapshotEpisodes(currentTitle);
                 if(loaded == null || loaded.size() == 0)
                     return;
                 for(Manga episode : loaded) {
@@ -606,7 +607,11 @@ public class ViewerActivity extends AppCompatActivity {
             }
         }else{
             //offline
-            eps = title.getEps();
+            eps = Utils.snapshotEpisodes(title);
+            if(eps.size() == 0 || !eps.contains(m)) {
+                showPopup(context, "오류", "저장된 회차 정보를 불러오지 못했습니다.", (dialog, which) -> ViewerActivity.this.finish(), dialog -> ViewerActivity.this.finish());
+                return;
+            }
 //            for(int i=0; i<eps.size(); i++){
 //                eps.get(i).setNextEp(i>0 ? eps.get(i-1) : null);
 //                eps.get(i).setPrevEp(i<eps.size()-1 ? eps.get(i+1) : null);
@@ -1019,7 +1024,7 @@ public class ViewerActivity extends AppCompatActivity {
         if(!skipTarget)
             addResumeCandidate(candidates, target);
         Title currentTitle = title != null ? title : target == null ? null : target.getTitle();
-        List<Manga> episodes = currentTitle == null ? null : currentTitle.getEps();
+        List<Manga> episodes = currentTitle == null ? null : Utils.snapshotEpisodes(currentTitle);
         if(episodes == null || episodes.size() == 0)
             return candidates;
 
@@ -1072,8 +1077,9 @@ public class ViewerActivity extends AppCompatActivity {
         if(currentTitle != null) {
             candidate.setTitle(currentTitle);
             candidate.setTitleId(currentTitle.getId());
-            if(currentTitle.getEps() != null && currentTitle.getEps().size() > 0)
-                candidate.setEps(currentTitle.getEps());
+            List<Manga> episodes = Utils.snapshotEpisodes(currentTitle);
+            if(episodes.size() > 0)
+                candidate.setEps(episodes);
         }
         for(Manga existing : candidates)
             if(existing != null && existing.getId() == candidate.getId() && existing.getBaseMode() == candidate.getBaseMode())
@@ -1094,12 +1100,13 @@ public class ViewerActivity extends AppCompatActivity {
     private void restoreTitleEpisodes(Title currentTitle, Manga target) {
         if(currentTitle == null || target == null)
             return;
-        List<Manga> targetEpisodes = target.getEps();
+        List<Manga> targetEpisodes = Utils.snapshotEpisodes(target);
+        List<Manga> currentEpisodes = Utils.snapshotEpisodes(currentTitle);
         if(targetEpisodes != null && targetEpisodes.size() > 1
-                && !containsEpisode(currentTitle.getEps(), target)
-                && (currentTitle.getEps() == null || currentTitle.getEps().size() < targetEpisodes.size()))
+                && !containsEpisode(currentEpisodes, target)
+                && currentEpisodes.size() < targetEpisodes.size())
             currentTitle.setEps(targetEpisodes);
-        if(currentTitle.getEps() == null || currentTitle.getEps().size() <= 1)
+        if(Utils.snapshotEpisodes(currentTitle).size() <= 1)
             restoreCachedEpisodes(currentTitle);
         attachEpisodeList(currentTitle, target);
     }
@@ -1201,8 +1208,8 @@ public class ViewerActivity extends AppCompatActivity {
         Title source = title != null ? title : (target == null ? null : target.getTitle());
         if(source == null || target == null)
             return source;
-        List<Manga> episodes = target.getEps();
-        if((source.getEps() == null || source.getEps().size() <= 1) && episodes != null && episodes.size() > 1)
+        List<Manga> episodes = Utils.snapshotEpisodes(target);
+        if(Utils.snapshotEpisodes(source).size() <= 1 && episodes != null && episodes.size() > 1)
             source.setEps(episodes);
         target.setTitle(source);
         target.setTitleId(source.getId());
@@ -1534,10 +1541,10 @@ public class ViewerActivity extends AppCompatActivity {
 
     public void refreshToolbar(Manga m){
         //spinner
-        eps = m.getEps();
+        eps = Utils.snapshotEpisodes(m);
         if((eps == null || eps.size() == 0) && title != null){
             //backup plan
-            eps = title.getEps();
+            eps = Utils.snapshotEpisodes(title);
         }
         boolean hasEpisodes = eps != null && eps.size() > 0;
         episodeButton.setEnabled(hasEpisodes);
@@ -1635,8 +1642,8 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private boolean needsFullEpisodeList(Title currentTitle, Manga target) {
-        List<Manga> titleEpisodes = currentTitle == null ? null : currentTitle.getEps();
-        List<Manga> targetEpisodes = target == null ? null : target.getEps();
+        List<Manga> titleEpisodes = currentTitle == null ? null : Utils.snapshotEpisodes(currentTitle);
+        List<Manga> targetEpisodes = target == null ? null : Utils.snapshotEpisodes(target);
         int titleCount = titleEpisodes == null ? 0 : titleEpisodes.size();
         int targetCount = targetEpisodes == null ? 0 : targetEpisodes.size();
         return !containsEpisode(titleEpisodes, target) || Math.max(titleCount, targetCount) <= 3;
@@ -1645,7 +1652,7 @@ public class ViewerActivity extends AppCompatActivity {
     private void attachEpisodeList(Title currentTitle, Manga target) {
         if(currentTitle == null)
             return;
-        List<Manga> episodes = currentTitle.getEps();
+        List<Manga> episodes = Utils.snapshotEpisodes(currentTitle);
         if(episodes != null)
             for(Manga episode : episodes) {
                 if(episode != null) {
@@ -1659,7 +1666,7 @@ public class ViewerActivity extends AppCompatActivity {
             if(episodes != null && episodes.size() > 0
                     && containsEpisode(episodes, target)
                     && !containsSameInstance(episodes, target)
-                    && (target.getEps() == null || episodes.size() >= target.getEps().size()))
+                    && (Utils.snapshotEpisodes(target).size() == 0 || episodes.size() >= Utils.snapshotEpisodes(target).size()))
                 target.setEps(episodes);
         }
         title = currentTitle;

@@ -19,7 +19,9 @@ import org.json.JSONArray;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.adapter.SelectEpisodeAdapter;
+import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -44,12 +46,14 @@ public class DownloadActivity extends AppCompatActivity {
         Intent intent = getIntent();
         try {
             title = new Gson().fromJson(intent.getStringExtra("title"),new TypeToken<Title>(){}.getType());
+            java.util.ArrayList<Manga> episodes = Utils.snapshotEpisodes(title);
+            title.setEps(episodes);
             eplist.setLayoutManager(new NpaLinearLayoutManager(this));
             eplist.setHasFixedSize(true);
             eplist.setItemViewCacheSize(20);
             eplist.setItemAnimator(null);
             eplist.setOverScrollMode(View.OVER_SCROLL_NEVER);
-            adapter = new SelectEpisodeAdapter(getApplicationContext(),title.getEps());
+            adapter = new SelectEpisodeAdapter(getApplicationContext(), episodes);
             adapter.setClickListener((view, position) -> adapter.select(position));
             eplist.setAdapter(adapter);
         }catch (Exception e){
@@ -57,7 +61,7 @@ public class DownloadActivity extends AppCompatActivity {
         }
         Button dl = findViewById(R.id.dl_btn);
         dl.setOnClickListener(v -> {
-            if(adapter == null || title == null || title.getEps() == null || title.getEps().size() == 0) {
+            if(adapter == null || title == null || Utils.snapshotEpisodes(title).size() == 0) {
                 Toast.makeText(getApplication(),"다운로드할 회차 정보를 불러오지 못했습니다", Toast.LENGTH_SHORT).show();
                 return;
             }
@@ -70,7 +74,7 @@ public class DownloadActivity extends AppCompatActivity {
         });
         Button dlAll = findViewById(R.id.dl_all_btn);
         dlAll.setOnClickListener(v -> {
-            if(adapter == null || title == null || title.getEps() == null || title.getEps().size() == 0) {
+            if(adapter == null || title == null || Utils.snapshotEpisodes(title).size() == 0) {
                 Toast.makeText(getApplication(),"다운로드할 회차 정보를 불러오지 못했습니다", Toast.LENGTH_SHORT).show();
                 return;
             }

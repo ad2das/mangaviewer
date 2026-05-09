@@ -567,9 +567,10 @@ public class Preference {
         int incomingCount = title.getEpsCount();
         boolean incomingHasCompleteList = incomingCount > 0
                 && (existingCount <= 0 || incomingCount >= existingCount);
-        if(incomingHasCompleteList && title.getEps() != null) {
-            for(int i = 0; i < title.getEps().size(); i++) {
-                if(title.getEps().get(i) != null && title.getEps().get(i).getId() == episodeId) {
+        List<Manga> episodes = Utils.snapshotEpisodes(title);
+        if(incomingHasCompleteList && episodes.size() > 0) {
+            for(int i = 0; i < episodes.size(); i++) {
+                if(episodes.get(i) != null && episodes.get(i).getId() == episodeId) {
                     episodeIndex = i + 1;
                     break;
                 }
@@ -853,18 +854,19 @@ public class Preference {
             processed++;
             try {
                 int code = title.fetchEps(client);
-                if(code == Title.LOAD_CAPTCHA || title.getEps() == null || title.getEps().size() == 0)
+                List<Manga> episodes = Utils.snapshotEpisodes(title);
+                if(code == Title.LOAD_CAPTCHA || episodes.size() == 0)
                     continue;
                 int episodeIndex = -1;
-                for(int i = 0; i < title.getEps().size(); i++) {
-                    Manga episode = title.getEps().get(i);
+                for(int i = 0; i < episodes.size(); i++) {
+                    Manga episode = episodes.get(i);
                     if(episode != null && episode.getId() == bookmarkId) {
                         episodeIndex = i + 1;
                         break;
                     }
                 }
                 if(episodeIndex > 0) {
-                    item.setReadingProgress(bookmarkId, episodeIndex, title.getEps().size());
+                    item.setReadingProgress(bookmarkId, episodeIndex, episodes.size());
                     changed = true;
                 }
             } catch (Exception e) {

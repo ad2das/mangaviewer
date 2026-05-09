@@ -140,13 +140,17 @@ public class MainSearch extends Fragment {
             @Override
             public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
                 super.onScrollStateChanged(recyclerView, newState);
-                if(getContext() == null)
+                if(getContext() == null || !isAdded())
                     return;
-                if(newState == RecyclerView.SCROLL_STATE_IDLE) {
-                    Glide.with(MainSearch.this).resumeRequests();
-                    applyPendingLibraryRefreshIfIdle();
-                } else {
-                    Glide.with(MainSearch.this).pauseRequests();
+                try {
+                    if(newState == RecyclerView.SCROLL_STATE_IDLE) {
+                        Glide.with(MainSearch.this).resumeRequests();
+                        applyPendingLibraryRefreshIfIdle();
+                    } else {
+                        Glide.with(MainSearch.this).pauseRequests();
+                    }
+                } catch (RuntimeException e) {
+                    ml.melun.mangaview.report.CrashReporter.record(e);
                 }
             }
         });
@@ -461,14 +465,14 @@ public class MainSearch extends Fragment {
     private ArrayList<Title> getLibraryTitles(int tab) {
         ArrayList<Title> data = new ArrayList<>();
         if(tab == 1) {
-            appendUnique(data, p.getRecent());
+            appendUnique(data, Utils.snapshotList(p.getRecent()));
         } else if(tab == 2) {
-            appendUnique(data, p.getFavorite());
+            appendUnique(data, Utils.snapshotList(p.getFavorite()));
         } else if(tab == 3) {
             appendUnique(data, offlineTitles);
         } else {
-            appendUnique(data, p.getRecent());
-            appendUnique(data, p.getFavorite());
+            appendUnique(data, Utils.snapshotList(p.getRecent()));
+            appendUnique(data, Utils.snapshotList(p.getFavorite()));
             appendUnique(data, offlineTitles);
         }
         return data;
@@ -537,7 +541,7 @@ public class MainSearch extends Fragment {
     private boolean isRecentTitle(Title title) {
         if(title == null)
             return false;
-        for(MTitle recent : p.getRecent()) {
+        for(MTitle recent : Utils.snapshotList(p.getRecent())) {
             if(recent != null
                     && recent.getId() == title.getId()
                     && recent.getBaseMode() == title.getBaseMode())
@@ -659,9 +663,9 @@ public class MainSearch extends Fragment {
                 title.setBookmark(bookmark);
             return title;
         }
-        MTitle stored = findStoredTitle(title, p.getRecent());
+        MTitle stored = findStoredTitle(title, Utils.snapshotList(p.getRecent()));
         if(stored == null)
-            stored = findStoredTitle(title, p.getFavorite());
+            stored = findStoredTitle(title, Utils.snapshotList(p.getFavorite()));
         if(stored == null)
             return title;
         Title latest = stored instanceof Title ? (Title) stored : new Title(stored);

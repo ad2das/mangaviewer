@@ -945,20 +945,23 @@ public class ViewerActivity2 extends AppCompatActivity {
         Title currentTitle = title != null ? title : target.getTitle();
         if(currentTitle == null)
             return 0;
-        if(currentTitle.getEps() == null || currentTitle.getEps().size() <= 1) {
+        if(Utils.snapshotEpisodes(currentTitle).size() <= 1) {
             int result = MangaRepository.fetchEpisodes(currentTitle);
             if(result == LOAD_CAPTCHA)
                 return result;
         }
         target.setTitle(currentTitle);
         target.setTitleId(currentTitle.getId());
-        if(currentTitle.getEps() != null)
-            for(Manga episode : currentTitle.getEps()) {
+        List<Manga> episodes = Utils.snapshotEpisodes(currentTitle);
+        if(episodes.size() > 0)
+            for(Manga episode : episodes) {
                 if(episode != null) {
                     episode.setTitle(currentTitle);
                     episode.setTitleId(currentTitle.getId());
                 }
             }
+        if(episodes.size() > 0)
+            target.setEps(episodes);
         title = currentTitle;
         return 0;
     }
@@ -1064,10 +1067,12 @@ public class ViewerActivity2 extends AppCompatActivity {
     }
 
     public void refreshToolbar(){
-        eps = manga.getEps();
+        eps = Utils.snapshotEpisodes(manga);
         if(eps == null || eps.size() == 0){
-            eps = title.getEps();
+            eps = Utils.snapshotEpisodes(title);
         }
+        if(eps == null)
+            eps = new java.util.ArrayList<>();
         for(int i=0; i<eps.size(); i++){
             if(eps.get(i).equals(manga)){
                 index = i;

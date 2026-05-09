@@ -37,6 +37,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
 
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.MainPageWebtoon;
@@ -864,7 +865,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private void appendRecentTitlesForCurrentMode(List<Title> target, int limit) {
-        List<MTitle> recent = p.getRecent();
+        List<MTitle> recent = Utils.snapshotList(p.getRecent());
         if(recent == null || target == null)
             return;
         for(MTitle item : recent) {
@@ -880,7 +881,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private void appendRecentTitlesForAnyMode(List<Title> target, int limit) {
-        List<MTitle> recent = p.getRecent();
+        List<MTitle> recent = Utils.snapshotList(p.getRecent());
         if(recent == null || target == null)
             return;
         for(MTitle item : recent) {
@@ -1632,10 +1633,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 return section.titles.get(0);
             }
         }
-        List<MTitle> recent = p.getRecent();
+        List<MTitle> recent = Utils.snapshotList(p.getRecent());
         if(recent == null || recent.size() == 0)
             return null;
-        for(MTitle item : new ArrayList<>(recent)) {
+        for(MTitle item : recent) {
             if(item == null || item.getId() <= 0)
                 continue;
             Title title = item instanceof Title ? (Title) item : new Title(item);
@@ -1653,13 +1654,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private List<Manga> snapshotEpisodes(Title item) {
-        if(item == null || item.getEps() == null)
-            return null;
-        try {
-            return new ArrayList<>(item.getEps());
-        } catch (RuntimeException ignored) {
-            return null;
-        }
+        return Utils.snapshotEpisodes(item);
     }
 
     class ActionStripHolder extends RecyclerView.ViewHolder {
@@ -2552,7 +2547,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private boolean hasMissingContinueProgress() {
-        List<MTitle> recent = p.getRecent();
+        List<MTitle> recent = Utils.snapshotList(p.getRecent());
         if(recent == null)
             return false;
         for(MTitle item : recent) {

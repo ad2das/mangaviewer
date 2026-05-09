@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Locale;
 
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
@@ -354,8 +355,9 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
         manga.setTitle(title);
         manga.setTitleId(title.getId());
-        if(title.getEps() != null && title.getEps().size() > 0)
-            manga.setEps(title.getEps());
+        List<Manga> episodes = Utils.snapshotEpisodes(title);
+        if(episodes.size() > 0)
+            manga.setEps(episodes);
         ViewerWarmupManager.warmupContinueImmediate(mainContext, manga, title);
     }
 
@@ -391,10 +393,10 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     }
 
     private int findStoredProgressBookmark(Title title) {
-        int bookmark = findStoredProgressBookmark(title, p.getRecent());
+        int bookmark = findStoredProgressBookmark(title, Utils.snapshotList(p.getRecent()));
         if(bookmark > 0)
             return bookmark;
-        return findStoredProgressBookmark(title, p.getFavorite());
+        return findStoredProgressBookmark(title, Utils.snapshotList(p.getFavorite()));
     }
 
     private int findStoredProgressBookmark(Title title, List<MTitle> source) {

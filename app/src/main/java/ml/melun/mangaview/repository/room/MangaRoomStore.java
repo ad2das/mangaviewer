@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import ml.melun.mangaview.Preference;
+import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.runtime.AppDispatchers;
@@ -70,8 +71,8 @@ public final class MangaRoomStore {
             if(preference == null)
                 return;
             MangaStoreDao dao = dao(context);
-            dao.replaceLibraryScope(SCOPE_RECENT, libraryEntities(SCOPE_RECENT, preference.getRecent()));
-            dao.replaceLibraryScope(SCOPE_FAVORITE, libraryEntities(SCOPE_FAVORITE, preference.getFavorite()));
+            dao.replaceLibraryScope(SCOPE_RECENT, libraryEntities(SCOPE_RECENT, Utils.snapshotList(preference.getRecent())));
+            dao.replaceLibraryScope(SCOPE_FAVORITE, libraryEntities(SCOPE_FAVORITE, Utils.snapshotList(preference.getFavorite())));
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
@@ -81,6 +82,7 @@ public final class MangaRoomStore {
         ArrayList<LibraryTitleEntity> entities = new ArrayList<>();
         if(titles == null)
             return entities;
+        titles = Utils.snapshotList(titles);
         long now = System.currentTimeMillis();
         for(int i = 0; i < titles.size(); i++) {
             MTitle title = titles.get(i);

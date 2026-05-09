@@ -9,9 +9,17 @@ public class DownloadTitle extends MTitle {
     public DownloadTitle(Title t){
         super(t.getName(), t.getId(), t.getThumb(), t.getAuthor(), t.getTags(), t.getRelease(), t.getBaseMode());
         eps = new ArrayList<>();
-        if(t.getEps() == null)
+        List<Manga> source;
+        try {
+            List<Manga> titleEpisodes = t.getEps();
+            source = titleEpisodes == null ? null : new ArrayList<>(titleEpisodes);
+        } catch (RuntimeException e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            source = null;
+        }
+        if(source == null)
             return;
-        for(Manga episode : t.getEps()) {
+        for(Manga episode : source) {
             if(episode == null)
                 continue;
             Manga copy = new Manga(episode.getId(), episode.getName(), episode.getDate(), episode.getBaseMode());

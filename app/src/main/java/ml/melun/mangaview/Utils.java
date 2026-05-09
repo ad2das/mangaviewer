@@ -279,6 +279,25 @@ public class Utils {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN_MR1 || !activity.isDestroyed();
     }
 
+    public static <T> ArrayList<T> snapshotList(List<T> source) {
+        if(source == null)
+            return new ArrayList<>();
+        try {
+            return new ArrayList<>(source);
+        } catch (RuntimeException e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return new ArrayList<>();
+        }
+    }
+
+    public static ArrayList<Manga> snapshotEpisodes(Title title) {
+        return title == null ? new ArrayList<>() : snapshotList(title.getEps());
+    }
+
+    public static ArrayList<Manga> snapshotEpisodes(Manga manga) {
+        return manga == null ? new ArrayList<>() : snapshotList(manga.getEps());
+    }
+
     public static String toViewerMangaJson(Manga manga, Title title) {
         return new Gson().toJson(viewerMangaCopy(manga, title));
     }
@@ -292,7 +311,7 @@ public class Utils {
             return null;
         Title copy = new Title(title.minimize());
         if(includeEpisodes)
-            copy.setEps(viewerEpisodeCopies(title.getEps()));
+            copy.setEps(viewerEpisodeCopies(snapshotEpisodes(title)));
         return new Gson().toJson(copy);
     }
 
@@ -300,11 +319,7 @@ public class Utils {
         if(source == null)
             return null;
         Manga copy = viewerEpisodeCopy(source, true);
-        List<Manga> episodes = null;
-        if(title != null && title.getEps() != null)
-            episodes = title.getEps();
-        else if(source.getEps() != null)
-            episodes = source.getEps();
+        List<Manga> episodes = title != null ? snapshotEpisodes(title) : snapshotEpisodes(source);
         copy.setEps(viewerEpisodeCopies(episodes));
         if(title != null)
             copy.setTitle(new Title(title.minimize()));
@@ -357,13 +372,15 @@ public class Utils {
             Toast.makeText(context, "작품 정보를 불러오지 못했습니다", Toast.LENGTH_SHORT).show();
             return false;
         }
-        if(title.getEps() == null)
-            title.setEps(new ArrayList<>());
-        int index = findEpisodeIndex(title.getEps(), manga);
+        ArrayList<Manga> episodes = snapshotEpisodes(title);
+        if(episodes.size() == 0)
+            title.setEps(episodes);
+        int index = findEpisodeIndex(episodes, manga);
         if(index < 0) {
             manga.setTitle(title);
-            title.getEps().add(manga);
-            index = title.getEps().size() - 1;
+            episodes.add(manga);
+            title.setEps(episodes);
+            index = episodes.size() - 1;
         }
         JSONArray selected = new JSONArray();
         selected.put(index);
@@ -375,7 +392,7 @@ public class Utils {
             Toast.makeText(context, "다운로드할 회차를 선택해 주세요", Toast.LENGTH_SHORT).show();
             return false;
         }
-        if(title.getEps() == null || title.getEps().size() == 0) {
+        if(snapshotEpisodes(title).size() == 0) {
             Toast.makeText(context, "다운로드할 회차 정보를 불러오지 못했습니다", Toast.LENGTH_SHORT).show();
             return false;
         }
@@ -472,9 +489,9 @@ public class Utils {
     }
 
     private static Manga findSavedEpisode(Title title, int id, int baseMode) {
-        if(title == null || title.getEps() == null)
+        if(title == null)
             return null;
-        for(Manga episode : title.getEps()) {
+        for(Manga episode : snapshotEpisodes(title)) {
             if(episode != null && episode.getId() == id && episode.getBaseMode() == baseMode)
                 return episode;
         }
@@ -699,9 +716,17 @@ public class Utils {
             try {
                 Response r = getHttpClient().mget("/plugin/kcaptcha/kcaptcha_image.php?t=" + currentTimeMillis(), false);
                 final byte[] b = CustomHttpClient.readBytes(r);
-                ((Activity) context).runOnUiThread(() -> Glide.with(img)
-                        .load(b)
-                        .into(img));
+                ((Activity) context).runOnUiThread(() -> {
+                    if(!(context instanceof Activity) || !canUseActivity((Activity) context) || img == null)
+                        return;
+                    try {
+                        Glide.with(img)
+                                .load(b)
+                                .into(img);
+                    } catch (RuntimeException glideError) {
+                        ml.melun.mangaview.report.CrashReporter.record(glideError);
+                    }
+                });
             }catch (Exception e){
                 ml.melun.mangaview.report.CrashReporter.record(e);
             }
@@ -724,6 +749,8 @@ public class Utils {
                             response.close();
                     }
                     ((Activity) context).runOnUiThread(() -> {
+                        if(!(context instanceof Activity) || !canUseActivity((Activity) context))
+                            return;
                         ((Activity) context).finish();
                         ((Activity) context).startActivity(((Activity) context).getIntent());
                     });

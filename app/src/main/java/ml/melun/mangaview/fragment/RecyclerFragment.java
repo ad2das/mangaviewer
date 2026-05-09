@@ -31,6 +31,7 @@ import java.util.List;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Preference;
+import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.adapter.TitleAdapter;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
@@ -90,12 +91,16 @@ public class RecyclerFragment extends Fragment {
             @Override
             public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
                 super.onScrollStateChanged(recyclerView, newState);
-                if(getContext() == null)
+                if(getContext() == null || !isAdded())
                     return;
-                if(newState == RecyclerView.SCROLL_STATE_IDLE)
-                    Glide.with(RecyclerFragment.this).resumeRequests();
-                else
-                    Glide.with(RecyclerFragment.this).pauseRequests();
+                try {
+                    if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                        Glide.with(RecyclerFragment.this).resumeRequests();
+                    else
+                        Glide.with(RecyclerFragment.this).pauseRequests();
+                } catch (RuntimeException e) {
+                    ml.melun.mangaview.report.CrashReporter.record(e);
+                }
             }
         });
         localChangeListener = scope -> {
@@ -244,9 +249,9 @@ public class RecyclerFragment extends Fragment {
     private Title resolveLatestTitleForResume(Title title) {
         if(title == null)
             return null;
-        MTitle stored = findStoredTitle(title, mode == R.id.nav_favorite ? p.getFavorite() : p.getRecent());
+        MTitle stored = findStoredTitle(title, mode == R.id.nav_favorite ? Utils.snapshotList(p.getFavorite()) : Utils.snapshotList(p.getRecent()));
         if(stored == null && mode == R.id.nav_favorite)
-            stored = findStoredTitle(title, p.getRecent());
+            stored = findStoredTitle(title, Utils.snapshotList(p.getRecent()));
         if(stored == null)
             return title;
         Title latest = stored instanceof Title ? (Title) stored : new Title(stored);
@@ -297,11 +302,11 @@ public class RecyclerFragment extends Fragment {
         if(id == R.id.nav_recent){
             titleAdapter.setResume(true);
             titleAdapter.setForceThumbnail(false);
-            titleAdapter.setData(p.getRecent());
+            titleAdapter.setData(Utils.snapshotList(p.getRecent()));
         }else if(id == R.id.nav_favorite){
             titleAdapter.setResume(true);
             titleAdapter.setForceThumbnail(false);
-            titleAdapter.setData(p.getFavorite());
+            titleAdapter.setData(Utils.snapshotList(p.getFavorite()));
         }else if(id == R.id.nav_download){
             titleAdapter.setResume(false);
             titleAdapter.setForceThumbnail(true);

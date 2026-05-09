@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.ui.StableScrollbarRecyclerView;
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.adapter.TitleAdapter;
 import ml.melun.mangaview.adapter.UpdatedAdapter;
 import ml.melun.mangaview.mangaview.Bookmark;
@@ -265,8 +266,9 @@ public class TagSearchActivity extends AppCompatActivity {
                         if(title != null) {
                             manga.setTitle(title);
                             manga.setTitleId(title.getId());
-                            if(title.getEps() != null && title.getEps().size() > 0)
-                                manga.setEps(title.getEps());
+                            ArrayList<Manga> episodes = Utils.snapshotEpisodes(title);
+                            if(episodes.size() > 0)
+                                manga.setEps(episodes);
                         }
                         openViewerPrepared(context, manga, 0, false, true, false, title, true);
                     }
@@ -366,8 +368,9 @@ public class TagSearchActivity extends AppCompatActivity {
                         if(title != null) {
                             manga.setTitle(title);
                             manga.setTitleId(title.getId());
-                            if(title.getEps() != null && title.getEps().size() > 0)
-                                manga.setEps(title.getEps());
+                            ArrayList<Manga> episodes = Utils.snapshotEpisodes(title);
+                            if(episodes.size() > 0)
+                                manga.setEps(episodes);
                         }
                         openViewerPrepared(context, manga, 0, false, true, false, title, true);
                     }

@@ -25,6 +25,7 @@ import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getOfflineEpisodes;
 import static ml.melun.mangaview.Utils.readFileToString;
 import static ml.melun.mangaview.Utils.readUriToString;
+import static ml.melun.mangaview.Utils.snapshotEpisodes;
 import static ml.melun.mangaview.Utils.useScopedStorageHome;
 
 public final class OfflineStore {
@@ -109,9 +110,7 @@ public final class OfflineStore {
     public static Manga resolveResumeManga(Context context, Title title, int bookmark) {
         if(context == null || title == null || title.getPath() == null)
             return null;
-        List<Manga> episodes = title.getEps();
-        if(episodes == null)
-            episodes = new ArrayList<>();
+        List<Manga> episodes = snapshotEpisodes(title);
         title.setEps(episodes);
         int mode = title.useBookmark() ? 3 : 4;
         if(useScopedStorageHome(title.getPath())) {
@@ -226,10 +225,7 @@ public final class OfflineStore {
     }
 
     private static ArrayList<Manga> existingEpisodes(Title title) {
-        List<Manga> source = title.getEps();
-        if(source == null)
-            return new ArrayList<>();
-        return new ArrayList<>(source);
+        return snapshotEpisodes(title);
     }
 
     private static void applyExistingOfflineFolder(Title title, List<Manga> episodes, String folderName, String path, int mode) {

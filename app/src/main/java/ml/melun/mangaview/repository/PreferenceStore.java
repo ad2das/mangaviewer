@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import java.util.List;
 
 import ml.melun.mangaview.mangaview.MTitle;
+import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.repository.room.MangaRoomStore;
 
 import static ml.melun.mangaview.MainApplication.appContext;
@@ -19,11 +20,11 @@ public final class PreferenceStore {
     }
 
     public static List<MTitle> favorites() {
-        return p.getFavorite();
+        return Utils.snapshotList(p.getFavorite());
     }
 
     public static List<MTitle> recents() {
-        return p.getRecent();
+        return Utils.snapshotList(p.getRecent());
     }
 
     public static void setFavorites(List<MTitle> titles) {

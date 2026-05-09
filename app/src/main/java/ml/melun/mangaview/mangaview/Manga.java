@@ -88,9 +88,9 @@ public class Manga {
         List<String> sourceImages = source.getImgs(null);
         if(sourceImages != null)
             imgs = new ArrayList<>(sourceImages);
-        List<Manga> sourceEpisodes = source.getEps();
+        List<Manga> sourceEpisodes = safeEpisodeCopy(source.getEps());
         if(sourceEpisodes != null)
-            eps = new ArrayList<>(sourceEpisodes);
+            eps = sourceEpisodes;
         seed = source.getSeed();
         if(source.getName() != null && source.getName().length() > 0)
             name = source.getName();
@@ -332,8 +332,9 @@ public class Manga {
                     addImageIfValid(client, seenImages, src);
             }
 
-            if(title != null && title.getEps() != null && title.getEps().size() > 0) {
-                eps = title.getEps();
+            List<Manga> titleEpisodes = title == null ? null : safeEpisodeCopy(title.getEps());
+            if(titleEpisodes != null && titleEpisodes.size() > 0) {
+                eps = titleEpisodes;
                 for(Manga ep : eps) {
                     ep.setMode(0);
                     ep.setTitle(title);
@@ -593,7 +594,7 @@ public class Manga {
     }
 
     private List<Manga> effectiveEpisodes() {
-        List<Manga> titleEpisodes = title == null ? null : title.getEps();
+        List<Manga> titleEpisodes = title == null ? null : safeEpisodeCopy(title.getEps());
         int titleIndex = findEpisodeIndex(titleEpisodes);
         int localIndex = findEpisodeIndex(eps);
         if(titleIndex >= 0 && (localIndex < 0 || titleEpisodes.size() >= eps.size()))
@@ -616,6 +617,17 @@ public class Manga {
             if (episode != null && episode.getId() == id) return i;
         }
         return -1;
+    }
+
+    private static List<Manga> safeEpisodeCopy(List<Manga> source) {
+        if(source == null)
+            return null;
+        try {
+            return new ArrayList<>(source);
+        } catch (RuntimeException e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return null;
+        }
     }
 
     public void setPrevEp(Manga m) {

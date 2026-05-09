@@ -64,12 +64,16 @@ public class MainUpdates extends Fragment {
             @Override
             public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
                 super.onScrollStateChanged(recyclerView, newState);
-                if(getContext() == null)
+                if(getContext() == null || !isAdded())
                     return;
-                if(newState == RecyclerView.SCROLL_STATE_IDLE)
-                    Glide.with(MainUpdates.this).resumeRequests();
-                else
-                    Glide.with(MainUpdates.this).pauseRequests();
+                try {
+                    if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                        Glide.with(MainUpdates.this).resumeRequests();
+                    else
+                        Glide.with(MainUpdates.this).pauseRequests();
+                } catch (RuntimeException e) {
+                    ml.melun.mangaview.report.CrashReporter.record(e);
+                }
             }
         });
         adapter = new UpdatedAdapter(getContext());

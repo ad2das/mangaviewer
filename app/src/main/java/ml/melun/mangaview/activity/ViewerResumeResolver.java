@@ -3,6 +3,7 @@ package ml.melun.mangaview.activity;
 import java.util.ArrayList;
 import java.util.List;
 
+import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 
@@ -15,17 +16,18 @@ public final class ViewerResumeResolver {
     public static boolean shouldResolveBeforeDirectFetch(Manga target, Title title) {
         if(target == null || !target.isOnline() || title == null)
             return false;
-        if(containsEpisode(title.getEps(), target))
+        List<Manga> episodes = Utils.snapshotEpisodes(title);
+        if(containsEpisode(episodes, target))
             return false;
         int episodeCount = title.getEpisodeCount();
-        if(episodeCount <= 0 && title.getEps() != null)
-            episodeCount = title.getEps().size();
+        if(episodeCount <= 0)
+            episodeCount = episodes.size();
         return target.getId() > 0 && episodeCount > 0 && target.getId() <= episodeCount;
     }
 
     public static List<Manga> candidates(Manga target, Title title, boolean skipTarget) {
         ArrayList<Manga> candidates = new ArrayList<>();
-        List<Manga> episodes = title == null ? null : title.getEps();
+        List<Manga> episodes = title == null ? null : Utils.snapshotEpisodes(title);
         if(episodes == null || episodes.size() == 0) {
             if(!skipTarget)
                 addCandidate(candidates, target, title);
@@ -99,8 +101,9 @@ public final class ViewerResumeResolver {
         if(title != null) {
             candidate.setTitle(title);
             candidate.setTitleId(title.getId());
-            if(title.getEps() != null && title.getEps().size() > 0)
-                candidate.setEps(title.getEps());
+            List<Manga> episodes = Utils.snapshotEpisodes(title);
+            if(episodes.size() > 0)
+                candidate.setEps(episodes);
         }
         for(Manga existing : candidates)
             if(sameManga(existing, candidate))

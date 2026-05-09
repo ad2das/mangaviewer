@@ -112,11 +112,11 @@ public class ViewerWarmupManager {
     public static void warmupSavedContinues(Context context, int limit) {
         if(context == null || p == null)
             return;
-        List<MTitle> recent = p.getRecent();
+        List<MTitle> recent = Utils.snapshotList(p.getRecent());
         if(recent == null || recent.size() == 0)
             return;
         int warmed = 0;
-        for(MTitle item : new ArrayList<>(recent)) {
+        for(MTitle item : recent) {
             if(item == null || item.getId() <= 0)
                 continue;
             Title title = item instanceof Title ? (Title) item : new Title(item);
@@ -144,8 +144,9 @@ public class ViewerWarmupManager {
         if(title != null) {
             manga.setTitle(title);
             manga.setTitleId(title.getId());
-            if(title.getEps() != null && title.getEps().size() > 0)
-                manga.setEps(title.getEps());
+            List<Manga> episodes = Utils.snapshotEpisodes(title);
+            if(episodes.size() > 0)
+                manga.setEps(episodes);
         } else {
             title = manga.getTitle();
         }
@@ -163,7 +164,7 @@ public class ViewerWarmupManager {
             try {
                 Manga target = manga;
                 Title currentTitle = warmupTitle != null ? warmupTitle : target.getTitle();
-                if(currentTitle != null && (currentTitle.getEps() == null || currentTitle.getEps().size() <= 1)) {
+                if(currentTitle != null && Utils.snapshotEpisodes(currentTitle).size() <= 1) {
                     int result = MangaRepository.fetchEpisodes(currentTitle);
                     if(result == LOAD_OK)
                         attachTitle(currentTitle, target);
@@ -196,8 +197,9 @@ public class ViewerWarmupManager {
         if(title != null) {
             manga.setTitle(title);
             manga.setTitleId(title.getId());
-            if(title.getEps() != null && title.getEps().size() > 0)
-                manga.setEps(title.getEps());
+            List<Manga> episodes = Utils.snapshotEpisodes(title);
+            if(episodes.size() > 0)
+                manga.setEps(episodes);
         } else {
             title = manga.getTitle();
         }
@@ -220,7 +222,7 @@ public class ViewerWarmupManager {
         try {
             Manga target = manga;
             Title currentTitle = title != null ? title : target.getTitle();
-            if(currentTitle != null && (currentTitle.getEps() == null || currentTitle.getEps().size() <= 1)) {
+            if(currentTitle != null && Utils.snapshotEpisodes(currentTitle).size() <= 1) {
                 int result = MangaRepository.fetchEpisodes(currentTitle);
                 if(result == LOAD_OK)
                     attachTitle(currentTitle, target);
@@ -262,8 +264,9 @@ public class ViewerWarmupManager {
         if(title != null) {
             manga.setTitle(title);
             manga.setTitleId(title.getId());
-            if(title.getEps() != null && title.getEps().size() > 0)
-                manga.setEps(title.getEps());
+            List<Manga> episodes = Utils.snapshotEpisodes(title);
+            if(episodes.size() > 0)
+                manga.setEps(episodes);
         } else {
             title = manga.getTitle();
         }
@@ -364,14 +367,15 @@ public class ViewerWarmupManager {
             return;
         target.setTitle(title);
         target.setTitleId(title.getId());
-        if(title.getEps() == null)
+        List<Manga> episodes = Utils.snapshotEpisodes(title);
+        if(episodes.size() == 0)
             return;
-        target.setEps(title.getEps());
-        for(Manga episode : title.getEps()) {
+        target.setEps(episodes);
+        for(Manga episode : episodes) {
             if(episode != null) {
                 episode.setTitle(title);
                 episode.setTitleId(title.getId());
-                episode.setEps(title.getEps());
+                episode.setEps(episodes);
             }
         }
     }
@@ -861,9 +865,8 @@ public class ViewerWarmupManager {
             seed = source.getSeed();
             title = source.getTitle();
             List<String> sourceImages = source.getImgs(null);
-            images = sourceImages == null ? new ArrayList<>() : new ArrayList<>(sourceImages);
-            List<Manga> sourceEpisodes = source.getEps();
-            episodes = sourceEpisodes == null ? new ArrayList<>() : new ArrayList<>(sourceEpisodes);
+            images = Utils.snapshotList(sourceImages);
+            episodes = Utils.snapshotEpisodes(source);
             createdAt = System.currentTimeMillis();
         }
 
