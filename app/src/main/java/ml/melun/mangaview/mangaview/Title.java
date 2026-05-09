@@ -209,14 +209,14 @@ public class Title extends MTitle {
             for(Element link : d.select("a[href^=\"/" + segment + "/" + id + "/\"]")) {
                 String href = link.attr("href");
                 int epId = MainPageWebtoon.getSecondPathId(href, segment);
-                if(epId <= 0 || !seenEpisodeIds.add(epId))
+                if(epId <= 0)
                     continue;
-                String epTitle = link.text().replace("▶ 보기", "").replace("›", "").trim();
-                epTitle = epTitle.replaceAll("\\s+", " ");
-                String date = "";
-                java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d{2}\\.\\d{2}\\.\\d{2})").matcher(epTitle);
-                if(matcher.find())
-                    date = matcher.group(1);
+                String epTitle = cleanNtkEpisodeTitle(link);
+                if(isNtkEpisodeActionTitle(epTitle))
+                    continue;
+                if(!seenEpisodeIds.add(epId))
+                    continue;
+                String date = extractNtkEpisodeDate(link, epTitle);
                 Manga tmp = new Manga(epId, epTitle, date, baseMode);
                 tmp.setMode(0);
                 tmp.setTitle(this);
@@ -227,6 +227,52 @@ public class Title extends MTitle {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return LOAD_OK;
+    }
+
+    static String cleanNtkEpisodeTitleForTest(String html) {
+        return cleanNtkEpisodeTitle(Jsoup.parseBodyFragment(html).body());
+    }
+
+    private static String cleanNtkEpisodeTitle(Element link) {
+        if(link == null)
+            return "";
+        Element subject = link.selectFirst(".subject, .wr-subject, .episode-title, .title, strong, b");
+        String text = subject == null ? link.text() : subject.text();
+        text = text.replace("첫화부터 정주행", "")
+                .replace("첫화부터", "")
+                .replace("정주행", "")
+                .replace("▶ 보기", "")
+                .replace("›", " ")
+                .replace("UP", "")
+                .replace("NEW", "")
+                .trim();
+        text = text.replaceAll("\\d{2}\\.\\d{2}\\.\\d{2}", " ").trim();
+        text = text.replaceAll("\\s+", " ");
+        return text;
+    }
+
+    private static boolean isNtkEpisodeActionTitle(String title) {
+        if(title == null)
+            return true;
+        String normalized = title.replaceAll("\\s+", "");
+        return normalized.length() == 0
+                || "보기".equals(normalized)
+                || "첫화부터정주행".equals(normalized)
+                || "첫화부터".equals(normalized)
+                || "정주행".equals(normalized);
+    }
+
+    private static String extractNtkEpisodeDate(Element link, String epTitle) {
+        if(link == null)
+            return "";
+        String text = link.text();
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d{2}\\.\\d{2}\\.\\d{2})").matcher(text);
+        if(matcher.find())
+            return matcher.group(1);
+        matcher = java.util.regex.Pattern.compile("(\\d{2}\\.\\d{2}\\.\\d{2})").matcher(epTitle == null ? "" : epTitle);
+        if(matcher.find())
+            return matcher.group(1);
+        return "";
     }
 
     private String ntkSegment() {

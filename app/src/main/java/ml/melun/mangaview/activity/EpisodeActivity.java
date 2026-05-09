@@ -335,8 +335,9 @@ public class EpisodeActivity extends AppCompatActivity {
 
             @Override
             public void onFirstClick(){
-                if(episodes != null && episodes.size()>0)
-                    openViewer(episodes.get(episodes.size()-1),0);
+                Manga target = quickReadEpisode();
+                if(target != null)
+                    openViewer(target,0);
             }
         });
         episodeAdapter.setTagClickListener(tag -> {
@@ -415,6 +416,27 @@ public class EpisodeActivity extends AppCompatActivity {
         if(title.getBookmarkEpisodeId() > 0)
             return title.getBookmarkEpisodeId();
         return -1;
+    }
+
+    private Manga quickReadEpisode() {
+        if(episodes == null || episodes.size() == 0)
+            return null;
+        if(bookmarkIndex > 0 && bookmarkIndex <= episodes.size())
+            return episodes.get(bookmarkIndex - 1);
+        int restoredId = restoredBookmarkId(title);
+        if(restoredId > 0) {
+            for(int i = 0; i < episodes.size(); i++) {
+                Manga episode = episodes.get(i);
+                if(episode != null && episode.getId() == restoredId) {
+                    bookmarkId = restoredId;
+                    bookmarkIndex = i + 1;
+                    if(episodeAdapter != null)
+                        episodeAdapter.setBookmark(bookmarkIndex);
+                    return episode;
+                }
+            }
+        }
+        return episodes.get(episodes.size() - 1);
     }
 
     @SuppressWarnings("unchecked")
