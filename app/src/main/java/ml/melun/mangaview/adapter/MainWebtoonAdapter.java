@@ -138,7 +138,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         this.save = p.getDataSave();
         inflater = LayoutInflater.from(context);
         siteNtkSnapshot = isNtkSite();
-        dataSet = MainPageWebtoon.getBlankDataSet(baseMode, siteNtkSnapshot);
+        dataSet = initialDataSetForSite();
         rows = new ArrayList<>();
         sharedHomePool.setMaxRecycledViews(VIEW_TYPE_HOME_CONTINUE, 12);
         sharedHomePool.setMaxRecycledViews(VIEW_TYPE_HOME_RANKING, 12);
@@ -164,7 +164,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return;
         }
         if(!hasFetchedContent())
-            dataSet = MainPageWebtoon.getBlankDataSet(baseMode, siteNtkSnapshot);
+            dataSet = initialDataSetForSite();
         List<Object> warmRows = buildInitialPlaceholderRows();
         if(!hasDisplayContent(warmRows))
             warmRows = buildRows(dataSet, false);
@@ -182,7 +182,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(rows != null && rows.size() > 0 && hasDisplayContent(rows))
             return;
         if(!hasFetchedContent())
-            dataSet = MainPageWebtoon.getBlankDataSet(baseMode, siteNtkSnapshot);
+            dataSet = initialDataSetForSite();
         List<Object> placeholderRows = buildInitialPlaceholderRows();
         if(!hasDisplayContent(placeholderRows))
             placeholderRows = buildRows(dataSet, false);
@@ -230,7 +230,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     public void resetForSiteChange() {
         cancelFetch();
         siteNtkSnapshot = isNtkSite();
-        dataSet = MainPageWebtoon.getBlankDataSet(baseMode, siteNtkSnapshot);
+        dataSet = initialDataSetForSite();
         initialRowsShown = false;
         pendingRows = null;
         rowDiffGeneration++;
@@ -717,6 +717,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     private boolean isNtkSite() {
         return getHttpClient().isNtk();
+    }
+
+    private List<Ranking<?>> initialDataSetForSite() {
+        if(siteNtkSnapshot && baseMode == base_webtoon)
+            return MainPageWebtoon.getFastNtkWebtoonDataSet();
+        return MainPageWebtoon.getBlankDataSet(baseMode, siteNtkSnapshot);
     }
 
     private boolean refreshSiteSnapshot() {
@@ -2318,7 +2324,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             boolean hadCompleteServerHome = hasCompleteHomeSections(dataSet);
             keepExistingRowsDuringFetch = hadInitialRows && hadCompleteServerHome;
             if(!hadInitialRows || collectTitles(dataSet, 1).size() == 0)
-                dataSet = MainPageWebtoon.getBlankDataSet(baseMode, isNtkSite());
+                dataSet = initialDataSetForSite();
             preloadedThumbs.clear();
             preloadCount = 0;
             pendingRows = null;
@@ -2351,6 +2357,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 for(int i = 0; i < sections.length; i++) {
                     final int index = i;
                     final String[] section = sections[i];
+                    if(!shouldFetchHomeSection(section, ntk))
+                        continue;
                     running.add(completion.submit(AppDispatchers.safeCallable(() -> new SectionResult(index,
                             MangaRepository.loadWebtoonSection(parser, section[0], section[1], baseMode, cancellation)))));
                     submitted++;
@@ -2397,6 +2405,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return loaded > 0;
         }
 
+        private boolean shouldFetchHomeSection(String[] section, boolean ntk) {
+            if(!ntk || baseMode != base_webtoon || section == null || section.length < 2)
+                return true;
+            String path = section[1];
+            return "/ing".equals(path)
+                    || "/end".equals(path)
+                    || "/ing?sort=hot".equals(path)
+                    || "/end?sort=hot".equals(path);
+        }
+
         private void postProgress(SectionBatch batch) {
             AppDispatchers.runOnMain(() -> applyProgress(batch));
         }
@@ -2412,7 +2430,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(batch.results == null || batch.results.size() == 0)
                 return;
             if(dataSet == null)
-                dataSet = MainPageWebtoon.getBlankDataSet(baseMode, isNtkSite());
+                dataSet = initialDataSetForSite();
             List<Ranking<?>> loadedSections = new ArrayList<>();
             for(SectionResult result : batch.results) {
                 if(result == null || result.index < 0)

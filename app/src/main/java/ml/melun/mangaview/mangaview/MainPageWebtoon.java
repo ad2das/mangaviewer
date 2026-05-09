@@ -870,6 +870,23 @@ public class MainPageWebtoon {
         return getClassificationDbTitlesByGenre(genre, 0, limit);
     }
 
+    public static List<Ranking<?>> getFastNtkWebtoonDataSet() {
+        if(!classificationDbLoaded)
+            return getBlankDataSet(base_webtoon, true);
+        List<Ranking<?>> dataset = getBlankDataSet(base_webtoon, true);
+        for(Ranking<?> section : dataset) {
+            if(section == null)
+                continue;
+            SectionInfo info = parseSectionInfo(section.getName());
+            ArrayList<Title> titles = isWebtoonGenre(info.label)
+                    ? getClassificationDbTitlesByGenreIfLoaded(info.label, MAIN_SECTION_LIMIT)
+                    : getClassificationDbTitlesIfLoaded(MAIN_SECTION_LIMIT);
+            for(Title title : titles)
+                ((Ranking<Object>) section).add(title);
+        }
+        return dataset;
+    }
+
     public static ArrayList<Title> getClassificationDbTitlesByGenre(String genre, int offset, int limit) {
         ArrayList<Title> result = new ArrayList<>();
         if(genre == null)
@@ -892,6 +909,33 @@ public class MainPageWebtoon {
         ArrayList<Title> result = new ArrayList<>();
         loadClassificationDb();
         for(DbTitle dbTitle : classificationTitleDb.values()) {
+            result.add(new Title(dbTitle.name, dbTitle.thumb, "", dbTitle.tags, dbTitle.release, dbTitle.id, base_webtoon));
+            if(limit > 0 && result.size() >= limit)
+                break;
+        }
+        return result;
+    }
+
+    private static ArrayList<Title> getClassificationDbTitlesIfLoaded(int limit) {
+        ArrayList<Title> result = new ArrayList<>();
+        if(!classificationDbLoaded)
+            return result;
+        for(DbTitle dbTitle : classificationTitleDb.values()) {
+            result.add(new Title(dbTitle.name, dbTitle.thumb, "", dbTitle.tags, dbTitle.release, dbTitle.id, base_webtoon));
+            if(limit > 0 && result.size() >= limit)
+                break;
+        }
+        return result;
+    }
+
+    private static ArrayList<Title> getClassificationDbTitlesByGenreIfLoaded(String genre, int limit) {
+        ArrayList<Title> result = new ArrayList<>();
+        if(!classificationDbLoaded || genre == null)
+            return result;
+        List<DbTitle> titles = classificationGenreDb.get(normalizeClassificationTag(genre));
+        if(titles == null)
+            return result;
+        for(DbTitle dbTitle : titles) {
             result.add(new Title(dbTitle.name, dbTitle.thumb, "", dbTitle.tags, dbTitle.release, dbTitle.id, base_webtoon));
             if(limit > 0 && result.size() >= limit)
                 break;
