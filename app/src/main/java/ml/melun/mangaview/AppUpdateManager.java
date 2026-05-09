@@ -227,8 +227,6 @@ public final class AppUpdateManager {
                     .url(info.link)
                     .header("User-Agent", "MangaView")
                     .header("Accept", APK_MIME + ", application/octet-stream, */*")
-                    .header("Cache-Control", "no-cache")
-                    .header("Pragma", "no-cache")
                     .build();
             try(Response response = APK_CLIENT.newCall(request).execute()) {
                 if(!response.isSuccessful() || response.body() == null)
@@ -243,7 +241,7 @@ public final class AppUpdateManager {
                 long total = response.body().contentLength();
                 try(InputStream input = response.body().byteStream();
                     FileOutputStream output = new FileOutputStream(apk)) {
-                    byte[] buffer = new byte[64 * 1024];
+                    byte[] buffer = new byte[256 * 1024];
                     long readTotal = 0;
                     int read;
                     int lastProgress = -1;
