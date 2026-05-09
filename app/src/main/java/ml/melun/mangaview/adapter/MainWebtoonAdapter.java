@@ -116,6 +116,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private long firstContentStartedAt = PerfTrace.start("home_first_content_ms");
     private boolean firstContentLogged = false;
     private FetchStateListener fetchStateListener;
+    private boolean siteNtkSnapshot;
     private String lastContinueOpenKey = "";
     private long lastContinueOpenAt = 0L;
     private float anchorDownX;
@@ -136,7 +137,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         this.dark = p.getDarkTheme();
         this.save = p.getDataSave();
         inflater = LayoutInflater.from(context);
-        dataSet = MainPageWebtoon.getBlankDataSet(baseMode, isNtkSite());
+        siteNtkSnapshot = isNtkSite();
+        dataSet = MainPageWebtoon.getBlankDataSet(baseMode, siteNtkSnapshot);
         rows = new ArrayList<>();
         sharedHomePool.setMaxRecycledViews(VIEW_TYPE_HOME_CONTINUE, 12);
         sharedHomePool.setMaxRecycledViews(VIEW_TYPE_HOME_RANKING, 12);
@@ -154,6 +156,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     public void showInitialRows() {
+        if(refreshSiteSnapshot())
+            return;
         if(rows != null && rows.size() > 0 && hasDisplayContent(rows) && hasCompleteHomeSections())
             return;
         if(!hasCompleteHomeSections() && showCachedHomeRows())
@@ -210,7 +214,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     public void resetForSiteChange() {
         cancelFetch();
-        dataSet = MainPageWebtoon.getBlankDataSet(baseMode, isNtkSite());
+        siteNtkSnapshot = isNtkSite();
+        dataSet = MainPageWebtoon.getBlankDataSet(baseMode, siteNtkSnapshot);
         initialRowsShown = false;
         pendingRows = null;
         rowDiffGeneration++;
@@ -690,11 +695,19 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private String homeCacheKey() {
-        return HOME_CACHE_KEY_PREFIX + (isNtkSite() ? "ntk_" : "wfwf_") + baseMode;
+        return HOME_CACHE_KEY_PREFIX + (siteNtkSnapshot ? "ntk_" : "wfwf_") + baseMode;
     }
 
     private boolean isNtkSite() {
         return getHttpClient().isNtk();
+    }
+
+    private boolean refreshSiteSnapshot() {
+        boolean ntk = isNtkSite();
+        if(ntk == siteNtkSnapshot)
+            return false;
+        resetForSiteChange();
+        return true;
     }
 
     private boolean showCachedHomeRows() {
@@ -714,11 +727,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private void loadCachedHomeRowsAsync() {
+        final boolean ntk = siteNtkSnapshot;
+        final String cacheKey = homeCacheKey();
         AppDispatchers.submitIo(() -> {
-            List<Ranking<?>> cached = loadHomeSnapshot();
+            List<Ranking<?>> cached = loadHomeSnapshot(cacheKey);
             if(cached == null || cached.size() == 0)
                 return;
-            AppDispatchers.runOnMain(() -> applyCachedHomeRows(cached));
+            AppDispatchers.runOnMain(() -> {
+                if(ntk == siteNtkSnapshot)
+                    applyCachedHomeRows(cached);
+            });
         });
     }
 
@@ -739,12 +757,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private List<Ranking<?>> loadHomeSnapshot() {
+        return loadHomeSnapshot(homeCacheKey());
+    }
+
+    private List<Ranking<?>> loadHomeSnapshot(String cacheKey) {
         try {
-            String json = CacheFileStore.read(context, homeCacheKey());
+            String json = CacheFileStore.read(context, cacheKey);
             if(json == null || json.length() == 0) {
-                json = p.getSharedPref().getString(homeCacheKey(), "");
+                json = p.getSharedPref().getString(cacheKey, "");
                 if(json != null && json.length() > 0)
-                    CacheFileStore.write(context, homeCacheKey(), json);
+                    CacheFileStore.write(context, cacheKey, json);
             }
             if(json == null || json.length() == 0)
                 return null;
@@ -2274,6 +2296,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         private void prepare() {
+            siteNtkSnapshot = isNtkSite();
             boolean hadInitialRows = rows != null && rows.size() > 0 && hasDisplayContent();
             boolean hadCompleteServerHome = hasCompleteHomeSections(dataSet);
             keepExistingRowsDuringFetch = hadInitialRows && hadCompleteServerHome;
@@ -2296,7 +2319,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
         private Boolean fetchSections() {
             cancellation = MangaRepository.cancellation();
-            boolean ntk = isNtkSite();
+            boolean ntk = siteNtkSnapshot;
             String[][] sections = MainPageWebtoon.getSections(baseMode, ntk);
             CompletionService<SectionResult> completion = AppDispatchers.ioCompletionService();
             MainPageWebtoon parser = MangaRepository.createWebtoonParser(baseMode);
@@ -2364,6 +2387,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         private void applyProgress(SectionBatch batch) {
             if(batch == null || cancelled)
                 return;
+            if(siteNtkSnapshot != isNtkSite()) {
+                cancel(true);
+                resetForSiteChange();
+                return;
+            }
             if(batch.results == null || batch.results.size() == 0)
                 return;
             if(dataSet == null)
@@ -2406,6 +2434,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         private void finish(Boolean hasAnyResult) {
             if(cancelled)
                 return;
+            if(siteNtkSnapshot != isNtkSite()) {
+                resetForSiteChange();
+                return;
+            }
             if(fetcher == this)
                 fetcher = null;
             if(!hasAnyResult) {
