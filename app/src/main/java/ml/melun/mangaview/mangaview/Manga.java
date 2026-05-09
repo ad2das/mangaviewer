@@ -421,6 +421,20 @@ public class Manga {
 
     public void setEps(List<Manga> eps) {
         this.eps = eps;
+        if(eps == null)
+            return;
+        int currentTitleId = resolvedTitleId(this);
+        Title currentTitle = getTitle();
+        if(currentTitleId <= 0 && currentTitle == null)
+            return;
+        for(Manga episode : eps) {
+            if(episode == null)
+                continue;
+            if(episode.getTitleId() <= 0 && currentTitleId > 0)
+                episode.setTitleId(currentTitleId);
+            if(episode.getTitle() == null && currentTitle != null)
+                episode.setTitle(currentTitle);
+        }
     }
 
     public Title getTitle() {
@@ -565,12 +579,12 @@ public class Manga {
                 if (index < 0) return null;
                 for (int i = index - 1; i >= 0; i--) {
                     Manga episode = episodes.get(i);
-                    if (episode != null && episode.getId() != id) return episode;
+                    if (sameSeriesEpisode(episode) && episode.getId() != id) return episode;
                 }
                 return null;
             }
         } else {
-            return nextEp;
+            return sameSeriesEpisode(nextEp) ? nextEp : null;
         }
     }
 
@@ -584,12 +598,12 @@ public class Manga {
                 if (index < 0) return null;
                 for (int i = index + 1; i < episodes.size(); i++) {
                     Manga episode = episodes.get(i);
-                    if (episode != null && episode.getId() != id) return episode;
+                    if (sameSeriesEpisode(episode) && episode.getId() != id) return episode;
                 }
                 return null;
             }
         } else {
-            return prevEp;
+            return sameSeriesEpisode(prevEp) ? prevEp : null;
         }
     }
 
@@ -610,13 +624,34 @@ public class Manga {
         if (episodes == null) return -1;
         for (int i = 0; i < episodes.size(); i++) {
             Manga episode = episodes.get(i);
-            if (episode == this) return i;
+            if (episode == this && sameSeriesEpisode(episode)) return i;
         }
         for (int i = 0; i < episodes.size(); i++) {
             Manga episode = episodes.get(i);
-            if (episode != null && episode.getId() == id) return i;
+            if (sameSeriesEpisode(episode) && episode.getId() == id) return i;
         }
         return -1;
+    }
+
+    private boolean sameSeriesEpisode(Manga episode) {
+        if(episode == null)
+            return false;
+        if(episode.getBaseMode() != getBaseMode())
+            return false;
+        int currentTitleId = resolvedTitleId(this);
+        int episodeTitleId = resolvedTitleId(episode);
+        if(currentTitleId > 0 && episodeTitleId > 0)
+            return currentTitleId == episodeTitleId;
+        return currentTitleId <= 0 && episodeTitleId <= 0;
+    }
+
+    private static int resolvedTitleId(Manga manga) {
+        if(manga == null)
+            return 0;
+        if(manga.getTitleId() > 0)
+            return manga.getTitleId();
+        Title mangaTitle = manga.getTitle();
+        return mangaTitle == null ? 0 : mangaTitle.getId();
     }
 
     private static List<Manga> safeEpisodeCopy(List<Manga> source) {
