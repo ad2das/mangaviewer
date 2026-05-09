@@ -33,6 +33,16 @@ function Write-Utf8NoBom($path, $content) {
     [System.IO.File]::WriteAllText((Resolve-Path $path), $content, $utf8)
 }
 
+function Invoke-Gradle($arguments) {
+    if ($IsWindows) {
+        & .\gradlew.bat @arguments
+    } else {
+        & chmod +x ./gradlew
+        & ./gradlew @arguments
+    }
+    return $LASTEXITCODE
+}
+
 Set-Location (Resolve-Path (Join-Path $PSScriptRoot ".."))
 
 Require-Command git
@@ -92,15 +102,13 @@ $releasesHtml = [regex]::Replace($releasesHtml, 'browser_download_url:\s*"[^"]*m
 Write-Utf8NoBom $releasesHtmlPath $releasesHtml
 
 Write-Step "Building debug APK"
-& .\gradlew.bat assembleDebug
-if ($LASTEXITCODE -ne 0) {
+if ((Invoke-Gradle @("assembleDebug")) -ne 0) {
     throw "assembleDebug failed"
 }
 
 if (-not $SkipTests) {
     Write-Step "Running unit tests"
-    & .\gradlew.bat testDebugUnitTest
-    if ($LASTEXITCODE -ne 0) {
+    if ((Invoke-Gradle @("testDebugUnitTest")) -ne 0) {
         throw "testDebugUnitTest failed"
     }
 }
