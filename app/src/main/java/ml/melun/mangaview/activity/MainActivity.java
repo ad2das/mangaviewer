@@ -48,6 +48,7 @@ import com.google.firebase.auth.FirebaseUser;
 import java.io.File;
 
 import ml.melun.mangaview.Downloader;
+import ml.melun.mangaview.AppUpdateManager;
 import ml.melun.mangaview.FirebaseAccountManager;
 import ml.melun.mangaview.MainApplication;
 import ml.melun.mangaview.Migrator;
@@ -351,6 +352,13 @@ public class MainActivity extends AppCompatActivity
         setupAccountHeader();
         startDeferredUrlUpdate();
         requestStartupPermissions();
+        AppUpdateManager.checkForUpdate(this);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        AppUpdateManager.resumePendingInstall(this);
     }
 
     private void startDeferredUrlUpdate() {
