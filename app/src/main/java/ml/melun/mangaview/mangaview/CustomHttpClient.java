@@ -647,6 +647,7 @@ public class CustomHttpClient {
         url = normalizePath(url);
         String baseUrl = getBaseUrl(url);
         Map<String, String> headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
+        applyNtkApiHeaders(headers, baseUrl, url);
 
         Response response = get(baseUrl + url, headers);
         if(shouldRetryWithResolvedDomain(response)) {
@@ -655,6 +656,7 @@ public class CustomHttpClient {
             ensureWfwfDomainForRetry();
             baseUrl = getBaseUrl(url);
             headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
+            applyNtkApiHeaders(headers, baseUrl, url);
             response = get(baseUrl + url, headers);
         }
         return response;
@@ -697,6 +699,17 @@ public class CustomHttpClient {
             putClientHintHeaders(headers);
         }
         return headers;
+    }
+
+    private void applyNtkApiHeaders(Map<String, String> headers, String baseUrl, String path) {
+        if(headers == null || !isNtkUrl(baseUrl) || path == null || !path.startsWith("/api/"))
+            return;
+        headers.put("Accept", "application/json,text/plain,*/*");
+        headers.put("Sec-Fetch-Dest", "empty");
+        headers.put("Sec-Fetch-Mode", "cors");
+        headers.put("Sec-Fetch-Site", "same-origin");
+        headers.remove("Upgrade-Insecure-Requests");
+        headers.remove("Sec-Fetch-User");
     }
 
     private void putClientHintHeaders(Map<String, String> headers) {

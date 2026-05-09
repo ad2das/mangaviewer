@@ -4,6 +4,10 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 import java.net.URLDecoder;
 import java.net.URLEncoder;
@@ -25,6 +29,7 @@ public class Search {
     private static final long PAGE_CACHE_TTL_MS = 2 * 60 * 1000L;
     private static final int MAX_TIMEOUT_RETRIES = 2;
     private static final int CLASSIFICATION_DB_PAGE_SIZE = 120;
+    private static final int NTK_CATEGORY_PAGE_SIZE = 30;
 
     int baseMode;
     private final String query;
@@ -360,6 +365,8 @@ public class Search {
         CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
         if(page.code >= 400)
             throw new Exception("Webtoon search failed: " + page.code);
+        if(client != null && client.isNtk() && isNtkApiListPath(path))
+            return parseNtkApiPage(page.body, path, baseMode, limit, currentPage);
         Document d = Jsoup.parse(page.body);
         ArrayList<Title> parsed = MainPageWebtoon.parseWolfTitles(d, baseMode, limit);
         if(parsed.size() == 0 && client.resolveWfwfDomainNow()) {
@@ -378,11 +385,40 @@ public class Search {
     }
 
     private boolean appendNextNtkCategoryPage(CustomHttpClient client, ArrayList<Title> target, String path, int limit) throws Exception {
-        String pagePath = ntkCategoryNextPath != null && ntkCategoryNextPath.length() > 0
-                ? ntkCategoryNextPath
-                : ntkPagePath(path, page);
-        PageTitles pageTitles = fetchWebtoonResults(client, pagePath, limit, page);
-        ArrayList<Title> parsed = pageTitles.titles;
+        ArrayList<String> candidates = new ArrayList<>();
+        if(ntkCategoryNextPath != null && ntkCategoryNextPath.length() > 0)
+            addCandidate(candidates, ntkCategoryNextPath);
+        addCandidate(candidates, ntkCategoryApiPath(path, page));
+        for(String candidate : ntkPageCandidates(path, page))
+            addCandidate(candidates, candidate);
+        if(candidates.size() == 0)
+            return true;
+
+        Exception lastError = null;
+        for(String pagePath : candidates) {
+            try {
+                PageTitles pageTitles = fetchWebtoonResults(client, pagePath, limit, page);
+                ArrayList<Title> parsed = pageTitles.titles;
+                int added = appendUniquePageTitles(target, parsed);
+                if(added == 0)
+                    continue;
+                page++;
+                ntkCategoryNextPath = pageTitles.nextPath;
+                if(pageTitles.totalCount > 0)
+                    classificationDbTotalCount = pageTitles.totalCount;
+                classificationSourceFetched = true;
+                return pageTitles.hasMoreKnown && !pageTitles.hasMore;
+            } catch (Exception e) {
+                lastError = e;
+            }
+        }
+        if(page <= 1 && lastError != null)
+            throw lastError;
+        classificationSourceFetched = true;
+        return true;
+    }
+
+    private int appendUniquePageTitles(ArrayList<Title> target, ArrayList<Title> parsed) {
         int added = 0;
         HashSet<String> pageKeys = new HashSet<>();
         for(Title title : parsed) {
@@ -394,20 +430,208 @@ public class Search {
             target.add(title);
             added++;
         }
-        page++;
-        ntkCategoryNextPath = pageTitles.nextPath;
-        classificationSourceFetched = true;
-        return parsed.size() == 0 || (ntkCategoryNextPath == null && added == 0);
+        return added;
+    }
+
+    private String ntkCategoryApiPath(String path, int page) {
+        return ntkCategoryApiPath(path, page, baseMode);
+    }
+
+    static String ntkCategoryApiPathForTest(String path, int page, int baseMode) {
+        return ntkCategoryApiPath(path, page, baseMode);
+    }
+
+    private static String ntkCategoryApiPath(String path, int page, int baseMode) {
+        if(path == null || path.length() == 0 || page < 1)
+            return null;
+        int hash = path.indexOf('#');
+        String base = hash >= 0 ? path.substring(0, hash) : path;
+        String[] split = base.split("\\?", 2);
+        String route = normalizedNtkRoute(split[0]);
+        String query = split.length > 1 ? split[1] : "";
+        ArrayList<String> params = queryParamsWithoutPage(query);
+        if(baseMode == base_comic && route.startsWith("/manhwa")) {
+            ArrayList<String> api = new ArrayList<>();
+            api.add("status=");
+            api.addAll(params);
+            api.add("page=" + page);
+            api.add("pageSize=" + NTK_CATEGORY_PAGE_SIZE);
+            api.add("withTotal=1");
+            return "/api/manhwa-list?" + String.join("&", api);
+        }
+        if(baseMode == base_webtoon && (route.startsWith("/ing") || route.startsWith("/end"))) {
+            ArrayList<String> api = new ArrayList<>();
+            api.add("status=" + (route.startsWith("/end") ? "end" : "ing"));
+            api.addAll(params);
+            api.add("page=" + page);
+            api.add("pageSize=" + NTK_CATEGORY_PAGE_SIZE);
+            api.add("withTotal=1");
+            return "/api/works?" + String.join("&", api);
+        }
+        return null;
     }
 
     private static class PageTitles {
         final ArrayList<Title> titles;
         final String nextPath;
+        final boolean hasMoreKnown;
+        final boolean hasMore;
+        final int totalCount;
 
         PageTitles(ArrayList<Title> titles, String nextPath) {
+            this(titles, nextPath, false, nextPath != null && nextPath.length() > 0, 0);
+        }
+
+        PageTitles(ArrayList<Title> titles, String nextPath, boolean hasMoreKnown, boolean hasMore, int totalCount) {
             this.titles = titles == null ? new ArrayList<>() : titles;
             this.nextPath = nextPath;
+            this.hasMoreKnown = hasMoreKnown;
+            this.hasMore = hasMore;
+            this.totalCount = totalCount;
         }
+    }
+
+    private static boolean isNtkApiListPath(String path) {
+        return path != null && (path.startsWith("/api/manhwa-list") || path.startsWith("/api/works"));
+    }
+
+    private static PageTitles parseNtkApiPage(String body, String path, int baseMode, int limit, int currentPage) throws Exception {
+        JsonElement root = JsonParser.parseString(body == null || body.length() == 0 ? "{}" : body);
+        JsonObject json = root != null && root.isJsonObject() ? root.getAsJsonObject() : new JsonObject();
+        JsonArray works = json.has("works") && json.get("works").isJsonArray()
+                ? json.getAsJsonArray("works")
+                : null;
+        ArrayList<Title> titles = new ArrayList<>();
+        if(works != null) {
+            for(int i = 0; i < works.size(); i++) {
+                JsonElement workElement = works.get(i);
+                if(workElement == null || !workElement.isJsonObject())
+                    continue;
+                JsonObject work = workElement.getAsJsonObject();
+                int id = parsePositiveInt(jsonString(work, "sourceWorkId"));
+                if(id <= 0)
+                    id = parsePositiveInt(jsonString(work, "id"));
+                if(id <= 0)
+                    continue;
+                String name = jsonString(work, "title").trim();
+                if(name.length() == 0)
+                    continue;
+                String thumb = jsonString(work, "thumbnailUrl");
+                ArrayList<String> tags = splitNtkGenre(jsonString(work, "genre"));
+                String release = "";
+                if(hasJsonValue(work, "latestEpisodeNumber"))
+                    release = jsonString(work, "latestEpisodeNumber") + "화";
+                else
+                    release = jsonString(work, "ep");
+                Title title = new Title(name, thumb, "", tags, release, id, baseMode);
+                title.setSourceSite("ntk");
+                titles.add(title);
+                if(limit > 0 && titles.size() >= limit)
+                    break;
+            }
+        }
+        int apiPage = jsonInt(json, "page", currentPage);
+        int pageSize = jsonInt(json, "pageSize", NTK_CATEGORY_PAGE_SIZE);
+        boolean hasMore = jsonBoolean(json, "hasMore", false);
+        int total = json.has("total") ? jsonInt(json, "total", 0) : 0;
+        String nextPath = hasMore ? replaceNtkQueryParam(replaceNtkQueryParam(path, "page", String.valueOf(apiPage + 1)), "pageSize", String.valueOf(pageSize)) : null;
+        return new PageTitles(titles, nextPath, true, hasMore, total);
+    }
+
+    static ArrayList<Title> parseNtkApiTitlesForTest(String body, int baseMode) throws Exception {
+        return parseNtkApiPage(body, "/api/manhwa-list?page=1&pageSize=30", baseMode, 0, 1).titles;
+    }
+
+    static int parseNtkApiTotalForTest(String body, int baseMode) throws Exception {
+        return parseNtkApiPage(body, "/api/manhwa-list?page=1&pageSize=30&withTotal=1", baseMode, 0, 1).totalCount;
+    }
+
+    private static boolean hasJsonValue(JsonObject json, String key) {
+        return json != null && json.has(key) && json.get(key) != null && !json.get(key).isJsonNull();
+    }
+
+    private static String jsonString(JsonObject json, String key) {
+        if(!hasJsonValue(json, key))
+            return "";
+        try {
+            JsonElement value = json.get(key);
+            return value.isJsonPrimitive() ? value.getAsString() : "";
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private static int jsonInt(JsonObject json, String key, int fallback) {
+        if(!hasJsonValue(json, key))
+            return fallback;
+        try {
+            return json.get(key).getAsInt();
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
+    private static boolean jsonBoolean(JsonObject json, String key, boolean fallback) {
+        if(!hasJsonValue(json, key))
+            return fallback;
+        try {
+            return json.get(key).getAsBoolean();
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
+    private static int parsePositiveInt(String value) {
+        if(value == null)
+            return 0;
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    private static ArrayList<String> splitNtkGenre(String value) {
+        ArrayList<String> tags = new ArrayList<>();
+        if(value == null)
+            return tags;
+        for(String tag : value.split("[,/|]")) {
+            String trimmed = tag.trim();
+            if(trimmed.length() > 0 && !tags.contains(trimmed))
+                tags.add(trimmed);
+        }
+        return tags;
+    }
+
+    private static String replaceNtkQueryParam(String path, String key, String value) {
+        if(path == null || path.length() == 0 || key == null || key.length() == 0)
+            return path;
+        int hash = path.indexOf('#');
+        String fragment = hash >= 0 ? path.substring(hash) : "";
+        String base = hash >= 0 ? path.substring(0, hash) : path;
+        String[] split = base.split("\\?", 2);
+        String route = split[0];
+        String query = split.length > 1 ? split[1] : "";
+        ArrayList<String> params = new ArrayList<>();
+        boolean replaced = false;
+        if(query.length() > 0) {
+            for(String param : query.split("&")) {
+                if(param.length() == 0)
+                    continue;
+                String paramKey = param.split("=", 2)[0];
+                if(paramKey.equals(key)) {
+                    if(!replaced) {
+                        params.add(key + "=" + value);
+                        replaced = true;
+                    }
+                } else {
+                    params.add(param);
+                }
+            }
+        }
+        if(!replaced)
+            params.add(key + "=" + value);
+        return route + "?" + String.join("&", params) + fragment;
     }
 
     private static String findNtkNextPagePath(Document document, String currentPath, int nextPage) {
@@ -418,11 +642,21 @@ public class Search {
             String href = link.attr("href");
             if(href == null || href.length() == 0)
                 continue;
+            String resolved = resolveNtkHref(currentPath, href);
+            if(resolved == null || resolved.length() == 0)
+                continue;
+            if(resolved.equals(currentPath))
+                continue;
             String text = link.text() == null ? "" : link.text().trim();
+            String label = (link.attr("aria-label") + " " + link.attr("title")).trim().toLowerCase(Locale.ROOT);
             String rel = link.attr("rel");
             String className = link.className();
-            boolean looksNext = "next".equalsIgnoreCase(rel)
+            boolean hrefLooksNext = isLikelyNtkPagePath(resolved, currentPath, nextPage);
+            boolean looksNext = hrefLooksNext
+                    || "next".equalsIgnoreCase(rel)
                     || className.toLowerCase(Locale.ROOT).contains("next")
+                    || label.contains("next")
+                    || label.contains("다음")
                     || text.equals(nextPageText)
                     || text.equals("다음")
                     || text.equals("›")
@@ -430,14 +664,14 @@ public class Search {
                     || text.equals(">");
             if(!looksNext)
                 continue;
-            String resolved = resolveNtkHref(currentPath, href);
-            if(resolved == null || resolved.length() == 0)
-                continue;
-            if(resolved.equals(currentPath))
-                continue;
-            return resolved;
+            if(isLikelyNtkPagePath(resolved, currentPath, nextPage))
+                return resolved;
         }
         return null;
+    }
+
+    static String findNtkNextPagePathForTest(String html, String currentPath, int nextPage) {
+        return findNtkNextPagePath(Jsoup.parse(html == null ? "" : html), currentPath, nextPage);
     }
 
     private static String resolveNtkHref(String currentPath, String href) {
@@ -461,8 +695,8 @@ public class Search {
         if(value.startsWith("/"))
             return value;
         if(value.startsWith("?")) {
-            String route = currentPath == null ? "" : currentPath.split("\\?", 2)[0];
-            return route + value;
+            String route = normalizedNtkRoute(currentPath == null ? "" : currentPath.split("\\?", 2)[0]);
+            return route + "?" + mergeNtkQuery(currentPath, value.substring(1));
         }
         String route = currentPath == null ? "" : currentPath.split("\\?", 2)[0];
         int slash = route.lastIndexOf('/');
@@ -474,25 +708,115 @@ public class Search {
         return ntkPagePath(path, page);
     }
 
+    static ArrayList<String> ntkPageCandidatesForTest(String path, int page) {
+        return ntkPageCandidates(path, page);
+    }
+
     private static String ntkPagePath(String path, int page) {
-        if(path == null || page <= 1)
-            return path;
+        ArrayList<String> candidates = ntkPageCandidates(path, page);
+        return candidates.size() == 0 ? path : candidates.get(0);
+    }
+
+    private static ArrayList<String> ntkPageCandidates(String path, int page) {
+        ArrayList<String> candidates = new ArrayList<>();
+        if(path == null || path.length() == 0)
+            return candidates;
+        if(page <= 1) {
+            candidates.add(path);
+            return candidates;
+        }
         int hash = path.indexOf('#');
         String fragment = hash >= 0 ? path.substring(hash) : "";
         String base = hash >= 0 ? path.substring(0, hash) : path;
         String[] split = base.split("\\?", 2);
         String route = split[0];
         String query = split.length > 1 ? split[1] : "";
+        ArrayList<String> params = queryParamsWithoutPage(query);
+        ArrayList<String> pageFirst = new ArrayList<>();
+        pageFirst.add("page=" + page);
+        pageFirst.addAll(params);
+        addCandidate(candidates, route + "?" + String.join("&", pageFirst) + fragment);
+        ArrayList<String> pFirst = new ArrayList<>();
+        pFirst.add("p=" + page);
+        pFirst.addAll(params);
+        addCandidate(candidates, route + "?" + String.join("&", pFirst) + fragment);
+        addCandidate(candidates, route + "?" + joinWithPage(params, "page", page) + fragment);
+        addCandidate(candidates, route + "?" + joinWithPage(params, "p", page) + fragment);
+        addCandidate(candidates, route + "/page/" + page + (params.size() == 0 ? "" : "?" + String.join("&", params)) + fragment);
+        addCandidate(candidates, route + "/p/" + page + (params.size() == 0 ? "" : "?" + String.join("&", params)) + fragment);
+        return candidates;
+    }
+
+    private static ArrayList<String> queryParamsWithoutPage(String query) {
         ArrayList<String> params = new ArrayList<>();
         if(query.length() > 0) {
             for(String param : query.split("&")) {
-                if(param.length() == 0 || param.startsWith("page="))
+                if(param.length() == 0)
+                    continue;
+                String key = param.split("=", 2)[0];
+                if("page".equals(key) || "p".equals(key) || "paged".equals(key))
                     continue;
                 params.add(param);
             }
         }
-        params.add("page=" + page);
-        return route + "?" + String.join("&", params) + fragment;
+        return params;
+    }
+
+    private static String joinWithPage(ArrayList<String> params, String key, int page) {
+        ArrayList<String> next = new ArrayList<>(params);
+        next.add(key + "=" + page);
+        return String.join("&", next);
+    }
+
+    private static void addCandidate(ArrayList<String> candidates, String candidate) {
+        if(candidate == null || candidate.length() == 0 || candidates.contains(candidate))
+            return;
+        candidates.add(candidate);
+    }
+
+    private static boolean isLikelyNtkPagePath(String candidate, String currentPath, int page) {
+        if(candidate == null || candidate.length() == 0)
+            return false;
+        String route = normalizedNtkRoute(currentPath == null ? "" : currentPath.split("\\?", 2)[0]);
+        if(route.length() > 0 && !candidate.startsWith(route))
+            return false;
+        if(candidate.contains("page=" + page) || candidate.contains("p=" + page) || candidate.contains("paged=" + page))
+            return true;
+        return candidate.contains("/page/" + page) || candidate.contains("/p/" + page);
+    }
+
+    private static String normalizedNtkRoute(String route) {
+        if(route == null || route.length() == 0)
+            return "";
+        return route.replaceFirst("/(?:page|p)/\\d+/?$", "");
+    }
+
+    private static String mergeNtkQuery(String currentPath, String nextQuery) {
+        ArrayList<String> merged = new ArrayList<>();
+        HashSet<String> nextKeys = new HashSet<>();
+        if(nextQuery != null && nextQuery.length() > 0) {
+            for(String param : nextQuery.split("&")) {
+                if(param.length() == 0)
+                    continue;
+                nextKeys.add(param.split("=", 2)[0]);
+            }
+        }
+        int question = currentPath == null ? -1 : currentPath.indexOf('?');
+        if(nextQuery != null && nextQuery.length() > 0)
+            for(String param : nextQuery.split("&"))
+                if(param.length() > 0)
+                    merged.add(param);
+        if(question >= 0 && question + 1 < currentPath.length()) {
+            for(String param : currentPath.substring(question + 1).split("&")) {
+                if(param.length() == 0)
+                    continue;
+                String key = param.split("=", 2)[0];
+                if("page".equals(key) || "p".equals(key) || "paged".equals(key) || nextKeys.contains(key))
+                    continue;
+                merged.add(param);
+            }
+        }
+        return String.join("&", merged);
     }
 
     private boolean appendSearchResults(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {

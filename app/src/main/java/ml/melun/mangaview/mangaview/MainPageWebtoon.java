@@ -495,9 +495,9 @@ public class MainPageWebtoon {
     public static ArrayList<Title> parseWolfTitles(Document d, int baseMode, int limit){
         ArrayList<Title> titles = new ArrayList<>();
         java.util.HashSet<String> seenTitleKeys = new java.util.HashSet<>();
-        for(Element e : d.select("div.webtoon-list li, article.searchItem, a[href*=toon=], a[href*=/webtoon/], a[href*=/manhwa/]")){
+        for(Element e : d.select("div.webtoon-list li, article.searchItem, li:has(a[href*=/webtoon/]), li:has(a[href*=/manhwa/]), article:has(a[href*=/webtoon/]), article:has(a[href*=/manhwa/]), div:has(> a[href*=/webtoon/]), div:has(> a[href*=/manhwa/]), a[href*=toon=], a[href*=/webtoon/], a[href*=/manhwa/]")){
             try{
-                Element link = e.tagName().equals("a") ? e : e.selectFirst("a[href*=toon=], a[href*=/webtoon/], a[href*=/manhwa/]");
+                Element link = findTitleLink(e, baseMode);
                 if(link == null) continue;
                 String href = link.attr("href");
                 int id = getQueryInt(href, "toon");
@@ -513,28 +513,33 @@ public class MainPageWebtoon {
                 if(!seenTitleKeys.add(seenKey))
                     continue;
 
-                String name = firstOwnText(e.selectFirst("p.subject"));
+                Element context = titleCardContext(e, link);
+                String name = firstOwnText(context.selectFirst("p.subject"));
                 if(name.length() == 0)
-                    name = cleanText(e.selectFirst("h6.searchDetailTitle"));
+                    name = cleanText(context.selectFirst("h6.searchDetailTitle"));
+                if(name.length() == 0)
+                    name = cleanText(context.selectFirst(".subject, .wr-subject, .episode-title, .post-title, .title, .name, h2, h3, h4, h5, h6"));
                 if(name.length() == 0)
                     name = link.attr("title");
                 if(name.length() == 0)
                     name = getQueryString(href, "title");
                 if(name.length() == 0)
                     name = cleanNtkListText(link.text());
+                if(name.length() == 0)
+                    name = cleanNtkListText(context.text());
 
                 String thumb = "";
-                Element img = e.selectFirst("img");
+                Element img = context.selectFirst("img");
                 if(img != null)
                     thumb = firstImageAttr(img);
                 if(thumb.length() == 0) {
-                    Element background = e.selectFirst("[style*=background-image], [style*=background]");
+                    Element background = context.selectFirst("[style*=background-image], [style*=background]");
                     if(background != null)
                         thumb = extractBackgroundImage(background.attr("style"));
                 }
                 thumb = resolveCoverThumb(name, id, thumb, baseMode);
 
-                Elements infos = e.select("div.txt p");
+                Elements infos = context.select("div.txt p");
                 List<String> tags = new ArrayList<>();
                 if(infos.size() > 1)
                     for(String tag : cleanTextWithoutChildren(infos.get(1)).split("/"))
@@ -551,6 +556,52 @@ public class MainPageWebtoon {
             }
         }
         return titles;
+    }
+
+    private static Element findTitleLink(Element root, int baseMode) {
+        if(root == null)
+            return null;
+        Elements links = root.tagName().equals("a")
+                ? new Elements(root)
+                : root.select("a[href*=toon=], a[href*=/webtoon/], a[href*=/manhwa/]");
+        for(Element link : links) {
+            String href = link.attr("href");
+            if(isEpisodePath(href, "webtoon") || isEpisodePath(href, "manhwa"))
+                continue;
+            int id = getQueryInt(href, "toon");
+            if(id <= 0)
+                id = getPathId(href, "webtoon");
+            if(id <= 0)
+                id = getPathId(href, "manhwa");
+            if(id <= 0)
+                continue;
+            int detectedBaseMode = detectWolfBaseMode(href);
+            if(detectedBaseMode != 0 && detectedBaseMode != baseMode)
+                continue;
+            return link;
+        }
+        return null;
+    }
+
+    private static Element titleCardContext(Element root, Element link) {
+        if(root != null && !root.tagName().equals("a"))
+            return root;
+        Element best = link;
+        Element current = link == null ? null : link.parent();
+        for(int depth = 0; current != null && depth < 5; depth++, current = current.parent()) {
+            int titleLinks = current.select("a[href*=/webtoon/], a[href*=/manhwa/], a[href*=toon=]").size();
+            boolean hasCardData = current.selectFirst("img, [style*=background-image], [style*=background], .subject, .wr-subject, .post-title, .title, .name, h2, h3, h4, h5, h6") != null;
+            if(hasCardData && titleLinks <= 3)
+                best = current;
+            String tag = current.tagName();
+            if("li".equals(tag) || "article".equals(tag))
+                break;
+        }
+        return best == null ? link : best;
+    }
+
+    private static boolean isEpisodePath(String href, String segment) {
+        return getSecondPathId(href, segment) > 0;
     }
 
     private static int detectWolfBaseMode(String href) {
@@ -583,6 +634,8 @@ public class MainPageWebtoon {
             int end = href.indexOf('/', start);
             if(end < 0)
                 end = href.indexOf('?', start);
+            if(end < 0)
+                end = href.indexOf('#', start);
             if(end < 0)
                 end = href.length();
             return Integer.parseInt(href.substring(start, end));

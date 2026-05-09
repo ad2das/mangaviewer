@@ -68,6 +68,85 @@ public class MainPageWebtoonTest {
     }
 
     @Test
+    public void parseWolfTitles_readsNtkCardContainerAndSkipsEpisodeLinks() {
+        ArrayList<Title> titles = MainPageWebtoon.parseWolfTitles(
+                Jsoup.parse("<section>"
+                        + "<div class=\"card\">"
+                        + "<a class=\"episode\" href=\"/manhwa/700/12\">12화</a>"
+                        + "<a class=\"cover\" href=\"/manhwa/700\"><img data-src=\"/covers/700.jpg\"></a>"
+                        + "<div class=\"meta\"><a class=\"title\" href=\"/manhwa/700\">스릴러 작품</a></div>"
+                        + "</div>"
+                        + "<a href=\"/manhwa/701/3\">다른 작품 3화</a>"
+                        + "</section>"),
+                base_comic, 0);
+
+        assertEquals(1, titles.size());
+        assertEquals(700, titles.get(0).getId());
+        assertEquals("스릴러 작품", titles.get(0).getName());
+        assertEquals("/covers/700.jpg", titles.get(0).getThumb());
+    }
+
+    @Test
+    public void ntkPaginationFindsNextLinksAndFallbackCandidates() {
+        assertEquals("/manhwa?g=%EC%8A%A4%EB%A6%B4%EB%9F%AC&page=2",
+                Search.findNtkNextPagePathForTest(
+                        "<nav><a href=\"?g=%EC%8A%A4%EB%A6%B4%EB%9F%AC&page=2\">2</a></nav>",
+                        "/manhwa?g=%EC%8A%A4%EB%A6%B4%EB%9F%AC",
+                        2));
+        assertEquals("/manhwa/page/3?g=%EC%8A%A4%EB%A6%B4%EB%9F%AC",
+                Search.findNtkNextPagePathForTest(
+                        "<a class=\"next\" href=\"https://ntk01.com/manhwa/page/3?g=%EC%8A%A4%EB%A6%B4%EB%9F%AC\">다음</a>",
+                        "/manhwa?page=2&g=%EC%8A%A4%EB%A6%B4%EB%9F%AC",
+                        3));
+        assertEquals("/manhwa?page=2&g=%EC%8A%A4%EB%A6%B4%EB%9F%AC",
+                Search.findNtkNextPagePathForTest(
+                        "<a rel=\"next\" href=\"?page=2\">다음</a>",
+                        "/manhwa?g=%EC%8A%A4%EB%A6%B4%EB%9F%AC",
+                        2));
+        assertEquals("/manhwa/page/3?g=%EC%8A%A4%EB%A6%B4%EB%9F%AC",
+                Search.findNtkNextPagePathForTest(
+                        "<a rel=\"next\" href=\"/manhwa/page/3?g=%EC%8A%A4%EB%A6%B4%EB%9F%AC\">다음</a>",
+                        "/manhwa/page/2?g=%EC%8A%A4%EB%A6%B4%EB%9F%AC",
+                        3));
+
+        ArrayList<String> candidates = Search.ntkPageCandidatesForTest("/manhwa?g=%EC%8A%A4%EB%A6%B4%EB%9F%AC", 2);
+        assertEquals("/manhwa?page=2&g=%EC%8A%A4%EB%A6%B4%EB%9F%AC", candidates.get(0));
+        assertTrue(candidates.contains("/manhwa?g=%EC%8A%A4%EB%A6%B4%EB%9F%AC&page=2"));
+        assertTrue(candidates.contains("/manhwa?g=%EC%8A%A4%EB%A6%B4%EB%9F%AC&p=2"));
+        assertTrue(candidates.contains("/manhwa/page/2?g=%EC%8A%A4%EB%A6%B4%EB%9F%AC"));
+    }
+
+    @Test
+    public void ntkCategoryUsesApiPaginationAndParsesWorks() throws Exception {
+        assertEquals("/api/manhwa-list?status=&g=%EC%8A%A4%EB%A6%B4%EB%9F%AC&page=2&pageSize=30&withTotal=1",
+                Search.ntkCategoryApiPathForTest("/manhwa?g=%EC%8A%A4%EB%A6%B4%EB%9F%AC", 2, base_comic));
+        assertEquals("/api/works?status=ing&tag=%EC%8A%A4%EB%A6%B4%EB%9F%AC&page=3&pageSize=30&withTotal=1",
+                Search.ntkCategoryApiPathForTest("/ing?tag=%EC%8A%A4%EB%A6%B4%EB%9F%AC", 3, base_webtoon));
+        assertEquals("/api/works?status=end&tag=%EC%8A%A4%EB%A6%B4%EB%9F%AC&page=4&pageSize=30&withTotal=1",
+                Search.ntkCategoryApiPathForTest("/end?tag=%EC%8A%A4%EB%A6%B4%EB%9F%AC", 4, base_webtoon));
+
+        String apiBody =
+                "{\"works\":["
+                        + "{\"sourceWorkId\":\"3587\",\"id\":\"u-ignore\",\"title\":\"데빌맨\",\"thumbnailUrl\":\"/covers/3587.webp\",\"genre\":\"스릴러, 액션\",\"latestEpisodeNumber\":5},"
+                        + "{\"sourceWorkId\":\"u-moszr294-sxhn\",\"title\":\"앱에서 열 수 없는 항목\",\"thumbnailUrl\":\"/covers/bad.webp\"}"
+                        + "],\"page\":2,\"hasMore\":true,\"pageSize\":30,\"total\":308}";
+        ArrayList<Title> titles = Search.parseNtkApiTitlesForTest(
+                apiBody,
+                base_comic);
+
+        assertEquals(1, titles.size());
+        assertEquals(3587, titles.get(0).getId());
+        assertEquals("데빌맨", titles.get(0).getName());
+        assertEquals("/covers/3587.webp", titles.get(0).getThumb());
+        assertEquals("5화", titles.get(0).getRelease());
+        assertEquals(base_comic, titles.get(0).getBaseMode());
+        assertEquals("ntk", titles.get(0).getSourceSite());
+        assertTrue(titles.get(0).getTags().contains("스릴러"));
+        assertTrue(titles.get(0).getTags().contains("액션"));
+        assertEquals(308, Search.parseNtkApiTotalForTest(apiBody, base_comic));
+    }
+
+    @Test
     public void enhanceComicClassification_backfillsGenreSectionsFromInferredTags() {
         Ranking<Title> recent = new Ranking<>("정렬|최신순|/cm?type1=complete&type2=recent&o=n");
         recent.add(new Title("학원 러브코미디 만화", "", "", new ArrayList<>(), "", 401, base_comic));
