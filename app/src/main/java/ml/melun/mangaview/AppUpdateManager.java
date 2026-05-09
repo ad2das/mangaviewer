@@ -9,6 +9,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.Settings;
+import android.util.Base64;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AlertDialog;
@@ -19,6 +20,7 @@ import org.json.JSONObject;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
 
 import ml.melun.mangaview.report.CrashReporter;
@@ -29,6 +31,7 @@ import okhttp3.Response;
 import okhttp3.ResponseBody;
 
 public final class AppUpdateManager {
+    private static final String VERSION_API_URL = "https://api.github.com/repos/ad2das/mangaviewer/contents/version.json?ref=main";
     private static final String RAW_VERSION_URL = "https://raw.githubusercontent.com/ad2das/mangaviewer/main/version.json";
     private static final String PREF = "appUpdate";
     private static final String KEY_VERSION = "latestVersion";
@@ -36,10 +39,15 @@ public final class AppUpdateManager {
     private static final String APK_MIME = "application/vnd.android.package-archive";
     private static final String UPDATE_APK_PREFIX = "mangaViewer-update-";
     private static final String UPDATE_APK_SUFFIX = ".apk";
-    private static final OkHttpClient UPDATE_CLIENT = new OkHttpClient.Builder()
+    private static final OkHttpClient VERSION_CLIENT = new OkHttpClient.Builder()
             .connectTimeout(2, TimeUnit.SECONDS)
-            .readTimeout(3, TimeUnit.SECONDS)
-            .callTimeout(4, TimeUnit.SECONDS)
+            .readTimeout(5, TimeUnit.SECONDS)
+            .callTimeout(7, TimeUnit.SECONDS)
+            .build();
+    private static final OkHttpClient APK_CLIENT = new OkHttpClient.Builder()
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .callTimeout(90, TimeUnit.SECONDS)
             .build();
     private static boolean checkStartedThisSession;
     private static boolean dialogShownThisSession;
@@ -82,25 +90,30 @@ public final class AppUpdateManager {
     }
 
     private static UpdateInfo fetchUpdateInfo(Context context) {
-        return fetchUpdateInfoFromUrl(RAW_VERSION_URL + "?t=" + System.currentTimeMillis());
+        UpdateInfo apiInfo = fetchUpdateInfoFromUrl(VERSION_API_URL, true);
+        if(apiInfo != null)
+            return apiInfo;
+        return fetchUpdateInfoFromUrl(RAW_VERSION_URL + "?t=" + System.currentTimeMillis(), false);
     }
 
-    private static UpdateInfo fetchUpdateInfoFromUrl(String url) {
+    private static UpdateInfo fetchUpdateInfoFromUrl(String url, boolean allowGithubContentsEnvelope) {
         try {
             Request request = new Request.Builder()
                     .url(url)
                     .header("User-Agent", "MangaView")
-                    .header("Accept", "application/json, text/plain, */*")
+                    .header("Accept", allowGithubContentsEnvelope
+                            ? "application/vnd.github.raw, application/vnd.github+json, application/json, text/plain, */*"
+                            : "application/json, text/plain, */*")
                     .header("Cache-Control", "no-cache")
                     .header("Pragma", "no-cache")
                     .build();
-            try(Response response = UPDATE_CLIENT.newCall(request).execute()) {
+            try(Response response = VERSION_CLIENT.newCall(request).execute()) {
                 if(!response.isSuccessful())
                     return null;
                 ResponseBody body = response.body();
                 if(body == null)
                     return null;
-                JSONObject json = new JSONObject(body.string());
+                JSONObject json = parseVersionJson(body.string(), allowGithubContentsEnvelope);
                 int version = json.optInt("version", -1);
                 String link = json.optString("link", "");
                 if(version <= 0 || link.length() == 0)
@@ -111,6 +124,17 @@ public final class AppUpdateManager {
             CrashReporter.record(e);
             return null;
         }
+    }
+
+    private static JSONObject parseVersionJson(String body, boolean allowGithubContentsEnvelope) throws Exception {
+        JSONObject json = new JSONObject(body);
+        if(json.has("version") || !allowGithubContentsEnvelope)
+            return json;
+        String encoded = json.optString("content", "");
+        if(encoded.length() == 0)
+            return json;
+        byte[] decoded = Base64.decode(encoded.replace("\n", ""), Base64.DEFAULT);
+        return new JSONObject(new String(decoded, StandardCharsets.UTF_8));
     }
 
     private static boolean isUpdateAvailable(UpdateInfo info) {
@@ -131,6 +155,9 @@ public final class AppUpdateManager {
 
     private static void cacheUpdateInfo(Context context, UpdateInfo info) {
         if(context == null || info == null)
+            return;
+        UpdateInfo current = readCachedUpdateInfo(context);
+        if(current != null && current.version > info.version)
             return;
         context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
                 .edit()
@@ -196,13 +223,14 @@ public final class AppUpdateManager {
 
     private static File downloadApk(Context context, UpdateInfo info, ProgressCallback callback) {
         try {
-            OkHttpClient client = MainApplication.getHttpClient().client;
             Request request = new Request.Builder()
                     .url(info.link)
                     .header("User-Agent", "MangaView")
                     .header("Accept", APK_MIME + ", application/octet-stream, */*")
+                    .header("Cache-Control", "no-cache")
+                    .header("Pragma", "no-cache")
                     .build();
-            try(Response response = client.newCall(request).execute()) {
+            try(Response response = APK_CLIENT.newCall(request).execute()) {
                 if(!response.isSuccessful() || response.body() == null)
                     return null;
                 File dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
