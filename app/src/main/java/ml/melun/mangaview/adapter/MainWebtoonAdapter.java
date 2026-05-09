@@ -177,6 +177,24 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         loadCachedHomeRowsAsync();
     }
 
+    public void showPlaceholderIfEmpty() {
+        refreshSiteSnapshot();
+        if(rows != null && rows.size() > 0 && hasDisplayContent(rows))
+            return;
+        if(!hasFetchedContent())
+            dataSet = MainPageWebtoon.getBlankDataSet(baseMode, siteNtkSnapshot);
+        List<Object> placeholderRows = buildInitialPlaceholderRows();
+        if(!hasDisplayContent(placeholderRows))
+            placeholderRows = buildRows(dataSet, false);
+        if(!hasDisplayContent(placeholderRows))
+            return;
+        pendingRows = null;
+        rowDiffGeneration++;
+        rows = placeholderRows;
+        initialRowsShown = true;
+        notifyDataSetChanged();
+    }
+
     public boolean isFetching() {
         return fetcher != null;
     }
@@ -278,6 +296,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     public void setHomeTab(int tabPosition) {
+        if(activeHomeTab == tabPosition && hasDisplayContent(rows))
+            return;
         activeHomeTab = tabPosition;
         List<Object> nextRows = buildRowsForCurrentTab(fetcher != null || !hasFetchedContent());
         updateRows(nextRows);

@@ -275,11 +275,9 @@ public class MainMain extends Fragment{
         showInitialHomeRows(selectedBaseMode);
         modeWebtoon.setOnClickListener(v -> {
             switchBaseMode(base_webtoon);
-            scheduleSelectedFetch();
         });
         modeComic.setOnClickListener(v -> {
             switchBaseMode(base_comic);
-            scheduleSelectedFetch();
         });
         switchBaseMode(selectedBaseMode);
 
@@ -392,35 +390,39 @@ public class MainMain extends Fragment{
 
     private void switchBaseMode(int baseMode) {
         RecyclerView previousRecycler = mainRecycler;
+        RecyclerView targetRecycler = baseMode == base_comic ? comicRecycler : webtoonRecycler;
+        if(selectedBaseMode == baseMode && mainRecycler == targetRecycler)
+            return;
         selectedBaseMode = baseMode;
         p.setBaseMode(baseMode);
         ensureHomeAdapter(baseMode);
         updateModeToggle();
-        applySelectedHomeTab();
         MainWebtoonAdapter selectedAdapter = getSelectedAdapter();
         if(selectedAdapter != null)
-            selectedAdapter.showInitialRows();
-        mainRecycler = getSelectedRecycler();
+            selectedAdapter.showPlaceholderIfEmpty();
+        mainRecycler = targetRecycler;
         if(mainRecycler != null) {
             if(previousRecycler != null)
                 previousRecycler.stopScroll();
             mainRecycler.stopScroll();
             showSelectedRecycler(previousRecycler, mainRecycler);
-            scrollHomeToTop();
+            prepareSelectedHomeAfterSwitch(baseMode);
         }
     }
 
-    private void scheduleSelectedFetch() {
+    private void prepareSelectedHomeAfterSwitch(int baseMode) {
         RecyclerView recyclerView = getSelectedRecycler();
-        if(recyclerView == null) {
-            fetchSelected();
-            scheduleInactivePrefetch();
+        if(recyclerView == null)
             return;
-        }
-        final int requestBaseMode = selectedBaseMode;
+        final int requestBaseMode = baseMode;
         recyclerView.post(() -> {
             if(!isAdded() || requestBaseMode != selectedBaseMode)
                 return;
+            applySelectedHomeTab();
+            MainWebtoonAdapter adapter = getSelectedAdapter();
+            if(adapter != null)
+                adapter.showInitialRows();
+            scrollHomeToTop();
             fetchSelected();
             scheduleInactivePrefetch();
         });
