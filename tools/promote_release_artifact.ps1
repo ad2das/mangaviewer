@@ -105,32 +105,32 @@ if (-not (Test-Path $apkPath)) {
 }
 
 $downloadUrl = "https://github.com/$Repo/releases/download/$ReleaseTag/$apkName"
+$currentVersion = 0
+if (Test-Path "version.json") {
+    try {
+        $currentVersionJson = Read-Utf8 "version.json" | ConvertFrom-Json
+        $currentVersion = [long]$currentVersionJson.version
+    } catch {
+        $currentVersion = 0
+    }
+}
 
 Write-Step "Promoting APK $apkName"
 Write-Host "versionCode=$versionCode"
+Write-Host "currentVersion=$currentVersion"
 Write-Host "artifact=$apkPath"
 Write-Host "url=$downloadUrl"
+
+if ($currentVersion -ge $versionCode) {
+    Write-Host "Skipping artifact because it is not newer than the current release metadata."
+    exit 0
+}
 
 if (-not $NoUpload) {
     Write-Step "Uploading APK release asset"
     Invoke-Checked {
         gh release upload $ReleaseTag $apkPath --clobber --repo $Repo
     } "gh release upload failed"
-
-    Write-Step "Deleting old APK release assets"
-    $assetsJson = gh release view $ReleaseTag --repo $Repo --json assets
-    if ($LASTEXITCODE -ne 0) {
-        throw "gh release view failed"
-    }
-    $releaseInfo = $assetsJson | ConvertFrom-Json
-    foreach ($asset in $releaseInfo.assets) {
-        $assetName = [string]$asset.name
-        if ($assetName -match '^mangaViewer_\d+-debug\.apk$' -and $assetName -ne $apkName) {
-            Invoke-Checked {
-                gh release delete-asset $ReleaseTag $assetName --repo $Repo -y
-            } "Failed to delete old release asset $assetName"
-        }
-    }
 }
 
 $versionJsonPath = "version.json"

@@ -7,13 +7,22 @@ on:
         description: "Build APK Artifact run id to promote. Leave empty to use the latest successful run."
         required: false
         type: string
-  workflow_run:
-    workflows:
-      - Build APK Artifact
-    types:
-      - completed
+  push:
     branches:
       - main
+    paths-ignore:
+      - "apk/**"
+      - "releases.html"
+      - "version.json"
+      - "tools/README_RELEASE.md"
+      - "webtoon-classification.json"
+      - "comic-classification.json"
+      - "webtoon-classification-unclassified.json"
+      - "comic-classification-unclassified.json"
+      - "app/src/main/assets/webtoon-classification.json"
+      - "app/src/main/assets/comic-classification.json"
+      - "*.png"
+      - "*.xml"
 
 permissions:
   actions: read
@@ -25,13 +34,12 @@ concurrency:
 
 jobs:
   release:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 3
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TZ: Asia/Seoul
-      BUILD_RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.build_run_id }}
+      BUILD_RUN_ID: ${{ inputs.build_run_id }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
