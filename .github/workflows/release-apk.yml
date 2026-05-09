@@ -67,6 +67,6 @@ jobs:
             printf '%s' "$GOOGLE_SERVICES_XML" > app/src/main/res/values/google_services.xml
           fi
 
-      - name: Release latest debug APK
+      - name: Release latest signed APK
         shell: pwsh
         run: ./tools/release_latest.ps1 -SkipTests -DeleteOldReleaseApks

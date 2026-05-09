@@ -1,6 +1,6 @@
 param(
     [string]$Repo = "ad2das/mangaviewer",
-    [string]$ReleaseTag = "codex/perf-stability-max-core-rewrite-v2112260512",
+    [string]$ReleaseTag = "",
     [string]$JavaHome = "",
     [string]$CommitMessage = "",
     [int]$ReleasePatch = -1,
@@ -91,7 +91,10 @@ $nextPatch = if ($ReleasePatch -ge 0) { $ReleasePatch } else { $currentPatch + 1
 $dateCodeText = Get-Date -Format "yyMMdd"
 $dateCode = [int]$dateCodeText
 $versionCode = 2112000000 + $dateCode + $nextPatch
-$apkName = "mangaViewer_${versionCode}-debug.apk"
+if ([string]::IsNullOrWhiteSpace($ReleaseTag)) {
+    $ReleaseTag = "main-v$versionCode"
+}
+$apkName = "mangaViewer_${versionCode}-release.apk"
 $downloadUrl = "https://github.com/$Repo/releases/download/$ReleaseTag/$apkName"
 
 Write-Step "Preparing version $versionCode"
@@ -106,18 +109,18 @@ Write-Utf8NoBom $versionJsonPath $versionJson
 
 $releasesHtml = Read-Utf8 $releasesHtmlPath
 $releasesHtml = [regex]::Replace($releasesHtml, 'tag_name:\s*"\d+"', "tag_name: `"$versionCode`"", 1)
-$releasesHtml = [regex]::Replace($releasesHtml, 'browser_download_url:\s*"[^"]*mangaViewer_\d+-debug\.apk"', "browser_download_url: `"$downloadUrl`"", 1)
+$releasesHtml = [regex]::Replace($releasesHtml, 'browser_download_url:\s*"[^"]*mangaViewer_\d+-(debug|release)\.apk"', "browser_download_url: `"$downloadUrl`"", 1)
 Write-Utf8NoBom $releasesHtmlPath $releasesHtml
 
-Write-Step "Building debug APK"
-Invoke-Gradle -GradleArgs @("--build-cache", "--parallel", "-PreleasePatch=$nextPatch", "-PreleaseDateCode=$dateCodeText", "assembleDebug")
+Write-Step "Building release APK"
+Invoke-Gradle -GradleArgs @("--build-cache", "--parallel", "-PreleasePatch=$nextPatch", "-PreleaseDateCode=$dateCodeText", "assembleRelease")
 
 if (-not $SkipTests) {
     Write-Step "Running unit tests"
-    Invoke-Gradle -GradleArgs @("--build-cache", "--parallel", "-PreleasePatch=$nextPatch", "-PreleaseDateCode=$dateCodeText", "testDebugUnitTest")
+    Invoke-Gradle -GradleArgs @("--build-cache", "--parallel", "-PreleasePatch=$nextPatch", "-PreleaseDateCode=$dateCodeText", "testReleaseUnitTest")
 }
 
-$builtApk = "app/build/outputs/apk/debug/$apkName"
+$builtApk = "app/build/outputs/apk/release/$apkName"
 if (-not (Test-Path $builtApk)) {
     throw "Built APK not found: $builtApk"
 }
@@ -153,6 +156,15 @@ if (-not $NoCommit) {
 }
 
 if (-not $NoUpload) {
+    gh release view $ReleaseTag --repo $Repo *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Step "Creating release $ReleaseTag"
+        gh release create $ReleaseTag --repo $Repo --target main --title "Main $versionCode" --notes "Main branch signed release APK." --latest
+        if ($LASTEXITCODE -ne 0) {
+            throw "gh release create failed"
+        }
+    }
+
     Write-Step "Uploading APK release asset"
     gh release upload $ReleaseTag $builtApk --clobber --repo $Repo
     if ($LASTEXITCODE -ne 0) {
@@ -163,7 +175,7 @@ if (-not $NoUpload) {
         Write-Step "Deleting old APK release assets"
         $assetNames = gh release view $ReleaseTag --repo $Repo --json assets --jq ".assets[].name"
         foreach ($asset in $assetNames) {
-            if ($asset -match '^mangaViewer_\d+-debug\.apk$' -and $asset -ne $apkName) {
+            if ($asset -match '^mangaViewer_\d+-(debug|release)\.apk$' -and $asset -ne $apkName) {
                 gh release delete-asset $ReleaseTag $asset --repo $Repo --yes
                 if ($LASTEXITCODE -ne 0) {
                     throw "Failed to delete old release asset: $asset"
