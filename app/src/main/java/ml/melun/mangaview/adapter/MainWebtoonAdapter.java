@@ -161,12 +161,21 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(showCachedHomeRows())
             return;
         if(rows != null && rows.size() > 0 && hasDisplayContent(rows)) {
+            if(hasFetchedContent()) {
+                List<Object> warmRows = buildRows(dataSet, false);
+                if(hasDisplayContent(warmRows)) {
+                    initialRowsShown = true;
+                    updateRows(warmRows);
+                    if(hasHero(warmRows))
+                        scrollHeroToTop();
+                }
+            }
             loadCachedHomeRowsAsync();
             return;
         }
         if(!hasFetchedContent())
             dataSet = initialDataSetForSite();
-        List<Object> warmRows = buildInitialPlaceholderRows();
+        List<Object> warmRows = hasFetchedContent() ? buildRows(dataSet, false) : buildInitialPlaceholderRows();
         if(!hasDisplayContent(warmRows))
             warmRows = buildRows(dataSet, false);
         if(hasDisplayContent(warmRows)) {
@@ -184,7 +193,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return;
         if(!hasFetchedContent())
             dataSet = initialDataSetForSite();
-        List<Object> placeholderRows = buildInitialPlaceholderRows();
+        List<Object> placeholderRows = hasFetchedContent() ? buildRows(dataSet, false) : buildInitialPlaceholderRows();
         if(!hasDisplayContent(placeholderRows))
             placeholderRows = buildRows(dataSet, false);
         if(!hasDisplayContent(placeholderRows))
