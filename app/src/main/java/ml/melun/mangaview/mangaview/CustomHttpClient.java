@@ -253,6 +253,8 @@ public class CustomHttpClient {
                 boolean clearanceChanged = false;
                 for(String key : webViewCookies.keySet()) {
                     String value = webViewCookies.get(key);
+                    if("cf_clearance".equalsIgnoreCase(key) && !canAcceptWebViewClearance(value))
+                        continue;
                     if(!value.equals(cookies.get(key))) {
                         cookies.put(key, value);
                         changed = true;
@@ -268,6 +270,13 @@ public class CustomHttpClient {
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
+    }
+
+    private synchronized boolean canAcceptWebViewClearance(String value) {
+        return value != null
+                && value.trim().length() >= 20
+                && !"deleted".equalsIgnoreCase(value.trim())
+                && !isClearanceExpired();
     }
 
     private synchronized void loadSavedCookies(){

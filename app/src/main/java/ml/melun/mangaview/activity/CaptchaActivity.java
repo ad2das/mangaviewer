@@ -26,7 +26,9 @@ import android.widget.TextView;
 
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.util.HashSet;
 import java.util.Random;
+import java.util.Set;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
@@ -66,6 +68,7 @@ public class CaptchaActivity extends AppCompatActivity {
     private long lastAttemptTime = 0;
     private static final long MIN_ATTEMPT_INTERVAL_MS = 300;
     private boolean isFinishing = false;
+    private Set<String> initialClearanceValues = new HashSet<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -120,6 +123,7 @@ public class CaptchaActivity extends AppCompatActivity {
         CookieManager cookiem = CookieManager.getInstance();
         cookiem.setAcceptCookie(true);
         cookiem.setAcceptThirdPartyCookies(webView, true);
+        initialClearanceValues = readClearanceValues(cookiem, purl, p.getWebtoonUrl(), p.getUrl(), "https://ntk01.com", "https://ntk01.com/manhwa");
         // Do NOT remove all cookies — previous valid cf_clearance should be preserved
         if(!getHttpClient().hasCloudflareClearance()) {
             getHttpClient().clearCloudflareWebViewCookies(purl, p.getWebtoonUrl(), p.getUrl(), "https://ntk01.com", "https://ntk01.com/manhwa");
@@ -318,10 +322,11 @@ public class CaptchaActivity extends AppCompatActivity {
                         continue;
                     String k = cookie.substring(0, eq);
                     String v = cookie.substring(eq + 1);
-                    if("cf_clearance".equalsIgnoreCase(k) && !isValidClearanceValue(v))
+                    boolean clearance = "cf_clearance".equalsIgnoreCase(k);
+                    if(clearance && (!isValidClearanceValue(v) || initialClearanceValues.contains(v)))
                         continue;
                     getHttpClient().setCookie(k, v);
-                    if("cf_clearance".equalsIgnoreCase(k))
+                    if(clearance)
                         hasClearance = true;
                 }
             }
@@ -346,6 +351,30 @@ public class CaptchaActivity extends AppCompatActivity {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return false;
+    }
+
+    private Set<String> readClearanceValues(CookieManager cookiem, String... urls) {
+        Set<String> values = new HashSet<>();
+        if(cookiem == null || urls == null)
+            return values;
+        for(String url : urls) {
+            if(url == null || url.length() == 0)
+                continue;
+            String cookieStr = cookiem.getCookie(url);
+            if(cookieStr == null || cookieStr.length() == 0)
+                continue;
+            for(String raw : cookieStr.split(";")) {
+                String cookie = raw.trim();
+                int eq = cookie.indexOf("=");
+                if(eq <= 0)
+                    continue;
+                String key = cookie.substring(0, eq);
+                String value = cookie.substring(eq + 1);
+                if("cf_clearance".equalsIgnoreCase(key) && isValidClearanceValue(value))
+                    values.add(value);
+            }
+        }
+        return values;
     }
 
     private boolean isValidClearanceValue(String value) {

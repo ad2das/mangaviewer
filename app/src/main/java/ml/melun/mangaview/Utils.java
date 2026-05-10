@@ -805,6 +805,14 @@ public class Utils {
         if(source == null)
             return;
         getHttpClient().restoreClearanceFromDisk();
+        if(!getHttpClient().hasCloudflareClearance()) {
+            getHttpClient().clearCloudflareWebViewCookies(
+                    source.getWebtoonUrl(),
+                    source.getUrl(),
+                    "https://ntk01.com",
+                    "https://ntk01.com/manhwa");
+            return;
+        }
         getHttpClient().syncCookiesFromWebView(source.getWebtoonUrl(), true);
         getHttpClient().syncCookiesFromWebView(source.getUrl(), true);
     }

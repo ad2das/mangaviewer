@@ -244,7 +244,7 @@ public class TagSearchActivity extends AppCompatActivity {
                 beginTitleTouch(event);
                 break;
             case MotionEvent.ACTION_MOVE:
-                if(touchPosition != RecyclerView.NO_POSITION)
+                if(touchPosition != RecyclerView.NO_POSITION && movedPastTouchSlop(event))
                     cancelTitleTouchClick();
                 break;
             case MotionEvent.ACTION_UP:
