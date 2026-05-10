@@ -193,6 +193,10 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     private void dispatchFilteredList(ArrayList<Title> next) {
         final ArrayList<Title> old = new ArrayList<>(mDataFiltered);
         final ArrayList<Title> target = new ArrayList<>(next);
+        if(listContentSignature(old).equals(listContentSignature(target))) {
+            mDataFiltered = target;
+            return;
+        }
         final int generation = ++diffGeneration;
         diffExecutor.execute(() -> {
             DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
@@ -223,6 +227,15 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                 diff.dispatchUpdatesTo(this);
             });
         });
+    }
+
+    private String listContentSignature(List<Title> titles) {
+        if(titles == null || titles.size() == 0)
+            return "";
+        StringBuilder builder = new StringBuilder(titles.size() * 32);
+        for(Title title : titles)
+            builder.append(titleContentKey(title)).append('\n');
+        return builder.toString();
     }
 
     private ArrayList<Title> normalizeTitles(List<?> source) {

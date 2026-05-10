@@ -65,7 +65,7 @@ public class Preference {
     private final Map<String, MTitle> favoriteByKey = new HashMap<>();
     private final Map<String, Integer> bookmarkValueByKey = new HashMap<>();
     private final Map<String, String> knownSourceByKey = new HashMap<>();
-    private long localDataVersion = 0L;
+    private volatile long localDataVersion = 0L;
     private final CopyOnWriteArrayList<LocalChangeListener> localChangeListeners = new CopyOnWriteArrayList<>();
 
     public interface LocalChangeListener {

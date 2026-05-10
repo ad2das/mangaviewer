@@ -29,7 +29,7 @@ public final class PrefetchCoordinator {
         if(context == null || title == null || episodes == null || episodes.size() == 0)
             return;
         Context appContext = context.getApplicationContext();
-        List<Integer> targets = viewerTargets(episodes, bookmarkIndex, aggressiveAllowed(appContext) ? 8 : 3);
+        List<Integer> targets = viewerTargets(episodes, bookmarkIndex, aggressiveAllowed(appContext) ? 3 : 2);
         for(Integer index : targets) {
             Manga manga = episodes.get(index);
             if(manga == null)
@@ -65,7 +65,8 @@ public final class PrefetchCoordinator {
         if(title != null)
             manga.setTitle(title);
         ViewerWarmupManager.warmup(context, manga, title);
-        if(MangaRepository.imageUrls(manga, context) != null && MangaRepository.imageUrls(manga, context).size() > 0)
+        List<String> imageUrls = MangaRepository.imageUrls(manga, context);
+        if(imageUrls != null && imageUrls.size() > 0)
             ViewerWarmupManager.preloadWindow(context, manga, 0, width, autoCut, reverse, ViewerPreloadPolicy.nextEpisodeWindow(p.getDataSave()));
     }
 

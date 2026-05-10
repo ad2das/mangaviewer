@@ -114,7 +114,7 @@ public class ViewerActivity extends AppCompatActivity {
     boolean previousEpisodeBoundaryJumpPending = false;
     boolean nextEpisodeBoundaryJumpPending = false;
     long lastBoundaryCheckMs = 0L;
-    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 18;
+    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 10;
     private static final int NEXT_EPISODE_ATTACH_THRESHOLD = 22;
     private static final int DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD = 12;
     private static final int PREVIOUS_EPISODE_PULL_THRESHOLD_DP = 36;

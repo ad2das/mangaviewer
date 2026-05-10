@@ -65,10 +65,11 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     int width;
     int count = 0;
     final static int MaxStackSize = 3;
-    private static final int PRELOAD_AHEAD_COUNT = 18;
-    private static final int DATA_SAVE_PRELOAD_AHEAD_COUNT = 6;
-    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 18;
+    private static final int PRELOAD_AHEAD_COUNT = 12;
+    private static final int DATA_SAVE_PRELOAD_AHEAD_COUNT = 4;
+    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 10;
     private static final int PRELOAD_TRACK_LIMIT = 500;
+    private static final int DECODED_PRELOAD_ACTIVE_LIMIT = 6;
     ViewerActivity.InfiniteScrollCallback callback;
     Title title;
 
@@ -701,6 +702,10 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private void preloadCriticalWindow(int adapterPosition, int direction) {
         if(adapterPosition == RecyclerView.NO_POSITION || !canStartGlideRequest())
             return;
+        if(scrollBusy) {
+            preloadDirectionalWindow(adapterPosition, direction, new ViewerPreloadPolicy.Window(0, 1, 2, 2));
+            return;
+        }
         int decodedLimit = p.getDataSave() ? 2 : 3;
         preloadDirectionalWindow(adapterPosition, direction, new ViewerPreloadPolicy.Window(decodedLimit, decodedLimit, decodedLimit, decodedLimit));
     }
@@ -782,6 +787,10 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private void preloadPageIntoDecodedCache(PageItem page, Priority priority) {
         if(!canStartGlideRequest())
             return;
+        if(scrollBusy || decodedPreloadTargets.size() >= DECODED_PRELOAD_ACTIVE_LIMIT) {
+            preloadPage(page, Priority.HIGH);
+            return;
+        }
         String key = decodedCacheKey(page);
         if(key == null || key.length() == 0)
             return;

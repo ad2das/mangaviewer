@@ -450,11 +450,12 @@ public class CustomHttpClient {
         if(isImage)
             return;
         boolean ntk = isNtkUrl(lower) || isNtk();
+        if(!ntk)
+            return;
         if(ntk && hasCloudflareClearance())
             return;
         try {
-            int delay = ntk ? 30 + (int)(Math.random() * 60) : 40 + (int)(Math.random() * 90);
-            Thread.sleep(delay);
+            Thread.sleep(30 + (int)(Math.random() * 60));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

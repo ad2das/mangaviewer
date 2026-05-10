@@ -59,9 +59,9 @@ public class MainApplication extends MultiDexApplication {
     public static synchronized void initDeferredServices() {
         if(!deferredServicesStarted) {
             deferredServicesStarted = true;
-            AppDispatchers.runIoDelayed(() -> MangaRoomStore.prime(appContext), 250);
-            AppDispatchers.runIoDelayed(MainPageWebtoon::preloadClassificationDbs, 900);
-            AppDispatchers.runIoDelayed(() -> ClassificationDbUpdater.updateInBackground(appContext), 1800);
+            AppDispatchers.runIoDelayed(() -> MangaRoomStore.prime(appContext), 800);
+            AppDispatchers.runIoDelayed(MainPageWebtoon::preloadClassificationDbs, 2200);
+            AppDispatchers.runIoDelayed(() -> ClassificationDbUpdater.updateInBackground(appContext), 4200);
         }
     }
 }

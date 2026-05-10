@@ -2084,6 +2084,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private void updateRows(List<Object> newRows) {
         final List<Object> oldRows = rows == null ? Collections.emptyList() : new ArrayList<>(rows);
         final List<Object> nextRows = newRows == null ? new ArrayList<>() : new ArrayList<>(newRows);
+        if(oldRows.size() > 0 && rowsContentSignature(oldRows).equals(rowsContentSignature(nextRows))) {
+            rows = nextRows;
+            return;
+        }
         if(anchorRecycler != null && anchorRecycler.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
             pendingRows = nextRows;
             return;
@@ -2157,6 +2161,15 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         List<Object> rowsToApply = pendingRows;
         pendingRows = null;
         updateRows(rowsToApply);
+    }
+
+    private String rowsContentSignature(List<Object> candidateRows) {
+        if(candidateRows == null || candidateRows.size() == 0)
+            return "";
+        StringBuilder builder = new StringBuilder(candidateRows.size() * 32);
+        for(Object row : candidateRows)
+            builder.append(rowContentKey(row)).append('\n');
+        return builder.toString();
     }
 
     private ScrollAnchor captureScrollAnchor(List<Object> currentRows) {
@@ -2617,19 +2630,21 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return;
         continueProgressBackfillRunning = true;
         AppDispatchers.runUserAction(() -> {
+            long versionBefore = p.getLocalDataVersion();
             try {
-                MangaRepository.backfillRecentProgress(12);
+                MangaRepository.backfillRecentProgress(4);
             } catch (Exception e) {
                 ml.melun.mangaview.report.CrashReporter.record(e);
             }
             Runnable done = () -> {
                 continueProgressBackfillRunning = false;
-                updateRows(buildRows(dataSet, false));
+                if(versionBefore != p.getLocalDataVersion())
+                    updateRows(buildRows(dataSet, false));
             };
             if(anchorRecycler != null)
                 anchorRecycler.post(done);
             else
-                continueProgressBackfillRunning = false;
+                MAIN.post(done);
         });
     }
 
