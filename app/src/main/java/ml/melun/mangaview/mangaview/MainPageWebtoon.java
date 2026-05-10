@@ -989,6 +989,8 @@ public class MainPageWebtoon {
     }
 
     public static List<Ranking<?>> getFastNtkWebtoonDataSet() {
+        if(!classificationDbLoaded && appContext != null)
+            loadClassificationDb();
         if(!classificationDbLoaded)
             return getBlankDataSet(base_webtoon, true);
         List<Ranking<?>> dataset = getBlankDataSet(base_webtoon, true);

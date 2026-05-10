@@ -158,6 +158,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         refreshSiteSnapshot();
         if(rows != null && rows.size() > 0 && hasDisplayContent(rows) && hasCompleteHomeSections())
             return;
+        if(showCachedHomeRows())
+            return;
         if(rows != null && rows.size() > 0 && hasDisplayContent(rows)) {
             loadCachedHomeRowsAsync();
             return;
