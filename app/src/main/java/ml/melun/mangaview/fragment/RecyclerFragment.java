@@ -4,13 +4,18 @@ import android.app.SearchManager;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.graphics.Rect;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.view.LayoutInflater;
 import android.view.Menu;
 import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -59,6 +64,19 @@ public class RecyclerFragment extends Fragment {
     SearchView searchView;
     Preference.LocalChangeListener localChangeListener;
     OfflineReader offlineReader;
+    final Handler touchHandler = new Handler(Looper.getMainLooper());
+    int touchSlop = 8;
+    int listScrollState = RecyclerView.SCROLL_STATE_IDLE;
+    float touchDownX = 0f;
+    float touchDownY = 0f;
+    long touchDownAt = 0L;
+    boolean touchMoved = false;
+    boolean touchLongPressed = false;
+    boolean touchOnResume = false;
+    int touchPosition = RecyclerView.NO_POSITION;
+    View touchChild;
+    View touchAnchor;
+    Runnable touchLongPressRunnable;
 
 
     @Override
@@ -88,26 +106,26 @@ public class RecyclerFragment extends Fragment {
         recyclerView.setItemAnimator(null);
         recyclerView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         recyclerView.setAdapter(titleAdapter);
+        touchSlop = ViewConfiguration.get(rootView.getContext()).getScaledTouchSlop();
         recyclerView.addOnItemTouchListener(new RecyclerView.SimpleOnItemTouchListener() {
             @Override
             public boolean onInterceptTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent e) {
-                if(titleAdapter != null)
-                    titleAdapter.noteListTouchEvent(e);
+                handleLibraryTouch(e);
                 return false;
             }
 
             @Override
             public void onTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent e) {
-                if(titleAdapter != null)
-                    titleAdapter.noteListTouchEvent(e);
+                handleLibraryTouch(e);
             }
         });
         recyclerView.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
             public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
                 super.onScrollStateChanged(recyclerView, newState);
-                if(titleAdapter != null)
-                    titleAdapter.setListScrollState(newState);
+                listScrollState = newState;
+                if(newState != RecyclerView.SCROLL_STATE_IDLE)
+                    cancelLibraryTouchClick();
                 if(getContext() == null || !isAdded())
                     return;
                 PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
@@ -207,6 +225,126 @@ public class RecyclerFragment extends Fragment {
         return rootView;
     }
 
+    private void handleLibraryTouch(MotionEvent event) {
+        if(event == null || recyclerView == null || titleAdapter == null)
+            return;
+        switch(event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                beginLibraryTouch(event);
+                break;
+            case MotionEvent.ACTION_MOVE:
+                if(touchPosition != RecyclerView.NO_POSITION && movedPastTouchSlop(event)) {
+                    cancelLibraryTouchClick();
+                }
+                break;
+            case MotionEvent.ACTION_UP:
+                finishLibraryTouch(event);
+                break;
+            case MotionEvent.ACTION_CANCEL:
+                resetLibraryTouch();
+                break;
+        }
+    }
+
+    private void beginLibraryTouch(MotionEvent event) {
+        resetLibraryTouch();
+        touchDownX = event.getX();
+        touchDownY = event.getY();
+        touchDownAt = SystemClock.uptimeMillis();
+        touchChild = recyclerView.findChildViewUnder(touchDownX, touchDownY);
+        if(touchChild == null)
+            return;
+        touchPosition = recyclerView.getChildAdapterPosition(touchChild);
+        if(touchPosition == RecyclerView.NO_POSITION) {
+            resetLibraryTouch();
+            return;
+        }
+        View resume = resumeButtonFor(touchChild);
+        touchOnResume = isTouchInsideDescendant(touchChild, resume, touchDownX, touchDownY);
+        touchAnchor = touchOnResume && resume != null ? resume : touchChild;
+        scheduleLibraryLongPress(touchPosition, touchAnchor);
+    }
+
+    private void finishLibraryTouch(MotionEvent event) {
+        touchHandler.removeCallbacksAndMessages(null);
+        if(touchPosition == RecyclerView.NO_POSITION) {
+            resetLibraryTouch();
+            return;
+        }
+        boolean moved = touchMoved || movedPastTouchSlop(event);
+        boolean longPressWindow = SystemClock.uptimeMillis() - touchDownAt >= ViewConfiguration.getLongPressTimeout();
+        int position = touchPosition;
+        boolean resumeTap = touchOnResume;
+        boolean canClick = !moved
+                && !touchLongPressed
+                && !longPressWindow
+                && listScrollState == RecyclerView.SCROLL_STATE_IDLE;
+        resetLibraryTouchStateOnly();
+        if(!canClick)
+            return;
+        if(resumeTap)
+            titleAdapter.performResumeClick(position);
+        else
+            titleAdapter.performItemClick(position);
+    }
+
+    private void scheduleLibraryLongPress(int position, View anchor) {
+        touchLongPressRunnable = () -> {
+            if(touchMoved
+                    || touchLongPressed
+                    || listScrollState != RecyclerView.SCROLL_STATE_IDLE
+                    || touchPosition != position
+                    || titleAdapter == null)
+                return;
+            touchLongPressed = titleAdapter.performItemLongClick(anchor == null ? recyclerView : anchor, position);
+        };
+        touchHandler.postDelayed(touchLongPressRunnable, ViewConfiguration.getLongPressTimeout());
+    }
+
+    private void cancelLibraryTouchClick() {
+        touchMoved = true;
+        touchHandler.removeCallbacksAndMessages(null);
+    }
+
+    private void resetLibraryTouch() {
+        touchHandler.removeCallbacksAndMessages(null);
+        resetLibraryTouchStateOnly();
+    }
+
+    private void resetLibraryTouchStateOnly() {
+        touchMoved = false;
+        touchLongPressed = false;
+        touchOnResume = false;
+        touchPosition = RecyclerView.NO_POSITION;
+        touchChild = null;
+        touchAnchor = null;
+        touchLongPressRunnable = null;
+        touchDownAt = 0L;
+    }
+
+    private boolean movedPastTouchSlop(MotionEvent event) {
+        if(event == null)
+            return false;
+        return Math.abs(event.getX() - touchDownX) > touchSlop
+                || Math.abs(event.getY() - touchDownY) > touchSlop;
+    }
+
+    private View resumeButtonFor(View child) {
+        return child == null ? null : child.findViewById(R.id.epsButton);
+    }
+
+    private boolean isTouchInsideDescendant(View child, View descendant, float recyclerX, float recyclerY) {
+        if(child == null || descendant == null || descendant.getVisibility() != View.VISIBLE)
+            return false;
+        if(!(child instanceof ViewGroup))
+            return false;
+        Rect rect = new Rect(0, 0, descendant.getWidth(), descendant.getHeight());
+        ((ViewGroup) child).offsetDescendantRectToMyCoords(descendant, rect);
+        int childX = Math.round(recyclerX - child.getLeft());
+        int childY = Math.round(recyclerY - child.getTop());
+        return rect.contains(childX, childY);
+    }
+
     @Override
     public void onActivityResult(int requestCode, int resultCode, Intent data) {
         if(resultCode == RESULT_OK){
@@ -238,6 +376,7 @@ public class RecyclerFragment extends Fragment {
 
     @Override
     public void onDestroyView() {
+        resetLibraryTouch();
         if(localChangeListener != null) {
             p.removeLocalChangeListener(localChangeListener);
             localChangeListener = null;

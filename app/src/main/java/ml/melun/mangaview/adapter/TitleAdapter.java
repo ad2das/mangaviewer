@@ -5,9 +5,7 @@ import androidx.recyclerview.widget.DiffUtil;
 import androidx.cardview.widget.CardView;
 import androidx.recyclerview.widget.RecyclerView;
 import android.view.LayoutInflater;
-import android.view.MotionEvent;
 import android.view.View;
-import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.widget.Filter;
 import android.widget.Filterable;
@@ -26,9 +24,7 @@ import java.util.concurrent.Executor;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
-import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.MTitle;
-import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.runtime.AppDispatchers;
 
@@ -55,14 +51,8 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     boolean searching = false;
     private final Executor diffExecutor = AppDispatchers.uiDiff();
     private int diffGeneration = 0;
-    private static final long SCROLL_CLICK_SUPPRESS_MS = 200L;
-    private static final long TOUCH_MOVE_SUPPRESS_MS = 350L;
-    private int listScrollState = RecyclerView.SCROLL_STATE_IDLE;
-    private long suppressClicksUntil = 0L;
-    private int touchSlop = 0;
-    private float listDownX = 0f;
-    private float listDownY = 0f;
-    private boolean listTouchMoved = false;
+    private long lastResumeOpenAt = 0L;
+    private int lastResumeOpenPosition = RecyclerView.NO_POSITION;
 
     public TitleAdapter(Context context) {
         init(context);
@@ -76,61 +66,11 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         this.forceThumbnail = b;
     }
 
-    public void setListScrollState(int state) {
-        listScrollState = state;
-        if(state == RecyclerView.SCROLL_STATE_IDLE)
-            suppressClicksUntil = android.os.SystemClock.uptimeMillis() + SCROLL_CLICK_SUPPRESS_MS;
-        else
-            suppressClicksUntil = Long.MAX_VALUE;
-    }
-
-    public void noteListTouchEvent(MotionEvent event) {
-        if(event == null)
-            return;
-        switch(event.getActionMasked()) {
-            case MotionEvent.ACTION_DOWN:
-                listDownX = event.getX();
-                listDownY = event.getY();
-                listTouchMoved = false;
-                break;
-            case MotionEvent.ACTION_MOVE:
-                if(!listTouchMoved && movedPastTouchSlop(event.getX(), event.getY(), listDownX, listDownY)) {
-                    listTouchMoved = true;
-                    suppressClicksForTouchMove();
-                }
-                break;
-            case MotionEvent.ACTION_UP:
-            case MotionEvent.ACTION_CANCEL:
-                if(listTouchMoved)
-                    suppressClicksForTouchMove();
-                listTouchMoved = false;
-                break;
-        }
-    }
-
-    private void suppressClicksForTouchMove() {
-        long until = android.os.SystemClock.uptimeMillis() + TOUCH_MOVE_SUPPRESS_MS;
-        if(suppressClicksUntil < until)
-            suppressClicksUntil = until;
-    }
-
-    private boolean canOpenUserAction() {
-        if(listScrollState != RecyclerView.SCROLL_STATE_IDLE)
-            return false;
-        return android.os.SystemClock.uptimeMillis() >= suppressClicksUntil;
-    }
-
-    private boolean movedPastTouchSlop(float x, float y, float downX, float downY) {
-        int slop = touchSlop > 0 ? touchSlop : 8;
-        return Math.abs(x - downX) > slop || Math.abs(y - downY) > slop;
-    }
-
     void init(Context context){
         dark = p.getDarkTheme();
         save = p.getDataSave();
         this.mInflater = LayoutInflater.from(context);
         mainContext = context;
-        touchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
         this.mData = new ArrayList<>();
         this.mDataFiltered = new ArrayList<>();
         setHasStableIds(true);
@@ -448,18 +388,6 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         return "ntk".equals(source) ? "ntk" : "wfwf";
     }
 
-    private void warmupResume(Title title, int bookmark, int position) {
-        if(title == null || bookmark <= 0 || position > 10)
-            return;
-        Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
-        manga.setTitle(title);
-        manga.setTitleId(title.getId());
-        List<Manga> episodes = Utils.snapshotEpisodes(title);
-        if(episodes.size() > 0)
-            manga.setEps(episodes);
-        ViewerWarmupManager.warmupContinueImmediate(mainContext, manga, title);
-    }
-
     int dp(int value) {
         return (int) (value * mainContext.getResources().getDisplayMetrics().density + 0.5f);
     }
@@ -552,6 +480,36 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         return episodeCount;
     }
 
+    public boolean performItemClick(int position) {
+        if(!isValidPosition(position) || mClickListener == null)
+            return false;
+        mClickListener.onItemClick(position);
+        return true;
+    }
+
+    public boolean performResumeClick(int position) {
+        if(!isValidPosition(position) || mClickListener == null)
+            return false;
+        long now = android.os.SystemClock.uptimeMillis();
+        if(position == lastResumeOpenPosition && now - lastResumeOpenAt < 700)
+            return false;
+        Title title = mDataFiltered.get(position);
+        int bookmark = resolveResumeBookmark(title);
+        if(bookmark <= 0)
+            return false;
+        lastResumeOpenPosition = position;
+        lastResumeOpenAt = now;
+        mClickListener.onResumeClick(position, bookmark);
+        return true;
+    }
+
+    public boolean performItemLongClick(View anchorView, int position) {
+        if(!longClickEnabled || !isValidPosition(position) || mClickListener == null)
+            return false;
+        mClickListener.onLongClick(anchorView, position);
+        return true;
+    }
+
     @Override
     public int getItemCount() {
         if(mDataFiltered != null)
@@ -573,14 +531,6 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         CardView card;
         View content;
         View thumbCard;
-        long lastResumeOpenAt = 0L;
-        int lastResumeOpenPosition = RecyclerView.NO_POSITION;
-        float itemDownX = 0f;
-        float itemDownY = 0f;
-        boolean itemTouchMoved = false;
-        float resumeDownX = 0f;
-        float resumeDownY = 0f;
-        boolean resumeTouchMoved = false;
 
         View tagContainer;
         View counterContainer;
@@ -611,147 +561,31 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                 card.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.colorDarkBackground));
                 resume.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.resumeDark));
             }
-            View.OnLongClickListener longClickListener = v -> {
-                if(!longClickEnabled || !canOpenUserAction())
-                    return false;
-                int position = getAdapterPosition();
-                if(!isValidPosition(position) || mClickListener == null)
-                    return false;
-                mClickListener.onLongClick(v, position);
-                return true;
-            };
-            itemView.setOnLongClickListener(longClickListener);
-            card.setOnLongClickListener(longClickListener);
-            content.setOnLongClickListener(longClickListener);
-            thumbCard.setOnLongClickListener(longClickListener);
-            name.setOnLongClickListener(longClickListener);
-            thumb.setOnLongClickListener(longClickListener);
-            author.setOnLongClickListener(longClickListener);
-            tags.setOnLongClickListener(longClickListener);
-            baseModeStr.setOnLongClickListener(longClickListener);
-            progress.setOnLongClickListener(longClickListener);
-            progressText.setOnLongClickListener(longClickListener);
-            tagContainer.setOnLongClickListener(longClickListener);
-            View.OnClickListener clickListener = v -> openItem();
-            View.OnTouchListener itemTouchListener = (v, event) -> {
-                switch(event.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        itemDownX = event.getX();
-                        itemDownY = event.getY();
-                        itemTouchMoved = false;
-                        v.setLongClickable(longClickEnabled);
-                        break;
-                    case MotionEvent.ACTION_MOVE:
-                        if(!itemTouchMoved && movedPastTouchSlop(event.getX(), event.getY(), itemDownX, itemDownY)) {
-                            itemTouchMoved = true;
-                            suppressClicksForTouchMove();
-                            v.setPressed(false);
-                            v.setLongClickable(false);
-                            v.cancelLongPress();
-                        }
-                        break;
-                    case MotionEvent.ACTION_UP:
-                    case MotionEvent.ACTION_CANCEL:
-                        if(itemTouchMoved)
-                            suppressClicksForTouchMove();
-                        itemTouchMoved = false;
-                        v.setLongClickable(longClickEnabled);
-                        break;
-                }
-                return false;
-            };
-            itemView.setOnTouchListener(itemTouchListener);
-            card.setOnTouchListener(itemTouchListener);
-            content.setOnTouchListener(itemTouchListener);
-            thumbCard.setOnTouchListener(itemTouchListener);
-            itemView.setOnClickListener(clickListener);
-            card.setOnClickListener(clickListener);
-            content.setOnClickListener(clickListener);
-            thumbCard.setOnClickListener(clickListener);
-            name.setOnClickListener(clickListener);
-            thumb.setOnClickListener(clickListener);
-            author.setOnClickListener(clickListener);
-            tags.setOnClickListener(clickListener);
-            baseModeStr.setOnClickListener(clickListener);
-            progress.setOnClickListener(clickListener);
-            progressText.setOnClickListener(clickListener);
-            tagContainer.setOnClickListener(clickListener);
-            resume.setOnClickListener(v -> openResume());
-            resume.setOnTouchListener((v, event) -> {
-                switch(event.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        resumeDownX = event.getX();
-                        resumeDownY = event.getY();
-                        resumeTouchMoved = false;
-                        v.setLongClickable(longClickEnabled);
-                        v.setPressed(true);
-                        warmupResumeAtCurrentPosition();
-                        return true;
-                    case MotionEvent.ACTION_MOVE:
-                        if(!resumeTouchMoved && movedPastTouchSlop(event.getX(), event.getY(), resumeDownX, resumeDownY)) {
-                            resumeTouchMoved = true;
-                            suppressClicksForTouchMove();
-                            v.setPressed(false);
-                            v.setLongClickable(false);
-                            v.cancelLongPress();
-                        }
-                        return true;
-                    case MotionEvent.ACTION_UP:
-                        boolean shouldClick = !resumeTouchMoved && canOpenUserAction();
-                        v.setPressed(false);
-                        resumeTouchMoved = false;
-                        if(shouldClick)
-                            v.performClick();
-                        v.setLongClickable(longClickEnabled);
-                        return true;
-                    case MotionEvent.ACTION_CANCEL:
-                        v.setPressed(false);
-                        resumeTouchMoved = false;
-                        v.setLongClickable(longClickEnabled);
-                        return true;
-                    default:
-                        return false;
-                }
-            });
-            resume.setOnLongClickListener(longClickListener);
-
+            disableTouchTarget(itemView);
+            disableTouchTarget(card);
+            disableTouchTarget(content);
+            disableTouchTarget(thumbCard);
+            disableTouchTarget(name);
+            disableTouchTarget(thumb);
+            disableTouchTarget(author);
+            disableTouchTarget(tags);
+            disableTouchTarget(baseModeStr);
+            disableTouchTarget(progress);
+            disableTouchTarget(progressText);
+            disableTouchTarget(tagContainer);
+            disableTouchTarget(resume);
         }
+    }
 
-        private void openItem() {
-            if(!canOpenUserAction())
-                return;
-            int position = getAdapterPosition();
-            if(!isValidPosition(position) || mClickListener == null)
-                return;
-            mClickListener.onItemClick(position);
-        }
-
-        private void openResume() {
-            if(!canOpenUserAction())
-                return;
-            int position = getAdapterPosition();
-            if(!isValidPosition(position) || mClickListener == null)
-                return;
-            long now = android.os.SystemClock.uptimeMillis();
-            if(position == lastResumeOpenPosition && now - lastResumeOpenAt < 700)
-                return;
-            lastResumeOpenPosition = position;
-            lastResumeOpenAt = now;
-            Title title = mDataFiltered.get(position);
-            int bookmark = resolveResumeBookmark(title);
-            if(bookmark <= 0)
-                return;
-            mClickListener.onResumeClick(position, bookmark);
-        }
-
-        private void warmupResumeAtCurrentPosition() {
-            int position = getAdapterPosition();
-            if(!isValidPosition(position))
-                return;
-            Title title = mDataFiltered.get(position);
-            int bookmark = resolveResumeBookmark(title);
-            warmupResume(title, bookmark, position);
-        }
+    private void disableTouchTarget(View view) {
+        if(view == null)
+            return;
+        view.setOnClickListener(null);
+        view.setOnLongClickListener(null);
+        view.setOnTouchListener(null);
+        view.setClickable(false);
+        view.setLongClickable(false);
+        view.setFocusable(false);
     }
 
     public void setResume(boolean resume){
