@@ -130,6 +130,23 @@ public class CustomHttpClient {
         return false;
     }
 
+    public synchronized boolean hasFreshCloudflareClearance() {
+        if(!hasCloudflareClearance())
+            return false;
+        long remaining = cloudflareClearanceRemainingMs();
+        return remaining > 5 * 60 * 1000L;
+    }
+
+    private long cloudflareClearanceRemainingMs() {
+        try {
+            SharedPreferences pref = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE);
+            long expireAt = pref.getLong("cfClearanceExpireAt", 0);
+            return expireAt - System.currentTimeMillis();
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
     public void saveClearanceToDisk() {
         try {
             String clearance = cookies.get("cf_clearance");
@@ -432,8 +449,12 @@ public class CustomHttpClient {
         boolean isImage = lower.matches(".*\\.(jpg|jpeg|png|gif|webp|css|js|ico)(\\?.*)?$") || lower.contains("imgcloud") || lower.contains("stm.com") || lower.contains("cloud.com");
         if(isImage)
             return;
+        boolean ntk = isNtkUrl(lower) || isNtk();
+        if(ntk && hasCloudflareClearance())
+            return;
         try {
-            Thread.sleep(100 + (int)(Math.random() * 300));
+            int delay = ntk ? 30 + (int)(Math.random() * 60) : 100 + (int)(Math.random() * 300);
+            Thread.sleep(delay);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
@@ -554,7 +575,7 @@ public class CustomHttpClient {
         String cacheKey = getBaseUrl(normalized) + normalized;
         long now = System.currentTimeMillis();
         if(isNtk())
-            ttlMillis *= 5;
+            ttlMillis = Math.max(ttlMillis * 5, 10 * 60 * 1000L);
         PageLoadState activeLoad = null;
         CachedPage staleCached = null;
         synchronized (this) {
@@ -582,26 +603,6 @@ public class CustomHttpClient {
             String body = readBody(response);
             if(isCloudflareChallenge(code, body)) {
                 clearCloudflareCookies();
-                // NTK: retry once after clearing cookies
-                if(isNtk()) {
-                    try { Thread.sleep(1000 + (int)(Math.random() * 500)); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
-                    response = mget(normalized, true, null);
-                    if(response != null) {
-                        code = response.code();
-                        body = readBody(response);
-                        if(!isCloudflareChallenge(code, body)) {
-                            if(code >= 500 && staleCached != null)
-                                return new PageResponse(staleCached.code, staleCached.body, true);
-                            if(code >= 200 && code < 400 && body.length() > 0 && looksCacheable(body)) {
-                                cacheKey = getBaseUrl(normalized) + normalized;
-                                synchronized (this) {
-                                    pageCache.put(cacheKey, new CachedPage(code, body, now));
-                                }
-                            }
-                            return new PageResponse(code, body, false);
-                        }
-                    }
-                }
                 throw new Exception("Cloudflare challenge");
             }
             if(code >= 500 && staleCached != null)
@@ -759,7 +760,8 @@ public class CustomHttpClient {
     private Map<String, String> buildHeaders(String baseUrl, Boolean useDefaultCookies, Map<String, String> customCookie) {
         Map<String, String> cookie = new HashMap<>();
         if(Boolean.TRUE.equals(useDefaultCookies)) {
-            syncCookiesFromWebView(baseUrl);
+            if(!shouldSkipWebViewCookieSync(baseUrl))
+                syncCookiesFromWebView(baseUrl);
             synchronized (this) {
                 cookie.putAll(this.cookies);
             }
@@ -793,6 +795,10 @@ public class CustomHttpClient {
             putClientHintHeaders(headers);
         }
         return headers;
+    }
+
+    private boolean shouldSkipWebViewCookieSync(String baseUrl) {
+        return isNtkUrl(baseUrl) && hasFreshCloudflareClearance();
     }
 
     private void applyNtkApiHeaders(Map<String, String> headers, String baseUrl, String path) {

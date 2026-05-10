@@ -14,8 +14,10 @@ import java.net.URLEncoder;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 import okhttp3.Response;
@@ -31,6 +33,9 @@ public class Search {
     private static final int CLASSIFICATION_DB_PAGE_SIZE = 120;
     private static final int NTK_CATEGORY_PAGE_SIZE = 30;
     private static final int NTK_KEYWORD_PAGE_SIZE = 30;
+    private static final long NTK_RESULT_CACHE_TTL_MS = 10 * 60 * 1000L;
+    private static final int NTK_RESULT_CACHE_MAX_ENTRIES = 80;
+    private static final Map<String, CachedPageTitles> NTK_RESULT_CACHE = new HashMap<>();
 
     int baseMode;
     private final String query;
@@ -363,6 +368,11 @@ public class Search {
     }
 
     private PageTitles fetchWebtoonResults(CustomHttpClient client, String path, int limit, int currentPage) throws Exception {
+        return cachedNtkPageTitles(client, "webtoon", path, baseMode, limit, currentPage,
+                () -> fetchWebtoonResultsUncached(client, path, limit, currentPage));
+    }
+
+    private PageTitles fetchWebtoonResultsUncached(CustomHttpClient client, String path, int limit, int currentPage) throws Exception {
         CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
         if(page.code >= 400)
             throw new Exception("Webtoon search failed: " + page.code);
@@ -490,6 +500,46 @@ public class Search {
             this.hasMore = hasMore;
             this.totalCount = totalCount;
         }
+    }
+
+    private static class CachedPageTitles {
+        final PageTitles pageTitles;
+        final long loadedAt;
+
+        CachedPageTitles(PageTitles pageTitles, long loadedAt) {
+            this.pageTitles = pageTitles;
+            this.loadedAt = loadedAt;
+        }
+    }
+
+    private interface PageTitleLoader {
+        PageTitles load() throws Exception;
+    }
+
+    private PageTitles cachedNtkPageTitles(CustomHttpClient client, String kind, String path, int targetBaseMode,
+                                           int limit, int currentPage, PageTitleLoader loader) throws Exception {
+        if(client == null || !client.isNtk())
+            return loader.load();
+        String key = kind + ':' + targetBaseMode + ':' + limit + ':' + currentPage + ':' + path;
+        long now = System.currentTimeMillis();
+        synchronized (NTK_RESULT_CACHE) {
+            CachedPageTitles cached = NTK_RESULT_CACHE.get(key);
+            if(cached != null && now - cached.loadedAt < NTK_RESULT_CACHE_TTL_MS)
+                return copyPageTitles(cached.pageTitles);
+        }
+        PageTitles loaded = loader.load();
+        synchronized (NTK_RESULT_CACHE) {
+            if(NTK_RESULT_CACHE.size() >= NTK_RESULT_CACHE_MAX_ENTRIES)
+                NTK_RESULT_CACHE.clear();
+            NTK_RESULT_CACHE.put(key, new CachedPageTitles(copyPageTitles(loaded), System.currentTimeMillis()));
+        }
+        return loaded;
+    }
+
+    private static PageTitles copyPageTitles(PageTitles source) {
+        if(source == null)
+            return new PageTitles(new ArrayList<>(), null);
+        return new PageTitles(new ArrayList<>(source.titles), source.nextPath, source.hasMoreKnown, source.hasMore, source.totalCount);
     }
 
     private static boolean isNtkApiListPath(String path) {
@@ -840,6 +890,11 @@ public class Search {
     }
 
     private PageTitles fetchNtkSearchResults(CustomHttpClient client, String path, int targetBaseMode, int limit, int currentPage) throws Exception {
+        return cachedNtkPageTitles(client, "search", path, targetBaseMode, limit, currentPage,
+                () -> fetchNtkSearchResultsUncached(client, path, targetBaseMode, limit, currentPage));
+    }
+
+    private PageTitles fetchNtkSearchResultsUncached(CustomHttpClient client, String path, int targetBaseMode, int limit, int currentPage) throws Exception {
         CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
         if(page.code >= 400)
             throw new Exception("NTK search failed: " + page.code);
@@ -939,10 +994,12 @@ public class Search {
         int pageSize = limit > 0 ? Math.min(NTK_KEYWORD_PAGE_SIZE, Math.max(10, limit)) : NTK_KEYWORD_PAGE_SIZE;
         String path = "/api/works?keyword=" + percentEncode(query, Charset.forName("UTF-8"))
                 + "&page=1&pageSize=" + pageSize;
-        CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
-        if(page.code >= 400)
-            return;
-        PageTitles parsed = parseNtkApiPage(page.body, path, targetBaseMode, 0, 1);
+        PageTitles parsed = cachedNtkPageTitles(client, "keyword", path, targetBaseMode, limit, 1, () -> {
+            CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+            if(page.code >= 400)
+                return new PageTitles(new ArrayList<>(), null);
+            return parseNtkApiPage(page.body, path, targetBaseMode, 0, 1);
+        });
         ArrayList<Title> filtered = filterNtkKeywordResults(parsed.titles, query, limit);
         appendUnique(target, filtered);
     }

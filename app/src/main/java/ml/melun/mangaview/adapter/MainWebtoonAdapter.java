@@ -822,7 +822,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 if(ranking.size() > 0)
                     restored.add(ranking);
             }
-            return hasCompleteHomeSections(restored) ? restored : null;
+            return canUseHomeSnapshot(restored) ? restored : null;
         } catch (Exception ignored) {
             return null;
         }
@@ -830,7 +830,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     private void saveHomeSnapshot(List<Ranking<?>> sections) {
         try {
-            if(!hasCompleteHomeSections(sections))
+            if(!canUseHomeSnapshot(sections))
                 return;
             HomeSnapshot snapshot = new HomeSnapshot();
             snapshot.savedAt = System.currentTimeMillis();
@@ -870,10 +870,18 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private boolean shouldKeepHomeCacheSection(Ranking<?> section, int keptSections) {
+        if(siteNtkSnapshot)
+            return true;
         if(keptSections < 2)
             return true;
         SectionName name = parseSectionName(section.getName());
         return name.title.contains("인기순") || name.title.contains(freshSectionTitle());
+    }
+
+    private boolean canUseHomeSnapshot(List<Ranking<?>> sections) {
+        if(siteNtkSnapshot)
+            return collectTitles(sections, 1).size() > 0;
+        return hasCompleteHomeSections(sections);
     }
 
     private boolean hasRequiredHomeSections(List<Ranking<?>> sections) {

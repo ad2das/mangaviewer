@@ -31,6 +31,8 @@ import static ml.melun.mangaview.MainApplication.p;
 public final class MangaRepository {
     private static final long HOME_TTL_MS = 45_000L;
     private static final long SECTION_TTL_MS = 2 * 60_000L;
+    private static final long NTK_HOME_TTL_MS = 10 * 60_000L;
+    private static final long NTK_SECTION_TTL_MS = 10 * 60_000L;
     private static final ConcurrentHashMap<String, CacheEntry> CACHE = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, FutureTask<Object>> IN_FLIGHT = new ConcurrentHashMap<>();
 
@@ -54,7 +56,9 @@ public final class MangaRepository {
     }
 
     public static MainPage loadComicHome(CustomHttpClient.RequestGroup requestGroup) throws Exception {
-        return cached("home:comic", HOME_TTL_MS,
+        boolean ntk = getHttpClient().isNtk();
+        String key = "home:" + (ntk ? "ntk:" : "wfwf:") + "comic";
+        return cached(key, ntk ? NTK_HOME_TTL_MS : HOME_TTL_MS,
                 () -> getHttpClient().runWithRequestGroup(requestGroup, () -> new MainPage(getHttpClient())));
     }
 
@@ -119,8 +123,9 @@ public final class MangaRepository {
 
     public static Ranking<Title> loadWebtoonSection(MainPageWebtoon parser, String title, String path, int baseMode,
                                                     CustomHttpClient.RequestGroup requestGroup) throws Exception {
-        String key = "section:" + baseMode + ':' + path;
-        return cached(key, SECTION_TTL_MS, () -> {
+        boolean ntk = getHttpClient().isNtk();
+        String key = "section:" + (ntk ? "ntk:" : "wfwf:") + baseMode + ':' + path;
+        return cached(key, ntk ? NTK_SECTION_TTL_MS : SECTION_TTL_MS, () -> {
             if(requestGroup == null)
                 return parser.parseWolfTitle(getHttpClient(), title, path, baseMode);
             return getHttpClient().runWithRequestGroup(requestGroup,
