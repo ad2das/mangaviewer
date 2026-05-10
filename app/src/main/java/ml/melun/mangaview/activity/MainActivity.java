@@ -391,6 +391,7 @@ public class MainActivity extends AppCompatActivity
         super.onResume();
         PerformanceMonitor.resume();
         AppUpdateManager.resumePendingInstall(this);
+        invalidateOptionsMenu();
         maybeOpenNtkCaptcha();
     }
 
@@ -1010,6 +1011,7 @@ public class MainActivity extends AppCompatActivity
             return;
         }
         if(resultCode == RESULT_CAPTCHA) {
+            invalidateOptionsMenu();
             if(fragments[0] instanceof MainMain) {
                 UrlUpdateCallback callback = ((MainMain) fragments[0]).getCallback();
                 if(callback != null)
