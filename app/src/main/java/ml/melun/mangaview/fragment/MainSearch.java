@@ -96,6 +96,8 @@ public class MainSearch extends Fragment {
     boolean pendingLibraryRefresh = false;
     boolean libraryMode = true;
     long searchFirstStartedAt = 0L;
+    AppDispatchers.TaskHandle libraryFilterTask;
+    int libraryFilterGeneration = 0;
 
     public static MainSearch newSearchTab() {
         MainSearch fragment = new MainSearch();
@@ -440,6 +442,11 @@ public class MainSearch extends Fragment {
             performLibrarySearch(activeLibraryQuery);
             return;
         }
+        if(libraryFilterTask != null) {
+            libraryFilterTask.cancel();
+            libraryFilterTask = null;
+        }
+        libraryFilterGeneration++;
         if(searchAdapter == null)
             searchAdapter = new TitleAdapter(getContext());
         searchAdapter.setResume(true);
@@ -976,11 +983,22 @@ public class MainSearch extends Fragment {
             offlineTask = new LoadOfflineTitles();
             offlineTask.start();
         }
-        ArrayList<Title> data = new ArrayList<>();
-        for(Title title : getLibraryTitles(tab))
-            if(matchesLibraryQuery(title, query))
-                data.add(title);
-        bindLibraryData(data, "서재에서 \"" + query + "\" 검색 결과가 없습니다");
+        if(libraryFilterTask != null)
+            libraryFilterTask.cancel();
+        final int generation = ++libraryFilterGeneration;
+        final String filterQuery = query;
+        libraryFilterTask = AppDispatchers.submitUiDiff(() -> {
+            ArrayList<Title> data = new ArrayList<>();
+            for(Title title : getLibraryTitles(tab))
+                if(matchesLibraryQuery(title, filterQuery))
+                    data.add(title);
+            AppDispatchers.runOnMain(() -> {
+                if(generation != libraryFilterGeneration || getContext() == null)
+                    return;
+                libraryFilterTask = null;
+                bindLibraryData(data, "서재에서 \"" + filterQuery + "\" 검색 결과가 없습니다");
+            });
+        });
     }
 
     private boolean matchesLibraryQuery(Title title, String query) {
@@ -1156,6 +1174,9 @@ public class MainSearch extends Fragment {
             searchTask.cancel(true);
         if(offlineTask != null)
             offlineTask.cancel(true);
+        if(libraryFilterTask != null)
+            libraryFilterTask.cancel();
+        libraryFilterGeneration++;
         activeSearchKey = null;
         super.onDestroyView();
     }

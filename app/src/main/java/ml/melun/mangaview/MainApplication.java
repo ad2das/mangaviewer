@@ -34,6 +34,7 @@ public class MainApplication extends MultiDexApplication {
         CrashReporter.install(this);
         AppCompatDelegate.setCompatVectorFromResourcesEnabled(true);
         p = new Preference(this);
+        p.forceWfwfSitePresetIfNeeded();
         MangaRoomStore.prime(this);
         AppDispatchers.runIo(MainPageWebtoon::preloadClassificationDbs);
         AppDispatchers.runIo(() -> ClassificationDbUpdater.updateInBackground(this));

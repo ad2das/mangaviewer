@@ -106,7 +106,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private static final String HOME_CACHE_KEY_PREFIX = "homeSnapshotV1_";
     private static final int HOME_CACHE_MAX_SECTIONS = 6;
     private static final int HOME_CACHE_MAX_TITLES_PER_SECTION = 10;
-    private static final Executor ROW_DIFF_EXECUTOR = AppDispatchers.userAction();
+    private static final Executor ROW_DIFF_EXECUTOR = AppDispatchers.uiDiff();
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private int preloadCount = 0;
     private int activeHomeTab = 0;
@@ -1958,9 +1958,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
             String thumb = title.getThumb();
             if(save || thumb == null || thumb.length() == 0) {
-                bindStaticThumb(holder.thumb, "launcher", R.mipmap.ic_launcher);
+                bindStaticThumb(holder.thumb, "placeholder", R.drawable.app_cover_placeholder);
             } else {
-                bindGlideThumb(holder.thumb, getGlideUrl(thumb, title.getBaseMode()), 128, 156, R.mipmap.ic_launcher);
+                bindGlideThumb(holder.thumb, getGlideUrl(thumb, title.getBaseMode()), 128, 156, R.drawable.app_cover_placeholder);
             }
 
             holder.card.setOnClickListener(v -> {

@@ -52,7 +52,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     String path = "";
     Filter filter;
     boolean searching = false;
-    private final Executor diffExecutor = AppDispatchers.userAction();
+    private final Executor diffExecutor = AppDispatchers.uiDiff();
     private int diffGeneration = 0;
 
     public TitleAdapter(Context context) {

@@ -191,7 +191,8 @@ public class Utils {
 
     private static Intent viewerIntent(Context context, Manga manga, boolean warmupContinue){
         Intent viewer = null;
-        switch (new Preference(context).getViewerType()){
+        int viewerType = p == null ? new Preference(context).getViewerType() : p.getViewerType();
+        switch (viewerType){
             case 0:
                 viewer = new Intent(context, ViewerActivity.class);
                 break;
@@ -251,23 +252,7 @@ public class Utils {
             return;
         }
         ViewerWarmupManager.warmupContinueImmediate(context, manga, launchTitle);
-        AppDispatchers.submitUserAction(() -> {
-            Manga prepared = ViewerWarmupManager.prepareClickFirstFrame(context, manga, launchTitle, false, p.getReverse());
-            if(prepared == null)
-                prepared = ViewerWarmupManager.prepareClickFirstFrame(context, manga, launchTitle, false, p.getReverse());
-            Manga launchManga = prepared;
-            AppDispatchers.runOnMain(() -> {
-                if(!isLatestViewerLaunchToken(context, launchToken))
-                    return;
-                if(launchManga == null) {
-                    safeToast(context, "이미지를 불러오지 못했습니다.", Toast.LENGTH_SHORT);
-                    return;
-                }
-                Title preparedTitle = launchManga.getTitle();
-                launchPreparedViewer(context, launchManga, code, returnToEpisodes, online, recent,
-                        launchTitle != null ? launchTitle : preparedTitle, includeTitleEpisodes, launchToken);
-            });
-        });
+        launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken);
     }
 
     private static void switchToTitleSourceSite(Title title) {
@@ -1206,7 +1191,9 @@ public class Utils {
         editor.putBoolean("stretch",data.getBoolean("stretch", false));
         editor.putInt("startTab",data.getInt("startTab", 0));
         editor.putString("url",data.getString("url", ""));
+        editor.putString("webtoonUrl",data.getString("webtoonUrl", CustomHttpClient.WEBTOON_URL));
         editor.putString("defUrl",data.getString("defUrl", "설정되지 않음"));
+        editor.putInt("baseMode", data.getInt("baseMode", MTitle.base_comic));
         editor.putBoolean("leftRight", data.getBoolean("leftRight", false));
         editor.putBoolean("autoUrl", data.getBoolean("autoUrl", true));
         editor.putFloat("pageControlButtonOffset", (float)data.getDouble("pageControlButtonOffset", -1));
@@ -1218,6 +1205,7 @@ public class Utils {
             CustomJSONObject data = new CustomJSONObject(readFileToString(f));
             jsonToPref(c, data);
             p.init(c);
+            p.forceWfwfSitePresetIfNeeded();
         }catch (Exception e){
             ml.melun.mangaview.report.CrashReporter.record(e);
             return false;
@@ -1230,6 +1218,7 @@ public class Utils {
             CustomJSONObject data = new CustomJSONObject(readUriToString(c, uri));
             jsonToPref(c, data);
             p.init(c);
+            p.forceWfwfSitePresetIfNeeded();
         }catch (Exception e){
             ml.melun.mangaview.report.CrashReporter.record(e);
             return false;
@@ -1254,7 +1243,9 @@ public class Utils {
             data.put("leftRight", sharedPref.getBoolean("leftRight", false));
             data.put("startTab",sharedPref.getInt("startTab", 0));
             data.put("url",sharedPref.getString("url", ""));
-            data.put("defUrl",sharedPref.getString("url", "설정되지 않음"));
+            data.put("webtoonUrl",sharedPref.getString("webtoonUrl", CustomHttpClient.WEBTOON_URL));
+            data.put("defUrl",sharedPref.getString("defUrl", "설정되지 않음"));
+            data.put("baseMode", sharedPref.getInt("baseMode", MTitle.base_comic));
             data.put("autoUrl", sharedPref.getBoolean("autoUrl", true));
             data.put("prevPageKey", sharedPref.getInt("prevPageKey", -1));
             data.put("nextPageKey", sharedPref.getInt("nextPageKey", -1));

@@ -162,7 +162,7 @@ public class ViewerWarmupManager {
             firstPage = 0;
         int startPage = firstPage;
         String scheduleKey = continueWarmupKey(manga, title, startPage);
-        if(!immediate && !shouldScheduleContinueWarmup(scheduleKey))
+        if(!shouldScheduleContinueWarmup(scheduleKey))
             return;
         AppDispatchers.submitImageWarmup(() -> {
             try {
@@ -287,7 +287,7 @@ public class ViewerWarmupManager {
         int firstPage = manga.useBookmark() ? p.getViewerBookmark(manga) : 0;
         if(firstPage < 0)
             firstPage = 0;
-        Manga warmed = continueSnapshotManga(context, continueWarmupKey(manga, title, firstPage), manga);
+        Manga warmed = continueSnapshotMangaFromMemory(continueWarmupKey(manga, title, firstPage), manga);
         if(warmed != null) {
             if(title != null)
                 attachTitle(title, warmed);
@@ -573,7 +573,7 @@ public class ViewerWarmupManager {
             return false;
         if(pageIndex < 0 || pageIndex >= images.size())
             pageIndex = 0;
-        int decodedLimit = p.getDataSave() ? 2 : 3;
+        int decodedLimit = 1;
         int end = Math.min(images.size(), pageIndex + decodedLimit);
         long startedAt = SystemClock.elapsedRealtime();
         boolean firstReady = false;
@@ -603,7 +603,7 @@ public class ViewerWarmupManager {
         }
         FutureTarget<Bitmap> target = null;
         boolean cachedResult = false;
-        long timeoutMs = firstPage ? 6000L : 700L;
+        long timeoutMs = firstPage ? 1800L : 300L;
         long decodeStart = SystemClock.elapsedRealtime();
         try {
             target = Glide.with(context)
@@ -731,6 +731,17 @@ public class ViewerWarmupManager {
             if(snapshot == null)
                 return null;
             continueSnapshots.put(key, snapshot);
+        }
+        return snapshot.toManga(fallback);
+    }
+
+    private static synchronized Manga continueSnapshotMangaFromMemory(String key, Manga fallback) {
+        WarmupSnapshot snapshot = continueSnapshots.get(key);
+        if(snapshot == null)
+            return null;
+        if(System.currentTimeMillis() - snapshot.createdAt > SNAPSHOT_TTL_MS) {
+            continueSnapshots.remove(key);
+            return null;
         }
         return snapshot.toManga(fallback);
     }

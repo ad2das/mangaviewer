@@ -961,7 +961,7 @@ public class ViewerActivity extends AppCompatActivity {
                 };
                 mainHandler.postDelayed(timeoutGuard, 12000);
             }
-            handle = AppDispatchers.submitUserAction(() -> {
+            handle = AppDispatchers.submitNavigation(() -> {
                 int result = LOAD_OK;
                 try {
                     if(m.isOnline()) {

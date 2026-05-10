@@ -31,6 +31,7 @@ import androidx.appcompat.app.ActionBarDrawerToggle;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 import androidx.fragment.app.Fragment;
+import androidx.fragment.app.FragmentTransaction;
 
 import android.view.Menu;
 import android.view.MenuItem;
@@ -119,6 +120,7 @@ public class MainActivity extends AppCompatActivity
     StartupViewModel startupViewModel;
     UrlUpdateCallback pendingUrlUpdateCallback;
     private static final int FIRST_TIME_ACTIVITY = 9;
+    private static final String FRAGMENT_TAG_PREFIX = "main_tab_";
     private long lastNtkCaptchaLaunchAt = 0L;
 
 
@@ -154,13 +156,20 @@ public class MainActivity extends AppCompatActivity
         ((MainSearch) fragments[1]).enterSearchMode();
     }
 
-    private void forceWfwfOnStartup() {
-        if(!p.isNtkSite())
-            return;
-        p.setSitePreset(DEFAULT_COMIC_URL, WEBTOON_URL);
+    private boolean forceWfwfOnStartup() {
+        if(!p.forceWfwfSitePresetIfNeeded())
+            return false;
         MainApplication.getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
         MainApplication.getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
         MainApplication.getHttpClient().clearPageCache();
+        if(toolbar != null)
+            invalidateOptionsMenu();
+        if(fragments[0] instanceof MainMain) {
+            UrlUpdateCallback callback = ((MainMain) fragments[0]).getCallback();
+            if(callback != null)
+                callback.callback(true);
+        }
+        return true;
     }
 
 
@@ -345,6 +354,7 @@ public class MainActivity extends AppCompatActivity
         homeDirStr = p.getHomeDir();
 
         content = findViewById(R.id.contentHolder);
+        restoreExistingFragments();
 
         // Always start a fresh app session from Home. The older startTab preference can
         // point to Library after sync/settings restore, which makes cold starts feel wrong.
@@ -380,6 +390,7 @@ public class MainActivity extends AppCompatActivity
     @Override
     protected void onResume() {
         super.onResume();
+        forceWfwfOnStartup();
         PerformanceMonitor.resume();
         AppUpdateManager.resumePendingInstall(this);
         maybeOpenNtkCaptcha();
@@ -732,6 +743,36 @@ public class MainActivity extends AppCompatActivity
         return "";
     }
 
+    private void restoreExistingFragments() {
+        for(int i = 0; i < fragments.length; i++) {
+            Fragment existing = getSupportFragmentManager().findFragmentByTag(fragmentTag(i));
+            if(existing != null)
+                fragments[i] = existing;
+        }
+    }
+
+    private String fragmentTag(int index) {
+        return FRAGMENT_TAG_PREFIX + index;
+    }
+
+    private void showFragment(int index) {
+        FragmentTransaction transaction = getSupportFragmentManager().beginTransaction();
+        for(int i = 0; i < fragments.length; i++) {
+            Fragment fragment = fragments[i];
+            if(fragment == null)
+                continue;
+            if(i == index) {
+                if(fragment.isAdded())
+                    transaction.show(fragment);
+                else
+                    transaction.add(R.id.contentHolder, fragment, fragmentTag(i));
+            } else if(fragment.isAdded()) {
+                transaction.hide(fragment);
+            }
+        }
+        transaction.commit();
+    }
+
     private void applyMainWindowChrome() {
         if(dark)
             return;
@@ -888,7 +929,7 @@ public class MainActivity extends AppCompatActivity
                 ((MainSearch) fragments[1]).enterSearchMode();
             currentTab = index;
             PerformanceMonitor.screen(performanceScreenName(index));
-            getSupportFragmentManager().beginTransaction().replace(R.id.contentHolder, (Fragment) fragments[index]).commit();
+            showFragment(index);
             res = true;
         } else if(index == 1 && fragments[1] instanceof MainSearch) {
             ((MainSearch) fragments[1]).enterSearchMode();

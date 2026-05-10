@@ -25,8 +25,6 @@ import static ml.melun.mangaview.mangaview.MTitle.baseModeStr;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static ml.melun.mangaview.mangaview.Title.isInteger;
 import static ml.melun.mangaview.mangaview.CustomHttpClient.DEFAULT_COMIC_URL;
-import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_COMIC_URL;
-import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_WEBTOON_URL;
 import static ml.melun.mangaview.mangaview.CustomHttpClient.WEBTOON_URL;
 
 public class Preference {
@@ -112,6 +110,15 @@ public class Preference {
         resetViewerBookmark();
     }
 
+    public boolean forceWfwfSitePresetIfNeeded() {
+        boolean changed = normalizeToWfwfSitePresetIfNeeded();
+        if(!changed)
+            return false;
+        writeSiteSettings();
+        notifySync("settings");
+        return true;
+    }
+
     //Offline manga has id of -1
     public Preference(Context context){
         init(context);
@@ -162,6 +169,7 @@ public class Preference {
             doublepReverse = sharedPref.getBoolean("doublepReverse", false);
             pageControlButtonOffset = sharedPref.getFloat("pageControlButtonOffset", -1);
             baseMode = sharedPref.getInt("baseMode", base_comic);
+            normalizeToWfwfSitePresetIfNeeded();
             prefsEditor.putString("defUrl", defUrl)
                     .putString("url", url)
                     .putString("webtoonUrl", webtoonUrl)
@@ -277,6 +285,46 @@ public class Preference {
         }
     }
 
+    private boolean normalizeToWfwfSitePresetIfNeeded() {
+        if(isWfwfLikeUrl(defUrl) && isWfwfLikeUrl(url) && isWfwfLikeUrl(webtoonUrl))
+            return false;
+        defUrl = DEFAULT_COMIC_URL;
+        url = DEFAULT_COMIC_URL;
+        webtoonUrl = WEBTOON_URL;
+        autoUrl = false;
+        return true;
+    }
+
+    private void writeSiteSettings() {
+        prefsEditor.putString("defUrl", defUrl)
+                .putString("url", url)
+                .putString("webtoonUrl", webtoonUrl)
+                .putBoolean("autoUrl", autoUrl)
+                .apply();
+    }
+
+    private boolean isWfwfLikeUrl(String sourceUrl) {
+        return hostStartsWith(sourceUrl, "wfwf");
+    }
+
+    private boolean isNtkLikeUrl(String sourceUrl) {
+        return hostStartsWith(sourceUrl, "ntk");
+    }
+
+    private boolean hostStartsWith(String sourceUrl, String prefix) {
+        try {
+            if(sourceUrl == null || sourceUrl.trim().length() == 0)
+                return false;
+            String normalized = normalizeHttpUrl(sourceUrl.trim(), "");
+            if(normalized.length() == 0)
+                return false;
+            String host = URI.create(normalized).getHost();
+            return host != null && host.toLowerCase().startsWith(prefix);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     public int getBaseMode(){
         return this.baseMode;
     }
@@ -368,8 +416,7 @@ public class Preference {
     }
 
     public boolean isNtkSite() {
-        return NTK_COMIC_URL.equals(normalizeComicUrl(url))
-                || NTK_WEBTOON_URL.equals(normalizeWebtoonUrl(webtoonUrl));
+        return isNtkLikeUrl(url) || isNtkLikeUrl(webtoonUrl) || isNtkLikeUrl(defUrl);
     }
 
     public int getStartTab() {
@@ -1178,6 +1225,7 @@ public class Preference {
         baseMode = readInt(settings, "baseMode", baseMode);
         doublep = readBoolean(settings, "doublep", doublep);
         doublepReverse = readBoolean(settings, "doublepReverse", doublepReverse);
+        normalizeToWfwfSitePresetIfNeeded();
         prefsEditor.putBoolean("darkTheme", darkTheme)
                 .putInt("viewerType", viewerType)
                 .putBoolean("pageReverse", reverse)
@@ -1187,6 +1235,7 @@ public class Preference {
                 .putString("url", url)
                 .putString("webtoonUrl", webtoonUrl)
                 .putString("defUrl", defUrl)
+                .putBoolean("autoUrl", autoUrl)
                 .putBoolean("stretch", stretch)
                 .putBoolean("leftRight", leftRight)
                 .putFloat("pageControlButtonOffset", pageControlButtonOffset)
