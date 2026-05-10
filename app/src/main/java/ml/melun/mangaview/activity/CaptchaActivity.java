@@ -121,6 +121,9 @@ public class CaptchaActivity extends AppCompatActivity {
         cookiem.setAcceptCookie(true);
         cookiem.setAcceptThirdPartyCookies(webView, true);
         // Do NOT remove all cookies — previous valid cf_clearance should be preserved
+        if(!getHttpClient().hasCloudflareClearance()) {
+            getHttpClient().clearCloudflareWebViewCookies(purl, p.getWebtoonUrl(), p.getUrl(), "https://ntk01.com", "https://ntk01.com/manhwa");
+        }
 
         // WebChromeClient for JS console and alerts
         webView.setWebChromeClient(new WebChromeClient() {
@@ -315,6 +318,8 @@ public class CaptchaActivity extends AppCompatActivity {
                         continue;
                     String k = cookie.substring(0, eq);
                     String v = cookie.substring(eq + 1);
+                    if("cf_clearance".equalsIgnoreCase(k) && !isValidClearanceValue(v))
+                        continue;
                     getHttpClient().setCookie(k, v);
                     if("cf_clearance".equalsIgnoreCase(k))
                         hasClearance = true;
@@ -341,6 +346,15 @@ public class CaptchaActivity extends AppCompatActivity {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return false;
+    }
+
+    private boolean isValidClearanceValue(String value) {
+        if(value == null)
+            return false;
+        String trimmed = value.trim();
+        return trimmed.length() >= 20
+                && !"deleted".equalsIgnoreCase(trimmed)
+                && !"null".equalsIgnoreCase(trimmed);
     }
 
     private String[] cookieReadUrls(String purl, String currentUrl) {

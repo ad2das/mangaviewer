@@ -98,6 +98,8 @@ public class CustomHttpClient {
         }
         cookies.put(k, v);
         persistCookies();
+        if("cf_clearance".equalsIgnoreCase(k) && v.length() > 0)
+            saveClearanceToDisk();
     }
 
     public synchronized void setUserAgent(String userAgent) {
@@ -162,14 +164,11 @@ public class CustomHttpClient {
         try {
             SharedPreferences pref = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE);
             long expireAt = pref.getLong("cfClearanceExpireAt", 0);
-            // If expireAt is 0, it means saveClearanceToDisk was never called
-            // (backward compat with older versions). Treat as NOT expired
-            // so hasCloudflareClearance() doesn't wipe the cookie prematurely.
             if(expireAt == 0)
-                return false;
+                return true;
             return expireAt <= System.currentTimeMillis();
         } catch (Exception e) {
-            return false;
+            return true;
         }
     }
     public synchronized void clearCloudflareCookies() {
@@ -183,6 +182,33 @@ public class CustomHttpClient {
         }
         if(changed)
             persistCookies();
+        if(changed) {
+            context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
+                    .edit()
+                    .remove("cfClearanceValue")
+                    .remove("cfClearanceExpireAt")
+                    .apply();
+        }
+    }
+
+    public void clearCloudflareWebViewCookies(String... urls) {
+        try {
+            CookieManager manager = CookieManager.getInstance();
+            if(urls == null)
+                return;
+            for(String url : urls) {
+                if(url == null || url.length() == 0)
+                    continue;
+                manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/");
+                manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=.ntk01.com");
+                manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/");
+                manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=.ntk01.com");
+            }
+            manager.flush();
+            clearCloudflareCookies();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
     }
     public synchronized void resetCookie(){
         this.cookies = new HashMap<>();
@@ -224,15 +250,20 @@ public class CustomHttpClient {
 
             synchronized (this) {
                 boolean changed = false;
+                boolean clearanceChanged = false;
                 for(String key : webViewCookies.keySet()) {
                     String value = webViewCookies.get(key);
                     if(!value.equals(cookies.get(key))) {
                         cookies.put(key, value);
                         changed = true;
+                        if("cf_clearance".equalsIgnoreCase(key))
+                            clearanceChanged = true;
                     }
                 }
                 if(changed)
                     persistCookies();
+                if(clearanceChanged)
+                    saveClearanceToDisk();
             }
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
@@ -282,6 +313,7 @@ public class CustomHttpClient {
         if(response == null)
             return;
         boolean changed = false;
+        boolean clearanceChanged = false;
         for(String c : response.headers("Set-Cookie")){
             int eq = c.indexOf("=");
             int semi = c.indexOf(";");
@@ -294,10 +326,14 @@ public class CustomHttpClient {
             if(!value.equals(cookies.get(key))) {
                 cookies.put(key, value);
                 changed = true;
+                if("cf_clearance".equalsIgnoreCase(key))
+                    clearanceChanged = true;
             }
         }
         if(changed)
             persistCookies();
+        if(clearanceChanged)
+            saveClearanceToDisk();
     }
 
     public synchronized String getCookie(String k){
