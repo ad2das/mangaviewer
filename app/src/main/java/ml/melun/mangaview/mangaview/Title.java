@@ -31,7 +31,7 @@ public class Title extends MTitle {
     public static final int BATTERY_FULL = 4;
     public static final int LOAD_OK = 0;
     public static final int LOAD_CAPTCHA = 1;
-    private static final long PAGE_CACHE_TTL_MS = 2 * 60 * 1000L;
+    private static final long PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final int MAX_TIMEOUT_RETRIES = 2;
 
 

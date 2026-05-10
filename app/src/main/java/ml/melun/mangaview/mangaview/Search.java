@@ -28,7 +28,7 @@ import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
 import static ml.melun.mangaview.mangaview.MTitle.baseModeStr;
 
 public class Search {
-    private static final long PAGE_CACHE_TTL_MS = 2 * 60 * 1000L;
+    private static final long PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final int MAX_TIMEOUT_RETRIES = 2;
     private static final int CLASSIFICATION_DB_PAGE_SIZE = 120;
     private static final int NTK_CATEGORY_PAGE_SIZE = 30;

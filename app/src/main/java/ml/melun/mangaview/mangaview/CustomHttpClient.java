@@ -453,7 +453,7 @@ public class CustomHttpClient {
         if(ntk && hasCloudflareClearance())
             return;
         try {
-            int delay = ntk ? 30 + (int)(Math.random() * 60) : 100 + (int)(Math.random() * 300);
+            int delay = ntk ? 30 + (int)(Math.random() * 60) : 40 + (int)(Math.random() * 90);
             Thread.sleep(delay);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

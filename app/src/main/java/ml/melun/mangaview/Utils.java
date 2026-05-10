@@ -51,6 +51,7 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -89,6 +90,13 @@ public class Utils {
 
     private static int captchaCount = 1;
     private static long lastAutoCloudflareCaptchaAt = 0L;
+    private static final int GLIDE_URL_CACHE_MAX = 512;
+    private static final Map<String, GlideUrl> glideUrlCache = new LinkedHashMap<String, GlideUrl>(GLIDE_URL_CACHE_MAX, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, GlideUrl> eldest) {
+            return size() > GLIDE_URL_CACHE_MAX;
+        }
+    };
 
     public static final String ReservedChars = "|\\?*<\":>+[]/'";
 
@@ -912,10 +920,16 @@ public class Utils {
         boolean ntkImage = getHttpClient().isNtkUrl(url) || isProtectedImageHost(url);
         if(ntkImage)
             referer = getSiteRoot(baseMode);
+        String cookie = getHttpClient().getCookieHeader();
+        String cacheKey = baseMode + "|" + url + "|" + referer + "|" + getHttpClient().agent + "|" + (cookie == null ? "" : cookie);
+        synchronized (glideUrlCache) {
+            GlideUrl cached = glideUrlCache.get(cacheKey);
+            if(cached != null)
+                return cached;
+        }
         LazyHeaders.Builder headers = new LazyHeaders.Builder()
                 .addHeader("Referer", referer)
                 .addHeader("User-Agent", getHttpClient().agent);
-        String cookie = getHttpClient().getCookieHeader();
         if(cookie != null && cookie.length() > 0)
             headers.addHeader("Cookie", cookie);
         if(ntkImage) {
@@ -926,7 +940,11 @@ public class Utils {
             headers.addHeader("Sec-Fetch-Site", "same-origin");
             addClientHintHeaders(headers);
         }
-        return new GlideUrl(url, headers.build());
+        GlideUrl glideUrl = new GlideUrl(url, headers.build());
+        synchronized (glideUrlCache) {
+            glideUrlCache.put(cacheKey, glideUrl);
+        }
+        return glideUrl;
     }
 
     private static void addClientHintHeaders(LazyHeaders.Builder headers) {

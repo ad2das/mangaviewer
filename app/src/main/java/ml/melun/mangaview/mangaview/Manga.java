@@ -43,7 +43,7 @@ import androidx.documentfile.provider.DocumentFile;
      */
 
 public class Manga {
-    private static final long PAGE_CACHE_TTL_MS = 60 * 1000L;
+    private static final long PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final int MAX_TIMEOUT_RETRIES = 2;
 
     int baseMode = base_comic;

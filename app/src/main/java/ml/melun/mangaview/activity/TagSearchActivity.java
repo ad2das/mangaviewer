@@ -700,6 +700,8 @@ public class TagSearchActivity extends AppCompatActivity {
     private void preloadVisibleThumbnails() {
         if(searchResult == null || destroyed || isFinishing())
             return;
+        if(searchResult.getScrollState() == RecyclerView.SCROLL_STATE_SETTLING)
+            return;
         RecyclerView.LayoutManager manager = searchResult.getLayoutManager();
         if(!(manager instanceof LinearLayoutManager))
             return;
@@ -709,7 +711,8 @@ public class TagSearchActivity extends AppCompatActivity {
         if(first == RecyclerView.NO_POSITION)
             first = 0;
         int visibleCount = last >= first ? last - first + 1 : 8;
-        int preloadCount = visibleCount + THUMBNAIL_PRELOAD_AHEAD;
+        int ahead = searchResult.getScrollState() == RecyclerView.SCROLL_STATE_IDLE ? THUMBNAIL_PRELOAD_AHEAD : Math.min(2, THUMBNAIL_PRELOAD_AHEAD);
+        int preloadCount = visibleCount + ahead;
         if(adapter != null)
             adapter.preloadThumbnails(first, preloadCount);
         if(uadapter != null)

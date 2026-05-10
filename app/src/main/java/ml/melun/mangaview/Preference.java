@@ -63,6 +63,9 @@ public class Preference {
     private final Map<String, Integer> favoriteIndexByKey = new HashMap<>();
     private final Map<String, MTitle> recentByKey = new HashMap<>();
     private final Map<String, MTitle> favoriteByKey = new HashMap<>();
+    private final Map<String, Integer> bookmarkValueByKey = new HashMap<>();
+    private final Map<String, String> knownSourceByKey = new HashMap<>();
+    private long localDataVersion = 0L;
     private final CopyOnWriteArrayList<LocalChangeListener> localChangeListeners = new CopyOnWriteArrayList<>();
 
     public interface LocalChangeListener {
@@ -98,8 +101,13 @@ public class Preference {
     }
 
     private void notifyLocalChange(String scope) {
+        localDataVersion++;
         for(LocalChangeListener listener : localChangeListeners)
             listener.onLocalPreferenceChanged(scope);
+    }
+
+    public long getLocalDataVersion() {
+        return localDataVersion;
     }
 
     private void notifySync(String scope) {
@@ -207,6 +215,7 @@ public class Preference {
 
     private void markHistoryIndexDirty() {
         historyIndexDirty = true;
+        knownSourceByKey.clear();
     }
 
     private void ensureHistoryIndex() {
@@ -786,14 +795,27 @@ public class Preference {
         if(titleId>0) {
             try {
                 String sourceKey = bookmarkKey(title);
+                Integer cached = bookmarkValueByKey.get(sourceKey);
+                if(cached != null)
+                    return cached;
                 if(bookmark.has(sourceKey))
-                    return bookmark.getInt(sourceKey);
-                return bookmark.getInt(legacyBookmarkKey(title));
+                    return cacheBookmarkValue(sourceKey, bookmark.getInt(sourceKey));
+                String legacyKey = legacyBookmarkKey(title);
+                cached = bookmarkValueByKey.get(legacyKey);
+                if(cached != null)
+                    return cached;
+                return cacheBookmarkValue(legacyKey, bookmark.getInt(legacyKey));
             } catch (Exception e) {
                 //
             }
         }
         return -1;
+    }
+
+    private int cacheBookmarkValue(String key, int value) {
+        if(key != null && key.length() > 0)
+            bookmarkValueByKey.put(key, value);
+        return value;
     }
 
     private void ensureSourceSite(MTitle title) {
@@ -818,17 +840,28 @@ public class Preference {
         if(source != null && source.length() > 0)
             return source;
         if(title != null && title.getId() > 0) {
+            String sourceCacheKey = legacyTitleLookupKey(title);
+            String cachedSource = knownSourceByKey.get(sourceCacheKey);
+            if(cachedSource != null)
+                return cachedSource;
             ensureBookmarkLoaded();
             String legacy = legacyBookmarkKey(title);
             if(bookmark.has("wfwf." + legacy))
-                return "wfwf";
+                return cacheKnownSource(sourceCacheKey, "wfwf");
             if(bookmark.has("ntk." + legacy))
-                return "ntk";
+                return cacheKnownSource(sourceCacheKey, "ntk");
         }
         source = sourceSiteFromUrl(title == null ? "" : title.getThumb());
         if(source.length() > 0)
-            return source;
-        return sourceSiteFromUrl(title == null ? "" : title.getPath());
+            return title != null && title.getId() > 0 ? cacheKnownSource(legacyTitleLookupKey(title), source) : source;
+        source = sourceSiteFromUrl(title == null ? "" : title.getPath());
+        return title != null && title.getId() > 0 ? cacheKnownSource(legacyTitleLookupKey(title), source) : source;
+    }
+
+    private String cacheKnownSource(String key, String source) {
+        if(key != null && key.length() > 0)
+            knownSourceByKey.put(key, source == null ? "" : source);
+        return source == null ? "" : source;
     }
 
     private String sourceSiteFromUrl(String sourceUrl) {
@@ -873,6 +906,8 @@ public class Preference {
 
     public void writeBookmark(){
         ensureBookmarkLoaded();
+        bookmarkValueByKey.clear();
+        knownSourceByKey.clear();
         prefsEditor.putString("bookmark2", bookmark.toString());
         prefsEditor.apply();
         notifyLocalChange("bookmark");
@@ -1087,6 +1122,7 @@ public class Preference {
             Gson gson = new Gson();
             prefsEditor.putString("favorite", gson.toJson(favorite));
             prefsEditor.apply();
+            notifyLocalChange("favorite");
             notifySync("favorite");
             return true;
         }else{
@@ -1095,6 +1131,7 @@ public class Preference {
             Gson gson = new Gson();
             prefsEditor.putString("favorite", gson.toJson(favorite));
             prefsEditor.apply();
+            notifyLocalChange("favorite");
             notifySync("favorite");
             return false;
         }
@@ -1201,6 +1238,8 @@ public class Preference {
     public void setBookmarks(JSONObject book){
         bookmarkLoaded = true;
         this.bookmark = book == null ? new JSONObject() : book;
+        bookmarkValueByKey.clear();
+        knownSourceByKey.clear();
         writeBookmark();
     }
 

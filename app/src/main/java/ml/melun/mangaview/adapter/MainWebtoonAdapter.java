@@ -2552,7 +2552,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     private void scheduleThumbnailPreload(List<Ranking<?>> sections) {
         if(anchorRecycler != null)
-            anchorRecycler.post(() -> preloadThumbnails(sections));
+            anchorRecycler.postDelayed(() -> {
+                if(anchorRecycler == null || anchorRecycler.getScrollState() == RecyclerView.SCROLL_STATE_SETTLING)
+                    return;
+                preloadThumbnails(sections);
+            }, 120);
         else
             preloadThumbnails(sections);
     }

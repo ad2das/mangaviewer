@@ -52,6 +52,10 @@ public final class AppDispatchers {
         IO.execute(safe(runnable));
     }
 
+    public static void runIoDelayed(Runnable runnable, long delayMs) {
+        MAIN.postDelayed(() -> runIo(runnable), Math.max(0L, delayMs));
+    }
+
     public static void runUserAction(Runnable runnable) {
         USER_ACTION.execute(safe(runnable));
     }

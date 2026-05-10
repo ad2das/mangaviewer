@@ -55,6 +55,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     private long lastResumeOpenAt = 0L;
     private int lastResumeOpenPosition = RecyclerView.NO_POSITION;
     private final Map<String, String> tagTextCache = new HashMap<>();
+    private final Map<String, BindMeta> bindMetaCache = new HashMap<>();
 
     public TitleAdapter(Context context) {
         init(context);
@@ -123,6 +124,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         mData.clear();
         mDataFiltered.clear();
         tagTextCache.clear();
+        bindMetaCache.clear();
         if(originSize > 0)
             notifyItemRangeRemoved(0,originSize);
     }
@@ -152,6 +154,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             }
         }
         mDataFiltered = mData;
+        bindMetaCache.clear();
         if(inserted > 0)
             notifyItemRangeInserted(oSize, inserted);
     }
@@ -183,6 +186,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         mData = next;
         searching = false;
         tagTextCache.clear();
+        bindMetaCache.clear();
         dispatchFilteredList(next);
     }
 
@@ -258,6 +262,8 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         int oldSize = getItemCount();
         mData.clear();
         mDataFiltered.clear();
+        tagTextCache.clear();
+        bindMetaCache.clear();
         if(oldSize > 0)
             notifyItemRangeRemoved(0, oldSize);
     }
@@ -294,15 +300,15 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     @Override
     public void onBindViewHolder(ViewHolder holder, int position) {
         Title data = mDataFiltered.get(position);
-        applyStoredBookmark(data);
+        BindMeta bindMeta = bindMeta(data);
         String title = data.getName();
         String thumb = data.getThumb();
         if(thumb == null)
             thumb = "";
         String author = data.getAuthor();
-        int bookmark = data.getBookmark();
+        int bookmark = bindMeta.bookmark;
         holder.baseModeStr.setText(data.getBaseModeStr());
-        holder.tags.setText(displayTags(data));
+        holder.tags.setText(bindMeta.tags);
         holder.tagContainer.setVisibility(View.VISIBLE);
 
         holder.name.setText(title);
@@ -310,11 +316,11 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         String meta = data.getRelease();
         if(meta == null || meta.length() == 0)
             meta = author;
-        String progressLabel = progressLabel(data);
+        String progressLabel = bindMeta.progressLabel;
         if(progressLabel.length() > 0)
             meta = progressLabel;
         holder.author.setText(meta);
-        int progressPercent = readingProgressPercent(data);
+        int progressPercent = bindMeta.progressPercent;
         if(holder.progress != null) {
             holder.progress.setVisibility(progressPercent > 0 ? View.VISIBLE : View.GONE);
             holder.progress.setProgress(progressPercent);
@@ -363,13 +369,29 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(bookmark>0 && resume) {
             holder.resume.setVisibility(View.VISIBLE);
             holder.resumeSiteIcon.setVisibility(View.VISIBLE);
-            bindResumeSiteIcon(holder.resumeSiteIcon, sourceSiteForTitle(data));
+            bindResumeSiteIcon(holder.resumeSiteIcon, bindMeta.sourceSite);
         }
         else {
             holder.resume.setVisibility(View.GONE);
             holder.resumeSiteIcon.setVisibility(View.GONE);
         }
 
+    }
+
+    private BindMeta bindMeta(Title title) {
+        if(title == null)
+            return BindMeta.EMPTY;
+        String key = titleContentKey(title) + "|" + title.getBookmark() + "|" + p.getLocalDataVersion();
+        BindMeta cached = bindMetaCache.get(key);
+        if(cached != null)
+            return cached;
+        applyStoredBookmark(title);
+        int progressPercent = readingProgressPercent(title);
+        BindMeta meta = new BindMeta(title.getBookmark(), displayTags(title), progressLabel(title), progressPercent, sourceSiteForTitle(title));
+        if(bindMetaCache.size() > 512)
+            bindMetaCache.clear();
+        bindMetaCache.put(key, meta);
+        return meta;
     }
 
     private void bindResumeSiteIcon(ImageView view, String sourceSite) {
@@ -487,6 +509,23 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(episodeCount <= 0)
             episodeCount = title.getEpsCount();
         return episodeCount;
+    }
+
+    private static final class BindMeta {
+        static final BindMeta EMPTY = new BindMeta(0, "", "", 0, "wfwf");
+        final int bookmark;
+        final String tags;
+        final String progressLabel;
+        final int progressPercent;
+        final String sourceSite;
+
+        BindMeta(int bookmark, String tags, String progressLabel, int progressPercent, String sourceSite) {
+            this.bookmark = bookmark;
+            this.tags = tags == null ? "" : tags;
+            this.progressLabel = progressLabel == null ? "" : progressLabel;
+            this.progressPercent = progressPercent;
+            this.sourceSite = sourceSite == null ? "wfwf" : sourceSite;
+        }
     }
 
     public boolean performItemClick(int position) {

@@ -101,6 +101,8 @@ public class MainSearch extends Fragment {
     long searchFirstStartedAt = 0L;
     AppDispatchers.TaskHandle libraryFilterTask;
     int libraryFilterGeneration = 0;
+    long librarySnapshotVersion = -1L;
+    final ArrayList<Title>[] librarySnapshots = new ArrayList[4];
 
     public static MainSearch newSearchTab() {
         MainSearch fragment = new MainSearch();
@@ -228,6 +230,7 @@ public class MainSearch extends Fragment {
         localChangeListener = scope -> {
             if(!isLibraryChange(scope) || searchResult == null)
                 return;
+            invalidateLibrarySnapshots(scope);
             searchResult.post(this::refreshLibraryFromPreferences);
         };
         p.addLocalChangeListener(localChangeListener);
@@ -480,6 +483,14 @@ public class MainSearch extends Fragment {
     }
 
     private ArrayList<Title> getLibraryTitles(int tab) {
+        long version = p.getLocalDataVersion();
+        if(version != librarySnapshotVersion) {
+            for(int i = 0; i < librarySnapshots.length; i++)
+                librarySnapshots[i] = null;
+            librarySnapshotVersion = version;
+        }
+        if(tab >= 0 && tab < librarySnapshots.length && librarySnapshots[tab] != null)
+            return new ArrayList<>(librarySnapshots[tab]);
         ArrayList<Title> data = new ArrayList<>();
         if(tab == 1) {
             appendUnique(data, Utils.snapshotList(p.getRecent()));
@@ -492,7 +503,23 @@ public class MainSearch extends Fragment {
             appendUnique(data, Utils.snapshotList(p.getFavorite()));
             appendUnique(data, offlineTitles);
         }
+        if(tab >= 0 && tab < librarySnapshots.length)
+            librarySnapshots[tab] = new ArrayList<>(data);
         return data;
+    }
+
+    private void invalidateLibrarySnapshots(String scope) {
+        if("recent".equals(scope)) {
+            librarySnapshots[0] = null;
+            librarySnapshots[1] = null;
+        } else if("favorite".equals(scope)) {
+            librarySnapshots[0] = null;
+            librarySnapshots[2] = null;
+        } else {
+            for(int i = 0; i < librarySnapshots.length; i++)
+                librarySnapshots[i] = null;
+        }
+        librarySnapshotVersion = -1L;
     }
 
     private String libraryEmptyMessage(int tab) {
@@ -1220,6 +1247,7 @@ public class MainSearch extends Fragment {
             if(offlineTask == this)
                 offlineTask = null;
             offlineTitles = titles == null ? new ArrayList<>() : titles;
+            invalidateLibrarySnapshots("offline");
             if(search == null) {
                 if(searchResult != null && searchResult.getScrollState() != RecyclerView.SCROLL_STATE_IDLE)
                     pendingLibraryRefresh = true;

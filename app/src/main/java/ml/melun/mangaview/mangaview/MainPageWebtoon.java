@@ -33,7 +33,7 @@ public class MainPageWebtoon {
     int baseMode;
 
     private static final int MAIN_SECTION_LIMIT = 10;
-    private static final long PAGE_CACHE_TTL_MS = 2 * 60 * 1000L;
+    private static final long PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
 
     private static final String[] WEBTOON_STATUS = {"ing", "end"};
     private static final String[] WEBTOON_STATUS_LABELS = {"연재웹툰", "완결웹툰"};
