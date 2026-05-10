@@ -116,6 +116,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private boolean firstContentLogged = false;
     private FetchStateListener fetchStateListener;
     private boolean siteNtkSnapshot;
+    private boolean cacheLoadInFlight = false;
     private String lastContinueOpenKey = "";
     private long lastContinueOpenAt = 0L;
     private float anchorDownX;
@@ -760,14 +761,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private void loadCachedHomeRowsAsync() {
+        if(cacheLoadInFlight)
+            return;
+        cacheLoadInFlight = true;
         final boolean ntk = siteNtkSnapshot;
         final String cacheKey = homeCacheKey();
         AppDispatchers.submitIo(() -> {
             List<Ranking<?>> cached = loadHomeSnapshot(cacheKey);
-            if(cached == null || cached.size() == 0)
-                return;
             AppDispatchers.runOnMain(() -> {
-                if(ntk == siteNtkSnapshot)
+                cacheLoadInFlight = false;
+                if(cached != null && cached.size() > 0 && ntk == siteNtkSnapshot)
                     applyCachedHomeRows(cached);
             });
         });

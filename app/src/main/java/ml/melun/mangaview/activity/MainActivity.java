@@ -176,7 +176,8 @@ public class MainActivity extends AppCompatActivity
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        forceWfwfOnStartup();
+        if(savedInstanceState == null)
+            forceWfwfOnStartup();
         fragments[0] = MainMain.newInstance();
         fragments[1] = MainSearch.newSearchTab();
         fragments[2] = MainSearch.newLibraryTab();
@@ -390,7 +391,6 @@ public class MainActivity extends AppCompatActivity
     @Override
     protected void onResume() {
         super.onResume();
-        forceWfwfOnStartup();
         PerformanceMonitor.resume();
         AppUpdateManager.resumePendingInstall(this);
         maybeOpenNtkCaptcha();

@@ -430,7 +430,13 @@ public class MainMain extends Fragment{
             if(adapter != null)
                 adapter.showInitialRows();
             scrollHomeToTop();
-            fetchSelected();
+            if(adapter == null || !adapter.hasDisplayContent())
+                fetchSelected();
+            else if(!adapter.hasCompleteHomeSections())
+                recyclerView.postDelayed(() -> {
+                    if(isAdded() && requestBaseMode == selectedBaseMode)
+                        fetchSelected();
+                }, 350);
             scheduleInactivePrefetch();
         });
     }
@@ -579,8 +585,10 @@ public class MainMain extends Fragment{
         if(targetRecycler == null || wait)
             return;
         final int visibleBaseMode = selectedBaseMode;
-        targetRecycler.post(() -> {
+        targetRecycler.postDelayed(() -> {
             if(!isAdded() || wait)
+                return;
+            if(visibleBaseMode != selectedBaseMode)
                 return;
             if(maybeOpenNtkCaptcha())
                 return;
@@ -588,7 +596,7 @@ public class MainMain extends Fragment{
                 fetchWebtoon();
             else
                 fetchComic();
-        });
+        }, 400);
     }
 
     private void fetchComic() {

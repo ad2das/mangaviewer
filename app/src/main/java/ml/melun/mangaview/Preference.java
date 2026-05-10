@@ -169,7 +169,6 @@ public class Preference {
             doublepReverse = sharedPref.getBoolean("doublepReverse", false);
             pageControlButtonOffset = sharedPref.getFloat("pageControlButtonOffset", -1);
             baseMode = sharedPref.getInt("baseMode", base_comic);
-            normalizeToWfwfSitePresetIfNeeded();
             prefsEditor.putString("defUrl", defUrl)
                     .putString("url", url)
                     .putString("webtoonUrl", webtoonUrl)
@@ -241,7 +240,19 @@ public class Preference {
         return baseModeStr(this.baseMode);
     }
 
-    private String normalizeComicUrl(String sourceUrl) {
+    static String normalizeComicUrlForTest(String sourceUrl) {
+        return normalizeComicUrl(sourceUrl);
+    }
+
+    static String normalizeWebtoonUrlForTest(String sourceUrl) {
+        return normalizeWebtoonUrl(sourceUrl);
+    }
+
+    static boolean needsWfwfSitePresetForTest(String defUrl, String url, String webtoonUrl) {
+        return needsWfwfSitePreset(defUrl, url, webtoonUrl);
+    }
+
+    private static String normalizeComicUrl(String sourceUrl) {
         if(sourceUrl == null || sourceUrl.trim().length() == 0)
             return DEFAULT_COMIC_URL;
         String normalized = normalizeHttpUrl(sourceUrl.trim(), DEFAULT_COMIC_URL);
@@ -258,7 +269,7 @@ public class Preference {
         return normalized;
     }
 
-    private String normalizeWebtoonUrl(String sourceUrl) {
+    private static String normalizeWebtoonUrl(String sourceUrl) {
         if(sourceUrl == null || sourceUrl.trim().length() == 0)
             return WEBTOON_URL;
         String normalized = normalizeHttpUrl(sourceUrl.trim(), WEBTOON_URL);
@@ -271,7 +282,7 @@ public class Preference {
         return normalized;
     }
 
-    private String normalizeHttpUrl(String sourceUrl, String fallback) {
+    private static String normalizeHttpUrl(String sourceUrl, String fallback) {
         try {
             String normalized = sourceUrl;
             if(!normalized.startsWith("http://") && !normalized.startsWith("https://"))
@@ -286,7 +297,7 @@ public class Preference {
     }
 
     private boolean normalizeToWfwfSitePresetIfNeeded() {
-        if(isWfwfLikeUrl(defUrl) && isWfwfLikeUrl(url) && isWfwfLikeUrl(webtoonUrl))
+        if(!needsWfwfSitePreset(defUrl, url, webtoonUrl))
             return false;
         defUrl = DEFAULT_COMIC_URL;
         url = DEFAULT_COMIC_URL;
@@ -303,15 +314,19 @@ public class Preference {
                 .apply();
     }
 
-    private boolean isWfwfLikeUrl(String sourceUrl) {
+    private static boolean needsWfwfSitePreset(String defUrl, String url, String webtoonUrl) {
+        return !(isWfwfLikeUrl(defUrl) && isWfwfLikeUrl(url) && isWfwfLikeUrl(webtoonUrl));
+    }
+
+    private static boolean isWfwfLikeUrl(String sourceUrl) {
         return hostStartsWith(sourceUrl, "wfwf");
     }
 
-    private boolean isNtkLikeUrl(String sourceUrl) {
+    private static boolean isNtkLikeUrl(String sourceUrl) {
         return hostStartsWith(sourceUrl, "ntk");
     }
 
-    private boolean hostStartsWith(String sourceUrl, String prefix) {
+    private static boolean hostStartsWith(String sourceUrl, String prefix) {
         try {
             if(sourceUrl == null || sourceUrl.trim().length() == 0)
                 return false;
