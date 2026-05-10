@@ -25,6 +25,8 @@ import static ml.melun.mangaview.mangaview.MTitle.baseModeStr;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static ml.melun.mangaview.mangaview.Title.isInteger;
 import static ml.melun.mangaview.mangaview.CustomHttpClient.DEFAULT_COMIC_URL;
+import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_COMIC_URL;
+import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_WEBTOON_URL;
 import static ml.melun.mangaview.mangaview.CustomHttpClient.WEBTOON_URL;
 
 public class Preference {
@@ -359,10 +361,14 @@ public class Preference {
         String normalized = normalizeHttpUrl(sourceUrl.trim(), DEFAULT_COMIC_URL);
         while(normalized.endsWith("/"))
             normalized = normalized.substring(0, normalized.length() - 1);
-        if(normalized.matches("https?://ntk\\d+\\.com"))
-            return normalized + "/manhwa";
-        if(normalized.matches("https?://ntk\\d+\\.com/cm"))
-            return normalized.substring(0, normalized.length() - 3) + "/manhwa";
+        if(isNtkLikeUrl(normalized)) {
+            if(!normalized.toLowerCase().contains("sbxh1.com"))
+                return NTK_COMIC_URL;
+            if(normalized.endsWith("/cm") || normalized.endsWith("/manhwa") || normalized.equals(ntkRoot(normalized)))
+                return NTK_COMIC_URL;
+            if(normalized.equals(NTK_WEBTOON_URL))
+                return NTK_COMIC_URL;
+        }
         if(normalized.contains("manatoki"))
             return DEFAULT_COMIC_URL;
         if(normalized.equals(WEBTOON_URL))
@@ -376,6 +382,14 @@ public class Preference {
         String normalized = normalizeHttpUrl(sourceUrl.trim(), WEBTOON_URL);
         while(normalized.endsWith("/"))
             normalized = normalized.substring(0, normalized.length() - 1);
+        if(isNtkLikeUrl(normalized)) {
+            if(!normalized.toLowerCase().contains("sbxh1.com"))
+                return NTK_WEBTOON_URL;
+            if(normalized.endsWith("/cm") || normalized.endsWith("/manhwa"))
+                return NTK_WEBTOON_URL;
+            if(normalized.equals(ntkRoot(normalized)))
+                return NTK_WEBTOON_URL;
+        }
         if(normalized.contains("manatoki"))
             return WEBTOON_URL;
         if(normalized.endsWith("/cm"))
@@ -424,7 +438,34 @@ public class Preference {
     }
 
     private static boolean isNtkLikeUrl(String sourceUrl) {
-        return hostStartsWith(sourceUrl, "ntk");
+        try {
+            if(sourceUrl == null || sourceUrl.trim().length() == 0)
+                return false;
+            String normalized = normalizeHttpUrl(sourceUrl.trim(), "");
+            if(normalized.length() == 0)
+                return false;
+            String host = URI.create(normalized).getHost();
+            if(host == null)
+                return false;
+            host = host.toLowerCase();
+            return host.startsWith("ntk") || "sbxh1.com".equals(host) || "www.sbxh1.com".equals(host);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static String ntkRoot(String sourceUrl) {
+        try {
+            String normalized = normalizeHttpUrl(sourceUrl.trim(), "");
+            URI uri = URI.create(normalized);
+            String scheme = uri.getScheme() == null ? "https" : uri.getScheme();
+            String host = uri.getHost();
+            if(host == null || host.length() == 0)
+                return "";
+            return scheme + "://" + host;
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     private static boolean hostStartsWith(String sourceUrl, String prefix) {

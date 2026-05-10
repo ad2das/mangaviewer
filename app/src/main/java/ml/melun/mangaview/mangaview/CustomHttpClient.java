@@ -42,8 +42,10 @@ import static ml.melun.mangaview.Utils.CODE_SCOPED_STORAGE;
 public class CustomHttpClient {
     public static final String DEFAULT_COMIC_URL = "https://wfwf449.com/cm";
     public static final String WEBTOON_URL = "https://wfwf449.com";
-    public static final String NTK_COMIC_URL = "https://ntk01.com/manhwa";
-    public static final String NTK_WEBTOON_URL = "https://ntk01.com";
+    public static final String NTK_COMIC_URL = "https://sbxh1.com/manhwa";
+    public static final String NTK_WEBTOON_URL = "https://sbxh1.com";
+    private static final String NTK_HOST = "sbxh1.com";
+    private static final String LEGACY_NTK_HOST = "ntk01.com";
     private static final long WFWF_DOMAIN_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L;
     private static final long WFWF_DOMAIN_FORCE_RETRY_INTERVAL_MS = 60 * 1000L;
     private static final long WFWF_DOMAIN_WAIT_TIMEOUT_MS = 6 * 1000L;
@@ -250,9 +252,11 @@ public class CustomHttpClient {
                 if(url == null || url.length() == 0)
                     continue;
                 manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/");
-                manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=.ntk01.com");
+                manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=." + NTK_HOST);
+                manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=." + LEGACY_NTK_HOST);
                 manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/");
-                manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=.ntk01.com");
+                manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=." + NTK_HOST);
+                manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=." + LEGACY_NTK_HOST);
             }
             manager.flush();
             clearCloudflareCookies();
@@ -482,7 +486,7 @@ public class CustomHttpClient {
         if(url == null)
             return false;
         String lower = url.toLowerCase(Locale.ROOT);
-        return lower.contains("wfwf") || lower.contains("wolf") || lower.contains("ntk");
+        return lower.contains("wfwf") || lower.contains("wolf") || lower.contains("ntk") || lower.contains("sbxh");
     }
 
     private void applyJitterIfNeeded(String url) {
@@ -740,7 +744,12 @@ public class CustomHttpClient {
     }
 
     public boolean isNtkUrl(String url) {
-        return url != null && url.toLowerCase(Locale.ROOT).contains("://ntk");
+        if(url == null)
+            return false;
+        String lower = url.toLowerCase(Locale.ROOT);
+        return lower.contains("://ntk")
+                || lower.contains("://" + NTK_HOST)
+                || lower.contains("://www." + NTK_HOST);
     }
 
     private boolean isWebtoonPath(String path){

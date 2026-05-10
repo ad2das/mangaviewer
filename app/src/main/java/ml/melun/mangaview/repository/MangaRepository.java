@@ -177,7 +177,7 @@ public final class MangaRepository {
                     return new UrlUpdateResult(false, "");
                 String resolvedRoot = WfwfDomainResolver.toRoot(result);
                 p.setWebtoonUrl(resolvedRoot);
-                String comicPath = resolvedRoot.contains("://ntk") ? "/manhwa" : "/cm";
+                String comicPath = isNtkRoot(resolvedRoot) ? "/manhwa" : "/cm";
                 p.setDefUrl(resolvedRoot + comicPath);
                 p.setUrl(resolvedRoot + comicPath);
                 getHttpClient().resetCookie();
@@ -203,6 +203,13 @@ public final class MangaRepository {
             ml.melun.mangaview.report.CrashReporter.record(e);
             return new UrlUpdateResult(false, "");
         }
+    }
+
+    private static boolean isNtkRoot(String root) {
+        if(root == null)
+            return false;
+        String lower = root.toLowerCase();
+        return lower.contains("://ntk") || lower.contains("://sbxh1.com") || lower.contains("://www.sbxh1.com");
     }
 
     @SuppressWarnings("unchecked")

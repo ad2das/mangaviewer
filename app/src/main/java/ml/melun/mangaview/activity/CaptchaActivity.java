@@ -37,6 +37,8 @@ import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.showErrorPopup;
 import static ml.melun.mangaview.Utils.showPopup;
+import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_COMIC_URL;
+import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_WEBTOON_URL;
 
 public class CaptchaActivity extends AppCompatActivity {
     WebView webView;
@@ -79,7 +81,7 @@ public class CaptchaActivity extends AppCompatActivity {
             "}" +
             "var host=(location.hostname||'').toLowerCase();" +
             "var text=(document.body&&document.body.innerText||'').replace(/\\s+/g,' ');" +
-            "if(host.indexOf('ntk')>=0&&text.length>200&&(text.indexOf('NEWTOKI')>=0||text.indexOf('실시간 웹툰 랭킹')>=0||text.indexOf('웹툰')>=0&&text.indexOf('만화')>=0))" +
+            "if((host.indexOf('ntk')>=0||host.indexOf('sbxh')>=0)&&text.length>200&&(text.indexOf('NEWTOKI')>=0||text.indexOf('실시간 웹툰 랭킹')>=0||text.indexOf('웹툰')>=0&&text.indexOf('만화')>=0))" +
             "return JSON.stringify({type:'normal'});" +
             "var mc=document.querySelector('.main-content');" +
             "if(!mc)return JSON.stringify({type:'none'});" +
@@ -159,10 +161,10 @@ public class CaptchaActivity extends AppCompatActivity {
         CookieManager cookiem = CookieManager.getInstance();
         cookiem.setAcceptCookie(true);
         cookiem.setAcceptThirdPartyCookies(webView, true);
-        initialClearanceValues = readClearanceValues(cookiem, purl, p.getWebtoonUrl(), p.getUrl(), "https://ntk01.com", "https://ntk01.com/manhwa");
+        initialClearanceValues = readClearanceValues(cookiem, purl, p.getWebtoonUrl(), p.getUrl(), NTK_WEBTOON_URL, NTK_COMIC_URL);
         // Do NOT remove all cookies — previous valid cf_clearance should be preserved
         if(!getHttpClient().hasCloudflareClearance()) {
-            getHttpClient().clearCloudflareWebViewCookies(purl, p.getWebtoonUrl(), p.getUrl(), "https://ntk01.com", "https://ntk01.com/manhwa");
+            getHttpClient().clearCloudflareWebViewCookies(purl, p.getWebtoonUrl(), p.getUrl(), NTK_WEBTOON_URL, NTK_COMIC_URL);
         }
 
         // WebChromeClient for JS console and alerts
@@ -533,8 +535,8 @@ public class CaptchaActivity extends AppCompatActivity {
                 purl,
                 p.getWebtoonUrl(),
                 p.getUrl(),
-                "https://ntk01.com",
-                "https://ntk01.com/manhwa"
+                NTK_WEBTOON_URL,
+                NTK_COMIC_URL
         };
     }
 

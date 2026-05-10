@@ -90,9 +90,9 @@ public class FirstTimeActivity extends AppCompatActivity {
         if(pd.isShowing())
             pd.dismiss();
         String root = WfwfDomainResolver.toRoot(url);
-        if(WfwfDomainResolver.isSupportedNumberedUrl(root)) {
+        if(WfwfDomainResolver.isSupportedNumberedUrl(root) || isNtkRoot(root)) {
             p.setWebtoonUrl(root);
-            String comicPath = root.contains("://ntk") ? "/manhwa" : "/cm";
+            String comicPath = isNtkRoot(root) ? "/manhwa" : "/cm";
             p.setDefUrl(root + comicPath);
             p.setUrl(root + comicPath);
         } else {
@@ -106,6 +106,13 @@ public class FirstTimeActivity extends AppCompatActivity {
         Toast.makeText(context, agreementMessage(time),Toast.LENGTH_LONG).show();
         setResult(RESULT_EULA_AGREE);
         finish();
+    }
+
+    private boolean isNtkRoot(String root) {
+        if(root == null)
+            return false;
+        String lower = root.toLowerCase(Locale.ROOT);
+        return lower.contains("://ntk") || lower.contains("://sbxh1.com") || lower.contains("://www.sbxh1.com");
     }
 
     @SuppressWarnings("rawtypes")

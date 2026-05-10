@@ -60,6 +60,8 @@ public class WfwfDomainResolver {
         String trimmed = trimTrailingSlash(url);
         if(trimmed.endsWith("/cm"))
             return trimmed.substring(0, trimmed.length() - 3);
+        if(trimmed.endsWith("/manhwa"))
+            return trimmed.substring(0, trimmed.length() - 7);
         return trimmed;
     }
 
@@ -111,7 +113,7 @@ public class WfwfDomainResolver {
     }
 
     private static boolean isAlive(OkHttpClient client, String root, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup) {
-        boolean ntk = root != null && root.contains("://ntk");
+        boolean ntk = root != null && (root.contains("://ntk") || root.contains("://sbxh1.com") || root.contains("://www.sbxh1.com"));
         String comicPath = ntk ? "/manhwa" : "/cm";
         return probe(client, root + "/ing", headers, requestGroup) || probe(client, root + comicPath, headers, requestGroup);
     }

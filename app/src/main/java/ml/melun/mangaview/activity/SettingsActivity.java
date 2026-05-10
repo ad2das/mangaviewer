@@ -452,7 +452,7 @@ public class SettingsActivity extends AppCompatActivity {
     private void updateSiteToggleText() {
         TextView current = findViewById(R.id.setting_site_current);
         if(current != null)
-            current.setText(p.isNtkSite() ? "NTK01" : "WFWF");
+            current.setText(p.isNtkSite() ? "NTK" : "WFWF");
     }
 
     private void switchSite(String comicUrl, String webtoonUrl, String label) {
@@ -490,7 +490,7 @@ public class SettingsActivity extends AppCompatActivity {
         final Button wfwfButton = new Button(context);
         final Button ntkButton = new Button(context);
         wfwfButton.setText("WFWF");
-        ntkButton.setText("NTK01");
+        ntkButton.setText("NTK");
         LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
         buttonParams.setMargins(0, 12, 6, 0);
         siteButtons.addView(wfwfButton, buttonParams);
