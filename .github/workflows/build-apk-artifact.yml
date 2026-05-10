@@ -8,12 +8,15 @@ on:
         required: false
         default: false
         type: boolean
+  push:
+    branches-ignore:
+      - main
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-apk-artifact-main
+  group: build-apk-artifact-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -39,7 +42,7 @@ jobs:
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
         with:
-          cache-read-only: ${{ !inputs.refresh_gradle_cache }}
+          cache-read-only: ${{ github.event_name != 'workflow_dispatch' || !inputs.refresh_gradle_cache }}
           cache-cleanup: never
 
       - name: Restore Firebase resources
