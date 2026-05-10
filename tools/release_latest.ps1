@@ -3,6 +3,7 @@ param(
     [string]$ReleaseTag = "",
     [string]$JavaHome = "",
     [string]$CommitMessage = "",
+    [string]$TargetBranch = "",
     [int]$ReleasePatch = -1,
     [switch]$SkipTests,
     [switch]$NoCommit,
@@ -80,6 +81,13 @@ $buildGradlePath = "app/build.gradle"
 $versionJsonPath = "version.json"
 $releasesHtmlPath = "releases.html"
 
+if ([string]::IsNullOrWhiteSpace($TargetBranch)) {
+    $TargetBranch = git branch --show-current
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($TargetBranch)) {
+        throw "Could not determine target branch. Pass -TargetBranch explicitly."
+    }
+}
+
 $buildGradle = Read-Utf8 $buildGradlePath
 $patchMatch = [regex]::Match($buildGradle, "def\s+defaultReleasePatch\s*=\s*(\d+)")
 if (-not $patchMatch.Success) {
@@ -92,7 +100,7 @@ $dateCodeText = Get-Date -Format "yyMMdd"
 $dateCode = [int]$dateCodeText
 $versionCode = 2112000000 + $dateCode + $nextPatch
 if ([string]::IsNullOrWhiteSpace($ReleaseTag)) {
-    $ReleaseTag = "main-v$versionCode"
+    $ReleaseTag = "$TargetBranch-v$versionCode"
 }
 $apkName = "mangaViewer_${versionCode}-release.apk"
 $downloadUrl = "https://github.com/$Repo/releases/download/$ReleaseTag/$apkName"
@@ -147,8 +155,8 @@ if (-not $NoCommit) {
     }
 
     if (-not $NoPush) {
-        Write-Step "Pushing main"
-        git push origin main
+        Write-Step "Pushing $TargetBranch"
+        git push origin "HEAD:$TargetBranch"
         if ($LASTEXITCODE -ne 0) {
             throw "git push failed"
         }
@@ -159,7 +167,7 @@ if (-not $NoUpload) {
     gh release view $ReleaseTag --repo $Repo *> $null
     if ($LASTEXITCODE -ne 0) {
         Write-Step "Creating release $ReleaseTag"
-        gh release create $ReleaseTag --repo $Repo --target main --title "Main $versionCode" --notes "Main branch signed release APK." --latest
+        gh release create $ReleaseTag --repo $Repo --target $TargetBranch --title "$TargetBranch $versionCode" --notes "$TargetBranch branch signed release APK." --latest
         if ($LASTEXITCODE -ne 0) {
             throw "gh release create failed"
         }
