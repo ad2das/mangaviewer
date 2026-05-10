@@ -45,28 +45,57 @@ public class CaptchaActivity extends AppCompatActivity {
     String domain;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private static final long TURNSTILE_CHECK_DELAY_MS = 0;
-    private static final long TURNSTILE_CHECK_INTERVAL_MS = 100;
+    private static final long TURNSTILE_CHECK_INTERVAL_MS = 50;
     private static final long TURNSTILE_MAX_WAIT_MS = 30000;
-    public static final String TURNSTILE_AUTO_JS = "(function() {" +
-            "   var mc = document.querySelector('.main-content');" +
-            "   if(!mc) return JSON.stringify({type:'none'});" +
-            "   for(var i=0; i<mc.children.length; i++) {" +
-            "       var wrapper = mc.children[i];" +
-            "       var host = wrapper.querySelector('div > div');" +
-            "       if(host) {" +
-            "           var rect = host.getBoundingClientRect();" +
-            "           if(rect.width > 50 && rect.height > 50) {" +
-            "               var x = rect.left + rect.width * 0.22;" +
-            "               var y = rect.top + rect.height/2;" +
-            "               return JSON.stringify({type:'iframe', x:x, y:y, w:rect.width*0.45, h:rect.height});" +
-            "           }" +
-            "       }" +
-            "   }" +
-            "   return JSON.stringify({type:'none'});" +
+    public static final String SHADOW_HOOK_JS = "(function(){" +
+            "if(window.__sh)return;" +
+            "window.__sh=1;" +
+            "var o=Element.prototype.attachShadow;" +
+            "Element.prototype.attachShadow=function(i){" +
+            "var s=o.call(this,i);" +
+            "this.__sr=s;" +
+            "return s;" +
+            "};" +
+            "})();";
+    public static final String TURNSTILE_AUTO_JS = "(function(){" +
+            "if(window.__sh){" +
+            "var m=document.querySelector('.main-content');" +
+            "if(m){" +
+            "for(var i=0;i<m.children.length;i++){" +
+            "var h=m.children[i].querySelector('div>div');" +
+            "if(h&&h.__sr){" +
+            "var inp=h.__sr.querySelector('input[type=\"checkbox\"]');" +
+            "if(inp){" +
+            "try{inp.focus();" +
+            "var e1=new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerType:'touch',isPrimary:true,width:20,height:20,pressure:0.5});" +
+            "var e2=new PointerEvent('pointerup',{bubbles:true,cancelable:true,pointerType:'touch',isPrimary:true,width:20,height:20,pressure:0});" +
+            "inp.dispatchEvent(e1);inp.dispatchEvent(e2);" +
+            "}catch(ex){}" +
+            "return JSON.stringify({type:'jsclick'});" +
+            "}" +
+            "}" +
+            "}" +
+            "}" +
+            "}" +
+            "var mc=document.querySelector('.main-content');" +
+            "if(!mc)return JSON.stringify({type:'none'});" +
+            "for(var i=0;i<mc.children.length;i++){" +
+            "var wrapper=mc.children[i];" +
+            "var host=wrapper.querySelector('div > div');" +
+            "if(host){" +
+            "var rect=host.getBoundingClientRect();" +
+            "if(rect.width>50&&rect.height>50){" +
+            "var x=rect.left+rect.width*0.22;" +
+            "var y=rect.top+rect.height/2;" +
+            "return JSON.stringify({type:'iframe',x:x,y:y,w:rect.width*0.45,h:rect.height});" +
+            "}" +
+            "}" +
+            "}" +
+            "return JSON.stringify({type:'none'});" +
             "})();";
     private long pageFinishedTime = 0;
     private long lastAttemptTime = 0;
-    private static final long MIN_ATTEMPT_INTERVAL_MS = 300;
+    private static final long MIN_ATTEMPT_INTERVAL_MS = 150;
     private boolean isFinishing = false;
     private Set<String> initialClearanceValues = new HashSet<>();
 
@@ -148,6 +177,12 @@ public class CaptchaActivity extends AppCompatActivity {
         WebViewClient client = new WebViewClient() {
 
             @Override
+            public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                view.evaluateJavascript(SHADOW_HOOK_JS, null);
+                super.onPageStarted(view, url, favicon);
+            }
+
+            @Override
             public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 //super.onReceivedError(view, request, error);
                 if(request != null && !request.isForMainFrame())
@@ -196,6 +231,7 @@ public class CaptchaActivity extends AppCompatActivity {
 //        webView.setOnTouchListener((view, motionEvent) -> true);
 
         webView.loadUrl(url);
+        webView.evaluateJavascript(SHADOW_HOOK_JS, null);
 
         infoText.setVisibility(View.GONE);
 
@@ -242,14 +278,16 @@ public class CaptchaActivity extends AppCompatActivity {
                 org.json.JSONObject obj = new org.json.JSONObject(clean);
                 String type = obj.optString("type");
 
-                if("iframe".equals(type)) {
+                if("jsclick".equals(type)) {
+                    android.util.Log.d("CaptchaActivity", "Turnstile JS direct click executed via shadow hook");
+                } else if("iframe".equals(type)) {
                     final float x = (float) obj.getDouble("x");
                     final float y = (float) obj.getDouble("y");
                     final float w = (float) obj.optDouble("w", 60);
                     final float h = (float) obj.optDouble("h", 60);
                     android.util.Log.d("CaptchaActivity", "Turnstile iframe found at: " + x + "," + y + " size:" + w + "x" + h);
 
-                    webView.post(() -> simulateTouch(webView, x, y, w, h));
+                    webView.post(() -> simulateTouchBurst(webView, x, y, w, h));
                 }
             } catch(Exception e) {
                 android.util.Log.e("CaptchaActivity", "Failed to parse turnstile result", e);
@@ -303,6 +341,67 @@ public class CaptchaActivity extends AppCompatActivity {
         upEvent.recycle();
 
         android.util.Log.d("CaptchaActivity", "Touch completed at: " + targetX + "," + targetY);
+    }
+
+    private void simulateTouchBurst(View view, float centerX, float centerY, float width, float height) {
+        if(view == null) return;
+        Random random = new Random();
+        // Fire 3 rapid clicks with slight coordinate jitter and MOVE events
+        for(int i = 0; i < 3; i++) {
+            simulateTouchWithMove(view, centerX, centerY, width, height);
+            if(i < 2) {
+                SystemClock.sleep(40 + random.nextInt(41)); // 40-80ms gap
+            }
+        }
+        android.util.Log.d("CaptchaActivity", "Burst touch sequence completed");
+    }
+
+    private void simulateTouchWithMove(View view, float centerX, float centerY, float width, float height) {
+        if(view == null) return;
+        Random random = new Random();
+        float density = getResources().getDisplayMetrics().density;
+        int[] location = new int[2];
+        view.getLocationOnScreen(location);
+
+        float baseX = location[0] + (centerX * density);
+        float baseY = location[1] + (centerY * density);
+        float physW = width * density;
+        float physH = height * density;
+
+        float targetX = baseX + (random.nextFloat() - 0.5f) * physW * 0.5f;
+        float targetY = baseY + (random.nextFloat() - 0.5f) * physH * 0.5f;
+
+        int vw = view.getWidth();
+        int vh = view.getHeight();
+        targetX = Math.max(5, Math.min(vw - 5, targetX));
+        targetY = Math.max(5, Math.min(vh - 5, targetY));
+
+        long downTime = SystemClock.uptimeMillis();
+        long eventTime = downTime;
+
+        // DOWN
+        MotionEvent downEvent = MotionEvent.obtain(downTime, eventTime, MotionEvent.ACTION_DOWN, targetX, targetY, 0);
+        downEvent.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+        view.dispatchTouchEvent(downEvent);
+        downEvent.recycle();
+
+        // Short MOVE (1-3 px drift)
+        SystemClock.sleep(10 + random.nextInt(21));
+        eventTime += 30;
+        float moveX = targetX + (random.nextFloat() - 0.5f) * 3f;
+        float moveY = targetY + (random.nextFloat() - 0.5f) * 3f;
+        MotionEvent moveEvent = MotionEvent.obtain(downTime, eventTime, MotionEvent.ACTION_MOVE, moveX, moveY, 0);
+        moveEvent.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+        view.dispatchTouchEvent(moveEvent);
+        moveEvent.recycle();
+
+        // UP
+        SystemClock.sleep(20 + random.nextInt(41));
+        eventTime += 60;
+        MotionEvent upEvent = MotionEvent.obtain(downTime, eventTime, MotionEvent.ACTION_UP, targetX, targetY, 0);
+        upEvent.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+        view.dispatchTouchEvent(upEvent);
+        upEvent.recycle();
     }
 
     private boolean readCookiesAndFinish(CookieManager cookiem, String purl, String currentUrl){
