@@ -400,9 +400,9 @@ public class RecyclerFragment extends Fragment {
     private Title resolveLatestTitleForResume(Title title) {
         if(title == null)
             return null;
-        MTitle stored = findStoredTitle(title, mode == R.id.nav_favorite ? Utils.snapshotList(p.getFavorite()) : Utils.snapshotList(p.getRecent()));
+        MTitle stored = mode == R.id.nav_favorite ? p.findFavoriteTitle(title) : p.findRecentTitle(title);
         if(stored == null && mode == R.id.nav_favorite)
-            stored = findStoredTitle(title, Utils.snapshotList(p.getRecent()));
+            stored = p.findRecentTitle(title);
         if(stored == null)
             return title;
         Title latest = stored instanceof Title ? (Title) stored : new Title(stored);

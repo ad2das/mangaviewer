@@ -120,6 +120,7 @@ public class CaptchaActivity extends AppCompatActivity {
         CookieManager cookiem = CookieManager.getInstance();
         cookiem.setAcceptCookie(true);
         cookiem.setAcceptThirdPartyCookies(webView, true);
+        // Do NOT remove all cookies — previous valid cf_clearance should be preserved
 
         // WebChromeClient for JS console and alerts
         webView.setWebChromeClient(new WebChromeClient() {
@@ -319,8 +320,8 @@ public class CaptchaActivity extends AppCompatActivity {
                         hasClearance = true;
                 }
             }
-            hasClearance = hasClearance || getHttpClient().hasCloudflareClearance();
-
+            // Only trust cookies actually read from CookieManager in THIS session
+            // Do NOT rely on stale CustomHttpClient state
             if(hasClearance) {
                 cookiem.flush();
                 getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);

@@ -47,8 +47,8 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_OK;
 public class ViewerWarmupManager {
     public static final int LOAD_EMPTY_IMAGES = -2;
     private static final String TAG = "ViewerPerf";
-    private static final int ACTIVE_LIMIT = 40;
-    private static final int DECODED_TARGET_LIMIT = 48;
+    private static final int ACTIVE_LIMIT = 72;
+    private static final int DECODED_TARGET_LIMIT = 96;
     private static final int SNAPSHOT_LIMIT = 64;
     private static final long SNAPSHOT_TTL_MS = 2 * 60 * 1000L;
     private static final long DISK_SNAPSHOT_TTL_MS = 20 * 60 * 1000L;

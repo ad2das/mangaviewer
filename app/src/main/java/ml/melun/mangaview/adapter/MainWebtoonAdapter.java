@@ -99,8 +99,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     List<Object> pendingRows;
     boolean initialRowsShown = false;
     private final Set<String> preloadedThumbs = new LinkedHashSet<>();
-    private static final int PRELOADED_THUMB_LIMIT = 64;
-    private static final int PRELOAD_THUMB_MAX_PER_FETCH = 8;
+    private static final int PRELOADED_THUMB_LIMIT = 160;
+    private static final int PRELOAD_THUMB_MAX_PER_FETCH = 24;
     private static final int SECTION_BATCH_SIZE = 4;
     private static final int FIRST_SCREEN_BATCH_SIZE = 1;
     private static final String HOME_CACHE_KEY_PREFIX = "homeSnapshotV1_";

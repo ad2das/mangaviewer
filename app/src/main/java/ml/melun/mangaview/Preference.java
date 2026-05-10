@@ -58,6 +58,11 @@ public class Preference {
     boolean historyLoaded;
     boolean bookmarkLoaded;
     boolean viewerBookmarkLoaded;
+    private boolean historyIndexDirty = true;
+    private final Map<String, Integer> recentIndexByKey = new HashMap<>();
+    private final Map<String, Integer> favoriteIndexByKey = new HashMap<>();
+    private final Map<String, MTitle> recentByKey = new HashMap<>();
+    private final Map<String, MTitle> favoriteByKey = new HashMap<>();
     private final CopyOnWriteArrayList<LocalChangeListener> localChangeListeners = new CopyOnWriteArrayList<>();
 
     public interface LocalChangeListener {
@@ -191,11 +196,98 @@ public class Preference {
             Gson gson = new Gson();
             recent = safeTitleList(gson.fromJson(sharedPref.getString("recent", ""), new TypeToken<ArrayList<MTitle>>(){}.getType()));
             favorite = safeTitleList(gson.fromJson(sharedPref.getString("favorite", ""), new TypeToken<ArrayList<MTitle>>(){}.getType()));
+            historyIndexDirty = true;
         } catch(Exception e) {
             recent = new ArrayList<>();
             favorite = new ArrayList<>();
+            historyIndexDirty = true;
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
+    }
+
+    private void markHistoryIndexDirty() {
+        historyIndexDirty = true;
+    }
+
+    private void ensureHistoryIndex() {
+        ensureHistoryLoaded();
+        if(!historyIndexDirty)
+            return;
+        recentIndexByKey.clear();
+        favoriteIndexByKey.clear();
+        recentByKey.clear();
+        favoriteByKey.clear();
+        indexTitles(recent, recentIndexByKey, recentByKey);
+        indexTitles(favorite, favoriteIndexByKey, favoriteByKey);
+        historyIndexDirty = false;
+    }
+
+    private void indexTitles(List<MTitle> source, Map<String, Integer> indexMap, Map<String, MTitle> titleMap) {
+        if(source == null)
+            return;
+        for(int i = 0; i < source.size(); i++) {
+            MTitle title = source.get(i);
+            if(title == null || title.getId() <= 0)
+                continue;
+            String legacy = legacyTitleLookupKey(title);
+            if(!indexMap.containsKey(legacy)) {
+                indexMap.put(legacy, i);
+                titleMap.put(legacy, title);
+            }
+            String sourceKey = sourceTitleLookupKey(title);
+            if(sourceKey.length() > 0 && !indexMap.containsKey(sourceKey)) {
+                indexMap.put(sourceKey, i);
+                titleMap.put(sourceKey, title);
+            }
+        }
+    }
+
+    private String legacyTitleLookupKey(MTitle title) {
+        if(title == null)
+            return "";
+        return title.getBaseMode() + "." + title.getId();
+    }
+
+    private String sourceTitleLookupKey(MTitle title) {
+        if(title == null)
+            return "";
+        String source = title.getSourceSite();
+        if(source == null || source.length() == 0)
+            source = resolveKnownSourceSite(title);
+        if(source == null || source.length() == 0)
+            return "";
+        return source + "." + legacyTitleLookupKey(title);
+    }
+
+    private Integer findIndexedPosition(MTitle title, Map<String, Integer> indexMap) {
+        if(title == null || title.getId() <= 0)
+            return null;
+        String sourceKey = sourceTitleLookupKey(title);
+        Integer indexed = sourceKey.length() == 0 ? null : indexMap.get(sourceKey);
+        if(indexed != null)
+            return indexed;
+        if(hasExplicitSourceSite(title))
+            return null;
+        return indexMap.get(legacyTitleLookupKey(title));
+    }
+
+    private MTitle findIndexedTitle(MTitle title, Map<String, MTitle> titleMap) {
+        if(title == null || title.getId() <= 0)
+            return null;
+        String sourceKey = sourceTitleLookupKey(title);
+        MTitle indexed = sourceKey.length() == 0 ? null : titleMap.get(sourceKey);
+        if(indexed != null)
+            return indexed;
+        if(hasExplicitSourceSite(title))
+            return null;
+        return titleMap.get(legacyTitleLookupKey(title));
+    }
+
+    private boolean hasExplicitSourceSite(MTitle title) {
+        if(title == null)
+            return false;
+        String source = title.getSourceSite();
+        return source != null && source.length() > 0;
     }
 
     private void ensureBookmarkLoaded() {
@@ -588,6 +680,7 @@ public class Preference {
         int index = findFavorite(tmp);
         if(index>-1){
             favorite.set(index,tmp);
+            markHistoryIndexDirty();
             Gson gson = new Gson();
             prefsEditor.putString("favorite", gson.toJson(favorite));
             prefsEditor.apply();
@@ -609,6 +702,7 @@ public class Preference {
         int index = findFavorite(tmp);
         if(index>-1){
             favorite.set(index, tmp);
+            markHistoryIndexDirty();
             Gson gson = new Gson();
             prefsEditor.putString("favorite", gson.toJson(favorite));
             prefsEditor.apply();
@@ -616,13 +710,9 @@ public class Preference {
     }
 
     private int getIndexOf(MTitle title){
-        ensureHistoryLoaded();
-        if(title != null && title.getId()>0) {
-            for(int i = 0; i < recent.size(); i++)
-                if(sameTitleRecord(recent.get(i), title))
-                    return i;
-        }
-        return -1;
+        ensureHistoryIndex();
+        Integer index = findIndexedPosition(title, recentIndexByKey);
+        return index == null ? -1 : index;
     }
 
     private boolean sameTitleRecord(MTitle left, MTitle right) {
@@ -799,12 +889,14 @@ public class Preference {
     public void resetRecent(){
         historyLoaded = true;
         recent = new ArrayList<>();
+        markHistoryIndexDirty();
         writeRecent();
     }
 
     public void resetFavorites(){
         ensureHistoryLoaded();
         favorite = new ArrayList<>();
+        markHistoryIndexDirty();
         prefsEditor.putString("favorite", new Gson().toJson(favorite));
         prefsEditor.apply();
         notifySync("favorite");
@@ -813,6 +905,7 @@ public class Preference {
 
     private void writeRecent(){
         ensureHistoryLoaded();
+        markHistoryIndexDirty();
         Gson gson = new Gson();
         prefsEditor.putString("recent", gson.toJson(recent));
         prefsEditor.apply();
@@ -990,6 +1083,7 @@ public class Preference {
             if(position < 0 || position > favorite.size())
                 position = favorite.size();
             favorite.add(position,title);
+            markHistoryIndexDirty();
             Gson gson = new Gson();
             prefsEditor.putString("favorite", gson.toJson(favorite));
             prefsEditor.apply();
@@ -997,6 +1091,7 @@ public class Preference {
             return true;
         }else{
             favorite.remove(index);
+            markHistoryIndexDirty();
             Gson gson = new Gson();
             prefsEditor.putString("favorite", gson.toJson(favorite));
             prefsEditor.apply();
@@ -1006,13 +1101,27 @@ public class Preference {
     }
 
     public int findFavorite(MTitle title){
-        ensureHistoryLoaded();
-        if(title != null && title.getId()>0){
-            for(int i = 0; i < favorite.size(); i++)
-                if(sameTitleRecord(favorite.get(i), title))
-                    return i;
-        }
-        return -1;
+        ensureHistoryIndex();
+        Integer index = findIndexedPosition(title, favoriteIndexByKey);
+        return index == null ? -1 : index;
+    }
+
+    public MTitle findRecentTitle(MTitle title) {
+        ensureHistoryIndex();
+        return findIndexedTitle(title, recentByKey);
+    }
+
+    public MTitle findFavoriteTitle(MTitle title) {
+        ensureHistoryIndex();
+        return findIndexedTitle(title, favoriteByKey);
+    }
+
+    public int getStoredProgressBookmark(MTitle title) {
+        ensureHistoryIndex();
+        MTitle stored = findIndexedTitle(title, recentByKey);
+        if(stored == null)
+            stored = findIndexedTitle(title, favoriteByKey);
+        return stored == null ? -1 : stored.getBookmarkEpisodeId();
     }
 
     public List<MTitle> getFavorite(){
@@ -1023,6 +1132,7 @@ public class Preference {
     public void setFavorites(List<MTitle> fav){
         historyLoaded = true;
         this.favorite = safeTitleList(fav);
+        markHistoryIndexDirty();
         Gson gson = new Gson();
         prefsEditor.putString("favorite", gson.toJson(favorite));
         prefsEditor.apply();
@@ -1033,6 +1143,7 @@ public class Preference {
     public void setRecents(List<MTitle> rec){
         historyLoaded = true;
         this.recent = safeTitleList(rec);
+        markHistoryIndexDirty();
         writeRecent();
     }
 

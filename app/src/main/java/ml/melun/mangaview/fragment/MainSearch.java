@@ -556,16 +556,7 @@ public class MainSearch extends Fragment {
     }
 
     private boolean isRecentTitle(Title title) {
-        if(title == null)
-            return false;
-        for(MTitle recent : Utils.snapshotList(p.getRecent())) {
-            if(recent != null
-                    && recent.getId() == title.getId()
-                    && recent.getBaseMode() == title.getBaseMode()
-                    && sameSourceSite(recent, title))
-                return true;
-        }
-        return false;
+        return title != null && p.findRecentTitle(title) != null;
     }
 
     private void showLibraryTitlePopup(View view, Title title) {
@@ -681,9 +672,9 @@ public class MainSearch extends Fragment {
                 title.setBookmark(bookmark);
             return title;
         }
-        MTitle stored = findStoredTitle(title, Utils.snapshotList(p.getRecent()));
+        MTitle stored = p.findRecentTitle(title);
         if(stored == null)
-            stored = findStoredTitle(title, Utils.snapshotList(p.getFavorite()));
+            stored = p.findFavoriteTitle(title);
         if(stored == null)
             return title;
         Title latest = stored instanceof Title ? (Title) stored : new Title(stored);

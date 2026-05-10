@@ -162,9 +162,14 @@ public class CustomHttpClient {
         try {
             SharedPreferences pref = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE);
             long expireAt = pref.getLong("cfClearanceExpireAt", 0);
+            // If expireAt is 0, it means saveClearanceToDisk was never called
+            // (backward compat with older versions). Treat as NOT expired
+            // so hasCloudflareClearance() doesn't wipe the cookie prematurely.
+            if(expireAt == 0)
+                return false;
             return expireAt <= System.currentTimeMillis();
         } catch (Exception e) {
-            return true;
+            return false;
         }
     }
     public synchronized void clearCloudflareCookies() {

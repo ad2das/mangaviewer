@@ -23,6 +23,7 @@ public class MainApplication extends MultiDexApplication {
     public static Context appContext;
     public static FirebaseAccountManager firebaseAccountManager;
     public static FirebaseSyncManager firebaseSyncManager;
+    private static boolean deferredServicesStarted = false;
     @Override
     protected void attachBaseContext(Context base) {
         super.attachBaseContext(base);
@@ -34,9 +35,6 @@ public class MainApplication extends MultiDexApplication {
         CrashReporter.install(this);
         AppCompatDelegate.setCompatVectorFromResourcesEnabled(true);
         p = new Preference(this);
-        MangaRoomStore.prime(this);
-        AppDispatchers.runIo(MainPageWebtoon::preloadClassificationDbs);
-        AppDispatchers.runIo(() -> ClassificationDbUpdater.updateInBackground(this));
         super.onCreate();
     }
 
@@ -59,6 +57,12 @@ public class MainApplication extends MultiDexApplication {
     }
 
     public static synchronized void initDeferredServices() {
+        if(!deferredServicesStarted) {
+            deferredServicesStarted = true;
+            MangaRoomStore.prime(appContext);
+            AppDispatchers.runIo(MainPageWebtoon::preloadClassificationDbs);
+            AppDispatchers.runIo(() -> ClassificationDbUpdater.updateInBackground(appContext));
+        }
         getFirebaseAccountManager();
         getFirebaseSyncManager();
     }

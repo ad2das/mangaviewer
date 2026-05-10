@@ -9,14 +9,14 @@ public class ViewerPreloadPolicyTest {
     public void firstFrameWindow_decodesFirstPageAndQueuesNearbyPages() {
         ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.firstFrameWindow(false);
 
-        assertEquals(3, window.decodedLimit);
-        assertEquals(6, window.immediateLimit);
-        assertEquals(24, window.highLimit);
-        assertEquals(24, window.totalLimit);
+        assertEquals(5, window.decodedLimit);
+        assertEquals(10, window.immediateLimit);
+        assertEquals(36, window.highLimit);
+        assertEquals(36, window.totalLimit);
         assertEquals(ViewerPreloadPolicy.TIER_DECODED, ViewerPreloadPolicy.tierForOffset(window, 0));
-        assertEquals(ViewerPreloadPolicy.TIER_DECODED, ViewerPreloadPolicy.tierForOffset(window, 2));
-        assertEquals(ViewerPreloadPolicy.TIER_IMMEDIATE, ViewerPreloadPolicy.tierForOffset(window, 3));
-        assertEquals(ViewerPreloadPolicy.TIER_HIGH, ViewerPreloadPolicy.tierForOffset(window, 6));
+        assertEquals(ViewerPreloadPolicy.TIER_DECODED, ViewerPreloadPolicy.tierForOffset(window, 4));
+        assertEquals(ViewerPreloadPolicy.TIER_IMMEDIATE, ViewerPreloadPolicy.tierForOffset(window, 5));
+        assertEquals(ViewerPreloadPolicy.TIER_HIGH, ViewerPreloadPolicy.tierForOffset(window, 10));
     }
 
     @Test
@@ -33,9 +33,9 @@ public class ViewerPreloadPolicyTest {
     public void scrollAheadWindow_decodesNearPagesOnly() {
         ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.scrollAheadWindow(false);
 
-        assertEquals(3, window.decodedLimit);
-        assertEquals(6, window.immediateLimit);
-        assertEquals(ViewerPreloadPolicy.TIER_HIGH, ViewerPreloadPolicy.tierForOffset(window, 18));
-        assertEquals(ViewerPreloadPolicy.TIER_NORMAL, ViewerPreloadPolicy.tierForOffset(window, 24));
+        assertEquals(5, window.decodedLimit);
+        assertEquals(10, window.immediateLimit);
+        assertEquals(ViewerPreloadPolicy.TIER_HIGH, ViewerPreloadPolicy.tierForOffset(window, 36));
+        assertEquals(ViewerPreloadPolicy.TIER_NORMAL, ViewerPreloadPolicy.tierForOffset(window, 40));
     }
 }

@@ -18,12 +18,13 @@ import com.bumptech.glide.Glide;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.Executor;
 
 import ml.melun.mangaview.R;
-import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.runtime.AppDispatchers;
@@ -53,6 +54,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     private int diffGeneration = 0;
     private long lastResumeOpenAt = 0L;
     private int lastResumeOpenPosition = RecyclerView.NO_POSITION;
+    private final Map<String, String> tagTextCache = new HashMap<>();
 
     public TitleAdapter(Context context) {
         init(context);
@@ -120,6 +122,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         int originSize = mData.size();
         mData.clear();
         mDataFiltered.clear();
+        tagTextCache.clear();
         if(originSize > 0)
             notifyItemRangeRemoved(0,originSize);
     }
@@ -157,7 +160,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(mDataFiltered == null || count <= 0 || (save && !forceThumbnail))
             return;
         int start = Math.max(0, startPosition);
-        int end = Math.min(mDataFiltered.size(), start + Math.min(count, 8));
+        int end = Math.min(mDataFiltered.size(), start + Math.min(count, save ? 8 : 20));
         for(int i = start; i < end; i++) {
             Title data = mDataFiltered.get(i);
             if(data == null)
@@ -179,6 +182,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         ArrayList<Title> next = normalizeTitles(t);
         mData = next;
         searching = false;
+        tagTextCache.clear();
         dispatchFilteredList(next);
     }
 
@@ -296,17 +300,9 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(thumb == null)
             thumb = "";
         String author = data.getAuthor();
-        StringBuilder tags = new StringBuilder();
         int bookmark = data.getBookmark();
         holder.baseModeStr.setText(data.getBaseModeStr());
-        for (String s : data.getTags()) {
-            if(s == null || s.length() == 0)
-                continue;
-            if(tags.length() > 0)
-                tags.append(" / ");
-            tags.append(s);
-        }
-        holder.tags.setText(tags.toString());
+        holder.tags.setText(displayTags(data));
         holder.tagContainer.setVisibility(View.VISIBLE);
 
         holder.name.setText(title);
@@ -400,6 +396,28 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         return source == null ? "" : source;
     }
 
+    private String displayTags(Title title) {
+        if(title == null)
+            return "";
+        String key = titleContentKey(title) + "|tags";
+        String cached = tagTextCache.get(key);
+        if(cached != null)
+            return cached;
+        StringBuilder tags = new StringBuilder();
+        for(String s : title.getTags()) {
+            if(s == null || s.length() == 0)
+                continue;
+            if(tags.length() > 0)
+                tags.append(" / ");
+            tags.append(s);
+        }
+        String value = tags.toString();
+        if(tagTextCache.size() > 512)
+            tagTextCache.clear();
+        tagTextCache.put(key, value);
+        return value;
+    }
+
     int dp(int value) {
         return (int) (value * mainContext.getResources().getDisplayMetrics().density + 0.5f);
     }
@@ -411,7 +429,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(bookmark <= 0)
             bookmark = title.getBookmarkEpisodeId();
         if(bookmark <= 0)
-            bookmark = findStoredProgressBookmark(title);
+            bookmark = p.getStoredProgressBookmark(title);
         if(bookmark > 0)
             title.setBookmark(bookmark);
     }
@@ -425,32 +443,10 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(bookmark <= 0)
             bookmark = title.getBookmarkEpisodeId();
         if(bookmark <= 0)
-            bookmark = findStoredProgressBookmark(title);
+            bookmark = p.getStoredProgressBookmark(title);
         if(bookmark > 0)
             title.setBookmark(bookmark);
         return bookmark;
-    }
-
-    private int findStoredProgressBookmark(Title title) {
-        int bookmark = findStoredProgressBookmark(title, Utils.snapshotList(p.getRecent()));
-        if(bookmark > 0)
-            return bookmark;
-        return findStoredProgressBookmark(title, Utils.snapshotList(p.getFavorite()));
-    }
-
-    private int findStoredProgressBookmark(Title title, List<MTitle> source) {
-        if(title == null || source == null)
-            return -1;
-        for(MTitle stored : source) {
-            if(stored == null)
-                continue;
-            if(stored.getId() == title.getId()
-                    && stored.getBaseMode() == title.getBaseMode()
-                    && sourceKey(stored).equals(sourceKey(title))
-                    && stored.getBookmarkEpisodeId() > 0)
-                return stored.getBookmarkEpisodeId();
-        }
-        return -1;
     }
 
     private int readingProgressPercent(Title title) {
