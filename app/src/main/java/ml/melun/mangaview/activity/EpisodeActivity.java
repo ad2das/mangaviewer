@@ -55,7 +55,6 @@ import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.openViewerPrepared;
 import static ml.melun.mangaview.Utils.queueOfflineDownload;
 import static ml.melun.mangaview.Utils.showCaptchaPopup;
-import static ml.melun.mangaview.Utils.showTokiCaptchaPopup;
 import static ml.melun.mangaview.Utils.toViewerMangaJson;
 import static ml.melun.mangaview.Utils.toViewerTitleJson;
 import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
@@ -484,7 +483,7 @@ public class EpisodeActivity extends AppCompatActivity {
             return;
         EpisodeLoadResult result = ((UiState.Content<EpisodeLoadResult>) state).getValue();
         if(result.getResultCode() == LOAD_CAPTCHA){
-            showTokiCaptchaPopup(context, p);
+            showCaptchaPopup(title.getUrl(), context, RESULT_CAPTCHA, p);
             return;
         }
         episodes = result.getEpisodes();

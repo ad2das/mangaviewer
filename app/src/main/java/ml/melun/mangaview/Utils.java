@@ -51,7 +51,6 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -71,11 +70,7 @@ import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
-import okhttp3.FormBody;
-import okhttp3.RequestBody;
-import okhttp3.Response;
 
-import static java.lang.System.currentTimeMillis;
 import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.activity.CaptchaActivity.REQUEST_CAPTCHA;
@@ -794,8 +789,7 @@ public class Utils {
         if(!canUseContextForUi(context))
             return;
         Intent captchaIntent = new Intent(context, CaptchaActivity.class);
-        if(url != null && url.startsWith("/"))
-            url = getHttpClient().getUrl(url) + url;
+        url = captchaUrl(url);
         captchaIntent.putExtra("url", url);
         try {
             if(fragment == null && context instanceof Activity)
@@ -811,6 +805,7 @@ public class Utils {
         if(!canUseContextForUi(context))
             return;
         Intent captchaIntent = new Intent(context, CaptchaActivity.class);
+        captchaIntent.putExtra("url", captchaUrl(null));
         try {
             if(fragment == null && context instanceof Activity)
                 ((Activity)context).startActivityForResult(captchaIntent, code);
@@ -819,6 +814,26 @@ public class Utils {
         } catch (RuntimeException e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
+    }
+
+    private static String captchaUrl(String url) {
+        if(url != null && url.length() > 0) {
+            if(url.startsWith("http://") || url.startsWith("https://"))
+                return url;
+            if(url.startsWith("/"))
+                return getHttpClient().getUrl(url) + url;
+            return getHttpClient().getUrl() + "/" + url;
+        }
+        if(getHttpClient().isNtk()) {
+            String webtoonUrl = p == null ? "" : p.getWebtoonUrl();
+            if(webtoonUrl != null && webtoonUrl.length() > 0 && getHttpClient().isNtkUrl(webtoonUrl))
+                return webtoonUrl;
+            String root = getHttpClient().getUrl();
+            if(root != null && root.endsWith("/manhwa"))
+                root = root.substring(0, root.length() - 7);
+            return root;
+        }
+        return null;
     }
 
     public static void showCaptchaPopup(String url, Context context, int code, Exception e, boolean force_close, Preference p) {
@@ -855,94 +870,6 @@ public class Utils {
     }
 
 
-    public static void showTokiCaptchaPopup(Context context, Preference p){
-        if(!(context instanceof Activity) || !canUseActivity((Activity) context))
-            return;
-        AlertDialog.Builder builder;
-        String title = "캡차 인증";
-        if (new Preference(context).getDarkTheme())
-            builder = new AlertDialog.Builder(context, R.style.darkDialog);
-        else builder = new AlertDialog.Builder(context);
-        View v = ((Activity)context).getLayoutInflater().inflate(R.layout.content_toki_captcha_popup, null);
-
-        ImageView img = v.findViewById(R.id.toki_captcha_image);
-        EditText answer = v.findViewById(R.id.toki_captcha_answer);
-
-        AppDispatchers.runIo(() -> {
-            int tries = 3;
-            while(tries > 0) {
-                Response r = null;
-                try {
-                    r = getHttpClient().post(p.getUrl() + "/plugin/kcaptcha/kcaptcha_session.php", new FormBody.Builder().build(), new HashMap<>(), true);
-                    if(r != null && r.code() == 200) {
-                        List<String> setcookie = r.headers("Set-Cookie");
-                        for (String c : setcookie) {
-                            if (c.contains("PHPSESSID=")) {
-                                String cookie = c.substring(c.indexOf("=") + 1, c.indexOf(";"));
-                                getHttpClient().setCookie("PHPSESSID", cookie);
-                            }
-                        }
-                        break;
-                    }
-                } finally {
-                    if(r != null)
-                        r.close();
-                }
-                tries--;
-            }
-            try {
-                Response r = getHttpClient().mget("/plugin/kcaptcha/kcaptcha_image.php?t=" + currentTimeMillis(), false);
-                final byte[] b = CustomHttpClient.readBytes(r);
-                ((Activity) context).runOnUiThread(() -> {
-                    if(!(context instanceof Activity) || !canUseActivity((Activity) context) || img == null)
-                        return;
-                    try {
-                        Glide.with(img)
-                                .load(b)
-                                .into(img);
-                    } catch (RuntimeException glideError) {
-                        ml.melun.mangaview.report.CrashReporter.record(glideError);
-                    }
-                });
-            }catch (Exception e){
-                ml.melun.mangaview.report.CrashReporter.record(e);
-            }
-        });
-
-        builder.setTitle(title)
-                .setView(v)
-                .setPositiveButton(android.R.string.ok, (dialog, which) -> AppDispatchers.runIo(() -> {
-                    RequestBody requestBody = new FormBody.Builder()
-                            .addEncoded("url", p.getUrl())
-                            .addEncoded("captcha_key", answer.getText().toString())
-                            .build();
-                    Map<String, String> headers = new HashMap<>();
-                    headers.put("cookie", "PHPSESSID=" + getHttpClient().getCookie("PHPSESSID") + ";");
-                    Response response = null;
-                    try {
-                        response = getHttpClient().post(p.getUrl() + "/bbs/captcha_check.php", requestBody, headers, true);
-                    } finally {
-                        if(response != null)
-                            response.close();
-                    }
-                    ((Activity) context).runOnUiThread(() -> {
-                        if(!(context instanceof Activity) || !canUseActivity((Activity) context))
-                            return;
-                        ((Activity) context).finish();
-                        ((Activity) context).startActivity(((Activity) context).getIntent());
-                    });
-                }))
-                .setNegativeButton(android.R.string.cancel, (dialogInterface, i) -> {
-                    if(canUseActivity((Activity) context))
-                        ((Activity) context).finish();
-                })
-                .setOnCancelListener(dialogInterface -> {
-                    if(canUseActivity((Activity) context))
-                        ((Activity) context).finish();
-                });
-
-        safeShowDialog(builder);
-    }
     public static GlideUrl getGlideUrl(String image){
         return getGlideUrl(image, guessImageBaseMode(image));
     }

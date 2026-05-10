@@ -66,7 +66,6 @@ import static ml.melun.mangaview.Utils.getScreenSize;
 import static ml.melun.mangaview.Utils.queueOfflineDownload;
 import static ml.melun.mangaview.Utils.showCaptchaPopup;
 import static ml.melun.mangaview.Utils.showPopup;
-import static ml.melun.mangaview.Utils.showTokiCaptchaPopup;
 import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
 import static ml.melun.mangaview.mangaview.Title.LOAD_OK;
@@ -517,7 +516,7 @@ public class ViewerActivity extends AppCompatActivity {
                 if(isFinishing())
                     return;
                 if(finalResult == LOAD_CAPTCHA) {
-                    showTokiCaptchaPopup(context, p);
+                    showViewerCaptchaRequired(source);
                     return;
                 }
                 if(resolved != null)
@@ -1742,7 +1741,7 @@ public class ViewerActivity extends AppCompatActivity {
                 if(isFinishing())
                     return;
                 if(finalResult == LOAD_CAPTCHA) {
-                    showTokiCaptchaPopup(context, p);
+                    showViewerCaptchaRequired(source);
                     return;
                 }
                 if(nextEpisodeCandidate(source) != null)
@@ -2102,7 +2101,7 @@ public class ViewerActivity extends AppCompatActivity {
 
     private void showViewerCaptchaRequired(Manga target) {
         ViewerWarmupManager.logMetric("viewer_ntk_captcha_required", target == null ? -1 : target.getId());
-        showCaptchaPopup(this, RESULT_CAPTCHA, null, p);
+        showCaptchaPopup(target == null ? null : target.getUrl(), this, RESULT_CAPTCHA, p);
     }
 
     public interface InfiniteScrollCallback{

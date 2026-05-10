@@ -70,7 +70,6 @@ import static ml.melun.mangaview.Utils.getScreenSize;
 import static ml.melun.mangaview.Utils.hideSpinnerDropDown;
 import static ml.melun.mangaview.Utils.queueOfflineDownload;
 import static ml.melun.mangaview.Utils.showCaptchaPopup;
-import static ml.melun.mangaview.Utils.showTokiCaptchaPopup;
 import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
 
@@ -950,7 +949,7 @@ public class ViewerActivity2 extends AppCompatActivity {
 
             if(res == LOAD_CAPTCHA) {
                 //캡차 처리 팝업
-                showTokiCaptchaPopup(context, p);
+                showCaptchaPopup(manga.getUrl(), context, RESULT_CAPTCHA, p);
                 return;
             }
 
