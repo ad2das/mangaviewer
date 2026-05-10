@@ -97,6 +97,20 @@ public class MainPageWebtoon {
     private static final String[][] COMIC_SECTIONS = buildComicSections();
     private static final String[][] NTK_SECTIONS = buildNtkWebtoonSections();
     private static final String[][] NTK_COMIC_SECTIONS = buildNtkComicSections();
+    private static final String[][] HOME_PREVIEW_WEBTOON = {
+            {"17801", "아티팩트 먹는 플레이어", "/platforms/naver.png", "스토리|판타지|액션"},
+            {"13197", "귀환했는데 입대 전날이다", "/platforms/naver.png", "스토리|판타지|액션"},
+            {"19225", "마수 사냥꾼이 살아가는 법", "/platforms/naver.png", "스토리|판타지|액션"},
+            {"14137", "킬러 배드로", "/platforms/naver.png", "스토리|액션|드라마"},
+            {"18940", "환생했더니 대공의 셋째 아들", "/platforms/naver.png", "스토리|판타지"}
+    };
+    private static final String[][] HOME_PREVIEW_COMIC = {
+            {"10001", "마왕의 딸은 너무 착해!!", "https://i1.imgcloud18.com/10001/2266a3ee.jpg", "개그|판타지"},
+            {"10002", "현자의 손자", "https://i1.imgcloud18.com/10002/a7f9cb68.jpg", "라노벨|판타지"},
+            {"10003", "모험에 따라 오지 말아줘", "https://i1.imgcloud18.com/10003/692272a6.jpg", "라노벨|판타지"},
+            {"10004", "지금까지 한 번도 여자취급", "https://i1.imgcloud18.com/10004/e415ca6c.jpg", "러브코미디|순정"},
+            {"10007", "종말의 세라프", "https://i1.imgcloud18.com/10007/ef8eef43.jpg", "애니화|액션"}
+    };
 
     List<Ranking<?>> dataSet;
 
@@ -988,23 +1002,45 @@ public class MainPageWebtoon {
         return getClassificationDbTitlesByGenre(genre, 0, limit);
     }
 
-    public static List<Ranking<?>> getFastNtkWebtoonDataSet() {
-        if(!classificationDbLoaded && appContext != null)
-            loadClassificationDb();
-        if(!classificationDbLoaded)
-            return getBlankDataSet(base_webtoon, true);
-        List<Ranking<?>> dataset = getBlankDataSet(base_webtoon, true);
+    public static List<Ranking<?>> getFastHomePreviewDataSet(int baseMode, boolean ntk) {
+        List<Ranking<?>> dataset = getBlankDataSet(baseMode, ntk);
         for(Ranking<?> section : dataset) {
             if(section == null)
                 continue;
             SectionInfo info = parseSectionInfo(section.getName());
-            if(!isWebtoonGenre(info.label))
+            if(!info.label.contains("인기순"))
                 continue;
-            ArrayList<Title> titles = getClassificationDbTitlesByGenreIfLoaded(info.label, MAIN_SECTION_LIMIT);
-            for(Title title : titles)
-                ((Ranking<Object>) section).add(title);
+            addHomePreviewTitles((Ranking<Object>) section, baseMode);
+            if(section.size() > 0)
+                break;
         }
         return dataset;
+    }
+
+    private static void addHomePreviewTitles(Ranking<Object> section, int baseMode) {
+        if(section == null)
+            return;
+        String[][] source = baseMode == base_comic ? HOME_PREVIEW_COMIC : HOME_PREVIEW_WEBTOON;
+        for(String[] item : source)
+            section.add(previewTitle(item, baseMode));
+    }
+
+    private static Title previewTitle(String[] item, int baseMode) {
+        int id = 0;
+        try {
+            id = Integer.parseInt(item[0]);
+        } catch (Exception ignored) {
+        }
+        ArrayList<String> tags = new ArrayList<>();
+        if(item.length > 3 && item[3] != null)
+            for(String tag : item[3].split("\\|"))
+                if(tag.length() > 0)
+                    tags.add(tag);
+        return new Title(item[1], item[2], "", tags, "", id, baseMode);
+    }
+
+    public static List<Ranking<?>> getFastNtkWebtoonDataSet() {
+        return getFastHomePreviewDataSet(base_webtoon, true);
     }
 
     public static synchronized ArrayList<Title> getClassificationDbTitlesByGenre(String genre, int offset, int limit) {

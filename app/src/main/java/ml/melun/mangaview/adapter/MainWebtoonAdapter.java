@@ -733,8 +733,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private List<Ranking<?>> initialDataSetForSite() {
-        if(siteNtkSnapshot && baseMode == base_webtoon)
-            return MainPageWebtoon.getFastNtkWebtoonDataSet();
+        List<Ranking<?>> preview = MainPageWebtoon.getFastHomePreviewDataSet(baseMode, siteNtkSnapshot);
+        if(collectTitles(preview, 1).size() > 0)
+            return preview;
         return MainPageWebtoon.getBlankDataSet(baseMode, siteNtkSnapshot);
     }
 
