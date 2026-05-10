@@ -56,8 +56,13 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     private final Executor diffExecutor = AppDispatchers.uiDiff();
     private int diffGeneration = 0;
     private static final long SCROLL_CLICK_SUPPRESS_MS = 200L;
+    private static final long TOUCH_MOVE_SUPPRESS_MS = 350L;
     private int listScrollState = RecyclerView.SCROLL_STATE_IDLE;
     private long suppressClicksUntil = 0L;
+    private int touchSlop = 0;
+    private float listDownX = 0f;
+    private float listDownY = 0f;
+    private boolean listTouchMoved = false;
 
     public TitleAdapter(Context context) {
         init(context);
@@ -79,10 +84,45 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             suppressClicksUntil = Long.MAX_VALUE;
     }
 
+    public void noteListTouchEvent(MotionEvent event) {
+        if(event == null)
+            return;
+        switch(event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                listDownX = event.getX();
+                listDownY = event.getY();
+                listTouchMoved = false;
+                break;
+            case MotionEvent.ACTION_MOVE:
+                if(!listTouchMoved && movedPastTouchSlop(event.getX(), event.getY(), listDownX, listDownY)) {
+                    listTouchMoved = true;
+                    suppressClicksForTouchMove();
+                }
+                break;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                if(listTouchMoved)
+                    suppressClicksForTouchMove();
+                listTouchMoved = false;
+                break;
+        }
+    }
+
+    private void suppressClicksForTouchMove() {
+        long until = android.os.SystemClock.uptimeMillis() + TOUCH_MOVE_SUPPRESS_MS;
+        if(suppressClicksUntil < until)
+            suppressClicksUntil = until;
+    }
+
     private boolean canOpenUserAction() {
         if(listScrollState != RecyclerView.SCROLL_STATE_IDLE)
             return false;
         return android.os.SystemClock.uptimeMillis() >= suppressClicksUntil;
+    }
+
+    private boolean movedPastTouchSlop(float x, float y, float downX, float downY) {
+        int slop = touchSlop > 0 ? touchSlop : 8;
+        return Math.abs(x - downX) > slop || Math.abs(y - downY) > slop;
     }
 
     void init(Context context){
@@ -90,6 +130,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         save = p.getDataSave();
         this.mInflater = LayoutInflater.from(context);
         mainContext = context;
+        touchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
         this.mData = new ArrayList<>();
         this.mDataFiltered = new ArrayList<>();
         setHasStableIds(true);
@@ -534,6 +575,9 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         View thumbCard;
         long lastResumeOpenAt = 0L;
         int lastResumeOpenPosition = RecyclerView.NO_POSITION;
+        float itemDownX = 0f;
+        float itemDownY = 0f;
+        boolean itemTouchMoved = false;
         float resumeDownX = 0f;
         float resumeDownY = 0f;
         boolean resumeTouchMoved = false;
@@ -589,6 +633,37 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             progressText.setOnLongClickListener(longClickListener);
             tagContainer.setOnLongClickListener(longClickListener);
             View.OnClickListener clickListener = v -> openItem();
+            View.OnTouchListener itemTouchListener = (v, event) -> {
+                switch(event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        itemDownX = event.getX();
+                        itemDownY = event.getY();
+                        itemTouchMoved = false;
+                        v.setLongClickable(longClickEnabled);
+                        break;
+                    case MotionEvent.ACTION_MOVE:
+                        if(!itemTouchMoved && movedPastTouchSlop(event.getX(), event.getY(), itemDownX, itemDownY)) {
+                            itemTouchMoved = true;
+                            suppressClicksForTouchMove();
+                            v.setPressed(false);
+                            v.setLongClickable(false);
+                            v.cancelLongPress();
+                        }
+                        break;
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        if(itemTouchMoved)
+                            suppressClicksForTouchMove();
+                        itemTouchMoved = false;
+                        v.setLongClickable(longClickEnabled);
+                        break;
+                }
+                return false;
+            };
+            itemView.setOnTouchListener(itemTouchListener);
+            card.setOnTouchListener(itemTouchListener);
+            content.setOnTouchListener(itemTouchListener);
+            thumbCard.setOnTouchListener(itemTouchListener);
             itemView.setOnClickListener(clickListener);
             card.setOnClickListener(clickListener);
             content.setOnClickListener(clickListener);
@@ -608,15 +683,17 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                         resumeDownX = event.getX();
                         resumeDownY = event.getY();
                         resumeTouchMoved = false;
+                        v.setLongClickable(longClickEnabled);
                         v.setPressed(true);
                         warmupResumeAtCurrentPosition();
                         return true;
                     case MotionEvent.ACTION_MOVE:
-                        int touchSlop = ViewConfiguration.get(v.getContext()).getScaledTouchSlop();
-                        if(Math.abs(event.getX() - resumeDownX) > touchSlop
-                                || Math.abs(event.getY() - resumeDownY) > touchSlop) {
+                        if(!resumeTouchMoved && movedPastTouchSlop(event.getX(), event.getY(), resumeDownX, resumeDownY)) {
                             resumeTouchMoved = true;
+                            suppressClicksForTouchMove();
                             v.setPressed(false);
+                            v.setLongClickable(false);
+                            v.cancelLongPress();
                         }
                         return true;
                     case MotionEvent.ACTION_UP:
@@ -625,10 +702,12 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                         resumeTouchMoved = false;
                         if(shouldClick)
                             v.performClick();
+                        v.setLongClickable(longClickEnabled);
                         return true;
                     case MotionEvent.ACTION_CANCEL:
                         v.setPressed(false);
                         resumeTouchMoved = false;
+                        v.setLongClickable(longClickEnabled);
                         return true;
                     default:
                         return false;
