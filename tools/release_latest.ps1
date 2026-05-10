@@ -1,6 +1,7 @@
 param(
     [string]$Repo = "ad2das/mangaviewer",
     [string]$ReleaseTag = "codex/perf-stability-max-core-rewrite-v2112260512",
+    [string]$TargetBranch = "",
     [string]$JavaHome = "",
     [string]$CommitMessage = "",
     [int]$ReleasePatch = -1,
@@ -80,6 +81,13 @@ $buildGradlePath = "app/build.gradle"
 $versionJsonPath = "version.json"
 $releasesHtmlPath = "releases.html"
 
+if ([string]::IsNullOrWhiteSpace($TargetBranch)) {
+    $TargetBranch = git branch --show-current
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($TargetBranch)) {
+        $TargetBranch = "main"
+    }
+}
+
 $buildGradle = Read-Utf8 $buildGradlePath
 $patchMatch = [regex]::Match($buildGradle, "def\s+defaultReleasePatch\s*=\s*(\d+)")
 if (-not $patchMatch.Success) {
@@ -144,8 +152,8 @@ if (-not $NoCommit) {
     }
 
     if (-not $NoPush) {
-        Write-Step "Pushing main"
-        git push origin main
+        Write-Step "Pushing $TargetBranch"
+        git push origin "HEAD:$TargetBranch"
         if ($LASTEXITCODE -ne 0) {
             throw "git push failed"
         }
