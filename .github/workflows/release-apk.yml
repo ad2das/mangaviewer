@@ -52,6 +52,7 @@ jobs:
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
         with:
+          cache-read-only: false
           cache-cleanup: never
 
       - name: Configure Git
