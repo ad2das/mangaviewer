@@ -177,10 +177,8 @@ public class MainSearch extends Fragment {
                 if(event.getAction() == MotionEvent.ACTION_MOVE) {
                     if(listLongPressHandled)
                         return true;
-                    if(movedBeyondListTapSlop(event)) {
-                        listMovedBeyondTapSlop = true;
-                        cancelTitleListLongPress();
-                    }
+                    listMovedBeyondTapSlop = true;
+                    cancelTitleListLongPress();
                     return false;
                 }
                 if(event.getAction() == MotionEvent.ACTION_CANCEL) {

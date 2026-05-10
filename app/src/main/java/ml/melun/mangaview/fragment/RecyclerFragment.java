@@ -233,7 +233,7 @@ public class RecyclerFragment extends Fragment {
                 beginLibraryTouch(event);
                 break;
             case MotionEvent.ACTION_MOVE:
-                if(touchPosition != RecyclerView.NO_POSITION && movedPastTouchSlop(event)) {
+                if(touchPosition != RecyclerView.NO_POSITION) {
                     cancelLibraryTouchClick();
                 }
                 break;
