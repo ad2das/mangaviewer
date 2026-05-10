@@ -9,14 +9,21 @@ import androidx.appcompat.app.ActionBar;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
+import android.graphics.Rect;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import androidx.appcompat.widget.Toolbar;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.appcompat.widget.PopupMenu;
 import androidx.recyclerview.widget.RecyclerView;
 import android.view.MenuItem;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
+import android.view.ViewGroup;
 import android.widget.TextView;
 
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout;
@@ -70,6 +77,19 @@ public class TagSearchActivity extends AppCompatActivity {
     LoadOperation loadTask;
     boolean destroyed = false;
     Runnable thumbnailPreloadRunnable;
+    final Handler touchHandler = new Handler(Looper.getMainLooper());
+    int touchSlop = 8;
+    int listScrollState = RecyclerView.SCROLL_STATE_IDLE;
+    float touchDownX = 0f;
+    float touchDownY = 0f;
+    long touchDownAt = 0L;
+    boolean touchMoved = false;
+    boolean touchLongPressed = false;
+    boolean touchOnResume = false;
+    int touchPosition = RecyclerView.NO_POSITION;
+    View touchChild;
+    View touchAnchor;
+    Runnable touchLongPressRunnable;
 
 
     @Override
@@ -100,10 +120,26 @@ public class TagSearchActivity extends AppCompatActivity {
         searchResult.setItemViewCacheSize(12);
         searchResult.setItemAnimator(null);
         searchResult.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        touchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
+        searchResult.addOnItemTouchListener(new RecyclerView.SimpleOnItemTouchListener() {
+            @Override
+            public boolean onInterceptTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent e) {
+                handleTitleTouch(e);
+                return false;
+            }
+
+            @Override
+            public void onTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent e) {
+                handleTitleTouch(e);
+            }
+        });
         searchResult.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
             public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
                 super.onScrollStateChanged(recyclerView, newState);
+                listScrollState = newState;
+                if(newState != RecyclerView.SCROLL_STATE_IDLE)
+                    cancelTitleTouchClick();
                 if(isFinishing() || destroyed)
                     return;
                 PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
@@ -198,6 +234,125 @@ public class TagSearchActivity extends AppCompatActivity {
                 } else swipe.setRefreshing(false);
             });
         }
+    }
+
+    private void handleTitleTouch(MotionEvent event) {
+        if(event == null || searchResult == null || adapter == null)
+            return;
+        switch(event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                beginTitleTouch(event);
+                break;
+            case MotionEvent.ACTION_MOVE:
+                if(touchPosition != RecyclerView.NO_POSITION && movedPastTouchSlop(event))
+                    cancelTitleTouchClick();
+                break;
+            case MotionEvent.ACTION_UP:
+                finishTitleTouch(event);
+                break;
+            case MotionEvent.ACTION_CANCEL:
+                resetTitleTouch();
+                break;
+        }
+    }
+
+    private void beginTitleTouch(MotionEvent event) {
+        resetTitleTouch();
+        touchDownX = event.getX();
+        touchDownY = event.getY();
+        touchDownAt = SystemClock.uptimeMillis();
+        touchChild = searchResult.findChildViewUnder(touchDownX, touchDownY);
+        if(touchChild == null)
+            return;
+        touchPosition = searchResult.getChildAdapterPosition(touchChild);
+        if(touchPosition == RecyclerView.NO_POSITION) {
+            resetTitleTouch();
+            return;
+        }
+        View resume = resumeButtonFor(touchChild);
+        touchOnResume = isTouchInsideDescendant(touchChild, resume, touchDownX, touchDownY);
+        touchAnchor = touchOnResume && resume != null ? resume : touchChild;
+        scheduleTitleLongPress(touchPosition, touchAnchor);
+    }
+
+    private void finishTitleTouch(MotionEvent event) {
+        touchHandler.removeCallbacksAndMessages(null);
+        if(touchPosition == RecyclerView.NO_POSITION) {
+            resetTitleTouch();
+            return;
+        }
+        boolean moved = touchMoved || movedPastTouchSlop(event);
+        boolean longPressWindow = SystemClock.uptimeMillis() - touchDownAt >= ViewConfiguration.getLongPressTimeout();
+        int position = touchPosition;
+        boolean resumeTap = touchOnResume;
+        boolean canClick = !moved
+                && !touchLongPressed
+                && !longPressWindow
+                && listScrollState == RecyclerView.SCROLL_STATE_IDLE;
+        resetTitleTouchStateOnly();
+        if(!canClick)
+            return;
+        if(resumeTap)
+            adapter.performResumeClick(position);
+        else
+            adapter.performItemClick(position);
+    }
+
+    private void scheduleTitleLongPress(int position, View anchor) {
+        touchLongPressRunnable = () -> {
+            if(touchMoved
+                    || touchLongPressed
+                    || listScrollState != RecyclerView.SCROLL_STATE_IDLE
+                    || touchPosition != position
+                    || adapter == null)
+                return;
+            touchLongPressed = adapter.performItemLongClick(anchor == null ? searchResult : anchor, position);
+        };
+        touchHandler.postDelayed(touchLongPressRunnable, ViewConfiguration.getLongPressTimeout());
+    }
+
+    private void cancelTitleTouchClick() {
+        touchMoved = true;
+        touchHandler.removeCallbacksAndMessages(null);
+    }
+
+    private void resetTitleTouch() {
+        touchHandler.removeCallbacksAndMessages(null);
+        resetTitleTouchStateOnly();
+    }
+
+    private void resetTitleTouchStateOnly() {
+        touchMoved = false;
+        touchLongPressed = false;
+        touchOnResume = false;
+        touchPosition = RecyclerView.NO_POSITION;
+        touchChild = null;
+        touchAnchor = null;
+        touchLongPressRunnable = null;
+        touchDownAt = 0L;
+    }
+
+    private boolean movedPastTouchSlop(MotionEvent event) {
+        if(event == null)
+            return false;
+        return Math.abs(event.getX() - touchDownX) > touchSlop
+                || Math.abs(event.getY() - touchDownY) > touchSlop;
+    }
+
+    private View resumeButtonFor(View child) {
+        return child == null ? null : child.findViewById(R.id.epsButton);
+    }
+
+    private boolean isTouchInsideDescendant(View child, View descendant, float recyclerX, float recyclerY) {
+        if(child == null || descendant == null || descendant.getVisibility() != View.VISIBLE)
+            return false;
+        if(!(child instanceof ViewGroup))
+            return false;
+        Rect rect = new Rect(0, 0, descendant.getWidth(), descendant.getHeight());
+        ((ViewGroup) child).offsetDescendantRectToMyCoords(descendant, rect);
+        int childX = Math.round(recyclerX - child.getLeft());
+        int childY = Math.round(recyclerY - child.getTop());
+        return rect.contains(childX, childY);
     }
 
     @Override

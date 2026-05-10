@@ -3,6 +3,7 @@ package ml.melun.mangaview.fragment;
 import android.content.Intent;
 import android.content.DialogInterface;
 import android.content.Context;
+import android.graphics.Rect;
 import android.os.Bundle;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
@@ -90,6 +91,8 @@ public class MainSearch extends Fragment {
     Runnable pendingListLongPress;
     boolean listLongPressHandled = false;
     boolean listMovedBeyondTapSlop = false;
+    boolean listDownOnResume = false;
+    int listScrollState = RecyclerView.SCROLL_STATE_IDLE;
     long lastTitlePopupAt = 0;
     int lastTitlePopupId = -1;
     int lastTitlePopupBaseMode = -1;
@@ -142,6 +145,11 @@ public class MainSearch extends Fragment {
             @Override
             public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
                 super.onScrollStateChanged(recyclerView, newState);
+                listScrollState = newState;
+                if(newState != RecyclerView.SCROLL_STATE_IDLE) {
+                    listMovedBeyondTapSlop = true;
+                    cancelTitleListLongPress();
+                }
                 if(getContext() == null || !isAdded())
                     return;
                 PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
@@ -154,7 +162,7 @@ public class MainSearch extends Fragment {
         searchResult.addOnItemTouchListener(new RecyclerView.SimpleOnItemTouchListener() {
             @Override
             public boolean onInterceptTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent event) {
-                if(!libraryMode || onlineSearchMode)
+                if(searchAdapter == null)
                     return false;
                 if(event.getAction() == MotionEvent.ACTION_DOWN) {
                     listDownX = event.getX();
@@ -162,6 +170,7 @@ public class MainSearch extends Fragment {
                     listDownWallTime = System.currentTimeMillis();
                     listLongPressHandled = false;
                     listMovedBeyondTapSlop = false;
+                    listDownOnResume = isTouchOnResumeButton(event.getX(), event.getY());
                     scheduleTitleListLongPress();
                     return false;
                 }
@@ -177,16 +186,21 @@ public class MainSearch extends Fragment {
                 if(event.getAction() == MotionEvent.ACTION_CANCEL) {
                     cancelTitleListLongPress();
                     listLongPressHandled = false;
+                    listDownOnResume = false;
                     return false;
                 }
                 if(event.getAction() == MotionEvent.ACTION_UP) {
                     cancelTitleListLongPress();
                     if(listLongPressHandled) {
                         listLongPressHandled = false;
+                        listDownOnResume = false;
                         return true;
                     }
-                    if(!listMovedBeyondTapSlop && System.currentTimeMillis() - listDownWallTime < ViewConfiguration.getLongPressTimeout())
+                    if(!listMovedBeyondTapSlop
+                            && listScrollState == RecyclerView.SCROLL_STATE_IDLE
+                            && System.currentTimeMillis() - listDownWallTime < ViewConfiguration.getLongPressTimeout())
                         return handleTitleListTap(event.getX(), event.getY());
+                    listDownOnResume = false;
                     return false;
                 }
                 return false;
@@ -197,6 +211,7 @@ public class MainSearch extends Fragment {
                 if(event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) {
                     cancelTitleListLongPress();
                     listLongPressHandled = false;
+                    listDownOnResume = false;
                 }
             }
         });
@@ -829,7 +844,7 @@ public class MainSearch extends Fragment {
             pendingListLongPress = null;
             if(!isAdded() || getContext() == null || searchResult == null || searchAdapter == null)
                 return;
-            if(!listMovedBeyondTapSlop)
+            if(!listMovedBeyondTapSlop && listScrollState == RecyclerView.SCROLL_STATE_IDLE)
                 listLongPressHandled = handleTitleListLongPress(listDownX, listDownY);
         };
         searchResult.postDelayed(pendingListLongPress, ViewConfiguration.getLongPressTimeout());
@@ -844,7 +859,7 @@ public class MainSearch extends Fragment {
     private boolean movedBeyondListTapSlop(MotionEvent event) {
         if(getContext() == null)
             return false;
-        int slop = ViewConfiguration.get(getContext()).getScaledTouchSlop() * 8;
+        int slop = ViewConfiguration.get(getContext()).getScaledTouchSlop();
         return Math.abs(event.getX() - listDownX) > slop || Math.abs(event.getY() - listDownY) > slop;
     }
 
@@ -858,33 +873,11 @@ public class MainSearch extends Fragment {
         int position = positionForTitleListItem(item);
         if(position == RecyclerView.NO_POSITION || position >= searchAdapter.getItemCount())
             return false;
-        Title title = searchAdapter.getItem(position);
-        if(title == null)
-            return false;
-        if(x >= item.getRight() - dp(96)) {
-            Title latest = resolveLatestTitleForResume(title);
-            int bookmark = resolveLatestBookmark(latest, title.getBookmark());
-            openResume(latest, bookmark);
-        } else {
-            openTitleFromList(title);
-        }
-        return true;
-    }
-
-    private void openTitleFromList(Title title) {
-        if(title == null || getContext() == null)
-            return;
-        if(isOfflineTitle(title)) {
-            Intent episodeView = episodeIntent(getContext(), title);
-            episodeView.putExtra("online", false);
-            Utils.safeStartActivity(getContext(), episodeView);
-        } else if(title.getId() > 0) {
-            Utils.safeStartActivity(getContext(), episodeIntent(getContext(), title));
-        }
-    }
-
-    private int dp(int value) {
-        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+        boolean resumeTap = listDownOnResume && isTouchOnResumeButton(x, y);
+        listDownOnResume = false;
+        if(resumeTap)
+            return searchAdapter.performResumeClick(position);
+        return searchAdapter.performItemClick(position);
     }
 
     private boolean handleTitleListLongPress(float x, float y) {
@@ -897,11 +890,7 @@ public class MainSearch extends Fragment {
         int position = positionForTitleListItem(item);
         if(position == RecyclerView.NO_POSITION || position >= searchAdapter.getItemCount())
             return false;
-        Title title = searchAdapter.getItem(position);
-        if(title == null)
-            return false;
-        showLibraryTitlePopup(item, title);
-        return true;
+        return searchAdapter.performItemLongClick(item, position);
     }
 
     private int positionForTitleListItem(View item) {
@@ -909,6 +898,23 @@ public class MainSearch extends Fragment {
         if(position == RecyclerView.NO_POSITION)
             position = searchResult.getChildLayoutPosition(item);
         return position;
+    }
+
+    private boolean isTouchOnResumeButton(float recyclerX, float recyclerY) {
+        if(searchResult == null)
+            return false;
+        View child = searchResult.findChildViewUnder(recyclerX, recyclerY);
+        View item = searchResult.findContainingItemView(child);
+        if(item == null)
+            return false;
+        View resume = item.findViewById(R.id.epsButton);
+        if(resume == null || resume.getVisibility() != View.VISIBLE || !(item instanceof ViewGroup))
+            return false;
+        Rect rect = new Rect(0, 0, resume.getWidth(), resume.getHeight());
+        ((ViewGroup) item).offsetDescendantRectToMyCoords(resume, rect);
+        int childX = Math.round(recyclerX - item.getLeft());
+        int childY = Math.round(recyclerY - item.getTop());
+        return rect.contains(childX, childY);
     }
 
     private void appendUnique(ArrayList<Title> target, List<?> source) {
