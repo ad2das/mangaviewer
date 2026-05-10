@@ -91,6 +91,8 @@ public class RecyclerFragment extends Fragment {
             @Override
             public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
                 super.onScrollStateChanged(recyclerView, newState);
+                if(titleAdapter != null)
+                    titleAdapter.setListScrollState(newState);
                 if(getContext() == null || !isAdded())
                     return;
                 PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");

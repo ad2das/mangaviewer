@@ -129,6 +129,23 @@
                 app:layout_constraintTop_toTopOf="parent"
                 app:srcCompat="@drawable/play" />
 
+            <ImageView
+                android:id="@+id/TitleResumeSiteIcon"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:layout_marginEnd="6dp"
+                android:layout_marginBottom="8dp"
+                android:background="@drawable/app_toolbar_icon_bg"
+                android:contentDescription="사이트"
+                android:elevation="3dp"
+                android:padding="4dp"
+                android:visibility="gone"
+                app:layout_constraintBottom_toTopOf="@+id/epsButton"
+                app:layout_constraintEnd_toEndOf="@+id/epsButton"
+                app:srcCompat="@drawable/ic_site_wfwf"
+                tools:srcCompat="@drawable/ic_site_ntk"
+                tools:visibility="visible" />
+
             <androidx.appcompat.widget.LinearLayoutCompat
                 android:id="@+id/TitleCounterContainer"
                 android:layout_width="0dp"

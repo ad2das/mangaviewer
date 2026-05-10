@@ -415,8 +415,7 @@ public class MainActivity extends AppCompatActivity
         if(now - lastNtkCaptchaLaunchAt < 1500L)
             return true;
         lastNtkCaptchaLaunchAt = now;
-        // Try background clearance first
-        tryBackgroundClearance();
+        Utils.showCaptchaPopup(this, 3, null, p);
         return true;
     }
 

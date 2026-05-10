@@ -7,6 +7,7 @@ import androidx.recyclerview.widget.RecyclerView;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.widget.Filter;
 import android.widget.Filterable;
@@ -54,6 +55,9 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     boolean searching = false;
     private final Executor diffExecutor = AppDispatchers.uiDiff();
     private int diffGeneration = 0;
+    private static final long SCROLL_CLICK_SUPPRESS_MS = 200L;
+    private int listScrollState = RecyclerView.SCROLL_STATE_IDLE;
+    private long suppressClicksUntil = 0L;
 
     public TitleAdapter(Context context) {
         init(context);
@@ -66,6 +70,21 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     public void setForceThumbnail(boolean b){
         this.forceThumbnail = b;
     }
+
+    public void setListScrollState(int state) {
+        listScrollState = state;
+        if(state == RecyclerView.SCROLL_STATE_IDLE)
+            suppressClicksUntil = android.os.SystemClock.uptimeMillis() + SCROLL_CLICK_SUPPRESS_MS;
+        else
+            suppressClicksUntil = Long.MAX_VALUE;
+    }
+
+    private boolean canOpenUserAction() {
+        if(listScrollState != RecyclerView.SCROLL_STATE_IDLE)
+            return false;
+        return android.os.SystemClock.uptimeMillis() >= suppressClicksUntil;
+    }
+
     void init(Context context){
         dark = p.getDarkTheme();
         save = p.getDataSave();
@@ -243,7 +262,8 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(title == null)
             return "";
         return title.getName() + "|" + title.getThumb() + "|" + title.getAuthor() + "|"
-                + title.getRelease() + "|" + title.getBookmark() + "|" + title.getTags();
+                + title.getRelease() + "|" + title.getBookmark() + "|" + title.getTags()
+                + "|" + title.getSourceSite();
     }
 
     public void clearData(){
@@ -362,9 +382,29 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         }
         if(bookmark>0 && resume) {
             holder.resume.setVisibility(View.VISIBLE);
+            holder.resumeSiteIcon.setVisibility(View.VISIBLE);
+            bindResumeSiteIcon(holder.resumeSiteIcon, sourceSiteForTitle(data));
         }
-        else holder.resume.setVisibility(View.GONE);
+        else {
+            holder.resume.setVisibility(View.GONE);
+            holder.resumeSiteIcon.setVisibility(View.GONE);
+        }
 
+    }
+
+    private void bindResumeSiteIcon(ImageView view, String sourceSite) {
+        boolean ntk = "ntk".equals(sourceSite);
+        view.setImageResource(ntk ? R.drawable.ic_site_ntk : R.drawable.ic_site_wfwf);
+        view.setContentDescription(ntk ? "NTK" : "WFWF");
+    }
+
+    private String sourceSiteForTitle(Title title) {
+        if(title == null || p == null)
+            return "wfwf";
+        String source = title.getSourceSite();
+        if(source == null || source.length() == 0)
+            source = p.resolveSourceSite(title);
+        return "ntk".equals(source) ? "ntk" : "wfwf";
     }
 
     private void warmupResume(Title title, int bookmark, int position) {
@@ -481,6 +521,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     class ViewHolder extends RecyclerView.ViewHolder{
         TextView name;
         ImageView thumb, fav;
+        ImageView resumeSiteIcon;
         TextView author;
         TextView tags;
         TextView recommend_c, battery_c, bookmark_c;
@@ -493,6 +534,9 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         View thumbCard;
         long lastResumeOpenAt = 0L;
         int lastResumeOpenPosition = RecyclerView.NO_POSITION;
+        float resumeDownX = 0f;
+        float resumeDownY = 0f;
+        boolean resumeTouchMoved = false;
 
         View tagContainer;
         View counterContainer;
@@ -507,6 +551,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             content = itemView.findViewById(R.id.titleContent);
             thumbCard = itemView.findViewById(R.id.thumbCard);
             resume = itemView.findViewById(R.id.epsButton);
+            resumeSiteIcon = itemView.findViewById(R.id.TitleResumeSiteIcon);
             recommend_c = itemView.findViewById(R.id.TitleRecommend_c);
             battery_c = itemView.findViewById(R.id.TitleBattery_c);
             bookmark_c = itemView.findViewById(R.id.TitleBookmark_c);
@@ -523,7 +568,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                 resume.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.resumeDark));
             }
             View.OnLongClickListener longClickListener = v -> {
-                if(!longClickEnabled)
+                if(!longClickEnabled || !canOpenUserAction())
                     return false;
                 int position = getAdapterPosition();
                 if(!isValidPosition(position) || mClickListener == null)
@@ -558,22 +603,44 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             tagContainer.setOnClickListener(clickListener);
             resume.setOnClickListener(v -> openResume());
             resume.setOnTouchListener((v, event) -> {
-                if(event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                    v.setPressed(true);
-                    openResumeImmediately();
-                    return true;
+                switch(event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        resumeDownX = event.getX();
+                        resumeDownY = event.getY();
+                        resumeTouchMoved = false;
+                        v.setPressed(true);
+                        warmupResumeAtCurrentPosition();
+                        return true;
+                    case MotionEvent.ACTION_MOVE:
+                        int touchSlop = ViewConfiguration.get(v.getContext()).getScaledTouchSlop();
+                        if(Math.abs(event.getX() - resumeDownX) > touchSlop
+                                || Math.abs(event.getY() - resumeDownY) > touchSlop) {
+                            resumeTouchMoved = true;
+                            v.setPressed(false);
+                        }
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                        boolean shouldClick = !resumeTouchMoved && canOpenUserAction();
+                        v.setPressed(false);
+                        resumeTouchMoved = false;
+                        if(shouldClick)
+                            v.performClick();
+                        return true;
+                    case MotionEvent.ACTION_CANCEL:
+                        v.setPressed(false);
+                        resumeTouchMoved = false;
+                        return true;
+                    default:
+                        return false;
                 }
-                if(event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
-                    v.setPressed(false);
-                    return true;
-                }
-                return false;
             });
             resume.setOnLongClickListener(longClickListener);
 
         }
 
         private void openItem() {
+            if(!canOpenUserAction())
+                return;
             int position = getAdapterPosition();
             if(!isValidPosition(position) || mClickListener == null)
                 return;
@@ -581,6 +648,8 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         }
 
         private void openResume() {
+            if(!canOpenUserAction())
+                return;
             int position = getAdapterPosition();
             if(!isValidPosition(position) || mClickListener == null)
                 return;
@@ -596,14 +665,13 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             mClickListener.onResumeClick(position, bookmark);
         }
 
-        private void openResumeImmediately() {
+        private void warmupResumeAtCurrentPosition() {
             int position = getAdapterPosition();
             if(!isValidPosition(position))
                 return;
             Title title = mDataFiltered.get(position);
             int bookmark = resolveResumeBookmark(title);
             warmupResume(title, bookmark, position);
-            openResume();
         }
     }
 
