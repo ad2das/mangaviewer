@@ -786,7 +786,7 @@ public class Utils {
     }
 
     private static boolean shouldOpenCloudflareCaptchaAutomatically() {
-        if(!getHttpClient().isNtk() || getHttpClient().hasCloudflareClearance())
+        if(!getHttpClient().isNtk() || getHttpClient().hasNtkAccessProof())
             return false;
         long now = System.currentTimeMillis();
         if(now - lastAutoCloudflareCaptchaAt < 500L)
@@ -799,7 +799,7 @@ public class Utils {
         if(!canUseContextForUi(context) || !getHttpClient().isNtk())
             return false;
         syncNtkCloudflareCookies(preference);
-        if(getHttpClient().hasCloudflareClearance())
+        if(getHttpClient().hasNtkAccessProof())
             return false;
         if(shouldOpenCloudflareCaptchaAutomatically()) {
             startCaptchaActivity(context, code, fragment, null);
@@ -861,6 +861,9 @@ public class Utils {
             return getHttpClient().getUrl() + "/" + url;
         }
         if(getHttpClient().isNtk()) {
+            String challengedUrl = getHttpClient().getLastCloudflareChallengeUrl();
+            if(challengedUrl != null && challengedUrl.length() > 0 && getHttpClient().isNtkUrl(challengedUrl))
+                return challengedUrl;
             String webtoonUrl = p == null ? "" : p.getWebtoonUrl();
             if(webtoonUrl != null && webtoonUrl.length() > 0 && getHttpClient().isNtkUrl(webtoonUrl))
                 return webtoonUrl;

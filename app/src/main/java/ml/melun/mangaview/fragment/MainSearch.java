@@ -886,8 +886,7 @@ public class MainSearch extends Fragment {
     private boolean handleTitleListTap(float x, float y) {
         if(searchResult == null || searchAdapter == null || getContext() == null)
             return false;
-        View child = searchResult.findChildViewUnder(x, y);
-        View item = searchResult.findContainingItemView(child);
+        View item = findTitleListItemAt(x, y);
         if(item == null)
             return false;
         int position = positionForTitleListItem(item);
@@ -903,8 +902,7 @@ public class MainSearch extends Fragment {
     private boolean handleTitleListLongPress(float x, float y) {
         if(searchResult == null || searchAdapter == null || getContext() == null)
             return false;
-        View child = searchResult.findChildViewUnder(x, y);
-        View item = searchResult.findContainingItemView(child);
+        View item = findTitleListItemAt(x, y);
         if(item == null)
             return false;
         int position = positionForTitleListItem(item);
@@ -920,11 +918,19 @@ public class MainSearch extends Fragment {
         return position;
     }
 
+    private View findTitleListItemAt(float x, float y) {
+        if(searchResult == null)
+            return null;
+        View child = searchResult.findChildViewUnder(x, y);
+        if(child == null)
+            return null;
+        return searchResult.findContainingItemView(child);
+    }
+
     private boolean isTouchOnResumeButton(float recyclerX, float recyclerY) {
         if(searchResult == null)
             return false;
-        View child = searchResult.findChildViewUnder(recyclerX, recyclerY);
-        View item = searchResult.findContainingItemView(child);
+        View item = findTitleListItemAt(recyclerX, recyclerY);
         if(item == null)
             return false;
         View resume = item.findViewById(R.id.epsButton);

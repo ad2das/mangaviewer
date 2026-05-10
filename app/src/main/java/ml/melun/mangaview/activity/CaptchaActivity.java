@@ -45,7 +45,7 @@ public class CaptchaActivity extends AppCompatActivity {
     String domain;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private static final long TURNSTILE_CHECK_DELAY_MS = 0;
-    private static final long TURNSTILE_CHECK_INTERVAL_MS = 50;
+    private static final long TURNSTILE_CHECK_INTERVAL_MS = 250;
     private static final long TURNSTILE_MAX_WAIT_MS = 30000;
     public static final String SHADOW_HOOK_JS = "(function(){" +
             "if(window.__sh)return;" +
@@ -77,6 +77,10 @@ public class CaptchaActivity extends AppCompatActivity {
             "}" +
             "}" +
             "}" +
+            "var host=(location.hostname||'').toLowerCase();" +
+            "var text=(document.body&&document.body.innerText||'').replace(/\\s+/g,' ');" +
+            "if(host.indexOf('ntk')>=0&&text.length>200&&(text.indexOf('NEWTOKI')>=0||text.indexOf('실시간 웹툰 랭킹')>=0||text.indexOf('웹툰')>=0&&text.indexOf('만화')>=0))" +
+            "return JSON.stringify({type:'normal'});" +
             "var mc=document.querySelector('.main-content');" +
             "if(!mc)return JSON.stringify({type:'none'});" +
             "for(var i=0;i<mc.children.length;i++){" +
@@ -98,6 +102,8 @@ public class CaptchaActivity extends AppCompatActivity {
     private static final long MIN_ATTEMPT_INTERVAL_MS = 150;
     private boolean isFinishing = false;
     private Set<String> initialClearanceValues = new HashSet<>();
+    private int normalNtkPageCount = 0;
+    private boolean turnstileAutoClickStarted = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -148,6 +154,7 @@ public class CaptchaActivity extends AppCompatActivity {
             realChromeUA = "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36";
         }
         settings.setUserAgentString(realChromeUA);
+        getHttpClient().setUserAgent(settings.getUserAgentString());
 
         CookieManager cookiem = CookieManager.getInstance();
         cookiem.setAcceptCookie(true);
@@ -178,6 +185,11 @@ public class CaptchaActivity extends AppCompatActivity {
 
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                handler.removeCallbacksAndMessages(null);
+                pageFinishedTime = 0;
+                lastAttemptTime = 0;
+                normalNtkPageCount = 0;
+                turnstileAutoClickStarted = false;
                 view.evaluateJavascript(SHADOW_HOOK_JS, null);
                 super.onPageStarted(view, url, favicon);
             }
@@ -193,7 +205,9 @@ public class CaptchaActivity extends AppCompatActivity {
             @Nullable
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                getHttpClient().agent = request.getRequestHeaders().get("User-Agent");
+                String userAgent = request == null ? null : request.getRequestHeaders().get("User-Agent");
+                if(userAgent != null && userAgent.length() > 0)
+                    getHttpClient().setUserAgent(userAgent);
                 return super.shouldInterceptRequest(view, request);
             }
 
@@ -238,6 +252,9 @@ public class CaptchaActivity extends AppCompatActivity {
     }
 
     private void startTurnstileAutoClick() {
+        if(turnstileAutoClickStarted)
+            return;
+        turnstileAutoClickStarted = true;
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
@@ -281,6 +298,7 @@ public class CaptchaActivity extends AppCompatActivity {
                 if("jsclick".equals(type)) {
                     android.util.Log.d("CaptchaActivity", "Turnstile JS direct click executed via shadow hook");
                 } else if("iframe".equals(type)) {
+                    normalNtkPageCount = 0;
                     final float x = (float) obj.getDouble("x");
                     final float y = (float) obj.getDouble("y");
                     final float w = (float) obj.optDouble("w", 60);
@@ -288,11 +306,35 @@ public class CaptchaActivity extends AppCompatActivity {
                     android.util.Log.d("CaptchaActivity", "Turnstile iframe found at: " + x + "," + y + " size:" + w + "x" + h);
 
                     webView.post(() -> simulateTouchBurst(webView, x, y, w, h));
+                } else if("normal".equals(type)) {
+                    normalNtkPageCount++;
+                    android.util.Log.d("CaptchaActivity", "NTK normal page detected without Turnstile: " + normalNtkPageCount);
+                    if(normalNtkPageCount >= 3 && System.currentTimeMillis() - pageFinishedTime > 1200L)
+                        finishWithNtkAccessVerified();
+                } else {
+                    normalNtkPageCount = 0;
                 }
             } catch(Exception e) {
                 android.util.Log.e("CaptchaActivity", "Failed to parse turnstile result", e);
             }
         });
+    }
+
+    private void finishWithNtkAccessVerified() {
+        if(isFinishing)
+            return;
+        CookieManager manager = CookieManager.getInstance();
+        manager.flush();
+        getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
+        getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
+        if(webView != null)
+            getHttpClient().syncCookiesFromWebView(webView.getUrl(), true);
+        getHttpClient().markNtkAccessVerified();
+        isFinishing = true;
+        handler.removeCallbacksAndMessages(null);
+        Intent resultIntent = new Intent();
+        setResult(RESULT_CAPTCHA, resultIntent);
+        finish();
     }
 
     private void simulateTouch(View view, float centerX, float centerY, float width, float height) {
