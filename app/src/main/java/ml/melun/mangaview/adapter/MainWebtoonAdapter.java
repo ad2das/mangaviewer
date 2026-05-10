@@ -1401,6 +1401,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         class ContinueHolder extends RecyclerView.ViewHolder {
             View card;
             ImageView thumb;
+            ImageView siteIcon;
             TextView name;
             TextView episode;
             TextView percent;
@@ -1411,6 +1412,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 super(itemView);
                 card = itemView.findViewById(R.id.home_continue_card);
                 thumb = itemView.findViewById(R.id.home_continue_thumb);
+                siteIcon = itemView.findViewById(R.id.home_continue_site_icon);
                 name = itemView.findViewById(R.id.home_continue_title);
                 episode = itemView.findViewById(R.id.home_continue_episode);
                 percent = itemView.findViewById(R.id.home_continue_percent);
@@ -1420,14 +1422,17 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             void bind(Title item, int position) {
                 boolean continueStyle = style == STYLE_CONTINUE;
                 int progressPercent = continueStyle ? readingProgressPercent(item) : 0;
-                String nextKey = titleContentKey(item) + ":" + continueStyle + ":" + progressPercent;
+                String sourceSite = continueStyle ? sourceSiteForContinueItem(item) : "";
+                String nextKey = titleContentKey(item) + ":" + continueStyle + ":" + progressPercent + ":" + sourceSite;
                 if(!nextKey.equals(boundKey)) {
                     setTextIfChanged(name, item == null ? "" : item.getName());
                     setVisibilityIfChanged(episode, continueStyle ? View.VISIBLE : View.GONE);
+                    setVisibilityIfChanged(siteIcon, continueStyle ? View.VISIBLE : View.GONE);
                     setVisibilityIfChanged(progress, continueStyle ? View.VISIBLE : View.GONE);
                     setVisibilityIfChanged(percent, continueStyle ? View.VISIBLE : View.GONE);
                     if(continueStyle) {
                         setTextIfChanged(episode, progressLabel(item));
+                        bindContinueSiteIcon(siteIcon, sourceSite);
                         if(progress.getProgress() != progressPercent)
                             progress.setProgress(progressPercent);
                         setTextIfChanged(percent, progressPercent + "%");
@@ -1453,6 +1458,21 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     return true;
                 });
             }
+        }
+
+        private void bindContinueSiteIcon(ImageView view, String sourceSite) {
+            boolean ntk = "ntk".equals(sourceSite);
+            view.setImageResource(ntk ? R.drawable.ic_site_ntk : R.drawable.ic_site_wfwf);
+            view.setContentDescription(ntk ? "NTK" : "WFWF");
+        }
+
+        private String sourceSiteForContinueItem(Title item) {
+            if(item == null || p == null)
+                return "wfwf";
+            String source = item.getSourceSite();
+            if(source == null || source.length() == 0)
+                source = p.resolveSourceSite(item);
+            return "ntk".equals(source) ? "ntk" : "wfwf";
         }
 
         private void warmupContinueViewer(Title item) {
