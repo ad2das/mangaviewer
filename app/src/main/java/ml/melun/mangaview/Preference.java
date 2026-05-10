@@ -717,6 +717,13 @@ public class Preference {
     }
 
     public String resolveSourceSite(MTitle title) {
+        String knownSource = resolveKnownSourceSite(title);
+        if(knownSource.length() > 0)
+            return knownSource;
+        return isNtkSite() ? "ntk" : "wfwf";
+    }
+
+    public String resolveKnownSourceSite(MTitle title) {
         String source = title == null ? "" : title.getSourceSite();
         if(source != null && source.length() > 0)
             return source;
@@ -728,7 +735,18 @@ public class Preference {
             if(bookmark.has("ntk." + legacy))
                 return "ntk";
         }
-        return isNtkSite() ? "ntk" : "wfwf";
+        source = sourceSiteFromUrl(title == null ? "" : title.getThumb());
+        if(source.length() > 0)
+            return source;
+        return sourceSiteFromUrl(title == null ? "" : title.getPath());
+    }
+
+    private String sourceSiteFromUrl(String sourceUrl) {
+        if(isNtkLikeUrl(sourceUrl))
+            return "ntk";
+        if(isWfwfLikeUrl(sourceUrl))
+            return "wfwf";
+        return "";
     }
 
     private String bookmarkKey(MTitle title) {

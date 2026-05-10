@@ -559,7 +559,8 @@ public class MainSearch extends Fragment {
         for(MTitle recent : Utils.snapshotList(p.getRecent())) {
             if(recent != null
                     && recent.getId() == title.getId()
-                    && recent.getBaseMode() == title.getBaseMode())
+                    && recent.getBaseMode() == title.getBaseMode()
+                    && sameSourceSite(recent, title))
                 return true;
         }
         return false;
@@ -698,7 +699,8 @@ public class MainSearch extends Fragment {
         for(MTitle stored : source) {
             if(stored != null
                     && stored.getId() == title.getId()
-                    && stored.getBaseMode() == title.getBaseMode())
+                    && stored.getBaseMode() == title.getBaseMode()
+                    && sameSourceSite(stored, title))
                 return stored;
         }
         return null;
@@ -925,8 +927,10 @@ public class MainSearch extends Fragment {
             boolean exists = false;
             for(Title existing : target) {
                 if(title.getId() > 0 && existing.getBaseMode() == title.getBaseMode() && existing.getId() == title.getId()) {
-                    exists = true;
-                    break;
+                    if(sameSourceSite(existing, title)) {
+                        exists = true;
+                        break;
+                    }
                 }
                 if(title.getId() <= 0 && title.getPath() != null && title.getPath().equals(existing.getPath())) {
                     exists = true;
@@ -940,6 +944,21 @@ public class MainSearch extends Fragment {
             if(!exists)
                 target.add(title);
         }
+    }
+
+    private boolean sameSourceSite(MTitle left, MTitle right) {
+        String leftSource = sourceSiteKey(left);
+        String rightSource = sourceSiteKey(right);
+        return leftSource.equals(rightSource);
+    }
+
+    private String sourceSiteKey(MTitle title) {
+        if(title == null || p == null)
+            return "";
+        String source = title.getSourceSite();
+        if(source == null || source.length() == 0)
+            source = p.resolveKnownSourceSite(title);
+        return source == null ? "" : source;
     }
 
     private boolean keyCodeIsEnter(KeyEvent event) {

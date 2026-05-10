@@ -112,7 +112,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(!isValidPosition(position))
             return RecyclerView.NO_ID;
         Title title = mDataFiltered.get(position);
-        return (title.getBaseMode() + ":" + title.getId()).hashCode();
+        return (sourceKey(title) + ":" + title.getBaseMode() + ":" + title.getId()).hashCode();
     }
 
     public void removeAll(){
@@ -236,7 +236,10 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     }
 
     private boolean sameTitle(Title a, Title b) {
-        return a != null && b != null && a.getId() == b.getId() && a.getBaseMode() == b.getBaseMode();
+        return a != null && b != null
+                && a.getId() == b.getId()
+                && a.getBaseMode() == b.getBaseMode()
+                && sourceKey(a).equals(sourceKey(b));
     }
 
     private String titleContentKey(Title title) {
@@ -384,8 +387,17 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             return "wfwf";
         String source = title.getSourceSite();
         if(source == null || source.length() == 0)
-            source = p.resolveSourceSite(title);
+            source = p.resolveKnownSourceSite(title);
         return "ntk".equals(source) ? "ntk" : "wfwf";
+    }
+
+    private String sourceKey(MTitle title) {
+        if(title == null || p == null)
+            return "";
+        String source = title.getSourceSite();
+        if(source == null || source.length() == 0)
+            source = p.resolveKnownSourceSite(title);
+        return source == null ? "" : source;
     }
 
     int dp(int value) {
@@ -434,6 +446,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                 continue;
             if(stored.getId() == title.getId()
                     && stored.getBaseMode() == title.getBaseMode()
+                    && sourceKey(stored).equals(sourceKey(title))
                     && stored.getBookmarkEpisodeId() > 0)
                 return stored.getBookmarkEpisodeId();
         }
