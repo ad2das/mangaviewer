@@ -850,6 +850,8 @@ public class MainSearch extends Fragment {
         if(searchResult == null || searchAdapter == null || getContext() == null)
             return false;
         View child = searchResult.findChildViewUnder(x, y);
+        if(child == null)
+            return false;
         View item = searchResult.findContainingItemView(child);
         if(item == null)
             return false;
@@ -889,6 +891,8 @@ public class MainSearch extends Fragment {
         if(searchResult == null || searchAdapter == null || getContext() == null)
             return false;
         View child = searchResult.findChildViewUnder(x, y);
+        if(child == null)
+            return false;
         View item = searchResult.findContainingItemView(child);
         if(item == null)
             return false;
