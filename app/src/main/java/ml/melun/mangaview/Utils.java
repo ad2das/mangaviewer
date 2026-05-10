@@ -804,6 +804,7 @@ public class Utils {
         Preference source = preference != null ? preference : p;
         if(source == null)
             return;
+        getHttpClient().restoreClearanceFromDisk();
         getHttpClient().syncCookiesFromWebView(source.getWebtoonUrl(), true);
         getHttpClient().syncCookiesFromWebView(source.getUrl(), true);
     }

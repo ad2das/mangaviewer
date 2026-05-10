@@ -114,6 +114,10 @@ public class CustomHttpClient {
         persistCookies();
     }
     public synchronized boolean hasCloudflareClearance() {
+        if(isClearanceExpired()) {
+            clearCloudflareCookies();
+            return false;
+        }
         for(String key : cookies.keySet()) {
             if(!"cf_clearance".equalsIgnoreCase(key))
                 continue;
@@ -122,6 +126,46 @@ public class CustomHttpClient {
                 return true;
         }
         return false;
+    }
+
+    public void saveClearanceToDisk() {
+        try {
+            String clearance = cookies.get("cf_clearance");
+            if(clearance == null || clearance.length() == 0)
+                return;
+            long expireAt = System.currentTimeMillis() + 45 * 60 * 1000L; // 45 minutes
+            context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
+                    .edit()
+                    .putString("cfClearanceValue", clearance)
+                    .putLong("cfClearanceExpireAt", expireAt)
+                    .apply();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
+    public void restoreClearanceFromDisk() {
+        try {
+            SharedPreferences pref = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE);
+            String value = pref.getString("cfClearanceValue", null);
+            long expireAt = pref.getLong("cfClearanceExpireAt", 0);
+            if(value == null || value.length() == 0 || expireAt <= System.currentTimeMillis())
+                return;
+            cookies.put("cf_clearance", value);
+            persistCookies();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
+    public boolean isClearanceExpired() {
+        try {
+            SharedPreferences pref = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE);
+            long expireAt = pref.getLong("cfClearanceExpireAt", 0);
+            return expireAt <= System.currentTimeMillis();
+        } catch (Exception e) {
+            return true;
+        }
     }
     public synchronized void clearCloudflareCookies() {
         boolean changed = false;

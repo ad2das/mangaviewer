@@ -1224,9 +1224,6 @@ public class Preference {
         settings.put("pageRtl", pageRtl);
         settings.put("dataSave", dataSave);
         settings.put("startTab", startTab);
-        settings.put("url", url);
-        settings.put("webtoonUrl", webtoonUrl);
-        settings.put("defUrl", defUrl);
         settings.put("stretch", stretch);
         settings.put("leftRight", leftRight);
         settings.put("pageControlButtonOffset", pageControlButtonOffset);
@@ -1247,9 +1244,6 @@ public class Preference {
         pageRtl = readBoolean(settings, "pageRtl", pageRtl);
         dataSave = readBoolean(settings, "dataSave", dataSave);
         startTab = readInt(settings, "startTab", startTab);
-        url = normalizeComicUrl(readString(settings, "url", url));
-        webtoonUrl = normalizeWebtoonUrl(readString(settings, "webtoonUrl", webtoonUrl));
-        defUrl = normalizeComicUrl(readString(settings, "defUrl", defUrl));
         stretch = readBoolean(settings, "stretch", stretch);
         leftRight = readBoolean(settings, "leftRight", leftRight);
         pageControlButtonOffset = readFloat(settings, "pageControlButtonOffset", pageControlButtonOffset);
@@ -1258,16 +1252,12 @@ public class Preference {
         baseMode = readInt(settings, "baseMode", baseMode);
         doublep = readBoolean(settings, "doublep", doublep);
         doublepReverse = readBoolean(settings, "doublepReverse", doublepReverse);
-        normalizeToWfwfSitePresetIfNeeded();
         prefsEditor.putBoolean("darkTheme", darkTheme)
                 .putInt("viewerType", viewerType)
                 .putBoolean("pageReverse", reverse)
                 .putBoolean("pageRtl", pageRtl)
                 .putBoolean("dataSave", dataSave)
                 .putInt("startTab", startTab)
-                .putString("url", url)
-                .putString("webtoonUrl", webtoonUrl)
-                .putString("defUrl", defUrl)
                 .putBoolean("autoUrl", autoUrl)
                 .putBoolean("stretch", stretch)
                 .putBoolean("leftRight", leftRight)
@@ -1279,11 +1269,6 @@ public class Preference {
                 .putBoolean("doublepReverse", doublepReverse)
                 .apply();
         notifySync("settings");
-    }
-
-    private String readString(Map<String, Object> data, String key, String fallback) {
-        Object value = data.get(key);
-        return value instanceof String ? (String)value : fallback;
     }
 
     private boolean readBoolean(Map<String, Object> data, String key, boolean fallback) {

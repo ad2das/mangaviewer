@@ -328,6 +328,7 @@ public class CaptchaActivity extends AppCompatActivity {
                 getHttpClient().syncCookiesFromWebView(purl, true);
                 if(currentUrl != null)
                     getHttpClient().syncCookiesFromWebView(currentUrl, true);
+                getHttpClient().saveClearanceToDisk();
                 isFinishing = true;
                 handler.removeCallbacksAndMessages(null);
                 Intent resultIntent = new Intent();

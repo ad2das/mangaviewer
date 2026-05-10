@@ -94,7 +94,8 @@ public class SettingsActivity extends AppCompatActivity {
                 startActivityForResult(intent, MODE_FOLDER_SELECT);
             }
         });
-        getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+        if(getSupportActionBar() != null)
+            getSupportActionBar().setDisplayHomeAsUpEnabled(true);
 //        s_getSd = this.findViewById(R.id.setting_externalSd);
 //        s_getSd.setOnClickListener(new View.OnClickListener() {
 //            @Override

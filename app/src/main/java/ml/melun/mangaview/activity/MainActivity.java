@@ -448,16 +448,53 @@ public class MainActivity extends AppCompatActivity
             @Override
             public void onPageFinished(android.webkit.WebView view, String url) {
                 checkAndFinish(bgWebView, root, handler, timeout);
-                view.loadUrl("javascript:" + CaptchaActivity.TURNSTILE_AUTO_JS);
+                view.evaluateJavascript(CaptchaActivity.TURNSTILE_AUTO_JS, result -> {
+                    if(result == null || result.equals("null")) return;
+                    try {
+                        String clean = result.replaceAll("^\"|\"$", "").replace("\\\"", "\"");
+                        org.json.JSONObject obj = new org.json.JSONObject(clean);
+                        if("iframe".equals(obj.optString("type"))) {
+                            float x = (float) obj.getDouble("x");
+                            float y = (float) obj.getDouble("y");
+                            float w = (float) obj.optDouble("w", 60);
+                            float h = (float) obj.optDouble("h", 60);
+                            bgWebView.post(() -> simulateBackgroundTouch(bgWebView, x, y, w, h));
+                        }
+                    } catch(Exception e) {
+                        android.util.Log.e("MainActivity", "BG turnstile parse failed", e);
+                    }
+                });
             }
         });
         bgWebView.loadUrl(rootUrl);
+    }
+
+    private void simulateBackgroundTouch(android.view.View view, float centerX, float centerY, float width, float height) {
+        if(view == null) return;
+        java.util.Random random = new java.util.Random();
+        float density = getResources().getDisplayMetrics().density;
+        int[] location = new int[2];
+        view.getLocationOnScreen(location);
+        float targetX = location[0] + (centerX * density) + (random.nextFloat() - 0.5f) * width * density * 0.5f;
+        float targetY = location[1] + (centerY * density) + (random.nextFloat() - 0.5f) * height * density * 0.5f;
+        long downTime = android.os.SystemClock.uptimeMillis();
+        android.view.MotionEvent downEvent = android.view.MotionEvent.obtain(downTime, downTime, android.view.MotionEvent.ACTION_DOWN, targetX, targetY, 0);
+        downEvent.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+        view.dispatchTouchEvent(downEvent);
+        downEvent.recycle();
+        android.os.SystemClock.sleep(80 + random.nextInt(121));
+        android.view.MotionEvent upEvent = android.view.MotionEvent.obtain(downTime, android.os.SystemClock.uptimeMillis(), android.view.MotionEvent.ACTION_UP, targetX, targetY, 0);
+        upEvent.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+        view.dispatchTouchEvent(upEvent);
+        upEvent.recycle();
+        android.util.Log.d("MainActivity", "BG touch at " + targetX + "," + targetY);
     }
 
     private void checkAndFinish(android.webkit.WebView bgWebView, android.view.ViewGroup root, android.os.Handler handler, Runnable timeout) {
         getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
         getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
         if(getHttpClient().hasCloudflareClearance()) {
+            getHttpClient().saveClearanceToDisk();
             handler.removeCallbacks(timeout);
             if(!isFinishing() && bgWebView.getParent() != null)
                 root.removeView(bgWebView);
