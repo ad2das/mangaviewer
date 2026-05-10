@@ -740,6 +740,8 @@ public class Utils {
 
     public static void showCaptchaPopup(String url, Context context, int code, Exception e, boolean force_close, Fragment fragment, Preference p){
         if(canUseContextForUi(context)) {
+            if(showNtkTurnstileCaptchaIfNeeded(context, code, fragment, p))
+                return;
             if (shouldOpenCloudflareCaptchaAutomatically()) {
                 startCaptchaActivity(context, code, fragment, url);
             } else if (!checkConnection(context)) {
@@ -783,6 +785,27 @@ public class Utils {
             return false;
         lastAutoCloudflareCaptchaAt = now;
         return true;
+    }
+
+    public static boolean showNtkTurnstileCaptchaIfNeeded(Context context, int code, Fragment fragment, Preference preference) {
+        if(!canUseContextForUi(context) || !getHttpClient().isNtk())
+            return false;
+        syncNtkCloudflareCookies(preference);
+        if(getHttpClient().hasCloudflareClearance())
+            return false;
+        if(shouldOpenCloudflareCaptchaAutomatically()) {
+            startCaptchaActivity(context, code, fragment, null);
+            captchaCount++;
+        }
+        return true;
+    }
+
+    private static void syncNtkCloudflareCookies(Preference preference) {
+        Preference source = preference != null ? preference : p;
+        if(source == null)
+            return;
+        getHttpClient().syncCookiesFromWebView(source.getWebtoonUrl(), true);
+        getHttpClient().syncCookiesFromWebView(source.getUrl(), true);
     }
 
     static void startCaptchaActivity(Context context, int code, Fragment fragment, String url){

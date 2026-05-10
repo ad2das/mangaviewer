@@ -1005,7 +1005,7 @@ public class MainPageWebtoon {
         return dataset;
     }
 
-    public static ArrayList<Title> getClassificationDbTitlesByGenre(String genre, int offset, int limit) {
+    public static synchronized ArrayList<Title> getClassificationDbTitlesByGenre(String genre, int offset, int limit) {
         ArrayList<Title> result = new ArrayList<>();
         if(genre == null)
             return result;
@@ -1023,7 +1023,7 @@ public class MainPageWebtoon {
         return result;
     }
 
-    private static ArrayList<Title> getClassificationDbTitles(int limit) {
+    private static synchronized ArrayList<Title> getClassificationDbTitles(int limit) {
         ArrayList<Title> result = new ArrayList<>();
         loadClassificationDb();
         for(DbTitle dbTitle : classificationTitleDb.values()) {
@@ -1034,7 +1034,7 @@ public class MainPageWebtoon {
         return result;
     }
 
-    private static ArrayList<Title> getClassificationDbTitlesIfLoaded(int limit) {
+    private static synchronized ArrayList<Title> getClassificationDbTitlesIfLoaded(int limit) {
         ArrayList<Title> result = new ArrayList<>();
         if(!classificationDbLoaded)
             return result;
@@ -1046,7 +1046,7 @@ public class MainPageWebtoon {
         return result;
     }
 
-    private static ArrayList<Title> getClassificationDbTitlesByGenreIfLoaded(String genre, int limit) {
+    private static synchronized ArrayList<Title> getClassificationDbTitlesByGenreIfLoaded(String genre, int limit) {
         ArrayList<Title> result = new ArrayList<>();
         if(!classificationDbLoaded || genre == null)
             return result;
@@ -1061,7 +1061,7 @@ public class MainPageWebtoon {
         return result;
     }
 
-    public static int getClassificationDbGenreCount(String genre) {
+    public static synchronized int getClassificationDbGenreCount(String genre) {
         if(genre == null)
             return 0;
         loadClassificationDb();
@@ -1073,7 +1073,7 @@ public class MainPageWebtoon {
         return getComicClassificationDbTitlesByGenre(genre, 0, limit);
     }
 
-    public static ArrayList<Title> getComicClassificationDbTitlesByGenre(String genre, int offset, int limit) {
+    public static synchronized ArrayList<Title> getComicClassificationDbTitlesByGenre(String genre, int offset, int limit) {
         ArrayList<Title> result = new ArrayList<>();
         if(genre == null)
             return result;
@@ -1091,7 +1091,7 @@ public class MainPageWebtoon {
         return result;
     }
 
-    public static int getComicClassificationDbGenreCount(String genre) {
+    public static synchronized int getComicClassificationDbGenreCount(String genre) {
         if(genre == null)
             return 0;
         loadComicClassificationDb();

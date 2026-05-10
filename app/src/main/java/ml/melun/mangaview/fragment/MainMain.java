@@ -72,7 +72,6 @@ public class MainMain extends Fragment{
     boolean viewStarted = false;
     int scrollRequestVersion = 0;
     Preference.LocalChangeListener localChangeListener;
-    long lastNtkCaptchaLaunchAt = 0L;
 
     public void setWait(Boolean wait){
         this.wait = wait;
@@ -560,18 +559,7 @@ public class MainMain extends Fragment{
     private boolean maybeOpenNtkCaptcha() {
         if(!isAdded() || getActivity() == null)
             return false;
-        if(getHttpClient().isNtk() && !getHttpClient().hasCloudflareClearance()) {
-            getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
-            getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
-        }
-        if(!getHttpClient().isNtk() || getHttpClient().hasCloudflareClearance())
-            return false;
-        long now = System.currentTimeMillis();
-        if(now - lastNtkCaptchaLaunchAt < 1500L)
-            return true;
-        lastNtkCaptchaLaunchAt = now;
-        Utils.showCaptchaPopup(getActivity(), 3, this, p);
-        return true;
+        return Utils.showNtkTurnstileCaptchaIfNeeded(getActivity(), 3, this, p);
     }
 
     private void showInitialHomeRows(int baseMode) {

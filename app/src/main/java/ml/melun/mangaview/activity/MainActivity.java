@@ -82,7 +82,6 @@ import static ml.melun.mangaview.Utils.showPopup;
 import static ml.melun.mangaview.Utils.showYesNoNeutralPopup;
 import static ml.melun.mangaview.Utils.writePreferenceToFile;
 import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
-import static ml.melun.mangaview.activity.CaptchaActivity.TURNSTILE_AUTO_JS;
 import static ml.melun.mangaview.activity.FirstTimeActivity.RESULT_EULA_AGREE;
 import static ml.melun.mangaview.activity.FolderSelectActivity.MODE_FILE_SAVE;
 import static ml.melun.mangaview.activity.SettingsActivity.RESULT_NEED_RESTART;
@@ -121,7 +120,6 @@ public class MainActivity extends AppCompatActivity
     UrlUpdateCallback pendingUrlUpdateCallback;
     private static final int FIRST_TIME_ACTIVITY = 9;
     private static final String FRAGMENT_TAG_PREFIX = "main_tab_";
-    private long lastNtkCaptchaLaunchAt = 0L;
 
 
     Fragment[] fragments = new Fragment[3];
@@ -405,18 +403,7 @@ public class MainActivity extends AppCompatActivity
     private boolean maybeOpenNtkCaptcha() {
         if(isFinishing() || isDestroyed())
             return false;
-        if(getHttpClient().isNtk() && !getHttpClient().hasCloudflareClearance()) {
-            getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
-            getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
-        }
-        if(!getHttpClient().isNtk() || getHttpClient().hasCloudflareClearance())
-            return false;
-        long now = System.currentTimeMillis();
-        if(now - lastNtkCaptchaLaunchAt < 1500L)
-            return true;
-        lastNtkCaptchaLaunchAt = now;
-        Utils.showCaptchaPopup(this, 3, null, p);
-        return true;
+        return Utils.showNtkTurnstileCaptchaIfNeeded(this, 3, null, p);
     }
 
     private void tryBackgroundClearance() {
@@ -917,6 +904,8 @@ public class MainActivity extends AppCompatActivity
         if(callback != null)
             callback.callback(true);
         Toast.makeText(context, label + " 사이트로 변경되었습니다.", Toast.LENGTH_SHORT).show();
+        if("NTK".equals(label))
+            content.post(this::maybeOpenNtkCaptcha);
     }
 
     boolean changeFragment(int index){
