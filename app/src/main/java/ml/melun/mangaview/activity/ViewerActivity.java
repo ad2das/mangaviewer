@@ -965,6 +965,11 @@ public class ViewerActivity extends AppCompatActivity {
                 try {
                     if(m.isOnline()) {
                         result = prepareEpisodeIdentity(m);
+                        if(result == LOAD_OK && needsResolvedNtkEpisodePath(m)) {
+                            result = ensureEpisodeListLoaded(m);
+                            if(result == LOAD_OK)
+                                m = resolvedEpisode(m);
+                        }
                         int firstPage = initialPageIndex(m, policy);
                         if(allowsResumeFallback(policy) && result == LOAD_OK && shouldResolveResumeBeforeDirectFetch(m)) {
                             result = ensureEpisodeListLoaded(m);
@@ -1063,6 +1068,8 @@ public class ViewerActivity extends AppCompatActivity {
                 try {
                     if(target != null && target.isOnline()) {
                         result = ensureEpisodeListLoaded(target);
+                        if(result == LOAD_OK)
+                            target = resolvedEpisode(target);
                     }
                     if(target != null && target.isOnline() && result == LOAD_OK)
                         result = ViewerWarmupManager.prepareFirstFrame(context, target, title, 0, width, autoCut, p.getReverse(), cancellation);
@@ -1856,7 +1863,37 @@ public class ViewerActivity extends AppCompatActivity {
         List<Manga> targetEpisodes = target == null ? null : Utils.snapshotEpisodes(target);
         int titleCount = titleEpisodes == null ? 0 : titleEpisodes.size();
         int targetCount = targetEpisodes == null ? 0 : targetEpisodes.size();
+        if(needsResolvedNtkEpisodePath(target))
+            return true;
         return !containsEpisode(titleEpisodes, target) || Math.max(titleCount, targetCount) <= 3;
+    }
+
+    private boolean needsResolvedNtkEpisodePath(Manga target) {
+        return target != null
+                && target.isOnline()
+                && isNtkEpisode(target)
+                && target.getTitleId() > 0
+                && target.getNtkEpisodePath().length() == 0;
+    }
+
+    private Manga resolvedEpisode(Manga target) {
+        Manga episode = findCanonicalEpisode(target);
+        return episode == null ? target : prepareEpisodeCandidate(episode, target);
+    }
+
+    private Manga findCanonicalEpisode(Manga target) {
+        if(target == null)
+            return null;
+        Title currentTitle = title != null ? title : target.getTitle();
+        List<Manga> episodes = currentTitle == null ? null : Utils.snapshotEpisodes(currentTitle);
+        if(episodes == null)
+            return null;
+        for(Manga episode : episodes) {
+            if(sameManga(episode, target)
+                    && (!isNtkEpisode(target) || episode.getNtkEpisodePath().length() > 0))
+                return episode;
+        }
+        return null;
     }
 
     private void attachEpisodeList(Title currentTitle, Manga target) {
