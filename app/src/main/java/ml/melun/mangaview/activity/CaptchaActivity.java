@@ -110,6 +110,10 @@ public class CaptchaActivity extends AppCompatActivity {
     private boolean turnstileAutoClickStarted = false;
     private boolean accessVerificationInFlight = false;
     private long lastTurnstileTouchAt = 0;
+    private final Set<String> rejectedClearanceValues = new HashSet<>();
+    private String lastVerificationClearanceValue = null;
+    private long lastClearanceVerificationAt = 0;
+    private long lastInvalidClearanceReloadAt = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -117,6 +121,7 @@ public class CaptchaActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         Context context = this;
         setContentView(R.layout.activity_captcha);
+        getHttpClient().setCloudflareCaptchaActive(true);
 
         String purl = p.getUrl();
 
@@ -454,6 +459,7 @@ public class CaptchaActivity extends AppCompatActivity {
         if(isFinishing) return true;
         try {
             boolean hasClearance = false;
+            String clearanceValue = null;
             for(String cookieUrl : cookieReadUrls(purl, currentUrl)) {
                 if(cookieUrl == null || cookieUrl.length() == 0)
                     continue;
@@ -470,9 +476,13 @@ public class CaptchaActivity extends AppCompatActivity {
                     boolean clearance = "cf_clearance".equalsIgnoreCase(k);
                     if(clearance && !isValidClearanceValue(v))
                         continue;
+                    if(clearance && rejectedClearanceValues.contains(v))
+                        continue;
                     getHttpClient().setCookie(k, v);
-                    if(clearance)
+                    if(clearance) {
                         hasClearance = true;
+                        clearanceValue = v;
+                    }
                 }
             }
             // Cookie presence alone is not enough: stale WebView clearances can make this
@@ -484,7 +494,7 @@ public class CaptchaActivity extends AppCompatActivity {
                 getHttpClient().syncCookiesFromWebView(purl, true);
                 if(currentUrl != null)
                     getHttpClient().syncCookiesFromWebView(currentUrl, true);
-                verifyNtkAccessAndFinish(purl, currentUrl);
+                verifyNtkAccessAndFinish(purl, currentUrl, clearanceValue);
             }
         }catch (Exception e){
             ml.melun.mangaview.report.CrashReporter.record(e);
@@ -492,9 +502,16 @@ public class CaptchaActivity extends AppCompatActivity {
         return false;
     }
 
-    private void verifyNtkAccessAndFinish(String purl, String currentUrl) {
+    private void verifyNtkAccessAndFinish(String purl, String currentUrl, String clearanceValue) {
         if(accessVerificationInFlight || isFinishing)
             return;
+        long now = System.currentTimeMillis();
+        if(clearanceValue != null
+                && clearanceValue.equals(lastVerificationClearanceValue)
+                && now - lastClearanceVerificationAt < 5000L)
+            return;
+        lastVerificationClearanceValue = clearanceValue;
+        lastClearanceVerificationAt = now;
         accessVerificationInFlight = true;
         AppDispatchers.runIo(() -> {
             boolean verified = verifyNtkAccess();
@@ -507,6 +524,8 @@ public class CaptchaActivity extends AppCompatActivity {
                     finishWithVerifiedClearance();
                 } else {
                     android.util.Log.d("CaptchaActivity", "NTK clearance failed app HTTP verification; keeping captcha open");
+                    if(clearanceValue != null)
+                        rejectedClearanceValues.add(clearanceValue);
                     resetInvalidNtkClearanceAndReload(purl, currentUrl);
                 }
             });
@@ -546,6 +565,10 @@ public class CaptchaActivity extends AppCompatActivity {
         getHttpClient().clearCloudflareWebViewCookies(purl, p.getWebtoonUrl(), p.getUrl(), currentUrl, NTK_WEBTOON_URL, NTK_COMIC_URL);
         if(webView == null || isFinishing)
             return;
+        long now = System.currentTimeMillis();
+        if(now - lastInvalidClearanceReloadAt < 5000L)
+            return;
+        lastInvalidClearanceReloadAt = now;
         String challengeUrl = getHttpClient().getLastCloudflareChallengeUrl();
         if(challengeUrl == null || challengeUrl.length() == 0)
             challengeUrl = purl;
@@ -600,6 +623,7 @@ public class CaptchaActivity extends AppCompatActivity {
     protected void onDestroy() {
         isFinishing = true;
         handler.removeCallbacksAndMessages(null);
+        getHttpClient().setCloudflareCaptchaActive(false);
         super.onDestroy();
         //destroy webview
         ((ConstraintLayout) findViewById(R.id.captchaContainer)).removeAllViews();

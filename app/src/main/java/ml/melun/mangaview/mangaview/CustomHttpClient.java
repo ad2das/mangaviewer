@@ -60,6 +60,7 @@ public class CustomHttpClient {
     Map<String, CachedPage> pageCache;
     Map<String, PageLoadState> pageLoads;
     private volatile String lastCloudflareChallengeUrl = null;
+    private volatile boolean cloudflareCaptchaActive = false;
     private final ThreadLocal<RequestGroup> currentRequestGroup = requestGroupLocal();
 
     private ThreadLocal<RequestGroup> requestGroupLocal() {
@@ -141,6 +142,10 @@ public class CustomHttpClient {
 
     public String getLastCloudflareChallengeUrl() {
         return lastCloudflareChallengeUrl;
+    }
+
+    public void setCloudflareCaptchaActive(boolean active) {
+        cloudflareCaptchaActive = active;
     }
 
     public void markNtkAccessVerified() {
@@ -250,10 +255,14 @@ public class CustomHttpClient {
                 if(url == null || url.length() == 0)
                     continue;
                 manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/");
+                manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=" + NTK_HOST);
                 manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=." + NTK_HOST);
+                manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=" + LEGACY_NTK_HOST);
                 manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=." + LEGACY_NTK_HOST);
                 manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/");
+                manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=" + NTK_HOST);
                 manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=." + NTK_HOST);
+                manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=" + LEGACY_NTK_HOST);
                 manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=." + LEGACY_NTK_HOST);
             }
             manager.flush();
@@ -649,7 +658,8 @@ public class CustomHttpClient {
             String body = readBody(response);
             if(isCloudflareChallenge(code, body)) {
                 lastCloudflareChallengeUrl = getBaseUrl(normalized) + normalized;
-                clearCloudflareCookies();
+                if(!cloudflareCaptchaActive)
+                    clearCloudflareCookies();
                 throw new Exception("Cloudflare challenge");
             }
             if(code >= 500 && staleCached != null)
