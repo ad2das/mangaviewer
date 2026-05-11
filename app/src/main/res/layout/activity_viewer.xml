@@ -4,6 +4,7 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_height="match_parent"
     android:layout_width="match_parent"
+    android:background="@color/appSurface"
     android:theme="@style/AppTheme.Viewer"
     tools:context=".activity.ViewerActivity"
     android:fitsSystemWindows="false">
@@ -12,6 +13,7 @@
         android:id="@+id/strip"
         android:layout_height="match_parent"
         android:layout_width="match_parent"
+        android:background="@color/appSurface"
         android:scrollbars="vertical" />
 
 

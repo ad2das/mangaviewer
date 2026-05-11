@@ -115,24 +115,20 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             Object source = getGlideUrl(thumb, m.getBaseMode());
             String key = String.valueOf(source);
             if(!key.equals(h.thumb.getTag())) {
-                if(scrollBusy) {
-                    bindDeferredThumb(h.thumb, key);
-                } else {
-                    safeGlideClear(h.thumb);
-                    h.thumb.setTag(key);
-                    try {
-                        Glide.with(h.thumb)
-                                .load(source)
-                                .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                                .override(dp(72), dp(96))
-                                .thumbnail(0.25f)
-                                .dontAnimate()
-                                .placeholder(R.drawable.app_cover_placeholder)
-                                .into(h.thumb);
-                    } catch (RuntimeException e) {
-                        ml.melun.mangaview.report.CrashReporter.record(e);
-                        h.thumb.setImageResource(R.drawable.app_cover_placeholder);
-                    }
+                safeGlideClear(h.thumb);
+                h.thumb.setTag(key);
+                try {
+                    Glide.with(h.thumb)
+                            .load(source)
+                            .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                            .override(dp(72), dp(96))
+                            .thumbnail(0.25f)
+                            .dontAnimate()
+                            .placeholder(R.drawable.app_cover_placeholder)
+                            .into(h.thumb);
+                } catch (RuntimeException e) {
+                    ml.melun.mangaview.report.CrashReporter.record(e);
+                    h.thumb.setImageResource(R.drawable.app_cover_placeholder);
                 }
             }
         } else {
@@ -190,15 +186,6 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     @Override
     public void onScrollIdle(RecyclerView recyclerView) {
         RecyclerPerformance.refreshVisibleRange(recyclerView, this, 6);
-    }
-
-    private void bindDeferredThumb(ImageView view, String targetKey) {
-        String key = "deferred:" + targetKey;
-        if(key.equals(view.getTag()))
-            return;
-        safeGlideClear(view);
-        view.setTag(key);
-        view.setImageResource(R.drawable.app_cover_placeholder);
     }
 
     int dp(int value) {

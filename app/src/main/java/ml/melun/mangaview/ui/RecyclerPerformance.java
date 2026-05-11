@@ -6,8 +6,6 @@ import androidx.recyclerview.widget.SimpleItemAnimator;
 
 import android.view.View;
 
-import com.bumptech.glide.Glide;
-
 public final class RecyclerPerformance {
     private RecyclerPerformance() {
     }
@@ -35,13 +33,6 @@ public final class RecyclerPerformance {
                 RecyclerView.Adapter adapter = rv.getAdapter();
                 if(adapter instanceof SmoothScrollAdapter)
                     ((SmoothScrollAdapter) adapter).setScrollBusy(newState != RecyclerView.SCROLL_STATE_IDLE);
-                try {
-                    if(newState == RecyclerView.SCROLL_STATE_IDLE)
-                        Glide.with(rv).resumeRequests();
-                    else
-                        Glide.with(rv).pauseRequests();
-                } catch (RuntimeException ignored) {
-                }
                 if(newState == RecyclerView.SCROLL_STATE_IDLE && adapter instanceof SmoothScrollAdapter)
                     ((SmoothScrollAdapter) adapter).onScrollIdle(rv);
             }

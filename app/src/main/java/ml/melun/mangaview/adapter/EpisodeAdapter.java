@@ -191,10 +191,6 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         String key = String.valueOf(source);
         if(key.equals(view.getTag()))
             return;
-        if(scrollBusy) {
-            bindDeferredThumbnail(view, key);
-            return;
-        }
         safeGlideClear(view);
         view.setTag(key);
         try {
@@ -221,15 +217,6 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     @Override
     public void onScrollIdle(RecyclerView recyclerView) {
         RecyclerPerformance.refreshVisibleRange(recyclerView, this, 8);
-    }
-
-    private void bindDeferredThumbnail(ImageView view, String targetKey) {
-        String key = "deferred:" + targetKey;
-        if(key.equals(view.getTag()))
-            return;
-        safeGlideClear(view);
-        view.setTag(key);
-        view.setImageResource(R.drawable.app_cover_placeholder);
     }
 
     private void bindEmptyThumbnail(ImageView view, boolean placeholder) {

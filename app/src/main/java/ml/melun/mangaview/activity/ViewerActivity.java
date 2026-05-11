@@ -164,7 +164,7 @@ public class ViewerActivity extends AppCompatActivity {
 
         //initial padding setup
         appbar.setPadding(0, 0,0,0);
-        getWindow().getDecorView().setBackgroundColor(Color.BLACK);
+        getWindow().getDecorView().setBackgroundColor(ContextCompat.getColor(this, dark ? R.color.colorDarkBackground : R.color.appSurface));
 
 
         ViewCompat.setOnApplyWindowInsetsListener(getWindow().getDecorView(), (view, windowInsetsCompat) -> {
