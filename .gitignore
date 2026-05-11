@@ -23,6 +23,7 @@ hs_err_pid*
 
 local.properties
 .gradle/
+.kotlin/
 .idea/
 .DS_Store
 build/

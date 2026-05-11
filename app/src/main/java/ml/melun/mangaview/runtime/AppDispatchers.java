@@ -20,7 +20,9 @@ public final class AppDispatchers {
     private static final ThreadPoolExecutor IO = boundedPool("manga-io", 2, 10, 256);
     private static final ThreadPoolExecutor NETWORK_FANOUT = boundedPool("manga-net", 4, 12, 512);
     private static final ThreadPoolExecutor USER_ACTION = boundedPool("manga-action", 1, 4, 128);
-    private static final ThreadPoolExecutor IMAGE_WARMUP = boundedPool("manga-image", 1, 3, 96);
+    private static final ThreadPoolExecutor NAVIGATION = boundedPool("manga-nav", 1, 2, 32);
+    private static final ThreadPoolExecutor UI_DIFF = boundedPool("manga-diff", 1, 2, 96);
+    private static final ThreadPoolExecutor IMAGE_WARMUP = boundedPool("manga-image", 2, 4, 96);
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     private AppDispatchers() {
@@ -32,6 +34,10 @@ public final class AppDispatchers {
 
     public static Executor userAction() {
         return USER_ACTION;
+    }
+
+    public static Executor uiDiff() {
+        return UI_DIFF;
     }
 
     public static Executor imageWarmup() {
@@ -46,6 +52,10 @@ public final class AppDispatchers {
         IO.execute(safe(runnable));
     }
 
+    public static void runIoDelayed(Runnable runnable, long delayMs) {
+        MAIN.postDelayed(() -> runIo(runnable), Math.max(0L, delayMs));
+    }
+
     public static void runUserAction(Runnable runnable) {
         USER_ACTION.execute(safe(runnable));
     }
@@ -56,6 +66,14 @@ public final class AppDispatchers {
 
     public static TaskHandle submitUserAction(Runnable runnable) {
         return new TaskHandle(USER_ACTION.submit(safe(runnable)));
+    }
+
+    public static TaskHandle submitNavigation(Runnable runnable) {
+        return new TaskHandle(NAVIGATION.submit(safe(runnable)));
+    }
+
+    public static TaskHandle submitUiDiff(Runnable runnable) {
+        return new TaskHandle(UI_DIFF.submit(safe(runnable)));
     }
 
     public static TaskHandle submitImageWarmup(Runnable runnable) {
@@ -107,6 +125,8 @@ public final class AppDispatchers {
                 namedThreadFactory(name),
                 (runnable, rejectedExecutor) -> {
                     if(rejectedExecutor == null || rejectedExecutor.isShutdown())
+                        return;
+                    if(name.startsWith("manga-image"))
                         return;
                     Thread overflow = namedThreadFactory(name + "-overflow").newThread(() -> safe(runnable).run());
                     overflow.start();

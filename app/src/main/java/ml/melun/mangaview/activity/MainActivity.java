@@ -31,6 +31,7 @@ import androidx.appcompat.app.ActionBarDrawerToggle;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 import androidx.fragment.app.Fragment;
+import androidx.fragment.app.FragmentTransaction;
 
 import android.view.Menu;
 import android.view.MenuItem;
@@ -61,12 +62,14 @@ import ml.melun.mangaview.fragment.MainSearch;
 import ml.melun.mangaview.interfaces.MainActivityCallback;
 import ml.melun.mangaview.interfaces.UrlUpdateCallback;
 import ml.melun.mangaview.model.UrlUpdateResult;
+import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.state.UiState;
 import ml.melun.mangaview.viewmodel.StartupViewModel;
 
 import static android.Manifest.permission.READ_EXTERNAL_STORAGE;
 import static android.Manifest.permission.WRITE_EXTERNAL_STORAGE;
 import static ml.melun.mangaview.Downloader.BROADCAST_STOP;
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Migrator.MIGRATE_FAIL;
 import static ml.melun.mangaview.Migrator.MIGRATE_PROGRESS;
@@ -78,10 +81,13 @@ import static ml.melun.mangaview.Utils.CODE_SCOPED_STORAGE;
 import static ml.melun.mangaview.Utils.showPopup;
 import static ml.melun.mangaview.Utils.showYesNoNeutralPopup;
 import static ml.melun.mangaview.Utils.writePreferenceToFile;
+import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 import static ml.melun.mangaview.activity.FirstTimeActivity.RESULT_EULA_AGREE;
 import static ml.melun.mangaview.activity.FolderSelectActivity.MODE_FILE_SAVE;
 import static ml.melun.mangaview.activity.SettingsActivity.RESULT_NEED_RESTART;
 import static ml.melun.mangaview.mangaview.CustomHttpClient.DEFAULT_COMIC_URL;
+import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_COMIC_URL;
+import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_WEBTOON_URL;
 import static ml.melun.mangaview.mangaview.CustomHttpClient.WEBTOON_URL;
 
 
@@ -113,6 +119,7 @@ public class MainActivity extends AppCompatActivity
     StartupViewModel startupViewModel;
     UrlUpdateCallback pendingUrlUpdateCallback;
     private static final int FIRST_TIME_ACTIVITY = 9;
+    private static final String FRAGMENT_TAG_PREFIX = "main_tab_";
 
 
     Fragment[] fragments = new Fragment[3];
@@ -147,10 +154,28 @@ public class MainActivity extends AppCompatActivity
         ((MainSearch) fragments[1]).enterSearchMode();
     }
 
+    private boolean forceWfwfOnStartup() {
+        if(!p.forceWfwfSitePresetIfNeeded())
+            return false;
+        MainApplication.getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
+        MainApplication.getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
+        MainApplication.getHttpClient().clearPageCache();
+        if(toolbar != null)
+            invalidateOptionsMenu();
+        if(fragments[0] instanceof MainMain) {
+            UrlUpdateCallback callback = ((MainMain) fragments[0]).getCallback();
+            if(callback != null)
+                callback.callback(true);
+        }
+        return true;
+    }
+
 
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        if(savedInstanceState == null)
+            forceWfwfOnStartup();
         fragments[0] = MainMain.newInstance();
         fragments[1] = MainSearch.newSearchTab();
         fragments[2] = MainSearch.newLibraryTab();
@@ -158,6 +183,7 @@ public class MainActivity extends AppCompatActivity
         if (dark) setTheme(R.style.AppThemeDarkNoTitle);
         else setTheme(R.style.AppTheme_NoActionBar);
         super.onCreate(savedInstanceState);
+        PerformanceMonitor.attach(this);
         context = this;
         Intent intent = getIntent();
         String action = intent.getAction();
@@ -174,7 +200,6 @@ public class MainActivity extends AppCompatActivity
                     .putBoolean("manamoa", false)
                     .apply();
         }
-
         if (Migrator.running) {
             ProgressDialog mpd;
             if (p.getDarkTheme()) mpd = new ProgressDialog(context, R.style.darkDialog);
@@ -328,6 +353,7 @@ public class MainActivity extends AppCompatActivity
         homeDirStr = p.getHomeDir();
 
         content = findViewById(R.id.contentHolder);
+        restoreExistingFragments();
 
         // Always start a fresh app session from Home. The older startTab preference can
         // point to Library after sync/settings restore, which makes cold starts feel wrong.
@@ -338,8 +364,12 @@ public class MainActivity extends AppCompatActivity
         }else
             changeFragment(0);
 
-        content.post(() -> AppUpdateManager.checkForUpdate(this));
+        content.postDelayed(() -> {
+            if(!isFinishing() && !isDestroyed())
+                AppUpdateManager.checkForUpdate(this);
+        }, 600);
         content.postDelayed(this::runDeferredStartupTasks, 500);
+        content.post(this::maybeOpenNtkCaptcha);
 
         // savedInstanceState
 
@@ -351,6 +381,8 @@ public class MainActivity extends AppCompatActivity
     private void runDeferredStartupTasks() {
         if(isFinishing() || isDestroyed())
             return;
+        if(maybeOpenNtkCaptcha())
+            return;
         MainApplication.initDeferredServices();
         setupAccountHeader();
         startDeferredUrlUpdate();
@@ -360,7 +392,22 @@ public class MainActivity extends AppCompatActivity
     @Override
     protected void onResume() {
         super.onResume();
+        PerformanceMonitor.resume();
         AppUpdateManager.resumePendingInstall(this);
+        invalidateOptionsMenu();
+        maybeOpenNtkCaptcha();
+    }
+
+    @Override
+    protected void onPause() {
+        PerformanceMonitor.pause();
+        super.onPause();
+    }
+
+    private boolean maybeOpenNtkCaptcha() {
+        if(isFinishing() || isDestroyed())
+            return false;
+        return Utils.startNtkTurnstileCaptchaIfNeeded(this, 3, null, p);
     }
 
     private void startDeferredUrlUpdate() {
@@ -453,7 +500,14 @@ public class MainActivity extends AppCompatActivity
             Toast.makeText(context, R.string.account_google_oauth_missing, Toast.LENGTH_LONG).show();
             return;
         }
-        accountManager.signIn(this);
+        if(accountSheet != null)
+            accountSheet.dismiss();
+        accountManager.signIn(this, (success, message) -> {
+            if(!success)
+                runOnUiThread(() -> Utils.safeToast(context,
+                        message == null ? getString(R.string.account_sign_in_failed) : message,
+                        Toast.LENGTH_LONG));
+        });
     }
 
     private void toggleAccountSignIn() {
@@ -621,6 +675,36 @@ public class MainActivity extends AppCompatActivity
         return "";
     }
 
+    private void restoreExistingFragments() {
+        for(int i = 0; i < fragments.length; i++) {
+            Fragment existing = getSupportFragmentManager().findFragmentByTag(fragmentTag(i));
+            if(existing != null)
+                fragments[i] = existing;
+        }
+    }
+
+    private String fragmentTag(int index) {
+        return FRAGMENT_TAG_PREFIX + index;
+    }
+
+    private void showFragment(int index) {
+        FragmentTransaction transaction = getSupportFragmentManager().beginTransaction();
+        for(int i = 0; i < fragments.length; i++) {
+            Fragment fragment = fragments[i];
+            if(fragment == null)
+                continue;
+            if(i == index) {
+                if(fragment.isAdded())
+                    transaction.show(fragment);
+                else
+                    transaction.add(R.id.contentHolder, fragment, fragmentTag(i));
+            } else if(fragment.isAdded()) {
+                transaction.hide(fragment);
+            }
+        }
+        transaction.commit();
+    }
+
     private void applyMainWindowChrome() {
         if(dark)
             return;
@@ -722,6 +806,12 @@ public class MainActivity extends AppCompatActivity
         MenuItem search = menu.findItem(R.id.action_search);
         if(search != null)
             search.setVisible(false);
+        MenuItem site = menu.findItem(R.id.action_site_switch);
+        if(site != null) {
+            boolean ntk = p.isNtkSite();
+            site.setIcon(ntk ? R.drawable.ic_site_ntk : R.drawable.ic_site_wfwf);
+            site.setTitle(ntk ? "NTK" : "WFWF");
+        }
         return super.onPrepareOptionsMenu(menu);
     }
 
@@ -733,11 +823,35 @@ public class MainActivity extends AppCompatActivity
         if (id == R.id.action_search) {
             openSearchTab();
             return true;
+        }else if (id == R.id.action_site_switch) {
+            toggleSitePreset();
+            return true;
         }else if (id == R.id.action_settings) {
             toggleAccountSignIn();
             return true;
         }
         return super.onOptionsItemSelected(item);
+    }
+
+    private void toggleSitePreset() {
+        if(p.isNtkSite())
+            switchSitePreset(DEFAULT_COMIC_URL, WEBTOON_URL, "WFWF");
+        else
+            switchSitePreset(NTK_COMIC_URL, NTK_WEBTOON_URL, "NTK");
+    }
+
+    private void switchSitePreset(String comicUrl, String webtoonUrl, String label) {
+        p.setSitePreset(comicUrl, webtoonUrl);
+        MainApplication.getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
+        MainApplication.getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
+        MainApplication.getHttpClient().clearPageCache();
+        invalidateOptionsMenu();
+        UrlUpdateCallback callback = fragments[0] instanceof MainMain ? ((MainMain) fragments[0]).getCallback() : null;
+        if(callback != null)
+            callback.callback(true);
+        Toast.makeText(context, label + " 사이트로 변경되었습니다.", Toast.LENGTH_SHORT).show();
+        if("NTK".equals(label))
+            content.post(() -> Utils.startNtkTurnstileCaptcha(this, 3, null, p));
     }
 
     boolean changeFragment(int index){
@@ -748,18 +862,29 @@ public class MainActivity extends AppCompatActivity
             if(index == 1 && fragments[1] instanceof MainSearch)
                 ((MainSearch) fragments[1]).enterSearchMode();
             currentTab = index;
-            getSupportFragmentManager().beginTransaction().replace(R.id.contentHolder, (Fragment) fragments[index]).commit();
+            PerformanceMonitor.screen(performanceScreenName(index));
+            showFragment(index);
             res = true;
         } else if(index == 1 && fragments[1] instanceof MainSearch) {
             ((MainSearch) fragments[1]).enterSearchMode();
+            PerformanceMonitor.screen("search");
         } else if(index == 2 && fragments[2] instanceof MainSearch) {
             ((MainSearch) fragments[2]).enterLibraryMode();
+            PerformanceMonitor.screen("library");
         }
         getSupportActionBar().setTitle(getTabTitle(currentTab));
         syncNavigationSelection();
         syncBottomNavigationSelection();
         invalidateOptionsMenu();
         return res;
+    }
+
+    private String performanceScreenName(int index) {
+        if(index == 1)
+            return "search";
+        if(index == 2)
+            return "library";
+        return "home";
     }
 
 
@@ -815,7 +940,7 @@ public class MainActivity extends AppCompatActivity
         super.onActivityResult(requestCode, resultCode, data);
         if(requestCode == FirebaseAccountManager.RC_GOOGLE_SIGN_IN) {
             FirebaseAccountManager accountManager = MainApplication.getFirebaseAccountManager();
-            if(data != null && accountManager != null) {
+            if(accountManager != null) {
                 accountManager.handleActivityResult(data, (success, message) -> runOnUiThread(() -> {
                     if(success) {
                         accountInitialSyncStarted = true;
@@ -827,6 +952,15 @@ public class MainActivity extends AppCompatActivity
                 }));
             } else {
                 Utils.safeToast(context, getString(R.string.account_sign_in_failed), Toast.LENGTH_LONG);
+            }
+            return;
+        }
+        if(resultCode == RESULT_CAPTCHA) {
+            invalidateOptionsMenu();
+            if(fragments[0] instanceof MainMain) {
+                UrlUpdateCallback callback = ((MainMain) fragments[0]).getCallback();
+                if(callback != null)
+                    callback.callback(true);
             }
             return;
         }

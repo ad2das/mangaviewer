@@ -33,7 +33,7 @@
                 style="@style/AppText.Header"
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"
-                android:text="MangaViewAndroid"
+                android:text="@string/first_time_app_name"
                 android:textAlignment="center"
                 android:textStyle="bold" />
 
@@ -42,7 +42,7 @@
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"
                 android:layout_marginTop="@dimen/app_space_xl"
-                android:text="이용 안내"
+                android:text="@string/first_time_guide"
                 android:textAlignment="center" />
 
             <TextView
@@ -60,7 +60,7 @@
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"
                 android:layout_marginTop="@dimen/app_space_xl"
-                android:text="저작권"
+                android:text="@string/first_time_copyright"
                 android:textAlignment="center" />
 
             <TextView
@@ -78,7 +78,7 @@
                 android:layout_height="wrap_content"
                 android:layout_width="match_parent"
                 android:layout_marginTop="@dimen/app_space_xl"
-                android:text="EULA"
+                android:text="@string/first_time_eula"
                 android:textAlignment="center" />
 
             <TextView
@@ -121,7 +121,7 @@
                 android:paddingStart="@dimen/app_space_md"
                 android:textColor="@android:color/white"
                 android:textStyle="bold"
-                android:text="동의하고 계속하기" />
+                android:text="@string/agree_and_continue" />
 
             <Button
                 android:background="@drawable/app_outline_button_bg"
@@ -136,7 +136,7 @@
                 android:paddingEnd="@dimen/app_space_md"
                 android:paddingStart="@dimen/app_space_md"
                 android:textColor="@color/appText"
-                android:text="동의하고 기본주소 없이 계속하기" />
+                android:text="@string/agree_without_url" />
 
         </LinearLayout>
 

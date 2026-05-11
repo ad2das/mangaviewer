@@ -8,7 +8,6 @@ import androidx.multidex.MultiDexApplication;
 import ml.melun.mangaview.ClassificationDbUpdater;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MainPageWebtoon;
-import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.report.CrashReporter;
 import ml.melun.mangaview.repository.room.MangaRoomStore;
 import ml.melun.mangaview.runtime.AppDispatchers;
@@ -24,6 +23,7 @@ public class MainApplication extends MultiDexApplication {
     public static Context appContext;
     public static FirebaseAccountManager firebaseAccountManager;
     public static FirebaseSyncManager firebaseSyncManager;
+    private static boolean deferredServicesStarted = false;
     @Override
     protected void attachBaseContext(Context base) {
         super.attachBaseContext(base);
@@ -35,11 +35,7 @@ public class MainApplication extends MultiDexApplication {
         CrashReporter.install(this);
         AppCompatDelegate.setCompatVectorFromResourcesEnabled(true);
         p = new Preference(this);
-        MangaRoomStore.prime(this);
-        AppDispatchers.runIo(MainPageWebtoon::preloadClassificationDbs);
-        AppDispatchers.runIo(() -> ClassificationDbUpdater.updateInBackground(this));
         super.onCreate();
-        ViewerWarmupManager.warmupSavedContinues(this, 6);
     }
 
     public static synchronized CustomHttpClient getHttpClient() {
@@ -61,7 +57,11 @@ public class MainApplication extends MultiDexApplication {
     }
 
     public static synchronized void initDeferredServices() {
-        getFirebaseAccountManager();
-        getFirebaseSyncManager();
+        if(!deferredServicesStarted) {
+            deferredServicesStarted = true;
+            AppDispatchers.runIoDelayed(() -> MangaRoomStore.prime(appContext), 800);
+            AppDispatchers.runIoDelayed(MainPageWebtoon::preloadClassificationDbs, 2200);
+            AppDispatchers.runIoDelayed(() -> ClassificationDbUpdater.updateInBackground(appContext), 4200);
+        }
     }
 }

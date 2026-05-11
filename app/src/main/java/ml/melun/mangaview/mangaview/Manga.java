@@ -23,6 +23,7 @@ import okhttp3.Response;
 
 import static ml.melun.mangaview.Utils.documentFileFromUri;
 import static ml.melun.mangaview.Utils.useScopedStorageHome;
+import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.mangaview.MTitle.baseModeStr;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
@@ -42,11 +43,12 @@ import androidx.documentfile.provider.DocumentFile;
      */
 
 public class Manga {
-    private static final long PAGE_CACHE_TTL_MS = 60 * 1000L;
+    private static final long PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final int MAX_TIMEOUT_RETRIES = 2;
 
     int baseMode = base_comic;
     int titleId = -1;
+    private String ntkEpisodePath = "";
 
     public Manga(int i, String n, String d, int baseMode) {
         id = i;
@@ -75,6 +77,14 @@ public class Manga {
         return date;
     }
 
+    public String getNtkEpisodePath() {
+        return ntkEpisodePath == null ? "" : ntkEpisodePath;
+    }
+
+    public void setNtkEpisodePath(String ntkEpisodePath) {
+        this.ntkEpisodePath = ntkEpisodePath == null ? "" : ntkEpisodePath.trim();
+    }
+
     public void setImgs(List<String> imgs) {
         this.imgs = imgs;
     }
@@ -98,6 +108,7 @@ public class Manga {
             setTitle(source.getTitle());
         else
             setTitleId(source.getTitleId());
+        setNtkEpisodePath(source.getNtkEpisodePath());
         return true;
     }
 
@@ -119,6 +130,8 @@ public class Manga {
     }
 
     public synchronized int fetch(CustomHttpClient client, boolean doLogin, Map<String, String> cookies) {
+        if(client.isNtk())
+            return fetchNtk(client);
         if(isComicWolfSource())
             return fetchWolf(client, "/cv?toon=", "/cv?toon=");
         if(isWebtoonWolfSource())
@@ -240,6 +253,60 @@ public class Manga {
         return LOAD_OK;
     }
 
+    private int fetchNtk(CustomHttpClient client) {
+        mode = 0;
+        List<Manga> previousEpisodes = safeEpisodeCopy(eps);
+        imgs = new ArrayList<>();
+        Set<String> seenImages = new LinkedHashSet<>();
+        eps = new ArrayList<>();
+        try {
+            int tid = titleId;
+            if(tid <= 0 && title != null)
+                tid = title.getId();
+            if(tid <= 0)
+                return LOAD_OK;
+            String segment = baseMode == MTitle.base_webtoon ? "webtoon" : "manhwa";
+            String path = getNtkEpisodePath();
+            if(path.length() == 0)
+                path = "/" + segment + "/" + tid + "/" + id;
+            CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+            Document d = Jsoup.parse(page.body);
+
+            Element h1 = d.selectFirst("h1");
+            if(h1 != null)
+                name = h1.text().trim();
+
+            for(Element img : d.select("img")) {
+                String src = img.hasAttr("data-original") ? img.attr("data-original") : img.attr("src");
+                String alt = img.attr("alt").toLowerCase(Locale.ROOT);
+                if(src.length() > 0 && (alt.contains("page") || src.matches(".*\\.(jpg|jpeg|png|webp)(\\?.*)?$")))
+                    addImageIfValid(client, seenImages, src);
+            }
+
+            List<Manga> titleEpisodes = title == null ? null : safeEpisodeCopy(title.getEps());
+            if(titleEpisodes != null && titleEpisodes.size() > 0) {
+                eps = titleEpisodes;
+                for(Manga ep : eps) {
+                    ep.setMode(0);
+                    ep.setTitle(title);
+                    ep.setTitleId(tid);
+                }
+            }
+        } catch (Exception e) {
+            if(isCloudflareChallenge(e))
+                return LOAD_CAPTCHA;
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+        restoreBetterEpisodeList(previousEpisodes);
+        attachEpisodeSeriesMetadata();
+        return LOAD_OK;
+    }
+
+    private static boolean isCloudflareChallenge(Exception e) {
+        String message = e == null ? null : e.getMessage();
+        return message != null && message.toLowerCase(Locale.ROOT).contains("cloudflare");
+    }
+
     private int parseEpisodeId(String href, String marker) {
         try {
             if(href == null || !href.contains(marker))
@@ -328,13 +395,7 @@ public class Manga {
                     name = header.ownText();
             }catch (Exception e){}
 
-            for(Element img : d.select("div.image-view img.v-img")) {
-                String src = img.attr("data-original");
-                if(src == null || src.length() == 0)
-                    src = img.attr("src");
-                if(src.length() > 0 && !src.contains("sprite.png"))
-                    addImageIfValid(client, seenImages, src);
-            }
+            addWolfImageCandidates(client, d, seenImages);
 
             List<Manga> titleEpisodes = title == null ? null : safeEpisodeCopy(title.getEps());
             if(titleEpisodes != null && titleEpisodes.size() > 0) {
@@ -361,6 +422,8 @@ public class Manga {
             }
             break;
             } catch (Exception e) {
+                if(isCloudflareChallenge(e))
+                    return LOAD_CAPTCHA;
                 ml.melun.mangaview.report.CrashReporter.record(e);
                 break;
             }
@@ -368,6 +431,88 @@ public class Manga {
         restoreBetterEpisodeList(previousEpisodes);
         attachEpisodeSeriesMetadata();
         return LOAD_OK;
+    }
+
+    private void addWolfImageCandidates(CustomHttpClient client, Document document, Set<String> seenImages) {
+        if(document == null)
+            return;
+        int before = imgs == null ? 0 : imgs.size();
+        Elements images = document.select("div.image-view img, div.view-padding img, section.webtoon-body img, div.toon-view img, article img, main img");
+        addWolfImageElements(client, images, seenImages);
+        int afterPrimary = imgs == null ? 0 : imgs.size();
+        if(afterPrimary == before)
+            addWolfImageElements(client, document.select("body img"), seenImages);
+    }
+
+    private void addWolfImageElements(CustomHttpClient client, Elements images, Set<String> seenImages) {
+        if(images == null)
+            return;
+        for(Element img : images) {
+            for(String attr : new String[]{"data-original", "data-src", "data-lazy-src", "data-url", "src"}) {
+                String src = img.attr(attr);
+                if(isWolfPageImage(img, src))
+                    addImageIfValid(client, seenImages, src);
+            }
+        }
+    }
+
+    private boolean isWolfPageImage(Element img, String src) {
+        if(src == null)
+            return false;
+        String lower = src.toLowerCase(Locale.ROOT);
+        if(lower.length() == 0
+                || lower.contains("sprite")
+                || lower.contains("logo")
+                || lower.contains("banner")
+                || lower.contains("advert")
+                || lower.contains("sponsor")
+                || lower.contains("popup")
+                || lower.contains("/ad/")
+                || lower.contains("/ads/")
+                || lower.contains("blank")
+                || lower.contains("loading"))
+            return false;
+        if(hasWolfAdToken(lower))
+            return false;
+        String cls = img == null ? "" : img.className().toLowerCase(Locale.ROOT);
+        String id = img == null ? "" : img.id().toLowerCase(Locale.ROOT);
+        String alt = img == null ? "" : img.attr("alt").toLowerCase(Locale.ROOT);
+        if(cls.contains("logo") || cls.contains("banner") || hasWolfAdToken(cls)
+                || id.contains("logo") || id.contains("banner") || hasWolfAdToken(id)
+                || alt.contains("logo") || alt.contains("banner") || hasWolfAdToken(alt)
+                || hasWolfBlockedAncestor(img))
+            return false;
+        return lower.matches(".*\\.(jpg|jpeg|png|webp|gif)(\\?.*)?$")
+                || lower.contains("/data/")
+                || lower.contains("/toon/")
+                || lower.contains("/webtoon/")
+                || lower.contains("/comic/");
+    }
+
+    private boolean hasWolfBlockedAncestor(Element img) {
+        if(img == null)
+            return false;
+        for(Element parent = img.parent(); parent != null; parent = parent.parent()) {
+            String context = (parent.id() + " " + parent.className()).toLowerCase(Locale.ROOT);
+            if(context.contains("banner")
+                    || context.contains("advert")
+                    || context.contains("sponsor")
+                    || context.contains("popup")
+                    || context.contains("광고")
+                    || hasWolfAdToken(context))
+                return true;
+            if("body".equals(parent.tagName()))
+                break;
+        }
+        return false;
+    }
+
+    private boolean hasWolfAdToken(String value) {
+        if(value == null)
+            return false;
+        return Pattern.compile("(^|[^a-z0-9가-힣])(ad|ads|advert|sponsor|popup|광고)([^a-z0-9가-힣]|$)")
+                .matcher(value.toLowerCase(Locale.ROOT))
+                .find();
     }
 
     private void restoreBetterEpisodeList(List<Manga> previousEpisodes) {
@@ -567,6 +712,13 @@ public class Manga {
     }
 
     public String getUrl() {
+        String ntkPath = getNtkEpisodePath();
+        if(ntkPath.length() > 0)
+            return ntkPath;
+        if(titleId > 0 && p != null && p.isNtkSite()) {
+            String segment = baseMode == MTitle.base_webtoon ? "webtoon" : "manhwa";
+            return "/" + segment + "/" + titleId + "/" + id;
+        }
         if(isComicWolfSource()) {
             int tid = titleId;
             if(tid <= 0 && title != null)

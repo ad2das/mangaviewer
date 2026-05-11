@@ -33,22 +33,24 @@
     </androidx.appcompat.widget.LinearLayoutCompat>
 
 
-    <Button
+    <View
         android:alpha="0"
         android:id="@+id/rightButton"
         android:layout_height="0dp"
         android:layout_width="0dp"
+        android:importantForAccessibility="no"
         android:visibility="visible"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toEndOf="@+id/leftButton"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <Button
+    <View
         android:alpha="0"
         android:id="@+id/leftButton"
         android:layout_height="0dp"
         android:layout_width="100dp"
+        android:importantForAccessibility="no"
         android:visibility="visible"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
@@ -77,7 +79,6 @@
         app:layout_constraintTop_toTopOf="parent" />
 
     <com.google.android.material.appbar.AppBarLayout
-        android:alpha="0.94"
         android:id="@+id/viewerAppbar"
         android:layout_height="wrap_content"
         android:layout_width="match_parent"
@@ -102,7 +103,6 @@
     </com.google.android.material.appbar.AppBarLayout>
 
     <com.google.android.material.appbar.AppBarLayout
-        android:alpha="0.94"
         android:id="@+id/viewerAppbarBottom"
         android:layout_gravity="bottom"
         android:layout_height="wrap_content"

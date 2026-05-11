@@ -61,6 +61,7 @@ import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.model.PageItem;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.ui.CustomSpinner;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -69,7 +70,6 @@ import static ml.melun.mangaview.Utils.getScreenSize;
 import static ml.melun.mangaview.Utils.hideSpinnerDropDown;
 import static ml.melun.mangaview.Utils.queueOfflineDownload;
 import static ml.melun.mangaview.Utils.showCaptchaPopup;
-import static ml.melun.mangaview.Utils.showTokiCaptchaPopup;
 import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
 
@@ -114,8 +114,15 @@ public class ViewerActivity2 extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        PerformanceMonitor.resume();
         if(toolbarshow) getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
         else getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN);
+    }
+
+    @Override
+    protected void onPause() {
+        PerformanceMonitor.pause();
+        super.onPause();
     }
 
     @Override
@@ -130,6 +137,8 @@ public class ViewerActivity2 extends AppCompatActivity {
         Utils.cancelPendingViewerLaunches(this);
         dark = p.getDarkTheme();
         super.onCreate(savedInstanceState);
+        PerformanceMonitor.attach(this);
+        PerformanceMonitor.screen("viewer");
         setContentView(R.layout.activity_viewer2);
 
         info = this.findViewById(R.id.viewer2_info);
@@ -898,6 +907,11 @@ public class ViewerActivity2 extends AppCompatActivity {
         AppDispatchers.TaskHandle handle;
         MangaRepository.Cancellation cancellation = MangaRepository.cancellation();
         volatile boolean cancelled;
+        final boolean allowResumeFallback;
+
+        loadImages(boolean allowResumeFallback) {
+            this.allowResumeFallback = allowResumeFallback;
+        }
 
         private void postProgress(String value) {
         }
@@ -916,11 +930,11 @@ public class ViewerActivity2 extends AppCompatActivity {
                 return res;
             try {
                 int firstPage = manga.useBookmark() ? p.getViewerBookmark(manga) : viewerBookmark;
-                if(ViewerResumeResolver.shouldResolveBeforeDirectFetch(manga, title)) {
+                if(allowResumeFallback && ViewerResumeResolver.shouldResolveBeforeDirectFetch(manga, title)) {
                     res = prepareFirstAvailableManga(firstPage, true, cancellation);
                 } else {
                     res = ViewerWarmupManager.prepareFirstFrame(context, manga, title, firstPage, swidth, false, reverse, cancellation);
-                    if(res == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !hasLoadedImages())
+                    if(allowResumeFallback && (res == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !hasLoadedImages()))
                         res = prepareFirstAvailableManga(firstPage, false, cancellation);
                 }
                 if(title == null)
@@ -940,7 +954,7 @@ public class ViewerActivity2 extends AppCompatActivity {
 
             if(res == LOAD_CAPTCHA) {
                 //캡차 처리 팝업
-                showTokiCaptchaPopup(context, p);
+                showCaptchaPopup(manga.getUrl(), context, RESULT_CAPTCHA, p);
                 return;
             }
 
@@ -1123,10 +1137,14 @@ public class ViewerActivity2 extends AppCompatActivity {
     }
 
     public void refresh(){
+        refresh(true);
+    }
+
+    public void refresh(boolean allowResumeFallback){
         captchaChecked = false;
         if(activeImageLoad != null)
             activeImageLoad.cancel();
-        activeImageLoad = new loadImages();
+        activeImageLoad = new loadImages(allowResumeFallback);
         activeImageLoad.start();
     }
 
@@ -1217,7 +1235,7 @@ public class ViewerActivity2 extends AppCompatActivity {
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (resultCode == RESULT_CAPTCHA) {
-            refresh();
+            refresh(false);
         }
     }
 

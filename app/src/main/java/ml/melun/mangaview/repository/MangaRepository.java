@@ -31,6 +31,8 @@ import static ml.melun.mangaview.MainApplication.p;
 public final class MangaRepository {
     private static final long HOME_TTL_MS = 45_000L;
     private static final long SECTION_TTL_MS = 2 * 60_000L;
+    private static final long NTK_HOME_TTL_MS = 10 * 60_000L;
+    private static final long NTK_SECTION_TTL_MS = 10 * 60_000L;
     private static final ConcurrentHashMap<String, CacheEntry> CACHE = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, FutureTask<Object>> IN_FLIGHT = new ConcurrentHashMap<>();
 
@@ -54,7 +56,9 @@ public final class MangaRepository {
     }
 
     public static MainPage loadComicHome(CustomHttpClient.RequestGroup requestGroup) throws Exception {
-        return cached("home:comic", HOME_TTL_MS,
+        boolean ntk = getHttpClient().isNtk();
+        String key = "home:" + (ntk ? "ntk:" : "wfwf:") + "comic";
+        return cached(key, ntk ? NTK_HOME_TTL_MS : HOME_TTL_MS,
                 () -> getHttpClient().runWithRequestGroup(requestGroup, () -> new MainPage(getHttpClient())));
     }
 
@@ -119,8 +123,9 @@ public final class MangaRepository {
 
     public static Ranking<Title> loadWebtoonSection(MainPageWebtoon parser, String title, String path, int baseMode,
                                                     CustomHttpClient.RequestGroup requestGroup) throws Exception {
-        String key = "section:" + baseMode + ':' + path;
-        return cached(key, SECTION_TTL_MS, () -> {
+        boolean ntk = getHttpClient().isNtk();
+        String key = "section:" + (ntk ? "ntk:" : "wfwf:") + baseMode + ':' + path;
+        return cached(key, ntk ? NTK_SECTION_TTL_MS : SECTION_TTL_MS, () -> {
             if(requestGroup == null)
                 return parser.parseWolfTitle(getHttpClient(), title, path, baseMode);
             return getHttpClient().runWithRequestGroup(requestGroup,
@@ -165,15 +170,19 @@ public final class MangaRepository {
             Map<String, String> headers = new HashMap<>();
             headers.put("User-Agent", getHttpClient().agent);
             String root = WfwfDomainResolver.toRoot(fetchUrl);
-            if(WfwfDomainResolver.isWfwfUrl(root)) {
+            if(WfwfDomainResolver.isSupportedNumberedUrl(root)) {
                 headers.put("Referer", root);
                 result = WfwfDomainResolver.resolve(getHttpClient().client, root, headers);
                 if(result == null)
                     return new UrlUpdateResult(false, "");
                 String resolvedRoot = WfwfDomainResolver.toRoot(result);
-                p.setWebtoonUrl(resolvedRoot);
-                p.setDefUrl(resolvedRoot + "/cm");
-                p.setUrl(resolvedRoot + "/cm");
+                if(isNtkRoot(resolvedRoot)) {
+                    p.setNtkSitePreset(resolvedRoot);
+                } else {
+                    p.setWebtoonUrl(resolvedRoot);
+                    p.setDefUrl(resolvedRoot + "/cm");
+                    p.setUrl(resolvedRoot + "/cm");
+                }
                 getHttpClient().resetCookie();
                 getHttpClient().clearPageCache();
                 return new UrlUpdateResult(true, result);
@@ -197,6 +206,16 @@ public final class MangaRepository {
             ml.melun.mangaview.report.CrashReporter.record(e);
             return new UrlUpdateResult(false, "");
         }
+    }
+
+    private static boolean isNtkRoot(String root) {
+        if(root == null)
+            return false;
+        String lower = root.toLowerCase();
+        return lower.contains("://ntk")
+                || lower.contains("://newtoki")
+                || lower.contains("://sbxh")
+                || lower.contains("://www.sbxh");
     }
 
     @SuppressWarnings("unchecked")

@@ -69,7 +69,7 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         if(mData == null || count <= 0 || save || !canUseContextForUi(context))
             return;
         int start = Math.max(0, startPosition);
-        int end = Math.min(mData.size(), start + count);
+        int end = Math.min(mData.size(), start + Math.min(count, 8));
         for(int i = start; i < end; i++) {
             UpdatedManga manga = mData.get(i);
             if(manga == null)

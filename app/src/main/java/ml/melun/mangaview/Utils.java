@@ -51,7 +51,7 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -71,11 +71,7 @@ import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
-import okhttp3.FormBody;
-import okhttp3.RequestBody;
-import okhttp3.Response;
 
-import static java.lang.System.currentTimeMillis;
 import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.activity.CaptchaActivity.REQUEST_CAPTCHA;
@@ -93,6 +89,15 @@ public class Utils {
     private static final String MANGA_OFFLINE_PATH = "manga_offline_path";
 
     private static int captchaCount = 1;
+    private static long lastAutoCloudflareCaptchaAt = 0L;
+    private static long lastCaptchaActivityStartedAt = 0L;
+    private static final int GLIDE_URL_CACHE_MAX = 512;
+    private static final Map<String, GlideUrl> glideUrlCache = new LinkedHashMap<String, GlideUrl>(GLIDE_URL_CACHE_MAX, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, GlideUrl> eldest) {
+            return size() > GLIDE_URL_CACHE_MAX;
+        }
+    };
 
     public static final String ReservedChars = "|\\?*<\":>+[]/'";
 
@@ -185,8 +190,13 @@ public class Utils {
     }
 
     public static Intent viewerIntent(Context context, Manga manga){
+        return viewerIntent(context, manga, true);
+    }
+
+    private static Intent viewerIntent(Context context, Manga manga, boolean warmupContinue){
         Intent viewer = null;
-        switch (new Preference(context).getViewerType()){
+        int viewerType = p == null ? new Preference(context).getViewerType() : p.getViewerType();
+        switch (viewerType){
             case 0:
                 viewer = new Intent(context, ViewerActivity.class);
                 break;
@@ -197,7 +207,8 @@ public class Utils {
                 viewer = new Intent(context, ViewerActivity2.class);
                 break;
         }
-        ViewerWarmupManager.warmupContinue(context, manga, manga == null ? null : manga.getTitle());
+        if(warmupContinue)
+            ViewerWarmupManager.warmupContinue(context, manga, manga == null ? null : manga.getTitle());
         Title title = manga == null ? null : manga.getTitle();
         viewer.putExtra("manga", toViewerMangaJson(manga, title));
         viewer.putExtra("title", toViewerTitleJson(title, true));
@@ -215,16 +226,27 @@ public class Utils {
 
     public static void openViewerPrepared(Context context, Manga manga, int code, boolean returnToEpisodes,
                                           boolean online, boolean recent, Title title, boolean includeTitleEpisodes) {
+        openViewerPrepared(context, manga, code, returnToEpisodes, online, recent, title, includeTitleEpisodes, false);
+    }
+
+    public static void openViewerPrepared(Context context, Manga manga, int code, boolean returnToEpisodes,
+                                          boolean online, boolean recent, Title title, boolean includeTitleEpisodes,
+                                          boolean exactEpisode) {
         if(context == null || manga == null)
             return;
         int launchToken = nextViewerLaunchToken(context);
         Title launchTitle = title != null ? title : manga.getTitle();
         if(launchTitle != null) {
+            switchToTitleSourceSite(launchTitle);
             manga.setTitle(launchTitle);
             manga.setTitleId(launchTitle.getId());
         }
         if(!manga.isOnline()) {
-            launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken);
+            launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken, exactEpisode);
+            return;
+        }
+        if(exactEpisode) {
+            launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken, true);
             return;
         }
         Manga immediate = ViewerWarmupManager.usePreparedFirstFrame(context, manga, launchTitle, false, p.getReverse());
@@ -234,36 +256,43 @@ public class Utils {
             return;
         }
         ViewerWarmupManager.warmupContinueImmediate(context, manga, launchTitle);
-        AppDispatchers.submitUserAction(() -> {
-            Manga prepared = ViewerWarmupManager.prepareClickFirstFrame(context, manga, launchTitle, false, p.getReverse());
-            if(prepared == null)
-                prepared = ViewerWarmupManager.prepareClickFirstFrame(context, manga, launchTitle, false, p.getReverse());
-            Manga launchManga = prepared;
-            AppDispatchers.runOnMain(() -> {
-                if(!isLatestViewerLaunchToken(context, launchToken))
-                    return;
-                if(launchManga == null) {
-                    safeToast(context, "이미지를 불러오지 못했습니다.", Toast.LENGTH_SHORT);
-                    return;
-                }
-                Title preparedTitle = launchManga.getTitle();
-                launchPreparedViewer(context, launchManga, code, returnToEpisodes, online, recent,
-                        launchTitle != null ? launchTitle : preparedTitle, includeTitleEpisodes, launchToken);
-            });
-        });
+        launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken);
+    }
+
+    private static void switchToTitleSourceSite(Title title) {
+        if(title == null || p == null)
+            return;
+        String source = title.getSourceSite();
+        if(source == null || source.length() == 0)
+            return;
+        boolean targetNtk = "ntk".equals(source);
+        if(p.isNtkSite() == targetNtk)
+            return;
+        if(targetNtk)
+            p.setSitePreset(CustomHttpClient.NTK_COMIC_URL, CustomHttpClient.NTK_WEBTOON_URL);
+        else
+            p.setSitePreset(CustomHttpClient.DEFAULT_COMIC_URL, CustomHttpClient.WEBTOON_URL);
     }
 
     private static void launchPreparedViewer(Context context, Manga manga, int code, boolean returnToEpisodes,
                                              boolean online, boolean recent, Title title, boolean includeTitleEpisodes,
                                              int launchToken) {
+        launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, title, includeTitleEpisodes, launchToken, false);
+    }
+
+    private static void launchPreparedViewer(Context context, Manga manga, int code, boolean returnToEpisodes,
+                                             boolean online, boolean recent, Title title, boolean includeTitleEpisodes,
+                                             int launchToken, boolean exactEpisode) {
         if(context == null || manga == null)
             return;
         if(!isLatestViewerLaunchToken(context, launchToken))
             return;
         if(context instanceof Activity && !canUseActivity((Activity) context))
             return;
-        Intent viewer = viewerIntent(context, manga);
+        Intent viewer = viewerIntent(context, manga, !exactEpisode);
         viewer.putExtra("online", online);
+        if(exactEpisode)
+            viewer.putExtra(ViewerActivity.EXTRA_EXACT_EPISODE, true);
         if(returnToEpisodes)
             viewer.putExtra("returnToEpisodes", true);
         Title launchTitle = title != null ? title : manga.getTitle();
@@ -461,6 +490,7 @@ public class Utils {
         copy.addThumb(source.getThumb());
         copy.setMode(source.getMode());
         copy.setTitleId(source.getTitleId());
+        copy.setNtkEpisodePath(source.getNtkEpisodePath());
         copy.setOfflinePath(source.getOfflinePath());
         if(includeImages) {
             try {
@@ -719,12 +749,16 @@ public class Utils {
 
     public static void showCaptchaPopup(String url, Context context, int code, Exception e, boolean force_close, Fragment fragment, Preference p){
         if(canUseContextForUi(context)) {
-            if (!checkConnection(context)) {
+            if(showNtkTurnstileCaptchaIfNeeded(url, context, code, fragment, p))
+                return;
+            if (shouldOpenCloudflareCaptchaAutomatically()) {
+                startCaptchaActivity(context, code, fragment, url);
+            } else if (!checkConnection(context)) {
                 //no internet
                 //showErrorPopup(context, "네트워크 연결이 없습니다.", e, force_close);
                 safeToast(context, "네트워크 연결이 없습니다.", Toast.LENGTH_LONG);
                 if (force_close && context instanceof Activity) ((Activity) context).finish();
-            } else if (captchaCount == 0) {
+            } else if (captchaCount == 0 || getHttpClient().isNtk()) {
                 startCaptchaActivity(context, code, fragment, url);
             } else {
                 AlertDialog.Builder builder;
@@ -752,12 +786,132 @@ public class Utils {
         }
     }
 
+    private static boolean shouldOpenCloudflareCaptchaAutomatically() {
+        if(!getHttpClient().isNtk() || getHttpClient().hasNtkAccessProof())
+            return false;
+        long now = System.currentTimeMillis();
+        if(now - lastAutoCloudflareCaptchaAt < 500L)
+            return false;
+        lastAutoCloudflareCaptchaAt = now;
+        return true;
+    }
+
+    public static boolean showNtkTurnstileCaptchaIfNeeded(String url, Context context, int code, Fragment fragment, Preference preference) {
+        if(!canUseContextForUi(context) || !getHttpClient().isNtk())
+            return false;
+        syncNtkCloudflareCookies(preference);
+        if(isNtkEpisodeUrl(url))
+            return false;
+        if(getHttpClient().hasNtkAccessProof() || getHttpClient().hasRecentNtkAccessVerification())
+            return true;
+        if(shouldOpenCloudflareCaptchaAutomatically()) {
+            startCaptchaActivity(context, code, fragment, null);
+            captchaCount++;
+        }
+        return true;
+    }
+
+    public static boolean showNtkTurnstileCaptchaIfNeeded(Context context, int code, Fragment fragment, Preference preference) {
+        return showNtkTurnstileCaptchaIfNeeded(null, context, code, fragment, preference);
+    }
+
+    public static boolean startNtkTurnstileCaptchaIfNeeded(Context context, int code, Fragment fragment, Preference preference) {
+        if(!canUseContextForUi(context) || !getHttpClient().isNtk())
+            return false;
+        syncNtkCloudflareCookies(preference);
+        if(getHttpClient().hasNtkAccessProof() || getHttpClient().hasRecentNtkAccessVerification())
+            return false;
+        String challengedUrl = getHttpClient().getLastCloudflareChallengeUrl();
+        if(challengedUrl == null || challengedUrl.length() == 0 || !getHttpClient().isNtkUrl(challengedUrl))
+            return false;
+        if(!shouldOpenCloudflareCaptchaAutomatically())
+            return false;
+        startCaptchaActivity(context, code, fragment, null);
+        captchaCount++;
+        return true;
+    }
+
+    public static boolean startNtkTurnstileCaptcha(Context context, int code, Fragment fragment, Preference preference) {
+        if(!canUseContextForUi(context) || !getHttpClient().isNtk())
+            return false;
+        syncNtkCloudflareCookies(preference);
+        if(!getHttpClient().hasNtkAccessProof() && !getHttpClient().hasRecentNtkAccessVerification()) {
+            startCaptchaActivity(context, code, fragment, null);
+            captchaCount++;
+            return true;
+        }
+        AppDispatchers.runUserAction(() -> {
+            if(!isNtkAccessChallengeActive())
+                return;
+            AppDispatchers.runOnMain(() -> {
+                Preference source = preference != null ? preference : p;
+                if(source != null)
+                    getHttpClient().clearCloudflareWebViewCookies(source.getWebtoonUrl(), source.getUrl());
+                else
+                    getHttpClient().clearCloudflareCookies();
+                startCaptchaActivity(context, code, fragment, null);
+                captchaCount++;
+            });
+        });
+        return true;
+    }
+
+    private static boolean isNtkAccessChallengeActive() {
+        if(isNtkAccessPathChallenged("/api/manhwa-list?page=1&pageSize=1&withTotal=1"))
+            return true;
+        return isNtkAccessPathChallenged("");
+    }
+
+    private static boolean isNtkAccessPathChallenged(String path) {
+        okhttp3.Response response = null;
+        try {
+            response = getHttpClient().mget(path, true);
+            if(response == null)
+                return false;
+            int code = response.code();
+            String body = CustomHttpClient.readBody(response);
+            response = null;
+            if(getHttpClient().isCloudflareChallengeResponse(code, body))
+                return true;
+            return code == 403 && body != null && body.length() > 0;
+        } catch (Exception e) {
+            String message = e.getMessage();
+            return message != null && message.toLowerCase(Locale.ROOT).contains("cloudflare");
+        } finally {
+            if(response != null)
+                response.close();
+        }
+    }
+
+    private static boolean isNtkEpisodeUrl(String url) {
+        if(url == null)
+            return false;
+        String lower = url.toLowerCase(java.util.Locale.ROOT);
+        return lower.matches("^(https?://[^/]+)?/(webtoon|manhwa)/\\d+/\\d+.*");
+    }
+
+    private static void syncNtkCloudflareCookies(Preference preference) {
+        Preference source = preference != null ? preference : p;
+        if(source == null)
+            return;
+        getHttpClient().restoreClearanceFromDisk();
+        if(!getHttpClient().hasCloudflareClearance())
+            return;
+        if(!getHttpClient().hasFreshCloudflareClearance()) {
+            getHttpClient().syncCookiesFromWebView(source.getWebtoonUrl(), true);
+            getHttpClient().syncCookiesFromWebView(source.getUrl(), true);
+        }
+    }
+
     static void startCaptchaActivity(Context context, int code, Fragment fragment, String url){
         if(!canUseContextForUi(context))
             return;
+        long now = System.currentTimeMillis();
+        if(now - lastCaptchaActivityStartedAt < 3000L)
+            return;
+        lastCaptchaActivityStartedAt = now;
         Intent captchaIntent = new Intent(context, CaptchaActivity.class);
-        if(url != null && url.startsWith("/"))
-            url = getHttpClient().getUrl(url) + url;
+        url = captchaUrl(url);
         captchaIntent.putExtra("url", url);
         try {
             if(fragment == null && context instanceof Activity)
@@ -772,7 +926,12 @@ public class Utils {
     static void startCaptchaActivity(Context context, int code, Fragment fragment){
         if(!canUseContextForUi(context))
             return;
+        long now = System.currentTimeMillis();
+        if(now - lastCaptchaActivityStartedAt < 3000L)
+            return;
+        lastCaptchaActivityStartedAt = now;
         Intent captchaIntent = new Intent(context, CaptchaActivity.class);
+        captchaIntent.putExtra("url", captchaUrl(null));
         try {
             if(fragment == null && context instanceof Activity)
                 ((Activity)context).startActivityForResult(captchaIntent, code);
@@ -780,6 +939,46 @@ public class Utils {
                 fragment.startActivityForResult(captchaIntent, code);
         } catch (RuntimeException e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
+    private static String captchaUrl(String url) {
+        if(url != null && url.length() > 0) {
+            if(url.startsWith("http://") || url.startsWith("https://"))
+                return url;
+            if(url.startsWith("/"))
+                return getHttpClient().getUrl(url) + url;
+            return getHttpClient().getUrl() + "/" + url;
+        }
+        if(getHttpClient().isNtk()) {
+            String challengedUrl = getHttpClient().getLastCloudflareChallengeUrl();
+            if(challengedUrl != null && challengedUrl.length() > 0
+                    && getHttpClient().isNtkUrl(challengedUrl)
+                    && !isNtkApiUrl(challengedUrl))
+                return challengedUrl;
+            return ntkCaptchaLandingUrl();
+        }
+        return null;
+    }
+
+    private static String ntkCaptchaLandingUrl() {
+        String webtoonUrl = p == null ? "" : p.getWebtoonUrl();
+        if(webtoonUrl != null && webtoonUrl.length() > 0 && getHttpClient().isNtkUrl(webtoonUrl))
+            return webtoonUrl;
+        String root = getHttpClient().getUrl();
+        if(root != null && root.endsWith("/manhwa"))
+            root = root.substring(0, root.length() - 7);
+        return root;
+    }
+
+    private static boolean isNtkApiUrl(String url) {
+        if(url == null || url.length() == 0)
+            return false;
+        try {
+            String path = Uri.parse(url).getPath();
+            return path != null && path.toLowerCase(Locale.ROOT).startsWith("/api/");
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -817,94 +1016,6 @@ public class Utils {
     }
 
 
-    public static void showTokiCaptchaPopup(Context context, Preference p){
-        if(!(context instanceof Activity) || !canUseActivity((Activity) context))
-            return;
-        AlertDialog.Builder builder;
-        String title = "캡차 인증";
-        if (new Preference(context).getDarkTheme())
-            builder = new AlertDialog.Builder(context, R.style.darkDialog);
-        else builder = new AlertDialog.Builder(context);
-        View v = ((Activity)context).getLayoutInflater().inflate(R.layout.content_toki_captcha_popup, null);
-
-        ImageView img = v.findViewById(R.id.toki_captcha_image);
-        EditText answer = v.findViewById(R.id.toki_captcha_answer);
-
-        AppDispatchers.runIo(() -> {
-            int tries = 3;
-            while(tries > 0) {
-                Response r = null;
-                try {
-                    r = getHttpClient().post(p.getUrl() + "/plugin/kcaptcha/kcaptcha_session.php", new FormBody.Builder().build(), new HashMap<>(), true);
-                    if(r != null && r.code() == 200) {
-                        List<String> setcookie = r.headers("Set-Cookie");
-                        for (String c : setcookie) {
-                            if (c.contains("PHPSESSID=")) {
-                                String cookie = c.substring(c.indexOf("=") + 1, c.indexOf(";"));
-                                getHttpClient().setCookie("PHPSESSID", cookie);
-                            }
-                        }
-                        break;
-                    }
-                } finally {
-                    if(r != null)
-                        r.close();
-                }
-                tries--;
-            }
-            try {
-                Response r = getHttpClient().mget("/plugin/kcaptcha/kcaptcha_image.php?t=" + currentTimeMillis(), false);
-                final byte[] b = CustomHttpClient.readBytes(r);
-                ((Activity) context).runOnUiThread(() -> {
-                    if(!(context instanceof Activity) || !canUseActivity((Activity) context) || img == null)
-                        return;
-                    try {
-                        Glide.with(img)
-                                .load(b)
-                                .into(img);
-                    } catch (RuntimeException glideError) {
-                        ml.melun.mangaview.report.CrashReporter.record(glideError);
-                    }
-                });
-            }catch (Exception e){
-                ml.melun.mangaview.report.CrashReporter.record(e);
-            }
-        });
-
-        builder.setTitle(title)
-                .setView(v)
-                .setPositiveButton(android.R.string.ok, (dialog, which) -> AppDispatchers.runIo(() -> {
-                    RequestBody requestBody = new FormBody.Builder()
-                            .addEncoded("url", p.getUrl())
-                            .addEncoded("captcha_key", answer.getText().toString())
-                            .build();
-                    Map<String, String> headers = new HashMap<>();
-                    headers.put("cookie", "PHPSESSID=" + getHttpClient().getCookie("PHPSESSID") + ";");
-                    Response response = null;
-                    try {
-                        response = getHttpClient().post(p.getUrl() + "/bbs/captcha_check.php", requestBody, headers, true);
-                    } finally {
-                        if(response != null)
-                            response.close();
-                    }
-                    ((Activity) context).runOnUiThread(() -> {
-                        if(!(context instanceof Activity) || !canUseActivity((Activity) context))
-                            return;
-                        ((Activity) context).finish();
-                        ((Activity) context).startActivity(((Activity) context).getIntent());
-                    });
-                }))
-                .setNegativeButton(android.R.string.cancel, (dialogInterface, i) -> {
-                    if(canUseActivity((Activity) context))
-                        ((Activity) context).finish();
-                })
-                .setOnCancelListener(dialogInterface -> {
-                    if(canUseActivity((Activity) context))
-                        ((Activity) context).finish();
-                });
-
-        safeShowDialog(builder);
-    }
     public static GlideUrl getGlideUrl(String image){
         return getGlideUrl(image, guessImageBaseMode(image));
     }
@@ -912,9 +1023,71 @@ public class Utils {
     public static GlideUrl getGlideUrl(String image, int baseMode){
         String referer = getHttpClient().getUrl(baseMode);
         String url = normalizeImageUrl(image, baseMode);
-        return new GlideUrl(url, new LazyHeaders.Builder()
+        boolean ntkImage = getHttpClient().isNtkUrl(url) || isProtectedImageHost(url);
+        if(ntkImage)
+            referer = getSiteRoot(baseMode);
+        String cookie = getHttpClient().getCookieHeader();
+        String cacheKey = baseMode + "|" + url + "|" + referer + "|" + getHttpClient().agent + "|" + (cookie == null ? "" : cookie);
+        synchronized (glideUrlCache) {
+            GlideUrl cached = glideUrlCache.get(cacheKey);
+            if(cached != null)
+                return cached;
+        }
+        LazyHeaders.Builder headers = new LazyHeaders.Builder()
                 .addHeader("Referer", referer)
-                .build());
+                .addHeader("User-Agent", getHttpClient().agent);
+        if(cookie != null && cookie.length() > 0)
+            headers.addHeader("Cookie", cookie);
+        if(ntkImage) {
+            headers.addHeader("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8");
+            headers.addHeader("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7");
+            headers.addHeader("Sec-Fetch-Dest", "image");
+            headers.addHeader("Sec-Fetch-Mode", "no-cors");
+            headers.addHeader("Sec-Fetch-Site", "same-origin");
+            addClientHintHeaders(headers);
+        }
+        GlideUrl glideUrl = new GlideUrl(url, headers.build());
+        synchronized (glideUrlCache) {
+            glideUrlCache.put(cacheKey, glideUrl);
+        }
+        return glideUrl;
+    }
+
+    private static void addClientHintHeaders(LazyHeaders.Builder headers) {
+        int chromeMajor = chromeMajorVersion(getHttpClient().agent);
+        String version = chromeMajor > 0 ? String.valueOf(chromeMajor) : "147";
+        headers.addHeader("sec-ch-ua", "\"Chromium\";v=\"" + version + "\", \"Android WebView\";v=\"" + version + "\", \"Not A(Brand\";v=\"24\"");
+        headers.addHeader("sec-ch-ua-mobile", "?1");
+        headers.addHeader("sec-ch-ua-platform", "\"Android\"");
+    }
+
+    private static boolean isProtectedImageHost(String url) {
+        if(url == null)
+            return false;
+        try {
+            String host = android.net.Uri.parse(url).getHost();
+            if(host == null)
+                return false;
+            host = host.toLowerCase(Locale.ROOT);
+            return host.matches("y\\d+stm\\.com")
+                    || host.matches("w\\d+cloud\\.com")
+                    || host.matches("i\\d+\\.imgcloud\\d+\\.com");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static int chromeMajorVersion(String userAgent) {
+        try {
+            if(userAgent == null)
+                return -1;
+            java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("Chrome/(\\d+)").matcher(userAgent);
+            if(!matcher.find())
+                return -1;
+            return Integer.parseInt(matcher.group(1));
+        } catch (Exception e) {
+            return -1;
+        }
     }
 
     private static int guessImageBaseMode(String image) {
@@ -945,6 +1118,8 @@ public class Utils {
             url = url.substring(0, url.length() - 1);
         if(url.endsWith("/cm"))
             return url.substring(0, url.length() - 3);
+        if(url.endsWith("/manhwa"))
+            return url.substring(0, url.length() - 7);
         return url;
     }
 
@@ -1099,7 +1274,9 @@ public class Utils {
         editor.putBoolean("stretch",data.getBoolean("stretch", false));
         editor.putInt("startTab",data.getInt("startTab", 0));
         editor.putString("url",data.getString("url", ""));
+        editor.putString("webtoonUrl",data.getString("webtoonUrl", CustomHttpClient.WEBTOON_URL));
         editor.putString("defUrl",data.getString("defUrl", "설정되지 않음"));
+        editor.putInt("baseMode", data.getInt("baseMode", MTitle.base_comic));
         editor.putBoolean("leftRight", data.getBoolean("leftRight", false));
         editor.putBoolean("autoUrl", data.getBoolean("autoUrl", true));
         editor.putFloat("pageControlButtonOffset", (float)data.getDouble("pageControlButtonOffset", -1));
@@ -1111,6 +1288,7 @@ public class Utils {
             CustomJSONObject data = new CustomJSONObject(readFileToString(f));
             jsonToPref(c, data);
             p.init(c);
+            p.forceWfwfSitePresetIfNeeded();
         }catch (Exception e){
             ml.melun.mangaview.report.CrashReporter.record(e);
             return false;
@@ -1123,6 +1301,7 @@ public class Utils {
             CustomJSONObject data = new CustomJSONObject(readUriToString(c, uri));
             jsonToPref(c, data);
             p.init(c);
+            p.forceWfwfSitePresetIfNeeded();
         }catch (Exception e){
             ml.melun.mangaview.report.CrashReporter.record(e);
             return false;
@@ -1147,7 +1326,9 @@ public class Utils {
             data.put("leftRight", sharedPref.getBoolean("leftRight", false));
             data.put("startTab",sharedPref.getInt("startTab", 0));
             data.put("url",sharedPref.getString("url", ""));
-            data.put("defUrl",sharedPref.getString("url", "설정되지 않음"));
+            data.put("webtoonUrl",sharedPref.getString("webtoonUrl", CustomHttpClient.WEBTOON_URL));
+            data.put("defUrl",sharedPref.getString("defUrl", "설정되지 않음"));
+            data.put("baseMode", sharedPref.getInt("baseMode", MTitle.base_comic));
             data.put("autoUrl", sharedPref.getBoolean("autoUrl", true));
             data.put("prevPageKey", sharedPref.getInt("prevPageKey", -1));
             data.put("nextPageKey", sharedPref.getInt("nextPageKey", -1));

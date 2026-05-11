@@ -22,16 +22,23 @@
         app:headerLayout="@layout/nav_header_main"
         app:menu="@menu/activity_main_drawer" />
 
-    <TextView
-        android:background="#BC000000"
-        android:gravity="center"
-        android:id="@+id/waiting_panel"
-        android:layout_height="match_parent"
+    <FrameLayout
         android:layout_width="match_parent"
-        android:text="다운로더 서비스 종료중..."
-        android:textAlignment="center"
-        android:textColor="@android:color/white"
-        android:textSize="20sp"
-        android:visibility="gone" />
+        android:layout_height="match_parent"
+        android:fitsSystemWindows="true">
+
+        <TextView
+            android:background="@color/appScrim"
+            android:gravity="center"
+            android:id="@+id/waiting_panel"
+            android:layout_height="match_parent"
+            android:layout_width="match_parent"
+            android:text="@string/downloader_stopping"
+            android:textAlignment="center"
+            android:textColor="@color/colorTextOnPrimary"
+            android:textSize="20sp"
+            android:visibility="gone" />
+
+    </FrameLayout>
 
 </androidx.drawerlayout.widget.DrawerLayout>

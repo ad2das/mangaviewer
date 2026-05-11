@@ -4,6 +4,7 @@ package ml.melun.mangaview.mangaview;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.webkit.CookieManager;
+import android.webkit.WebSettings;
 
 import org.json.JSONObject;
 
@@ -41,11 +42,15 @@ import static ml.melun.mangaview.Utils.CODE_SCOPED_STORAGE;
 public class CustomHttpClient {
     public static final String DEFAULT_COMIC_URL = "https://wfwf449.com/cm";
     public static final String WEBTOON_URL = "https://wfwf449.com";
+    public static final String NTK_COMIC_URL = "https://sbxh1.com/manhwa";
+    public static final String NTK_WEBTOON_URL = "https://sbxh1.com";
+    private static final String NTK_HOST = "sbxh1.com";
+    private static final String LEGACY_NTK_HOST = "ntk01.com";
     private static final long WFWF_DOMAIN_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L;
     private static final long WFWF_DOMAIN_FORCE_RETRY_INTERVAL_MS = 60 * 1000L;
     private static final long WFWF_DOMAIN_WAIT_TIMEOUT_MS = 6 * 1000L;
     private static final long COOKIE_SYNC_INTERVAL_MS = 30 * 1000L;
-    private static final int PAGE_CACHE_MAX_ENTRIES = 80;
+    private static final int PAGE_CACHE_MAX_ENTRIES = 200;
     private static final int MAX_HTTP_REQUESTS = 8;
     private static final int MAX_HTTP_REQUESTS_PER_HOST = 4;
     public OkHttpClient client;
@@ -54,6 +59,8 @@ public class CustomHttpClient {
     Map<String, Long> cookieSyncAt;
     Map<String, CachedPage> pageCache;
     Map<String, PageLoadState> pageLoads;
+    private volatile String lastCloudflareChallengeUrl = null;
+    private volatile boolean cloudflareCaptchaActive = false;
     private final ThreadLocal<RequestGroup> currentRequestGroup = requestGroupLocal();
 
     private ThreadLocal<RequestGroup> requestGroupLocal() {
@@ -62,6 +69,7 @@ public class CustomHttpClient {
     }
     private final Object wfwfDomainLock = new Object();
     private DomainResolveState wfwfDomainResolveState;
+    private DomainResolveState ntkDomainResolveState;
     private long wfwfDomainLastForcedRetry = 0;
     private Context context;
     public String agent = "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36";
@@ -77,7 +85,9 @@ public class CustomHttpClient {
                 return size() > PAGE_CACHE_MAX_ENTRIES;
             }
         };
+        loadDefaultUserAgent();
         loadSavedCookies();
+        loadSavedUserAgent();
         this.client = baseClient(new OkHttpClient.Builder()).build();
         this.unsafeFallbackClient = baseClient(getUnsafeOkHttpClient()).build();
 
@@ -86,8 +96,181 @@ public class CustomHttpClient {
     }
 
     public synchronized void setCookie(String k, String v){
+        if(k == null || k.length() == 0)
+            return;
+        if(v == null) {
+            cookies.remove(k);
+            persistCookies();
+            return;
+        }
         cookies.put(k, v);
         persistCookies();
+        if("cf_clearance".equalsIgnoreCase(k) && v.length() > 0)
+            saveClearanceToDisk();
+    }
+
+    public synchronized void setUserAgent(String userAgent) {
+        if(userAgent == null || userAgent.trim().length() == 0)
+            return;
+        agent = userAgent.trim();
+        context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
+                .edit()
+                .putString("httpUserAgent", agent)
+                .apply();
+    }
+    public synchronized void removeCookie(String k) {
+        cookies.remove(k);
+        persistCookies();
+    }
+    public synchronized boolean hasCloudflareClearance() {
+        if(isClearanceExpired()) {
+            clearCloudflareCookies();
+            return false;
+        }
+        for(String key : cookies.keySet()) {
+            if(!"cf_clearance".equalsIgnoreCase(key))
+                continue;
+            String value = cookies.get(key);
+            if(value != null && value.length() > 0)
+                return true;
+        }
+        return false;
+    }
+
+    public synchronized boolean hasNtkAccessProof() {
+        return hasCloudflareClearance();
+    }
+
+    public String getLastCloudflareChallengeUrl() {
+        return lastCloudflareChallengeUrl;
+    }
+
+    public void setCloudflareCaptchaActive(boolean active) {
+        cloudflareCaptchaActive = active;
+    }
+
+    public void markNtkAccessVerified() {
+        try {
+            context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
+                    .edit()
+                    .putLong("ntkAccessVerifiedAt", System.currentTimeMillis())
+                    .apply();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
+    public boolean hasRecentNtkAccessVerification() {
+        try {
+            SharedPreferences pref = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE);
+            long verifiedAt = pref.getLong("ntkAccessVerifiedAt", 0);
+            return verifiedAt > 0 && System.currentTimeMillis() - verifiedAt < 10 * 60 * 1000L;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public synchronized boolean hasFreshCloudflareClearance() {
+        if(!hasCloudflareClearance())
+            return false;
+        long remaining = cloudflareClearanceRemainingMs();
+        return remaining > 5 * 60 * 1000L;
+    }
+
+    private long cloudflareClearanceRemainingMs() {
+        try {
+            SharedPreferences pref = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE);
+            long expireAt = pref.getLong("cfClearanceExpireAt", 0);
+            return expireAt - System.currentTimeMillis();
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    public void saveClearanceToDisk() {
+        try {
+            String clearance = cookies.get("cf_clearance");
+            if(clearance == null || clearance.length() == 0)
+                return;
+            long expireAt = System.currentTimeMillis() + 45 * 60 * 1000L; // 45 minutes
+            context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
+                    .edit()
+                    .putString("cfClearanceValue", clearance)
+                    .putLong("cfClearanceExpireAt", expireAt)
+                    .apply();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
+    public void restoreClearanceFromDisk() {
+        try {
+            SharedPreferences pref = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE);
+            String value = pref.getString("cfClearanceValue", null);
+            long expireAt = pref.getLong("cfClearanceExpireAt", 0);
+            if(value == null || value.length() == 0 || expireAt <= System.currentTimeMillis())
+                return;
+            cookies.put("cf_clearance", value);
+            persistCookies();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
+    public boolean isClearanceExpired() {
+        try {
+            SharedPreferences pref = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE);
+            long expireAt = pref.getLong("cfClearanceExpireAt", 0);
+            if(expireAt == 0)
+                return true;
+            return expireAt <= System.currentTimeMillis();
+        } catch (Exception e) {
+            return true;
+        }
+    }
+    public synchronized void clearCloudflareCookies() {
+        boolean changed = false;
+        for(String key : new ArrayList<>(cookies.keySet())) {
+            String lower = key.toLowerCase(Locale.ROOT);
+            if(lower.startsWith("cf_") || "__cf_bm".equals(lower)) {
+                cookies.remove(key);
+                changed = true;
+            }
+        }
+        if(changed)
+            persistCookies();
+        context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
+                .edit()
+                .remove("cfClearanceValue")
+                .remove("cfClearanceExpireAt")
+                .remove("ntkAccessVerifiedAt")
+                .apply();
+    }
+
+    public void clearCloudflareWebViewCookies(String... urls) {
+        try {
+            CookieManager manager = CookieManager.getInstance();
+            if(urls == null)
+                return;
+            for(String url : urls) {
+                if(url == null || url.length() == 0)
+                    continue;
+                manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/");
+                manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=" + NTK_HOST);
+                manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=." + NTK_HOST);
+                manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=" + LEGACY_NTK_HOST);
+                manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=." + LEGACY_NTK_HOST);
+                manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/");
+                manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=" + NTK_HOST);
+                manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=." + NTK_HOST);
+                manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=" + LEGACY_NTK_HOST);
+                manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=." + LEGACY_NTK_HOST);
+            }
+            manager.flush();
+            clearCloudflareCookies();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
     }
     public synchronized void resetCookie(){
         this.cookies = new HashMap<>();
@@ -96,11 +279,17 @@ public class CustomHttpClient {
     }
 
     public void syncCookiesFromWebView(String url){
+        syncCookiesFromWebView(url, false);
+    }
+
+    public void syncCookiesFromWebView(String url, boolean force){
         try {
+            if(url == null || url.length() == 0)
+                return;
             long now = System.currentTimeMillis();
             synchronized (this) {
                 Long lastSync = cookieSyncAt.get(url);
-                if(lastSync != null && now - lastSync < COOKIE_SYNC_INTERVAL_MS)
+                if(!force && lastSync != null && now - lastSync < COOKIE_SYNC_INTERVAL_MS)
                     return;
                 cookieSyncAt.put(url, now);
             }
@@ -123,19 +312,33 @@ public class CustomHttpClient {
 
             synchronized (this) {
                 boolean changed = false;
+                boolean clearanceChanged = false;
                 for(String key : webViewCookies.keySet()) {
                     String value = webViewCookies.get(key);
+                    if("cf_clearance".equalsIgnoreCase(key) && !canAcceptWebViewClearance(value))
+                        continue;
                     if(!value.equals(cookies.get(key))) {
                         cookies.put(key, value);
                         changed = true;
+                        if("cf_clearance".equalsIgnoreCase(key))
+                            clearanceChanged = true;
                     }
                 }
                 if(changed)
                     persistCookies();
+                if(clearanceChanged)
+                    saveClearanceToDisk();
             }
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
+    }
+
+    private synchronized boolean canAcceptWebViewClearance(String value) {
+        return value != null
+                && value.trim().length() >= 20
+                && !"deleted".equalsIgnoreCase(value.trim())
+                && !isClearanceExpired();
     }
 
     private synchronized void loadSavedCookies(){
@@ -147,6 +350,27 @@ public class CustomHttpClient {
                 String k = it.next();
                 cookies.put(k, obj.getString(k));
             }
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
+    private synchronized void loadSavedUserAgent(){
+        try {
+            SharedPreferences pref = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE);
+            String saved = pref.getString("httpUserAgent", null);
+            if(saved != null && saved.trim().length() > 0)
+                agent = saved.trim();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
+    private synchronized void loadDefaultUserAgent(){
+        try {
+            String defaultAgent = WebSettings.getDefaultUserAgent(context);
+            if(defaultAgent != null && defaultAgent.trim().length() > 0)
+                agent = defaultAgent.trim();
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
@@ -170,6 +394,7 @@ public class CustomHttpClient {
         if(response == null)
             return;
         boolean changed = false;
+        boolean clearanceChanged = false;
         for(String c : response.headers("Set-Cookie")){
             int eq = c.indexOf("=");
             int semi = c.indexOf(";");
@@ -182,14 +407,28 @@ public class CustomHttpClient {
             if(!value.equals(cookies.get(key))) {
                 cookies.put(key, value);
                 changed = true;
+                if("cf_clearance".equalsIgnoreCase(key))
+                    clearanceChanged = true;
             }
         }
         if(changed)
             persistCookies();
+        if(clearanceChanged)
+            saveClearanceToDisk();
     }
 
     public synchronized String getCookie(String k){
         return cookies.get(k);
+    }
+
+    public synchronized String getCookieHeader() {
+        StringBuilder builder = new StringBuilder();
+        for(String key : cookies.keySet()) {
+            if(builder.length() > 0)
+                builder.append("; ");
+            builder.append(key).append('=').append(cookies.get(key));
+        }
+        return builder.toString();
     }
 
     public <T> T runWithRequestGroup(RequestGroup requestGroup, RequestWork<T> work) throws Exception {
@@ -210,7 +449,7 @@ public class CustomHttpClient {
     }
 
     public Response get(String url, Map<String, String> headers){
-//        System.out.println(url);
+        applyJitterIfNeeded(url);
         Response response;
         Call call = null;
         RequestGroup requestGroup = currentRequestGroup.get();
@@ -255,7 +494,26 @@ public class CustomHttpClient {
         if(url == null)
             return false;
         String lower = url.toLowerCase(Locale.ROOT);
-        return lower.contains("wfwf") || lower.contains("wolf");
+        return lower.contains("wfwf") || lower.contains("wolf") || lower.contains("ntk") || lower.contains("sbxh");
+    }
+
+    private void applyJitterIfNeeded(String url) {
+        if(url == null)
+            return;
+        String lower = url.toLowerCase(Locale.ROOT);
+        boolean isImage = lower.matches(".*\\.(jpg|jpeg|png|gif|webp|css|js|ico)(\\?.*)?$") || lower.contains("imgcloud") || lower.contains("stm.com") || lower.contains("cloud.com");
+        if(isImage)
+            return;
+        boolean ntk = isNtkUrl(lower) || isNtk();
+        if(!ntk)
+            return;
+        if(ntk && hasCloudflareClearance())
+            return;
+        try {
+            Thread.sleep(30 + (int)(Math.random() * 60));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     public static String readBody(Response response) throws Exception {
@@ -279,7 +537,9 @@ public class CustomHttpClient {
     }
 
     public boolean resolveWfwfDomainNow() {
-        return ensureWfwfDomain(true);
+        if(isNtk())
+            return false;
+        return ensureNumberedDomain(true);
     }
 
     private boolean ensureWfwfDomainForRetry() {
@@ -289,14 +549,16 @@ public class CustomHttpClient {
                 return false;
             wfwfDomainLastForcedRetry = now;
         }
-        return ensureWfwfDomain(true);
+        return ensureNumberedDomain(true);
     }
 
-    private boolean ensureWfwfDomain(boolean force) {
+    private boolean ensureNumberedDomain(boolean force) {
+        if(isNtk())
+            return force && ensureNtkDomain();
         try {
             String webtoonUrl = getWebtoonUrl();
             String root = WfwfDomainResolver.toRoot(webtoonUrl);
-            if(!WfwfDomainResolver.isWfwfUrl(root))
+            if(!WfwfDomainResolver.isSupportedNumberedUrl(root))
                 return false;
 
             SharedPreferences pref = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE);
@@ -326,8 +588,9 @@ public class CustomHttpClient {
                 String resolved = WfwfDomainResolver.resolve(client, root, headers, currentRequestGroup.get());
                 if(resolved != null && !resolved.equals(root)) {
                     p.setWebtoonUrl(resolved);
-                    p.setUrl(resolved + "/cm");
-                    p.setDefUrl(resolved + "/cm");
+                    String comicPath = isNtkUrl(resolved) ? "/manhwa" : "/cm";
+                    p.setUrl(resolved + comicPath);
+                    p.setDefUrl(resolved + comicPath);
                     resetCookie();
                     clearPageCache();
                     changed = true;
@@ -338,6 +601,52 @@ public class CustomHttpClient {
                     resolveState.changed = changed;
                     if(wfwfDomainResolveState == resolveState)
                         wfwfDomainResolveState = null;
+                }
+                resolveState.done.countDown();
+            }
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return false;
+        }
+    }
+
+    private boolean ensureNtkDomain() {
+        try {
+            String currentRoot = WfwfDomainResolver.toRoot(getWebtoonUrl());
+            if(!isNtkUrl(currentRoot))
+                return false;
+
+            DomainResolveState resolveState;
+            boolean shouldResolve = false;
+            synchronized (wfwfDomainLock) {
+                if(ntkDomainResolveState == null) {
+                    ntkDomainResolveState = new DomainResolveState();
+                    shouldResolve = true;
+                }
+                resolveState = ntkDomainResolveState;
+            }
+
+            if(!shouldResolve)
+                return waitForWfwfDomainResolve(resolveState);
+
+            boolean changed = false;
+            try {
+                Map<String, String> headers = new HashMap<>();
+                headers.put("User-Agent", agent);
+                headers.put("Referer", NtkDomainResolver.CHANNEL_URL);
+                String resolved = NtkDomainResolver.resolve(client, headers, currentRequestGroup.get());
+                if(resolved != null && isNtkUrl(resolved) && !resolved.equals(currentRoot)) {
+                    p.setNtkSitePreset(resolved);
+                    resetCookie();
+                    clearPageCache();
+                    changed = true;
+                }
+                return changed;
+            } finally {
+                synchronized (wfwfDomainLock) {
+                    resolveState.changed = changed;
+                    if(ntkDomainResolveState == resolveState)
+                        ntkDomainResolveState = null;
                 }
                 resolveState.done.countDown();
             }
@@ -367,10 +676,12 @@ public class CustomHttpClient {
     }
 
     public PageResponse mgetCachedPage(String url, long ttlMillis) throws Exception {
-        ensureWfwfDomain(false);
+        ensureNumberedDomain(false);
         String normalized = normalizePath(url);
         String cacheKey = getBaseUrl(normalized) + normalized;
         long now = System.currentTimeMillis();
+        if(isNtk())
+            ttlMillis = Math.max(ttlMillis * 5, 10 * 60 * 1000L);
         PageLoadState activeLoad = null;
         CachedPage staleCached = null;
         synchronized (this) {
@@ -396,6 +707,12 @@ public class CustomHttpClient {
                 throw new Exception("Request failed: " + normalized);
             int code = response.code();
             String body = readBody(response);
+            if(isCloudflareChallenge(code, body)) {
+                lastCloudflareChallengeUrl = getBaseUrl(normalized) + normalized;
+                if(!cloudflareCaptchaActive)
+                    clearCloudflareCookies();
+                throw new Exception("Cloudflare challenge");
+            }
             if(code >= 500 && staleCached != null)
                 return new PageResponse(staleCached.code, staleCached.body, true);
             if(code >= 200 && code < 400 && body.length() > 0 && looksCacheable(body)) {
@@ -481,6 +798,22 @@ public class CustomHttpClient {
         return getRootUrl(getComicUrl());
     }
 
+    public boolean isNtk() {
+        return isNtkUrl(getWebtoonUrl()) || isNtkUrl(getComicUrl());
+    }
+
+    public boolean isNtkUrl(String url) {
+        if(url == null)
+            return false;
+        String lower = url.toLowerCase(Locale.ROOT);
+        return lower.contains("://ntk")
+                || lower.contains("://newtoki")
+                || lower.contains("://" + NTK_HOST)
+                || lower.contains("://www." + NTK_HOST)
+                || lower.contains("://sbxh")
+                || lower.contains("://www.sbxh");
+    }
+
     private boolean isWebtoonPath(String path){
         if(path == null)
             return false;
@@ -488,16 +821,26 @@ public class CustomHttpClient {
                 || path.startsWith("webtoon")
                 || path.startsWith("/ing")
                 || path.startsWith("/end")
+                || path.startsWith("/manhwa")
                 || path.startsWith("/list?toon=")
                 || path.startsWith("/view?toon=")
                 || path.startsWith("/search.html")
                 || path.contains("bo_table=webtoon");
     }
 
+    private boolean isNtkPagePath(String path) {
+        if(path == null)
+            return false;
+        return path.startsWith("/")
+                && !path.matches(".*\\.(jpg|jpeg|png|gif|webp|css|js|ico)(\\?.*)?$");
+    }
+
     private String getRootUrl(String url){
         String trimmed = trimTrailingSlash(url);
         if(trimmed.endsWith("/cm"))
             return trimmed.substring(0, trimmed.length() - 3);
+        if(trimmed.endsWith("/manhwa"))
+            return trimmed.substring(0, trimmed.length() - 7);
         return trimmed;
     }
 
@@ -509,12 +852,13 @@ public class CustomHttpClient {
 
 
     public Response mget(String url, Boolean useDefaultCookies, Map<String, String> customCookie){
-        ensureWfwfDomain(false);
+        ensureNumberedDomain(false);
         if(customCookie==null)
             customCookie = new HashMap<>();
         url = normalizePath(url);
         String baseUrl = getBaseUrl(url);
         Map<String, String> headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
+        applyNtkApiHeaders(headers, baseUrl, url);
 
         Response response = get(baseUrl + url, headers);
         if(shouldRetryWithResolvedDomain(response)) {
@@ -523,6 +867,7 @@ public class CustomHttpClient {
             ensureWfwfDomainForRetry();
             baseUrl = getBaseUrl(url);
             headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
+            applyNtkApiHeaders(headers, baseUrl, url);
             response = get(baseUrl + url, headers);
         }
         return response;
@@ -531,7 +876,8 @@ public class CustomHttpClient {
     private Map<String, String> buildHeaders(String baseUrl, Boolean useDefaultCookies, Map<String, String> customCookie) {
         Map<String, String> cookie = new HashMap<>();
         if(Boolean.TRUE.equals(useDefaultCookies)) {
-            syncCookiesFromWebView(baseUrl);
+            if(!shouldSkipWebViewCookieSync(baseUrl))
+                syncCookiesFromWebView(baseUrl);
             synchronized (this) {
                 cookie.putAll(this.cookies);
             }
@@ -553,13 +899,62 @@ public class CustomHttpClient {
         headers.put("Cookie", cbuilder.toString());
         headers.put("User-Agent", agent);
         headers.put("Referer", baseUrl);
+        if(isNtkUrl(baseUrl)) {
+            headers.put("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8");
+            headers.put("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7");
+            headers.put("Cache-Control", "max-age=0");
+            headers.put("Upgrade-Insecure-Requests", "1");
+            headers.put("Sec-Fetch-Dest", "document");
+            headers.put("Sec-Fetch-Mode", "navigate");
+            headers.put("Sec-Fetch-Site", "same-origin");
+            headers.put("Sec-Fetch-User", "?1");
+            putClientHintHeaders(headers);
+        }
         return headers;
+    }
+
+    private boolean shouldSkipWebViewCookieSync(String baseUrl) {
+        return isNtkUrl(baseUrl) && hasFreshCloudflareClearance();
+    }
+
+    private void applyNtkApiHeaders(Map<String, String> headers, String baseUrl, String path) {
+        if(headers == null || !isNtkUrl(baseUrl) || path == null || !path.startsWith("/api/"))
+            return;
+        headers.put("Accept", "application/json,text/plain,*/*");
+        headers.put("Sec-Fetch-Dest", "empty");
+        headers.put("Sec-Fetch-Mode", "cors");
+        headers.put("Sec-Fetch-Site", "same-origin");
+        headers.remove("Upgrade-Insecure-Requests");
+        headers.remove("Sec-Fetch-User");
+    }
+
+    private void putClientHintHeaders(Map<String, String> headers) {
+        int chromeMajor = chromeMajorVersion(agent);
+        String version = chromeMajor > 0 ? String.valueOf(chromeMajor) : "147";
+        headers.put("sec-ch-ua", "\"Chromium\";v=\"" + version + "\", \"Android WebView\";v=\"" + version + "\", \"Not A(Brand\";v=\"24\"");
+        headers.put("sec-ch-ua-mobile", "?1");
+        headers.put("sec-ch-ua-platform", "\"Android\"");
+    }
+
+    private static int chromeMajorVersion(String userAgent) {
+        try {
+            if(userAgent == null)
+                return -1;
+            java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("Chrome/(\\d+)").matcher(userAgent);
+            if(!matcher.find())
+                return -1;
+            return Integer.parseInt(matcher.group(1));
+        } catch (Exception e) {
+            return -1;
+        }
     }
 
     private boolean shouldRetryWithResolvedDomain(Response response) {
         if(response == null)
             return true;
         int code = response.code();
+        if(isNtk())
+            return code == 301 || code == 302 || code == 404 || code >= 500;
         return code == 301 || code == 302 || code == 403 || code == 404 || code >= 500;
     }
 
@@ -574,10 +969,44 @@ public class CustomHttpClient {
         return lower.contains("webtoon-list")
                 || lower.contains("searchitem")
                 || lower.contains("toon=")
+                || lower.contains("/webtoon/")
+                || lower.contains("/manhwa/")
                 || lower.contains("image-view")
                 || lower.contains("webtoon-body")
                 || lower.contains("miso-post-gallery")
                 || lower.contains("post-row");
+    }
+
+    private boolean isCloudflareChallenge(int code, String body) {
+        if(code != 403 || body == null)
+            return false;
+        String lower = body.toLowerCase(Locale.ROOT);
+        if(looksLikeNtkNormalPage(lower))
+            return false;
+        return lower.contains("cf-mitigated")
+                || lower.contains("challenges.cloudflare.com")
+                || lower.contains("cf-challenge")
+                || lower.contains("cf-turnstile")
+                || lower.contains("cf-please-wait")
+                || lower.contains("turnstile")
+                || lower.contains("__cf_bm")
+                || lower.contains("checking your browser")
+                || lower.contains("just a moment");
+    }
+
+    public boolean isCloudflareChallengeResponse(int code, String body) {
+        return isCloudflareChallenge(code, body);
+    }
+
+    private boolean looksLikeNtkNormalPage(String lowerBody) {
+        if(lowerBody == null || lowerBody.length() < 500)
+            return false;
+        return (lowerBody.contains("newtoki") || lowerBody.contains("뉴토끼"))
+                && (lowerBody.contains("실시간 웹툰 랭킹")
+                || lowerBody.contains("실시간 만화 랭킹")
+                || lowerBody.contains("/webtoon/")
+                || lowerBody.contains("/manhwa/")
+                || lowerBody.contains("webtoon-list"));
     }
 
     public static class PageResponse {

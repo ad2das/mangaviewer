@@ -7,7 +7,7 @@ import java.util.List;
 
 
 public class UpdatedList {
-    private static final long PAGE_CACHE_TTL_MS = 30 * 1000L;
+    private static final long PAGE_CACHE_TTL_MS = 60 * 1000L;
     private static final int MAX_TIMEOUT_RETRIES = 2;
     private static final int UPDATE_LIMIT = 60;
 

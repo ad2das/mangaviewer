@@ -3,101 +3,118 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
-    android:layout_height="88dp"
-    android:layout_marginStart="@dimen/app_space_lg"
-    android:layout_marginEnd="@dimen/app_space_lg"
-    android:background="@color/appCard"
-    android:foreground="?android:attr/selectableItemBackground">
+    android:layout_height="wrap_content"
+    android:paddingStart="12dp"
+    android:paddingEnd="12dp"
+    android:paddingTop="6dp"
+    android:paddingBottom="6dp"
+    android:background="@color/appSurface">
 
     <androidx.cardview.widget.CardView
-        android:id="@+id/episodeThumbCard"
-        android:layout_width="58dp"
-        android:layout_height="58dp"
-        android:layout_marginStart="@dimen/app_space_xs"
-        app:cardCornerRadius="6dp"
-        app:cardElevation="0dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        app:cardCornerRadius="14dp"
+        app:cardElevation="2dp"
+        app:cardBackgroundColor="@color/appCard"
+        app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent">
+        app:layout_constraintEnd_toEndOf="parent">
 
-        <ImageView
-            android:id="@+id/episodeThumb"
+        <androidx.constraintlayout.widget.ConstraintLayout
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:background="@drawable/app_cover_placeholder"
-            android:scaleType="centerCrop" />
+            android:layout_height="wrap_content"
+            android:minHeight="96dp"
+            android:foreground="?android:attr/selectableItemBackground">
+
+            <androidx.cardview.widget.CardView
+                android:id="@+id/episodeThumbCard"
+                android:layout_width="64dp"
+                android:layout_height="64dp"
+                android:layout_marginStart="14dp"
+                app:cardCornerRadius="12dp"
+                app:cardElevation="0dp"
+                app:layout_constraintBottom_toBottomOf="parent"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toTopOf="parent">
+
+                <ImageView
+                    android:id="@+id/episodeThumb"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/app_cover_placeholder"
+                    android:contentDescription="@string/episode_thumbnail"
+                    android:scaleType="centerCrop" />
+
+            </androidx.cardview.widget.CardView>
+
+            <TextView
+                android:id="@+id/episode"
+                style="@style/AppText.Body"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:layout_marginTop="16dp"
+                android:layout_marginEnd="12dp"
+                android:ellipsize="end"
+                android:maxLines="2"
+                android:textStyle="bold"
+                android:textColor="@color/appText"
+                android:textSize="15sp"
+                app:layout_constraintEnd_toStartOf="@+id/episodeAction"
+                app:layout_constraintStart_toEndOf="@+id/episodeThumbCard"
+                app:layout_constraintTop_toTopOf="parent"
+                tools:text="#179 - 마지막 전투" />
+
+            <TextView
+                android:id="@+id/date"
+                style="@style/AppText.Meta"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:layout_marginTop="6dp"
+                android:layout_marginEnd="12dp"
+                android:ellipsize="end"
+                android:maxLines="1"
+                app:layout_constraintEnd_toStartOf="@+id/episodeAction"
+                app:layout_constraintStart_toEndOf="@+id/episodeThumbCard"
+                app:layout_constraintTop_toBottomOf="@+id/episode"
+                tools:text="2026.05.09" />
+
+            <TextView
+                android:id="@+id/episodeNew"
+                android:layout_width="wrap_content"
+                android:layout_height="24dp"
+                android:background="@drawable/app_accent_button_bg"
+                android:gravity="center"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="@string/new_badge"
+                android:textColor="@color/colorTextOnPrimary"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                app:layout_constraintBottom_toBottomOf="@+id/episode"
+                app:layout_constraintEnd_toStartOf="@+id/episodeAction"
+                app:layout_constraintTop_toTopOf="@+id/episode" />
+
+            <ImageView
+                android:id="@+id/episodeAction"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginEnd="12dp"
+                android:background="@drawable/app_soft_chip_bg"
+                android:clickable="true"
+                android:contentDescription="@string/download_episode"
+                android:focusable="true"
+                android:foreground="?attr/selectableItemBackgroundBorderless"
+                android:padding="12dp"
+                app:layout_constraintBottom_toBottomOf="parent"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintTop_toTopOf="parent"
+                app:srcCompat="@drawable/download" />
+
+        </androidx.constraintlayout.widget.ConstraintLayout>
 
     </androidx.cardview.widget.CardView>
-
-    <TextView
-        android:id="@+id/episode"
-        style="@style/AppText.Body"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="@dimen/app_space_md"
-        android:layout_marginTop="@dimen/app_space_md"
-        android:layout_marginEnd="@dimen/app_space_sm"
-        android:ellipsize="end"
-        android:maxLines="2"
-        android:textStyle="bold"
-        app:autoSizeMaxTextSize="15sp"
-        app:autoSizeMinTextSize="11sp"
-        app:autoSizeStepGranularity="1sp"
-        app:autoSizeTextType="uniform"
-        app:layout_constraintEnd_toStartOf="@+id/episodeAction"
-        app:layout_constraintStart_toEndOf="@+id/episodeThumbCard"
-        app:layout_constraintTop_toTopOf="parent"
-        tools:text="#179" />
-
-    <TextView
-        android:id="@+id/date"
-        style="@style/AppText.Meta"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="@dimen/app_space_md"
-        android:layout_marginTop="@dimen/app_space_sm"
-        android:layout_marginEnd="@dimen/app_space_sm"
-        android:ellipsize="end"
-        android:maxLines="1"
-        app:layout_constraintEnd_toStartOf="@+id/episodeAction"
-        app:layout_constraintStart_toEndOf="@+id/episodeThumbCard"
-        app:layout_constraintTop_toBottomOf="@+id/episode"
-        tools:text="May 1, 2026" />
-
-    <TextView
-        android:id="@+id/episodeNew"
-        android:layout_width="wrap_content"
-        android:layout_height="22dp"
-        android:background="@drawable/app_accent_button_bg"
-        android:gravity="center"
-        android:paddingStart="7dp"
-        android:paddingEnd="7dp"
-        android:text="NEW"
-        android:textColor="@android:color/white"
-        android:textSize="@dimen/app_text_caption"
-        android:textStyle="bold"
-        app:layout_constraintBottom_toBottomOf="@+id/episode"
-        app:layout_constraintEnd_toStartOf="@+id/episodeAction"
-        app:layout_constraintTop_toTopOf="@+id/episode" />
-
-    <ImageView
-        android:id="@+id/episodeAction"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
-        android:background="@drawable/app_soft_chip_bg"
-        android:padding="9dp"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toTopOf="parent"
-        app:srcCompat="@drawable/download" />
-
-    <View
-        android:id="@+id/view"
-        android:layout_width="0dp"
-        android:layout_height="1dp"
-        android:background="@color/appDivider"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="@+id/episode" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

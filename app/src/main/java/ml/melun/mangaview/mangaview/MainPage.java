@@ -13,7 +13,7 @@ import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 
 
 public class MainPage {
-    private static final long PAGE_CACHE_TTL_MS = 60 * 1000L;
+    private static final long PAGE_CACHE_TTL_MS = 3 * 60 * 1000L;
     private static final int MAX_TIMEOUT_RETRIES = 2;
     List<Manga> recent, favUpdate, onlineRecent;
     List<RankingTitle> ranking;

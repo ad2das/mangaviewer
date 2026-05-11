@@ -5,7 +5,6 @@ import androidx.recyclerview.widget.DiffUtil;
 import androidx.cardview.widget.CardView;
 import androidx.recyclerview.widget.RecyclerView;
 import android.view.LayoutInflater;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Filter;
@@ -19,15 +18,16 @@ import com.bumptech.glide.Glide;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.Executor;
 
 import ml.melun.mangaview.R;
-import ml.melun.mangaview.Utils;
-import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.MTitle;
-import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.runtime.AppDispatchers;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getGlideUrl;
@@ -50,6 +50,12 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     String path = "";
     Filter filter;
     boolean searching = false;
+    private final Executor diffExecutor = AppDispatchers.uiDiff();
+    private int diffGeneration = 0;
+    private long lastResumeOpenAt = 0L;
+    private int lastResumeOpenPosition = RecyclerView.NO_POSITION;
+    private final Map<String, String> tagTextCache = new HashMap<>();
+    private final Map<String, BindMeta> bindMetaCache = new HashMap<>();
 
     public TitleAdapter(Context context) {
         init(context);
@@ -62,6 +68,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     public void setForceThumbnail(boolean b){
         this.forceThumbnail = b;
     }
+
     void init(Context context){
         dark = p.getDarkTheme();
         save = p.getDataSave();
@@ -74,8 +81,9 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             @Override
             protected FilterResults performFiltering(CharSequence charSequence) {
                 String query = charSequence.toString();
+                ArrayList<Title> next;
                 if(query.isEmpty() || query.length() == 0){
-                    mDataFiltered = mData;
+                    next = new ArrayList<>(mData);
                     searching = false;
                 }else{
                     searching = true;
@@ -86,10 +94,10 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                                 || t.getAuthor().toLowerCase(Locale.ROOT).contains(normalizedQuery))
                             filtered.add(t);
                     }
-                    mDataFiltered = filtered;
+                    next = filtered;
                 }
                 FilterResults res = new FilterResults();
-                res.values = mDataFiltered;
+                res.values = next;
                 return res;
             }
 
@@ -107,13 +115,16 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(!isValidPosition(position))
             return RecyclerView.NO_ID;
         Title title = mDataFiltered.get(position);
-        return (title.getBaseMode() + ":" + title.getId()).hashCode();
+        return (sourceKey(title) + ":" + title.getBaseMode() + ":" + title.getId()).hashCode();
     }
 
     public void removeAll(){
+        diffGeneration++;
         int originSize = mData.size();
         mData.clear();
         mDataFiltered.clear();
+        tagTextCache.clear();
+        bindMetaCache.clear();
         if(originSize > 0)
             notifyItemRangeRemoved(0,originSize);
     }
@@ -143,6 +154,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             }
         }
         mDataFiltered = mData;
+        bindMetaCache.clear();
         if(inserted > 0)
             notifyItemRangeInserted(oSize, inserted);
     }
@@ -151,7 +163,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(mDataFiltered == null || count <= 0 || (save && !forceThumbnail))
             return;
         int start = Math.max(0, startPosition);
-        int end = Math.min(mDataFiltered.size(), start + count);
+        int end = Math.min(mDataFiltered.size(), start + Math.min(count, save ? 8 : 20));
         for(int i = start; i < end; i++) {
             Title data = mDataFiltered.get(i);
             if(data == null)
@@ -173,35 +185,68 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         ArrayList<Title> next = normalizeTitles(t);
         mData = next;
         searching = false;
+        tagTextCache.clear();
+        bindMetaCache.clear();
         dispatchFilteredList(next);
+    }
+
+    public void setDataImmediate(List<?> t){
+        ArrayList<Title> next = normalizeTitles(t);
+        mData = next;
+        mDataFiltered = new ArrayList<>(next);
+        searching = false;
+        diffGeneration++;
+        tagTextCache.clear();
+        bindMetaCache.clear();
+        notifyDataSetChanged();
     }
 
     private void dispatchFilteredList(ArrayList<Title> next) {
         final ArrayList<Title> old = new ArrayList<>(mDataFiltered);
         final ArrayList<Title> target = new ArrayList<>(next);
-        DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
-            @Override
-            public int getOldListSize() {
-                return old.size();
-            }
+        if(listContentSignature(old).equals(listContentSignature(target))) {
+            mDataFiltered = target;
+            return;
+        }
+        final int generation = ++diffGeneration;
+        diffExecutor.execute(() -> {
+            DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
+                @Override
+                public int getOldListSize() {
+                    return old.size();
+                }
 
-            @Override
-            public int getNewListSize() {
-                return target.size();
-            }
+                @Override
+                public int getNewListSize() {
+                    return target.size();
+                }
 
-            @Override
-            public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
-                return sameTitle(old.get(oldItemPosition), target.get(newItemPosition));
-            }
+                @Override
+                public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
+                    return sameTitle(old.get(oldItemPosition), target.get(newItemPosition));
+                }
 
-            @Override
-            public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
-                return titleContentKey(old.get(oldItemPosition)).equals(titleContentKey(target.get(newItemPosition)));
-            }
-        }, false);
-        mDataFiltered = next;
-        diff.dispatchUpdatesTo(this);
+                @Override
+                public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
+                    return titleContentKey(old.get(oldItemPosition)).equals(titleContentKey(target.get(newItemPosition)));
+                }
+            }, false);
+            AppDispatchers.runOnMain(() -> {
+                if(generation != diffGeneration)
+                    return;
+                mDataFiltered = target;
+                diff.dispatchUpdatesTo(this);
+            });
+        });
+    }
+
+    private String listContentSignature(List<Title> titles) {
+        if(titles == null || titles.size() == 0)
+            return "";
+        StringBuilder builder = new StringBuilder(titles.size() * 32);
+        for(Title title : titles)
+            builder.append(titleContentKey(title)).append('\n');
+        return builder.toString();
     }
 
     private ArrayList<Title> normalizeTitles(List<?> source) {
@@ -223,20 +268,26 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     }
 
     private boolean sameTitle(Title a, Title b) {
-        return a != null && b != null && a.getId() == b.getId() && a.getBaseMode() == b.getBaseMode();
+        return a != null && b != null
+                && a.getId() == b.getId()
+                && a.getBaseMode() == b.getBaseMode()
+                && sourceKey(a).equals(sourceKey(b));
     }
 
     private String titleContentKey(Title title) {
         if(title == null)
             return "";
         return title.getName() + "|" + title.getThumb() + "|" + title.getAuthor() + "|"
-                + title.getRelease() + "|" + title.getBookmark() + "|" + title.getTags();
+                + title.getRelease() + "|" + title.getBookmark() + "|" + title.getTags()
+                + "|" + title.getSourceSite();
     }
 
     public void clearData(){
         int oldSize = getItemCount();
         mData.clear();
         mDataFiltered.clear();
+        tagTextCache.clear();
+        bindMetaCache.clear();
         if(oldSize > 0)
             notifyItemRangeRemoved(0, oldSize);
     }
@@ -273,23 +324,15 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     @Override
     public void onBindViewHolder(ViewHolder holder, int position) {
         Title data = mDataFiltered.get(position);
-        applyStoredBookmark(data);
+        BindMeta bindMeta = bindMeta(data);
         String title = data.getName();
         String thumb = data.getThumb();
         if(thumb == null)
             thumb = "";
         String author = data.getAuthor();
-        StringBuilder tags = new StringBuilder();
-        int bookmark = data.getBookmark();
+        int bookmark = bindMeta.bookmark;
         holder.baseModeStr.setText(data.getBaseModeStr());
-        for (String s : data.getTags()) {
-            if(s == null || s.length() == 0)
-                continue;
-            if(tags.length() > 0)
-                tags.append(" / ");
-            tags.append(s);
-        }
-        holder.tags.setText(tags.toString());
+        holder.tags.setText(bindMeta.tags);
         holder.tagContainer.setVisibility(View.VISIBLE);
 
         holder.name.setText(title);
@@ -297,11 +340,11 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         String meta = data.getRelease();
         if(meta == null || meta.length() == 0)
             meta = author;
-        String progressLabel = progressLabel(data);
+        String progressLabel = bindMeta.progressLabel;
         if(progressLabel.length() > 0)
             meta = progressLabel;
         holder.author.setText(meta);
-        int progressPercent = readingProgressPercent(data);
+        int progressPercent = bindMeta.progressPercent;
         if(holder.progress != null) {
             holder.progress.setVisibility(progressPercent > 0 ? View.VISIBLE : View.GONE);
             holder.progress.setProgress(progressPercent);
@@ -349,22 +392,76 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         }
         if(bookmark>0 && resume) {
             holder.resume.setVisibility(View.VISIBLE);
-            warmupResume(data, bookmark, position);
+            holder.resumeSiteIcon.setVisibility(View.VISIBLE);
+            bindResumeSiteIcon(holder.resumeSiteIcon, bindMeta.sourceSite);
         }
-        else holder.resume.setVisibility(View.GONE);
+        else {
+            holder.resume.setVisibility(View.GONE);
+            holder.resumeSiteIcon.setVisibility(View.GONE);
+        }
 
     }
 
-    private void warmupResume(Title title, int bookmark, int position) {
-        if(title == null || bookmark <= 0 || position > 10)
-            return;
-        Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
-        manga.setTitle(title);
-        manga.setTitleId(title.getId());
-        List<Manga> episodes = Utils.snapshotEpisodes(title);
-        if(episodes.size() > 0)
-            manga.setEps(episodes);
-        ViewerWarmupManager.warmupContinueImmediate(mainContext, manga, title);
+    private BindMeta bindMeta(Title title) {
+        if(title == null)
+            return BindMeta.EMPTY;
+        String key = titleContentKey(title) + "|" + title.getBookmark() + "|" + p.getLocalDataVersion();
+        BindMeta cached = bindMetaCache.get(key);
+        if(cached != null)
+            return cached;
+        applyStoredBookmark(title);
+        int progressPercent = readingProgressPercent(title);
+        BindMeta meta = new BindMeta(title.getBookmark(), displayTags(title), progressLabel(title), progressPercent, sourceSiteForTitle(title));
+        if(bindMetaCache.size() > 512)
+            bindMetaCache.clear();
+        bindMetaCache.put(key, meta);
+        return meta;
+    }
+
+    private void bindResumeSiteIcon(ImageView view, String sourceSite) {
+        boolean ntk = "ntk".equals(sourceSite);
+        view.setImageResource(ntk ? R.drawable.ic_site_ntk : R.drawable.ic_site_wfwf);
+        view.setContentDescription(ntk ? "NTK" : "WFWF");
+    }
+
+    private String sourceSiteForTitle(Title title) {
+        if(title == null || p == null)
+            return "wfwf";
+        String source = title.getSourceSite();
+        if(source == null || source.length() == 0)
+            source = p.resolveSourceSite(title);
+        return "ntk".equals(source) ? "ntk" : "wfwf";
+    }
+
+    private String sourceKey(MTitle title) {
+        if(title == null || p == null)
+            return "";
+        String source = title.getSourceSite();
+        if(source == null || source.length() == 0)
+            source = p.resolveKnownSourceSite(title);
+        return source == null ? "" : source;
+    }
+
+    private String displayTags(Title title) {
+        if(title == null)
+            return "";
+        String key = titleContentKey(title) + "|tags";
+        String cached = tagTextCache.get(key);
+        if(cached != null)
+            return cached;
+        StringBuilder tags = new StringBuilder();
+        for(String s : title.getTags()) {
+            if(s == null || s.length() == 0)
+                continue;
+            if(tags.length() > 0)
+                tags.append(" / ");
+            tags.append(s);
+        }
+        String value = tags.toString();
+        if(tagTextCache.size() > 512)
+            tagTextCache.clear();
+        tagTextCache.put(key, value);
+        return value;
     }
 
     int dp(int value) {
@@ -378,7 +475,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(bookmark <= 0)
             bookmark = title.getBookmarkEpisodeId();
         if(bookmark <= 0)
-            bookmark = findStoredProgressBookmark(title);
+            bookmark = p.getStoredProgressBookmark(title);
         if(bookmark > 0)
             title.setBookmark(bookmark);
     }
@@ -392,31 +489,10 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(bookmark <= 0)
             bookmark = title.getBookmarkEpisodeId();
         if(bookmark <= 0)
-            bookmark = findStoredProgressBookmark(title);
+            bookmark = p.getStoredProgressBookmark(title);
         if(bookmark > 0)
             title.setBookmark(bookmark);
         return bookmark;
-    }
-
-    private int findStoredProgressBookmark(Title title) {
-        int bookmark = findStoredProgressBookmark(title, Utils.snapshotList(p.getRecent()));
-        if(bookmark > 0)
-            return bookmark;
-        return findStoredProgressBookmark(title, Utils.snapshotList(p.getFavorite()));
-    }
-
-    private int findStoredProgressBookmark(Title title, List<MTitle> source) {
-        if(title == null || source == null)
-            return -1;
-        for(MTitle stored : source) {
-            if(stored == null)
-                continue;
-            if(stored.getId() == title.getId()
-                    && stored.getBaseMode() == title.getBaseMode()
-                    && stored.getBookmarkEpisodeId() > 0)
-                return stored.getBookmarkEpisodeId();
-        }
-        return -1;
     }
 
     private int readingProgressPercent(Title title) {
@@ -453,10 +529,54 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     private int totalEpisodeCount(Title title) {
         if(title == null)
             return 0;
-        int episodeCount = title.getEpisodeCount();
-        if(episodeCount <= 0)
-            episodeCount = title.getEpsCount();
-        return episodeCount;
+        return title.getDisplayEpisodeCount(title.getEpsCount());
+    }
+
+    private static final class BindMeta {
+        static final BindMeta EMPTY = new BindMeta(0, "", "", 0, "wfwf");
+        final int bookmark;
+        final String tags;
+        final String progressLabel;
+        final int progressPercent;
+        final String sourceSite;
+
+        BindMeta(int bookmark, String tags, String progressLabel, int progressPercent, String sourceSite) {
+            this.bookmark = bookmark;
+            this.tags = tags == null ? "" : tags;
+            this.progressLabel = progressLabel == null ? "" : progressLabel;
+            this.progressPercent = progressPercent;
+            this.sourceSite = sourceSite == null ? "wfwf" : sourceSite;
+        }
+    }
+
+    public boolean performItemClick(int position) {
+        if(!isValidPosition(position) || mClickListener == null)
+            return false;
+        mClickListener.onItemClick(position);
+        return true;
+    }
+
+    public boolean performResumeClick(int position) {
+        if(!isValidPosition(position) || mClickListener == null)
+            return false;
+        long now = android.os.SystemClock.uptimeMillis();
+        if(position == lastResumeOpenPosition && now - lastResumeOpenAt < 700)
+            return false;
+        Title title = mDataFiltered.get(position);
+        int bookmark = resolveResumeBookmark(title);
+        if(bookmark <= 0)
+            return false;
+        lastResumeOpenPosition = position;
+        lastResumeOpenAt = now;
+        mClickListener.onResumeClick(position, bookmark);
+        return true;
+    }
+
+    public boolean performItemLongClick(View anchorView, int position) {
+        if(!longClickEnabled || !isValidPosition(position) || mClickListener == null)
+            return false;
+        mClickListener.onLongClick(anchorView, position);
+        return true;
     }
 
     @Override
@@ -469,6 +589,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     class ViewHolder extends RecyclerView.ViewHolder{
         TextView name;
         ImageView thumb, fav;
+        ImageView resumeSiteIcon;
         TextView author;
         TextView tags;
         TextView recommend_c, battery_c, bookmark_c;
@@ -479,8 +600,6 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         CardView card;
         View content;
         View thumbCard;
-        long lastResumeOpenAt = 0L;
-        int lastResumeOpenPosition = RecyclerView.NO_POSITION;
 
         View tagContainer;
         View counterContainer;
@@ -493,8 +612,9 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             tags = itemView.findViewById(R.id.TitleTag);
             card = itemView.findViewById(R.id.titleCard);
             content = itemView.findViewById(R.id.titleContent);
-            thumbCard = itemView.findViewById(R.id.thumbCard);
+            thumbCard = itemView.findViewById(R.id.Thumb);
             resume = itemView.findViewById(R.id.epsButton);
+            resumeSiteIcon = itemView.findViewById(R.id.TitleResumeSiteIcon);
             recommend_c = itemView.findViewById(R.id.TitleRecommend_c);
             battery_c = itemView.findViewById(R.id.TitleBattery_c);
             bookmark_c = itemView.findViewById(R.id.TitleBookmark_c);
@@ -510,89 +630,31 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                 card.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.colorDarkBackground));
                 resume.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.resumeDark));
             }
-            View.OnLongClickListener longClickListener = v -> {
-                if(!longClickEnabled)
-                    return false;
-                int position = getAdapterPosition();
-                if(!isValidPosition(position) || mClickListener == null)
-                    return false;
-                mClickListener.onLongClick(v, position);
-                return true;
-            };
-            itemView.setOnLongClickListener(longClickListener);
-            card.setOnLongClickListener(longClickListener);
-            content.setOnLongClickListener(longClickListener);
-            thumbCard.setOnLongClickListener(longClickListener);
-            name.setOnLongClickListener(longClickListener);
-            thumb.setOnLongClickListener(longClickListener);
-            author.setOnLongClickListener(longClickListener);
-            tags.setOnLongClickListener(longClickListener);
-            baseModeStr.setOnLongClickListener(longClickListener);
-            progress.setOnLongClickListener(longClickListener);
-            progressText.setOnLongClickListener(longClickListener);
-            tagContainer.setOnLongClickListener(longClickListener);
-            View.OnClickListener clickListener = v -> openItem();
-            itemView.setOnClickListener(clickListener);
-            card.setOnClickListener(clickListener);
-            content.setOnClickListener(clickListener);
-            thumbCard.setOnClickListener(clickListener);
-            name.setOnClickListener(clickListener);
-            thumb.setOnClickListener(clickListener);
-            author.setOnClickListener(clickListener);
-            tags.setOnClickListener(clickListener);
-            baseModeStr.setOnClickListener(clickListener);
-            progress.setOnClickListener(clickListener);
-            progressText.setOnClickListener(clickListener);
-            tagContainer.setOnClickListener(clickListener);
-            resume.setOnClickListener(v -> openResume());
-            resume.setOnTouchListener((v, event) -> {
-                if(event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                    v.setPressed(true);
-                    openResumeImmediately();
-                    return true;
-                }
-                if(event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
-                    v.setPressed(false);
-                    return true;
-                }
-                return false;
-            });
-            resume.setOnLongClickListener(longClickListener);
-
+            disableTouchTarget(itemView);
+            disableTouchTarget(card);
+            disableTouchTarget(content);
+            disableTouchTarget(thumbCard);
+            disableTouchTarget(name);
+            disableTouchTarget(thumb);
+            disableTouchTarget(author);
+            disableTouchTarget(tags);
+            disableTouchTarget(baseModeStr);
+            disableTouchTarget(progress);
+            disableTouchTarget(progressText);
+            disableTouchTarget(tagContainer);
+            disableTouchTarget(resume);
         }
+    }
 
-        private void openItem() {
-            int position = getAdapterPosition();
-            if(!isValidPosition(position) || mClickListener == null)
-                return;
-            mClickListener.onItemClick(position);
-        }
-
-        private void openResume() {
-            int position = getAdapterPosition();
-            if(!isValidPosition(position) || mClickListener == null)
-                return;
-            long now = android.os.SystemClock.uptimeMillis();
-            if(position == lastResumeOpenPosition && now - lastResumeOpenAt < 700)
-                return;
-            lastResumeOpenPosition = position;
-            lastResumeOpenAt = now;
-            Title title = mDataFiltered.get(position);
-            int bookmark = resolveResumeBookmark(title);
-            if(bookmark <= 0)
-                return;
-            mClickListener.onResumeClick(position, bookmark);
-        }
-
-        private void openResumeImmediately() {
-            int position = getAdapterPosition();
-            if(!isValidPosition(position))
-                return;
-            Title title = mDataFiltered.get(position);
-            int bookmark = resolveResumeBookmark(title);
-            warmupResume(title, bookmark, position);
-            openResume();
-        }
+    private void disableTouchTarget(View view) {
+        if(view == null)
+            return;
+        view.setOnClickListener(null);
+        view.setOnLongClickListener(null);
+        view.setOnTouchListener(null);
+        view.setClickable(false);
+        view.setLongClickable(false);
+        view.setFocusable(false);
     }
 
     public void setResume(boolean resume){

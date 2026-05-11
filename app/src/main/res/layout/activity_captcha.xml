@@ -32,10 +32,83 @@
         android:textAlignment="center"
         android:textColor="@color/appText"
         android:textStyle="bold"
-        app:layout_constraintBottom_toTopOf="@+id/progressBar"
+        app:layout_constraintBottom_toTopOf="@+id/captchaActions"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         />
+
+    <LinearLayout
+        android:id="@+id/captchaActions"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/appCard"
+        android:gravity="center"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/app_space_md"
+        android:paddingEnd="@dimen/app_space_md"
+        android:paddingBottom="@dimen/app_space_md"
+        app:layout_constraintBottom_toTopOf="@+id/progressBar"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <TextView
+            android:id="@+id/captchaReload"
+            style="@style/AppText.Action"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_marginEnd="@dimen/app_space_sm"
+            android:layout_weight="1"
+            android:background="@drawable/app_outline_button_bg"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:text="새로고침"
+            android:textColor="@color/appText" />
+
+        <TextView
+            android:id="@+id/captchaCheckCookie"
+            style="@style/AppText.Action"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="@dimen/app_space_sm"
+            android:layout_marginEnd="@dimen/app_space_sm"
+            android:layout_weight="1"
+            android:background="@drawable/app_accent_button_bg"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:text="쿠키 확인"
+            android:textColor="@android:color/white" />
+
+        <TextView
+            android:id="@+id/captchaPasteCookie"
+            style="@style/AppText.Action"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="@dimen/app_space_sm"
+            android:layout_marginEnd="@dimen/app_space_sm"
+            android:layout_weight="1"
+            android:background="@drawable/app_outline_button_bg"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:text="붙여넣기"
+            android:textColor="@color/appText" />
+
+        <TextView
+            android:id="@+id/captchaClose"
+            style="@style/AppText.Action"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="@dimen/app_space_sm"
+            android:layout_weight="1"
+            android:background="@drawable/app_outline_button_bg"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:text="닫기"
+            android:textColor="@color/appText" />
+    </LinearLayout>
 
     <ProgressBar
         android:background="@color/appCard"

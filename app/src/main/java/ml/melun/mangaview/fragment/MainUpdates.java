@@ -14,7 +14,6 @@ import androidx.fragment.app.Fragment;
 import androidx.lifecycle.ViewModelProvider;
 import androidx.recyclerview.widget.RecyclerView;
 
-import com.bumptech.glide.Glide;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout;
 
 import java.util.ArrayList;
@@ -26,6 +25,7 @@ import ml.melun.mangaview.adapter.UpdatedAdapter;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.mangaview.UpdatedManga;
+import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.state.UiState;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.viewmodel.UpdatesViewModel;
@@ -66,14 +66,9 @@ public class MainUpdates extends Fragment {
                 super.onScrollStateChanged(recyclerView, newState);
                 if(getContext() == null || !isAdded())
                     return;
-                try {
-                    if(newState == RecyclerView.SCROLL_STATE_IDLE)
-                        Glide.with(MainUpdates.this).resumeRequests();
-                    else
-                        Glide.with(MainUpdates.this).pauseRequests();
-                } catch (RuntimeException e) {
-                    ml.melun.mangaview.report.CrashReporter.record(e);
-                }
+                PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
+                if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                    PerformanceMonitor.reportNow("updates_scroll_idle");
             }
         });
         adapter = new UpdatedAdapter(getContext());

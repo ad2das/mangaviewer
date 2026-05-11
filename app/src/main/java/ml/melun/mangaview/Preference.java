@@ -25,6 +25,8 @@ import static ml.melun.mangaview.mangaview.MTitle.baseModeStr;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static ml.melun.mangaview.mangaview.Title.isInteger;
 import static ml.melun.mangaview.mangaview.CustomHttpClient.DEFAULT_COMIC_URL;
+import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_COMIC_URL;
+import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_WEBTOON_URL;
 import static ml.melun.mangaview.mangaview.CustomHttpClient.WEBTOON_URL;
 
 public class Preference {
@@ -44,6 +46,7 @@ public class Preference {
     int startTab;
     String url;
     String webtoonUrl;
+    String ntkResolvedRoot;
     boolean stretch;
     boolean leftRight;
     String defUrl;
@@ -58,6 +61,14 @@ public class Preference {
     boolean historyLoaded;
     boolean bookmarkLoaded;
     boolean viewerBookmarkLoaded;
+    private boolean historyIndexDirty = true;
+    private final Map<String, Integer> recentIndexByKey = new HashMap<>();
+    private final Map<String, Integer> favoriteIndexByKey = new HashMap<>();
+    private final Map<String, MTitle> recentByKey = new HashMap<>();
+    private final Map<String, MTitle> favoriteByKey = new HashMap<>();
+    private final Map<String, Integer> bookmarkValueByKey = new HashMap<>();
+    private final Map<String, String> knownSourceByKey = new HashMap<>();
+    private volatile long localDataVersion = 0L;
     private final CopyOnWriteArrayList<LocalChangeListener> localChangeListeners = new CopyOnWriteArrayList<>();
 
     public interface LocalChangeListener {
@@ -93,8 +104,13 @@ public class Preference {
     }
 
     private void notifyLocalChange(String scope) {
+        localDataVersion++;
         for(LocalChangeListener listener : localChangeListeners)
             listener.onLocalPreferenceChanged(scope);
+    }
+
+    public long getLocalDataVersion() {
+        return localDataVersion;
     }
 
     private void notifySync(String scope) {
@@ -108,6 +124,15 @@ public class Preference {
         resetRecent();
         resetBookmark();
         resetViewerBookmark();
+    }
+
+    public boolean forceWfwfSitePresetIfNeeded() {
+        boolean changed = normalizeToWfwfSitePresetIfNeeded();
+        if(!changed)
+            return false;
+        writeSiteSettings();
+        notifySync("settings");
+        return true;
     }
 
     //Offline manga has id of -1
@@ -150,9 +175,10 @@ public class Preference {
             pageRtl = sharedPref.getBoolean("pageRtl",false);
             dataSave = sharedPref.getBoolean("dataSave", false);
             startTab = sharedPref.getInt("startTab", 0);
-            defUrl = normalizeComicUrl(sharedPref.getString("defUrl", DEFAULT_COMIC_URL));
-            url = normalizeComicUrl(sharedPref.getString("url", DEFAULT_COMIC_URL));
-            webtoonUrl = normalizeWebtoonUrl(sharedPref.getString("webtoonUrl", WEBTOON_URL));
+            ntkResolvedRoot = normalizeNtkRoot(sharedPref.getString("ntkResolvedRoot", NTK_WEBTOON_URL));
+            defUrl = normalizeComicUrl(sharedPref.getString("defUrl", DEFAULT_COMIC_URL), ntkResolvedRoot);
+            url = normalizeComicUrl(sharedPref.getString("url", DEFAULT_COMIC_URL), ntkResolvedRoot);
+            webtoonUrl = normalizeWebtoonUrl(sharedPref.getString("webtoonUrl", WEBTOON_URL), ntkResolvedRoot);
             stretch = sharedPref.getBoolean("stretch", false);
             leftRight = sharedPref.getBoolean("leftRight", false);
             autoUrl = false;
@@ -163,6 +189,7 @@ public class Preference {
             prefsEditor.putString("defUrl", defUrl)
                     .putString("url", url)
                     .putString("webtoonUrl", webtoonUrl)
+                    .putString("ntkResolvedRoot", ntkResolvedRoot)
                     .putBoolean("autoUrl", false)
                     .remove("login")
                     .remove("notice")
@@ -182,11 +209,99 @@ public class Preference {
             Gson gson = new Gson();
             recent = safeTitleList(gson.fromJson(sharedPref.getString("recent", ""), new TypeToken<ArrayList<MTitle>>(){}.getType()));
             favorite = safeTitleList(gson.fromJson(sharedPref.getString("favorite", ""), new TypeToken<ArrayList<MTitle>>(){}.getType()));
+            historyIndexDirty = true;
         } catch(Exception e) {
             recent = new ArrayList<>();
             favorite = new ArrayList<>();
+            historyIndexDirty = true;
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
+    }
+
+    private void markHistoryIndexDirty() {
+        historyIndexDirty = true;
+        knownSourceByKey.clear();
+    }
+
+    private void ensureHistoryIndex() {
+        ensureHistoryLoaded();
+        if(!historyIndexDirty)
+            return;
+        recentIndexByKey.clear();
+        favoriteIndexByKey.clear();
+        recentByKey.clear();
+        favoriteByKey.clear();
+        indexTitles(recent, recentIndexByKey, recentByKey);
+        indexTitles(favorite, favoriteIndexByKey, favoriteByKey);
+        historyIndexDirty = false;
+    }
+
+    private void indexTitles(List<MTitle> source, Map<String, Integer> indexMap, Map<String, MTitle> titleMap) {
+        if(source == null)
+            return;
+        for(int i = 0; i < source.size(); i++) {
+            MTitle title = source.get(i);
+            if(title == null || title.getId() <= 0)
+                continue;
+            String legacy = legacyTitleLookupKey(title);
+            if(!indexMap.containsKey(legacy)) {
+                indexMap.put(legacy, i);
+                titleMap.put(legacy, title);
+            }
+            String sourceKey = sourceTitleLookupKey(title);
+            if(sourceKey.length() > 0 && !indexMap.containsKey(sourceKey)) {
+                indexMap.put(sourceKey, i);
+                titleMap.put(sourceKey, title);
+            }
+        }
+    }
+
+    private String legacyTitleLookupKey(MTitle title) {
+        if(title == null)
+            return "";
+        return title.getBaseMode() + "." + title.getId();
+    }
+
+    private String sourceTitleLookupKey(MTitle title) {
+        if(title == null)
+            return "";
+        String source = title.getSourceSite();
+        if(source == null || source.length() == 0)
+            source = resolveKnownSourceSite(title);
+        if(source == null || source.length() == 0)
+            return "";
+        return source + "." + legacyTitleLookupKey(title);
+    }
+
+    private Integer findIndexedPosition(MTitle title, Map<String, Integer> indexMap) {
+        if(title == null || title.getId() <= 0)
+            return null;
+        String sourceKey = sourceTitleLookupKey(title);
+        Integer indexed = sourceKey.length() == 0 ? null : indexMap.get(sourceKey);
+        if(indexed != null)
+            return indexed;
+        if(hasExplicitSourceSite(title))
+            return null;
+        return indexMap.get(legacyTitleLookupKey(title));
+    }
+
+    private MTitle findIndexedTitle(MTitle title, Map<String, MTitle> titleMap) {
+        if(title == null || title.getId() <= 0)
+            return null;
+        String sourceKey = sourceTitleLookupKey(title);
+        MTitle indexed = sourceKey.length() == 0 ? null : titleMap.get(sourceKey);
+        if(indexed != null)
+            return indexed;
+        if(hasExplicitSourceSite(title))
+            return null;
+        return titleMap.get(legacyTitleLookupKey(title));
+    }
+
+    private boolean hasExplicitSourceSite(MTitle title) {
+        if(title == null)
+            return false;
+        String source = title.getSourceSite();
+        return source != null && source.length() > 0;
     }
 
     private void ensureBookmarkLoaded() {
@@ -231,12 +346,35 @@ public class Preference {
         return baseModeStr(this.baseMode);
     }
 
-    private String normalizeComicUrl(String sourceUrl) {
+    static String normalizeComicUrlForTest(String sourceUrl) {
+        return normalizeComicUrl(sourceUrl);
+    }
+
+    static String normalizeWebtoonUrlForTest(String sourceUrl) {
+        return normalizeWebtoonUrl(sourceUrl);
+    }
+
+    static boolean needsWfwfSitePresetForTest(String defUrl, String url, String webtoonUrl) {
+        return needsWfwfSitePreset(defUrl, url, webtoonUrl);
+    }
+
+    private static String normalizeComicUrl(String sourceUrl) {
+        return normalizeComicUrl(sourceUrl, NTK_WEBTOON_URL);
+    }
+
+    private static String normalizeComicUrl(String sourceUrl, String ntkRootFallback) {
         if(sourceUrl == null || sourceUrl.trim().length() == 0)
             return DEFAULT_COMIC_URL;
         String normalized = normalizeHttpUrl(sourceUrl.trim(), DEFAULT_COMIC_URL);
         while(normalized.endsWith("/"))
             normalized = normalized.substring(0, normalized.length() - 1);
+        if(isNtkLikeUrl(normalized)) {
+            String root = ntkRoot(normalized);
+            if(root.length() == 0)
+                root = normalizeNtkRoot(ntkRootFallback);
+            if(normalized.endsWith("/cm") || normalized.endsWith("/manhwa") || normalized.equals(root))
+                return root + "/manhwa";
+        }
         if(normalized.contains("manatoki"))
             return DEFAULT_COMIC_URL;
         if(normalized.equals(WEBTOON_URL))
@@ -244,12 +382,25 @@ public class Preference {
         return normalized;
     }
 
-    private String normalizeWebtoonUrl(String sourceUrl) {
+    private static String normalizeWebtoonUrl(String sourceUrl) {
+        return normalizeWebtoonUrl(sourceUrl, NTK_WEBTOON_URL);
+    }
+
+    private static String normalizeWebtoonUrl(String sourceUrl, String ntkRootFallback) {
         if(sourceUrl == null || sourceUrl.trim().length() == 0)
             return WEBTOON_URL;
         String normalized = normalizeHttpUrl(sourceUrl.trim(), WEBTOON_URL);
         while(normalized.endsWith("/"))
             normalized = normalized.substring(0, normalized.length() - 1);
+        if(isNtkLikeUrl(normalized)) {
+            String root = ntkRoot(normalized);
+            if(root.length() == 0)
+                root = normalizeNtkRoot(ntkRootFallback);
+            if(normalized.endsWith("/cm") || normalized.endsWith("/manhwa"))
+                return root;
+            if(normalized.equals(root))
+                return root;
+        }
         if(normalized.contains("manatoki"))
             return WEBTOON_URL;
         if(normalized.endsWith("/cm"))
@@ -257,7 +408,7 @@ public class Preference {
         return normalized;
     }
 
-    private String normalizeHttpUrl(String sourceUrl, String fallback) {
+    private static String normalizeHttpUrl(String sourceUrl, String fallback) {
         try {
             String normalized = sourceUrl;
             if(!normalized.startsWith("http://") && !normalized.startsWith("https://"))
@@ -268,6 +419,89 @@ public class Preference {
             return normalized;
         } catch (Exception e) {
             return fallback;
+        }
+    }
+
+    private boolean normalizeToWfwfSitePresetIfNeeded() {
+        if(!needsWfwfSitePreset(defUrl, url, webtoonUrl))
+            return false;
+        defUrl = DEFAULT_COMIC_URL;
+        url = DEFAULT_COMIC_URL;
+        webtoonUrl = WEBTOON_URL;
+        ntkResolvedRoot = NTK_WEBTOON_URL;
+        autoUrl = false;
+        return true;
+    }
+
+    private void writeSiteSettings() {
+        prefsEditor.putString("defUrl", defUrl)
+                .putString("url", url)
+                .putString("webtoonUrl", webtoonUrl)
+                .putBoolean("autoUrl", autoUrl)
+                .apply();
+    }
+
+    private static boolean needsWfwfSitePreset(String defUrl, String url, String webtoonUrl) {
+        return !(isWfwfLikeUrl(defUrl) && isWfwfLikeUrl(url) && isWfwfLikeUrl(webtoonUrl));
+    }
+
+    private static boolean isWfwfLikeUrl(String sourceUrl) {
+        return hostStartsWith(sourceUrl, "wfwf");
+    }
+
+    private static boolean isNtkLikeUrl(String sourceUrl) {
+        try {
+            if(sourceUrl == null || sourceUrl.trim().length() == 0)
+                return false;
+            String normalized = normalizeHttpUrl(sourceUrl.trim(), "");
+            if(normalized.length() == 0)
+                return false;
+            String host = URI.create(normalized).getHost();
+            if(host == null)
+                return false;
+            host = host.toLowerCase();
+            if(host.startsWith("www."))
+                host = host.substring(4);
+            return host.startsWith("ntk")
+                    || host.startsWith("sbxh")
+                    || host.contains("newtoki")
+                    || "sbxh1.com".equals(host)
+                    || "www.sbxh1.com".equals(host);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static String normalizeNtkRoot(String root) {
+        String normalized = ntkRoot(root == null ? "" : root);
+        return normalized.length() == 0 ? NTK_WEBTOON_URL : normalized;
+    }
+
+    private static String ntkRoot(String sourceUrl) {
+        try {
+            String normalized = normalizeHttpUrl(sourceUrl.trim(), "");
+            URI uri = URI.create(normalized);
+            String scheme = uri.getScheme() == null ? "https" : uri.getScheme();
+            String host = uri.getHost();
+            if(host == null || host.length() == 0)
+                return "";
+            return scheme + "://" + host;
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static boolean hostStartsWith(String sourceUrl, String prefix) {
+        try {
+            if(sourceUrl == null || sourceUrl.trim().length() == 0)
+                return false;
+            String normalized = normalizeHttpUrl(sourceUrl.trim(), "");
+            if(normalized.length() == 0)
+                return false;
+            String host = URI.create(normalized).getHost();
+            return host != null && host.toLowerCase().startsWith(prefix);
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -331,7 +565,7 @@ public class Preference {
     }
 
     public void setUrl(String url) {
-        this.url = normalizeComicUrl(url);
+        this.url = normalizeComicUrl(url, ntkResolvedRoot);
         prefsEditor.putString("url", this.url);
         prefsEditor.apply();
         notifySync("settings");
@@ -342,10 +576,50 @@ public class Preference {
     }
 
     public void setWebtoonUrl(String webtoonUrl) {
-        this.webtoonUrl = normalizeWebtoonUrl(webtoonUrl);
+        this.webtoonUrl = normalizeWebtoonUrl(webtoonUrl, ntkResolvedRoot);
         prefsEditor.putString("webtoonUrl", this.webtoonUrl);
         prefsEditor.apply();
         notifySync("settings");
+    }
+
+    public void setSitePreset(String comicUrl, String webtoonUrl) {
+        if(isNtkLikeUrl(comicUrl) || isNtkLikeUrl(webtoonUrl)) {
+            String root = ntkRoot(webtoonUrl);
+            if(root.length() == 0)
+                root = ntkRoot(comicUrl);
+            setNtkSitePreset(root);
+            return;
+        }
+        this.defUrl = normalizeComicUrl(comicUrl, ntkResolvedRoot);
+        this.url = this.defUrl;
+        this.webtoonUrl = normalizeWebtoonUrl(webtoonUrl, ntkResolvedRoot);
+        prefsEditor.putString("defUrl", this.defUrl)
+                .putString("url", this.url)
+                .putString("webtoonUrl", this.webtoonUrl)
+                .putBoolean("autoUrl", false)
+                .apply();
+        autoUrl = false;
+        notifySync("settings");
+    }
+
+    public void setNtkSitePreset(String rootUrl) {
+        String root = normalizeNtkRoot(rootUrl);
+        ntkResolvedRoot = root;
+        defUrl = root + "/manhwa";
+        url = defUrl;
+        webtoonUrl = root;
+        autoUrl = false;
+        prefsEditor.putString("ntkResolvedRoot", ntkResolvedRoot)
+                .putString("defUrl", defUrl)
+                .putString("url", url)
+                .putString("webtoonUrl", webtoonUrl)
+                .putBoolean("autoUrl", false)
+                .apply();
+        notifySync("settings");
+    }
+
+    public boolean isNtkSite() {
+        return isNtkLikeUrl(url) || isNtkLikeUrl(webtoonUrl) || isNtkLikeUrl(defUrl);
     }
 
     public int getStartTab() {
@@ -440,6 +714,7 @@ public class Preference {
     public void addRecent(MTitle tmp){
         ensureHistoryLoaded();
         if(tmp != null && tmp.getId()>0) {
+            ensureSourceSite(tmp);
             tmp.setPath(null);
             int position = getIndexOf(tmp);
             if (position > -1) {
@@ -454,11 +729,14 @@ public class Preference {
         ensureHistoryLoaded();
         if(tmp != null && tmp.getId()>0) {
             MTitle title = tmp.minimize();
+            ensureSourceSite(title);
             title.setPath(null);
+            normalizeNtkProgressFromRelease(title);
             int position = getIndexOf(title);
             if (position > -1) {
                 MTitle existing = recent.remove(position);
                 preserveMoreCompleteProgress(title, existing);
+                normalizeNtkProgressFromRelease(title);
                 recent.add(0, title);
             } else recent.add(0, title);
             writeRecent();
@@ -490,7 +768,9 @@ public class Preference {
         if(title == null)
             return;
         MTitle tmp = title.clone();
+        ensureSourceSite(tmp);
         tmp.setPath(null);
+        normalizeNtkProgressFromRelease(tmp);
         int recentIndex = getIndexOf(tmp);
         if(recentIndex > -1) {
             recent.set(recentIndex, tmp);
@@ -499,6 +779,7 @@ public class Preference {
         int index = findFavorite(tmp);
         if(index>-1){
             favorite.set(index,tmp);
+            markHistoryIndexDirty();
             Gson gson = new Gson();
             prefsEditor.putString("favorite", gson.toJson(favorite));
             prefsEditor.apply();
@@ -510,7 +791,9 @@ public class Preference {
         if(title == null)
             return;
         MTitle tmp = title.minimize();
+        ensureSourceSite(tmp);
         tmp.setPath(null);
+        normalizeNtkProgressFromRelease(tmp);
         int recentIndex = getIndexOf(tmp);
         if(recentIndex > -1) {
             recent.set(recentIndex, tmp);
@@ -519,6 +802,7 @@ public class Preference {
         int index = findFavorite(tmp);
         if(index>-1){
             favorite.set(index, tmp);
+            markHistoryIndexDirty();
             Gson gson = new Gson();
             prefsEditor.putString("favorite", gson.toJson(favorite));
             prefsEditor.apply();
@@ -526,11 +810,19 @@ public class Preference {
     }
 
     private int getIndexOf(MTitle title){
-        ensureHistoryLoaded();
-        if(title != null && title.getId()>0) {
-            return recent.indexOf(title);
-        }
-        return -1;
+        ensureHistoryIndex();
+        Integer index = findIndexedPosition(title, recentIndexByKey);
+        return index == null ? -1 : index;
+    }
+
+    private boolean sameTitleRecord(MTitle left, MTitle right) {
+        if(left == null || right == null)
+            return false;
+        if(left.getBaseMode() != right.getBaseMode() || left.getId() != right.getId())
+            return false;
+        String leftSource = left.getSourceSite();
+        String rightSource = right.getSourceSite();
+        return leftSource.length() == 0 || rightSource.length() == 0 || leftSource.equals(rightSource);
     }
 
     public void setBookmark(Title title, int id){
@@ -539,7 +831,8 @@ public class Preference {
             return;
         int titleId = title.getId();
         if(titleId>0) {
-            String key = title.getBaseMode() + "." + title.getId();
+            ensureSourceSite(title);
+            String key = bookmarkKey(title);
             try {
                 if(bookmark.has(key) && bookmark.getInt(key) == id) {
                     updateRecentProgress(title, id);
@@ -582,7 +875,28 @@ public class Preference {
         if(episodeIndex <= 0 && recentTitle.getBookmarkEpisodeId() == episodeId)
             episodeIndex = recentTitle.getBookmarkEpisodeIndex();
         recentTitle.setReadingProgress(episodeId, episodeIndex, episodeCount);
+        normalizeNtkProgressFromRelease(recentTitle);
         writeRecent();
+    }
+
+    private static void normalizeNtkProgressFromRelease(MTitle title) {
+        if(title == null)
+            return;
+        int releaseCount = title.getNtkReleaseEpisodeCount();
+        if(releaseCount <= 0 || title.getEpisodeCount() <= releaseCount)
+            return;
+        int episodeId = title.getBookmarkEpisodeId();
+        int episodeIndex = title.getBookmarkEpisodeIndex();
+        if(episodeId > 0 && episodeId <= releaseCount)
+            episodeIndex = releaseCount - episodeId + 1;
+        else if(episodeIndex > releaseCount)
+            episodeIndex = releaseCount;
+        title.setReadingProgress(episodeId, episodeIndex, releaseCount);
+    }
+
+    static int normalizedNtkEpisodeCountForTest(MTitle title) {
+        normalizeNtkProgressFromRelease(title);
+        return title == null ? 0 : title.getEpisodeCount();
     }
     public int getBookmark(MTitle title){
         ensureBookmarkLoaded();
@@ -592,12 +906,110 @@ public class Preference {
         int titleId = title.getId();
         if(titleId>0) {
             try {
-                return bookmark.getInt(title.getBaseMode()+"."+titleId);
+                String sourceKey = bookmarkKey(title);
+                Integer cached = bookmarkValueByKey.get(sourceKey);
+                if(cached != null)
+                    return cached;
+                if(bookmark.has(sourceKey))
+                    return cacheBookmarkValue(sourceKey, bookmark.getInt(sourceKey));
+                String legacyKey = legacyBookmarkKey(title);
+                cached = bookmarkValueByKey.get(legacyKey);
+                if(cached != null)
+                    return cached;
+                return cacheBookmarkValue(legacyKey, bookmark.getInt(legacyKey));
             } catch (Exception e) {
                 //
             }
         }
         return -1;
+    }
+
+    private int cacheBookmarkValue(String key, int value) {
+        if(key != null && key.length() > 0)
+            bookmarkValueByKey.put(key, value);
+        return value;
+    }
+
+    private void ensureSourceSite(MTitle title) {
+        if(title == null || title.getSourceSite().length() > 0)
+            return;
+        title.setSourceSite(resolveSourceSite(title));
+    }
+
+    public void ensureSourceSiteForTitle(MTitle title) {
+        ensureSourceSite(title);
+    }
+
+    public String resolveSourceSite(MTitle title) {
+        String knownSource = resolveKnownSourceSite(title);
+        if(knownSource.length() > 0)
+            return knownSource;
+        return isNtkSite() ? "ntk" : "wfwf";
+    }
+
+    public String resolveKnownSourceSite(MTitle title) {
+        String source = title == null ? "" : title.getSourceSite();
+        if(source != null && source.length() > 0)
+            return source;
+        if(title != null && title.getId() > 0) {
+            String sourceCacheKey = legacyTitleLookupKey(title);
+            String cachedSource = knownSourceByKey.get(sourceCacheKey);
+            if(cachedSource != null)
+                return cachedSource;
+            ensureBookmarkLoaded();
+            String legacy = legacyBookmarkKey(title);
+            if(hasSourceBookmark("wfwf", legacy))
+                return cacheKnownSource(sourceCacheKey, "wfwf");
+            if(hasSourceBookmark("ntk", legacy))
+                return cacheKnownSource(sourceCacheKey, "ntk");
+        }
+        source = sourceSiteFromUrl(title == null ? "" : title.getThumb());
+        if(source.length() > 0)
+            return title != null && title.getId() > 0 ? cacheKnownSource(legacyTitleLookupKey(title), source) : source;
+        source = sourceSiteFromUrl(title == null ? "" : title.getPath());
+        return title != null && title.getId() > 0 ? cacheKnownSource(legacyTitleLookupKey(title), source) : source;
+    }
+
+    private boolean hasSourceBookmark(String source, String legacy) {
+        if(source == null || source.length() == 0 || legacy == null || legacy.length() == 0)
+            return false;
+        String exact = source + "." + legacy;
+        if(bookmark.has(exact))
+            return true;
+        String nested = "." + exact;
+        Iterator<String> keys = bookmark.keys();
+        while(keys.hasNext()) {
+            String key = keys.next();
+            if(key != null && key.endsWith(nested))
+                return true;
+        }
+        return false;
+    }
+
+    private String cacheKnownSource(String key, String source) {
+        if(key != null && key.length() > 0)
+            knownSourceByKey.put(key, source == null ? "" : source);
+        return source == null ? "" : source;
+    }
+
+    private String sourceSiteFromUrl(String sourceUrl) {
+        if(isNtkLikeUrl(sourceUrl))
+            return "ntk";
+        if(isWfwfLikeUrl(sourceUrl))
+            return "wfwf";
+        return "";
+    }
+
+    private String bookmarkKey(MTitle title) {
+        String legacy = legacyBookmarkKey(title);
+        String source = title == null ? "" : title.getSourceSite();
+        if(source == null || source.length() == 0)
+            return legacy;
+        return source + "." + legacy;
+    }
+
+    private String legacyBookmarkKey(MTitle title) {
+        return title.getBaseMode() + "." + title.getId();
     }
 
     private void removeBookmark(MTitle title){
@@ -607,10 +1019,12 @@ public class Preference {
         int titleId = title.getId();
         if(titleId>0) {
             try {
-                String key = title.getBaseMode()+"."+titleId;
-                if(!bookmark.has(key))
+                String key = bookmarkKey(title);
+                String legacyKey = legacyBookmarkKey(title);
+                if(!bookmark.has(key) && !bookmark.has(legacyKey))
                     return;
                 bookmark.remove(key);
+                bookmark.remove(legacyKey);
             } catch (Exception e) {
                 //
             }
@@ -620,6 +1034,8 @@ public class Preference {
 
     public void writeBookmark(){
         ensureBookmarkLoaded();
+        bookmarkValueByKey.clear();
+        knownSourceByKey.clear();
         prefsEditor.putString("bookmark2", bookmark.toString());
         prefsEditor.apply();
         notifyLocalChange("bookmark");
@@ -636,12 +1052,14 @@ public class Preference {
     public void resetRecent(){
         historyLoaded = true;
         recent = new ArrayList<>();
+        markHistoryIndexDirty();
         writeRecent();
     }
 
     public void resetFavorites(){
         ensureHistoryLoaded();
         favorite = new ArrayList<>();
+        markHistoryIndexDirty();
         prefsEditor.putString("favorite", new Gson().toJson(favorite));
         prefsEditor.apply();
         notifySync("favorite");
@@ -650,6 +1068,7 @@ public class Preference {
 
     private void writeRecent(){
         ensureHistoryLoaded();
+        markHistoryIndexDirty();
         Gson gson = new Gson();
         prefsEditor.putString("recent", gson.toJson(recent));
         prefsEditor.apply();
@@ -699,6 +1118,11 @@ public class Preference {
                 //
             }
             try {
+                return pagebookmark.getInt(legacyViewerBookmarkKeyWithTitle(m));
+            } catch (Exception e) {
+                //
+            }
+            try {
                 String legacyKey = legacyViewerBookmarkKey(m);
                 if(legacyKey != null)
                     return pagebookmark.getInt(legacyKey);
@@ -719,6 +1143,11 @@ public class Preference {
                 //
             }
             try {
+                return pagebookmark.getInt(legacyViewerBookmarkKeyWithTitle(m) + ".offset");
+            } catch (Exception e) {
+                //
+            }
+            try {
                 String legacyKey = legacyViewerBookmarkKey(m);
                 if(legacyKey != null)
                     return pagebookmark.getInt(legacyKey + ".offset");
@@ -734,22 +1163,51 @@ public class Preference {
             return;
         String key = viewerBookmarkKey(m);
         String offsetKey = viewerBookmarkOffsetKey(m);
-        if(!pagebookmark.has(key) && !pagebookmark.has(offsetKey))
+        String legacyWithTitle = legacyViewerBookmarkKeyWithTitle(m);
+        String legacyWithTitleOffset = legacyWithTitle + ".offset";
+        String legacy = legacyViewerBookmarkKey(m);
+        String legacyOffset = legacy == null ? null : legacy + ".offset";
+        if(!pagebookmark.has(key) && !pagebookmark.has(offsetKey)
+                && !pagebookmark.has(legacyWithTitle) && !pagebookmark.has(legacyWithTitleOffset)
+                && (legacy == null || (!pagebookmark.has(legacy) && !pagebookmark.has(legacyOffset))))
             return;
         pagebookmark.remove(key);
         pagebookmark.remove(offsetKey);
+        pagebookmark.remove(legacyWithTitle);
+        pagebookmark.remove(legacyWithTitleOffset);
+        if(legacy != null) {
+            pagebookmark.remove(legacy);
+            pagebookmark.remove(legacyOffset);
+        }
         writeViewerBookmark();
     }
 
     private String viewerBookmarkKey(Manga m) {
+        String legacy = legacyViewerBookmarkKeyWithTitle(m);
+        String source = mangaSourceSite(m);
+        if(source == null || source.length() == 0)
+            return legacy;
+        return source + "." + legacy;
+    }
+
+    private String viewerBookmarkOffsetKey(Manga m) {
+        return viewerBookmarkKey(m) + ".offset";
+    }
+
+    private String legacyViewerBookmarkKeyWithTitle(Manga m) {
         int titleId = m.getTitleId();
         if(titleId > 0)
             return m.getBaseMode() + "." + titleId + "." + m.getId();
         return m.getBaseMode() + "." + m.getId();
     }
 
-    private String viewerBookmarkOffsetKey(Manga m) {
-        return viewerBookmarkKey(m) + ".offset";
+    private String mangaSourceSite(Manga m) {
+        if(m == null || m.getTitle() == null)
+            return "";
+        String source = m.getTitle().getSourceSite();
+        if(source != null && source.length() > 0)
+            return source;
+        return isNtkSite() ? "ntk" : "wfwf";
     }
 
     private String legacyViewerBookmarkKey(Manga m) {
@@ -782,32 +1240,53 @@ public class Preference {
         ensureHistoryLoaded();
         if(title == null)
             return false;
+        ensureSourceSite(title);
         int index = findFavorite(title);
         if(index==-1){
             if(position < 0 || position > favorite.size())
                 position = favorite.size();
             favorite.add(position,title);
+            markHistoryIndexDirty();
             Gson gson = new Gson();
             prefsEditor.putString("favorite", gson.toJson(favorite));
             prefsEditor.apply();
+            notifyLocalChange("favorite");
             notifySync("favorite");
             return true;
         }else{
             favorite.remove(index);
+            markHistoryIndexDirty();
             Gson gson = new Gson();
             prefsEditor.putString("favorite", gson.toJson(favorite));
             prefsEditor.apply();
+            notifyLocalChange("favorite");
             notifySync("favorite");
             return false;
         }
     }
 
     public int findFavorite(MTitle title){
-        ensureHistoryLoaded();
-        if(title != null && title.getId()>0){
-            return favorite.indexOf(title);
-        }
-        return -1;
+        ensureHistoryIndex();
+        Integer index = findIndexedPosition(title, favoriteIndexByKey);
+        return index == null ? -1 : index;
+    }
+
+    public MTitle findRecentTitle(MTitle title) {
+        ensureHistoryIndex();
+        return findIndexedTitle(title, recentByKey);
+    }
+
+    public MTitle findFavoriteTitle(MTitle title) {
+        ensureHistoryIndex();
+        return findIndexedTitle(title, favoriteByKey);
+    }
+
+    public int getStoredProgressBookmark(MTitle title) {
+        ensureHistoryIndex();
+        MTitle stored = findIndexedTitle(title, recentByKey);
+        if(stored == null)
+            stored = findIndexedTitle(title, favoriteByKey);
+        return stored == null ? -1 : stored.getBookmarkEpisodeId();
     }
 
     public List<MTitle> getFavorite(){
@@ -818,6 +1297,7 @@ public class Preference {
     public void setFavorites(List<MTitle> fav){
         historyLoaded = true;
         this.favorite = safeTitleList(fav);
+        markHistoryIndexDirty();
         Gson gson = new Gson();
         prefsEditor.putString("favorite", gson.toJson(favorite));
         prefsEditor.apply();
@@ -828,6 +1308,7 @@ public class Preference {
     public void setRecents(List<MTitle> rec){
         historyLoaded = true;
         this.recent = safeTitleList(rec);
+        markHistoryIndexDirty();
         writeRecent();
     }
 
@@ -885,6 +1366,8 @@ public class Preference {
     public void setBookmarks(JSONObject book){
         bookmarkLoaded = true;
         this.bookmark = book == null ? new JSONObject() : book;
+        bookmarkValueByKey.clear();
+        knownSourceByKey.clear();
         writeBookmark();
     }
 
@@ -1019,9 +1502,6 @@ public class Preference {
         settings.put("pageRtl", pageRtl);
         settings.put("dataSave", dataSave);
         settings.put("startTab", startTab);
-        settings.put("url", url);
-        settings.put("webtoonUrl", webtoonUrl);
-        settings.put("defUrl", defUrl);
         settings.put("stretch", stretch);
         settings.put("leftRight", leftRight);
         settings.put("pageControlButtonOffset", pageControlButtonOffset);
@@ -1042,9 +1522,6 @@ public class Preference {
         pageRtl = readBoolean(settings, "pageRtl", pageRtl);
         dataSave = readBoolean(settings, "dataSave", dataSave);
         startTab = readInt(settings, "startTab", startTab);
-        url = normalizeComicUrl(readString(settings, "url", url));
-        webtoonUrl = normalizeWebtoonUrl(readString(settings, "webtoonUrl", webtoonUrl));
-        defUrl = normalizeComicUrl(readString(settings, "defUrl", defUrl));
         stretch = readBoolean(settings, "stretch", stretch);
         leftRight = readBoolean(settings, "leftRight", leftRight);
         pageControlButtonOffset = readFloat(settings, "pageControlButtonOffset", pageControlButtonOffset);
@@ -1059,9 +1536,7 @@ public class Preference {
                 .putBoolean("pageRtl", pageRtl)
                 .putBoolean("dataSave", dataSave)
                 .putInt("startTab", startTab)
-                .putString("url", url)
-                .putString("webtoonUrl", webtoonUrl)
-                .putString("defUrl", defUrl)
+                .putBoolean("autoUrl", autoUrl)
                 .putBoolean("stretch", stretch)
                 .putBoolean("leftRight", leftRight)
                 .putFloat("pageControlButtonOffset", pageControlButtonOffset)
@@ -1072,11 +1547,6 @@ public class Preference {
                 .putBoolean("doublepReverse", doublepReverse)
                 .apply();
         notifySync("settings");
-    }
-
-    private String readString(Map<String, Object> data, String key, String fallback) {
-        Object value = data.get(key);
-        return value instanceof String ? (String)value : fallback;
     }
 
     private boolean readBoolean(Map<String, Object> data, String key, boolean fallback) {

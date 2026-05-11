@@ -35,7 +35,9 @@ import java.io.File;
 import ml.melun.mangaview.Preference;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.interfaces.StringCallback;
+import ml.melun.mangaview.runtime.AppDispatchers;
 
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.CODE_SCOPED_STORAGE;
 import static ml.melun.mangaview.Utils.readPreferenceFromFile;
@@ -46,6 +48,10 @@ import static ml.melun.mangaview.Utils.writePreferenceToFile;
 import static ml.melun.mangaview.activity.FolderSelectActivity.MODE_FILE_SAVE;
 import static ml.melun.mangaview.activity.FolderSelectActivity.MODE_FILE_SELECT;
 import static ml.melun.mangaview.activity.FolderSelectActivity.MODE_FOLDER_SELECT;
+import static ml.melun.mangaview.mangaview.CustomHttpClient.DEFAULT_COMIC_URL;
+import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_COMIC_URL;
+import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_WEBTOON_URL;
+import static ml.melun.mangaview.mangaview.CustomHttpClient.WEBTOON_URL;
 
 public class SettingsActivity extends AppCompatActivity {
 
@@ -88,7 +94,8 @@ public class SettingsActivity extends AppCompatActivity {
                 startActivityForResult(intent, MODE_FOLDER_SELECT);
             }
         });
-        getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+        if(getSupportActionBar() != null)
+            getSupportActionBar().setDisplayHomeAsUpEnabled(true);
 //        s_getSd = this.findViewById(R.id.setting_externalSd);
 //        s_getSd.setOnClickListener(new View.OnClickListener() {
 //            @Override
@@ -286,6 +293,14 @@ public class SettingsActivity extends AppCompatActivity {
 
 
         this.findViewById(R.id.setting_url).setOnClickListener(v -> urlSettingPopup(context, p));
+        updateSiteToggleText();
+        this.findViewById(R.id.setting_site_toggle).setOnClickListener(v -> {
+            if(p.isNtkSite()) {
+                switchSite(DEFAULT_COMIC_URL, WEBTOON_URL, "WFWF");
+            } else {
+                switchSite(NTK_COMIC_URL, NTK_WEBTOON_URL, "NTK");
+            }
+        });
 
         s_stretch = this.findViewById(R.id.setting_stretch);
         s_stretch_switch = this.findViewById(R.id.setting_stretch_switch);
@@ -348,6 +363,7 @@ public class SettingsActivity extends AppCompatActivity {
 
         int[] rowIds = {
                 R.id.setting_url,
+                R.id.setting_site_toggle,
                 R.id.setting_dir,
                 R.id.setting_startTab,
                 R.id.setting_dark,
@@ -433,6 +449,21 @@ public class SettingsActivity extends AppCompatActivity {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
     }
 
+    private void updateSiteToggleText() {
+        TextView current = findViewById(R.id.setting_site_current);
+        if(current != null)
+            current.setText(p.isNtkSite() ? "NTK" : "WFWF");
+    }
+
+    private void switchSite(String comicUrl, String webtoonUrl, String label) {
+        p.setSitePreset(comicUrl, webtoonUrl);
+        getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
+        getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
+        getHttpClient().clearPageCache();
+        updateSiteToggleText();
+        Toast.makeText(context, label + " 사이트로 변경되었습니다.", Toast.LENGTH_SHORT).show();
+    }
+
     public static void urlSettingPopup(Context context, Preference p){
         final LinearLayout layout = new LinearLayout(context);
         layout.setOrientation(LinearLayout.VERTICAL);
@@ -454,6 +485,29 @@ public class SettingsActivity extends AppCompatActivity {
         webtoonInput.setHint(p.getWebtoonUrl());
         layout.addView(webtoonInput);
 
+        final LinearLayout siteButtons = new LinearLayout(context);
+        siteButtons.setOrientation(LinearLayout.HORIZONTAL);
+        final Button wfwfButton = new Button(context);
+        final Button ntkButton = new Button(context);
+        wfwfButton.setText("WFWF");
+        ntkButton.setText("NTK");
+        LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        buttonParams.setMargins(0, 12, 6, 0);
+        siteButtons.addView(wfwfButton, buttonParams);
+        LinearLayout.LayoutParams buttonParamsEnd = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        buttonParamsEnd.setMargins(6, 12, 0, 0);
+        siteButtons.addView(ntkButton, buttonParamsEnd);
+        layout.addView(siteButtons);
+
+        wfwfButton.setOnClickListener(v -> {
+            definput.setText(DEFAULT_COMIC_URL);
+            webtoonInput.setText(WEBTOON_URL);
+        });
+        ntkButton.setOnClickListener(v -> {
+            definput.setText(NTK_COMIC_URL);
+            webtoonInput.setText(NTK_WEBTOON_URL);
+        });
+
         AlertDialog.Builder builder;
         if(p.getDarkTheme()) builder = new AlertDialog.Builder(context,R.style.darkDialog);
         else builder = new AlertDialog.Builder(context);
@@ -462,10 +516,8 @@ public class SettingsActivity extends AppCompatActivity {
                 .setPositiveButton("설정", (dialog, button) -> {
                     String url = definput.getText().length() > 0 ? definput.getText().toString() : definput.getHint().toString();
                     String webtoonUrl = webtoonInput.getText().length() > 0 ? webtoonInput.getText().toString() : webtoonInput.getHint().toString();
-                    p.setAutoUrl(false);
-                    p.setDefUrl(url);
-                    p.setUrl(url);
-                    p.setWebtoonUrl(webtoonUrl);
+                    p.setSitePreset(url, webtoonUrl);
+                    Toast.makeText(context, "사이트 설정이 변경되었습니다.", Toast.LENGTH_SHORT).show();
                 })
                 .setNegativeButton("취소", (dialog, button) -> {
                     //do nothing

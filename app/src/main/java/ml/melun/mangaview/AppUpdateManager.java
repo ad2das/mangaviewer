@@ -44,17 +44,18 @@ import okhttp3.ResponseBody;
 
 public final class AppUpdateManager {
     private static final String TAG = "AppUpdate";
-    private static final String VERSION_API_URL = "https://api.github.com/repos/ad2das/mangaviewer/contents/version.json?ref=main";
-    private static final String RAW_VERSION_URL = "https://raw.githubusercontent.com/ad2das/mangaviewer/main/version.json";
+    private static final String UPDATE_CHANNEL = "ntk01";
+    private static final String VERSION_API_URL = "https://api.github.com/repos/ad2das/mangaviewer/contents/version.json?ref=" + UPDATE_CHANNEL;
+    private static final String RAW_VERSION_URL = "https://raw.githubusercontent.com/ad2das/mangaviewer/" + UPDATE_CHANNEL + "/version.json";
     private static final String PREF = "appUpdate";
-    private static final String KEY_VERSION = "latestVersion";
-    private static final String KEY_LINK = "latestLink";
-    private static final String KEY_SKIPPED_VERSION = "skippedVersion";
-    private static final String KEY_PLAN_LINK = "downloadPlanLink";
-    private static final String KEY_PLAN_URL = "downloadPlanUrl";
-    private static final String KEY_PLAN_LENGTH = "downloadPlanLength";
-    private static final String KEY_PLAN_RANGE = "downloadPlanRange";
-    private static final String KEY_PLAN_FETCHED_AT = "downloadPlanFetchedAt";
+    private static final String KEY_VERSION = UPDATE_CHANNEL + "_latestVersion";
+    private static final String KEY_LINK = UPDATE_CHANNEL + "_latestLink";
+    private static final String KEY_SKIPPED_VERSION = UPDATE_CHANNEL + "_skippedVersion";
+    private static final String KEY_PLAN_LINK = UPDATE_CHANNEL + "_downloadPlanLink";
+    private static final String KEY_PLAN_URL = UPDATE_CHANNEL + "_downloadPlanUrl";
+    private static final String KEY_PLAN_LENGTH = UPDATE_CHANNEL + "_downloadPlanLength";
+    private static final String KEY_PLAN_RANGE = UPDATE_CHANNEL + "_downloadPlanRange";
+    private static final String KEY_PLAN_FETCHED_AT = UPDATE_CHANNEL + "_downloadPlanFetchedAt";
     private static final String APK_MIME = "application/vnd.android.package-archive";
     private static final String UPDATE_APK_PREFIX = "mangaViewer-update-";
     private static final String UPDATE_APK_SUFFIX = ".apk";
@@ -357,16 +358,16 @@ public final class AppUpdateManager {
             return requested;
         }
         UpdateInfo latest = fetchUpdateInfo(context);
-        log("refreshBeforeDownload source=network ms=" + (System.currentTimeMillis() - started)
-                + " requested=" + (requested == null ? -1 : requested.version)
-                + " latest=" + (latest == null ? -1 : latest.version));
         if(latest != null && isUpdateAvailable(context, latest, false)) {
             cacheUpdateInfo(context, latest);
-            if(requested == null
-                    || latest.version >= requested.version
-                    || !latest.link.equals(requested.link))
-                return latest;
+            log("refreshBeforeDownload source=network ms=" + (System.currentTimeMillis() - started)
+                    + " requested=" + (requested == null ? -1 : requested.version)
+                    + " latest=" + latest.version);
+            return latest;
         }
+        log("refreshBeforeDownload source=none ms=" + (System.currentTimeMillis() - started)
+                + " requested=" + (requested == null ? -1 : requested.version)
+                + " latest=" + (latest == null ? -1 : latest.version));
         return requested;
     }
 

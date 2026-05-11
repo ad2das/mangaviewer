@@ -31,7 +31,7 @@ public class Title extends MTitle {
     public static final int BATTERY_FULL = 4;
     public static final int LOAD_OK = 0;
     public static final int LOAD_CAPTCHA = 1;
-    private static final long PAGE_CACHE_TTL_MS = 2 * 60 * 1000L;
+    private static final long PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final int MAX_TIMEOUT_RETRIES = 2;
 
 
@@ -40,6 +40,8 @@ public class Title extends MTitle {
     }
 
     public String getUrl(){
+        if(p != null && p.isNtkSite())
+            return "/" + ntkSegment() + "/" + id;
         if(isComicWolfSource())
             return "/cl?toon=" + id;
         if(isWebtoonWolfSource())
@@ -51,6 +53,7 @@ public class Title extends MTitle {
     public Title(MTitle title){
         super(title.getName(), title.getId(), title.getThumb(), title.getAuthor(), title.getTags(), title.getRelease(), title.getBaseMode());
         setPath(title.getPath());
+        setSourceSite(title.getSourceSite());
         setReadingProgress(title.getBookmarkEpisodeId(), title.getBookmarkEpisodeIndex(), title.getEpisodeCount());
         bookmark = title.getBookmarkEpisodeId();
     }
@@ -71,6 +74,8 @@ public class Title extends MTitle {
     }
 
     public int fetchEps(CustomHttpClient client) {
+        if(client.isNtk())
+            return fetchNtkEps(client);
         if(isComicWolfSource())
             return fetchWolfEps(client, "/cl?toon=", "/cv?toon=");
         if(isWebtoonWolfSource())
@@ -176,6 +181,190 @@ public class Title extends MTitle {
         return LOAD_OK;
     }
 
+    private int fetchNtkEps(CustomHttpClient client) {
+        try {
+            String segment = ntkSegment();
+            CustomHttpClient.PageResponse page = client.mgetCachedPage("/" + segment + "/" + id, PAGE_CACHE_TTL_MS);
+            Document d = Jsoup.parse(page.body);
+
+            Element h1 = d.selectFirst("h1");
+            if(h1 != null)
+                name = h1.ownText().trim();
+            Element authorElement = d.selectFirst("h1 + *");
+            if(authorElement != null)
+                author = authorElement.ownText().trim();
+
+            tags = new ArrayList<>();
+            for(Element tag : d.select("a[href*=genre], a[href*=tag], a:matchesOwn(^#)")) {
+                String text = tag.text().replace("#", "").trim();
+                if(text.length() > 0 && !tags.contains(text))
+                    tags.add(text);
+            }
+
+            Element img = d.selectFirst("img[src*=/" + id + "/], img[alt=\"" + name + "\"]");
+            if(img != null)
+                thumb = img.hasAttr("data-original") ? img.attr("data-original") : img.attr("src");
+
+            eps = new ArrayList<>();
+            Set<String> seenEpisodePaths = new HashSet<>();
+            for(Element link : d.select("a[href^=\"/" + segment + "/" + id + "/\"]")) {
+                if(link.hasClass("cta"))
+                    continue;
+                String href = link.attr("href");
+                String epPath = normalizeNtkEpisodePath(href, segment, id);
+                if(epPath.length() == 0)
+                    continue;
+                int epId = ntkEpisodeSortId(link, epPath, segment);
+                if(epId <= 0)
+                    continue;
+                String epTitle = cleanNtkEpisodeTitle(link);
+                if(isNtkEpisodeActionTitle(epTitle))
+                    continue;
+                if(!seenEpisodePaths.add(epPath))
+                    continue;
+                String date = extractNtkEpisodeDate(link, epTitle);
+                Manga tmp = new Manga(epId, epTitle, date, baseMode);
+                tmp.setMode(0);
+                tmp.setTitle(this);
+                tmp.setTitleId(id);
+                tmp.setNtkEpisodePath(epPath);
+                eps.add(tmp);
+            }
+            eps.sort((left, right) -> Integer.compare(right.getId(), left.getId()));
+        }catch(Exception e) {
+            if(isCloudflareChallenge(e))
+                return LOAD_CAPTCHA;
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+        return LOAD_OK;
+    }
+
+    private static boolean isCloudflareChallenge(Exception e) {
+        String message = e == null ? null : e.getMessage();
+        return message != null && message.toLowerCase(java.util.Locale.ROOT).contains("cloudflare");
+    }
+
+    static String cleanNtkEpisodeTitleForTest(String html) {
+        return cleanNtkEpisodeTitle(Jsoup.parseBodyFragment(html).body());
+    }
+
+    static String normalizeNtkEpisodePathForTest(String href, String segment, int titleId) {
+        return normalizeNtkEpisodePath(href, segment, titleId);
+    }
+
+    static int ntkEpisodeSortIdForTest(String html, String epPath, String segment) {
+        return ntkEpisodeSortId(Jsoup.parseBodyFragment(html).body(), epPath, segment);
+    }
+
+    private static String cleanNtkEpisodeTitle(Element link) {
+        if(link == null)
+            return "";
+        Element subject = link.selectFirst(".subject, .wr-subject, .episode-title, .title, strong, b");
+        String text = subject == null ? link.text() : subject.text();
+        text = text.replace("첫화부터 정주행", "")
+                .replace("첫화부터", "")
+                .replace("정주행", "")
+                .replace("▶ 보기", "")
+                .replace("›", " ")
+                .replace("UP", "")
+                .replace("NEW", "")
+                .trim();
+        text = text.replaceAll("\\d{2}\\.\\d{2}\\.\\d{2}", " ").trim();
+        text = text.replaceAll("\\s+", " ");
+        if(!hasLetterOrDigit(text))
+            return "";
+        return text;
+    }
+
+    private static boolean isNtkEpisodeActionTitle(String title) {
+        if(title == null)
+            return true;
+        String normalized = title.replaceAll("\\s+", "");
+        return normalized.length() == 0
+                || !hasLetterOrDigit(normalized)
+                || "보기".equals(normalized)
+                || "첫화부터정주행".equals(normalized)
+                || "첫화부터".equals(normalized)
+                || "정주행".equals(normalized);
+    }
+
+    private static boolean hasLetterOrDigit(String value) {
+        if(value == null)
+            return false;
+        for(int i = 0; i < value.length();) {
+            int codePoint = value.codePointAt(i);
+            if(Character.isLetterOrDigit(codePoint))
+                return true;
+            i += Character.charCount(codePoint);
+        }
+        return false;
+    }
+
+    private static String normalizeNtkEpisodePath(String href, String segment, int titleId) {
+        if(href == null)
+            return "";
+        String path = href.trim();
+        int schemeIndex = path.indexOf("://");
+        if(schemeIndex >= 0) {
+            int slash = path.indexOf('/', schemeIndex + 3);
+            path = slash >= 0 ? path.substring(slash) : "";
+        }
+        int hash = path.indexOf('#');
+        if(hash >= 0)
+            path = path.substring(0, hash);
+        int query = path.indexOf('?');
+        if(query >= 0)
+            path = path.substring(0, query);
+        if(path.length() > 0 && path.charAt(0) != '/')
+            path = "/" + path;
+        String prefix = "/" + segment + "/" + titleId + "/";
+        if(!path.startsWith(prefix))
+            return "";
+        String token = path.substring(prefix.length());
+        return token.length() == 0 ? "" : path;
+    }
+
+    private static int ntkEpisodeSortId(Element link, String epPath, String segment) {
+        Element number = link == null ? null : link.selectFirst(".ep-row-v2-no");
+        int sortId = parsePositiveInt(number == null ? "" : number.text());
+        if(sortId > 0)
+            return sortId;
+        sortId = MainPageWebtoon.getSecondPathId(epPath, segment);
+        if(sortId > 0)
+            return sortId;
+        return parsePositiveInt(cleanNtkEpisodeTitle(link));
+    }
+
+    private static int parsePositiveInt(String value) {
+        if(value == null)
+            return 0;
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d+)").matcher(value);
+        if(!matcher.find())
+            return 0;
+        try {
+            return Integer.parseInt(matcher.group(1));
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private static String extractNtkEpisodeDate(Element link, String epTitle) {
+        if(link == null)
+            return "";
+        String text = link.text();
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d{2}\\.\\d{2}\\.\\d{2})").matcher(text);
+        if(matcher.find())
+            return matcher.group(1);
+        matcher = java.util.regex.Pattern.compile("(\\d{2}\\.\\d{2}\\.\\d{2})").matcher(epTitle == null ? "" : epTitle);
+        if(matcher.find())
+            return matcher.group(1);
+        return "";
+    }
+
+    private String ntkSegment() {
+        return baseMode == MTitle.base_webtoon ? "webtoon" : "manhwa";
+    }
+
     private int fetchWolfEps(CustomHttpClient client) {
         return fetchWolfEps(client, "/list?toon=", "/view?toon=");
     }
@@ -235,6 +424,8 @@ public class Title extends MTitle {
             if(eps.size() == 0 && client.resolveWfwfDomainNow())
                 return fetchWolfEps(client, listPath, viewPath);
         }catch(Exception e) {
+            if(isCloudflareChallenge(e))
+                return LOAD_CAPTCHA;
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return LOAD_OK;
@@ -321,6 +512,7 @@ public class Title extends MTitle {
             progressCount = getEpisodeCount();
         title.setReadingProgress(progressEpisodeId, progressIndex, progressCount);
         title.setPath(getPath());
+        title.setSourceSite(getSourceSite());
         return title;
     }
 

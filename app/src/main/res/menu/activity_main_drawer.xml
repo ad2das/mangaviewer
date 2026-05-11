@@ -7,27 +7,27 @@
         <item
             android:id="@+id/nav_main"
             android:orderInCategory="0"
-            android:title="홈" />
+            android:title="@string/drawer_home" />
         <item
             android:id="@+id/nav_search"
             android:orderInCategory="1"
-            android:title="검색" />
+            android:title="@string/drawer_search" />
         <item
             android:id="@+id/nav_recent"
             android:orderInCategory="2"
-            android:title="내 보관함" />
+            android:title="@string/drawer_library" />
         <item
             android:id="@+id/nav_favorite"
             android:orderInCategory="3"
-            android:title="좋아요" />
+            android:title="@string/drawer_favorite" />
         <item
             android:id="@+id/nav_download"
             android:orderInCategory="4"
-            android:title="저장됨" />
+            android:title="@string/drawer_downloaded" />
         <item
             android:id="@+id/nav_settings"
             android:orderInCategory="5"
-            android:title="설정" />
+            android:title="@string/drawer_settings" />
     </group>
 
 </menu>

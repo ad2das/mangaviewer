@@ -91,65 +91,56 @@
         android:text="@string/account_sync_scope"
         android:textColor="@color/appTextSecondary" />
 
-    <TextView
+    <com.google.android.material.button.MaterialButton
         android:id="@+id/account_sheet_primary"
         android:layout_width="match_parent"
-        android:layout_height="48dp"
+        android:layout_height="56dp"
         android:layout_marginTop="22dp"
-        android:background="@drawable/account_sheet_primary_bg"
-        android:clickable="true"
-        android:focusable="true"
-        android:foreground="?attr/selectableItemBackground"
-        android:gravity="center"
         android:text="@string/account_sign_in"
-        android:textColor="@android:color/white"
+        android:textColor="@color/colorTextOnPrimary"
         android:textSize="15sp"
-        android:textStyle="bold" />
+        android:textStyle="bold"
+        app:backgroundTint="@color/appAccent"
+        app:cornerRadius="12dp" />
 
-    <TextView
+    <com.google.android.material.button.MaterialButton
         android:id="@+id/account_sheet_secondary"
+        style="?attr/materialButtonOutlinedStyle"
         android:layout_width="match_parent"
-        android:layout_height="46dp"
+        android:layout_height="56dp"
         android:layout_marginTop="10dp"
-        android:background="@drawable/account_sheet_secondary_bg"
-        android:clickable="true"
-        android:focusable="true"
-        android:foreground="?attr/selectableItemBackground"
-        android:gravity="center"
         android:text="@string/account_sign_out"
         android:textColor="@color/appText"
         android:textSize="15sp"
         android:textStyle="bold"
-        android:visibility="gone" />
+        android:visibility="gone"
+        app:cornerRadius="12dp"
+        app:strokeColor="@color/appDivider" />
 
-    <TextView
+    <com.google.android.material.button.MaterialButton
         android:id="@+id/account_sheet_settings"
+        style="?attr/materialButtonOutlinedStyle"
         android:layout_width="match_parent"
-        android:layout_height="46dp"
+        android:layout_height="56dp"
         android:layout_marginTop="10dp"
-        android:background="@drawable/account_sheet_secondary_bg"
-        android:clickable="true"
-        android:focusable="true"
-        android:foreground="?attr/selectableItemBackground"
-        android:gravity="center"
         android:text="@string/account_open_settings"
         android:textColor="@color/appText"
         android:textSize="15sp"
-        android:textStyle="bold" />
+        android:textStyle="bold"
+        app:cornerRadius="12dp"
+        app:strokeColor="@color/appDivider" />
 
-    <TextView
+    <com.google.android.material.button.MaterialButton
         android:id="@+id/account_sheet_update"
+        style="?attr/materialButtonOutlinedStyle"
         android:layout_width="match_parent"
-        android:layout_height="46dp"
+        android:layout_height="56dp"
         android:layout_marginTop="10dp"
-        android:background="@drawable/account_sheet_secondary_bg"
-        android:clickable="true"
-        android:focusable="true"
-        android:foreground="?attr/selectableItemBackground"
-        android:gravity="center"
         android:text="@string/account_check_update"
         android:textColor="@color/appText"
         android:textSize="15sp"
-        android:textStyle="bold" />
+        android:textStyle="bold"
+        app:cornerRadius="12dp"
+        app:strokeColor="@color/appDivider" />
 
 </LinearLayout>

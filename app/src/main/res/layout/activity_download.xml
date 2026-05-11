@@ -22,19 +22,19 @@
     <androidx.appcompat.widget.LinearLayoutCompat
         android:id="@+id/dl_buttonContainer"
         android:layout_width="match_parent"
-        android:layout_height="82dp"
-        android:background="@color/appCard"
+        android:layout_height="88dp"
+        android:background="@drawable/app_bottom_nav_bg"
         android:elevation="8dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp"
+        android:paddingStart="14dp"
+        android:paddingEnd="14dp"
         app:layout_constraintBottom_toBottomOf="parent">
 
         <Button
             android:id="@+id/dl_btn"
             android:layout_width="0dp"
-            android:layout_height="50dp"
+            android:layout_height="52dp"
             android:layout_weight="1"
             android:background="@drawable/app_accent_button_bg"
             android:foreground="?android:attr/selectableItemBackground"
@@ -46,14 +46,14 @@
             android:text="선택 다운로드"
             android:textAllCaps="false"
             android:textColor="@android:color/white"
-            android:textSize="13sp"
+            android:textSize="14sp"
             android:textStyle="bold" />
 
         <Button
             android:id="@+id/dl_mode_btn"
             android:layout_width="0dp"
-            android:layout_height="50dp"
-            android:layout_marginStart="8dp"
+            android:layout_height="52dp"
+            android:layout_marginStart="10dp"
             android:layout_weight="1"
             android:background="@drawable/app_outline_button_bg"
             android:foreground="?android:attr/selectableItemBackground"
@@ -62,16 +62,16 @@
             android:minWidth="0dp"
             android:paddingStart="8dp"
             android:paddingEnd="8dp"
-            android:text="단일 선택 모드"
+            android:text="단일 선택"
             android:textAllCaps="false"
             android:textColor="@color/appText"
-            android:textSize="13sp" />
+            android:textSize="14sp" />
 
         <Button
             android:id="@+id/dl_all_btn"
             android:layout_width="0dp"
-            android:layout_height="50dp"
-            android:layout_marginStart="8dp"
+            android:layout_height="52dp"
+            android:layout_marginStart="10dp"
             android:layout_weight="1"
             android:background="@drawable/app_outline_button_bg"
             android:foreground="?android:attr/selectableItemBackground"
@@ -80,10 +80,10 @@
             android:minWidth="0dp"
             android:paddingStart="8dp"
             android:paddingEnd="8dp"
-            android:text="모두 다운로드"
+            android:text="모두 다운"
             android:textAllCaps="false"
             android:textColor="@color/appText"
-            android:textSize="13sp" />
+            android:textSize="14sp" />
 
     </androidx.appcompat.widget.LinearLayoutCompat>
 

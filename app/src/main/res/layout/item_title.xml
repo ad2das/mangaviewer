@@ -1,68 +1,67 @@
 <?xml version="1.0" encoding="utf-8" standalone="no"?>
-<androidx.appcompat.widget.LinearLayoutCompat xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
-    android:layout_height="wrap_content">
+    android:layout_height="wrap_content"
+    android:paddingStart="10dp"
+    android:paddingEnd="10dp"
+    android:paddingTop="5dp"
+    android:paddingBottom="5dp">
 
-    <androidx.cardview.widget.CardView
+    <com.google.android.material.card.MaterialCardView
         android:id="@+id/titleCard"
         android:layout_width="match_parent"
-        android:layout_height="168dp"
-        android:layout_marginStart="16dp"
-        android:layout_marginTop="@dimen/app_space_xs"
-        android:layout_marginEnd="16dp"
-        android:layout_marginBottom="@dimen/app_space_xs"
-        android:foreground="?android:attr/selectableItemBackground"
+        android:layout_height="172dp"
+        android:clickable="true"
+        android:focusable="true"
         app:cardBackgroundColor="@color/appCard"
-        app:cardCornerRadius="8dp"
-        app:cardElevation="0dp">
+        app:cardCornerRadius="16dp"
+        app:cardElevation="3dp"
+        app:rippleColor="@color/appAccentLight"
+        app:strokeColor="@color/appDivider"
+        app:strokeWidth="1dp">
 
         <androidx.constraintlayout.widget.ConstraintLayout
             android:id="@+id/titleContent"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:paddingEnd="8dp">
+            android:paddingEnd="10dp">
 
-            <androidx.cardview.widget.CardView
-                android:id="@+id/thumbCard"
-                android:layout_width="92dp"
-                android:layout_height="124dp"
-                android:layout_marginStart="14dp"
-                app:cardCornerRadius="6dp"
-                app:cardElevation="0dp"
+            <com.google.android.material.imageview.ShapeableImageView
+                android:id="@+id/Thumb"
+                android:layout_width="96dp"
+                android:layout_height="132dp"
+                android:layout_marginStart="16dp"
+                android:background="@drawable/app_cover_placeholder"
+                android:contentDescription="@string/cover_image"
+                android:scaleType="centerCrop"
                 app:layout_constraintBottom_toBottomOf="parent"
                 app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toTopOf="parent">
-
-                <ImageView
-                    android:id="@+id/Thumb"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:background="@drawable/app_cover_placeholder"
-                    android:scaleType="centerCrop" />
-
-            </androidx.cardview.widget.CardView>
+                app:layout_constraintTop_toTopOf="parent"
+                app:shapeAppearanceOverlay="@style/RoundedImageView" />
 
             <TextView
                 android:id="@+id/Title"
                 style="@style/AppText.Body"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="14dp"
-                android:layout_marginEnd="@dimen/app_space_sm"
+                android:layout_marginStart="16dp"
+                android:layout_marginEnd="12dp"
                 android:ellipsize="end"
                 android:lineSpacingExtra="1dp"
                 android:maxLines="3"
                 android:singleLine="false"
                 android:textStyle="bold"
+                android:textColor="@color/appText"
+                android:textSize="16sp"
                 app:autoSizeMaxTextSize="16sp"
                 app:autoSizeMinTextSize="11sp"
                 app:autoSizeStepGranularity="1sp"
                 app:autoSizeTextType="uniform"
                 app:layout_constraintEnd_toStartOf="@+id/epsButton"
-                app:layout_constraintStart_toEndOf="@+id/thumbCard"
-                app:layout_constraintTop_toTopOf="@+id/thumbCard"
+                app:layout_constraintStart_toEndOf="@id/Thumb"
+                app:layout_constraintTop_toTopOf="@id/Thumb"
                 tools:text="Solo Leveling" />
 
             <TextView
@@ -70,13 +69,14 @@
                 style="@style/AppText.Caption"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="14dp"
+                android:layout_marginStart="16dp"
                 android:layout_marginTop="6dp"
-                android:layout_marginEnd="@dimen/app_space_sm"
+                android:layout_marginEnd="12dp"
                 android:ellipsize="end"
                 android:maxLines="1"
+                android:textColor="@color/appTextSecondary"
                 app:layout_constraintEnd_toStartOf="@+id/epsButton"
-                app:layout_constraintStart_toEndOf="@+id/thumbCard"
+                app:layout_constraintStart_toEndOf="@id/Thumb"
                 app:layout_constraintTop_toBottomOf="@+id/Title"
                 tools:text="Episode 179" />
 
@@ -85,14 +85,14 @@
                 style="?android:attr/progressBarStyleHorizontal"
                 android:layout_width="0dp"
                 android:layout_height="5dp"
-                android:layout_marginStart="14dp"
+                android:layout_marginStart="16dp"
                 android:layout_marginEnd="10dp"
                 android:max="100"
                 android:progressDrawable="@drawable/app_progress_bar"
                 android:visibility="gone"
                 app:layout_constraintBottom_toBottomOf="@+id/TitleProgressText"
                 app:layout_constraintEnd_toStartOf="@+id/TitleProgressText"
-                app:layout_constraintStart_toEndOf="@+id/thumbCard"
+                app:layout_constraintStart_toEndOf="@id/Thumb"
                 app:layout_constraintTop_toTopOf="@+id/TitleProgressText" />
 
             <TextView
@@ -105,7 +105,7 @@
                 android:textColor="@color/appTextSecondary"
                 android:textStyle="bold"
                 android:visibility="gone"
-                app:layout_constraintBottom_toBottomOf="@+id/thumbCard"
+                app:layout_constraintBottom_toBottomOf="@id/Thumb"
                 app:layout_constraintEnd_toStartOf="@+id/epsButton"
                 app:layout_constraintTop_toBottomOf="@+id/TitleTagContainer"
                 app:layout_constraintVertical_bias="1"
@@ -113,18 +113,35 @@
 
             <ImageButton
                 android:id="@+id/epsButton"
-                android:layout_width="44dp"
-                android:layout_height="44dp"
-                android:layout_marginEnd="4dp"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginEnd="6dp"
                 android:background="@drawable/app_accent_button_bg"
-                android:contentDescription="이어보기"
+                android:contentDescription="@string/resume_reading"
                 android:foreground="?android:attr/selectableItemBackground"
-                android:padding="9dp"
+                android:padding="10dp"
                 android:visibility="visible"
                 app:layout_constraintBottom_toBottomOf="parent"
                 app:layout_constraintEnd_toEndOf="parent"
                 app:layout_constraintTop_toTopOf="parent"
                 app:srcCompat="@drawable/play" />
+
+            <ImageView
+                android:id="@+id/TitleResumeSiteIcon"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:layout_marginEnd="6dp"
+                android:layout_marginBottom="8dp"
+                android:background="@drawable/app_toolbar_icon_bg"
+                android:contentDescription="@string/site_icon"
+                android:elevation="3dp"
+                android:padding="4dp"
+                android:visibility="gone"
+                app:layout_constraintBottom_toTopOf="@+id/epsButton"
+                app:layout_constraintEnd_toEndOf="@+id/epsButton"
+                app:srcCompat="@drawable/ic_site_wfwf"
+                tools:srcCompat="@drawable/ic_site_ntk"
+                tools:visibility="visible" />
 
             <androidx.appcompat.widget.LinearLayoutCompat
                 android:id="@+id/TitleCounterContainer"
@@ -155,13 +172,13 @@
                 android:id="@+id/TitleTagContainer"
                 android:layout_width="0dp"
                 android:layout_height="24dp"
-                android:layout_marginStart="14dp"
+                android:layout_marginStart="16dp"
                 android:layout_marginTop="8dp"
-                android:layout_marginEnd="@dimen/app_space_sm"
+                android:layout_marginEnd="12dp"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
                 app:layout_constraintEnd_toStartOf="@+id/epsButton"
-                app:layout_constraintStart_toEndOf="@+id/thumbCard"
+                app:layout_constraintStart_toEndOf="@id/Thumb"
                 app:layout_constraintTop_toBottomOf="@+id/TitleAuthor"
                 app:layout_constraintBottom_toTopOf="@+id/TitleProgress"
                 app:layout_constraintVertical_bias="0">
@@ -169,16 +186,16 @@
                 <TextView
                     android:id="@+id/TitleBaseMode"
                     android:layout_width="wrap_content"
-                    android:layout_height="22dp"
+                    android:layout_height="24dp"
                     android:layout_marginEnd="6dp"
                     android:background="@drawable/app_soft_chip_bg"
                     android:ellipsize="end"
                     android:gravity="center"
                     android:includeFontPadding="false"
                     android:maxLines="1"
-                    android:minWidth="38dp"
-                    android:paddingStart="8dp"
-                    android:paddingEnd="8dp"
+                    android:minWidth="40dp"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp"
                     android:textColor="@color/appAccent"
                     android:textSize="11sp"
                     android:textStyle="bold"
@@ -200,6 +217,6 @@
 
         </androidx.constraintlayout.widget.ConstraintLayout>
 
-    </androidx.cardview.widget.CardView>
+    </com.google.android.material.card.MaterialCardView>
 
-</androidx.appcompat.widget.LinearLayoutCompat>
+</FrameLayout>

@@ -5,6 +5,7 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.net.Uri;
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.ActionBar;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
@@ -44,15 +45,16 @@ import ml.melun.mangaview.repository.CachePolicy;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.repository.OfflineStore;
 import ml.melun.mangaview.runtime.PerfTrace;
+import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.PrefetchCoordinator;
 import ml.melun.mangaview.state.UiState;
 import ml.melun.mangaview.viewmodel.EpisodeViewModel;
+import ml.melun.mangaview.mangaview.CustomHttpClient;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.openViewerPrepared;
 import static ml.melun.mangaview.Utils.queueOfflineDownload;
 import static ml.melun.mangaview.Utils.showCaptchaPopup;
-import static ml.melun.mangaview.Utils.showTokiCaptchaPopup;
 import static ml.melun.mangaview.Utils.toViewerMangaJson;
 import static ml.melun.mangaview.Utils.toViewerTitleJson;
 import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
@@ -186,10 +188,13 @@ public class EpisodeActivity extends AppCompatActivity {
         dark = p.getDarkTheme();
         if(dark) setTheme(R.style.AppThemeDarkNoTitle);
         super.onCreate(savedInstanceState);
+        PerformanceMonitor.attach(this);
+        PerformanceMonitor.screen("episode");
         setContentView(R.layout.activity_episode);
         applyEpisodeWindowChrome();
         Intent intent = getIntent();
         title = new Gson().fromJson(intent.getStringExtra("title"),new TypeToken<Title>(){}.getType());
+        switchToTitleSourceSite();
         firstContentStartedAt = PerfTrace.start("episode_first_content_ms");
         online = intent.getBooleanExtra("online", true);
         if(title.useBookmark())
@@ -203,6 +208,15 @@ public class EpisodeActivity extends AppCompatActivity {
         episodeList.setItemViewCacheSize(20);
         episodeList.setItemAnimator(null);
         episodeList.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        episodeList.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
+                super.onScrollStateChanged(recyclerView, newState);
+                PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
+                if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                    PerformanceMonitor.reportNow("episode_scroll_idle");
+            }
+        });
         homeDir = p.getHomeDir();
         resumefab = this.findViewById(R.id.resumefab);
         fab_container = findViewById(R.id.fab_container);
@@ -299,7 +313,7 @@ public class EpisodeActivity extends AppCompatActivity {
             @Override
             public void onItemClick(int position, Manga selected) {
                 //add local images to manga
-                openViewer(selected,0);
+                openViewer(selected,0, true);
             }
             @Override
             public void onStarClick(){
@@ -335,8 +349,9 @@ public class EpisodeActivity extends AppCompatActivity {
 
             @Override
             public void onFirstClick(){
-                if(episodes != null && episodes.size()>0)
-                    openViewer(episodes.get(episodes.size()-1),0);
+                Manga target = quickReadEpisode();
+                if(target != null)
+                    openViewer(target,0);
             }
         });
         episodeAdapter.setTagClickListener(tag -> {
@@ -417,6 +432,42 @@ public class EpisodeActivity extends AppCompatActivity {
         return -1;
     }
 
+    private void switchToTitleSourceSite() {
+        if(title == null || p == null)
+            return;
+        String source = title.getSourceSite();
+        if(source == null || source.length() == 0)
+            return;
+        boolean targetNtk = "ntk".equals(source);
+        if(p.isNtkSite() == targetNtk)
+            return;
+        if(targetNtk)
+            p.setSitePreset(CustomHttpClient.NTK_COMIC_URL, CustomHttpClient.NTK_WEBTOON_URL);
+        else
+            p.setSitePreset(CustomHttpClient.DEFAULT_COMIC_URL, CustomHttpClient.WEBTOON_URL);
+    }
+
+    private Manga quickReadEpisode() {
+        if(episodes == null || episodes.size() == 0)
+            return null;
+        if(bookmarkIndex > 0 && bookmarkIndex <= episodes.size())
+            return episodes.get(bookmarkIndex - 1);
+        int restoredId = restoredBookmarkId(title);
+        if(restoredId > 0) {
+            for(int i = 0; i < episodes.size(); i++) {
+                Manga episode = episodes.get(i);
+                if(episode != null && episode.getId() == restoredId) {
+                    bookmarkId = restoredId;
+                    bookmarkIndex = i + 1;
+                    if(episodeAdapter != null)
+                        episodeAdapter.setBookmark(bookmarkIndex);
+                    return episode;
+                }
+            }
+        }
+        return episodes.get(episodes.size() - 1);
+    }
+
     @SuppressWarnings("unchecked")
     private void renderEpisodeState(UiState<EpisodeLoadResult> state) {
         if(state instanceof UiState.Loading) {
@@ -432,7 +483,7 @@ public class EpisodeActivity extends AppCompatActivity {
             return;
         EpisodeLoadResult result = ((UiState.Content<EpisodeLoadResult>) state).getValue();
         if(result.getResultCode() == LOAD_CAPTCHA){
-            showTokiCaptchaPopup(context, p);
+            showCaptchaPopup(title.getUrl(), context, RESULT_CAPTCHA, p);
             return;
         }
         episodes = result.getEpisodes();
@@ -498,11 +549,16 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     public void openViewer(Manga manga, int code){
+        openViewer(manga, code, false);
+    }
+
+    public void openViewer(Manga manga, int code, boolean exactEpisode){
         manga.setMode(mode);
         manga.setTitle(title);
         manga.setTitleId(title == null ? manga.getTitleId() : title.getId());
-        ViewerWarmupManager.warmup(context, manga, title);
-        openViewerPrepared(context, manga, code, false, online, true, title, !manga.isOnline());
+        if(!exactEpisode)
+            ViewerWarmupManager.warmup(context, manga, title);
+        openViewerPrepared(context, manga, code, false, online, true, title, !manga.isOnline(), exactEpisode);
     }
 
     @Override
@@ -535,6 +591,18 @@ public class EpisodeActivity extends AppCompatActivity {
             resultIntent.putExtra("favorite", favorite);
             setResult(RESULT_OK, resultIntent);
         }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        PerformanceMonitor.resume();
+    }
+
+    @Override
+    protected void onPause() {
+        PerformanceMonitor.pause();
+        super.onPause();
     }
 
     @Override

@@ -1,6 +1,8 @@
 package ml.melun.mangaview.fragment;
 
+import android.content.Context;
 import android.content.Intent;
+import android.content.res.ColorStateList;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -16,8 +18,7 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.material.tabs.TabLayout;
-import com.bumptech.glide.Glide;
-
+import com.google.android.material.button.MaterialButton;
 import ml.melun.mangaview.interfaces.MainActivityCallback;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Preference;
@@ -29,9 +30,11 @@ import ml.melun.mangaview.adapter.MainWebtoonAdapter;
 import ml.melun.mangaview.interfaces.UrlUpdateCallback;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 
 import static ml.melun.mangaview.MainApplication.p;
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.Utils.episodeIntent;
 import static ml.melun.mangaview.Utils.openViewer;
 import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
@@ -98,6 +101,14 @@ public class MainMain extends Fragment{
             wait = false;
             comicFetchState = HOME_FETCH_IDLE;
             webtoonFetchState = HOME_FETCH_IDLE;
+            if(mainComicAdapter != null)
+                mainComicAdapter.resetForSiteChange();
+            if(mainWebtoonAdapter != null)
+                mainWebtoonAdapter.resetForSiteChange();
+            if(!canUseHomeUi())
+                return;
+            applySelectedHomeTab();
+            scrollToSelectedTab();
             if(fragmentActive)
                 fetchSelected();
         };
@@ -153,7 +164,7 @@ public class MainMain extends Fragment{
         comicRecycler = rootView.findViewById(R.id.main_comic_recycler);
         configureHomeRecycler(webtoonRecycler);
         configureHomeRecycler(comicRecycler);
-        mainRecycler = webtoonRecycler;
+        mainRecycler = null;
         localChangeListener = scope -> {
             if(!"recent".equals(scope) && !"bookmark".equals(scope))
                 return;
@@ -264,28 +275,27 @@ public class MainMain extends Fragment{
         selectedBaseMode = p.getBaseMode() == base_comic ? base_comic : base_webtoon;
         ensureHomeAdapter(base_webtoon);
         ensureHomeAdapter(base_comic);
-        showInitialHomeRows(base_webtoon);
-        showInitialHomeRows(base_comic);
+        showInitialHomeRows(selectedBaseMode);
         modeWebtoon.setOnClickListener(v -> {
             switchBaseMode(base_webtoon);
-            fetchSelected();
-            scheduleInactivePrefetch();
         });
         modeComic.setOnClickListener(v -> {
             switchBaseMode(base_comic);
-            fetchSelected();
-            scheduleInactivePrefetch();
         });
         switchBaseMode(selectedBaseMode);
 
         RecyclerView selectedRecycler = getSelectedRecycler();
         if(selectedRecycler != null) {
+            final int initialBaseMode = selectedBaseMode;
             selectedRecycler.postDelayed(() -> {
                 if(!isAdded())
+                    return;
+                if(maybeOpenNtkCaptcha())
                     return;
                 if(!wait)
                     fetchSelected();
                 scheduleInactivePrefetch();
+                showInitialHomeRows(initialBaseMode == base_comic ? base_webtoon : base_comic);
             }, 80);
         }
         return rootView;
@@ -306,14 +316,9 @@ public class MainMain extends Fragment{
                 super.onScrollStateChanged(recyclerView, newState);
                 if(getContext() == null || !isAdded())
                     return;
-                try {
-                    if(newState == RecyclerView.SCROLL_STATE_IDLE)
-                        Glide.with(MainMain.this).resumeRequests();
-                    else
-                        Glide.with(MainMain.this).pauseRequests();
-                } catch (RuntimeException e) {
-                    ml.melun.mangaview.report.CrashReporter.record(e);
-                }
+                PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
+                if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                    PerformanceMonitor.reportNow("home_scroll_idle");
             }
         });
     }
@@ -346,9 +351,12 @@ public class MainMain extends Fragment{
     }
 
     private MainWebtoonAdapter ensureHomeAdapter(int baseMode) {
+        Context context = getContext();
+        if(context == null || !isAdded())
+            return baseMode == base_comic ? mainComicAdapter : mainWebtoonAdapter;
         if(baseMode == base_comic) {
             if(mainComicAdapter == null) {
-                mainComicAdapter = new MainWebtoonAdapter(getContext(), base_comic);
+                mainComicAdapter = new MainWebtoonAdapter(context, base_comic);
                 mainComicAdapter.setListener(homeClickListener);
                 mainComicAdapter.setFetchStateListener(this::onHomeFetchFinished);
                 mainComicAdapter.setAnchorRecycler(comicRecycler);
@@ -359,7 +367,7 @@ public class MainMain extends Fragment{
             return mainComicAdapter;
         }
         if(mainWebtoonAdapter == null) {
-            mainWebtoonAdapter = new MainWebtoonAdapter(getContext());
+            mainWebtoonAdapter = new MainWebtoonAdapter(context);
             mainWebtoonAdapter.setListener(homeClickListener);
             mainWebtoonAdapter.setFetchStateListener(this::onHomeFetchFinished);
             mainWebtoonAdapter.setAnchorRecycler(webtoonRecycler);
@@ -375,6 +383,10 @@ public class MainMain extends Fragment{
         return selectedBaseMode == base_comic ? mainComicAdapter : mainWebtoonAdapter;
     }
 
+    private boolean canUseHomeUi() {
+        return isAdded() && getContext() != null && webtoonRecycler != null && comicRecycler != null;
+    }
+
     private int getSelectedTabPosition() {
         if(mainTabLayout == null || mainTabLayout.getSelectedTabPosition() < 0)
             return FOR_YOU_TAB;
@@ -382,24 +394,52 @@ public class MainMain extends Fragment{
     }
 
     private void switchBaseMode(int baseMode) {
+        if(!canUseHomeUi())
+            return;
         RecyclerView previousRecycler = mainRecycler;
+        RecyclerView targetRecycler = baseMode == base_comic ? comicRecycler : webtoonRecycler;
+        if(selectedBaseMode == baseMode && mainRecycler == targetRecycler)
+            return;
         selectedBaseMode = baseMode;
         p.setBaseMode(baseMode);
+        PerformanceMonitor.updateSiteMode();
         ensureHomeAdapter(baseMode);
         updateModeToggle();
         MainWebtoonAdapter selectedAdapter = getSelectedAdapter();
         if(selectedAdapter != null)
-            selectedAdapter.showInitialRows();
-        mainRecycler = getSelectedRecycler();
+            selectedAdapter.showPlaceholderIfEmpty();
+        mainRecycler = targetRecycler;
         if(mainRecycler != null) {
             if(previousRecycler != null)
                 previousRecycler.stopScroll();
             mainRecycler.stopScroll();
             showSelectedRecycler(previousRecycler, mainRecycler);
-            scrollHomeToTop();
+            prepareSelectedHomeAfterSwitch(baseMode);
         }
-        applySelectedHomeTab();
-        scrollToSelectedTab();
+    }
+
+    private void prepareSelectedHomeAfterSwitch(int baseMode) {
+        RecyclerView recyclerView = getSelectedRecycler();
+        if(recyclerView == null)
+            return;
+        final int requestBaseMode = baseMode;
+        recyclerView.post(() -> {
+            if(!isAdded() || requestBaseMode != selectedBaseMode)
+                return;
+            applySelectedHomeTab();
+            MainWebtoonAdapter adapter = getSelectedAdapter();
+            if(adapter != null)
+                adapter.showInitialRows();
+            scrollHomeToTop();
+            if(adapter == null || !adapter.hasDisplayContent())
+                fetchSelected();
+            else if(!adapter.hasCompleteHomeSections())
+                recyclerView.postDelayed(() -> {
+                    if(isAdded() && requestBaseMode == selectedBaseMode)
+                        fetchSelected();
+                }, 350);
+            scheduleInactivePrefetch();
+        });
     }
 
     private RecyclerView getSelectedRecycler() {
@@ -413,17 +453,23 @@ public class MainMain extends Fragment{
     private void showSelectedRecycler(RecyclerView previousRecycler, RecyclerView selectedRecycler) {
         if(selectedRecycler == null)
             return;
+        selectedRecycler.setVisibility(View.VISIBLE);
         selectedRecycler.setAlpha(1f);
         selectedRecycler.setEnabled(true);
+        selectedRecycler.setClickable(true);
         selectedRecycler.bringToFront();
         RecyclerView inactiveRecycler = selectedRecycler == comicRecycler ? webtoonRecycler : comicRecycler;
         if(inactiveRecycler != null && inactiveRecycler != selectedRecycler) {
             inactiveRecycler.setAlpha(0f);
             inactiveRecycler.setEnabled(false);
+            inactiveRecycler.setClickable(false);
+            inactiveRecycler.setVisibility(View.GONE);
         }
         if(previousRecycler != null && previousRecycler != selectedRecycler) {
             previousRecycler.setAlpha(0f);
             previousRecycler.setEnabled(false);
+            previousRecycler.setClickable(false);
+            previousRecycler.setVisibility(View.GONE);
         }
     }
 
@@ -442,6 +488,16 @@ public class MainMain extends Fragment{
     }
 
     private void styleModeButton(TextView view, boolean selected) {
+        if(view instanceof MaterialButton) {
+            MaterialButton button = (MaterialButton)view;
+            int background = ContextCompat.getColor(getContext(), selected ? R.color.appAccent : android.R.color.transparent);
+            int stroke = ContextCompat.getColor(getContext(), selected ? R.color.appAccent : R.color.appDivider);
+            button.setChecked(selected);
+            button.setBackgroundTintList(ColorStateList.valueOf(background));
+            button.setStrokeColor(ColorStateList.valueOf(stroke));
+            button.setTextColor(ContextCompat.getColor(getContext(), selected ? android.R.color.white : R.color.appTextSecondary));
+            return;
+        }
         view.setBackgroundResource(selected ? R.drawable.app_accent_button_bg : android.R.color.transparent);
         view.setTextColor(ContextCompat.getColor(getContext(), selected ? android.R.color.white : R.color.appTextSecondary));
     }
@@ -504,10 +560,18 @@ public class MainMain extends Fragment{
     }
 
     private void fetchSelected() {
+        if(maybeOpenNtkCaptcha())
+            return;
         if(selectedBaseMode == base_comic)
             fetchComic();
         else
             fetchWebtoon();
+    }
+
+    private boolean maybeOpenNtkCaptcha() {
+        if(!isAdded() || getActivity() == null)
+            return false;
+        return Utils.startNtkTurnstileCaptchaIfNeeded(getActivity(), 3, this, p);
     }
 
     private void showInitialHomeRows(int baseMode) {
@@ -521,14 +585,18 @@ public class MainMain extends Fragment{
         if(targetRecycler == null || wait)
             return;
         final int visibleBaseMode = selectedBaseMode;
-        targetRecycler.post(() -> {
+        targetRecycler.postDelayed(() -> {
             if(!isAdded() || wait)
+                return;
+            if(visibleBaseMode != selectedBaseMode)
+                return;
+            if(maybeOpenNtkCaptcha())
                 return;
             if(visibleBaseMode == base_comic)
                 fetchWebtoon();
             else
                 fetchComic();
-        });
+        }, 400);
     }
 
     private void fetchComic() {
@@ -631,6 +699,7 @@ public class MainMain extends Fragment{
         if(viewStarted)
             refreshHomeLocalState();
         viewStarted = true;
+        maybeOpenNtkCaptcha();
     }
 
     @Override
@@ -664,6 +733,8 @@ public class MainMain extends Fragment{
     public void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if(resultCode == RESULT_CAPTCHA) {
+            getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
+            getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
             if(p.getBaseMode() == base_comic)
                 comicFetchState = HOME_FETCH_IDLE;
             else

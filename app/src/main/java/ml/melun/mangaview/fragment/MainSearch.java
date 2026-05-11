@@ -3,6 +3,7 @@ package ml.melun.mangaview.fragment;
 import android.content.Intent;
 import android.content.DialogInterface;
 import android.content.Context;
+import android.graphics.Rect;
 import android.os.Bundle;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
@@ -29,7 +30,6 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import com.google.android.material.tabs.TabLayout;
-import com.bumptech.glide.Glide;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayoutDirection;
 import java.util.ArrayList;
@@ -49,6 +49,7 @@ import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.repository.OfflineStore;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.PerfTrace;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -62,9 +63,10 @@ public class MainSearch extends Fragment {
     private static final String ARG_LIBRARY_MODE = "libraryMode";
     SwipyRefreshLayout swipe;
     FloatingActionButton advSearchBtn;
-    TextView noresult;
+    View noresult;
+    TextView noResultText;
     private EditText searchBox;
-    TextView searchSubmitButton;
+    View searchSubmitButton;
     RecyclerView searchResult;
     Spinner searchMode, baseMode;
     TitleAdapter searchAdapter;
@@ -90,12 +92,18 @@ public class MainSearch extends Fragment {
     Runnable pendingListLongPress;
     boolean listLongPressHandled = false;
     boolean listMovedBeyondTapSlop = false;
+    boolean listDownOnResume = false;
+    int listScrollState = RecyclerView.SCROLL_STATE_IDLE;
     long lastTitlePopupAt = 0;
     int lastTitlePopupId = -1;
     int lastTitlePopupBaseMode = -1;
     boolean pendingLibraryRefresh = false;
     boolean libraryMode = true;
     long searchFirstStartedAt = 0L;
+    AppDispatchers.TaskHandle libraryFilterTask;
+    int libraryFilterGeneration = 0;
+    long librarySnapshotVersion = -1L;
+    final ArrayList<Title>[] librarySnapshots = new ArrayList[4];
 
     public static MainSearch newSearchTab() {
         MainSearch fragment = new MainSearch();
@@ -128,6 +136,7 @@ public class MainSearch extends Fragment {
 
         //search content
         noresult = rootView.findViewById(R.id.noResult);
+        noResultText = rootView.findViewById(R.id.noResultText);
         searchBox = rootView.findViewById(R.id.searchBox);
         searchSubmitButton = rootView.findViewById(R.id.searchSubmitButton);
         searchResult = rootView.findViewById(R.id.searchResult);
@@ -140,24 +149,24 @@ public class MainSearch extends Fragment {
             @Override
             public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
                 super.onScrollStateChanged(recyclerView, newState);
+                listScrollState = newState;
+                if(newState != RecyclerView.SCROLL_STATE_IDLE) {
+                    listMovedBeyondTapSlop = true;
+                    cancelTitleListLongPress();
+                }
                 if(getContext() == null || !isAdded())
                     return;
-                try {
-                    if(newState == RecyclerView.SCROLL_STATE_IDLE) {
-                        Glide.with(MainSearch.this).resumeRequests();
-                        applyPendingLibraryRefreshIfIdle();
-                    } else {
-                        Glide.with(MainSearch.this).pauseRequests();
-                    }
-                } catch (RuntimeException e) {
-                    ml.melun.mangaview.report.CrashReporter.record(e);
+                PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
+                if(newState == RecyclerView.SCROLL_STATE_IDLE) {
+                    applyPendingLibraryRefreshIfIdle();
+                    PerformanceMonitor.reportNow(libraryMode && !onlineSearchMode ? "library_scroll_idle" : "search_scroll_idle");
                 }
             }
         });
         searchResult.addOnItemTouchListener(new RecyclerView.SimpleOnItemTouchListener() {
             @Override
             public boolean onInterceptTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent event) {
-                if(!libraryMode || onlineSearchMode)
+                if(searchAdapter == null)
                     return false;
                 if(event.getAction() == MotionEvent.ACTION_DOWN) {
                     listDownX = event.getX();
@@ -165,6 +174,7 @@ public class MainSearch extends Fragment {
                     listDownWallTime = System.currentTimeMillis();
                     listLongPressHandled = false;
                     listMovedBeyondTapSlop = false;
+                    listDownOnResume = isTouchOnResumeButton(event.getX(), event.getY());
                     scheduleTitleListLongPress();
                     return false;
                 }
@@ -180,16 +190,21 @@ public class MainSearch extends Fragment {
                 if(event.getAction() == MotionEvent.ACTION_CANCEL) {
                     cancelTitleListLongPress();
                     listLongPressHandled = false;
+                    listDownOnResume = false;
                     return false;
                 }
                 if(event.getAction() == MotionEvent.ACTION_UP) {
                     cancelTitleListLongPress();
                     if(listLongPressHandled) {
                         listLongPressHandled = false;
+                        listDownOnResume = false;
                         return true;
                     }
-                    if(!listMovedBeyondTapSlop && System.currentTimeMillis() - listDownWallTime < ViewConfiguration.getLongPressTimeout())
+                    if(!listMovedBeyondTapSlop
+                            && listScrollState == RecyclerView.SCROLL_STATE_IDLE
+                            && System.currentTimeMillis() - listDownWallTime < ViewConfiguration.getLongPressTimeout())
                         return handleTitleListTap(event.getX(), event.getY());
+                    listDownOnResume = false;
                     return false;
                 }
                 return false;
@@ -200,6 +215,7 @@ public class MainSearch extends Fragment {
                 if(event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) {
                     cancelTitleListLongPress();
                     listLongPressHandled = false;
+                    listDownOnResume = false;
                 }
             }
         });
@@ -216,6 +232,7 @@ public class MainSearch extends Fragment {
         localChangeListener = scope -> {
             if(!isLibraryChange(scope) || searchResult == null)
                 return;
+            invalidateLibrarySnapshots(scope);
             searchResult.post(this::refreshLibraryFromPreferences);
         };
         p.addLocalChangeListener(localChangeListener);
@@ -227,7 +244,7 @@ public class MainSearch extends Fragment {
                 libraryMeta.setVisibility(View.GONE);
             if(optionsPanel != null)
                 optionsPanel.setVisibility(View.VISIBLE);
-            noresult.setText("검색어를 입력하면 작품을 찾아드립니다");
+            noResultText.setText("검색어를 입력하면 작품을 찾아드립니다");
             noresult.setVisibility(View.VISIBLE);
         }
         if(p.getDarkTheme()){
@@ -445,6 +462,11 @@ public class MainSearch extends Fragment {
             performLibrarySearch(activeLibraryQuery);
             return;
         }
+        if(libraryFilterTask != null) {
+            libraryFilterTask.cancel();
+            libraryFilterTask = null;
+        }
+        libraryFilterGeneration++;
         if(searchAdapter == null)
             searchAdapter = new TitleAdapter(getContext());
         searchAdapter.setResume(true);
@@ -463,6 +485,14 @@ public class MainSearch extends Fragment {
     }
 
     private ArrayList<Title> getLibraryTitles(int tab) {
+        long version = p.getLocalDataVersion();
+        if(version != librarySnapshotVersion) {
+            for(int i = 0; i < librarySnapshots.length; i++)
+                librarySnapshots[i] = null;
+            librarySnapshotVersion = version;
+        }
+        if(tab >= 0 && tab < librarySnapshots.length && librarySnapshots[tab] != null)
+            return new ArrayList<>(librarySnapshots[tab]);
         ArrayList<Title> data = new ArrayList<>();
         if(tab == 1) {
             appendUnique(data, Utils.snapshotList(p.getRecent()));
@@ -475,7 +505,23 @@ public class MainSearch extends Fragment {
             appendUnique(data, Utils.snapshotList(p.getFavorite()));
             appendUnique(data, offlineTitles);
         }
+        if(tab >= 0 && tab < librarySnapshots.length)
+            librarySnapshots[tab] = new ArrayList<>(data);
         return data;
+    }
+
+    private void invalidateLibrarySnapshots(String scope) {
+        if("recent".equals(scope)) {
+            librarySnapshots[0] = null;
+            librarySnapshots[1] = null;
+        } else if("favorite".equals(scope)) {
+            librarySnapshots[0] = null;
+            librarySnapshots[2] = null;
+        } else {
+            for(int i = 0; i < librarySnapshots.length; i++)
+                librarySnapshots[i] = null;
+        }
+        librarySnapshotVersion = -1L;
     }
 
     private String libraryEmptyMessage(int tab) {
@@ -494,15 +540,16 @@ public class MainSearch extends Fragment {
         searchAdapter.setResume(true);
         searchAdapter.setForceThumbnail(false);
         searchAdapter.setLongClickEnabled(true);
-        searchAdapter.setData(data);
         if(searchResult.getAdapter() != searchAdapter)
             searchResult.setAdapter(searchAdapter);
+        searchResult.stopScroll();
+        searchAdapter.setDataImmediate(data);
         updateAdvSearchVisibility();
         if(swipe != null)
             swipe.setRefreshing(false);
         if(libraryCount != null)
             libraryCount.setText(data.size() + "개 작품");
-        noresult.setText(emptyMessage);
+        noResultText.setText(emptyMessage);
         noresult.setVisibility(data.size() == 0 ? View.VISIBLE : View.GONE);
         searchAdapter.setClickListener(new TitleAdapter.ItemClickListener() {
             @Override
@@ -539,15 +586,7 @@ public class MainSearch extends Fragment {
     }
 
     private boolean isRecentTitle(Title title) {
-        if(title == null)
-            return false;
-        for(MTitle recent : Utils.snapshotList(p.getRecent())) {
-            if(recent != null
-                    && recent.getId() == title.getId()
-                    && recent.getBaseMode() == title.getBaseMode())
-                return true;
-        }
-        return false;
+        return title != null && p.findRecentTitle(title) != null;
     }
 
     private void showLibraryTitlePopup(View view, Title title) {
@@ -663,9 +702,9 @@ public class MainSearch extends Fragment {
                 title.setBookmark(bookmark);
             return title;
         }
-        MTitle stored = findStoredTitle(title, Utils.snapshotList(p.getRecent()));
+        MTitle stored = p.findRecentTitle(title);
         if(stored == null)
-            stored = findStoredTitle(title, Utils.snapshotList(p.getFavorite()));
+            stored = p.findFavoriteTitle(title);
         if(stored == null)
             return title;
         Title latest = stored instanceof Title ? (Title) stored : new Title(stored);
@@ -683,7 +722,8 @@ public class MainSearch extends Fragment {
         for(MTitle stored : source) {
             if(stored != null
                     && stored.getId() == title.getId()
-                    && stored.getBaseMode() == title.getBaseMode())
+                    && stored.getBaseMode() == title.getBaseMode()
+                    && sameSourceSite(stored, title))
                 return stored;
         }
         return null;
@@ -827,7 +867,7 @@ public class MainSearch extends Fragment {
             pendingListLongPress = null;
             if(!isAdded() || getContext() == null || searchResult == null || searchAdapter == null)
                 return;
-            if(!listMovedBeyondTapSlop)
+            if(!listMovedBeyondTapSlop && listScrollState == RecyclerView.SCROLL_STATE_IDLE)
                 listLongPressHandled = handleTitleListLongPress(listDownX, listDownY);
         };
         searchResult.postDelayed(pendingListLongPress, ViewConfiguration.getLongPressTimeout());
@@ -842,64 +882,36 @@ public class MainSearch extends Fragment {
     private boolean movedBeyondListTapSlop(MotionEvent event) {
         if(getContext() == null)
             return false;
-        int slop = ViewConfiguration.get(getContext()).getScaledTouchSlop() * 8;
+        int slop = ViewConfiguration.get(getContext()).getScaledTouchSlop();
         return Math.abs(event.getX() - listDownX) > slop || Math.abs(event.getY() - listDownY) > slop;
     }
 
     private boolean handleTitleListTap(float x, float y) {
         if(searchResult == null || searchAdapter == null || getContext() == null)
             return false;
-        View child = searchResult.findChildViewUnder(x, y);
-        View item = searchResult.findContainingItemView(child);
+        View item = findTitleListItemAt(x, y);
         if(item == null)
             return false;
         int position = positionForTitleListItem(item);
         if(position == RecyclerView.NO_POSITION || position >= searchAdapter.getItemCount())
             return false;
-        Title title = searchAdapter.getItem(position);
-        if(title == null)
-            return false;
-        if(x >= item.getRight() - dp(96)) {
-            Title latest = resolveLatestTitleForResume(title);
-            int bookmark = resolveLatestBookmark(latest, title.getBookmark());
-            openResume(latest, bookmark);
-        } else {
-            openTitleFromList(title);
-        }
-        return true;
-    }
-
-    private void openTitleFromList(Title title) {
-        if(title == null || getContext() == null)
-            return;
-        if(isOfflineTitle(title)) {
-            Intent episodeView = episodeIntent(getContext(), title);
-            episodeView.putExtra("online", false);
-            Utils.safeStartActivity(getContext(), episodeView);
-        } else if(title.getId() > 0) {
-            Utils.safeStartActivity(getContext(), episodeIntent(getContext(), title));
-        }
-    }
-
-    private int dp(int value) {
-        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+        boolean resumeTap = listDownOnResume && isTouchOnResumeButton(x, y);
+        listDownOnResume = false;
+        if(resumeTap)
+            return searchAdapter.performResumeClick(position);
+        return searchAdapter.performItemClick(position);
     }
 
     private boolean handleTitleListLongPress(float x, float y) {
         if(searchResult == null || searchAdapter == null || getContext() == null)
             return false;
-        View child = searchResult.findChildViewUnder(x, y);
-        View item = searchResult.findContainingItemView(child);
+        View item = findTitleListItemAt(x, y);
         if(item == null)
             return false;
         int position = positionForTitleListItem(item);
         if(position == RecyclerView.NO_POSITION || position >= searchAdapter.getItemCount())
             return false;
-        Title title = searchAdapter.getItem(position);
-        if(title == null)
-            return false;
-        showLibraryTitlePopup(item, title);
-        return true;
+        return searchAdapter.performItemLongClick(item, position);
     }
 
     private int positionForTitleListItem(View item) {
@@ -907,6 +919,31 @@ public class MainSearch extends Fragment {
         if(position == RecyclerView.NO_POSITION)
             position = searchResult.getChildLayoutPosition(item);
         return position;
+    }
+
+    private View findTitleListItemAt(float x, float y) {
+        if(searchResult == null)
+            return null;
+        View child = searchResult.findChildViewUnder(x, y);
+        if(child == null)
+            return null;
+        return searchResult.findContainingItemView(child);
+    }
+
+    private boolean isTouchOnResumeButton(float recyclerX, float recyclerY) {
+        if(searchResult == null)
+            return false;
+        View item = findTitleListItemAt(recyclerX, recyclerY);
+        if(item == null)
+            return false;
+        View resume = item.findViewById(R.id.epsButton);
+        if(resume == null || resume.getVisibility() != View.VISIBLE || !(item instanceof ViewGroup))
+            return false;
+        Rect rect = new Rect(0, 0, resume.getWidth(), resume.getHeight());
+        ((ViewGroup) item).offsetDescendantRectToMyCoords(resume, rect);
+        int childX = Math.round(recyclerX - item.getLeft());
+        int childY = Math.round(recyclerY - item.getTop());
+        return rect.contains(childX, childY);
     }
 
     private void appendUnique(ArrayList<Title> target, List<?> source) {
@@ -919,8 +956,10 @@ public class MainSearch extends Fragment {
             boolean exists = false;
             for(Title existing : target) {
                 if(title.getId() > 0 && existing.getBaseMode() == title.getBaseMode() && existing.getId() == title.getId()) {
-                    exists = true;
-                    break;
+                    if(sameSourceSite(existing, title)) {
+                        exists = true;
+                        break;
+                    }
                 }
                 if(title.getId() <= 0 && title.getPath() != null && title.getPath().equals(existing.getPath())) {
                     exists = true;
@@ -934,6 +973,21 @@ public class MainSearch extends Fragment {
             if(!exists)
                 target.add(title);
         }
+    }
+
+    private boolean sameSourceSite(MTitle left, MTitle right) {
+        String leftSource = sourceSiteKey(left);
+        String rightSource = sourceSiteKey(right);
+        return leftSource.equals(rightSource);
+    }
+
+    private String sourceSiteKey(MTitle title) {
+        if(title == null || p == null)
+            return "";
+        String source = title.getSourceSite();
+        if(source == null || source.length() == 0)
+            source = p.resolveKnownSourceSite(title);
+        return source == null ? "" : source;
     }
 
     private boolean keyCodeIsEnter(KeyEvent event) {
@@ -981,11 +1035,22 @@ public class MainSearch extends Fragment {
             offlineTask = new LoadOfflineTitles();
             offlineTask.start();
         }
-        ArrayList<Title> data = new ArrayList<>();
-        for(Title title : getLibraryTitles(tab))
-            if(matchesLibraryQuery(title, query))
-                data.add(title);
-        bindLibraryData(data, "서재에서 \"" + query + "\" 검색 결과가 없습니다");
+        if(libraryFilterTask != null)
+            libraryFilterTask.cancel();
+        final int generation = ++libraryFilterGeneration;
+        final String filterQuery = query;
+        libraryFilterTask = AppDispatchers.submitUiDiff(() -> {
+            ArrayList<Title> data = new ArrayList<>();
+            for(Title title : getLibraryTitles(tab))
+                if(matchesLibraryQuery(title, filterQuery))
+                    data.add(title);
+            AppDispatchers.runOnMain(() -> {
+                if(generation != libraryFilterGeneration || getContext() == null)
+                    return;
+                libraryFilterTask = null;
+                bindLibraryData(data, "서재에서 \"" + filterQuery + "\" 검색 결과가 없습니다");
+            });
+        });
     }
 
     private boolean matchesLibraryQuery(Title title, String query) {
@@ -1039,7 +1104,7 @@ public class MainSearch extends Fragment {
             if(searchAdapter == null)
                 searchAdapter = new TitleAdapter(getContext());
             bindOnlineAdapter();
-            if(noresult != null && searchAdapter.getItemCount() == 0)
+            if(noresult != null)
                 noresult.setVisibility(View.GONE);
             updateAdvSearchVisibility();
             int selectedBaseMode = selectedSearchBaseMode();
@@ -1161,6 +1226,9 @@ public class MainSearch extends Fragment {
             searchTask.cancel(true);
         if(offlineTask != null)
             offlineTask.cancel(true);
+        if(libraryFilterTask != null)
+            libraryFilterTask.cancel();
+        libraryFilterGeneration++;
         activeSearchKey = null;
         super.onDestroyView();
     }
@@ -1188,6 +1256,7 @@ public class MainSearch extends Fragment {
             if(offlineTask == this)
                 offlineTask = null;
             offlineTitles = titles == null ? new ArrayList<>() : titles;
+            invalidateLibrarySnapshots("offline");
             if(search == null) {
                 if(searchResult != null && searchResult.getScrollState() != RecyclerView.SCROLL_STATE_IDLE)
                     pendingLibraryRefresh = true;
@@ -1255,12 +1324,16 @@ public class MainSearch extends Fragment {
                 searchAdapter.addData(targetSearch.getResult());
             }
 
-            if(searchAdapter.getItemCount()>0) {
+            List<Title> latestResults = targetSearch.getResult();
+            boolean hasResults = (latestResults != null && latestResults.size() > 0)
+                    || (!replaceResults && searchAdapter.getItemCount() > 0);
+
+            if(hasResults) {
                 noresult.setVisibility(View.GONE);
                 if(replaceResults && searchFirstStartedAt > 0)
                     PerfTrace.end("search_first_result_ms", searchFirstStartedAt);
             }else{
-                noresult.setText("\"" + targetSearch.getQuery() + "\" 검색 결과가 없습니다");
+                noResultText.setText("\"" + targetSearch.getQuery() + "\" 검색 결과가 없습니다");
                 noresult.setVisibility(View.VISIBLE);
             }
 

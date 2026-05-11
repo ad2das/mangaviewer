@@ -1,41 +1,77 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="colorPrimary">#000000</color>
-    <color name="colorPrimaryDark">#d8d8d8</color>
-    <color name="colorAccent">#2F5BFF</color>
-    <color name="colorRanking">#8d78a0</color>
-    <color name="selected">#e1d3ef</color>
-    <color name="selectedDark">#664a73</color>
-    <color name="resumeDark">#493c4f</color>
-    <color name="colorText">#121212</color>
-    <color name="colorBackground">#ffffff</color>
-    <color name="appSurface">#F5F7FB</color>
+    <!-- Modern Primary Palette -->
+    <color name="colorPrimary">#6366F1</color>
+    <color name="colorPrimaryDark">#4F46E5</color>
+    <color name="colorAccent">#8B5CF6</color>
+    <color name="colorAccentLight">#EDE9FE</color>
+
+    <!-- Modern Surface Colors -->
+    <color name="colorBackground">#FAFAFA</color>
+    <color name="colorSurface">#FFFFFF</color>
+    <color name="colorSurfaceElevated">#FFFFFF</color>
+    <color name="colorSurfaceVariant">#F1F5F9</color>
+    <color name="colorDivider">#E2E8F0</color>
+    <color name="colorOutline">#CBD5E1</color>
+
+    <!-- Text Colors -->
+    <color name="colorText">#0F172A</color>
+    <color name="colorTextPrimary">#1E293B</color>
+    <color name="colorTextSecondary">#64748B</color>
+    <color name="colorTextMuted">#94A3B8</color>
+    <color name="colorTextOnPrimary">#FFFFFF</color>
+
+    <!-- App Theme Colors -->
+    <color name="appSurface">#F8FAFC</color>
     <color name="appCard">#FFFFFF</color>
-    <color name="appText">#101828</color>
-    <color name="appTextSecondary">#667085</color>
-    <color name="appAccent">#2F5BFF</color>
-    <color name="appAccentLight">#E8EDFF</color>
-    <color name="appDivider">#DDE3EE</color>
-    <color name="appMutedSurface">#EBEFF6</color>
-    <color name="appWarmAccent">#B45309</color>
-    <color name="appTealAccent">#0E7C73</color>
-    <color name="appInk">#111827</color>
+    <color name="appText">#0F172A</color>
+    <color name="appTextSecondary">#64748B</color>
+    <color name="appTextMuted">#94A3B8</color>
+    <color name="appAccent">#6366F1</color>
+    <color name="appAccentLight">#E0E7FF</color>
+    <color name="appDivider">#E2E8F0</color>
+    <color name="appMutedSurface">#F1F5F9</color>
+    <color name="appWarmAccent">#F59E0B</color>
+    <color name="appTealAccent">#14B8A6</color>
+    <color name="appInk">#0F172A</color>
 
-    <color name="rangeSelected">#4CAF50</color>
+    <!-- Status Colors -->
+    <color name="colorSuccess">#22C55E</color>
+    <color name="colorWarning">#F59E0B</color>
+    <color name="colorError">#EF4444</color>
+    <color name="colorInfo">#3B82F6</color>
 
+    <!-- Legacy compatibility -->
+    <color name="colorRanking">#8B5CF6</color>
+    <color name="selected">#EDE9FE</color>
+    <color name="selectedDark">#7C3AED</color>
+    <color name="resumeDark">#4C1D95</color>
+    <color name="rangeSelected">#22C55E</color>
 
-    <color name="colorDarkBackground">#111318</color>
-    <color name="nav_enable">#a2a2a2</color>
-    <color name="nav_disable">#565656</color>
-    <color name="colorDarkWindowBackground">#111318</color>
-    <color name="colorDarkItem">#1A1D25</color>
+    <!-- Dark Theme -->
+    <color name="colorDarkBackground">#0F172A</color>
+    <color name="colorDarkSurface">#1E293B</color>
+    <color name="colorDarkSurfaceElevated">#334155</color>
+    <color name="colorDarkWindowBackground">#0F172A</color>
+    <color name="colorDarkItem">#1E293B</color>
+    <color name="colorDarkText">#F8FAFC</color>
+    <color name="colorDarkTextSecondary">#94A3B8</color>
+    <color name="colorDarkDivider">#334155</color>
 
-    <color name="thumb">#5997e7</color>
-    <color name="smile">#ee7873</color>
-    <color name="bookmark">#e7c06c</color>
+    <!-- Navigation -->
+    <color name="nav_enable">#94A3B8</color>
+    <color name="nav_disable">#475569</color>
 
-    <color name="favorite">#FF9CCF</color>
+    <!-- Icon Colors -->
+    <color name="thumb">#6366F1</color>
+    <color name="smile">#F43F5E</color>
+    <color name="bookmark">#F59E0B</color>
+    <color name="favorite">#EC4899</color>
 
+    <!-- Legacy header -->
+    <color name="header_darker">#EDE9FE</color>
 
-    <color name="header_darker">#e1d3ef</color>
+    <!-- Scrim / Overlay -->
+    <color name="appScrim">#BC000000</color>
+    <color name="appScrimDark">#E6000000</color>
 </resources>

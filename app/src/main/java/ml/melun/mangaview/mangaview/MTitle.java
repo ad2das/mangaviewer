@@ -13,6 +13,7 @@ public class MTitle{
     List<String> tags;
     String release;
     String path;
+    String sourceSite;
     int bookmarkEpisodeId = -1;
     int bookmarkEpisodeIndex = -1;
     int episodeCount = 0;
@@ -37,6 +38,14 @@ public class MTitle{
 
     public void setPath(String path) {
         this.path = path;
+    }
+
+    public String getSourceSite() {
+        return sourceSite == null ? "" : sourceSite;
+    }
+
+    public void setSourceSite(String sourceSite) {
+        this.sourceSite = sourceSite == null ? "" : sourceSite;
     }
 
     public int getBaseMode() {
@@ -91,6 +100,27 @@ public class MTitle{
         return episodeCount;
     }
 
+    public int getDisplayEpisodeCount(int fallbackEpisodeCount) {
+        int count = episodeCount > 0 ? episodeCount : fallbackEpisodeCount;
+        int releaseCount = getNtkReleaseEpisodeCount();
+        if(releaseCount > 0 && (count <= 0 || count > releaseCount))
+            return releaseCount;
+        return count;
+    }
+
+    public int getNtkReleaseEpisodeCount() {
+        if(!"ntk".equals(sourceSite) || release == null)
+            return 0;
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d+)\\s*화").matcher(release);
+        if(!matcher.find())
+            return 0;
+        try {
+            return Integer.parseInt(matcher.group(1));
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
     public void setReadingProgress(int episodeId, int episodeIndex, int episodeCount) {
         this.bookmarkEpisodeId = episodeId;
         this.bookmarkEpisodeIndex = episodeIndex;
@@ -126,6 +156,7 @@ public class MTitle{
         MTitle clone = new MTitle(name, id, thumb, author, tags, release, baseMode);
         clone.setReadingProgress(bookmarkEpisodeId, bookmarkEpisodeIndex, episodeCount);
         clone.setPath(path);
+        clone.setSourceSite(sourceSite);
         return clone;
     }
 

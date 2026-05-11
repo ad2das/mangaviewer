@@ -8,61 +8,68 @@
     app:layout_behavior="@string/appbar_scrolling_view_behavior"
     tools:context=".activity.MainActivity">
 
-    <EditText
-        android:id="@+id/searchBox"
-        style="@style/AppText.Body"
+    <androidx.cardview.widget.CardView
+        android:id="@+id/searchCard"
         android:layout_width="0dp"
-        android:layout_height="48dp"
-        android:layout_marginStart="20dp"
-        android:layout_marginTop="8dp"
+        android:layout_height="52dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="12dp"
         android:layout_marginEnd="12dp"
-        android:background="@drawable/app_home_search_bg"
-        android:contentDescription="검색어"
-        android:drawableStart="@drawable/ic_search"
-        android:drawablePadding="10dp"
-        android:hint="전체 검색"
-        android:inputType="textPersonName"
-        android:paddingStart="@dimen/app_space_lg"
-        android:paddingEnd="@dimen/app_space_lg"
-        android:singleLine="true"
-        android:textColor="@color/appText"
-        android:textColorHint="@color/appTextSecondary"
-        android:visibility="visible"
+        app:cardCornerRadius="14dp"
+        app:cardElevation="2dp"
+        app:cardBackgroundColor="@color/appCard"
         app:layout_constraintEnd_toStartOf="@+id/searchSubmitButton"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
+        app:layout_constraintTop_toTopOf="parent">
 
-    <TextView
+        <EditText
+            android:id="@+id/searchBox"
+            style="@style/AppText.Body"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@null"
+            android:contentDescription="검색어"
+            android:drawableStart="@drawable/ic_search"
+            android:drawablePadding="12dp"
+            android:hint="@string/search_hint"
+            android:inputType="text"
+            android:imeOptions="actionSearch"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:singleLine="true"
+            android:textColor="@color/appText"
+            android:textColorHint="@color/appTextSecondary"
+            android:visibility="visible" />
+
+    </androidx.cardview.widget.CardView>
+
+    <com.google.android.material.button.MaterialButton
         android:id="@+id/searchSubmitButton"
-        style="@style/AppText.Action"
-        android:layout_width="88dp"
-        android:layout_height="48dp"
-        android:layout_marginTop="8dp"
-        android:layout_marginEnd="20dp"
-        android:background="@drawable/app_accent_button_bg"
-        android:gravity="center"
-        android:includeFontPadding="false"
-        android:maxLines="1"
-        android:minWidth="88dp"
-        android:singleLine="true"
-        android:text="검색"
-        android:textColor="@android:color/white"
-        android:textSize="16sp"
-        app:layout_constraintBottom_toBottomOf="@+id/searchBox"
+        android:layout_width="80dp"
+        android:layout_height="52dp"
+        android:layout_marginTop="12dp"
+        android:layout_marginEnd="16dp"
+        android:text="@string/search_action"
+        android:textColor="@color/colorTextOnPrimary"
+        android:textSize="15sp"
+        android:textStyle="bold"
+        app:backgroundTint="@color/appAccent"
+        app:cornerRadius="12dp"
+        app:layout_constraintBottom_toBottomOf="@+id/searchCard"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toTopOf="@+id/searchBox" />
+        app:layout_constraintTop_toTopOf="@+id/searchCard" />
 
     <androidx.appcompat.widget.LinearLayoutCompat
         android:id="@+id/searchOptionPanel"
         android:layout_width="match_parent"
         android:layout_height="50dp"
         android:orientation="horizontal"
-        android:paddingStart="20dp"
+        android:paddingStart="16dp"
         android:paddingTop="6dp"
-        android:paddingEnd="20dp"
+        android:paddingEnd="16dp"
         android:paddingBottom="6dp"
         android:visibility="visible"
-        app:layout_constraintTop_toBottomOf="@+id/searchBox">
+        app:layout_constraintTop_toBottomOf="@+id/searchCard">
 
         <androidx.appcompat.widget.AppCompatSpinner
             android:id="@+id/searchBaseMode"
@@ -103,8 +110,8 @@
         android:id="@+id/libraryMeta"
         android:layout_width="match_parent"
         android:layout_height="40dp"
-        android:paddingStart="20dp"
-        android:paddingEnd="20dp"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@+id/libraryTab">
@@ -124,7 +131,7 @@
             style="@style/AppText.Meta"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="최근 업데이트"
+            android:text="@string/sort_recent_update"
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintTop_toTopOf="parent" />
@@ -146,30 +153,47 @@
             android:clipToPadding="false"
             android:paddingTop="@dimen/app_space_sm"
             android:paddingBottom="24dp"
-            android:scrollbars="vertical" />
+            android:scrollbars="vertical"
+            android:layoutAnimation="@anim/layout_animation_slide_up" />
 
     </com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout>
 
-    <TextView
+    <LinearLayout
         android:id="@+id/noResult"
-        style="@style/AppText.Body"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginStart="32dp"
         android:layout_marginEnd="32dp"
         android:background="@drawable/app_info_panel_bg"
         android:gravity="center"
+        android:orientation="vertical"
         android:paddingStart="@dimen/app_space_lg"
         android:paddingTop="@dimen/app_space_lg"
         android:paddingEnd="@dimen/app_space_lg"
         android:paddingBottom="@dimen/app_space_lg"
-        android:text="최근 읽거나 보관한 작품이 없습니다"
-        android:textColor="@color/appTextSecondary"
         android:visibility="gone"
         app:layout_constraintBottom_toBottomOf="@+id/searchSwipe"
         app:layout_constraintEnd_toEndOf="@+id/searchSwipe"
         app:layout_constraintStart_toStartOf="@+id/searchSwipe"
-        app:layout_constraintTop_toTopOf="@+id/searchSwipe" />
+        app:layout_constraintTop_toTopOf="@+id/searchSwipe">
+
+        <ImageView
+            android:layout_width="64dp"
+            android:layout_height="64dp"
+            android:src="@drawable/ic_search"
+            app:tint="@color/appTextMuted" />
+
+        <TextView
+            android:id="@+id/noResultText"
+            style="@style/AppText.Body"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/app_space_md"
+            android:gravity="center"
+            android:text="@string/no_items_message"
+            android:textColor="@color/appTextSecondary" />
+
+    </LinearLayout>
 
     <com.google.android.material.floatingactionbutton.FloatingActionButton
         android:id="@+id/advSearchBtn"
