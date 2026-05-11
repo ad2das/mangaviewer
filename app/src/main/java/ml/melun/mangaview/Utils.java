@@ -800,8 +800,8 @@ public class Utils {
         if(!canUseContextForUi(context) || !getHttpClient().isNtk())
             return false;
         syncNtkCloudflareCookies(preference);
-        if(getHttpClient().hasNtkAccessProof())
-            return false;
+        if(getHttpClient().hasNtkAccessProof() || getHttpClient().hasRecentNtkAccessVerification())
+            return true;
         if(shouldOpenCloudflareCaptchaAutomatically()) {
             startCaptchaActivity(context, code, fragment, null);
             captchaCount++;

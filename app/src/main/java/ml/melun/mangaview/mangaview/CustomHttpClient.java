@@ -160,7 +160,7 @@ public class CustomHttpClient {
         }
     }
 
-    private boolean hasRecentNtkAccessVerification() {
+    public boolean hasRecentNtkAccessVerification() {
         try {
             SharedPreferences pref = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE);
             long verifiedAt = pref.getLong("ntkAccessVerifiedAt", 0);
