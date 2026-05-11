@@ -353,6 +353,10 @@ public class ViewerWarmupManager {
         boolean snapshotHit = applySnapshot(context, key, manga);
         if(!snapshotHit)
             snapshotHit = waitForActiveSnapshot(context, key, manga, 220);
+        if(snapshotHit && !hasReachableImages(manga)) {
+            invalidateSnapshot(context, key);
+            snapshotHit = false;
+        }
         int result = LOAD_OK;
         if(!snapshotHit && !hasImages(manga, context)) {
             result = MangaRepository.fetchViewerInitial(manga, cancellation);
@@ -362,6 +366,11 @@ public class ViewerWarmupManager {
         if(result == LOAD_OK && !hasImages(manga, context)) {
             result = MangaRepository.fetchManga(manga);
             if(result == LOAD_OK)
+                cacheSnapshot(context, key, manga);
+        }
+        if(result == LOAD_OK && hasImages(manga, context) && !hasReachableImages(manga)) {
+            result = MangaRepository.fetchManga(manga);
+            if(result == LOAD_OK && hasReachableImages(manga))
                 cacheSnapshot(context, key, manga);
         }
         if(result == LOAD_OK && hasImages(manga, context)) {
@@ -673,6 +682,10 @@ public class ViewerWarmupManager {
         return images != null && images.size() > 0;
     }
 
+    private static boolean hasReachableImages(Manga manga) {
+        return manga != null && manga.ensureReachablePageImages(getHttpClient());
+    }
+
     public static void logMetric(String name, long valueMs) {
         Log.d(TAG, name + "=" + valueMs);
         PerfTrace.mark(name, valueMs);
@@ -680,9 +693,9 @@ public class ViewerWarmupManager {
 
     private static int viewerWidth(Context context) {
         if(context instanceof Activity)
-            return Utils.getScreenSize(((Activity) context).getWindowManager().getDefaultDisplay());
+            return Utils.getScreenWidth(((Activity) context).getWindowManager().getDefaultDisplay());
         DisplayMetrics metrics = context.getResources().getDisplayMetrics();
-        return Math.min(Math.max(metrics.widthPixels, metrics.heightPixels), 3000);
+        return Math.min(Math.max(metrics.widthPixels, 1), 3000);
     }
 
     private static String episodeKey(Manga manga, Title title) {
@@ -712,6 +725,12 @@ public class ViewerWarmupManager {
         snapshots.put(key, snapshot);
         writeDiskSnapshot(context, "viewerSnapshotV1_", key, snapshot);
         trimSnapshots();
+    }
+
+    private static synchronized void invalidateSnapshot(Context context, String key) {
+        snapshots.remove(key);
+        if(context != null)
+            CacheFileStore.delete(context.getApplicationContext(), "viewerSnapshotV1_" + key);
     }
 
     private static synchronized void cacheContinueSnapshot(Context context, String key, Manga manga) {

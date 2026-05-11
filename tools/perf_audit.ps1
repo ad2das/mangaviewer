@@ -98,13 +98,25 @@ function Swipe-Vertical {
     }
 }
 
+function Fling-Vertical {
+    param([int]$Count = 10)
+    for($i = 0; $i -lt $Count; $i++) {
+        Invoke-Adb shell input swipe 540 1700 540 250 120 | Out-Null
+        Start-Sleep -Milliseconds 90
+    }
+    for($i = 0; $i -lt $Count; $i++) {
+        Invoke-Adb shell input swipe 540 250 540 1700 120 | Out-Null
+        Start-Sleep -Milliseconds 90
+    }
+}
+
 function Tap-HomeFirstTitle {
     Invoke-Adb shell input tap 260 1180 | Out-Null
     Start-Sleep -Seconds 4
 }
 
 function Tap-FirstEpisode {
-    Invoke-Adb shell input tap 430 1450 | Out-Null
+    Invoke-Adb shell input tap 460 876 | Out-Null
     Start-Sleep -Seconds 5
 }
 
@@ -117,6 +129,18 @@ function Assert-Focus($Expected, $Scenario) {
         return $false
     }
     return $true
+}
+
+function Reset-Logcat {
+    try {
+        Invoke-Adb logcat "-c" | Out-Null
+    } catch {
+    }
+}
+
+function Read-PerfTrace {
+    $logs = Invoke-Adb logcat "-d" "-s" "PerfTrace:D" "ViewerPerf:D" "*:S"
+    return ($logs -join "`n")
 }
 
 function Measure-Scenario {
@@ -135,12 +159,16 @@ function Measure-Scenario {
     }
 
     Reset-Gfx
+    Reset-Logcat
     & $Action
     Start-Sleep -Seconds 1
     $shotAfter = Save-Screenshot "$Name-after"
     $gfx = Read-Gfx
     $gfxPath = Join-Path $OutDir "$Name-gfxinfo.txt"
     $gfx | Set-Content -Path $gfxPath -Encoding UTF8
+    $perfTrace = Read-PerfTrace
+    $perfTracePath = Join-Path $OutDir "$Name-perftrace.txt"
+    $perfTrace | Set-Content -Path $perfTracePath -Encoding UTF8
 
     $frames = Read-GfxMetric $gfx "Total frames rendered"
     $janky = Read-GfxMetric $gfx "Janky frames"
@@ -167,6 +195,7 @@ function Measure-Scenario {
         AltUiHidden = $altUiHidden
         Screenshot = $shotAfter
         Gfx = $gfxPath
+        PerfTrace = $perfTracePath
     }
 }
 
@@ -197,6 +226,7 @@ $results += Measure-Scenario "home_cold_start" { Invoke-Adb shell am force-stop 
 $results += Measure-Scenario "home_scroll" { Start-App; Start-Sleep -Seconds 6 } { Swipe-Vertical 4 } "MainActivity"
 $results += Measure-Scenario "episode_open_scroll" { Start-App; Start-Sleep -Seconds 6; Tap-HomeFirstTitle } { Swipe-Vertical 4 } "EpisodeActivity"
 $results += Measure-Scenario "viewer_open_scroll" { Start-App; Start-Sleep -Seconds 6; Tap-HomeFirstTitle; Tap-FirstEpisode } { Swipe-Vertical 4 } "ViewerActivity"
+$results += Measure-Scenario "viewer_fast_fling" { Start-App; Start-Sleep -Seconds 6; Tap-HomeFirstTitle; Tap-FirstEpisode } { Fling-Vertical 10 } "ViewerActivity"
 
 $summaryPath = Join-Path $OutDir "summary.json"
 $summary = @{

@@ -4,6 +4,7 @@ import java.io.File;
 import java.net.URLDecoder;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -414,6 +415,16 @@ public class Manga {
                 if(prev != null)
                     eps.add(prev);
             }
+            if(imgs.size() > 0 && !hasReachableWolfPageImage(client)) {
+                imgs.clear();
+                seenImages.clear();
+                eps.clear();
+                client.clearPageCache();
+                if(attempt == 0) {
+                    client.resolveWfwfDomainNow();
+                    continue;
+                }
+            }
             if(imgs.size() == 0 && attempt == 0 && client.resolveWfwfDomainNow()) {
                 imgs.clear();
                 seenImages.clear();
@@ -431,6 +442,59 @@ public class Manga {
         restoreBetterEpisodeList(previousEpisodes);
         attachEpisodeSeriesMetadata();
         return LOAD_OK;
+    }
+
+    private boolean hasReachableWolfPageImage(CustomHttpClient client) {
+        if(client == null || imgs == null || imgs.size() == 0)
+            return false;
+        int checked = 0;
+        for(String img : imgs) {
+            if(img == null || img.length() == 0)
+                continue;
+            Integer code = probeWolfImage(client, img);
+            if(code == null)
+                return true;
+            if(code >= 200 && code < 400)
+                return true;
+            if(code == 403 || code == 429)
+                return true;
+            checked++;
+            if(checked >= 2)
+                break;
+        }
+        return false;
+    }
+
+    public synchronized boolean ensureReachablePageImages(CustomHttpClient client) {
+        if(client == null || !isOnline())
+            return true;
+        if(!(isComicWolfSource() || isWebtoonWolfSource()))
+            return true;
+        if(imgs == null || imgs.size() == 0)
+            return false;
+        if(hasReachableWolfPageImage(client))
+            return true;
+        imgs.clear();
+        client.clearPageCache();
+        return false;
+    }
+
+    private Integer probeWolfImage(CustomHttpClient client, String url) {
+        Response response = null;
+        try {
+            Map<String, String> headers = new HashMap<>();
+            headers.put("User-Agent", client.agent);
+            headers.put("Referer", client.getUrl(baseMode));
+            headers.put("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8");
+            headers.put("Range", "bytes=0-0");
+            response = client.get(url, headers);
+            return response == null ? null : response.code();
+        } catch (Exception e) {
+            return null;
+        } finally {
+            if(response != null)
+                response.close();
+        }
     }
 
     private void addWolfImageCandidates(CustomHttpClient client, Document document, Set<String> seenImages) {

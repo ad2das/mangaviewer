@@ -62,7 +62,7 @@ import ml.melun.mangaview.runtime.PrefetchCoordinator;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.MainApplication.getHttpClient;
-import static ml.melun.mangaview.Utils.getScreenSize;
+import static ml.melun.mangaview.Utils.getScreenWidth;
 import static ml.melun.mangaview.Utils.queueOfflineDownload;
 import static ml.melun.mangaview.Utils.showCaptchaPopup;
 import static ml.melun.mangaview.Utils.showPopup;
@@ -125,6 +125,7 @@ public class ViewerActivity extends AppCompatActivity {
     private boolean initialResumeRestorePending = false;
     private boolean userScrolledAfterInitialResume = false;
     private final Runnable clearInitialResumeRestore = this::clearInitialResumeRestore;
+    private int lastViewerScrollDirection = 1;
     float topPullStartY = 0;
     boolean topPullTriggered = false;
     boolean topPullEligible = false;
@@ -160,7 +161,7 @@ public class ViewerActivity extends AppCompatActivity {
         pageBtn.setText("-/-");
         saveBtn = this.findViewById(R.id.viewerSaveButton);
         episodeButton = this.findViewById(R.id.toolbar_spinner);
-        width = getScreenSize(getWindowManager().getDefaultDisplay());
+        width = getScreenWidth(getWindowManager().getDefaultDisplay());
 
         //initial padding setup
         appbar.setPadding(0, 0,0,0);
@@ -285,7 +286,7 @@ public class ViewerActivity extends AppCompatActivity {
             strip = this.findViewById(R.id.strip);
             manager = new StripLayoutManager(this);
             manager.setOrientation(LinearLayoutManager.VERTICAL);
-            strip.setItemViewCacheSize(p.getDataSave() ? 6 : 12);
+            strip.setItemViewCacheSize(p.getDataSave() ? 8 : 18);
             strip.setLayoutManager(manager);
 
             if(intent.getBooleanExtra("recent",false)){
@@ -305,8 +306,10 @@ public class ViewerActivity extends AppCompatActivity {
                 public void onScrollStateChanged(RecyclerView recyclerView, int newState) {
                     super.onScrollStateChanged(recyclerView, newState);
                     PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
-                    if(stripAdapter != null)
+                    if(stripAdapter != null) {
                         stripAdapter.setScrollBusy(newState != RecyclerView.SCROLL_STATE_IDLE);
+                        dispatchScrollAnchorToAdapter(newState != RecyclerView.SCROLL_STATE_IDLE);
+                    }
                     if(strip.getLayoutManager().getItemCount()>0 && newState == RecyclerView.SCROLL_STATE_DRAGGING && toolbarshow) {
                         toggleToolbar();
                     }
@@ -325,6 +328,9 @@ public class ViewerActivity extends AppCompatActivity {
                 @Override
                 public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
                     super.onScrolled(recyclerView, dx, dy);
+                    if(dy != 0)
+                        lastViewerScrollDirection = dy < 0 ? -1 : 1;
+                    dispatchScrollAnchorToAdapter(recyclerView.getScrollState() != RecyclerView.SCROLL_STATE_IDLE);
                     loadEpisodeAtBoundaryIfNeededThrottled();
                     scheduleScrollBookmarkSave();
                 }
@@ -745,15 +751,11 @@ public class ViewerActivity extends AppCompatActivity {
         cancelActiveEpisodeLoader();
         cancelNextPrefetcher();
         if(m.isOnline()) {
-            if(hasLoadedImages(m)) {
-                setManga(m, policy);
-            } else {
-                ViewerLoadPolicy finalPolicy = policy;
-                loadManga(m, m1 -> {
-                    manga = m1;
-                    setManga(m1, finalPolicy);
-                }, policy);
-            }
+            ViewerLoadPolicy finalPolicy = policy;
+            loadManga(m, m1 -> {
+                manga = m1;
+                setManga(m1, finalPolicy);
+            }, policy);
         }else{
             //offline
             eps = Utils.snapshotEpisodes(title);
@@ -1495,6 +1497,18 @@ public class ViewerActivity extends AppCompatActivity {
         result = new Intent();
         result.putExtra("id", m.getId());
         setResult(RESULT_OK, result);
+    }
+
+    private void dispatchScrollAnchorToAdapter(boolean busy) {
+        if(stripAdapter == null || manager == null)
+            return;
+        int anchor = lastViewerScrollDirection >= 0
+                ? manager.findLastVisibleItemPosition()
+                : manager.findFirstVisibleItemPosition();
+        if(anchor == RecyclerView.NO_POSITION)
+            anchor = manager.findFirstVisibleItemPosition();
+        if(anchor != RecyclerView.NO_POSITION)
+            stripAdapter.onScrollAnchor(anchor, lastViewerScrollDirection, busy);
     }
 
     public void refreshAdapter(){

@@ -22,7 +22,13 @@ public final class ViewerPreloadPolicy {
     public static Window scrollAheadWindow(boolean dataSave) {
         return dataSave
                 ? new Window(1, 2, 6, 6)
-                : new Window(2, 5, 20, 20);
+                : new Window(4, 8, 24, 24);
+    }
+
+    public static Window scrollBusyWindow(boolean dataSave) {
+        return dataSave
+                ? new Window(0, 1, 2, 2)
+                : new Window(0, 2, 2, 2);
     }
 
     public static Window nextEpisodeWindow(boolean dataSave) {

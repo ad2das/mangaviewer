@@ -46,6 +46,18 @@ public final class CacheFileStore {
         }
     }
 
+    public static void delete(Context context, String key) {
+        if(context == null || key == null)
+            return;
+        try {
+            File file = file(context, key);
+            if(file.exists())
+                file.delete();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
     private static File file(Context context, String key) {
         String safeKey = key.replaceAll("[^A-Za-z0-9_.-]", "_");
         return new File(new File(context.getCacheDir(), DIR_NAME), safeKey + ".json");
