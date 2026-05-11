@@ -40,8 +40,8 @@ import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.CODE_SCOPED_STORAGE;
 
 public class CustomHttpClient {
-    public static final String DEFAULT_COMIC_URL = "https://wfwf449.com/cm";
-    public static final String WEBTOON_URL = "https://wfwf449.com";
+    public static final String DEFAULT_COMIC_URL = "https://wfwf450.com/cm";
+    public static final String WEBTOON_URL = "https://wfwf450.com";
     public static final String NTK_COMIC_URL = "https://sbxh1.com/manhwa";
     public static final String NTK_WEBTOON_URL = "https://sbxh1.com";
     private static final String NTK_HOST = "sbxh1.com";
@@ -702,26 +702,7 @@ public class CustomHttpClient {
             loadState = pageLoads.get(loadKey);
         }
         try {
-            Response response = mget(normalized, true, null);
-            if(response == null)
-                throw new Exception("Request failed: " + normalized);
-            int code = response.code();
-            String body = readBody(response);
-            if(isCloudflareChallenge(code, body)) {
-                lastCloudflareChallengeUrl = getBaseUrl(normalized) + normalized;
-                if(!cloudflareCaptchaActive)
-                    clearCloudflareCookies();
-                throw new Exception("Cloudflare challenge");
-            }
-            if(code >= 500 && staleCached != null)
-                return new PageResponse(staleCached.code, staleCached.body, true);
-            if(code >= 200 && code < 400 && body.length() > 0 && looksCacheable(body)) {
-                cacheKey = getBaseUrl(normalized) + normalized;
-                synchronized (this) {
-                    pageCache.put(cacheKey, new CachedPage(code, body, now));
-                }
-            }
-            return new PageResponse(code, body, false);
+            return loadPageFromNetworkWithDomainRetry(normalized, now, staleCached);
         } catch (Exception e) {
             if(staleCached != null)
                 return new PageResponse(staleCached.code, staleCached.body, true);
@@ -733,6 +714,56 @@ public class CustomHttpClient {
             if(loadState != null)
                 loadState.done.countDown();
         }
+    }
+
+    private PageResponse loadPageFromNetworkWithDomainRetry(String normalized, long now, CachedPage staleCached) throws Exception {
+        Exception lastError = null;
+        for(int attempt = 0; attempt < 3; attempt++) {
+            try {
+                return loadPageFromNetwork(normalized, now, staleCached);
+            } catch (Exception error) {
+                lastError = error;
+                if(isNtk())
+                    throw error;
+                if(attempt == 0)
+                    ensureWfwfDomainForRetry();
+                client.connectionPool().evictAll();
+                unsafeFallbackClient.connectionPool().evictAll();
+                sleepBeforeWfwfRetry(attempt);
+            }
+        }
+        throw lastError;
+    }
+
+    private void sleepBeforeWfwfRetry(int attempt) {
+        try {
+            Thread.sleep(180L + (attempt * 220L));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private PageResponse loadPageFromNetwork(String normalized, long now, CachedPage staleCached) throws Exception {
+        Response response = mget(normalized, true, null);
+        if(response == null)
+            throw new Exception("Request failed: " + normalized);
+        int code = response.code();
+        String body = readBody(response);
+        if(isCloudflareChallenge(code, body)) {
+            lastCloudflareChallengeUrl = getBaseUrl(normalized) + normalized;
+            if(!cloudflareCaptchaActive)
+                clearCloudflareCookies();
+            throw new Exception("Cloudflare challenge");
+        }
+        if(code >= 500 && staleCached != null)
+            return new PageResponse(staleCached.code, staleCached.body, true);
+        if(code >= 200 && code < 400 && body.length() > 0 && looksCacheable(body)) {
+            String cacheKey = getBaseUrl(normalized) + normalized;
+            synchronized (this) {
+                pageCache.put(cacheKey, new CachedPage(code, body, now));
+            }
+        }
+        return new PageResponse(code, body, false);
     }
 
     private PageResponse waitForCachedPage(String normalized, String cacheKey, PageLoadState loadState, long ttlMillis, CachedPage staleCached) throws Exception {

@@ -179,6 +179,7 @@ public class Preference {
             defUrl = normalizeComicUrl(sharedPref.getString("defUrl", DEFAULT_COMIC_URL), ntkResolvedRoot);
             url = normalizeComicUrl(sharedPref.getString("url", DEFAULT_COMIC_URL), ntkResolvedRoot);
             webtoonUrl = normalizeWebtoonUrl(sharedPref.getString("webtoonUrl", WEBTOON_URL), ntkResolvedRoot);
+            upgradeLegacyWfwfDefaultUrl();
             stretch = sharedPref.getBoolean("stretch", false);
             leftRight = sharedPref.getBoolean("leftRight", false);
             autoUrl = false;
@@ -200,6 +201,26 @@ public class Preference {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
         migrateSourcePrefKeysIfNeeded();
+    }
+
+    private void upgradeLegacyWfwfDefaultUrl() {
+        if(isNtkLikeUrl(url) || isNtkLikeUrl(webtoonUrl) || isNtkLikeUrl(defUrl))
+            return;
+        String oldRoot = "https://wfwf449.com";
+        if(oldRoot.equals(trimTrailingSlashLocal(webtoonUrl))) {
+            webtoonUrl = WEBTOON_URL;
+            url = DEFAULT_COMIC_URL;
+            defUrl = DEFAULT_COMIC_URL;
+        }
+    }
+
+    private String trimTrailingSlashLocal(String value) {
+        if(value == null)
+            return "";
+        String trimmed = value.trim();
+        while(trimmed.endsWith("/"))
+            trimmed = trimmed.substring(0, trimmed.length() - 1);
+        return trimmed;
     }
 
     private void migrateSourcePrefKeysIfNeeded() {
