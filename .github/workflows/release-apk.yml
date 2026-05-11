@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - main
-      - ntk01
     paths-ignore:
       - "apk/**"
       - "releases.html"
@@ -31,10 +30,11 @@ jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    if: github.ref_name == 'main'
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TZ: Asia/Seoul
-      RELEASE_TAG: ${{ github.ref_name == 'ntk01' && 'ntk-drag-longpress-guard-v2112260611' || 'main-v2112260569' }}
+      RELEASE_TAG: ntk-drag-longpress-guard-v2112260611
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -3,7 +3,7 @@ name: Update comic classification DB
 on:
   workflow_dispatch:
   schedule:
-    - cron: "47 */6 * * *"
+    - cron: "30 19 * * *"
 
 permissions:
   contents: write
