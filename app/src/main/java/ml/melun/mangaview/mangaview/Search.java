@@ -460,7 +460,7 @@ public class Search {
         String[] split = base.split("\\?", 2);
         String route = normalizedNtkRoute(split[0]);
         String query = split.length > 1 ? split[1] : "";
-        ArrayList<String> params = queryParamsWithoutPage(query);
+        ArrayList<String> params = normalizeNtkApiParams(queryParamsWithoutPage(query));
         if(baseMode == base_comic && route.startsWith("/manhwa")) {
             ArrayList<String> api = new ArrayList<>();
             api.add("status=");
@@ -480,6 +480,54 @@ public class Search {
             return "/api/works?" + String.join("&", api);
         }
         return null;
+    }
+
+    private static ArrayList<String> normalizeNtkApiParams(ArrayList<String> params) {
+        ArrayList<String> result = new ArrayList<>();
+        String legacyType1 = "";
+        String legacyType2 = "";
+        if(params == null)
+            return result;
+        for(String param : params) {
+            if(param == null || param.length() == 0)
+                continue;
+            String[] split = param.split("=", 2);
+            String key = split[0];
+            String value = split.length > 1 ? split[1] : "";
+            if("type1".equals(key)) {
+                legacyType1 = value;
+                continue;
+            }
+            if("type2".equals(key)) {
+                legacyType2 = value;
+                continue;
+            }
+            if("day".equals(key)) {
+                String day = webtoonDay(percentDecode(value, Charset.forName("UTF-8")));
+                result.add("day=" + (day.length() > 0 ? day : value));
+                continue;
+            }
+            result.add(param);
+        }
+        if("day".equals(legacyType1) && legacyType2.length() > 0 && !hasQueryParam(result, "day")) {
+            String day = webtoonDay(percentDecode(legacyType2, Charset.forName("UTF-8")));
+            result.add("day=" + (day.length() > 0 ? day : legacyType2));
+        } else if("genre".equals(legacyType1) && legacyType2.length() > 0 && !hasQueryParam(result, "tag")) {
+            result.add("tag=" + legacyType2);
+        } else if("alphabet".equals(legacyType1) && legacyType2.length() > 0 && !hasQueryParam(result, "letter")) {
+            result.add("letter=" + legacyType2);
+        }
+        return result;
+    }
+
+    private static boolean hasQueryParam(ArrayList<String> params, String key) {
+        if(params == null || key == null)
+            return false;
+        for(String param : params) {
+            if(param != null && param.split("=", 2)[0].equals(key))
+                return true;
+        }
+        return false;
     }
 
     private static class PageTitles {
@@ -589,8 +637,12 @@ public class Search {
         return new PageTitles(titles, nextPath, true, hasMore, total);
     }
 
+    static ArrayList<Title> parseNtkApiTitles(String body, int baseMode, int limit) throws Exception {
+        return parseNtkApiPage(body, "/api/manhwa-list?page=1&pageSize=30", baseMode, limit, 1).titles;
+    }
+
     static ArrayList<Title> parseNtkApiTitlesForTest(String body, int baseMode) throws Exception {
-        return parseNtkApiPage(body, "/api/manhwa-list?page=1&pageSize=30", baseMode, 0, 1).titles;
+        return parseNtkApiTitles(body, baseMode, 0);
     }
 
     static int parseNtkApiTotalForTest(String body, int baseMode) throws Exception {

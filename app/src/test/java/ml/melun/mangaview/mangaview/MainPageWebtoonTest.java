@@ -124,6 +124,10 @@ public class MainPageWebtoonTest {
                 Search.ntkCategoryApiPathForTest("/ing?tag=%EC%8A%A4%EB%A6%B4%EB%9F%AC", 3, base_webtoon));
         assertEquals("/api/works?status=end&tag=%EC%8A%A4%EB%A6%B4%EB%9F%AC&page=4&pageSize=30&withTotal=1",
                 Search.ntkCategoryApiPathForTest("/end?tag=%EC%8A%A4%EB%A6%B4%EB%9F%AC", 4, base_webtoon));
+        assertEquals("/api/works?status=ing&day=1&page=1&pageSize=30&withTotal=1",
+                Search.ntkCategoryApiPathForTest("/ing?day=%EC%9B%94", 1, base_webtoon));
+        assertEquals("/api/works?status=ing&day=2&page=1&pageSize=30&withTotal=1",
+                Search.ntkCategoryApiPathForTest("/ing?type1=day&type2=%ED%99%94", 1, base_webtoon));
 
         String apiBody =
                 "{\"works\":["

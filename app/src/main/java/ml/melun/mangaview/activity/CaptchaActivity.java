@@ -368,6 +368,7 @@ public class CaptchaActivity extends AppCompatActivity {
                     webView.post(() -> simulateTouchBurst(webView, x, y, w, h));
                     isFirstAttempt = false;
                 } else if("normal".equals(type)) {
+                    isFirstAttempt = false;
                     normalNtkPageCount++;
                     android.util.Log.d("CaptchaActivity", "NTK normal page detected without Turnstile: " + normalNtkPageCount);
                     if(normalNtkPageCount >= 1

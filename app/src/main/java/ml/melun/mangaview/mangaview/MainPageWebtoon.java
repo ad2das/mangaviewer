@@ -185,6 +185,11 @@ public class MainPageWebtoon {
             Ranking<Title> ranking = new Ranking<>(title);
             try{
                 path = normalizePathForClient(client, path);
+                if(client != null && client.isNtk()) {
+                    Ranking<Title> apiRanking = parseNtkApiTitle(client, title, path, baseMode);
+                    if(apiRanking.size() > 0)
+                        return apiRanking;
+                }
                 CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
                 Document d = Jsoup.parse(page.body);
                 for(Title webtoon : parseWolfTitles(d, baseMode, MAIN_SECTION_LIMIT))
@@ -201,6 +206,17 @@ public class MainPageWebtoon {
             return ranking;
         }
         return new Ranking<>(title);
+    }
+
+    private Ranking<Title> parseNtkApiTitle(CustomHttpClient client, String title, String path, int baseMode) throws Exception {
+        Ranking<Title> ranking = new Ranking<>(title);
+        String apiPath = Search.ntkCategoryApiPathForTest(path, 1, baseMode);
+        if(apiPath == null || apiPath.length() == 0)
+            return ranking;
+        CustomHttpClient.PageResponse page = client.mgetCachedPage(apiPath, PAGE_CACHE_TTL_MS);
+        for(Title webtoon : Search.parseNtkApiTitles(page.body, baseMode, MAIN_SECTION_LIMIT))
+            ranking.add(webtoon);
+        return ranking;
     }
 
     private static String normalizePathForClient(CustomHttpClient client, String path) {
