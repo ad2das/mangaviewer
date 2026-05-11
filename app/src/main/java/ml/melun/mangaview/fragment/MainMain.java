@@ -645,9 +645,9 @@ public class MainMain extends Fragment{
     }
 
     private void refreshHomeLocalState() {
-        if(mainComicAdapter != null && comicFetchState == HOME_FETCH_COMPLETE)
+        if(mainComicAdapter != null)
             mainComicAdapter.refreshLocalState();
-        if(mainWebtoonAdapter != null && webtoonFetchState == HOME_FETCH_COMPLETE)
+        if(mainWebtoonAdapter != null)
             mainWebtoonAdapter.refreshLocalState();
     }
 
