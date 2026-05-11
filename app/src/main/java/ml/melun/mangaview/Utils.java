@@ -831,6 +831,58 @@ public class Utils {
         return true;
     }
 
+    public static boolean startNtkTurnstileCaptcha(Context context, int code, Fragment fragment, Preference preference) {
+        if(!canUseContextForUi(context) || !getHttpClient().isNtk())
+            return false;
+        syncNtkCloudflareCookies(preference);
+        if(!getHttpClient().hasNtkAccessProof() && !getHttpClient().hasRecentNtkAccessVerification()) {
+            startCaptchaActivity(context, code, fragment, null);
+            captchaCount++;
+            return true;
+        }
+        AppDispatchers.runUserAction(() -> {
+            if(!isNtkAccessChallengeActive())
+                return;
+            AppDispatchers.runOnMain(() -> {
+                Preference source = preference != null ? preference : p;
+                if(source != null)
+                    getHttpClient().clearCloudflareWebViewCookies(source.getWebtoonUrl(), source.getUrl());
+                else
+                    getHttpClient().clearCloudflareCookies();
+                startCaptchaActivity(context, code, fragment, null);
+                captchaCount++;
+            });
+        });
+        return true;
+    }
+
+    private static boolean isNtkAccessChallengeActive() {
+        if(isNtkAccessPathChallenged("/api/manhwa-list?page=1&pageSize=1&withTotal=1"))
+            return true;
+        return isNtkAccessPathChallenged("");
+    }
+
+    private static boolean isNtkAccessPathChallenged(String path) {
+        okhttp3.Response response = null;
+        try {
+            response = getHttpClient().mget(path, true);
+            if(response == null)
+                return false;
+            int code = response.code();
+            String body = CustomHttpClient.readBody(response);
+            response = null;
+            if(getHttpClient().isCloudflareChallengeResponse(code, body))
+                return true;
+            return code == 403 && body != null && body.length() > 0;
+        } catch (Exception e) {
+            String message = e.getMessage();
+            return message != null && message.toLowerCase(Locale.ROOT).contains("cloudflare");
+        } finally {
+            if(response != null)
+                response.close();
+        }
+    }
+
     private static boolean isNtkEpisodeUrl(String url) {
         if(url == null)
             return false;
@@ -900,17 +952,34 @@ public class Utils {
         }
         if(getHttpClient().isNtk()) {
             String challengedUrl = getHttpClient().getLastCloudflareChallengeUrl();
-            if(challengedUrl != null && challengedUrl.length() > 0 && getHttpClient().isNtkUrl(challengedUrl))
+            if(challengedUrl != null && challengedUrl.length() > 0
+                    && getHttpClient().isNtkUrl(challengedUrl)
+                    && !isNtkApiUrl(challengedUrl))
                 return challengedUrl;
-            String webtoonUrl = p == null ? "" : p.getWebtoonUrl();
-            if(webtoonUrl != null && webtoonUrl.length() > 0 && getHttpClient().isNtkUrl(webtoonUrl))
-                return webtoonUrl;
-            String root = getHttpClient().getUrl();
-            if(root != null && root.endsWith("/manhwa"))
-                root = root.substring(0, root.length() - 7);
-            return root;
+            return ntkCaptchaLandingUrl();
         }
         return null;
+    }
+
+    private static String ntkCaptchaLandingUrl() {
+        String webtoonUrl = p == null ? "" : p.getWebtoonUrl();
+        if(webtoonUrl != null && webtoonUrl.length() > 0 && getHttpClient().isNtkUrl(webtoonUrl))
+            return webtoonUrl;
+        String root = getHttpClient().getUrl();
+        if(root != null && root.endsWith("/manhwa"))
+            root = root.substring(0, root.length() - 7);
+        return root;
+    }
+
+    private static boolean isNtkApiUrl(String url) {
+        if(url == null || url.length() == 0)
+            return false;
+        try {
+            String path = Uri.parse(url).getPath();
+            return path != null && path.toLowerCase(Locale.ROOT).startsWith("/api/");
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     public static void showCaptchaPopup(String url, Context context, int code, Exception e, boolean force_close, Preference p) {

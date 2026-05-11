@@ -907,6 +907,11 @@ public class ViewerActivity2 extends AppCompatActivity {
         AppDispatchers.TaskHandle handle;
         MangaRepository.Cancellation cancellation = MangaRepository.cancellation();
         volatile boolean cancelled;
+        final boolean allowResumeFallback;
+
+        loadImages(boolean allowResumeFallback) {
+            this.allowResumeFallback = allowResumeFallback;
+        }
 
         private void postProgress(String value) {
         }
@@ -925,11 +930,11 @@ public class ViewerActivity2 extends AppCompatActivity {
                 return res;
             try {
                 int firstPage = manga.useBookmark() ? p.getViewerBookmark(manga) : viewerBookmark;
-                if(ViewerResumeResolver.shouldResolveBeforeDirectFetch(manga, title)) {
+                if(allowResumeFallback && ViewerResumeResolver.shouldResolveBeforeDirectFetch(manga, title)) {
                     res = prepareFirstAvailableManga(firstPage, true, cancellation);
                 } else {
                     res = ViewerWarmupManager.prepareFirstFrame(context, manga, title, firstPage, swidth, false, reverse, cancellation);
-                    if(res == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !hasLoadedImages())
+                    if(allowResumeFallback && (res == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !hasLoadedImages()))
                         res = prepareFirstAvailableManga(firstPage, false, cancellation);
                 }
                 if(title == null)
@@ -1132,10 +1137,14 @@ public class ViewerActivity2 extends AppCompatActivity {
     }
 
     public void refresh(){
+        refresh(true);
+    }
+
+    public void refresh(boolean allowResumeFallback){
         captchaChecked = false;
         if(activeImageLoad != null)
             activeImageLoad.cancel();
-        activeImageLoad = new loadImages();
+        activeImageLoad = new loadImages(allowResumeFallback);
         activeImageLoad.start();
     }
 
@@ -1226,7 +1235,7 @@ public class ViewerActivity2 extends AppCompatActivity {
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (resultCode == RESULT_CAPTCHA) {
-            refresh();
+            refresh(false);
         }
     }
 

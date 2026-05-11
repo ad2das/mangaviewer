@@ -1627,10 +1627,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         private int totalEpisodeCount(Title item) {
-            int episodeCount = item.getEpisodeCount();
-            if(episodeCount <= 0)
-                episodeCount = item.getEpsCount();
-            return episodeCount;
+            return item.getDisplayEpisodeCount(item.getEpsCount());
         }
 
         class RankHolder extends RecyclerView.ViewHolder {

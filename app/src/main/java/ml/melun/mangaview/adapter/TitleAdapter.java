@@ -529,10 +529,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     private int totalEpisodeCount(Title title) {
         if(title == null)
             return 0;
-        int episodeCount = title.getEpisodeCount();
-        if(episodeCount <= 0)
-            episodeCount = title.getEpsCount();
-        return episodeCount;
+        return title.getDisplayEpisodeCount(title.getEpsCount());
     }
 
     private static final class BindMeta {

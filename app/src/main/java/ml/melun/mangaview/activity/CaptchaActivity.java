@@ -51,6 +51,7 @@ public class CaptchaActivity extends AppCompatActivity {
     private static final long TURNSTILE_CHECK_DELAY_MS = 0;
     private static final long TURNSTILE_CHECK_INTERVAL_MS = 500;
     private static final long TURNSTILE_MAX_WAIT_MS = 30000;
+    private static final String NTK_ACCESS_VERIFY_PATH = "/api/manhwa-list?page=1&pageSize=1&withTotal=1";
     public static final String SHADOW_HOOK_JS = "(function(){" +
             "if(window.__sh)return;" +
             "window.__sh=1;" +
@@ -586,9 +587,15 @@ public class CaptchaActivity extends AppCompatActivity {
     }
 
     private boolean verifyNtkAccess(String purl, String currentUrl) {
+        String pagePath = ntkVerificationUrl(purl, currentUrl);
+        if(pagePath.length() > 0 && !verifyNtkPath(pagePath))
+            return false;
+        return verifyNtkPath(NTK_ACCESS_VERIFY_PATH);
+    }
+
+    private boolean verifyNtkPath(String path) {
         try {
-            String verifyUrl = ntkVerificationUrl(purl, currentUrl);
-            Response response = getHttpClient().mget(verifyUrl, true);
+            Response response = getHttpClient().mget(path, true);
             if(response == null)
                 return false;
             int code = response.code();
@@ -604,7 +611,7 @@ public class CaptchaActivity extends AppCompatActivity {
         String candidate = ntkPagePath(currentUrl);
         if(candidate.length() == 0)
             candidate = ntkPagePath(purl);
-        return candidate.length() > 0 ? candidate : "/";
+        return candidate;
     }
 
     private String ntkPagePath(String url) {
@@ -648,10 +655,35 @@ public class CaptchaActivity extends AppCompatActivity {
         if(now - lastInvalidClearanceReloadAt < 5000L)
             return;
         lastInvalidClearanceReloadAt = now;
-        String challengeUrl = getHttpClient().getLastCloudflareChallengeUrl();
-        if(challengeUrl == null || challengeUrl.length() == 0)
-            challengeUrl = purl;
-        webView.loadUrl(challengeUrl);
+        webView.loadUrl(ntkCaptchaLoadUrl(getHttpClient().getLastCloudflareChallengeUrl(), purl));
+    }
+
+    private String ntkCaptchaLoadUrl(String challengeUrl, String purl) {
+        if(challengeUrl != null && challengeUrl.length() > 0
+                && getHttpClient().isNtkUrl(challengeUrl)
+                && !isNtkApiUrl(challengeUrl))
+            return challengeUrl;
+        if(purl != null && purl.length() > 0 && !isNtkApiUrl(purl))
+            return purl;
+        String webtoonUrl = p.getWebtoonUrl();
+        if(webtoonUrl != null && webtoonUrl.length() > 0 && !isNtkApiUrl(webtoonUrl))
+            return webtoonUrl;
+        String root = getHttpClient().getUrl();
+        if(root != null && root.endsWith("/manhwa"))
+            root = root.substring(0, root.length() - 7);
+        return root;
+    }
+
+    private boolean isNtkApiUrl(String url) {
+        if(url == null || url.length() == 0)
+            return false;
+        try {
+            android.net.Uri uri = android.net.Uri.parse(url);
+            String path = uri.getPath();
+            return path != null && path.toLowerCase(java.util.Locale.ROOT).startsWith("/api/");
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private Set<String> readClearanceValues(CookieManager cookiem, String... urls) {

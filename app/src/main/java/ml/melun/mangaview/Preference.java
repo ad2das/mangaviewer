@@ -731,10 +731,12 @@ public class Preference {
             MTitle title = tmp.minimize();
             ensureSourceSite(title);
             title.setPath(null);
+            normalizeNtkProgressFromRelease(title);
             int position = getIndexOf(title);
             if (position > -1) {
                 MTitle existing = recent.remove(position);
                 preserveMoreCompleteProgress(title, existing);
+                normalizeNtkProgressFromRelease(title);
                 recent.add(0, title);
             } else recent.add(0, title);
             writeRecent();
@@ -768,6 +770,7 @@ public class Preference {
         MTitle tmp = title.clone();
         ensureSourceSite(tmp);
         tmp.setPath(null);
+        normalizeNtkProgressFromRelease(tmp);
         int recentIndex = getIndexOf(tmp);
         if(recentIndex > -1) {
             recent.set(recentIndex, tmp);
@@ -790,6 +793,7 @@ public class Preference {
         MTitle tmp = title.minimize();
         ensureSourceSite(tmp);
         tmp.setPath(null);
+        normalizeNtkProgressFromRelease(tmp);
         int recentIndex = getIndexOf(tmp);
         if(recentIndex > -1) {
             recent.set(recentIndex, tmp);
@@ -871,7 +875,28 @@ public class Preference {
         if(episodeIndex <= 0 && recentTitle.getBookmarkEpisodeId() == episodeId)
             episodeIndex = recentTitle.getBookmarkEpisodeIndex();
         recentTitle.setReadingProgress(episodeId, episodeIndex, episodeCount);
+        normalizeNtkProgressFromRelease(recentTitle);
         writeRecent();
+    }
+
+    private static void normalizeNtkProgressFromRelease(MTitle title) {
+        if(title == null)
+            return;
+        int releaseCount = title.getNtkReleaseEpisodeCount();
+        if(releaseCount <= 0 || title.getEpisodeCount() <= releaseCount)
+            return;
+        int episodeId = title.getBookmarkEpisodeId();
+        int episodeIndex = title.getBookmarkEpisodeIndex();
+        if(episodeId > 0 && episodeId <= releaseCount)
+            episodeIndex = releaseCount - episodeId + 1;
+        else if(episodeIndex > releaseCount)
+            episodeIndex = releaseCount;
+        title.setReadingProgress(episodeId, episodeIndex, releaseCount);
+    }
+
+    static int normalizedNtkEpisodeCountForTest(MTitle title) {
+        normalizeNtkProgressFromRelease(title);
+        return title == null ? 0 : title.getEpisodeCount();
     }
     public int getBookmark(MTitle title){
         ensureBookmarkLoaded();

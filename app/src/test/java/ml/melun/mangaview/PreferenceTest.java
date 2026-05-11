@@ -10,6 +10,8 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import ml.melun.mangaview.mangaview.MTitle;
+
 public class PreferenceTest {
     @Test
     public void siteUrlNormalizationPreservesNtkPreset() {
@@ -36,5 +38,15 @@ public class PreferenceTest {
     public void wfwfPresetForceIsExplicitlyDetectable() {
         assertFalse(Preference.needsWfwfSitePresetForTest(DEFAULT_COMIC_URL, DEFAULT_COMIC_URL, WEBTOON_URL));
         assertTrue(Preference.needsWfwfSitePresetForTest(NTK_COMIC_URL, NTK_COMIC_URL, NTK_WEBTOON_URL));
+    }
+
+    @Test
+    public void ntkRecentProgressShrinksStaleEpisodeCountFromRelease() {
+        MTitle title = new MTitle("성순 엑스터시", 36716, "", "", null, "13화", MTitle.base_comic);
+        title.setSourceSite("ntk");
+        title.setReadingProgress(7, 43, 49);
+
+        assertEquals(13, Preference.normalizedNtkEpisodeCountForTest(title));
+        assertEquals(7, title.getBookmarkEpisodeIndex());
     }
 }

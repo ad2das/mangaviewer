@@ -380,6 +380,10 @@ public class ViewerActivity extends AppCompatActivity {
         loadManga(manga);
     }
 
+    void refreshExactEpisode(){
+        loadManga(manga, ViewerLoadPolicy.EXACT);
+    }
+
     private void showEpisodePicker() {
         List<Manga> data = currentEpisodeList();
         if(data == null || data.size() == 0)
@@ -2093,7 +2097,7 @@ public class ViewerActivity extends AppCompatActivity {
         if (resultCode == RESULT_CAPTCHA) {
             getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
             getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
-            refresh();
+            refreshExactEpisode();
         }
     }
 

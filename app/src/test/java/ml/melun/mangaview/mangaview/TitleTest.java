@@ -69,4 +69,13 @@ public class TitleTest {
         assertEquals("ntk", minimized.getSourceSite());
         assertEquals("ntk", restored.getSourceSite());
     }
+
+    @Test
+    public void displayEpisodeCountUsesNtkReleaseWhenStoredCountIsStale() {
+        Title title = new Title("성순 엑스터시", "", "", null, "13화", 36716, MTitle.base_comic);
+        title.setSourceSite("ntk");
+        title.setReadingProgress(7, 43, 49);
+
+        assertEquals(13, title.getDisplayEpisodeCount(0));
+    }
 }

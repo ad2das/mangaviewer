@@ -100,6 +100,27 @@ public class MTitle{
         return episodeCount;
     }
 
+    public int getDisplayEpisodeCount(int fallbackEpisodeCount) {
+        int count = episodeCount > 0 ? episodeCount : fallbackEpisodeCount;
+        int releaseCount = getNtkReleaseEpisodeCount();
+        if(releaseCount > 0 && (count <= 0 || count > releaseCount))
+            return releaseCount;
+        return count;
+    }
+
+    public int getNtkReleaseEpisodeCount() {
+        if(!"ntk".equals(sourceSite) || release == null)
+            return 0;
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d+)\\s*화").matcher(release);
+        if(!matcher.find())
+            return 0;
+        try {
+            return Integer.parseInt(matcher.group(1));
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
     public void setReadingProgress(int episodeId, int episodeIndex, int episodeCount) {
         this.bookmarkEpisodeId = episodeId;
         this.bookmarkEpisodeIndex = episodeIndex;
