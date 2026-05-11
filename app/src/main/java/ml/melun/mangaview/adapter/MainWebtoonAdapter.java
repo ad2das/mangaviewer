@@ -974,8 +974,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         ArrayList<Title> titles = new ArrayList<>();
         try {
             appendRecentTitlesForCurrentMode(titles, 6);
-            if(titles.size() == 0)
-                appendRecentTitlesForAnyMode(titles, 6);
         } catch (Exception ignored) {
         }
         for(Title title : titles) {
@@ -992,22 +990,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return;
         for(MTitle item : recent) {
             if(item == null || item.getBaseMode() != baseMode)
-                continue;
-            Title title = item instanceof Title ? (Title) item : new Title(item);
-            if(containsTitle(target, title))
-                continue;
-            target.add(title);
-            if(limit > 0 && target.size() >= limit)
-                return;
-        }
-    }
-
-    private void appendRecentTitlesForAnyMode(List<Title> target, int limit) {
-        List<MTitle> recent = Utils.snapshotList(p.getRecent());
-        if(recent == null || target == null)
-            return;
-        for(MTitle item : recent) {
-            if(item == null)
                 continue;
             Title title = item instanceof Title ? (Title) item : new Title(item);
             if(containsTitle(target, title))
@@ -1730,7 +1712,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(recent == null || recent.size() == 0)
             return null;
         for(MTitle item : recent) {
-            if(item == null || item.getId() <= 0)
+            if(item == null || item.getId() <= 0 || item.getBaseMode() != baseMode)
                 continue;
             Title title = item instanceof Title ? (Title) item : new Title(item);
             int bookmark = p.getBookmark(title);
