@@ -311,7 +311,9 @@ public class CaptchaActivity extends AppCompatActivity {
                 } else if("normal".equals(type)) {
                     normalNtkPageCount++;
                     android.util.Log.d("CaptchaActivity", "NTK normal page detected without Turnstile: " + normalNtkPageCount);
-                    if(normalNtkPageCount >= 1 && System.currentTimeMillis() - pageFinishedTime > 400L)
+                    if(normalNtkPageCount >= 1
+                            && System.currentTimeMillis() - pageFinishedTime > 400L
+                            && readCookiesAndFinish(CookieManager.getInstance(), p.getUrl(), webView == null ? null : webView.getUrl()))
                         finishWithNtkAccessVerified();
                 } else {
                     normalNtkPageCount = 0;
@@ -466,7 +468,7 @@ public class CaptchaActivity extends AppCompatActivity {
                     String k = cookie.substring(0, eq);
                     String v = cookie.substring(eq + 1);
                     boolean clearance = "cf_clearance".equalsIgnoreCase(k);
-                    if(clearance && (!isValidClearanceValue(v) || initialClearanceValues.contains(v)))
+                    if(clearance && !isValidClearanceValue(v))
                         continue;
                     getHttpClient().setCookie(k, v);
                     if(clearance)

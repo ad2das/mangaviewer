@@ -136,9 +136,7 @@ public class CustomHttpClient {
     }
 
     public synchronized boolean hasNtkAccessProof() {
-        if(hasCloudflareClearance())
-            return true;
-        return hasRecentNtkAccessVerification();
+        return hasCloudflareClearance();
     }
 
     public String getLastCloudflareChallengeUrl() {
