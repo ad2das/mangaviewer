@@ -182,12 +182,6 @@ public class Search {
         int status = 0;
         ArrayList<Title> combined = new ArrayList<>();
         try {
-            if(client != null && client.isNtk() && mode == 0) {
-                last = appendNextNtkSearchPage(client, combined, base_auto, 200);
-                result.addAll(combined);
-                return 0;
-            }
-
             Search webtoonSearch = new Search(query, mode, base_webtoon);
             Search comicSearch = new Search(query, mode, base_comic);
             CustomHttpClient.RequestGroup requestGroup = client.currentRequestGroup();
