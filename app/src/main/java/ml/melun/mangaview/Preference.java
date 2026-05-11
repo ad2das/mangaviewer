@@ -933,9 +933,9 @@ public class Preference {
                 return cachedSource;
             ensureBookmarkLoaded();
             String legacy = legacyBookmarkKey(title);
-            if(bookmark.has("wfwf." + legacy))
+            if(hasSourceBookmark("wfwf", legacy))
                 return cacheKnownSource(sourceCacheKey, "wfwf");
-            if(bookmark.has("ntk." + legacy))
+            if(hasSourceBookmark("ntk", legacy))
                 return cacheKnownSource(sourceCacheKey, "ntk");
         }
         source = sourceSiteFromUrl(title == null ? "" : title.getThumb());
@@ -943,6 +943,22 @@ public class Preference {
             return title != null && title.getId() > 0 ? cacheKnownSource(legacyTitleLookupKey(title), source) : source;
         source = sourceSiteFromUrl(title == null ? "" : title.getPath());
         return title != null && title.getId() > 0 ? cacheKnownSource(legacyTitleLookupKey(title), source) : source;
+    }
+
+    private boolean hasSourceBookmark(String source, String legacy) {
+        if(source == null || source.length() == 0 || legacy == null || legacy.length() == 0)
+            return false;
+        String exact = source + "." + legacy;
+        if(bookmark.has(exact))
+            return true;
+        String nested = "." + exact;
+        Iterator<String> keys = bookmark.keys();
+        while(keys.hasNext()) {
+            String key = keys.next();
+            if(key != null && key.endsWith(nested))
+                return true;
+        }
+        return false;
     }
 
     private String cacheKnownSource(String key, String source) {

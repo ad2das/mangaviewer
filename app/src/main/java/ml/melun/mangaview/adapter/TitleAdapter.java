@@ -418,7 +418,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             return "wfwf";
         String source = title.getSourceSite();
         if(source == null || source.length() == 0)
-            source = p.resolveKnownSourceSite(title);
+            source = p.resolveSourceSite(title);
         return "ntk".equals(source) ? "ntk" : "wfwf";
     }
 

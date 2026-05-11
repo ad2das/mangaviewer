@@ -1491,7 +1491,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 return "wfwf";
             String source = item.getSourceSite();
             if(source == null || source.length() == 0)
-                source = p.resolveKnownSourceSite(item);
+                source = p.resolveSourceSite(item);
             return "ntk".equals(source) ? "ntk" : "wfwf";
         }
 

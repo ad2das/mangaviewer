@@ -59,11 +59,11 @@ public class NtkDomainResolver {
         String latest = null;
         for(Element message : doc.select(".tgme_widget_message_text")) {
             String text = message.text();
-            if(text == null || !text.contains("뉴토끼 현재주소"))
+            if(text == null || !looksLikeCurrentAddressMessage(text))
                 continue;
             for(Element link : message.select("a[href]")) {
                 String root = normalizeRoot(link.attr("href"));
-                if(isCandidate(root)) {
+                if(isCandidate(root, link.text())) {
                     latest = root;
                     break;
                 }
@@ -90,7 +90,16 @@ public class NtkDomainResolver {
         }
     }
 
-    private static boolean isCandidate(String root) {
+    private static boolean looksLikeCurrentAddressMessage(String text) {
+        return text.contains("현재주소")
+                || text.contains("현재 주소")
+                || text.contains("접속 주소")
+                || text.contains("실시간 주소")
+                || text.contains("최신주소")
+                || text.contains("최신 주소");
+    }
+
+    private static boolean isCandidate(String root, String label) {
         if(root == null || root.length() == 0)
             return false;
         try {
@@ -100,13 +109,15 @@ public class NtkDomainResolver {
             host = host.toLowerCase(Locale.ROOT);
             if(host.startsWith("www."))
                 host = host.substring(4);
-            if(host.equals("t.me") || host.endsWith(".telegram.org"))
+            if(host.equals("t.me")
+                    || host.endsWith(".telegram.org")
+                    || host.endsWith(".telesco.pe")
+                    || host.endsWith(".telegram-cdn.org"))
                 return false;
-            if(host.contains("xn--") || host.contains("주소"))
+            String lowerLabel = label == null ? "" : label.toLowerCase(Locale.ROOT);
+            if(host.contains("xn--") || root.contains("주소") || lowerLabel.contains("주소 안내") || lowerLabel.contains("안내페이지"))
                 return false;
-            return host.contains("newtoki")
-                    || host.startsWith("ntk")
-                    || host.startsWith("sbxh");
+            return host.indexOf('.') > 0;
         } catch (Exception e) {
             return false;
         }

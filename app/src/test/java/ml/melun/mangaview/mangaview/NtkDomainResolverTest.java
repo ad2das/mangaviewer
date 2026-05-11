@@ -26,4 +26,14 @@ public class NtkDomainResolverTest {
 
         assertEquals("https://sbxh3.com", NtkDomainResolver.parseLatestRoot(html));
     }
+
+    @Test
+    public void acceptsChangedDomainPrefixFromCurrentAddressMessage() {
+        String html = "<div class=\"tgme_widget_message_text\">뉴토끼 최신 주소<br>"
+                + "<a href=\"https://abc123.com\">abc123.com</a><br>"
+                + "<a href=\"https://xn--h10b90bi5zuhh79k.net\">주소 안내페이지</a>"
+                + "</div>";
+
+        assertEquals("https://abc123.com", NtkDomainResolver.parseLatestRoot(html));
+    }
 }
