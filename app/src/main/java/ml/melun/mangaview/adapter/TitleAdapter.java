@@ -19,13 +19,17 @@ import com.bumptech.glide.load.engine.DiskCacheStrategy;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Executor;
 
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.MTitle;
+import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.runtime.AppDispatchers;
 
@@ -57,6 +61,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     private int lastResumeOpenPosition = RecyclerView.NO_POSITION;
     private final Map<String, String> tagTextCache = new HashMap<>();
     private final Map<String, BindMeta> bindMetaCache = new HashMap<>();
+    private final LinkedHashMap<String, Boolean> resumeWarmupKeys = new LinkedHashMap<>(64, 0.75f, true);
 
     public TitleAdapter(Context context) {
         init(context);
@@ -182,6 +187,67 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                     .dontAnimate()
                     .preload();
         }
+    }
+
+    public void warmupVisibleResumeItems(RecyclerView recyclerView) {
+        if(recyclerView == null || mDataFiltered == null || !resume || forceThumbnail)
+            return;
+        int childCount = recyclerView.getChildCount();
+        if(childCount <= 0)
+            return;
+        int first = Integer.MAX_VALUE;
+        int last = RecyclerView.NO_POSITION;
+        for(int i = 0; i < childCount; i++) {
+            int position = recyclerView.getChildAdapterPosition(recyclerView.getChildAt(i));
+            if(!isValidPosition(position))
+                continue;
+            first = Math.min(first, position);
+            last = Math.max(last, position);
+        }
+        if(first == Integer.MAX_VALUE || last == RecyclerView.NO_POSITION)
+            return;
+        warmupResumeRange(first, last, save ? 2 : 4);
+    }
+
+    private void warmupResumeRange(int first, int last, int limit) {
+        int warmed = 0;
+        int end = Math.min(last, getItemCount() - 1);
+        for(int position = Math.max(0, first); position <= end && warmed < limit; position++) {
+            if(warmupResumeAt(position))
+                warmed++;
+        }
+    }
+
+    private boolean warmupResumeAt(int position) {
+        if(!isValidPosition(position) || mainContext == null)
+            return false;
+        Title title = mDataFiltered.get(position);
+        if(title == null || title.getPath() != null && title.getPath().length() > 0)
+            return false;
+        int bookmark = resolveResumeBookmark(title);
+        if(bookmark <= 0 || title.getId() <= 0)
+            return false;
+        Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
+        manga.setTitle(title);
+        manga.setTitleId(title.getId());
+        int page = p.getViewerBookmark(manga);
+        if(page < 0)
+            page = 0;
+        String key = sourceKey(title) + ":" + title.getBaseMode() + ":" + title.getId() + ":" + bookmark + ":" + page;
+        synchronized (resumeWarmupKeys) {
+            if(resumeWarmupKeys.containsKey(key))
+                return false;
+            resumeWarmupKeys.put(key, Boolean.TRUE);
+            while(resumeWarmupKeys.size() > 128) {
+                Iterator<String> iterator = resumeWarmupKeys.keySet().iterator();
+                if(!iterator.hasNext())
+                    break;
+                iterator.next();
+                iterator.remove();
+            }
+        }
+        ViewerWarmupManager.warmupVisibleContinue(mainContext, manga, title);
+        return true;
     }
 
     public void setData(List<?> t){

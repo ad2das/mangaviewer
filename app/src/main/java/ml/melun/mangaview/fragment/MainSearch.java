@@ -159,6 +159,7 @@ public class MainSearch extends Fragment {
                 PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
                 if(newState == RecyclerView.SCROLL_STATE_IDLE) {
                     applyPendingLibraryRefreshIfIdle();
+                    warmupVisibleResumeItems();
                     PerformanceMonitor.reportNow(libraryMode && !onlineSearchMode ? "library_scroll_idle" : "search_scroll_idle");
                 }
             }
@@ -551,6 +552,7 @@ public class MainSearch extends Fragment {
             libraryCount.setText(data.size() + "개 작품");
         noResultText.setText(emptyMessage);
         noresult.setVisibility(data.size() == 0 ? View.VISIBLE : View.GONE);
+        scheduleVisibleResumeWarmup();
         searchAdapter.setClickListener(new TitleAdapter.ItemClickListener() {
             @Override
             public void onLongClick(View view, int position) {
@@ -686,6 +688,20 @@ public class MainSearch extends Fragment {
             return;
         pendingLibraryRefresh = false;
         refreshLibraryFromPreferences();
+    }
+
+    private void scheduleVisibleResumeWarmup() {
+        if(searchResult == null)
+            return;
+        searchResult.post(this::warmupVisibleResumeItems);
+    }
+
+    private void warmupVisibleResumeItems() {
+        if(searchResult == null || searchAdapter == null)
+            return;
+        if(searchResult.getScrollState() != RecyclerView.SCROLL_STATE_IDLE)
+            return;
+        searchAdapter.warmupVisibleResumeItems(searchResult);
     }
 
     private void updateSwipeEnabled() {
@@ -1323,6 +1339,7 @@ public class MainSearch extends Fragment {
             }else{
                 searchAdapter.addData(targetSearch.getResult());
             }
+            scheduleVisibleResumeWarmup();
 
             List<Title> latestResults = targetSearch.getResult();
             boolean hasResults = (latestResults != null && latestResults.size() > 0)

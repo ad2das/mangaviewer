@@ -101,6 +101,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     List<Object> pendingRows;
     boolean initialRowsShown = false;
     private final Set<String> preloadedThumbs = new LinkedHashSet<>();
+    private final Set<String> visibleContinueWarmupKeys = new LinkedHashSet<>();
     private static final int PRELOADED_THUMB_LIMIT = 160;
     private static final int PRELOAD_THUMB_MAX_PER_FETCH = 24;
     private static final int SECTION_BATCH_SIZE = 4;
@@ -1316,10 +1317,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 ((HomeTitleAdapter) adapter).setItems(section.titles);
             else
                 list.setAdapter(new HomeTitleAdapter(section.titles, section.style));
-            if(section.style == STYLE_CONTINUE)
+            if(section.style == STYLE_CONTINUE) {
                 list.setOnTouchListener((v, event) -> handleContinueSectionTouch(event));
-            else
+                list.post(() -> warmupVisibleContinueItems(section.titles));
+            } else {
                 list.setOnTouchListener(null);
+            }
         }
 
         private boolean handleContinueSectionTouch(MotionEvent event) {
@@ -1694,7 +1697,45 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         Title item = firstContinueTitle();
         Manga manga = resolveContinueMangaForWarmup(item);
         if(manga != null)
-            ViewerWarmupManager.warmupContinueImmediate(context, manga, item);
+            ViewerWarmupManager.warmupVisibleContinue(context, manga, item);
+    }
+
+    private void warmupVisibleContinueItems(List<Title> titles) {
+        if(titles == null || titles.size() == 0 || context == null)
+            return;
+        int limit = save ? 2 : 4;
+        int warmed = 0;
+        for(Title item : titles) {
+            if(item == null || item.getId() <= 0)
+                continue;
+            Manga manga = resolveContinueMangaForWarmup(item);
+            if(manga == null)
+                continue;
+            int page = p.getViewerBookmark(manga);
+            if(page < 0)
+                page = 0;
+            String key = item.getSourceSite() + ":" + item.getBaseMode() + ":" + item.getId() + ":" + manga.getId() + ":" + page;
+            synchronized (visibleContinueWarmupKeys) {
+                if(visibleContinueWarmupKeys.contains(key))
+                    continue;
+                visibleContinueWarmupKeys.add(key);
+                trimVisibleContinueWarmups();
+            }
+            ViewerWarmupManager.warmupVisibleContinue(context, manga, item);
+            warmed++;
+            if(warmed >= limit)
+                return;
+        }
+    }
+
+    private void trimVisibleContinueWarmups() {
+        while(visibleContinueWarmupKeys.size() > 128) {
+            Iterator<String> iterator = visibleContinueWarmupKeys.iterator();
+            if(!iterator.hasNext())
+                return;
+            iterator.next();
+            iterator.remove();
+        }
     }
 
     private Title firstContinueTitle() {
@@ -2586,6 +2627,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private Manga resolveContinueMangaForWarmup(Title item) {
         if(item == null)
             return null;
+        p.ensureSourceSiteForTitle(item);
         int bookmark = p.getBookmark(item);
         if(bookmark <= 0)
             bookmark = item.getBookmark();

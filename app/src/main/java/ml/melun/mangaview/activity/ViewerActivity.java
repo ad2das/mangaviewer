@@ -6,10 +6,13 @@ import android.content.res.Configuration;
 import android.graphics.Color;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.text.TextUtils;
 import android.util.TypedValue;
 
 import com.google.android.material.appbar.AppBarLayout;
+
+import com.bumptech.glide.Priority;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -789,11 +792,11 @@ public class ViewerActivity extends AppCompatActivity {
             }
             releaseStripAdapter();
             stripAdapter = new StripAdapter(context, m, autoCut, width,title, infiniteScrollCallback);
-            preloadInitialViewerPages(m, policy);
 
             refreshAdapter();
             prepareInitialViewerPosition(m, policy);
             bookmarkRefresh(m, policy);
+            scheduleInitialViewerPreload(m, policy);
             scheduleFocusedPagePreload();
             refreshToolbar(m);
             updateIntent(m);
@@ -957,6 +960,8 @@ public class ViewerActivity extends AppCompatActivity {
         MangaRepository.Cancellation cancellation = MangaRepository.cancellation();
         AppDispatchers.TaskHandle handle;
         volatile boolean cancelled = false;
+        volatile boolean displayedEarly = false;
+        long startedAtMs = 0L;
         Runnable timeoutGuard;
 
         public LoadImagesJob(Manga m, LoadMangaCallback callback, boolean lockui, ViewerLoadPolicy policy){
@@ -967,6 +972,7 @@ public class ViewerActivity extends AppCompatActivity {
         }
 
         void start() {
+            startedAtMs = SystemClock.elapsedRealtime();
             if(lockui) lockUi(true);
             if(lockui) {
                 setOnBackPressed(() -> {
@@ -983,6 +989,8 @@ public class ViewerActivity extends AppCompatActivity {
                 };
                 mainHandler.postDelayed(timeoutGuard, 12000);
             }
+            if(lockui && canDisplayLoadedImagesImmediately(m, policy))
+                displayLoadedImagesEarly();
             handle = AppDispatchers.submitNavigation(() -> {
                 int result = LOAD_OK;
                 try {
@@ -1002,6 +1010,9 @@ public class ViewerActivity extends AppCompatActivity {
                             result = prepared.result;
                             if(prepared.manga != null)
                                 m = prepared.manga;
+                        } else if(result == LOAD_OK && displayedEarly && hasLoadedImages(m)) {
+                            ViewerWarmupManager.preloadLoadedImages(context, m, firstPage, width, autoCut,
+                                    p.getReverse(), p.getDataSave() ? 6 : 12, Priority.IMMEDIATE);
                         } else if(result == LOAD_OK) {
                             result = ViewerWarmupManager.prepareFirstFrame(context, m, title, firstPage, width, autoCut, p.getReverse(), cancellation);
                         }
@@ -1026,6 +1037,28 @@ public class ViewerActivity extends AppCompatActivity {
                 finish(LOAD_OK);
         }
 
+        private boolean canDisplayLoadedImagesImmediately(Manga target, ViewerLoadPolicy policy) {
+            return target != null
+                    && target.isOnline()
+                    && hasLoadedImages(target)
+                    && !needsResolvedNtkEpisodePath(target)
+                    && !(allowsResumeFallback(policy) && shouldResolveResumeBeforeDirectFetch(target));
+        }
+
+        private void displayLoadedImagesEarly() {
+            if(cancelled || isFinishing() || loader != this || displayedEarly)
+                return;
+            displayedEarly = true;
+            if(lockui)
+                lockUi(false);
+            if(title == null)
+                title = m.getTitle();
+            resetOnBackPressed();
+            ViewerWarmupManager.logMetric("viewer_open_to_set_manga_ms", SystemClock.elapsedRealtime() - startedAtMs);
+            callback.post(m);
+            hydrateEpisodeListAfterFirstFrame(m);
+        }
+
         void finish(Integer res) {
             if(cancelled || isFinishing())
                 return;
@@ -1034,6 +1067,11 @@ public class ViewerActivity extends AppCompatActivity {
             if(timeoutGuard != null)
                 mainHandler.removeCallbacks(timeoutGuard);
             loader = null;
+            if(displayedEarly) {
+                if(res == LOAD_CAPTCHA)
+                    showViewerCaptchaRequired(m);
+                return;
+            }
             if(res == LOAD_CAPTCHA){
                 //캡차 처리 팝업
                 if(lockui) lockUi(false);
@@ -1527,6 +1565,15 @@ public class ViewerActivity extends AppCompatActivity {
         if(pageIndex < 0 || pageIndex >= images.size())
             pageIndex = 0;
         stripAdapter.preloadInitialAroundPage(new PageItem(pageIndex, "", target));
+    }
+
+    private void scheduleInitialViewerPreload(Manga target, ViewerLoadPolicy policy) {
+        if(strip == null || target == null)
+            return;
+        strip.postDelayed(() -> {
+            if(!isFinishing() && manga != null && manga.getId() == target.getId())
+                preloadInitialViewerPages(target, policy);
+        }, 140);
     }
 
     private void preloadInitialRequestWindow(Manga target, ViewerLoadPolicy policy) {

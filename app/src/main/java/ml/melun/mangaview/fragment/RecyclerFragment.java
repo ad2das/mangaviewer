@@ -129,8 +129,10 @@ public class RecyclerFragment extends Fragment {
                 if(getContext() == null || !isAdded())
                     return;
                 PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
-                if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                if(newState == RecyclerView.SCROLL_STATE_IDLE) {
+                    warmupVisibleResumeItems();
                     PerformanceMonitor.reportNow("recycler_scroll_idle");
+                }
             }
         });
         localChangeListener = scope -> {
@@ -146,11 +148,13 @@ public class RecyclerFragment extends Fragment {
             @Override
             public void onChanged() {
                 updateEmptyState();
+                scheduleVisibleResumeWarmup();
             }
 
             @Override
             public void onItemRangeInserted(int positionStart, int itemCount) {
                 updateEmptyState();
+                scheduleVisibleResumeWarmup();
             }
 
             @Override
@@ -468,6 +472,21 @@ public class RecyclerFragment extends Fragment {
             offlineReader.start();
         }
         updateEmptyState();
+        scheduleVisibleResumeWarmup();
+    }
+
+    private void scheduleVisibleResumeWarmup() {
+        if(recyclerView == null)
+            return;
+        recyclerView.post(this::warmupVisibleResumeItems);
+    }
+
+    private void warmupVisibleResumeItems() {
+        if(recyclerView == null || titleAdapter == null || mode == R.id.nav_download)
+            return;
+        if(recyclerView.getScrollState() != RecyclerView.SCROLL_STATE_IDLE)
+            return;
+        titleAdapter.warmupVisibleResumeItems(recyclerView);
     }
 
     private void updateEmptyState() {

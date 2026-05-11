@@ -540,6 +540,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             clearImageTarget(holder);
         int bindGeneration = ++holder.bindGeneration;
         holder.boundPageKey = pageKey;
+        holder.bindStartedAtMs = android.os.SystemClock.elapsedRealtime();
         applyKnownHeight(holder, pageKey);
         String cacheKey = decodedCacheKey(item);
         Bitmap cached = decodedBitmapCache.get(cacheKey);
@@ -772,6 +773,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         trimDisplayedTracker();
         if(mainContext instanceof ViewerActivity)
             ((ViewerActivity) mainContext).onViewerPageDisplayed(item);
+        if(item.index == 0)
+            ViewerWarmupManager.logMetric("viewer_first_visible_ms", android.os.SystemClock.elapsedRealtime() - holder.bindStartedAtMs);
         int layoutPos = holder.getAdapterPosition();
         if(layoutPos != RecyclerView.NO_POSITION)
             schedulePreloadAroundScrollPosition(layoutPos);
@@ -1184,6 +1187,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         CustomTarget<Bitmap> imageTarget;
         String boundPageKey;
         int bindGeneration = 0;
+        long bindStartedAtMs = 0L;
         int appliedItemHeight = ViewGroup.LayoutParams.WRAP_CONTENT;
         ImgViewHolder(View itemView) {
             super(itemView);
