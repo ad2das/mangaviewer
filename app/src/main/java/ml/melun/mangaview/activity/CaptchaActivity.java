@@ -299,6 +299,7 @@ public class CaptchaActivity extends AppCompatActivity {
 
 //        webView.setOnTouchListener((view, motionEvent) -> true);
 
+        android.util.Log.d("CaptchaActivity", "Loading captcha URL: " + url);
         webView.loadUrl(url);
         webView.evaluateJavascript(SHADOW_HOOK_JS, null);
 

@@ -1016,10 +1016,7 @@ public class ViewerActivity extends AppCompatActivity {
             if(res == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !hasLoadedImages(m)) {
                 if(lockui) lockUi(false);
                 resetOnBackPressed();
-                if(isNtkEpisode(m))
-                    showViewerCaptchaRequired(m);
-                else
-                    showViewerImagesUnavailable(m);
+                showViewerImagesUnavailable(m);
                 return;
             }
 

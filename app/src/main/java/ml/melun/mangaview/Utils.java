@@ -821,6 +821,9 @@ public class Utils {
         syncNtkCloudflareCookies(preference);
         if(getHttpClient().hasNtkAccessProof() || getHttpClient().hasRecentNtkAccessVerification())
             return false;
+        String challengedUrl = getHttpClient().getLastCloudflareChallengeUrl();
+        if(challengedUrl == null || challengedUrl.length() == 0 || !getHttpClient().isNtkUrl(challengedUrl))
+            return false;
         if(!shouldOpenCloudflareCaptchaAutomatically())
             return false;
         startCaptchaActivity(context, code, fragment, null);
