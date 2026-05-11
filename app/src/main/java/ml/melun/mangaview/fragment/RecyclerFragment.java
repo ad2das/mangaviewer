@@ -44,7 +44,6 @@ import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.repository.OfflineStore;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
-import ml.melun.mangaview.ui.RecyclerPerformance;
 
 import static android.app.Activity.RESULT_OK;
 import static ml.melun.mangaview.MainApplication.p;
@@ -102,8 +101,10 @@ public class RecyclerFragment extends Fragment {
         emptyStateMessage = rootView.findViewById(R.id.empty_state_message);
         titleAdapter = new TitleAdapter(getContext());
         recyclerView.setLayoutManager(new NpaLinearLayoutManager(getContext()));
-        RecyclerPerformance.tune(recyclerView, 12);
-        RecyclerPerformance.bindImageRequestPausing(recyclerView);
+        recyclerView.setHasFixedSize(true);
+        recyclerView.setItemViewCacheSize(12);
+        recyclerView.setItemAnimator(null);
+        recyclerView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         recyclerView.setAdapter(titleAdapter);
         touchSlop = ViewConfiguration.get(rootView.getContext()).getScaledTouchSlop();
         recyclerView.addOnItemTouchListener(new RecyclerView.SimpleOnItemTouchListener() {

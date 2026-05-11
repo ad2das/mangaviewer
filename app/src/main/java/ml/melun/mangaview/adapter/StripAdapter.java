@@ -53,11 +53,9 @@ import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.model.PageItem;
 import ml.melun.mangaview.repository.MangaRepository;
-import ml.melun.mangaview.ui.RecyclerPerformance;
-import ml.melun.mangaview.ui.SmoothScrollAdapter;
 
 
-public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> implements SmoothScrollAdapter {
+public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
     private final LayoutInflater mInflater;
     private final Context mainContext;
@@ -87,38 +85,17 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private boolean pendingPreloadScheduled = false;
     private boolean scrollBusy = false;
     private boolean released = false;
-    private Manga pendingInfoUpdate;
 
     public List<Object> getItems(){
         return items;
     }
 
-    @Override
     public void setScrollBusy(boolean scrollBusy) {
         if(released)
             return;
         this.scrollBusy = scrollBusy;
-        if(!scrollBusy) {
-            flushPendingInfoUpdate();
-            if(pendingPreloadPosition != RecyclerView.NO_POSITION)
-                schedulePreloadAroundScrollPosition(pendingPreloadPosition);
-        }
-    }
-
-    @Override
-    public void onScrollIdle(RecyclerView recyclerView) {
-        if(released)
-            return;
-        flushPendingInfoUpdate();
-        RecyclerPerformance.refreshVisibleRange(recyclerView, this, 2);
-        int anchor = pendingPreloadPosition;
-        if(anchor == RecyclerView.NO_POSITION && recyclerView != null) {
-            RecyclerView.LayoutManager manager = recyclerView.getLayoutManager();
-            if(manager instanceof androidx.recyclerview.widget.LinearLayoutManager)
-                anchor = ((androidx.recyclerview.widget.LinearLayoutManager) manager).findFirstVisibleItemPosition();
-        }
-        if(anchor != RecyclerView.NO_POSITION)
-            preloadAroundScrollPosition(anchor);
+        if(!scrollBusy && pendingPreloadPosition != RecyclerView.NO_POSITION)
+            schedulePreloadAroundScrollPosition(pendingPreloadPosition);
     }
 
 
@@ -517,13 +494,14 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             clearImageTarget(holder);
         int bindGeneration = ++holder.bindGeneration;
         holder.boundPageKey = pageKey;
-        setFramePlaceholderSize(holder.frame);
+        holder.frame.setMinimumHeight(Math.max(width, 1));
         String cacheKey = decodedCacheKey(item);
         Bitmap cached = decodedBitmapCache.get(cacheKey);
         if(cached != null && !cached.isRecycled() && isHolderStillBound(holder, item, pageKey)) {
             if(item.index > 0)
                 ViewerWarmupManager.logMetric("viewer_next_page_cache_hit", 1);
-            applyBitmapToFrame(holder.frame, cached);
+            holder.frame.setMinimumHeight(0);
+            holder.frame.setImageBitmap(cached);
             holder.refresh.setVisibility(View.GONE);
             markDisplayedAndPreload(holder, item, pageKey);
             return;
@@ -534,7 +512,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(cached != null && !cached.isRecycled() && isHolderStillBound(holder, item, pageKey)) {
             if(item.index > 0)
                 ViewerWarmupManager.logMetric("viewer_next_page_cache_hit", 1);
-            applyBitmapToFrame(holder.frame, cached);
+            holder.frame.setMinimumHeight(0);
+            holder.frame.setImageBitmap(cached);
             holder.refresh.setVisibility(View.GONE);
             decodedBitmapCache.put(cacheKey, cached);
             markDisplayedAndPreload(holder, item, pageKey);
@@ -542,10 +521,6 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         }
         holder.frame.setImageDrawable(null);
         holder.refresh.setVisibility(View.GONE);
-        if(scrollBusy) {
-            bindDeferredPage(holder, pageKey);
-            return;
-        }
         if (autoCut) {
             long bindStart = android.os.SystemClock.elapsedRealtime();
             CustomTarget<Bitmap> imageTarget = new CustomTarget<Bitmap>() {
@@ -553,7 +528,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 public void onResourceReady(@NonNull Bitmap bitmap, Transition<? super Bitmap> transition) {
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
-                    applyBitmapToFrame(holder.frame, bitmap);
+                    holder.frame.setMinimumHeight(0);
+                    holder.frame.setImageBitmap(bitmap);
                     holder.refresh.setVisibility(View.GONE);
                     if(item.index == 0)
                         ViewerWarmupManager.logMetric("viewer_first_bind_ms", android.os.SystemClock.elapsedRealtime() - bindStart);
@@ -564,7 +540,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 public void onLoadCleared(@Nullable Drawable placeholder) {
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
-                    setFramePlaceholderSize(holder.frame);
+                    holder.frame.setMinimumHeight(Math.max(width, 1));
                     holder.frame.setImageDrawable(null);
                     holder.refresh.setVisibility(View.GONE);
                 }
@@ -573,7 +549,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 public void onLoadFailed(@Nullable Drawable errorDrawable) {
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
-                    setFramePlaceholderSize(holder.frame);
+                    holder.frame.setMinimumHeight(Math.max(width, 1));
                     holder.frame.setImageDrawable(null);
                     holder.refresh.setVisibility(View.VISIBLE);
                 }
@@ -593,7 +569,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 public void onResourceReady(@NonNull Bitmap resource, @Nullable Transition<? super Bitmap> transition) {
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
-                    applyBitmapToFrame(holder.frame, resource);
+                    holder.frame.setMinimumHeight(0);
+                    holder.frame.setImageBitmap(resource);
                     holder.refresh.setVisibility(View.GONE);
                     if(item.index == 0)
                         ViewerWarmupManager.logMetric("viewer_first_bind_ms", android.os.SystemClock.elapsedRealtime() - bindStart);
@@ -604,7 +581,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 public void onLoadCleared(@Nullable Drawable placeholder) {
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
-                    setFramePlaceholderSize(holder.frame);
+                    holder.frame.setMinimumHeight(Math.max(width, 1));
                     holder.frame.setImageDrawable(null);
                     holder.refresh.setVisibility(View.GONE);
                 }
@@ -613,7 +590,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 public void onLoadFailed(@Nullable Drawable errorDrawable) {
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
-                    setFramePlaceholderSize(holder.frame);
+                    holder.frame.setMinimumHeight(Math.max(width, 1));
                     holder.frame.setImageDrawable(null);
                     holder.refresh.setVisibility(View.VISIBLE);
                 }
@@ -668,43 +645,6 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         } catch (IllegalArgumentException e) {
             // RecyclerView can recycle children while the viewer Activity is already destroyed.
         }
-    }
-
-    private void applyBitmapToFrame(ImageView frame, Bitmap bitmap) {
-        if(frame == null || bitmap == null || bitmap.isRecycled())
-            return;
-        int bitmapWidth = Math.max(1, bitmap.getWidth());
-        int bitmapHeight = Math.max(1, bitmap.getHeight());
-        int targetWidth = Math.max(1, width);
-        int targetHeight = Math.max(1, (int)((long) targetWidth * bitmapHeight / bitmapWidth));
-        ViewGroup.LayoutParams params = frame.getLayoutParams();
-        if(params != null && params.height != targetHeight) {
-            params.height = targetHeight;
-            frame.setLayoutParams(params);
-        }
-        frame.setMinimumHeight(targetHeight);
-        frame.setImageBitmap(bitmap);
-    }
-
-    private void setFramePlaceholderSize(ImageView frame) {
-        if(frame == null)
-            return;
-        int target = Math.max(width, 1);
-        ViewGroup.LayoutParams params = frame.getLayoutParams();
-        if(params != null && params.height != target) {
-            params.height = target;
-            frame.setLayoutParams(params);
-        }
-        frame.setMinimumHeight(target);
-    }
-
-    private void bindDeferredPage(ImgViewHolder holder, String pageKey) {
-        if(("deferred:" + pageKey).equals(holder.frame.getTag()))
-            return;
-        clearImageTarget(holder);
-        holder.frame.setTag("deferred:" + pageKey);
-        setFramePlaceholderSize(holder.frame);
-        holder.refresh.setVisibility(View.GONE);
     }
 
     private boolean isContextDestroyed() {
@@ -1020,22 +960,11 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             if(needUpdate || currentMangaId != pi.manga.getId()){
                 needUpdate = false;
                 currentMangaId = pi.manga.getId();
-                if(scrollBusy)
-                    pendingInfoUpdate = pi.manga;
-                else
-                    callback.updateInfo(pi.manga);
+                callback.updateInfo(pi.manga);
             }
         } else if(type == INFO){
             needUpdate = true;
         }
-    }
-
-    private void flushPendingInfoUpdate() {
-        if(pendingInfoUpdate == null)
-            return;
-        Manga target = pendingInfoUpdate;
-        pendingInfoUpdate = null;
-        callback.updateInfo(target);
     }
 
     @Override
@@ -1045,7 +974,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             ImgViewHolder imageHolder = (ImgViewHolder) holder;
             clearImageTarget(imageHolder);
             imageHolder.boundPageKey = null;
-            setFramePlaceholderSize(imageHolder.frame);
+            imageHolder.frame.setMinimumHeight(Math.max(width, 1));
             imageHolder.frame.setImageDrawable(null);
             imageHolder.refresh.setVisibility(View.GONE);
         }

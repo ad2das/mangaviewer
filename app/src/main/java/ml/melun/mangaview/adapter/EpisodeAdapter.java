@@ -29,8 +29,6 @@ import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
-import ml.melun.mangaview.ui.RecyclerPerformance;
-import ml.melun.mangaview.ui.SmoothScrollAdapter;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getGlideUrl;
@@ -38,7 +36,7 @@ import static ml.melun.mangaview.Utils.isLocalMediaPath;
 import static ml.melun.mangaview.Utils.safeGlideClear;
 
 
-public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> implements SmoothScrollAdapter {
+public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
     private final List<Manga> mData;
     private final LayoutInflater mInflater;
@@ -55,7 +53,6 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     NpaLinearLayoutManager lm;
     boolean dark;
     boolean save;
-    private boolean scrollBusy = false;
     int mode = 0;
     // data is passed into the constructor
     public EpisodeAdapter(Context context, List<Manga> data, Title title, int mode) {
@@ -191,10 +188,6 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         String key = String.valueOf(source);
         if(key.equals(view.getTag()))
             return;
-        if(scrollBusy) {
-            bindDeferredThumbnail(view, key);
-            return;
-        }
         safeGlideClear(view);
         view.setTag(key);
         try {
@@ -211,25 +204,6 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             ml.melun.mangaview.report.CrashReporter.record(e);
             view.setImageResource(R.drawable.app_cover_placeholder);
         }
-    }
-
-    @Override
-    public void setScrollBusy(boolean busy) {
-        scrollBusy = busy;
-    }
-
-    @Override
-    public void onScrollIdle(RecyclerView recyclerView) {
-        RecyclerPerformance.refreshVisibleRange(recyclerView, this, 8);
-    }
-
-    private void bindDeferredThumbnail(ImageView view, String targetKey) {
-        String key = "deferred:" + targetKey;
-        if(key.equals(view.getTag()))
-            return;
-        safeGlideClear(view);
-        view.setTag(key);
-        view.setImageResource(R.drawable.app_cover_placeholder);
     }
 
     private void bindEmptyThumbnail(ImageView view, boolean placeholder) {

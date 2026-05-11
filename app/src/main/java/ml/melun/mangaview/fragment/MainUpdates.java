@@ -28,7 +28,6 @@ import ml.melun.mangaview.mangaview.UpdatedManga;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.state.UiState;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
-import ml.melun.mangaview.ui.RecyclerPerformance;
 import ml.melun.mangaview.viewmodel.UpdatesViewModel;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -57,8 +56,10 @@ public class MainUpdates extends Fragment {
         emptyMessage = root.findViewById(R.id.updates_empty_message);
 
         recyclerView.setLayoutManager(new NpaLinearLayoutManager(getContext()));
-        RecyclerPerformance.tune(recyclerView, 20);
-        RecyclerPerformance.bindImageRequestPausing(recyclerView);
+        recyclerView.setHasFixedSize(true);
+        recyclerView.setItemViewCacheSize(20);
+        recyclerView.setItemAnimator(null);
+        recyclerView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         recyclerView.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
             public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {

@@ -307,8 +307,6 @@ public class ViewerActivity extends AppCompatActivity {
                     PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
                     if(stripAdapter != null)
                         stripAdapter.setScrollBusy(newState != RecyclerView.SCROLL_STATE_IDLE);
-                    if(stripAdapter != null && newState == RecyclerView.SCROLL_STATE_IDLE)
-                        stripAdapter.onScrollIdle(recyclerView);
                     if(strip.getLayoutManager().getItemCount()>0 && newState == RecyclerView.SCROLL_STATE_DRAGGING && toolbarshow) {
                         toggleToolbar();
                     }
@@ -327,10 +325,8 @@ public class ViewerActivity extends AppCompatActivity {
                 @Override
                 public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
                     super.onScrolled(recyclerView, dx, dy);
-                    if(recyclerView.getScrollState() != RecyclerView.SCROLL_STATE_SETTLING) {
-                        loadEpisodeAtBoundaryIfNeededThrottled();
-                        scheduleScrollBookmarkSave();
-                    }
+                    loadEpisodeAtBoundaryIfNeededThrottled();
+                    scheduleScrollBookmarkSave();
                 }
             });
             strip.addOnItemTouchListener(new RecyclerView.SimpleOnItemTouchListener() {

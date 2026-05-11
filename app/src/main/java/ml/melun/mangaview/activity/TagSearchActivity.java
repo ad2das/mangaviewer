@@ -32,7 +32,6 @@ import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayoutDirec
 import java.util.ArrayList;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
-import ml.melun.mangaview.ui.RecyclerPerformance;
 import ml.melun.mangaview.ui.StableScrollbarRecyclerView;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
@@ -129,8 +128,7 @@ public class TagSearchActivity extends AppCompatActivity {
         searchResult.setHasFixedSize(true);
         searchResult.setItemViewCacheSize(12);
         searchResult.setItemAnimator(null);
-        RecyclerPerformance.tune(searchResult, 14);
-        RecyclerPerformance.bindImageRequestPausing(searchResult);
+        searchResult.setOverScrollMode(View.OVER_SCROLL_NEVER);
         touchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
         searchResult.addOnItemTouchListener(new RecyclerView.SimpleOnItemTouchListener() {
             @Override

@@ -57,8 +57,6 @@ import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.PerfTrace;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
-import ml.melun.mangaview.ui.RecyclerPerformance;
-import ml.melun.mangaview.ui.SmoothScrollAdapter;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
@@ -66,7 +64,7 @@ import static ml.melun.mangaview.Utils.getGlideUrl;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
 
-public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> implements SmoothScrollAdapter {
+public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     private static final int HERO = 21;
     private static final int HOME_SECTION = 22;
     private static final int GROUP = 23;
@@ -126,7 +124,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private float anchorDownX;
     private float anchorDownY;
     private boolean anchorTouchMoved;
-    private boolean scrollBusy = false;
 
     public interface FetchStateListener {
         void onFetchFinished(int baseMode, boolean success);
@@ -1105,18 +1102,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         Glide.with(thumbView).clear(thumbView);
         thumbView.setTag(key);
         thumbView.setImageResource(resId);
-    }
-
-    @Override
-    public void setScrollBusy(boolean busy) {
-        scrollBusy = busy;
-    }
-
-    @Override
-    public void onScrollIdle(RecyclerView recyclerView) {
-        applyPendingRows();
-        RecyclerPerformance.refreshVisibleRange(recyclerView, this, 4);
-        preloadThumbnails(dataSet);
     }
 
     class HeroHolder extends RecyclerView.ViewHolder {
