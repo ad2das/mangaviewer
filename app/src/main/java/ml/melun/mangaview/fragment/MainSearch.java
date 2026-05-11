@@ -63,9 +63,10 @@ public class MainSearch extends Fragment {
     private static final String ARG_LIBRARY_MODE = "libraryMode";
     SwipyRefreshLayout swipe;
     FloatingActionButton advSearchBtn;
-    TextView noresult;
+    View noresult;
+    TextView noResultText;
     private EditText searchBox;
-    TextView searchSubmitButton;
+    View searchSubmitButton;
     RecyclerView searchResult;
     Spinner searchMode, baseMode;
     TitleAdapter searchAdapter;
@@ -135,6 +136,7 @@ public class MainSearch extends Fragment {
 
         //search content
         noresult = rootView.findViewById(R.id.noResult);
+        noResultText = rootView.findViewById(R.id.noResultText);
         searchBox = rootView.findViewById(R.id.searchBox);
         searchSubmitButton = rootView.findViewById(R.id.searchSubmitButton);
         searchResult = rootView.findViewById(R.id.searchResult);
@@ -242,7 +244,7 @@ public class MainSearch extends Fragment {
                 libraryMeta.setVisibility(View.GONE);
             if(optionsPanel != null)
                 optionsPanel.setVisibility(View.VISIBLE);
-            noresult.setText("검색어를 입력하면 작품을 찾아드립니다");
+            noResultText.setText("검색어를 입력하면 작품을 찾아드립니다");
             noresult.setVisibility(View.VISIBLE);
         }
         if(p.getDarkTheme()){
@@ -546,7 +548,7 @@ public class MainSearch extends Fragment {
             swipe.setRefreshing(false);
         if(libraryCount != null)
             libraryCount.setText(data.size() + "개 작품");
-        noresult.setText(emptyMessage);
+        noResultText.setText(emptyMessage);
         noresult.setVisibility(data.size() == 0 ? View.VISIBLE : View.GONE);
         searchAdapter.setClickListener(new TitleAdapter.ItemClickListener() {
             @Override
@@ -1330,7 +1332,7 @@ public class MainSearch extends Fragment {
                 if(replaceResults && searchFirstStartedAt > 0)
                     PerfTrace.end("search_first_result_ms", searchFirstStartedAt);
             }else{
-                noresult.setText("\"" + targetSearch.getQuery() + "\" 검색 결과가 없습니다");
+                noResultText.setText("\"" + targetSearch.getQuery() + "\" 검색 결과가 없습니다");
                 noresult.setVisibility(View.VISIBLE);
             }
 

@@ -17,7 +17,6 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import com.google.android.material.button.MaterialButton;
-import com.google.android.material.tabs.TabLayout;
 
 import androidx.annotation.NonNull;
 import androidx.core.content.ContextCompat;
@@ -1129,7 +1128,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         TextView title;
         TextView badge;
         TextView meta;
-        TabLayout dots;
+        LinearLayout dots;
         MaterialButton readButton;
         float downX;
         float downY;
@@ -1267,7 +1266,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         private void bindHeroDots(HeroRow row) {
-            dots.removeAllTabs();
+            dots.removeAllViews();
             if(row == null || row.titles == null || row.titles.size() <= 1) {
                 dots.setVisibility(View.GONE);
                 return;
@@ -1276,10 +1275,17 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             int count = Math.min(5, row.titles.size());
             int selected = row.index % count;
             for(int i = 0; i < count; i++) {
-                dots.addTab(dots.newTab(), false);
+                ImageView dot = new ImageView(context);
+                boolean isActive = (i == selected);
+                dot.setImageResource(isActive ? R.drawable.dot_active : R.drawable.dot_inactive);
+                int size = isActive ? dp(10) : dp(6);
+                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(size, size);
+                if(i > 0) {
+                    params.leftMargin = dp(8);
+                }
+                dot.setLayoutParams(params);
+                dots.addView(dot);
             }
-            TabLayout.Tab selectedTab = dots.getTabAt(selected);
-            if(selectedTab != null) selectedTab.select();
         }
     }
 
