@@ -32,6 +32,28 @@
                 app:layout_constraintBottom_toBottomOf="parent"
                 app:layout_constraintStart_toStartOf="parent"
                 app:layout_constraintTop_toTopOf="parent" />
+
+            <TextView
+                android:id="@+id/ThumbStatusBadge"
+                android:layout_width="wrap_content"
+                android:layout_height="18dp"
+                android:layout_marginStart="4dp"
+                android:layout_marginTop="4dp"
+                android:background="@drawable/app_thumb_badge_ongoing_bg"
+                android:ellipsize="end"
+                android:gravity="center"
+                android:includeFontPadding="false"
+                android:maxLines="1"
+                android:paddingStart="5dp"
+                android:paddingEnd="5dp"
+                android:textColor="@color/appCard"
+                android:textSize="10sp"
+                android:textStyle="bold"
+                android:visibility="gone"
+                app:layout_constraintStart_toStartOf="@id/Thumb"
+                app:layout_constraintTop_toTopOf="@id/Thumb"
+                tools:text="연재"
+                tools:visibility="visible" />
             <ImageView
                 android:id="@+id/seenIcon"
                 android:layout_width="18dp"

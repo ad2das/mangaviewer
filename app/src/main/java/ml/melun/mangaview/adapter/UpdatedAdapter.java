@@ -145,6 +145,25 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         else
             h.fav.setVisibility(View.GONE);
 
+        Title t = m.getTitle();
+        if(t != null) {
+            String statusLabel = t.getNtkStatusLabel();
+            if(statusLabel != null && statusLabel.length() > 0) {
+                h.thumbStatusBadge.setVisibility(View.VISIBLE);
+                if("연재".equals(statusLabel)) {
+                    h.thumbStatusBadge.setBackgroundResource(R.drawable.app_thumb_badge_ongoing_bg);
+                    h.thumbStatusBadge.setText("연재");
+                } else {
+                    h.thumbStatusBadge.setBackgroundResource(R.drawable.app_thumb_badge_completed_bg);
+                    h.thumbStatusBadge.setText("완결");
+                }
+            } else {
+                h.thumbStatusBadge.setVisibility(View.GONE);
+            }
+        } else {
+            h.thumbStatusBadge.setVisibility(View.GONE);
+        }
+
         StringBuilder tags = new StringBuilder();
         List<String> tagList = m.getTag();
         if(tagList != null) {
@@ -173,6 +192,7 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         ImageButton viewEps;
         TextView author;
         TextView tags;
+        TextView thumbStatusBadge;
         View tagContainer;
 
         public viewHolder(View itemView) {
@@ -186,6 +206,7 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             fav = itemView.findViewById(R.id.favIcon);
             author =itemView.findViewById(R.id.TitleAuthor);
             tags = itemView.findViewById(R.id.TitleTag);
+            thumbStatusBadge = itemView.findViewById(R.id.ThumbStatusBadge);
             tagContainer = itemView.findViewById(R.id.TitleTagContainer);
             if(dark){
                 card.setBackgroundColor(ContextCompat.getColor(context, R.color.colorDarkBackground));
