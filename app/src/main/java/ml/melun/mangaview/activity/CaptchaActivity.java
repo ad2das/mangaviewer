@@ -58,6 +58,23 @@ public class CaptchaActivity extends AppCompatActivity {
             "Element.prototype.attachShadow=function(i){" +
             "var s=o.call(this,i);" +
             "this.__sr=s;" +
+            "try{" +
+            "var mo=new MutationObserver(function(ms){" +
+            "ms.forEach(function(m){" +
+            "m.addedNodes.forEach(function(n){" +
+            "if(n.tagName==='INPUT'&&n.type==='checkbox'){" +
+            "try{n.focus();" +
+            "var e1=new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerType:'touch',isPrimary:true,width:20,height:20,pressure:0.5});" +
+            "var e2=new PointerEvent('pointerup',{bubbles:true,cancelable:true,pointerType:'touch',isPrimary:true,width:20,height:20,pressure:0});" +
+            "n.dispatchEvent(e1);n.dispatchEvent(e2);" +
+            "}catch(ex){}" +
+            "console.log('__TURNSTILE_CB__');" +
+            "}" +
+            "});" +
+            "});" +
+            "});" +
+            "mo.observe(s,{childList:true,subtree:true});" +
+            "}catch(e){}" +
             "return s;" +
             "};" +
             "})();";
@@ -199,7 +216,12 @@ public class CaptchaActivity extends AppCompatActivity {
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public boolean onConsoleMessage(android.webkit.ConsoleMessage consoleMessage) {
-                android.util.Log.d("CaptchaActivity", "JS Console [" + consoleMessage.sourceId() + ":" + consoleMessage.lineNumber() + "] " + consoleMessage.message());
+                String msg = consoleMessage.message();
+                android.util.Log.d("CaptchaActivity", "JS Console [" + consoleMessage.sourceId() + ":" + consoleMessage.lineNumber() + "] " + msg);
+                if(msg != null && msg.contains("__TURNSTILE_CB__")) {
+                    android.util.Log.d("CaptchaActivity", "Turnstile checkbox detected via MutationObserver - triggering click");
+                    handler.post(() -> attemptTurnstileClick());
+                }
                 return true;
             }
 
