@@ -277,7 +277,7 @@ public class MainPageWebtoonTest {
     public void ntkWebtoonGenreFiltersExposeFullGenreList() {
         String[] genres = MainPageWebtoon.NTK_WEBTOON_FILTER_GROUPS[1];
 
-        assertEquals(53, genres.length);
+        assertEquals(24, genres.length);
         assertTrue(containsFilterPathPart(genres, "성인", "ongoing=%2Fing%3Fcat%3Dadult"));
         assertTrue(containsFilterPathPart(genres, "성인", "completed=%2Fend%3Ftag%3D16"));
         assertTrue(containsFilterPathPart(genres, "액션", "ongoing=%2Fing%3Ftag%3D2"));
@@ -289,8 +289,10 @@ public class MainPageWebtoonTest {
         assertTrue(containsFilterPathPart(genres, "순정", "ongoing=%2Fing%3Ftag%3D%25EC%2588%259C%25EC%25A0%2595"));
         assertTrue(containsFilterPathPart(genres, "스릴러", "ongoing=%2Fing%3Ftag%3D%25EC%258A%25A4%25EB%25A6%25B4%25EB%259F%25AC"));
         assertTrue(containsFilterPathPart(genres, "기타", "ongoing=%2Fing%3Ftag%3D99"));
-        assertTrue(containsFilterPathPart(genres, "현대판타", "completed=%2Fend%3Ftag%3D105"));
-        assertTrue(containsFilterPathPart(genres, "관계역전", "completed=%2Fend%3Ftag%3D128"));
+        assertTrue(!containsLabel(genres, "노벨피아"));
+        assertTrue(!containsLabel(genres, "마법소녀"));
+        assertTrue(!containsLabel(genres, "현대판타"));
+        assertTrue(!containsLabel(genres, "관계역전"));
     }
 
     @Test
