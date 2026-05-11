@@ -9,14 +9,18 @@
     android:paddingTop="5dp"
     android:paddingBottom="5dp">
 
-    <androidx.cardview.widget.CardView
+    <com.google.android.material.card.MaterialCardView
         android:id="@+id/titleCard"
         android:layout_width="match_parent"
         android:layout_height="172dp"
-        android:foreground="?android:attr/selectableItemBackground"
+        android:clickable="true"
+        android:focusable="true"
         app:cardBackgroundColor="@color/appCard"
         app:cardCornerRadius="16dp"
-        app:cardElevation="3dp">
+        app:cardElevation="3dp"
+        app:rippleColor="@color/appAccentLight"
+        app:strokeColor="@color/appDivider"
+        app:strokeWidth="1dp">
 
         <androidx.constraintlayout.widget.ConstraintLayout
             android:id="@+id/titleContent"
@@ -56,8 +60,8 @@
                 app:autoSizeStepGranularity="1sp"
                 app:autoSizeTextType="uniform"
                 app:layout_constraintEnd_toStartOf="@+id/epsButton"
-                app:layout_constraintStart_toEndOf="@+id/thumbCard"
-                app:layout_constraintTop_toTopOf="@+id/thumbCard"
+                app:layout_constraintStart_toEndOf="@id/Thumb"
+                app:layout_constraintTop_toTopOf="@id/Thumb"
                 tools:text="Solo Leveling" />
 
             <TextView
@@ -72,7 +76,7 @@
                 android:maxLines="1"
                 android:textColor="@color/appTextSecondary"
                 app:layout_constraintEnd_toStartOf="@+id/epsButton"
-                app:layout_constraintStart_toEndOf="@+id/thumbCard"
+                app:layout_constraintStart_toEndOf="@id/Thumb"
                 app:layout_constraintTop_toBottomOf="@+id/Title"
                 tools:text="Episode 179" />
 
@@ -88,7 +92,7 @@
                 android:visibility="gone"
                 app:layout_constraintBottom_toBottomOf="@+id/TitleProgressText"
                 app:layout_constraintEnd_toStartOf="@+id/TitleProgressText"
-                app:layout_constraintStart_toEndOf="@+id/thumbCard"
+                app:layout_constraintStart_toEndOf="@id/Thumb"
                 app:layout_constraintTop_toTopOf="@+id/TitleProgressText" />
 
             <TextView
@@ -101,7 +105,7 @@
                 android:textColor="@color/appTextSecondary"
                 android:textStyle="bold"
                 android:visibility="gone"
-                app:layout_constraintBottom_toBottomOf="@+id/thumbCard"
+                app:layout_constraintBottom_toBottomOf="@id/Thumb"
                 app:layout_constraintEnd_toStartOf="@+id/epsButton"
                 app:layout_constraintTop_toBottomOf="@+id/TitleTagContainer"
                 app:layout_constraintVertical_bias="1"
@@ -174,7 +178,7 @@
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
                 app:layout_constraintEnd_toStartOf="@+id/epsButton"
-                app:layout_constraintStart_toEndOf="@+id/thumbCard"
+                app:layout_constraintStart_toEndOf="@id/Thumb"
                 app:layout_constraintTop_toBottomOf="@+id/TitleAuthor"
                 app:layout_constraintBottom_toTopOf="@+id/TitleProgress"
                 app:layout_constraintVertical_bias="0">
@@ -213,6 +217,6 @@
 
         </androidx.constraintlayout.widget.ConstraintLayout>
 
-    </androidx.cardview.widget.CardView>
+    </com.google.android.material.card.MaterialCardView>
 
 </FrameLayout>

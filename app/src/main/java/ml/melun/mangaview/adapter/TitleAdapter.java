@@ -604,7 +604,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             tags = itemView.findViewById(R.id.TitleTag);
             card = itemView.findViewById(R.id.titleCard);
             content = itemView.findViewById(R.id.titleContent);
-            thumbCard = itemView.findViewById(R.id.thumbCard);
+            thumbCard = itemView.findViewById(R.id.Thumb);
             resume = itemView.findViewById(R.id.epsButton);
             resumeSiteIcon = itemView.findViewById(R.id.TitleResumeSiteIcon);
             recommend_c = itemView.findViewById(R.id.TitleRecommend_c);

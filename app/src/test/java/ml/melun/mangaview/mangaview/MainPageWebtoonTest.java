@@ -271,8 +271,8 @@ public class MainPageWebtoonTest {
 
     @Test
     public void ntkWebtoonGenreFiltersExposeFullGenreList() {
-        String[] genres = MainPageWebtoon.NTK_WEBTOON_FILTER_GROUPS[2];
-        String[] completedGenres = MainPageWebtoon.NTK_WEBTOON_FILTER_GROUPS[3];
+        String[] genres = MainPageWebtoon.NTK_WEBTOON_FILTER_GROUPS[1];
+        String[] completedGenres = MainPageWebtoon.NTK_WEBTOON_FILTER_GROUPS[2];
 
         assertEquals(24, genres.length);
         assertEquals(53, completedGenres.length);

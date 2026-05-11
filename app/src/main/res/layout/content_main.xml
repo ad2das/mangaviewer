@@ -53,42 +53,47 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@+id/homeTitle" />
 
-    <androidx.appcompat.widget.LinearLayoutCompat
+    <com.google.android.material.button.MaterialButtonToggleGroup
         android:id="@+id/mainModeToggle"
         android:layout_width="match_parent"
         android:layout_height="40dp"
         android:layout_marginStart="20dp"
         android:layout_marginTop="18dp"
         android:layout_marginEnd="20dp"
-        android:background="@drawable/app_outline_button_bg"
-        android:gravity="center"
-        android:orientation="horizontal"
-        android:padding="4dp"
+        app:checkedButton="@id/modeWebtoon"
+        app:selectionRequired="true"
+        app:singleSelection="true"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@+id/homeSubtitle">
 
-        <TextView
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/modeWebtoon"
+            style="?attr/materialButtonOutlinedStyle"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
-            android:gravity="center"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
             android:text="@string/mode_webtoon"
             android:textSize="13sp"
-            android:textStyle="bold" />
+            android:textStyle="bold"
+            app:cornerRadius="8dp" />
 
-        <TextView
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/modeComic"
+            style="?attr/materialButtonOutlinedStyle"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
-            android:gravity="center"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
             android:text="@string/mode_comic"
             android:textSize="13sp"
-            android:textStyle="bold" />
+            android:textStyle="bold"
+            app:cornerRadius="8dp" />
 
-    </androidx.appcompat.widget.LinearLayoutCompat>
+    </com.google.android.material.button.MaterialButtonToggleGroup>
 
     <com.google.android.material.tabs.TabLayout
         android:background="@color/appSurface"
@@ -115,6 +120,7 @@
         android:paddingBottom="26dp"
         android:layout_height="0dp"
         android:layout_width="match_parent"
+        android:layoutAnimation="@anim/layout_animation_slide_up"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
@@ -129,6 +135,7 @@
         android:layout_height="0dp"
         android:layout_width="match_parent"
         android:alpha="0"
+        android:layoutAnimation="@anim/layout_animation_slide_up"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"

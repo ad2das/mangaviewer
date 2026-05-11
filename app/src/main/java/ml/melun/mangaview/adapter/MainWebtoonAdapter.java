@@ -103,7 +103,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private static final int PRELOAD_THUMB_MAX_PER_FETCH = 24;
     private static final int SECTION_BATCH_SIZE = 4;
     private static final int FIRST_SCREEN_BATCH_SIZE = 1;
-    private static final String HOME_CACHE_KEY_PREFIX = "homeSnapshotV1_";
+    private static final String HOME_CACHE_KEY_PREFIX = "homeSnapshotV3_";
     private static final int HOME_CACHE_MAX_SECTIONS = 6;
     private static final int HOME_CACHE_MAX_TITLES_PER_SECTION = 10;
     private static final Executor ROW_DIFF_EXECUTOR = AppDispatchers.uiDiff();
@@ -2455,10 +2455,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(!ntk || baseMode != base_webtoon || section == null || section.length < 2)
                 return true;
             String path = section[1];
-            return "/ing".equals(path)
-                    || "/end".equals(path)
-                    || "/ing?sort=hot".equals(path)
-                    || "/end?sort=hot".equals(path);
+            return path.startsWith("/ing") || path.startsWith("/end");
         }
 
         private void postProgress(SectionBatch batch) {

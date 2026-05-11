@@ -361,11 +361,6 @@ public class MainPageWebtoon {
         ArrayList<String[]> sections = new ArrayList<>();
         sections.add(section("연재웹툰", "인기순", "/ing?sort=hot"));
         sections.add(section("연재웹툰", "신작", "/ing"));
-        sections.add(section("연재웹툰", "월", "/ing?day=%EC%9B%94"));
-        sections.add(section("연재웹툰", "화", "/ing?day=%ED%99%94"));
-        sections.add(section("연재웹툰", "수", "/ing?day=%EC%88%98"));
-        sections.add(section("연재웹툰", "목", "/ing?day=%EB%AA%A9"));
-        sections.add(section("연재웹툰", "금", "/ing?day=%EA%B8%88"));
         sections.add(section("완결웹툰", "인기순", "/end?sort=hot"));
         sections.add(section("완결웹툰", "최신", "/end"));
         for(String[] genre : NTK_WEBTOON_ING_GENRES)
@@ -444,15 +439,6 @@ public class MainPageWebtoon {
                 filter("정렬", "연재 신작", "/ing"),
                 filter("정렬", "완결 인기순", "/end?sort=hot"),
                 filter("정렬", "완결 최신순", "/end")
-        });
-        groups.add(new String[]{
-                filter("연재 요일별", "월", "/ing?day=%EC%9B%94"),
-                filter("연재 요일별", "화", "/ing?day=%ED%99%94"),
-                filter("연재 요일별", "수", "/ing?day=%EC%88%98"),
-                filter("연재 요일별", "목", "/ing?day=%EB%AA%A9"),
-                filter("연재 요일별", "금", "/ing?day=%EA%B8%88"),
-                filter("연재 요일별", "토", "/ing?day=%ED%86%A0"),
-                filter("연재 요일별", "일", "/ing?day=%EC%9D%BC")
         });
         ArrayList<String> ingGenres = new ArrayList<>();
         for(String[] genre : NTK_WEBTOON_ING_GENRES)

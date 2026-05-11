@@ -120,16 +120,20 @@
 
     </androidx.constraintlayout.widget.ConstraintLayout>
 
-    <TextView
+    <com.google.android.material.tabs.TabLayout
         android:id="@+id/hero_dots"
         android:layout_width="wrap_content"
         android:layout_height="18dp"
-        android:gravity="center"
-        android:textColor="@color/appAccent"
-        android:textSize="11sp"
+        android:background="@android:color/transparent"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        tools:text="●  ○  ○  ○" />
+        app:tabBackground="@drawable/selector_dot"
+        app:tabGravity="center"
+        app:tabIndicatorHeight="0dp"
+        app:tabMinWidth="12dp"
+        app:tabPaddingEnd="4dp"
+        app:tabPaddingStart="4dp"
+        app:tabRippleColor="@null" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

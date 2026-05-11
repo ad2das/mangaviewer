@@ -4,7 +4,7 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_height="match_parent"
     android:layout_width="match_parent"
-    android:background="@color/appSurface"
+    android:background="@color/appCard"
     android:visibility="visible">
 
     <ImageButton
@@ -15,6 +15,7 @@
         android:background="@drawable/viewer_nav_button_bg"
             android:contentDescription="@string/next_episode"
         android:elevation="3dp"
+        android:foreground="?attr/selectableItemBackgroundBorderless"
         android:padding="10dp"
         android:scaleType="centerInside"
         app:layout_constraintBottom_toBottomOf="parent"
@@ -31,6 +32,7 @@
         android:background="@drawable/viewer_episode_button_bg"
             android:contentDescription="@string/select_episode"
         android:elevation="3dp"
+        android:foreground="?attr/selectableItemBackgroundBorderless"
         android:paddingStart="8dp"
         android:paddingEnd="8dp"
         android:scaleType="centerInside"
@@ -49,6 +51,7 @@
         android:background="@drawable/viewer_nav_button_bg"
             android:contentDescription="@string/previous_episode"
         android:elevation="3dp"
+        android:foreground="?attr/selectableItemBackgroundBorderless"
         android:padding="10dp"
         android:scaleType="centerInside"
         app:layout_constraintBottom_toBottomOf="parent"

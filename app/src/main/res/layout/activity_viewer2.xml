@@ -77,7 +77,6 @@
         app:layout_constraintTop_toTopOf="parent" />
 
     <com.google.android.material.appbar.AppBarLayout
-        android:alpha="0.94"
         android:id="@+id/viewerAppbar"
         android:layout_height="wrap_content"
         android:layout_width="match_parent"
@@ -102,7 +101,6 @@
     </com.google.android.material.appbar.AppBarLayout>
 
     <com.google.android.material.appbar.AppBarLayout
-        android:alpha="0.94"
         android:id="@+id/viewerAppbarBottom"
         android:layout_gravity="bottom"
         android:layout_height="wrap_content"
