@@ -69,6 +69,7 @@ public class CustomHttpClient {
     }
     private final Object wfwfDomainLock = new Object();
     private DomainResolveState wfwfDomainResolveState;
+    private DomainResolveState ntkDomainResolveState;
     private long wfwfDomainLastForcedRetry = 0;
     private Context context;
     public String agent = "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36";
@@ -536,6 +537,8 @@ public class CustomHttpClient {
     }
 
     public boolean resolveWfwfDomainNow() {
+        if(isNtk())
+            return false;
         return ensureNumberedDomain(true);
     }
 
@@ -550,6 +553,8 @@ public class CustomHttpClient {
     }
 
     private boolean ensureNumberedDomain(boolean force) {
+        if(isNtk())
+            return force && ensureNtkDomain();
         try {
             String webtoonUrl = getWebtoonUrl();
             String root = WfwfDomainResolver.toRoot(webtoonUrl);
@@ -596,6 +601,52 @@ public class CustomHttpClient {
                     resolveState.changed = changed;
                     if(wfwfDomainResolveState == resolveState)
                         wfwfDomainResolveState = null;
+                }
+                resolveState.done.countDown();
+            }
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return false;
+        }
+    }
+
+    private boolean ensureNtkDomain() {
+        try {
+            String currentRoot = WfwfDomainResolver.toRoot(getWebtoonUrl());
+            if(!isNtkUrl(currentRoot))
+                return false;
+
+            DomainResolveState resolveState;
+            boolean shouldResolve = false;
+            synchronized (wfwfDomainLock) {
+                if(ntkDomainResolveState == null) {
+                    ntkDomainResolveState = new DomainResolveState();
+                    shouldResolve = true;
+                }
+                resolveState = ntkDomainResolveState;
+            }
+
+            if(!shouldResolve)
+                return waitForWfwfDomainResolve(resolveState);
+
+            boolean changed = false;
+            try {
+                Map<String, String> headers = new HashMap<>();
+                headers.put("User-Agent", agent);
+                headers.put("Referer", NtkDomainResolver.CHANNEL_URL);
+                String resolved = NtkDomainResolver.resolve(client, headers, currentRequestGroup.get());
+                if(resolved != null && isNtkUrl(resolved) && !resolved.equals(currentRoot)) {
+                    p.setNtkSitePreset(resolved);
+                    resetCookie();
+                    clearPageCache();
+                    changed = true;
+                }
+                return changed;
+            } finally {
+                synchronized (wfwfDomainLock) {
+                    resolveState.changed = changed;
+                    if(ntkDomainResolveState == resolveState)
+                        ntkDomainResolveState = null;
                 }
                 resolveState.done.countDown();
             }
@@ -756,8 +807,11 @@ public class CustomHttpClient {
             return false;
         String lower = url.toLowerCase(Locale.ROOT);
         return lower.contains("://ntk")
+                || lower.contains("://newtoki")
                 || lower.contains("://" + NTK_HOST)
-                || lower.contains("://www." + NTK_HOST);
+                || lower.contains("://www." + NTK_HOST)
+                || lower.contains("://sbxh")
+                || lower.contains("://www.sbxh");
     }
 
     private boolean isWebtoonPath(String path){
@@ -899,6 +953,8 @@ public class CustomHttpClient {
         if(response == null)
             return true;
         int code = response.code();
+        if(isNtk())
+            return code == 301 || code == 302 || code == 404 || code >= 500;
         return code == 301 || code == 302 || code == 403 || code == 404 || code >= 500;
     }
 

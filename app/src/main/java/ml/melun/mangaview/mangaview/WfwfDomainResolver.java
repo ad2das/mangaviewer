@@ -113,7 +113,7 @@ public class WfwfDomainResolver {
     }
 
     private static boolean isAlive(OkHttpClient client, String root, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup) {
-        boolean ntk = root != null && (root.contains("://ntk") || root.contains("://sbxh1.com") || root.contains("://www.sbxh1.com"));
+        boolean ntk = root != null && (root.contains("://ntk") || root.contains("://newtoki") || root.contains("://sbxh") || root.contains("://www.sbxh"));
         String comicPath = ntk ? "/manhwa" : "/cm";
         return probe(client, root + "/ing", headers, requestGroup) || probe(client, root + comicPath, headers, requestGroup);
     }

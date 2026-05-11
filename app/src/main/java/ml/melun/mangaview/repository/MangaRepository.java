@@ -176,10 +176,13 @@ public final class MangaRepository {
                 if(result == null)
                     return new UrlUpdateResult(false, "");
                 String resolvedRoot = WfwfDomainResolver.toRoot(result);
-                p.setWebtoonUrl(resolvedRoot);
-                String comicPath = isNtkRoot(resolvedRoot) ? "/manhwa" : "/cm";
-                p.setDefUrl(resolvedRoot + comicPath);
-                p.setUrl(resolvedRoot + comicPath);
+                if(isNtkRoot(resolvedRoot)) {
+                    p.setNtkSitePreset(resolvedRoot);
+                } else {
+                    p.setWebtoonUrl(resolvedRoot);
+                    p.setDefUrl(resolvedRoot + "/cm");
+                    p.setUrl(resolvedRoot + "/cm");
+                }
                 getHttpClient().resetCookie();
                 getHttpClient().clearPageCache();
                 return new UrlUpdateResult(true, result);
@@ -209,7 +212,10 @@ public final class MangaRepository {
         if(root == null)
             return false;
         String lower = root.toLowerCase();
-        return lower.contains("://ntk") || lower.contains("://sbxh1.com") || lower.contains("://www.sbxh1.com");
+        return lower.contains("://ntk")
+                || lower.contains("://newtoki")
+                || lower.contains("://sbxh")
+                || lower.contains("://www.sbxh");
     }
 
     @SuppressWarnings("unchecked")

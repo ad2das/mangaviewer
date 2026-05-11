@@ -46,6 +46,7 @@ public class Preference {
     int startTab;
     String url;
     String webtoonUrl;
+    String ntkResolvedRoot;
     boolean stretch;
     boolean leftRight;
     String defUrl;
@@ -174,9 +175,10 @@ public class Preference {
             pageRtl = sharedPref.getBoolean("pageRtl",false);
             dataSave = sharedPref.getBoolean("dataSave", false);
             startTab = sharedPref.getInt("startTab", 0);
-            defUrl = normalizeComicUrl(sharedPref.getString("defUrl", DEFAULT_COMIC_URL));
-            url = normalizeComicUrl(sharedPref.getString("url", DEFAULT_COMIC_URL));
-            webtoonUrl = normalizeWebtoonUrl(sharedPref.getString("webtoonUrl", WEBTOON_URL));
+            ntkResolvedRoot = normalizeNtkRoot(sharedPref.getString("ntkResolvedRoot", NTK_WEBTOON_URL));
+            defUrl = normalizeComicUrl(sharedPref.getString("defUrl", DEFAULT_COMIC_URL), ntkResolvedRoot);
+            url = normalizeComicUrl(sharedPref.getString("url", DEFAULT_COMIC_URL), ntkResolvedRoot);
+            webtoonUrl = normalizeWebtoonUrl(sharedPref.getString("webtoonUrl", WEBTOON_URL), ntkResolvedRoot);
             stretch = sharedPref.getBoolean("stretch", false);
             leftRight = sharedPref.getBoolean("leftRight", false);
             autoUrl = false;
@@ -187,6 +189,7 @@ public class Preference {
             prefsEditor.putString("defUrl", defUrl)
                     .putString("url", url)
                     .putString("webtoonUrl", webtoonUrl)
+                    .putString("ntkResolvedRoot", ntkResolvedRoot)
                     .putBoolean("autoUrl", false)
                     .remove("login")
                     .remove("notice")
@@ -356,18 +359,21 @@ public class Preference {
     }
 
     private static String normalizeComicUrl(String sourceUrl) {
+        return normalizeComicUrl(sourceUrl, NTK_WEBTOON_URL);
+    }
+
+    private static String normalizeComicUrl(String sourceUrl, String ntkRootFallback) {
         if(sourceUrl == null || sourceUrl.trim().length() == 0)
             return DEFAULT_COMIC_URL;
         String normalized = normalizeHttpUrl(sourceUrl.trim(), DEFAULT_COMIC_URL);
         while(normalized.endsWith("/"))
             normalized = normalized.substring(0, normalized.length() - 1);
         if(isNtkLikeUrl(normalized)) {
-            if(!normalized.toLowerCase().contains("sbxh1.com"))
-                return NTK_COMIC_URL;
-            if(normalized.endsWith("/cm") || normalized.endsWith("/manhwa") || normalized.equals(ntkRoot(normalized)))
-                return NTK_COMIC_URL;
-            if(normalized.equals(NTK_WEBTOON_URL))
-                return NTK_COMIC_URL;
+            String root = ntkRoot(normalized);
+            if(root.length() == 0)
+                root = normalizeNtkRoot(ntkRootFallback);
+            if(normalized.endsWith("/cm") || normalized.endsWith("/manhwa") || normalized.equals(root))
+                return root + "/manhwa";
         }
         if(normalized.contains("manatoki"))
             return DEFAULT_COMIC_URL;
@@ -377,18 +383,23 @@ public class Preference {
     }
 
     private static String normalizeWebtoonUrl(String sourceUrl) {
+        return normalizeWebtoonUrl(sourceUrl, NTK_WEBTOON_URL);
+    }
+
+    private static String normalizeWebtoonUrl(String sourceUrl, String ntkRootFallback) {
         if(sourceUrl == null || sourceUrl.trim().length() == 0)
             return WEBTOON_URL;
         String normalized = normalizeHttpUrl(sourceUrl.trim(), WEBTOON_URL);
         while(normalized.endsWith("/"))
             normalized = normalized.substring(0, normalized.length() - 1);
         if(isNtkLikeUrl(normalized)) {
-            if(!normalized.toLowerCase().contains("sbxh1.com"))
-                return NTK_WEBTOON_URL;
+            String root = ntkRoot(normalized);
+            if(root.length() == 0)
+                root = normalizeNtkRoot(ntkRootFallback);
             if(normalized.endsWith("/cm") || normalized.endsWith("/manhwa"))
-                return NTK_WEBTOON_URL;
-            if(normalized.equals(ntkRoot(normalized)))
-                return NTK_WEBTOON_URL;
+                return root;
+            if(normalized.equals(root))
+                return root;
         }
         if(normalized.contains("manatoki"))
             return WEBTOON_URL;
@@ -417,6 +428,7 @@ public class Preference {
         defUrl = DEFAULT_COMIC_URL;
         url = DEFAULT_COMIC_URL;
         webtoonUrl = WEBTOON_URL;
+        ntkResolvedRoot = NTK_WEBTOON_URL;
         autoUrl = false;
         return true;
     }
@@ -448,10 +460,21 @@ public class Preference {
             if(host == null)
                 return false;
             host = host.toLowerCase();
-            return host.startsWith("ntk") || "sbxh1.com".equals(host) || "www.sbxh1.com".equals(host);
+            if(host.startsWith("www."))
+                host = host.substring(4);
+            return host.startsWith("ntk")
+                    || host.startsWith("sbxh")
+                    || host.contains("newtoki")
+                    || "sbxh1.com".equals(host)
+                    || "www.sbxh1.com".equals(host);
         } catch (Exception e) {
             return false;
         }
+    }
+
+    private static String normalizeNtkRoot(String root) {
+        String normalized = ntkRoot(root == null ? "" : root);
+        return normalized.length() == 0 ? NTK_WEBTOON_URL : normalized;
     }
 
     private static String ntkRoot(String sourceUrl) {
@@ -542,7 +565,7 @@ public class Preference {
     }
 
     public void setUrl(String url) {
-        this.url = normalizeComicUrl(url);
+        this.url = normalizeComicUrl(url, ntkResolvedRoot);
         prefsEditor.putString("url", this.url);
         prefsEditor.apply();
         notifySync("settings");
@@ -553,22 +576,45 @@ public class Preference {
     }
 
     public void setWebtoonUrl(String webtoonUrl) {
-        this.webtoonUrl = normalizeWebtoonUrl(webtoonUrl);
+        this.webtoonUrl = normalizeWebtoonUrl(webtoonUrl, ntkResolvedRoot);
         prefsEditor.putString("webtoonUrl", this.webtoonUrl);
         prefsEditor.apply();
         notifySync("settings");
     }
 
     public void setSitePreset(String comicUrl, String webtoonUrl) {
-        this.defUrl = normalizeComicUrl(comicUrl);
+        if(isNtkLikeUrl(comicUrl) || isNtkLikeUrl(webtoonUrl)) {
+            String root = ntkRoot(webtoonUrl);
+            if(root.length() == 0)
+                root = ntkRoot(comicUrl);
+            setNtkSitePreset(root);
+            return;
+        }
+        this.defUrl = normalizeComicUrl(comicUrl, ntkResolvedRoot);
         this.url = this.defUrl;
-        this.webtoonUrl = normalizeWebtoonUrl(webtoonUrl);
+        this.webtoonUrl = normalizeWebtoonUrl(webtoonUrl, ntkResolvedRoot);
         prefsEditor.putString("defUrl", this.defUrl)
                 .putString("url", this.url)
                 .putString("webtoonUrl", this.webtoonUrl)
                 .putBoolean("autoUrl", false)
                 .apply();
         autoUrl = false;
+        notifySync("settings");
+    }
+
+    public void setNtkSitePreset(String rootUrl) {
+        String root = normalizeNtkRoot(rootUrl);
+        ntkResolvedRoot = root;
+        defUrl = root + "/manhwa";
+        url = defUrl;
+        webtoonUrl = root;
+        autoUrl = false;
+        prefsEditor.putString("ntkResolvedRoot", ntkResolvedRoot)
+                .putString("defUrl", defUrl)
+                .putString("url", url)
+                .putString("webtoonUrl", webtoonUrl)
+                .putBoolean("autoUrl", false)
+                .apply();
         notifySync("settings");
     }
 

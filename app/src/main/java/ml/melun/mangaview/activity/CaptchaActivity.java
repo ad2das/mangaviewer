@@ -103,7 +103,10 @@ public class CaptchaActivity extends AppCompatActivity {
             "})();";
     private long pageFinishedTime = 0;
     private long lastAttemptTime = 0;
-    private static final long MIN_ATTEMPT_INTERVAL_MS = 1800;
+    private static final long FIRST_CLICK_DELAY_MS = 0;
+    private static final long RETRY_MIN_MS = 1000;
+    private static final long RETRY_MAX_MS = 3000;
+    private boolean isFirstAttempt = true;
     private boolean isFinishing = false;
     private Set<String> initialClearanceValues = new HashSet<>();
     private int normalNtkPageCount = 0;
@@ -216,9 +219,10 @@ public class CaptchaActivity extends AppCompatActivity {
             @Nullable
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                String userAgent = request == null ? null : request.getRequestHeaders().get("User-Agent");
-                if(userAgent != null && userAgent.length() > 0)
-                    getHttpClient().setUserAgent(userAgent);
+                // Do NOT overwrite OkHttp UA with WebView UA here.
+                // WebView default UA contains "; wv)" which flags it as WebView to Cloudflare,
+                // causing Turnstile to trigger more aggressively.
+                // UA is already synchronized via setUserAgentString() during setup.
                 return super.shouldInterceptRequest(view, request);
             }
 
@@ -230,7 +234,8 @@ public class CaptchaActivity extends AppCompatActivity {
 
                 // Attempt click immediately when resources load (Turnstile iframe appears mid-load)
                 long now = System.currentTimeMillis();
-                if(pageFinishedTime > 0 && now - lastAttemptTime > MIN_ATTEMPT_INTERVAL_MS) {
+                long requiredInterval = isFirstAttempt ? FIRST_CLICK_DELAY_MS : (RETRY_MIN_MS + (long)(Math.random() * (RETRY_MAX_MS - RETRY_MIN_MS)));
+                if(pageFinishedTime > 0 && now - lastAttemptTime > requiredInterval) {
                     attemptTurnstileClick();
                 }
 
@@ -266,6 +271,7 @@ public class CaptchaActivity extends AppCompatActivity {
         if(turnstileAutoClickStarted)
             return;
         turnstileAutoClickStarted = true;
+        isFirstAttempt = true;
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
@@ -284,8 +290,9 @@ public class CaptchaActivity extends AppCompatActivity {
 
                 attemptTurnstileClick();
 
-                // Schedule next check
-                handler.postDelayed(this, TURNSTILE_CHECK_INTERVAL_MS);
+                // Schedule next check with random jitter for retries
+                long nextDelay = isFirstAttempt ? 0 : RETRY_MIN_MS + (long)(Math.random() * (RETRY_MAX_MS - RETRY_MIN_MS));
+                handler.postDelayed(this, nextDelay);
             }
         }, TURNSTILE_CHECK_DELAY_MS);
     }
@@ -294,7 +301,8 @@ public class CaptchaActivity extends AppCompatActivity {
         if(webView == null) return;
 
         long now = System.currentTimeMillis();
-        if(now - lastAttemptTime < MIN_ATTEMPT_INTERVAL_MS) return;
+        long requiredInterval = isFirstAttempt ? FIRST_CLICK_DELAY_MS : (RETRY_MIN_MS + (long)(Math.random() * (RETRY_MAX_MS - RETRY_MIN_MS)));
+        if(now - lastAttemptTime < requiredInterval) return;
         lastAttemptTime = now;
 
         webView.evaluateJavascript(TURNSTILE_AUTO_JS, result -> {
@@ -308,6 +316,7 @@ public class CaptchaActivity extends AppCompatActivity {
 
                 if("jsclick".equals(type)) {
                     android.util.Log.d("CaptchaActivity", "Turnstile JS direct click executed via shadow hook");
+                    isFirstAttempt = false;
                 } else if("iframe".equals(type)) {
                     normalNtkPageCount = 0;
                     final float x = (float) obj.getDouble("x");
@@ -317,6 +326,7 @@ public class CaptchaActivity extends AppCompatActivity {
                     android.util.Log.d("CaptchaActivity", "Turnstile iframe found at: " + x + "," + y + " size:" + w + "x" + h);
 
                     webView.post(() -> simulateTouchBurst(webView, x, y, w, h));
+                    isFirstAttempt = false;
                 } else if("normal".equals(type)) {
                     normalNtkPageCount++;
                     android.util.Log.d("CaptchaActivity", "NTK normal page detected without Turnstile: " + normalNtkPageCount);
@@ -411,11 +421,11 @@ public class CaptchaActivity extends AppCompatActivity {
         if(view == null) return;
         Random random = new Random();
         float density = getResources().getDisplayMetrics().density;
-        int[] location = new int[2];
-        view.getLocationOnScreen(location);
 
-        float baseX = location[0] + (centerX * density);
-        float baseY = location[1] + (centerY * density);
+        // getBoundingClientRect returns CSS pixels relative to WebView viewport
+        // dispatchTouchEvent expects view-local physical pixels (0,0 = top-left of view)
+        float baseX = centerX * density;
+        float baseY = centerY * density;
         float physW = width * density;
         float physH = height * density;
 
@@ -426,6 +436,8 @@ public class CaptchaActivity extends AppCompatActivity {
         int vh = view.getHeight();
         targetX = Math.max(5, Math.min(vw - 5, targetX));
         targetY = Math.max(5, Math.min(vh - 5, targetY));
+
+        android.util.Log.d("CaptchaActivity", "Dispatching touch in view-local coords: " + targetX + "," + targetY);
 
         long downTime = SystemClock.uptimeMillis();
         long eventTime = downTime;
