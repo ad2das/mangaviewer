@@ -74,4 +74,8 @@
     <!-- Scrim / Overlay -->
     <color name="appScrim">#BC000000</color>
     <color name="appScrimDark">#E6000000</color>
+
+    <!-- Status Chip Colors -->
+    <color name="appStatusOngoingLight">#DCFCE7</color>
+    <color name="appStatusCompletedLight">#F1F5F9</color>
 </resources>

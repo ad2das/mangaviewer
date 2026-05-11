@@ -366,8 +366,25 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         String author = data.getAuthor();
         int bookmark = bindMeta.bookmark;
         holder.baseModeStr.setText(data.getBaseModeStr());
-        holder.status.setText(bindMeta.statusLabel);
-        holder.status.setVisibility(bindMeta.statusLabel.length() > 0 ? View.VISIBLE : View.GONE);
+        String statusLabel = bindMeta.statusLabel;
+        if(statusLabel.length() > 0) {
+            holder.status.setVisibility(View.VISIBLE);
+            holder.statusIcon.setVisibility(View.VISIBLE);
+            if("연재".equals(statusLabel)) {
+                holder.statusIcon.setImageResource(R.drawable.app_status_ongoing_dot);
+                holder.status.setBackgroundResource(R.drawable.app_ongoing_chip_bg);
+                holder.status.setTextColor(ContextCompat.getColor(mainContext, R.color.colorSuccess));
+                holder.status.setText("연재중");
+            } else {
+                holder.statusIcon.setImageResource(R.drawable.app_status_completed_check);
+                holder.status.setBackgroundResource(R.drawable.app_completed_chip_bg);
+                holder.status.setTextColor(ContextCompat.getColor(mainContext, R.color.appTextSecondary));
+                holder.status.setText("완결");
+            }
+        } else {
+            holder.status.setVisibility(View.GONE);
+            holder.statusIcon.setVisibility(View.GONE);
+        }
         holder.tags.setText(bindMeta.tags);
         holder.tagContainer.setVisibility(View.VISIBLE);
 
@@ -631,6 +648,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         TextView author;
         TextView tags;
         TextView status;
+        ImageView statusIcon;
         TextView recommend_c, battery_c, bookmark_c;
         TextView baseModeStr;
         TextView progressText;
@@ -650,6 +668,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             author =itemView.findViewById(R.id.TitleAuthor);
             tags = itemView.findViewById(R.id.TitleTag);
             status = itemView.findViewById(R.id.TitleStatus);
+            statusIcon = itemView.findViewById(R.id.TitleStatusIcon);
             card = itemView.findViewById(R.id.titleCard);
             content = itemView.findViewById(R.id.titleContent);
             thumbCard = itemView.findViewById(R.id.Thumb);
@@ -679,6 +698,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             disableTouchTarget(author);
             disableTouchTarget(tags);
             disableTouchTarget(status);
+            disableTouchTarget(statusIcon);
             disableTouchTarget(baseModeStr);
             disableTouchTarget(progress);
             disableTouchTarget(progressText);
