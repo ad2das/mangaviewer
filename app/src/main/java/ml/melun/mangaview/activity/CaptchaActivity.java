@@ -62,23 +62,38 @@ public class CaptchaActivity extends AppCompatActivity {
             "};" +
             "})();";
     public static final String TURNSTILE_AUTO_JS = "(function(){" +
-            "if(window.__sh){" +
-            "var m=document.querySelector('.main-content');" +
-            "if(m){" +
-            "for(var i=0;i<m.children.length;i++){" +
-            "var h=m.children[i].querySelector('div>div');" +
-            "if(h&&h.__sr){" +
-            "var inp=h.__sr.querySelector('input[type=\"checkbox\"]');" +
-            "if(inp){" +
-            "try{inp.focus();" +
+            "function findCheckbox(){" +
+            "var all=document.querySelectorAll('*');" +
+            "for(var i=0;i<all.length;i++){" +
+            "var el=all[i];" +
+            "if(el.__sr){" +
+            "var inp=el.__sr.querySelector('input[type=\"checkbox\"]');" +
+            "if(inp)return inp;" +
+            "}" +
+            "}" +
+            "return null;" +
+            "}" +
+            "var cb=findCheckbox();" +
+            "if(cb){" +
+            "try{cb.focus();" +
             "var e1=new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerType:'touch',isPrimary:true,width:20,height:20,pressure:0.5});" +
             "var e2=new PointerEvent('pointerup',{bubbles:true,cancelable:true,pointerType:'touch',isPrimary:true,width:20,height:20,pressure:0});" +
-            "inp.dispatchEvent(e1);inp.dispatchEvent(e2);" +
+            "cb.dispatchEvent(e1);cb.dispatchEvent(e2);" +
             "}catch(ex){}" +
             "return JSON.stringify({type:'jsclick'});" +
             "}" +
+            "var iframe=document.querySelector('iframe[src*=\"turnstile\"],iframe[src*=\"challenges.cloudflare\"]');" +
+            "if(iframe){" +
+            "var rect=iframe.getBoundingClientRect();" +
+            "if(rect.width>10&&rect.height>10){" +
+            "return JSON.stringify({type:'iframe',x:rect.left+rect.width/2,y:rect.top+rect.height/2,w:rect.width,h:rect.height});" +
             "}" +
             "}" +
+            "var turnstileDiv=document.querySelector('.cf-turnstile,.turnstile,[class*=\"turnstile\"]');" +
+            "if(turnstileDiv){" +
+            "var rect=turnstileDiv.getBoundingClientRect();" +
+            "if(rect.width>10&&rect.height>10){" +
+            "return JSON.stringify({type:'div',x:rect.left+rect.width/2,y:rect.top+rect.height/2,w:rect.width,h:rect.height});" +
             "}" +
             "}" +
             "var host=(location.hostname||'').toLowerCase();" +
@@ -86,7 +101,7 @@ public class CaptchaActivity extends AppCompatActivity {
             "if((host.indexOf('ntk')>=0||host.indexOf('sbxh')>=0)&&text.length>200&&(text.indexOf('NEWTOKI')>=0||text.indexOf('실시간 웹툰 랭킹')>=0||text.indexOf('웹툰')>=0&&text.indexOf('만화')>=0))" +
             "return JSON.stringify({type:'normal'});" +
             "var mc=document.querySelector('.main-content');" +
-            "if(!mc)return JSON.stringify({type:'none'});" +
+            "if(mc){" +
             "for(var i=0;i<mc.children.length;i++){" +
             "var wrapper=mc.children[i];" +
             "var host=wrapper.querySelector('div > div');" +
@@ -96,6 +111,7 @@ public class CaptchaActivity extends AppCompatActivity {
             "var x=rect.left+rect.width*0.22;" +
             "var y=rect.top+rect.height/2;" +
             "return JSON.stringify({type:'iframe',x:x,y:y,w:rect.width*0.45,h:rect.height});" +
+            "}" +
             "}" +
             "}" +
             "}" +
@@ -233,9 +249,10 @@ public class CaptchaActivity extends AppCompatActivity {
                     return;
 
                 // Attempt click immediately when resources load (Turnstile iframe appears mid-load)
+                // Do NOT wait for pageFinishedTime - iframe loads before onPageFinished
                 long now = System.currentTimeMillis();
                 long requiredInterval = isFirstAttempt ? FIRST_CLICK_DELAY_MS : (RETRY_MIN_MS + (long)(Math.random() * (RETRY_MAX_MS - RETRY_MIN_MS)));
-                if(pageFinishedTime > 0 && now - lastAttemptTime > requiredInterval) {
+                if(now - lastAttemptTime > requiredInterval) {
                     attemptTurnstileClick();
                 }
 
@@ -410,7 +427,7 @@ public class CaptchaActivity extends AppCompatActivity {
     private void simulateTouchBurst(View view, float centerX, float centerY, float width, float height) {
         if(view == null) return;
         long now = System.currentTimeMillis();
-        if(now - lastTurnstileTouchAt < 3500L)
+        if(now - lastTurnstileTouchAt < 1000L)
             return;
         lastTurnstileTouchAt = now;
         simulateTouchWithMove(view, centerX, centerY, width, height);
