@@ -559,7 +559,7 @@ public class MainMain extends Fragment{
     private boolean maybeOpenNtkCaptcha() {
         if(!isAdded() || getActivity() == null)
             return false;
-        return Utils.showNtkTurnstileCaptchaIfNeeded(getActivity(), 3, this, p);
+        return Utils.startNtkTurnstileCaptchaIfNeeded(getActivity(), 3, this, p);
     }
 
     private void showInitialHomeRows(int baseMode) {

@@ -407,7 +407,7 @@ public class MainActivity extends AppCompatActivity
     private boolean maybeOpenNtkCaptcha() {
         if(isFinishing() || isDestroyed())
             return false;
-        return Utils.showNtkTurnstileCaptchaIfNeeded(this, 3, null, p);
+        return Utils.startNtkTurnstileCaptchaIfNeeded(this, 3, null, p);
     }
 
     private void startDeferredUrlUpdate() {

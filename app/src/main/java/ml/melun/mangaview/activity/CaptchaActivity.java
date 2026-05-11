@@ -565,7 +565,7 @@ public class CaptchaActivity extends AppCompatActivity {
         lastClearanceVerificationAt = now;
         accessVerificationInFlight = true;
         AppDispatchers.runIo(() -> {
-            boolean verified = verifyNtkAccess();
+            boolean verified = verifyNtkAccess(purl, currentUrl);
             AppDispatchers.runOnMain(() -> {
                 accessVerificationInFlight = false;
                 if(isFinishing)
@@ -583,9 +583,10 @@ public class CaptchaActivity extends AppCompatActivity {
         });
     }
 
-    private boolean verifyNtkAccess() {
+    private boolean verifyNtkAccess(String purl, String currentUrl) {
         try {
-            Response response = getHttpClient().mget("/", true);
+            String verifyUrl = ntkVerificationUrl(purl, currentUrl);
+            Response response = getHttpClient().mget(verifyUrl, true);
             if(response == null)
                 return false;
             int code = response.code();
@@ -594,6 +595,31 @@ public class CaptchaActivity extends AppCompatActivity {
         } catch(Exception e) {
             android.util.Log.d("CaptchaActivity", "NTK clearance verification request failed", e);
             return false;
+        }
+    }
+
+    private String ntkVerificationUrl(String purl, String currentUrl) {
+        String candidate = ntkPagePath(currentUrl);
+        if(candidate.length() == 0)
+            candidate = ntkPagePath(purl);
+        return candidate.length() > 0 ? candidate : "/";
+    }
+
+    private String ntkPagePath(String url) {
+        if(url == null || url.length() == 0)
+            return "";
+        try {
+            android.net.Uri uri = android.net.Uri.parse(url);
+            String path = uri.getPath();
+            if(path == null || path.length() == 0)
+                return "";
+            String lower = path.toLowerCase(java.util.Locale.ROOT);
+            if(!lower.startsWith("/webtoon/") && !lower.startsWith("/manhwa/"))
+                return "";
+            String query = uri.getEncodedQuery();
+            return query == null || query.length() == 0 ? path : path + "?" + query;
+        } catch (Exception e) {
+            return "";
         }
     }
 

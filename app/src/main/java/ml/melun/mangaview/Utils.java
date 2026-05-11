@@ -749,7 +749,7 @@ public class Utils {
 
     public static void showCaptchaPopup(String url, Context context, int code, Exception e, boolean force_close, Fragment fragment, Preference p){
         if(canUseContextForUi(context)) {
-            if(showNtkTurnstileCaptchaIfNeeded(context, code, fragment, p))
+            if(showNtkTurnstileCaptchaIfNeeded(url, context, code, fragment, p))
                 return;
             if (shouldOpenCloudflareCaptchaAutomatically()) {
                 startCaptchaActivity(context, code, fragment, url);
@@ -796,10 +796,12 @@ public class Utils {
         return true;
     }
 
-    public static boolean showNtkTurnstileCaptchaIfNeeded(Context context, int code, Fragment fragment, Preference preference) {
+    public static boolean showNtkTurnstileCaptchaIfNeeded(String url, Context context, int code, Fragment fragment, Preference preference) {
         if(!canUseContextForUi(context) || !getHttpClient().isNtk())
             return false;
         syncNtkCloudflareCookies(preference);
+        if(isNtkEpisodeUrl(url))
+            return false;
         if(getHttpClient().hasNtkAccessProof() || getHttpClient().hasRecentNtkAccessVerification())
             return true;
         if(shouldOpenCloudflareCaptchaAutomatically()) {
@@ -807,6 +809,30 @@ public class Utils {
             captchaCount++;
         }
         return true;
+    }
+
+    public static boolean showNtkTurnstileCaptchaIfNeeded(Context context, int code, Fragment fragment, Preference preference) {
+        return showNtkTurnstileCaptchaIfNeeded(null, context, code, fragment, preference);
+    }
+
+    public static boolean startNtkTurnstileCaptchaIfNeeded(Context context, int code, Fragment fragment, Preference preference) {
+        if(!canUseContextForUi(context) || !getHttpClient().isNtk())
+            return false;
+        syncNtkCloudflareCookies(preference);
+        if(getHttpClient().hasNtkAccessProof() || getHttpClient().hasRecentNtkAccessVerification())
+            return false;
+        if(!shouldOpenCloudflareCaptchaAutomatically())
+            return false;
+        startCaptchaActivity(context, code, fragment, null);
+        captchaCount++;
+        return true;
+    }
+
+    private static boolean isNtkEpisodeUrl(String url) {
+        if(url == null)
+            return false;
+        String lower = url.toLowerCase(java.util.Locale.ROOT);
+        return lower.matches("^(https?://[^/]+)?/(webtoon|manhwa)/\\d+/\\d+.*");
     }
 
     private static void syncNtkCloudflareCookies(Preference preference) {
