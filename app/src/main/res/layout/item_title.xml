@@ -69,61 +69,70 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="16dp"
-                android:layout_marginEnd="6dp"
+                android:layout_marginEnd="12dp"
                 android:ellipsize="end"
                 android:lineSpacingExtra="1dp"
                 android:maxLines="3"
                 android:singleLine="false"
                 android:textStyle="bold"
                 android:textColor="@color/appText"
-                android:textSize="18sp"
-                app:autoSizeMaxTextSize="18sp"
-                app:autoSizeMinTextSize="13sp"
+                android:textSize="16sp"
+                app:autoSizeMaxTextSize="16sp"
+                app:autoSizeMinTextSize="12sp"
                 app:autoSizeStepGranularity="1sp"
                 app:autoSizeTextType="uniform"
-                app:layout_constraintEnd_toStartOf="@+id/TitleStatusIcon"
+                app:layout_constraintEnd_toStartOf="@+id/epsButton"
                 app:layout_constraintStart_toEndOf="@id/Thumb"
                 app:layout_constraintTop_toTopOf="@id/Thumb"
                 tools:text="Solo Leveling" />
 
-            <ImageView
-                android:id="@+id/TitleStatusIcon"
-                android:layout_width="8dp"
-                android:layout_height="8dp"
-                android:layout_marginStart="2dp"
-                android:contentDescription="상태 아이콘"
-                android:visibility="gone"
-                app:layout_constraintBottom_toBottomOf="@id/Title"
-                app:layout_constraintEnd_toStartOf="@+id/TitleStatus"
-                app:layout_constraintStart_toEndOf="@id/Title"
-                app:layout_constraintTop_toTopOf="@id/Title"
-                tools:src="@drawable/app_status_ongoing_dot"
-                tools:visibility="visible" />
-
-            <TextView
-                android:id="@+id/TitleStatus"
-                android:layout_width="wrap_content"
-                android:layout_height="20dp"
-                android:layout_marginStart="4dp"
+            <androidx.appcompat.widget.LinearLayoutCompat
+                android:id="@+id/TitleTagContainer"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:minHeight="20dp"
+                android:layout_marginStart="16dp"
+                android:layout_marginTop="6dp"
                 android:layout_marginEnd="12dp"
-                android:background="@drawable/app_ongoing_chip_bg"
-                android:ellipsize="end"
-                android:gravity="center"
-                android:includeFontPadding="false"
-                android:maxLines="1"
-                android:minWidth="40dp"
-                android:paddingStart="8dp"
-                android:paddingEnd="8dp"
-                android:textColor="@color/colorSuccess"
-                android:textSize="11sp"
-                android:textStyle="bold"
-                android:visibility="gone"
-                app:layout_constraintBottom_toBottomOf="@id/Title"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
                 app:layout_constraintEnd_toStartOf="@+id/epsButton"
-                app:layout_constraintStart_toEndOf="@id/TitleStatusIcon"
-                app:layout_constraintTop_toTopOf="@id/Title"
-                tools:text="연재중"
-                tools:visibility="visible" />
+                app:layout_constraintStart_toEndOf="@id/Thumb"
+                app:layout_constraintTop_toBottomOf="@+id/Title">
+
+                <TextView
+                    android:id="@+id/TitleBaseMode"
+                    android:layout_width="wrap_content"
+                    android:layout_height="20dp"
+                    android:layout_marginEnd="6dp"
+                    android:background="@drawable/app_soft_chip_bg"
+                    android:ellipsize="end"
+                    android:gravity="center"
+                    android:includeFontPadding="false"
+                    android:maxLines="1"
+                    android:minWidth="36dp"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:textColor="@color/appAccent"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    tools:text="웹툰" />
+
+                <TextView
+                    android:id="@+id/TitleTag"
+                    style="@style/AppText.Caption"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:ellipsize="end"
+                    android:gravity="center_vertical"
+                    android:includeFontPadding="false"
+                    android:maxLines="2"
+                    android:minHeight="20dp"
+                    android:textSize="12sp"
+                    tools:text="액션 판타지 드라마" />
+
+            </androidx.appcompat.widget.LinearLayoutCompat>
 
             <TextView
                 android:id="@+id/TitleAuthor"
@@ -139,7 +148,7 @@
                 android:textColor="@color/appTextSecondary"
                 app:layout_constraintEnd_toStartOf="@+id/epsButton"
                 app:layout_constraintStart_toEndOf="@id/Thumb"
-                app:layout_constraintTop_toBottomOf="@+id/Title"
+                app:layout_constraintTop_toBottomOf="@+id/TitleTagContainer"
                 tools:text="Episode 179" />
 
             <ProgressBar
@@ -169,7 +178,7 @@
                 android:visibility="gone"
                 app:layout_constraintBottom_toBottomOf="@id/Thumb"
                 app:layout_constraintEnd_toStartOf="@+id/epsButton"
-                app:layout_constraintTop_toBottomOf="@+id/TitleTagContainer"
+                app:layout_constraintTop_toBottomOf="@+id/TitleAuthor"
                 app:layout_constraintVertical_bias="1"
                 tools:text="" />
 
@@ -227,56 +236,6 @@
                     android:id="@+id/TitleBookmark_c"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content" />
-
-            </androidx.appcompat.widget.LinearLayoutCompat>
-
-            <androidx.appcompat.widget.LinearLayoutCompat
-                android:id="@+id/TitleTagContainer"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:minHeight="20dp"
-                android:layout_marginStart="16dp"
-                android:layout_marginTop="8dp"
-                android:layout_marginEnd="12dp"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
-                app:layout_constraintEnd_toStartOf="@+id/epsButton"
-                app:layout_constraintStart_toEndOf="@id/Thumb"
-                app:layout_constraintTop_toBottomOf="@+id/TitleAuthor"
-                app:layout_constraintBottom_toTopOf="@+id/TitleProgress"
-                app:layout_constraintVertical_bias="0">
-
-                <TextView
-                    android:id="@+id/TitleBaseMode"
-                    android:layout_width="wrap_content"
-                    android:layout_height="20dp"
-                    android:layout_marginEnd="6dp"
-                    android:background="@drawable/app_soft_chip_bg"
-                    android:ellipsize="end"
-                    android:gravity="center"
-                    android:includeFontPadding="false"
-                    android:maxLines="1"
-                    android:minWidth="36dp"
-                    android:paddingStart="8dp"
-                    android:paddingEnd="8dp"
-                    android:textColor="@color/appAccent"
-                    android:textSize="11sp"
-                    android:textStyle="bold"
-                    tools:text="웹툰" />
-
-                <TextView
-                    android:id="@+id/TitleTag"
-                    style="@style/AppText.Caption"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:ellipsize="end"
-                    android:gravity="center_vertical"
-                    android:includeFontPadding="false"
-                    android:maxLines="2"
-                    android:minHeight="20dp"
-                    android:textSize="12sp"
-                    tools:text="액션 판타지 드라마" />
 
             </androidx.appcompat.widget.LinearLayoutCompat>
 
