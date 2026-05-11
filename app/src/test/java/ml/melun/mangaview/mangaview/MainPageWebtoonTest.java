@@ -276,6 +276,7 @@ public class MainPageWebtoonTest {
 
         assertEquals(24, genres.length);
         assertEquals(53, completedGenres.length);
+        assertTrue(containsFilter(genres, "성인", "/ing?tag=%EC%84%B1%EC%9D%B8"));
         assertTrue(containsFilter(genres, "액션", "/ing?tag=2"));
         assertTrue(containsFilter(genres, "BL", "/ing?tag=6"));
         assertTrue(containsFilter(genres, "연애", "/ing?tag=8"));
@@ -286,6 +287,13 @@ public class MainPageWebtoonTest {
         assertTrue(containsFilter(genres, "기타", "/ing?tag=99"));
         assertTrue(containsFilter(completedGenres, "현대판타", "/end?tag=105"));
         assertTrue(containsFilter(completedGenres, "관계역전", "/end?tag=128"));
+    }
+
+    @Test
+    public void ntkAdultWebtoonLegacyTagUsesAdultGenreName() {
+        assertEquals("/api/works?status=ing&tag=%EC%84%B1%EC%9D%B8&page=1&pageSize=30&withTotal=1",
+                Search.ntkCategoryApiPathForTest("/ing?tag=16", 1, base_webtoon));
+        assertEquals("성인", Search.genreFromCategoryPath("/ing?tag=16", base_webtoon));
     }
 
     @Test
@@ -317,8 +325,9 @@ public class MainPageWebtoonTest {
         assertTrue(containsFilter(webtoonGenres, "스토리", "/ing?type1=genre&type2=%BD%BA%C5%E4%B8%AE&o=n"));
         assertTrue(!containsLabel(webtoonGenres, "미분류"));
 
-        assertEquals(34, comicGenres.length);
-        assertTrue(containsFilter(comicGenres, "17", "/cm?type1=genre&type2=17&o=n"));
+        assertEquals(33, comicGenres.length);
+        assertTrue(!containsLabel(comicGenres, "17"));
+        assertTrue(containsFilter(comicGenres, "성인", "/cm?type1=genre&type2=%BC%BA%C0%CE&o=n"));
         assertTrue(containsFilter(comicGenres, "이세계", "/cm?type1=genre&type2=%C0%CC%BC%BC%B0%E8&o=n"));
         assertTrue(containsFilter(comicGenres, "판타지", "/cm?type1=genre&type2=%C6%C7%C5%B8%C1%F6&o=n"));
         assertTrue(containsFilter(comicGenres, "애니화", "/cm?type1=genre&type2=%BE%D6%B4%CF%C8%AD&o=n"));

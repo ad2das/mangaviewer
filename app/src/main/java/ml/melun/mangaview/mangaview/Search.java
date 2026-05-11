@@ -507,6 +507,10 @@ public class Search {
                 result.add("day=" + (day.length() > 0 ? day : value));
                 continue;
             }
+            if("tag".equals(key) && "16".equals(value)) {
+                result.add("tag=" + percentEncode("성인", StandardCharsets.UTF_8));
+                continue;
+            }
             result.add(param);
         }
         if("day".equals(legacyType1) && legacyType2.length() > 0 && !hasQueryParam(result, "day")) {
@@ -1136,6 +1140,8 @@ public class Search {
         if(path == null)
             return "";
         String ntkGenre = rawQueryValue(path, baseMode == base_comic ? "g" : "tag");
+        if(baseMode == base_webtoon && "16".equals(ntkGenre))
+            return "성인";
         if(ntkGenre != null && ntkGenre.length() > 0)
             return percentDecode(ntkGenre, Charset.forName("UTF-8")).trim();
         String type1 = rawQueryValue(path, "type1");
