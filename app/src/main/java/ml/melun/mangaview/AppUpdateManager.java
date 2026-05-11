@@ -24,8 +24,11 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Callable;
@@ -68,11 +71,13 @@ public final class AppUpdateManager {
     private static final long DOWNLOAD_PLAN_TTL_MS = 10 * 60_000L;
     private static final Pattern APK_VERSION_PATTERN = Pattern.compile("mangaViewer_(\\d+).+\\.apk");
     private static final OkHttpClient VERSION_CLIENT = new OkHttpClient.Builder()
+            .dns(AppUpdateManager::lookupUpdateDns)
             .connectTimeout(5, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.SECONDS)
             .callTimeout(15, TimeUnit.SECONDS)
             .build();
     private static final OkHttpClient APK_CLIENT = new OkHttpClient.Builder()
+            .dns(AppUpdateManager::lookupUpdateDns)
             .connectTimeout(5, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .callTimeout(90, TimeUnit.SECONDS)
@@ -88,6 +93,45 @@ public final class AppUpdateManager {
     private static File pendingInstallApk;
 
     private AppUpdateManager() {
+    }
+
+    private static List<InetAddress> lookupUpdateDns(String hostname) throws UnknownHostException {
+        try {
+            return okhttp3.Dns.SYSTEM.lookup(hostname);
+        } catch (UnknownHostException e) {
+            List<InetAddress> fallback = fallbackUpdateAddresses(hostname);
+            if(!fallback.isEmpty()) {
+                log("dnsFallback host=" + hostname + " count=" + fallback.size());
+                return fallback;
+            }
+            throw e;
+        }
+    }
+
+    private static List<InetAddress> fallbackUpdateAddresses(String hostname) throws UnknownHostException {
+        if("api.github.com".equalsIgnoreCase(hostname))
+            return Arrays.asList(address(hostname, 20, 200, 245, 245));
+        if("github.com".equalsIgnoreCase(hostname))
+            return Arrays.asList(address(hostname, 20, 200, 245, 247));
+        if("raw.githubusercontent.com".equalsIgnoreCase(hostname)
+                || "release-assets.githubusercontent.com".equalsIgnoreCase(hostname)
+                || "objects.githubusercontent.com".equalsIgnoreCase(hostname))
+            return Arrays.asList(
+                    address(hostname, 185, 199, 108, 133),
+                    address(hostname, 185, 199, 109, 133),
+                    address(hostname, 185, 199, 110, 133),
+                    address(hostname, 185, 199, 111, 133));
+        if("cdn.jsdelivr.net".equalsIgnoreCase(hostname))
+            return Arrays.asList(
+                    address(hostname, 151, 101, 1, 229),
+                    address(hostname, 151, 101, 65, 229),
+                    address(hostname, 151, 101, 129, 229),
+                    address(hostname, 151, 101, 193, 229));
+        return new ArrayList<>();
+    }
+
+    private static InetAddress address(String hostname, int a, int b, int c, int d) throws UnknownHostException {
+        return InetAddress.getByAddress(hostname, new byte[] {(byte)a, (byte)b, (byte)c, (byte)d});
     }
 
     public static void checkForUpdate(Activity activity) {

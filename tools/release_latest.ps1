@@ -1,6 +1,6 @@
 param(
     [string]$Repo = "ad2das/mangaviewer",
-    [string]$ReleaseTag = "",
+    [string]$ReleaseTag = "main-latest",
     [string]$TargetBranch = "",
     [string]$JavaHome = "",
     [string]$CommitMessage = "",
@@ -100,7 +100,7 @@ $dateCodeText = Get-Date -Format "yyMMdd"
 $dateCode = [int]$dateCodeText
 $versionCode = 2112000000 + $dateCode + $nextPatch
 if ([string]::IsNullOrWhiteSpace($ReleaseTag)) {
-    $ReleaseTag = "main-v$versionCode"
+    $ReleaseTag = "main-latest"
 }
 $apkName = "mangaViewer_${versionCode}-debug.apk"
 $downloadUrl = "https://github.com/$Repo/releases/download/$ReleaseTag/$apkName"
@@ -167,7 +167,7 @@ if (-not $NoUpload) {
     gh release view $ReleaseTag --repo $Repo *> $null
     if ($LASTEXITCODE -ne 0) {
         Write-Step "Creating release $ReleaseTag"
-        gh release create $ReleaseTag --repo $Repo --target $TargetBranch --title "Main $versionCode" --notes "Main branch debug APK." --latest
+        gh release create $ReleaseTag --repo $Repo --target $TargetBranch --title "Main Latest" --notes "Latest main branch debug APK." --latest
         if ($LASTEXITCODE -ne 0) {
             throw "gh release create failed"
         }
