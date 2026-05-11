@@ -34,6 +34,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import ml.melun.mangaview.report.CrashReporter;
 import ml.melun.mangaview.runtime.AppDispatchers;
@@ -44,9 +46,11 @@ import okhttp3.ResponseBody;
 
 public final class AppUpdateManager {
     private static final String TAG = "AppUpdate";
-    private static final String UPDATE_CHANNEL = "ntk01";
+    private static final String UPDATE_CHANNEL = "main";
     private static final String VERSION_API_URL = "https://api.github.com/repos/ad2das/mangaviewer/contents/version.json?ref=" + UPDATE_CHANNEL;
     private static final String RAW_VERSION_URL = "https://raw.githubusercontent.com/ad2das/mangaviewer/" + UPDATE_CHANNEL + "/version.json";
+    private static final String CDN_VERSION_URL = "https://cdn.jsdelivr.net/gh/ad2das/mangaviewer@" + UPDATE_CHANNEL + "/version.json";
+    private static final String LATEST_RELEASE_API_URL = "https://api.github.com/repos/ad2das/mangaviewer/releases/latest";
     private static final String PREF = "appUpdate";
     private static final String KEY_VERSION = UPDATE_CHANNEL + "_latestVersion";
     private static final String KEY_LINK = UPDATE_CHANNEL + "_latestLink";
@@ -62,10 +66,11 @@ public final class AppUpdateManager {
     private static final int APK_PARALLEL_PARTS = 8;
     private static final long APK_PARALLEL_MIN_BYTES = 8L * 1024L * 1024L;
     private static final long DOWNLOAD_PLAN_TTL_MS = 10 * 60_000L;
+    private static final Pattern APK_VERSION_PATTERN = Pattern.compile("mangaViewer_(\\d+).+\\.apk");
     private static final OkHttpClient VERSION_CLIENT = new OkHttpClient.Builder()
-            .connectTimeout(2, TimeUnit.SECONDS)
-            .readTimeout(5, TimeUnit.SECONDS)
-            .callTimeout(7, TimeUnit.SECONDS)
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .callTimeout(15, TimeUnit.SECONDS)
             .build();
     private static final OkHttpClient APK_CLIENT = new OkHttpClient.Builder()
             .connectTimeout(5, TimeUnit.SECONDS)
@@ -126,16 +131,25 @@ public final class AppUpdateManager {
             UpdateInfo info = fetchUpdateInfo(appContext);
             if(info != null)
                 cacheUpdateInfo(appContext, info);
+            if(info == null) {
+                UpdateInfo cachedInfo = readCachedUpdateInfo(appContext);
+                if(cachedInfo != null) {
+                    log("manualCheck source=cache version=" + cachedInfo.version);
+                    info = cachedInfo;
+                }
+            }
             if(info != null && isUpdateAvailable(appContext, info, false)) {
+                UpdateInfo updateInfo = info;
                 warmDownloadPlan(appContext, info);
-                AppDispatchers.runOnMain(() -> showUpdateDialog(activity, info));
+                AppDispatchers.runOnMain(() -> showUpdateDialog(activity, updateInfo));
                 return;
             }
+            UpdateInfo resultInfo = info;
             AppDispatchers.runOnMain(() -> {
-                if(info == null)
+                if(resultInfo == null)
                     showManualUpdateResult(activity, "업데이트 확인 실패", "최신 버전 정보를 가져오지 못했습니다.\n네트워크 상태를 확인한 뒤 다시 시도해 주세요.");
                 else
-                    showManualUpdateResult(activity, "최신 버전입니다", "현재 설치된 버전: " + currentVersionCode(activity) + "\n최신 버전: " + info.version);
+                    showManualUpdateResult(activity, "최신 버전입니다", "현재 설치된 버전: " + currentVersionCode(activity) + "\n최신 버전: " + resultInfo.version);
             });
         });
     }
@@ -148,13 +162,21 @@ public final class AppUpdateManager {
     }
 
     private static UpdateInfo fetchUpdateInfo(Context context) {
-        UpdateInfo apiInfo = fetchUpdateInfoFromUrl(VERSION_API_URL, true);
+        long now = System.currentTimeMillis();
+        UpdateInfo apiInfo = fetchUpdateInfoFromUrl("github-api", VERSION_API_URL, true);
         if(apiInfo != null)
             return apiInfo;
-        return fetchUpdateInfoFromUrl(RAW_VERSION_URL + "?t=" + System.currentTimeMillis(), false);
+        UpdateInfo rawInfo = fetchUpdateInfoFromUrl("github-raw", RAW_VERSION_URL + "?t=" + now, false);
+        if(rawInfo != null)
+            return rawInfo;
+        UpdateInfo cdnInfo = fetchUpdateInfoFromUrl("jsdelivr", CDN_VERSION_URL + "?t=" + now, false);
+        if(cdnInfo != null)
+            return cdnInfo;
+        return fetchUpdateInfoFromLatestRelease();
     }
 
-    private static UpdateInfo fetchUpdateInfoFromUrl(String url, boolean allowGithubContentsEnvelope) {
+    private static UpdateInfo fetchUpdateInfoFromUrl(String source, String url, boolean allowGithubContentsEnvelope) {
+        long started = System.currentTimeMillis();
         try {
             Request request = new Request.Builder()
                     .url(url)
@@ -166,8 +188,12 @@ public final class AppUpdateManager {
                     .header("Pragma", "no-cache")
                     .build();
             try(Response response = VERSION_CLIENT.newCall(request).execute()) {
-                if(!response.isSuccessful())
+                if(!response.isSuccessful()) {
+                    log("versionFetchFailed source=" + source
+                            + " code=" + response.code()
+                            + " ms=" + (System.currentTimeMillis() - started));
                     return null;
+                }
                 ResponseBody body = response.body();
                 if(body == null)
                     return null;
@@ -176,12 +202,77 @@ public final class AppUpdateManager {
                 String link = json.optString("link", "");
                 if(version <= 0 || link.length() == 0)
                     return null;
+                log("versionFetchOk source=" + source
+                        + " version=" + version
+                        + " ms=" + (System.currentTimeMillis() - started));
                 return new UpdateInfo(version, link);
             }
         } catch (Exception e) {
             CrashReporter.record(e);
+            log("versionFetchException source=" + source
+                    + " " + e.getClass().getSimpleName() + ": " + e.getMessage()
+                    + " ms=" + (System.currentTimeMillis() - started));
             return null;
         }
+    }
+
+    private static UpdateInfo fetchUpdateInfoFromLatestRelease() {
+        long started = System.currentTimeMillis();
+        try {
+            Request request = new Request.Builder()
+                    .url(LATEST_RELEASE_API_URL)
+                    .header("User-Agent", "MangaView")
+                    .header("Accept", "application/vnd.github+json, application/json, */*")
+                    .header("Cache-Control", "no-cache")
+                    .header("Pragma", "no-cache")
+                    .build();
+            try(Response response = VERSION_CLIENT.newCall(request).execute()) {
+                if(!response.isSuccessful() || response.body() == null) {
+                    log("versionFetchFailed source=github-latest-release code=" + response.code()
+                            + " ms=" + (System.currentTimeMillis() - started));
+                    return null;
+                }
+                JSONObject json = new JSONObject(response.body().string());
+                UpdateInfo info = parseLatestReleaseInfo(json);
+                if(info != null)
+                    log("versionFetchOk source=github-latest-release version=" + info.version
+                            + " ms=" + (System.currentTimeMillis() - started));
+                return info;
+            }
+        } catch (Exception e) {
+            CrashReporter.record(e);
+            log("versionFetchException source=github-latest-release "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage()
+                    + " ms=" + (System.currentTimeMillis() - started));
+            return null;
+        }
+    }
+
+    private static UpdateInfo parseLatestReleaseInfo(JSONObject releaseJson) {
+        if(releaseJson == null)
+            return null;
+        org.json.JSONArray assets = releaseJson.optJSONArray("assets");
+        if(assets == null)
+            return null;
+        UpdateInfo best = null;
+        for(int i = 0; i < assets.length(); i++) {
+            JSONObject asset = assets.optJSONObject(i);
+            if(asset == null)
+                continue;
+            String name = asset.optString("name", "");
+            String link = asset.optString("browser_download_url", "");
+            Matcher matcher = APK_VERSION_PATTERN.matcher(name);
+            if(!matcher.matches() || link.length() == 0)
+                continue;
+            try {
+                int version = Integer.parseInt(matcher.group(1));
+                if(best == null || version > best.version)
+                    best = new UpdateInfo(version, link);
+            } catch (NumberFormatException e) {
+                CrashReporter.record(e);
+            }
+        }
+        return best;
     }
 
     private static JSONObject parseVersionJson(String body, boolean allowGithubContentsEnvelope) throws Exception {
