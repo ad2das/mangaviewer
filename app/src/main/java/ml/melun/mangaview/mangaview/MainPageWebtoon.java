@@ -69,6 +69,7 @@ public class MainPageWebtoon {
     private static final String[] COMIC_DAY_VALUES = {"recent", "10", "11", "12", "14", "16", "15", "13", "20"};
     private static final String[] COMIC_GENRES = {"드라마", "액션", "SF", "TS", "개그", "게임", "공포", "도박", "호러", "라노벨", "러브코미디", "로맨스", "먹방", "미스터리", "백합", "붕탁", "성인", "순정", "스릴러", "스포츠", "시대", "애니화", "판타지", "학원", "BL", "여장", "역사", "요리", "음악", "이세계", "일상", "전생", "추리"};
     private static final String[] NTK_COMIC_GENRES = {"순정", "판타지", "러브코미디", "드라마", "17", "학원", "라노벨", "개그", "액션", "백합", "SF", "이세계", "일상", "스릴러", "애니화", "전생", "스포츠", "TS", "소년", "먹방", "붕탁", "게임", "호러", "시대", "로맨스", "추리", "무협", "음악", "BL", "도박", "미스터리", "여장", "역사", "요리"};
+    private static final String[] NTK_COMPLETED_COMIC_GENRES = {"순정", "판타지", "러브코미디", "드라마", "17", "학원", "라노벨", "개그", "액션", "백합", "SF", "이세계", "일상", "스릴러", "애니화", "전생", "스포츠", "TS", "소년", "먹방", "붕탁", "게임", "호러", "시대", "로맨스", "추리", "무협", "음악", "BL"};
     private static final String INFERRED_TAG_CACHE_KEY = "webtoonInferredTagCacheV1";
     private static final int INFERRED_TAG_CACHE_LIMIT = 800;
     private static final LinkedHashMap<String, List<String>> inferredTagCache = new LinkedHashMap<>();
@@ -271,6 +272,7 @@ public class MainPageWebtoon {
     }
 
     private static String normalizeNtkComicPath(String path) {
+        String base = path.startsWith("/manhwa-end") ? "/manhwa-end" : "/manhwa";
         String type1 = rawQueryValue(path, "type1");
         String type2 = rawQueryValue(path, "type2");
         String order = rawQueryValue(path, "o");
@@ -295,7 +297,7 @@ public class MainPageWebtoon {
             addQueryParam(params, "letter=" + type2);
         else if("complete".equals(type1) && type2 != null && type2.length() > 0 && !"recent".equals(type2))
             addQueryParam(params, "type=" + type2);
-        return params.size() == 0 ? "/manhwa" : "/manhwa?" + joinQuery(params);
+        return params.size() == 0 ? base : base + "?" + joinQuery(params);
     }
 
     private static void addQueryParam(ArrayList<String> params, String param) {
@@ -372,10 +374,14 @@ public class MainPageWebtoon {
 
     private static String[][] buildNtkComicSections() {
         ArrayList<String[]> sections = new ArrayList<>();
-        sections.add(section("정렬", "인기순", "/manhwa?sort=hot"));
-        sections.add(section("정렬", "최신", "/manhwa"));
+        sections.add(section("만화", "인기순", "/manhwa?sort=hot"));
+        sections.add(section("만화", "최신", "/manhwa"));
+        sections.add(section("완결만화", "인기순", "/manhwa-end?sort=hot"));
+        sections.add(section("완결만화", "최신", "/manhwa-end"));
         for(String genre : NTK_COMIC_GENRES)
-            sections.add(section("장르별", genre, ntkComicGenrePath(genre)));
+            sections.add(section("만화 장르별", genre, ntkComicGenrePath("/manhwa", genre)));
+        for(String genre : NTK_COMPLETED_COMIC_GENRES)
+            sections.add(section("완결만화 장르별", genre, ntkComicGenrePath("/manhwa-end", genre)));
         return sections.toArray(new String[0][]);
     }
 
@@ -454,13 +460,19 @@ public class MainPageWebtoon {
     private static String[][] buildNtkComicFilterGroups() {
         ArrayList<String[]> groups = new ArrayList<>();
         groups.add(new String[]{
-                filter("정렬", "인기순", "/manhwa?sort=hot"),
-                filter("정렬", "최신순", "/manhwa")
+                filter("정렬", "만화 인기순", "/manhwa?sort=hot"),
+                filter("정렬", "만화 최신순", "/manhwa"),
+                filter("정렬", "완결만화 인기순", "/manhwa-end?sort=hot"),
+                filter("정렬", "완결만화 최신순", "/manhwa-end")
         });
         ArrayList<String> genres = new ArrayList<>();
         for(String genre : NTK_COMIC_GENRES)
-            genres.add(filter("장르별", genre, ntkComicGenrePath(genre)));
+            genres.add(filter("만화 장르별", genre, ntkComicGenrePath("/manhwa", genre)));
         groups.add(genres.toArray(new String[0]));
+        ArrayList<String> completedGenres = new ArrayList<>();
+        for(String genre : NTK_COMPLETED_COMIC_GENRES)
+            completedGenres.add(filter("완결만화 장르별", genre, ntkComicGenrePath("/manhwa-end", genre)));
+        groups.add(completedGenres.toArray(new String[0]));
         return groups.toArray(new String[0][]);
     }
 
@@ -510,8 +522,8 @@ public class MainPageWebtoon {
         return "/" + status + "?tag=" + percentEncode(tag, StandardCharsets.UTF_8);
     }
 
-    private static String ntkComicGenrePath(String genre) {
-        return "/manhwa?g=" + percentEncode(genre, StandardCharsets.UTF_8);
+    private static String ntkComicGenrePath(String route, String genre) {
+        return route + "?g=" + percentEncode(genre, StandardCharsets.UTF_8);
     }
 
     private static String percentEncode(String value, Charset charset) {

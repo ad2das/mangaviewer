@@ -463,7 +463,7 @@ public class Search {
         ArrayList<String> params = normalizeNtkApiParams(queryParamsWithoutPage(query));
         if(baseMode == base_comic && route.startsWith("/manhwa")) {
             ArrayList<String> api = new ArrayList<>();
-            api.add("status=");
+            api.add("status=" + (route.startsWith("/manhwa-end") ? "completed" : ""));
             api.addAll(params);
             api.add("page=" + page);
             api.add("pageSize=" + NTK_CATEGORY_PAGE_SIZE);

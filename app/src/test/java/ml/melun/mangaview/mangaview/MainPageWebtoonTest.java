@@ -120,6 +120,10 @@ public class MainPageWebtoonTest {
     public void ntkCategoryUsesApiPaginationAndParsesWorks() throws Exception {
         assertEquals("/api/manhwa-list?status=&g=%EC%8A%A4%EB%A6%B4%EB%9F%AC&page=2&pageSize=30&withTotal=1",
                 Search.ntkCategoryApiPathForTest("/manhwa?g=%EC%8A%A4%EB%A6%B4%EB%9F%AC", 2, base_comic));
+        assertEquals("/api/manhwa-list?status=completed&page=1&pageSize=30&withTotal=1",
+                Search.ntkCategoryApiPathForTest("/manhwa-end", 1, base_comic));
+        assertEquals("/api/manhwa-list?status=completed&g=%EC%95%A1%EC%85%98&page=2&pageSize=30&withTotal=1",
+                Search.ntkCategoryApiPathForTest("/manhwa-end?g=%EC%95%A1%EC%85%98", 2, base_comic));
         assertEquals("/api/works?status=ing&tag=%EC%8A%A4%EB%A6%B4%EB%9F%AC&page=3&pageSize=30&withTotal=1",
                 Search.ntkCategoryApiPathForTest("/ing?tag=%EC%8A%A4%EB%A6%B4%EB%9F%AC", 3, base_webtoon));
         assertEquals("/api/works?status=completed&tag=%EC%8A%A4%EB%A6%B4%EB%9F%AC&page=4&pageSize=30&withTotal=1",
@@ -301,8 +305,10 @@ public class MainPageWebtoonTest {
     @Test
     public void ntkComicGenreFiltersExposeFullGenreList() {
         String[] genres = MainPageWebtoon.NTK_COMIC_FILTER_GROUPS[1];
+        String[] completedGenres = MainPageWebtoon.NTK_COMIC_FILTER_GROUPS[2];
 
         assertEquals(34, genres.length);
+        assertEquals(29, completedGenres.length);
         assertTrue(containsFilter(genres, "17", "/manhwa?g=17"));
         assertTrue(containsFilter(genres, "TS", "/manhwa?g=TS"));
         assertTrue(containsFilter(genres, "소년", "/manhwa?g=%EC%86%8C%EB%85%84"));
@@ -315,6 +321,14 @@ public class MainPageWebtoonTest {
         assertTrue(containsFilter(genres, "여장", "/manhwa?g=%EC%97%AC%EC%9E%A5"));
         assertTrue(containsFilter(genres, "역사", "/manhwa?g=%EC%97%AD%EC%82%AC"));
         assertTrue(containsFilter(genres, "요리", "/manhwa?g=%EC%9A%94%EB%A6%AC"));
+        assertTrue(containsFilter(completedGenres, "17", "/manhwa-end?g=17"));
+        assertTrue(containsFilter(completedGenres, "액션", "/manhwa-end?g=%EC%95%A1%EC%85%98"));
+        assertTrue(containsFilter(completedGenres, "무협", "/manhwa-end?g=%EB%AC%B4%ED%98%91"));
+        assertTrue(!containsLabel(completedGenres, "도박"));
+        assertTrue(!containsLabel(completedGenres, "미스터리"));
+        assertTrue(!containsLabel(completedGenres, "여장"));
+        assertTrue(!containsLabel(completedGenres, "역사"));
+        assertTrue(!containsLabel(completedGenres, "요리"));
     }
 
     @Test
@@ -340,8 +354,10 @@ public class MainPageWebtoonTest {
         assertEquals("/ing?sort=hot", MainPageWebtoon.normalizeNtkPathForTest("/ing?sort=hot"));
         assertEquals("/end?sort=hot", MainPageWebtoon.normalizeNtkPathForTest("/end?sort=hot"));
         assertEquals("/manhwa?sort=hot", MainPageWebtoon.normalizeNtkPathForTest("/manhwa?sort=hot"));
+        assertEquals("/manhwa-end?sort=hot", MainPageWebtoon.normalizeNtkPathForTest("/manhwa-end?sort=hot"));
         assertEquals("/ing?tag=%EB%A1%9C%EB%A7%A8%EC%8A%A4", MainPageWebtoon.normalizeNtkPathForTest("/ing?tag=%EB%A1%9C%EB%A7%A8%EC%8A%A4"));
         assertEquals("/manhwa?g=%EC%9D%B4%EC%84%B8%EA%B3%84", MainPageWebtoon.normalizeNtkPathForTest("/manhwa?g=%EC%9D%B4%EC%84%B8%EA%B3%84"));
+        assertEquals("/manhwa-end?g=%EC%95%A1%EC%85%98", MainPageWebtoon.normalizeNtkPathForTest("/manhwa-end?g=%EC%95%A1%EC%85%98"));
     }
 
     @Test
