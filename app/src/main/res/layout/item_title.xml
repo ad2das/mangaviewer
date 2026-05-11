@@ -24,26 +24,18 @@
             android:layout_height="match_parent"
             android:paddingEnd="10dp">
 
-            <androidx.cardview.widget.CardView
-                android:id="@+id/thumbCard"
+            <com.google.android.material.imageview.ShapeableImageView
+                android:id="@+id/Thumb"
                 android:layout_width="96dp"
                 android:layout_height="132dp"
                 android:layout_marginStart="16dp"
-                app:cardCornerRadius="12dp"
-                app:cardElevation="2dp"
+                android:background="@drawable/app_cover_placeholder"
+                android:contentDescription="@string/cover_image"
+                android:scaleType="centerCrop"
                 app:layout_constraintBottom_toBottomOf="parent"
                 app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toTopOf="parent">
-
-                <ImageView
-                    android:id="@+id/Thumb"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:background="@drawable/app_cover_placeholder"
-                    android:contentDescription="@string/cover_image"
-                    android:scaleType="centerCrop" />
-
-            </androidx.cardview.widget.CardView>
+                app:layout_constraintTop_toTopOf="parent"
+                app:shapeAppearanceOverlay="@style/RoundedImageView" />
 
             <TextView
                 android:id="@+id/Title"
