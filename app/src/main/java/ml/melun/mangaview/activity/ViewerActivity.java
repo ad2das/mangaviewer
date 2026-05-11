@@ -120,6 +120,11 @@ public class ViewerActivity extends AppCompatActivity {
     private static final int PREVIOUS_EPISODE_PULL_THRESHOLD_DP = 36;
     private static final long SCROLL_BOOKMARK_SAVE_DELAY_MS = 350L;
     final Runnable delayedScrollBookmarkSave = this::saveCurrentScrollBookmark;
+    private PageItem pendingInitialResumePage;
+    private int pendingInitialResumeOffset;
+    private boolean initialResumeRestorePending = false;
+    private boolean userScrolledAfterInitialResume = false;
+    private final Runnable clearInitialResumeRestore = this::clearInitialResumeRestore;
     float topPullStartY = 0;
     boolean topPullTriggered = false;
     boolean topPullEligible = false;
@@ -305,6 +310,8 @@ public class ViewerActivity extends AppCompatActivity {
                     if(strip.getLayoutManager().getItemCount()>0 && newState == RecyclerView.SCROLL_STATE_DRAGGING && toolbarshow) {
                         toggleToolbar();
                     }
+                    if(newState == RecyclerView.SCROLL_STATE_DRAGGING)
+                        markUserScrolledAfterInitialResume();
                     if(newState == RecyclerView.SCROLL_STATE_IDLE)
                         loadEpisodeAtBoundaryIfNeeded();
                     if(newState == RecyclerView.SCROLL_STATE_IDLE) {
@@ -1129,32 +1136,12 @@ public class ViewerActivity extends AppCompatActivity {
         if(policy == null)
             policy = ViewerLoadPolicy.RESUME;
         if(m.useBookmark()) {
-            PageItem page = initialPageItem(m, policy);
-            int pageIndex = page.index;
-            List<String> images = MangaRepository.imageUrls(m, context);
-            if(images != null && images.size() > 0 && pageIndex >= images.size()) {
-                pageIndex = images.size() - 1;
-                page = new PageItem(pageIndex, "", m, PageItem.FIRST);
-            }
-            if(pageIndex < 0)
-                pageIndex = 0;
-            int position = exactInitialPagePosition(page);
-            if(position == RecyclerView.NO_POSITION && page.side != PageItem.FIRST) {
-                page = new PageItem(pageIndex, "", m, PageItem.FIRST);
-                position = exactInitialPagePosition(page);
-            }
-            if(position != RecyclerView.NO_POSITION)
-                manager.scrollToPositionWithOffset(position, initialPageOffset(m, policy));
-            else
-                manager.scrollToPage(new PageItem(0,"",m));
             if (m.isOnline()) {
                 // if manga is online or has title.gson
                 if (title == null) title = m.getTitle();
                 p.addRecent(title);
                 if (m!=null && m.getId()>0) p.setBookmark(title, m.getId());
             }
-        }else{
-            manager.scrollToPage(new PageItem(0,"",m));
         }
     }
 
@@ -1355,9 +1342,13 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private void saveCurrentScrollBookmark() {
+        if(shouldHoldBookmarkSaveForInitialRestore())
+            return;
         if(strip == null || manager == null || stripAdapter == null)
             return;
-        PageItem page = getFocusedVisiblePage();
+        PageItem page = getFirstVisiblePage();
+        if(page == null)
+            page = getFocusedVisiblePage();
         if(page == null || page.manga == null || !page.manga.useBookmark())
             return;
         int position = stripAdapter.findPagePosition(page);
@@ -1383,15 +1374,108 @@ public class ViewerActivity extends AppCompatActivity {
         if(stripAdapter == null || manager == null || target == null)
             return;
         PageItem page = initialPageItem(target, policy);
-        int position = exactInitialPagePosition(page);
-        if(position == RecyclerView.NO_POSITION && page.side != PageItem.FIRST) {
-            page = new PageItem(page.index, "", target, PageItem.FIRST);
-            position = exactInitialPagePosition(page);
+        int offset = initialPageOffset(target, policy);
+        if(hasInitialResumePosition(page, offset))
+            hideToolbarImmediatelyForResume();
+        restoreInitialViewerPosition(page, offset);
+        scheduleInitialResumeRestores(target, policy, page, offset);
+    }
+
+    private boolean hasInitialResumePosition(PageItem page, int offset) {
+        return page != null && (page.index > 0 || offset != 0 || page.side != PageItem.FIRST);
+    }
+
+    private void hideToolbarImmediatelyForResume() {
+        if(appbar == null || appbarBottom == null)
+            return;
+        appbar.animate().cancel();
+        appbarBottom.animate().cancel();
+        appbar.setTranslationY(-appbar.getHeight());
+        appbarBottom.setTranslationY(appbarBottom.getHeight());
+        toolbarshow = false;
+        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN);
+    }
+
+    private boolean restoreInitialViewerPosition(PageItem page, int offset) {
+        if(stripAdapter == null || manager == null || page == null)
+            return false;
+        PageItem target = page;
+        int position = exactInitialPagePosition(target);
+        if(position == RecyclerView.NO_POSITION && target.side != PageItem.FIRST) {
+            target = new PageItem(target.index, "", target.manga, PageItem.FIRST);
+            position = exactInitialPagePosition(target);
         }
         if(position == RecyclerView.NO_POSITION)
-            return;
-        int offset = initialPageOffset(target, policy);
+            return false;
         manager.scrollToPositionWithOffset(position, offset);
+        return true;
+    }
+
+    private void scheduleInitialResumeRestores(Manga target, ViewerLoadPolicy policy, PageItem page, int offset) {
+        clearInitialResumeRestore();
+        if(target == null || policy == ViewerLoadPolicy.EXACT || !target.useBookmark() || page == null)
+            return;
+        if(page.index <= 0 && offset == 0 && page.side == PageItem.FIRST)
+            return;
+        pendingInitialResumePage = page;
+        pendingInitialResumeOffset = offset;
+        initialResumeRestorePending = true;
+        userScrolledAfterInitialResume = false;
+        scheduleInitialResumeRestoreAt(80);
+        scheduleInitialResumeRestoreAt(240);
+        scheduleInitialResumeRestoreAt(700);
+        scheduleInitialResumeRestoreAt(1500);
+        mainHandler.postDelayed(clearInitialResumeRestore, 2200);
+    }
+
+    private void scheduleInitialResumeRestoreAt(long delayMs) {
+        mainHandler.postDelayed(() -> restorePendingInitialResumePosition(false), delayMs);
+    }
+
+    private void restorePendingInitialResumePosition(boolean fromDisplayedPage) {
+        if(!initialResumeRestorePending || userScrolledAfterInitialResume || pendingInitialResumePage == null)
+            return;
+        if(isFinishing())
+            return;
+        if(fromDisplayedPage || sameManga(pendingInitialResumePage.manga, manga))
+        {
+            if(hasInitialResumePosition(pendingInitialResumePage, pendingInitialResumeOffset))
+                hideToolbarImmediatelyForResume();
+            restoreInitialViewerPosition(pendingInitialResumePage, pendingInitialResumeOffset);
+        }
+    }
+
+    public void onViewerPageDisplayed(PageItem item) {
+        if(!initialResumeRestorePending || userScrolledAfterInitialResume || pendingInitialResumePage == null)
+            return;
+        if(sameInitialResumePage(pendingInitialResumePage, item))
+            mainHandler.post(() -> restorePendingInitialResumePosition(true));
+    }
+
+    private boolean shouldHoldBookmarkSaveForInitialRestore() {
+        return initialResumeRestorePending && !userScrolledAfterInitialResume;
+    }
+
+    private void markUserScrolledAfterInitialResume() {
+        if(!initialResumeRestorePending)
+            return;
+        userScrolledAfterInitialResume = true;
+        clearInitialResumeRestore();
+    }
+
+    private void clearInitialResumeRestore() {
+        mainHandler.removeCallbacks(clearInitialResumeRestore);
+        initialResumeRestorePending = false;
+        pendingInitialResumePage = null;
+        pendingInitialResumeOffset = 0;
+        userScrolledAfterInitialResume = false;
+    }
+
+    private boolean sameInitialResumePage(PageItem a, PageItem b) {
+        return a != null && b != null
+                && a.index == b.index
+                && a.side == b.side
+                && sameManga(a.manga, b.manga);
     }
 
     private Title titleForProgress(Manga target) {

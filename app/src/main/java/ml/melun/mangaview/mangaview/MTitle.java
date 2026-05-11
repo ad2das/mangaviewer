@@ -46,7 +46,21 @@ public class MTitle{
     }
 
     public void setSourceSite(String sourceSite) {
-        this.sourceSite = sourceSite == null ? "" : sourceSite;
+        this.sourceSite = normalizeSourceSite(sourceSite);
+    }
+
+    private String normalizeSourceSite(String sourceSite) {
+        if(sourceSite == null)
+            return "";
+        String lower = sourceSite.trim().toLowerCase();
+        if(lower.length() == 0)
+            return "";
+        if(lower.contains("ntk") || lower.contains("sbxh") || lower.contains("toonflix"))
+            return "ntk";
+        if(lower.contains("wfwf") || lower.contains("wolf") || lower.contains("vcloud")
+                || lower.contains("v12st") || lower.contains("ao9cloud"))
+            return "wfwf";
+        return "";
     }
 
     public String getNtkStatusLabel() {

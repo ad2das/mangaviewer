@@ -610,6 +610,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             return;
         displayedImages.add(pageKey);
         trimDisplayedTracker();
+        if(mainContext instanceof ViewerActivity)
+            ((ViewerActivity) mainContext).onViewerPageDisplayed(item);
         int layoutPos = holder.getAdapterPosition();
         if(layoutPos != RecyclerView.NO_POSITION)
             schedulePreloadAroundScrollPosition(layoutPos);

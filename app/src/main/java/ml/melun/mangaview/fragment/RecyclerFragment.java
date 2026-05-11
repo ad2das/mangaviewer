@@ -554,7 +554,9 @@ public class RecyclerFragment extends Fragment {
     }
 
     void openViewer(Manga manga, int code){
-        Title title = selectedPosition > -1 ? titleAdapter.getItem(selectedPosition) : null;
+        Title title = manga == null ? null : manga.getTitle();
+        if(title == null && selectedPosition > -1)
+            title = titleAdapter.getItem(selectedPosition);
         manga.setMode(0);
         if(title != null)
             manga.setTitle(title);

@@ -199,6 +199,37 @@ public class Preference {
         }catch(Exception e){
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
+        migrateSourcePrefKeysIfNeeded();
+    }
+
+    private void migrateSourcePrefKeysIfNeeded() {
+        migrateStoredSourcePrefKeysIfNeeded();
+        ensureBookmarkLoaded();
+        ensureViewerBookmarkLoaded();
+    }
+
+    private void migrateStoredSourcePrefKeysIfNeeded() {
+        boolean changed = false;
+        String storedBookmark = sharedPref.getString("bookmark2", "{}");
+        String normalizedBookmark = normalizeSourcePrefJsonString(storedBookmark);
+        if(!normalizedBookmark.equals(storedBookmark)) {
+            prefsEditor.putString("bookmark2", normalizedBookmark);
+            changed = true;
+        }
+        String storedViewerBookmark = sharedPref.getString("bookmark", "{}");
+        String normalizedViewerBookmark = normalizeSourcePrefJsonString(storedViewerBookmark);
+        if(!normalizedViewerBookmark.equals(storedViewerBookmark)) {
+            prefsEditor.putString("bookmark", normalizedViewerBookmark);
+            changed = true;
+        }
+        if(changed)
+            prefsEditor.apply();
+    }
+
+    private String normalizeSourcePrefJsonString(String source) {
+        if(source == null || source.length() == 0)
+            return "{}";
+        return source.replaceAll("\"(?:[0-9]+\\.)+(ntk|wfwf)\\.", "\"$1.");
     }
 
     private void ensureHistoryLoaded() {
@@ -310,6 +341,8 @@ public class Preference {
         bookmarkLoaded = true;
         try {
             bookmark = new JSONObject(sharedPref.getString("bookmark2", "{}"));
+            if(normalizeSourcePrefKeys(bookmark))
+                writeBookmark();
         } catch(Exception e) {
             bookmark = new JSONObject();
             ml.melun.mangaview.report.CrashReporter.record(e);
@@ -322,6 +355,8 @@ public class Preference {
         viewerBookmarkLoaded = true;
         try {
             pagebookmark = new JSONObject(sharedPref.getString("bookmark", "{}"));
+            if(normalizeSourcePrefKeys(pagebookmark))
+                writeViewerBookmark();
         } catch(Exception e) {
             pagebookmark = new JSONObject();
             ml.melun.mangaview.report.CrashReporter.record(e);
@@ -912,6 +947,9 @@ public class Preference {
                     return cached;
                 if(bookmark.has(sourceKey))
                     return cacheBookmarkValue(sourceKey, bookmark.getInt(sourceKey));
+                Integer normalized = intFromNormalizedSourcePref(bookmark, sourceKey);
+                if(normalized != null)
+                    return cacheBookmarkValue(sourceKey, normalized);
                 String legacyKey = legacyBookmarkKey(title);
                 cached = bookmarkValueByKey.get(legacyKey);
                 if(cached != null)
@@ -931,8 +969,14 @@ public class Preference {
     }
 
     private void ensureSourceSite(MTitle title) {
-        if(title == null || title.getSourceSite().length() > 0)
+        if(title == null)
             return;
+        String canonical = canonicalSourceSite(title.getSourceSite());
+        if(canonical.length() > 0) {
+            if(!canonical.equals(title.getSourceSite()))
+                title.setSourceSite(canonical);
+            return;
+        }
         title.setSourceSite(resolveSourceSite(title));
     }
 
@@ -948,8 +992,8 @@ public class Preference {
     }
 
     public String resolveKnownSourceSite(MTitle title) {
-        String source = title == null ? "" : title.getSourceSite();
-        if(source != null && source.length() > 0)
+        String source = canonicalSourceSite(title == null ? "" : title.getSourceSite());
+        if(source.length() > 0)
             return source;
         if(title != null && title.getId() > 0) {
             String sourceCacheKey = legacyTitleLookupKey(title);
@@ -987,9 +1031,24 @@ public class Preference {
     }
 
     private String cacheKnownSource(String key, String source) {
+        source = canonicalSourceSite(source);
         if(key != null && key.length() > 0)
             knownSourceByKey.put(key, source == null ? "" : source);
         return source == null ? "" : source;
+    }
+
+    private String canonicalSourceSite(String source) {
+        if(source == null)
+            return "";
+        String lower = source.trim().toLowerCase();
+        if(lower.length() == 0)
+            return "";
+        if(lower.contains("ntk") || lower.contains("sbxh") || lower.contains("toonflix"))
+            return "ntk";
+        if(lower.contains("wfwf") || lower.contains("wolf") || lower.contains("vcloud")
+                || lower.contains("v12st") || lower.contains("ao9cloud"))
+            return "wfwf";
+        return "";
     }
 
     private String sourceSiteFromUrl(String sourceUrl) {
@@ -1002,7 +1061,7 @@ public class Preference {
 
     private String bookmarkKey(MTitle title) {
         String legacy = legacyBookmarkKey(title);
-        String source = title == null ? "" : title.getSourceSite();
+        String source = canonicalSourceSite(title == null ? "" : title.getSourceSite());
         if(source == null || source.length() == 0)
             return legacy;
         return source + "." + legacy;
@@ -1034,6 +1093,7 @@ public class Preference {
 
     public void writeBookmark(){
         ensureBookmarkLoaded();
+        normalizeSourcePrefKeys(bookmark);
         bookmarkValueByKey.clear();
         knownSourceByKey.clear();
         prefsEditor.putString("bookmark2", bookmark.toString());
@@ -1123,7 +1183,9 @@ public class Preference {
             return 0;
         if(m.getId()>-1) {
             try {
-                return pagebookmark.getInt(viewerBookmarkKey(m));
+                String key = viewerBookmarkKey(m);
+                Integer normalized = intFromNormalizedSourcePref(pagebookmark, key);
+                return normalized != null ? normalized : pagebookmark.getInt(key);
             } catch (Exception e) {
                 //
             }
@@ -1148,7 +1210,9 @@ public class Preference {
             return 0;
         if(m.getId()>-1) {
             try {
-                return pagebookmark.getInt(viewerBookmarkOffsetKey(m));
+                String key = viewerBookmarkOffsetKey(m);
+                Integer normalized = intFromNormalizedSourcePref(pagebookmark, key);
+                return normalized != null ? normalized : pagebookmark.getInt(key);
             } catch (Exception e) {
                 //
             }
@@ -1173,7 +1237,9 @@ public class Preference {
             return 0;
         if(m.getId()>-1) {
             try {
-                return pagebookmark.getInt(viewerBookmarkSideKey(m));
+                String key = viewerBookmarkSideKey(m);
+                Integer normalized = intFromNormalizedSourcePref(pagebookmark, key);
+                return normalized != null ? normalized : pagebookmark.getInt(key);
             } catch (Exception e) {
                 //
             }
@@ -1252,10 +1318,109 @@ public class Preference {
     private String mangaSourceSite(Manga m) {
         if(m == null || m.getTitle() == null)
             return "";
-        String source = m.getTitle().getSourceSite();
+        String source = canonicalSourceSite(m.getTitle().getSourceSite());
         if(source != null && source.length() > 0)
             return source;
         return isNtkSite() ? "ntk" : "wfwf";
+    }
+
+    private boolean normalizeSourcePrefKeys(JSONObject object) {
+        if(object == null)
+            return false;
+        boolean changed = false;
+        JSONObject normalized = new JSONObject();
+        try {
+            Iterator<String> keys = object.keys();
+            while(keys.hasNext()) {
+                String key = keys.next();
+                String normalizedKey = normalizeSourcePrefKey(key);
+                if(!normalizedKey.equals(key))
+                    changed = true;
+                normalized.put(normalizedKey, object.get(key));
+            }
+            if(changed) {
+                Iterator<String> existing = object.keys();
+                ArrayList<String> removeKeys = new ArrayList<>();
+                while(existing.hasNext())
+                    removeKeys.add(existing.next());
+                for(String key : removeKeys)
+                    object.remove(key);
+                Iterator<String> normalizedKeys = normalized.keys();
+                while(normalizedKeys.hasNext()) {
+                    String key = normalizedKeys.next();
+                    object.put(key, normalized.get(key));
+                }
+            }
+        } catch(Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return false;
+        }
+        return changed;
+    }
+
+    private String normalizeSourcePrefKey(String key) {
+        if(key == null)
+            return "";
+        int ntk = key.indexOf("ntk.");
+        int wfwf = key.indexOf("wfwf.");
+        int index;
+        if(ntk >= 0 && (wfwf < 0 || ntk < wfwf))
+            index = ntk;
+        else
+            index = wfwf;
+        return index > 0 ? key.substring(index) : key;
+    }
+
+    private Integer intFromNormalizedSourcePref(JSONObject object, String normalizedKey) {
+        if(object == null || normalizedKey == null || normalizedKey.length() == 0)
+            return null;
+        Integer found = null;
+        try {
+            if(object.has(normalizedKey))
+                found = object.getInt(normalizedKey);
+            Iterator<String> keys = object.keys();
+            while(keys.hasNext()) {
+                String key = keys.next();
+                if(key != null && !normalizedKey.equals(key)
+                        && sourceAwarePrefKeyMatches(key, normalizedKey))
+                    found = object.getInt(key);
+            }
+        } catch(Exception e) {
+            return found;
+        }
+        return found;
+    }
+
+    private boolean sourceAwarePrefKeyMatches(String storedKey, String requestedKey) {
+        String stored = normalizeSourcePrefKey(storedKey);
+        String requested = normalizeSourcePrefKey(requestedKey);
+        if(stored.equals(requested))
+            return true;
+        String storedSource = leadingSourcePrefix(stored);
+        String requestedSource = leadingSourcePrefix(requested);
+        if(storedSource.length() > 0 && requestedSource.length() > 0 && !storedSource.equals(requestedSource))
+            return false;
+        return stripLeadingSourcePrefix(stored).equals(stripLeadingSourcePrefix(requested));
+    }
+
+    private String leadingSourcePrefix(String key) {
+        if(key == null)
+            return "";
+        if(key.startsWith("ntk."))
+            return "ntk";
+        if(key.startsWith("wfwf."))
+            return "wfwf";
+        return "";
+    }
+
+    private String stripLeadingSourcePrefix(String key) {
+        if(key == null)
+            return "";
+        if(key.startsWith("ntk."))
+            return key.substring(4);
+        if(key.startsWith("wfwf."))
+            return key.substring(5);
+        return key;
     }
 
     private String legacyViewerBookmarkKey(Manga m) {
@@ -1272,6 +1437,7 @@ public class Preference {
     }
     private void writeViewerBookmark(){
         ensureViewerBookmarkLoaded();
+        normalizeSourcePrefKeys(pagebookmark);
         prefsEditor.putString("bookmark", pagebookmark.toString());
         prefsEditor.apply();
         notifyLocalChange("pageBookmark");
@@ -1414,6 +1580,7 @@ public class Preference {
     public void setBookmarks(JSONObject book){
         bookmarkLoaded = true;
         this.bookmark = book == null ? new JSONObject() : book;
+        normalizeSourcePrefKeys(this.bookmark);
         bookmarkValueByKey.clear();
         knownSourceByKey.clear();
         writeBookmark();
@@ -1422,11 +1589,13 @@ public class Preference {
     public void setViewerBookmarks(JSONObject book){
         viewerBookmarkLoaded = true;
         this.pagebookmark = book == null ? new JSONObject() : book;
+        normalizeSourcePrefKeys(this.pagebookmark);
         writeViewerBookmark();
     }
 
     public JSONObject getViewerBookmarkObject() {
         ensureViewerBookmarkLoaded();
+        normalizeSourcePrefKeys(pagebookmark);
         return pagebookmark;
     }
 
@@ -1539,6 +1708,7 @@ public class Preference {
     }
     public JSONObject getBookmarkObject() {
         ensureBookmarkLoaded();
+        normalizeSourcePrefKeys(bookmark);
         return bookmark;
     }
 
