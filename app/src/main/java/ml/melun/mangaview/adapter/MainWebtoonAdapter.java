@@ -1790,14 +1790,15 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         void bindFilters(String[][] groups) {
+            boolean ntk = isNtkSite();
             for(String[] group : groups) {
                 if(group.length == 0)
                     continue;
                 SectionName groupName = parseSectionName(group[0]);
-                if(baseMode == base_webtoon && groupName.group.startsWith("완결"))
+                if(baseMode == base_webtoon && !ntk && groupName.group.startsWith("완결"))
                     continue;
                 String displayGroup = groupName.group;
-                if(baseMode == base_webtoon && displayGroup.startsWith("연재 "))
+                if(baseMode == base_webtoon && !ntk && displayGroup.startsWith("연재 "))
                     displayGroup = displayGroup.substring(3);
 
                 LinearLayout groupBlock = new LinearLayout(context);
