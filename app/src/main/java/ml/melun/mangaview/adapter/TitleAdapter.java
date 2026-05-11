@@ -417,19 +417,23 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             Object source = isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, data.getBaseMode());
             String thumbKey = String.valueOf(source);
             if(!thumbKey.equals(holder.thumb.getTag())) {
-                safeGlideClear(holder.thumb);
-                holder.thumb.setTag(thumbKey);
-                try {
-                    Glide.with(holder.thumb)
-                            .load(source)
-                            .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                            .override(dp(126), dp(170))
-                            .thumbnail(0.25f)
-                            .dontAnimate()
-                            .into(holder.thumb);
-                } catch (RuntimeException e) {
-                    ml.melun.mangaview.report.CrashReporter.record(e);
-                    holder.thumb.setImageResource(R.drawable.app_cover_placeholder);
+                if(scrollBusy) {
+                    bindDeferredThumbnail(holder.thumb, thumbKey);
+                } else {
+                    safeGlideClear(holder.thumb);
+                    holder.thumb.setTag(thumbKey);
+                    try {
+                        Glide.with(holder.thumb)
+                                .load(source)
+                                .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                                .override(dp(126), dp(170))
+                                .thumbnail(0.25f)
+                                .dontAnimate()
+                                .into(holder.thumb);
+                    } catch (RuntimeException e) {
+                        ml.melun.mangaview.report.CrashReporter.record(e);
+                        holder.thumb.setImageResource(R.drawable.app_cover_placeholder);
+                    }
                 }
             }
         }
@@ -468,6 +472,15 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             if(first != RecyclerView.NO_POSITION)
                 preloadThumbnails(first, Math.max(8, last - first + 10));
         }
+    }
+
+    private void bindDeferredThumbnail(ImageView view, String targetKey) {
+        String deferredKey = "deferred:" + targetKey;
+        if(deferredKey.equals(view.getTag()))
+            return;
+        safeGlideClear(view);
+        view.setTag(deferredKey);
+        view.setImageResource(R.drawable.app_cover_placeholder);
     }
 
     private BindMeta bindMeta(Title title) {

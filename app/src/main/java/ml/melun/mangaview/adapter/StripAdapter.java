@@ -540,7 +540,12 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             markDisplayedAndPreload(holder, item, pageKey);
             return;
         }
+        holder.frame.setImageDrawable(null);
         holder.refresh.setVisibility(View.GONE);
+        if(scrollBusy) {
+            bindDeferredPage(holder, pageKey);
+            return;
+        }
         if (autoCut) {
             long bindStart = android.os.SystemClock.elapsedRealtime();
             CustomTarget<Bitmap> imageTarget = new CustomTarget<Bitmap>() {
@@ -560,6 +565,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
                     setFramePlaceholderSize(holder.frame);
+                    holder.frame.setImageDrawable(null);
                     holder.refresh.setVisibility(View.GONE);
                 }
 
@@ -568,6 +574,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
                     setFramePlaceholderSize(holder.frame);
+                    holder.frame.setImageDrawable(null);
                     holder.refresh.setVisibility(View.VISIBLE);
                 }
             };
@@ -598,6 +605,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
                     setFramePlaceholderSize(holder.frame);
+                    holder.frame.setImageDrawable(null);
                     holder.refresh.setVisibility(View.GONE);
                 }
 
@@ -606,6 +614,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
                     setFramePlaceholderSize(holder.frame);
+                    holder.frame.setImageDrawable(null);
                     holder.refresh.setVisibility(View.VISIBLE);
                 }
             };
@@ -687,6 +696,15 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             frame.setLayoutParams(params);
         }
         frame.setMinimumHeight(target);
+    }
+
+    private void bindDeferredPage(ImgViewHolder holder, String pageKey) {
+        if(("deferred:" + pageKey).equals(holder.frame.getTag()))
+            return;
+        clearImageTarget(holder);
+        holder.frame.setTag("deferred:" + pageKey);
+        setFramePlaceholderSize(holder.frame);
+        holder.refresh.setVisibility(View.GONE);
     }
 
     private boolean isContextDestroyed() {
