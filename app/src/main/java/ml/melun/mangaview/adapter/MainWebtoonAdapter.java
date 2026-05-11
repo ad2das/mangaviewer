@@ -1430,7 +1430,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
             ContinueHolder(View itemView) {
                 super(itemView);
-                card = itemView.findViewById(R.id.home_continue_card);
+                card = itemView;
                 thumb = itemView.findViewById(R.id.home_continue_thumb);
                 siteIcon = itemView.findViewById(R.id.home_continue_site_icon);
                 name = itemView.findViewById(R.id.home_continue_title);
@@ -1632,7 +1632,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
             RankHolder(View itemView) {
                 super(itemView);
-                card = itemView.findViewById(R.id.home_rank_card);
+                card = itemView;
                 thumb = itemView.findViewById(R.id.home_rank_thumb);
                 index = itemView.findViewById(R.id.home_rank_index);
                 title = itemView.findViewById(R.id.home_rank_title);

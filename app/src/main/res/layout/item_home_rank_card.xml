@@ -4,80 +4,70 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="150dp"
     android:layout_height="222dp"
+    android:background="@drawable/app_home_card_bg"
+    android:clickable="true"
+    android:focusable="true"
+    android:elevation="2dp"
     android:paddingStart="4dp"
     android:paddingEnd="4dp">
 
-    <androidx.constraintlayout.widget.ConstraintLayout
-        android:id="@+id/home_rank_card"
+    <ImageView
+        android:id="@+id/home_rank_thumb"
+        android:layout_width="match_parent"
+        android:layout_height="134dp"
+        android:background="@drawable/app_cover_placeholder"
+        android:contentDescription="@string/cover_image"
+        android:scaleType="centerCrop"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <TextView
+        android:id="@+id/home_rank_index"
+        android:layout_width="34dp"
+        android:layout_height="34dp"
+        android:background="@drawable/app_rank_badge"
+        android:gravity="center"
+        android:textColor="@android:color/white"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        tools:text="1" />
+
+    <TextView
+        android:id="@+id/home_rank_title"
+        style="@style/AppText.CardTitle"
         android:layout_width="0dp"
-        android:layout_height="212dp"
-        android:background="@drawable/app_home_card_bg"
-        android:clickable="true"
-        android:focusable="true"
-        android:elevation="2dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="10dp"
+        android:layout_marginTop="10dp"
+        android:layout_marginEnd="10dp"
+        android:ellipsize="end"
+        android:lineSpacingExtra="0dp"
+        android:maxLines="2"
+        app:autoSizeMaxTextSize="14sp"
+        app:autoSizeMinTextSize="11sp"
+        app:autoSizeStepGranularity="1sp"
+        app:autoSizeTextType="uniform"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/home_rank_thumb"
+        tools:text="One Piece" />
+
+    <TextView
+        android:id="@+id/home_rank_meta"
+        style="@style/AppText.CardMeta"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="10dp"
+        android:layout_marginEnd="10dp"
+        android:layout_marginBottom="10dp"
+        android:ellipsize="end"
+        android:maxLines="1"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent">
-
-        <ImageView
-            android:id="@+id/home_rank_thumb"
-            android:layout_width="match_parent"
-            android:layout_height="134dp"
-            android:background="@drawable/app_cover_placeholder"
-            android:scaleType="centerCrop"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toTopOf="parent" />
-
-        <TextView
-            android:id="@+id/home_rank_index"
-            android:layout_width="34dp"
-            android:layout_height="34dp"
-            android:background="@drawable/app_rank_badge"
-            android:gravity="center"
-            android:textColor="@android:color/white"
-            android:textSize="14sp"
-            android:textStyle="bold"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toTopOf="parent"
-            tools:text="1" />
-
-        <TextView
-            android:id="@+id/home_rank_title"
-            style="@style/AppText.CardTitle"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="10dp"
-            android:layout_marginTop="10dp"
-            android:layout_marginEnd="10dp"
-            android:ellipsize="end"
-            android:lineSpacingExtra="0dp"
-            android:maxLines="2"
-            app:autoSizeMaxTextSize="14sp"
-            app:autoSizeMinTextSize="11sp"
-            app:autoSizeStepGranularity="1sp"
-            app:autoSizeTextType="uniform"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toBottomOf="@+id/home_rank_thumb"
-            tools:text="One Piece" />
-
-        <TextView
-            android:id="@+id/home_rank_meta"
-            style="@style/AppText.CardMeta"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="10dp"
-            android:layout_marginEnd="10dp"
-            android:layout_marginBottom="10dp"
-            android:ellipsize="end"
-            android:maxLines="1"
-            app:layout_constraintBottom_toBottomOf="parent"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintStart_toStartOf="parent"
-            tools:text="98.7K" />
-
-    </androidx.constraintlayout.widget.ConstraintLayout>
+        tools:text="98.7K" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

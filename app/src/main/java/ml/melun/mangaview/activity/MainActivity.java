@@ -367,7 +367,7 @@ public class MainActivity extends AppCompatActivity
         content.postDelayed(() -> {
             if(!isFinishing() && !isDestroyed())
                 AppUpdateManager.checkForUpdate(this);
-        }, 2500);
+        }, 600);
         content.postDelayed(this::runDeferredStartupTasks, 500);
         content.post(this::maybeOpenNtkCaptcha);
 
