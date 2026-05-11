@@ -23,14 +23,14 @@
         app:menu="@menu/activity_main_drawer" />
 
     <TextView
-        android:background="#BC000000"
+        android:background="@color/appScrim"
         android:gravity="center"
         android:id="@+id/waiting_panel"
         android:layout_height="match_parent"
         android:layout_width="match_parent"
         android:text="@string/downloader_stopping"
         android:textAlignment="center"
-        android:textColor="@android:color/white"
+        android:textColor="@color/colorTextOnPrimary"
         android:textSize="20sp"
         android:visibility="gone" />
 

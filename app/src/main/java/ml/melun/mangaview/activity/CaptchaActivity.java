@@ -311,7 +311,7 @@ public class CaptchaActivity extends AppCompatActivity {
                 } else if("normal".equals(type)) {
                     normalNtkPageCount++;
                     android.util.Log.d("CaptchaActivity", "NTK normal page detected without Turnstile: " + normalNtkPageCount);
-                    if(normalNtkPageCount >= 3 && System.currentTimeMillis() - pageFinishedTime > 1200L)
+                    if(normalNtkPageCount >= 1 && System.currentTimeMillis() - pageFinishedTime > 400L)
                         finishWithNtkAccessVerified();
                 } else {
                     normalNtkPageCount = 0;

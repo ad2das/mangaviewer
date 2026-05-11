@@ -90,6 +90,7 @@ public class Utils {
 
     private static int captchaCount = 1;
     private static long lastAutoCloudflareCaptchaAt = 0L;
+    private static long lastCaptchaActivityStartedAt = 0L;
     private static final int GLIDE_URL_CACHE_MAX = 512;
     private static final Map<String, GlideUrl> glideUrlCache = new LinkedHashMap<String, GlideUrl>(GLIDE_URL_CACHE_MAX, 0.75f, true) {
         @Override
@@ -824,6 +825,10 @@ public class Utils {
     static void startCaptchaActivity(Context context, int code, Fragment fragment, String url){
         if(!canUseContextForUi(context))
             return;
+        long now = System.currentTimeMillis();
+        if(now - lastCaptchaActivityStartedAt < 3000L)
+            return;
+        lastCaptchaActivityStartedAt = now;
         Intent captchaIntent = new Intent(context, CaptchaActivity.class);
         url = captchaUrl(url);
         captchaIntent.putExtra("url", url);
@@ -840,6 +845,10 @@ public class Utils {
     static void startCaptchaActivity(Context context, int code, Fragment fragment){
         if(!canUseContextForUi(context))
             return;
+        long now = System.currentTimeMillis();
+        if(now - lastCaptchaActivityStartedAt < 3000L)
+            return;
+        lastCaptchaActivityStartedAt = now;
         Intent captchaIntent = new Intent(context, CaptchaActivity.class);
         captchaIntent.putExtra("url", captchaUrl(null));
         try {

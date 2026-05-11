@@ -69,4 +69,8 @@
 
     <!-- Legacy header -->
     <color name="header_darker">#EDE9FE</color>
+
+    <!-- Scrim / Overlay -->
+    <color name="appScrim">#BC000000</color>
+    <color name="appScrimDark">#E6000000</color>
 </resources>
