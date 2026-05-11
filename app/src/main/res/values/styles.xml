@@ -141,6 +141,12 @@
         <item name="android:fontFamily">sans-serif-medium</item>
     </style>
 
+    <!-- ShapeableImageView -->
+    <style name="RoundedImageView">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">12dp</item>
+    </style>
+
     <!-- Toolbar Title -->
     <style name="AppToolbarTitle" parent="TextAppearance.Material3.TitleLarge">
         <item name="android:textSize">22sp</item>
