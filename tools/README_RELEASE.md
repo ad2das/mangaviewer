@@ -3,6 +3,7 @@
 GitHub Actions uses this release flow:
 
 1. `Release APK` runs on pushes to `main` and `ntk01`, builds and uploads the debug APK to that branch's release tag, then commits `version.json` plus `releases.html` back to the same branch.
+   The `main` branch reuses the `main-latest` release tag so only the newest main APK is kept there.
 2. `Build APK Artifact` remains available for manual artifact-only builds on other branches.
 
 `Build APK Artifact` defaults to a read-only Gradle cache so manual builds skip the slower cache-save post step. Turn on `refresh_gradle_cache` only when dependencies or Gradle inputs changed and the cache needs to be warmed again.
