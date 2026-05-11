@@ -54,6 +54,7 @@ public final class AppUpdateManager {
     private static final String RAW_VERSION_URL = "https://raw.githubusercontent.com/ad2das/mangaviewer/" + UPDATE_CHANNEL + "/version.json";
     private static final String CDN_VERSION_URL = "https://cdn.jsdelivr.net/gh/ad2das/mangaviewer@" + UPDATE_CHANNEL + "/version.json";
     private static final String LATEST_RELEASE_API_URL = "https://api.github.com/repos/ad2das/mangaviewer/releases/latest";
+    private static final String UPDATE_USER_AGENT = "MangaView Update";
     private static final String PREF = "appUpdate";
     private static final String KEY_VERSION = UPDATE_CHANNEL + "_latestVersion";
     private static final String KEY_LINK = UPDATE_CHANNEL + "_latestLink";
@@ -224,7 +225,7 @@ public final class AppUpdateManager {
         try {
             Request request = new Request.Builder()
                     .url(url)
-                    .header("User-Agent", "MangaView")
+                    .header("User-Agent", UPDATE_USER_AGENT)
                     .header("Accept", allowGithubContentsEnvelope
                             ? "application/vnd.github.raw, application/vnd.github+json, application/json, text/plain, */*"
                             : "application/json, text/plain, */*")
@@ -265,7 +266,7 @@ public final class AppUpdateManager {
         try {
             Request request = new Request.Builder()
                     .url(LATEST_RELEASE_API_URL)
-                    .header("User-Agent", "MangaView")
+                    .header("User-Agent", UPDATE_USER_AGENT)
                     .header("Accept", "application/vnd.github+json, application/json, */*")
                     .header("Cache-Control", "no-cache")
                     .header("Pragma", "no-cache")
