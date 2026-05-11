@@ -540,9 +540,10 @@ public class MainSearch extends Fragment {
         searchAdapter.setResume(true);
         searchAdapter.setForceThumbnail(false);
         searchAdapter.setLongClickEnabled(true);
-        searchAdapter.setData(data);
         if(searchResult.getAdapter() != searchAdapter)
             searchResult.setAdapter(searchAdapter);
+        searchResult.stopScroll();
+        searchAdapter.setDataImmediate(data);
         updateAdvSearchVisibility();
         if(swipe != null)
             swipe.setRefreshing(false);

@@ -819,6 +819,7 @@ public class ViewerActivity extends AppCompatActivity {
 
     @Override
     protected void onPause() {
+        saveCurrentScrollBookmark();
         PerformanceMonitor.pause();
         super.onPause();
     }
@@ -1336,25 +1337,21 @@ public class ViewerActivity extends AppCompatActivity {
     private void saveCurrentScrollBookmark() {
         if(strip == null || manager == null || stripAdapter == null)
             return;
-        int first = manager.findFirstVisibleItemPosition();
-        int last = manager.findLastVisibleItemPosition();
-        if(first == RecyclerView.NO_POSITION || last == RecyclerView.NO_POSITION)
+        PageItem page = getFocusedVisiblePage();
+        if(page == null || page.manga == null || !page.manga.useBookmark())
             return;
-        for(int i = Math.max(0, first); i <= last && i < stripAdapter.getItemCount(); i++) {
-            PageItem page = stripAdapter.getPageAtPosition(i);
-            if(page == null || page.manga == null || !page.manga.useBookmark())
-                continue;
-            View view = manager.findViewByPosition(i);
-            if(view == null)
-                continue;
-            int offset = view.getTop() - strip.getPaddingTop();
-            p.setViewerBookmark(page.manga, page.index, offset);
-            Title bookmarkTitle = titleForProgress(page.manga);
-            if(title == null)
-                title = bookmarkTitle;
-            p.setBookmark(bookmarkTitle, page.manga.getId());
+        int position = stripAdapter.findPagePosition(page);
+        if(position == RecyclerView.NO_POSITION)
             return;
-        }
+        View view = manager.findViewByPosition(position);
+        if(view == null)
+            return;
+        int offset = view.getTop() - strip.getPaddingTop();
+        p.setViewerBookmark(page.manga, page.index, offset);
+        Title bookmarkTitle = titleForProgress(page.manga);
+        if(title == null)
+            title = bookmarkTitle;
+        p.setBookmark(bookmarkTitle, page.manga.getId());
     }
 
     private void prepareInitialViewerPosition(Manga target, ViewerLoadPolicy policy) {

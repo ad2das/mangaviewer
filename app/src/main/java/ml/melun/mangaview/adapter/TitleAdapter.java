@@ -190,6 +190,17 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         dispatchFilteredList(next);
     }
 
+    public void setDataImmediate(List<?> t){
+        ArrayList<Title> next = normalizeTitles(t);
+        mData = next;
+        mDataFiltered = new ArrayList<>(next);
+        searching = false;
+        diffGeneration++;
+        tagTextCache.clear();
+        bindMetaCache.clear();
+        notifyDataSetChanged();
+    }
+
     private void dispatchFilteredList(ArrayList<Title> next) {
         final ArrayList<Title> old = new ArrayList<>(mDataFiltered);
         final ArrayList<Title> target = new ArrayList<>(next);
