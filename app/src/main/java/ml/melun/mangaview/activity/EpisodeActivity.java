@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
+import ml.melun.mangaview.ui.RecyclerPerformance;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.adapter.EpisodeAdapter;
 import ml.melun.mangaview.adapter.TagAdapter;
@@ -204,10 +205,8 @@ public class EpisodeActivity extends AppCompatActivity {
         recentResult = intent.getBooleanExtra("recent",false);
         episodeList = this.findViewById(R.id.EpisodeList);
         episodeList.setLayoutManager(new NpaLinearLayoutManager(this));
-        episodeList.setHasFixedSize(true);
-        episodeList.setItemViewCacheSize(20);
-        episodeList.setItemAnimator(null);
-        episodeList.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        RecyclerPerformance.tune(episodeList, 20);
+        RecyclerPerformance.bindImageRequestPausing(episodeList);
         episodeList.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
             public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {

@@ -51,6 +51,7 @@ import ml.melun.mangaview.repository.OfflineStore;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.PerfTrace;
+import ml.melun.mangaview.ui.RecyclerPerformance;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
@@ -141,10 +142,8 @@ public class MainSearch extends Fragment {
         searchSubmitButton = rootView.findViewById(R.id.searchSubmitButton);
         searchResult = rootView.findViewById(R.id.searchResult);
         searchResult.setLayoutManager(new NpaLinearLayoutManager(getContext()));
-        searchResult.setHasFixedSize(true);
-        searchResult.setItemViewCacheSize(12);
-        searchResult.setItemAnimator(null);
-        searchResult.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        RecyclerPerformance.tune(searchResult, 12);
+        RecyclerPerformance.bindImageRequestPausing(searchResult);
         searchResult.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
             public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {

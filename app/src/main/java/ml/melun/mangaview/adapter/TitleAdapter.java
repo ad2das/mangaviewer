@@ -28,13 +28,15 @@ import ml.melun.mangaview.R;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.ui.RecyclerPerformance;
+import ml.melun.mangaview.ui.SmoothScrollAdapter;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getGlideUrl;
 import static ml.melun.mangaview.Utils.isLocalMediaPath;
 import static ml.melun.mangaview.Utils.safeGlideClear;
 
-public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> implements Filterable {
+public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> implements Filterable, SmoothScrollAdapter {
 
     private ArrayList<Title> mData;
     private ArrayList<Title> mDataFiltered;
@@ -57,6 +59,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     private int lastResumeOpenPosition = RecyclerView.NO_POSITION;
     private final Map<String, String> tagTextCache = new HashMap<>();
     private final Map<String, BindMeta> bindMetaCache = new HashMap<>();
+    private boolean scrollBusy = false;
 
     public TitleAdapter(Context context) {
         init(context);
@@ -414,19 +417,23 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             Object source = isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, data.getBaseMode());
             String thumbKey = String.valueOf(source);
             if(!thumbKey.equals(holder.thumb.getTag())) {
-                safeGlideClear(holder.thumb);
-                holder.thumb.setTag(thumbKey);
-                try {
-                    Glide.with(holder.thumb)
-                            .load(source)
-                            .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                            .override(dp(126), dp(170))
-                            .thumbnail(0.25f)
-                            .dontAnimate()
-                            .into(holder.thumb);
-                } catch (RuntimeException e) {
-                    ml.melun.mangaview.report.CrashReporter.record(e);
-                    holder.thumb.setImageResource(R.drawable.app_cover_placeholder);
+                if(scrollBusy) {
+                    bindDeferredThumbnail(holder.thumb, thumbKey);
+                } else {
+                    safeGlideClear(holder.thumb);
+                    holder.thumb.setTag(thumbKey);
+                    try {
+                        Glide.with(holder.thumb)
+                                .load(source)
+                                .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                                .override(dp(126), dp(170))
+                                .thumbnail(0.25f)
+                                .dontAnimate()
+                                .into(holder.thumb);
+                    } catch (RuntimeException e) {
+                        ml.melun.mangaview.report.CrashReporter.record(e);
+                        holder.thumb.setImageResource(R.drawable.app_cover_placeholder);
+                    }
                 }
             }
         }
@@ -447,6 +454,33 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             holder.resumeSiteIcon.setVisibility(View.GONE);
         }
 
+    }
+
+    @Override
+    public void setScrollBusy(boolean busy) {
+        scrollBusy = busy;
+    }
+
+    @Override
+    public void onScrollIdle(RecyclerView recyclerView) {
+        RecyclerPerformance.refreshVisibleRange(recyclerView, this, 6);
+        RecyclerView.LayoutManager manager = recyclerView.getLayoutManager();
+        if(manager instanceof androidx.recyclerview.widget.LinearLayoutManager) {
+            androidx.recyclerview.widget.LinearLayoutManager linear = (androidx.recyclerview.widget.LinearLayoutManager) manager;
+            int first = linear.findFirstVisibleItemPosition();
+            int last = linear.findLastVisibleItemPosition();
+            if(first != RecyclerView.NO_POSITION)
+                preloadThumbnails(first, Math.max(8, last - first + 10));
+        }
+    }
+
+    private void bindDeferredThumbnail(ImageView view, String targetKey) {
+        String deferredKey = "deferred:" + targetKey;
+        if(deferredKey.equals(view.getTag()))
+            return;
+        safeGlideClear(view);
+        view.setTag(deferredKey);
+        view.setImageResource(R.drawable.app_cover_placeholder);
     }
 
     private BindMeta bindMeta(Title title) {

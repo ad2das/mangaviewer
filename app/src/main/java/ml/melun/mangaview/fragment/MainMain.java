@@ -32,6 +32,7 @@ import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
+import ml.melun.mangaview.ui.RecyclerPerformance;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.MainApplication.getHttpClient;
@@ -306,10 +307,8 @@ public class MainMain extends Fragment{
             return;
         NpaLinearLayoutManager lm = new NpaLinearLayoutManager(getContext());
         recyclerView.setLayoutManager(lm);
-        recyclerView.setHasFixedSize(true);
-        recyclerView.setItemViewCacheSize(18);
-        recyclerView.setItemAnimator(null);
-        recyclerView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        RecyclerPerformance.tune(recyclerView, 18);
+        RecyclerPerformance.bindImageRequestPausing(recyclerView);
         recyclerView.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
             public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {

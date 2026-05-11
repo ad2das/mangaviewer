@@ -22,18 +22,21 @@ import ml.melun.mangaview.R;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.mangaview.UpdatedManga;
+import ml.melun.mangaview.ui.RecyclerPerformance;
+import ml.melun.mangaview.ui.SmoothScrollAdapter;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.canUseContextForUi;
 import static ml.melun.mangaview.Utils.getGlideUrl;
 import static ml.melun.mangaview.Utils.safeGlideClear;
 
-public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> implements SmoothScrollAdapter {
     Context context;
     ArrayList<UpdatedManga> mData;
     onclickListener olisten;
     boolean save;
     boolean dark;
+    private boolean scrollBusy = false;
     private final LayoutInflater mInflater;
 
     public UpdatedAdapter(Context main) {
@@ -112,20 +115,24 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             Object source = getGlideUrl(thumb, m.getBaseMode());
             String key = String.valueOf(source);
             if(!key.equals(h.thumb.getTag())) {
-                safeGlideClear(h.thumb);
-                h.thumb.setTag(key);
-                try {
-                    Glide.with(h.thumb)
-                            .load(source)
-                            .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
-                            .override(dp(72), dp(96))
-                            .thumbnail(0.25f)
-                            .dontAnimate()
-                            .placeholder(R.drawable.app_cover_placeholder)
-                            .into(h.thumb);
-                } catch (RuntimeException e) {
-                    ml.melun.mangaview.report.CrashReporter.record(e);
-                    h.thumb.setImageResource(R.drawable.app_cover_placeholder);
+                if(scrollBusy) {
+                    bindDeferredThumb(h.thumb, key);
+                } else {
+                    safeGlideClear(h.thumb);
+                    h.thumb.setTag(key);
+                    try {
+                        Glide.with(h.thumb)
+                                .load(source)
+                                .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                                .override(dp(72), dp(96))
+                                .thumbnail(0.25f)
+                                .dontAnimate()
+                                .placeholder(R.drawable.app_cover_placeholder)
+                                .into(h.thumb);
+                    } catch (RuntimeException e) {
+                        ml.melun.mangaview.report.CrashReporter.record(e);
+                        h.thumb.setImageResource(R.drawable.app_cover_placeholder);
+                    }
                 }
             }
         } else {
@@ -173,6 +180,25 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         }
         h.tags.setText(tags.toString());
         h.author.setText(m.getAuthor() == null ? "" : m.getAuthor());
+    }
+
+    @Override
+    public void setScrollBusy(boolean busy) {
+        scrollBusy = busy;
+    }
+
+    @Override
+    public void onScrollIdle(RecyclerView recyclerView) {
+        RecyclerPerformance.refreshVisibleRange(recyclerView, this, 6);
+    }
+
+    private void bindDeferredThumb(ImageView view, String targetKey) {
+        String key = "deferred:" + targetKey;
+        if(key.equals(view.getTag()))
+            return;
+        safeGlideClear(view);
+        view.setTag(key);
+        view.setImageResource(R.drawable.app_cover_placeholder);
     }
 
     int dp(int value) {
