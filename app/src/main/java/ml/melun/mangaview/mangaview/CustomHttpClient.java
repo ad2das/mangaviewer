@@ -928,6 +928,10 @@ public class CustomHttpClient {
                 || lower.contains("just a moment");
     }
 
+    public boolean isCloudflareChallengeResponse(int code, String body) {
+        return isCloudflareChallenge(code, body);
+    }
+
     private boolean looksLikeNtkNormalPage(String lowerBody) {
         if(lowerBody == null || lowerBody.length() < 500)
             return false;

@@ -32,6 +32,8 @@ import java.util.Set;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
+import ml.melun.mangaview.runtime.AppDispatchers;
+import okhttp3.Response;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
@@ -47,7 +49,7 @@ public class CaptchaActivity extends AppCompatActivity {
     String domain;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private static final long TURNSTILE_CHECK_DELAY_MS = 0;
-    private static final long TURNSTILE_CHECK_INTERVAL_MS = 250;
+    private static final long TURNSTILE_CHECK_INTERVAL_MS = 500;
     private static final long TURNSTILE_MAX_WAIT_MS = 30000;
     public static final String SHADOW_HOOK_JS = "(function(){" +
             "if(window.__sh)return;" +
@@ -101,11 +103,13 @@ public class CaptchaActivity extends AppCompatActivity {
             "})();";
     private long pageFinishedTime = 0;
     private long lastAttemptTime = 0;
-    private static final long MIN_ATTEMPT_INTERVAL_MS = 150;
+    private static final long MIN_ATTEMPT_INTERVAL_MS = 1800;
     private boolean isFinishing = false;
     private Set<String> initialClearanceValues = new HashSet<>();
     private int normalNtkPageCount = 0;
     private boolean turnstileAutoClickStarted = false;
+    private boolean accessVerificationInFlight = false;
+    private long lastTurnstileTouchAt = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -312,9 +316,8 @@ public class CaptchaActivity extends AppCompatActivity {
                     normalNtkPageCount++;
                     android.util.Log.d("CaptchaActivity", "NTK normal page detected without Turnstile: " + normalNtkPageCount);
                     if(normalNtkPageCount >= 1
-                            && System.currentTimeMillis() - pageFinishedTime > 400L
-                            && readCookiesAndFinish(CookieManager.getInstance(), p.getUrl(), webView == null ? null : webView.getUrl()))
-                        finishWithNtkAccessVerified();
+                            && System.currentTimeMillis() - pageFinishedTime > 400L)
+                        readCookiesAndFinish(CookieManager.getInstance(), p.getUrl(), webView == null ? null : webView.getUrl());
                 } else {
                     normalNtkPageCount = 0;
                 }
@@ -391,15 +394,12 @@ public class CaptchaActivity extends AppCompatActivity {
 
     private void simulateTouchBurst(View view, float centerX, float centerY, float width, float height) {
         if(view == null) return;
-        Random random = new Random();
-        // Fire 3 rapid clicks with slight coordinate jitter and MOVE events
-        for(int i = 0; i < 3; i++) {
-            simulateTouchWithMove(view, centerX, centerY, width, height);
-            if(i < 2) {
-                SystemClock.sleep(40 + random.nextInt(41)); // 40-80ms gap
-            }
-        }
-        android.util.Log.d("CaptchaActivity", "Burst touch sequence completed");
+        long now = System.currentTimeMillis();
+        if(now - lastTurnstileTouchAt < 3500L)
+            return;
+        lastTurnstileTouchAt = now;
+        simulateTouchWithMove(view, centerX, centerY, width, height);
+        android.util.Log.d("CaptchaActivity", "Turnstile touch sequence completed");
     }
 
     private void simulateTouchWithMove(View view, float centerX, float centerY, float width, float height) {
@@ -451,7 +451,7 @@ public class CaptchaActivity extends AppCompatActivity {
     }
 
     private boolean readCookiesAndFinish(CookieManager cookiem, String purl, String currentUrl){
-        if(isFinishing) return false;
+        if(isFinishing) return true;
         try {
             boolean hasClearance = false;
             for(String cookieUrl : cookieReadUrls(purl, currentUrl)) {
@@ -475,8 +475,8 @@ public class CaptchaActivity extends AppCompatActivity {
                         hasClearance = true;
                 }
             }
-            // Only trust cookies actually read from CookieManager in THIS session
-            // Do NOT rely on stale CustomHttpClient state
+            // Cookie presence alone is not enough: stale WebView clearances can make this
+            // activity close while OkHttp still receives the Cloudflare challenge.
             if(hasClearance) {
                 cookiem.flush();
                 getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
@@ -484,18 +484,72 @@ public class CaptchaActivity extends AppCompatActivity {
                 getHttpClient().syncCookiesFromWebView(purl, true);
                 if(currentUrl != null)
                     getHttpClient().syncCookiesFromWebView(currentUrl, true);
-                getHttpClient().saveClearanceToDisk();
-                isFinishing = true;
-                handler.removeCallbacksAndMessages(null);
-                Intent resultIntent = new Intent();
-                setResult(RESULT_CAPTCHA, resultIntent);
-                finish();
-                return true;
+                verifyNtkAccessAndFinish(purl, currentUrl);
             }
         }catch (Exception e){
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return false;
+    }
+
+    private void verifyNtkAccessAndFinish(String purl, String currentUrl) {
+        if(accessVerificationInFlight || isFinishing)
+            return;
+        accessVerificationInFlight = true;
+        AppDispatchers.runIo(() -> {
+            boolean verified = verifyNtkAccess();
+            AppDispatchers.runOnMain(() -> {
+                accessVerificationInFlight = false;
+                if(isFinishing)
+                    return;
+                if(verified) {
+                    android.util.Log.d("CaptchaActivity", "NTK clearance verified by app HTTP client");
+                    finishWithVerifiedClearance();
+                } else {
+                    android.util.Log.d("CaptchaActivity", "NTK clearance failed app HTTP verification; keeping captcha open");
+                    resetInvalidNtkClearanceAndReload(purl, currentUrl);
+                }
+            });
+        });
+    }
+
+    private boolean verifyNtkAccess() {
+        try {
+            Response response = getHttpClient().mget("/", true);
+            if(response == null)
+                return false;
+            int code = response.code();
+            String body = getHttpClient().readBody(response);
+            return code >= 200 && code < 400 && !getHttpClient().isCloudflareChallengeResponse(code, body);
+        } catch(Exception e) {
+            android.util.Log.d("CaptchaActivity", "NTK clearance verification request failed", e);
+            return false;
+        }
+    }
+
+    private void finishWithVerifiedClearance() {
+        CookieManager manager = CookieManager.getInstance();
+        manager.flush();
+        getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
+        getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
+        if(webView != null)
+            getHttpClient().syncCookiesFromWebView(webView.getUrl(), true);
+        getHttpClient().saveClearanceToDisk();
+        isFinishing = true;
+        handler.removeCallbacksAndMessages(null);
+        Intent resultIntent = new Intent();
+        setResult(RESULT_CAPTCHA, resultIntent);
+        finish();
+    }
+
+    private void resetInvalidNtkClearanceAndReload(String purl, String currentUrl) {
+        getHttpClient().clearCloudflareWebViewCookies(purl, p.getWebtoonUrl(), p.getUrl(), currentUrl, NTK_WEBTOON_URL, NTK_COMIC_URL);
+        if(webView == null || isFinishing)
+            return;
+        String challengeUrl = getHttpClient().getLastCloudflareChallengeUrl();
+        if(challengeUrl == null || challengeUrl.length() == 0)
+            challengeUrl = purl;
+        webView.loadUrl(challengeUrl);
     }
 
     private Set<String> readClearanceValues(CookieManager cookiem, String... urls) {
