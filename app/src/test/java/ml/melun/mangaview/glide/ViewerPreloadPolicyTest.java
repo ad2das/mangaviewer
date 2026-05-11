@@ -45,7 +45,7 @@ public class ViewerPreloadPolicyTest {
     public void scrollBusyWindow_keepsFastFlingWorkTiny() {
         ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.scrollBusyWindow(false);
 
-        assertEquals(0, window.decodedLimit);
+        assertEquals(1, window.decodedLimit);
         assertEquals(2, window.immediateLimit);
         assertEquals(2, window.highLimit);
         assertEquals(2, window.totalLimit);

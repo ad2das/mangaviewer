@@ -851,7 +851,7 @@ public class MainActivity extends AppCompatActivity
             callback.callback(true);
         Toast.makeText(context, label + " 사이트로 변경되었습니다.", Toast.LENGTH_SHORT).show();
         if("NTK".equals(label))
-            content.post(() -> Utils.startNtkTurnstileCaptcha(this, 3, null, p));
+            content.post(() -> Utils.verifyNtkAccessAndOpenCaptchaIfNeeded(this, 3, null, p));
     }
 
     boolean changeFragment(int index){

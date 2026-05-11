@@ -640,6 +640,7 @@ public class CaptchaActivity extends AppCompatActivity {
         if(webView != null)
             getHttpClient().syncCookiesFromWebView(webView.getUrl(), true);
         getHttpClient().saveClearanceToDisk();
+        getHttpClient().markNtkAccessVerified();
         isFinishing = true;
         handler.removeCallbacksAndMessages(null);
         Intent resultIntent = new Intent();

@@ -787,7 +787,9 @@ public class Utils {
     }
 
     private static boolean shouldOpenCloudflareCaptchaAutomatically() {
-        if(!getHttpClient().isNtk() || getHttpClient().hasNtkAccessProof())
+        if(!getHttpClient().isNtk())
+            return false;
+        if(getHttpClient().hasNtkAccessProof() && !getHttpClient().hasRecentCloudflareChallenge())
             return false;
         long now = System.currentTimeMillis();
         if(now - lastAutoCloudflareCaptchaAt < 500L)
@@ -802,6 +804,8 @@ public class Utils {
         syncNtkCloudflareCookies(preference);
         if(isNtkEpisodeUrl(url))
             return false;
+        if(openRecentNtkCloudflareChallenge(context, code, fragment))
+            return true;
         if(getHttpClient().hasNtkAccessProof() || getHttpClient().hasRecentNtkAccessVerification())
             return true;
         if(shouldOpenCloudflareCaptchaAutomatically()) {
@@ -819,12 +823,52 @@ public class Utils {
         if(!canUseContextForUi(context) || !getHttpClient().isNtk())
             return false;
         syncNtkCloudflareCookies(preference);
+        if(openRecentNtkCloudflareChallenge(context, code, fragment))
+            return true;
         if(getHttpClient().hasNtkAccessProof() || getHttpClient().hasRecentNtkAccessVerification())
             return false;
         String challengedUrl = getHttpClient().getLastCloudflareChallengeUrl();
         if(challengedUrl == null || challengedUrl.length() == 0 || !getHttpClient().isNtkUrl(challengedUrl))
             return false;
         if(!shouldOpenCloudflareCaptchaAutomatically())
+            return false;
+        startCaptchaActivity(context, code, fragment, null);
+        captchaCount++;
+        return true;
+    }
+
+    public static boolean verifyNtkAccessAndOpenCaptchaIfNeeded(Context context, int code, Fragment fragment, Preference preference) {
+        if(!canUseContextForUi(context) || !getHttpClient().isNtk())
+            return false;
+        syncNtkCloudflareCookies(preference);
+        if(openRecentNtkCloudflareChallenge(context, code, fragment))
+            return true;
+        AppDispatchers.runUserAction(() -> {
+            boolean challenged = isNtkAccessChallengeActive();
+            AppDispatchers.runOnMain(() -> {
+                if(!canUseContextForUi(context))
+                    return;
+                if(challenged) {
+                    Preference source = preference != null ? preference : p;
+                    if(source != null)
+                        getHttpClient().clearCloudflareWebViewCookies(source.getWebtoonUrl(), source.getUrl());
+                    else
+                        getHttpClient().clearCloudflareCookies();
+                    startCaptchaActivity(context, code, fragment, null);
+                    captchaCount++;
+                } else {
+                    getHttpClient().markNtkAccessVerified();
+                }
+            });
+        });
+        return true;
+    }
+
+    private static boolean openRecentNtkCloudflareChallenge(Context context, int code, Fragment fragment) {
+        String challengedUrl = getHttpClient().getLastCloudflareChallengeUrl();
+        if(challengedUrl == null || challengedUrl.length() == 0 || !getHttpClient().isNtkUrl(challengedUrl))
+            return false;
+        if(!getHttpClient().hasRecentCloudflareChallenge())
             return false;
         startCaptchaActivity(context, code, fragment, null);
         captchaCount++;
@@ -895,8 +939,6 @@ public class Utils {
         if(source == null)
             return;
         getHttpClient().restoreClearanceFromDisk();
-        if(!getHttpClient().hasCloudflareClearance())
-            return;
         if(!getHttpClient().hasFreshCloudflareClearance()) {
             getHttpClient().syncCookiesFromWebView(source.getWebtoonUrl(), true);
             getHttpClient().syncCookiesFromWebView(source.getUrl(), true);

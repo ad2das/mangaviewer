@@ -311,7 +311,7 @@ public class ViewerActivity extends AppCompatActivity {
                         dispatchScrollAnchorToAdapter(newState != RecyclerView.SCROLL_STATE_IDLE);
                     }
                     if(strip.getLayoutManager().getItemCount()>0 && newState == RecyclerView.SCROLL_STATE_DRAGGING && toolbarshow) {
-                        toggleToolbar();
+                        hideToolbarImmediately();
                     }
                     if(newState == RecyclerView.SCROLL_STATE_DRAGGING)
                         markUserScrolledAfterInitialResume();
@@ -1378,7 +1378,7 @@ public class ViewerActivity extends AppCompatActivity {
         PageItem page = initialPageItem(target, policy);
         int offset = initialPageOffset(target, policy);
         if(hasInitialResumePosition(page, offset))
-            hideToolbarImmediatelyForResume();
+            hideToolbarImmediately();
         restoreInitialViewerPosition(page, offset);
         scheduleInitialResumeRestores(target, policy, page, offset);
     }
@@ -1387,7 +1387,7 @@ public class ViewerActivity extends AppCompatActivity {
         return page != null && (page.index > 0 || offset != 0 || page.side != PageItem.FIRST);
     }
 
-    private void hideToolbarImmediatelyForResume() {
+    private void hideToolbarImmediately() {
         if(appbar == null || appbarBottom == null)
             return;
         appbar.animate().cancel();
@@ -1442,7 +1442,7 @@ public class ViewerActivity extends AppCompatActivity {
         if(fromDisplayedPage || sameManga(pendingInitialResumePage.manga, manga))
         {
             if(hasInitialResumePosition(pendingInitialResumePage, pendingInitialResumeOffset))
-                hideToolbarImmediatelyForResume();
+                hideToolbarImmediately();
             restoreInitialViewerPosition(pendingInitialResumePage, pendingInitialResumeOffset);
         }
     }

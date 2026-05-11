@@ -60,6 +60,7 @@ public class CustomHttpClient {
     Map<String, CachedPage> pageCache;
     Map<String, PageLoadState> pageLoads;
     private volatile String lastCloudflareChallengeUrl = null;
+    private volatile long lastCloudflareChallengeAt = 0L;
     private volatile boolean cloudflareCaptchaActive = false;
     private final ThreadLocal<RequestGroup> currentRequestGroup = requestGroupLocal();
 
@@ -145,12 +146,24 @@ public class CustomHttpClient {
         return lastCloudflareChallengeUrl;
     }
 
+    public boolean hasRecentCloudflareChallenge() {
+        return lastCloudflareChallengeUrl != null
+                && lastCloudflareChallengeUrl.length() > 0
+                && System.currentTimeMillis() - lastCloudflareChallengeAt < 5 * 60 * 1000L;
+    }
+
+    public void clearLastCloudflareChallenge() {
+        lastCloudflareChallengeUrl = null;
+        lastCloudflareChallengeAt = 0L;
+    }
+
     public void setCloudflareCaptchaActive(boolean active) {
         cloudflareCaptchaActive = active;
     }
 
     public void markNtkAccessVerified() {
         try {
+            clearLastCloudflareChallenge();
             context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
                     .edit()
                     .putLong("ntkAccessVerifiedAt", System.currentTimeMillis())
@@ -338,7 +351,7 @@ public class CustomHttpClient {
         return value != null
                 && value.trim().length() >= 20
                 && !"deleted".equalsIgnoreCase(value.trim())
-                && !isClearanceExpired();
+                && !"null".equalsIgnoreCase(value.trim());
     }
 
     private synchronized void loadSavedCookies(){
@@ -751,10 +764,12 @@ public class CustomHttpClient {
         String body = readBody(response);
         if(isCloudflareChallenge(code, body)) {
             lastCloudflareChallengeUrl = getBaseUrl(normalized) + normalized;
-            if(!cloudflareCaptchaActive)
-                clearCloudflareCookies();
+            lastCloudflareChallengeAt = System.currentTimeMillis();
+            clearCloudflareCookies();
             throw new Exception("Cloudflare challenge");
         }
+        if(isNtk())
+            clearLastCloudflareChallenge();
         if(code >= 500 && staleCached != null)
             return new PageResponse(staleCached.code, staleCached.body, true);
         if(code >= 200 && code < 400 && body.length() > 0 && looksCacheable(body)) {

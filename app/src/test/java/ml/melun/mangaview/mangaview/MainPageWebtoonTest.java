@@ -340,6 +340,7 @@ public class MainPageWebtoonTest {
         assertEquals(33, comicGenres.length);
         assertTrue(!containsLabel(comicGenres, "17"));
         assertTrue(containsFilter(comicGenres, "성인", "/cm?type1=genre&type2=%BC%BA%C0%CE&o=n"));
+        assertTrue(containsFilter(comicGenres, "호러", "/cm?type1=genre&type2=%C8%A3%B7%AF&o=n"));
         assertTrue(containsFilter(comicGenres, "이세계", "/cm?type1=genre&type2=%C0%CC%BC%BC%B0%E8&o=n"));
         assertTrue(containsFilter(comicGenres, "판타지", "/cm?type1=genre&type2=%C6%C7%C5%B8%C1%F6&o=n"));
         assertTrue(containsFilter(comicGenres, "애니화", "/cm?type1=genre&type2=%BE%D6%B4%CF%C8%AD&o=n"));

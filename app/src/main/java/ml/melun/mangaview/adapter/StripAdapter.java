@@ -70,6 +70,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private static final int INITIAL_PRELOAD_AHEAD_COUNT = 10;
     private static final int PRELOAD_TRACK_LIMIT = 500;
     private static final int DECODED_PRELOAD_ACTIVE_LIMIT = 8;
+    private static final String PAYLOAD_HEIGHT = "height";
     ViewerActivity.InfiniteScrollCallback callback;
     Title title;
 
@@ -80,13 +81,17 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private final Map<String, Decoder> decoders = new HashMap<>();
     private final Map<String, CustomTarget<Bitmap>> decodedPreloadTargets = new HashMap<>();
     private final Map<String, Integer> pageHeights = new HashMap<>();
+    private final Set<String> pendingHeightCorrections = new LinkedHashSet<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private int lastPreloadAnchorPosition = RecyclerView.NO_POSITION;
     private int pendingPreloadPosition = RecyclerView.NO_POSITION;
     private int pendingPreloadDirection = 1;
     private int lastScrollDirection = 1;
+    private long pageHeightTotal = 0L;
+    private int pageHeightSampleCount = 0;
     private long preloadGeneration = 0L;
     private boolean pendingPreloadScheduled = false;
+    private boolean pendingHeightCorrectionScheduled = false;
     private boolean scrollBusy = false;
     private boolean released = false;
 
@@ -98,8 +103,11 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(released)
             return;
         this.scrollBusy = scrollBusy;
-        if(!scrollBusy && pendingPreloadPosition != RecyclerView.NO_POSITION)
-            schedulePreloadAroundScrollPosition(pendingPreloadPosition);
+        if(!scrollBusy) {
+            schedulePendingHeightCorrections();
+            if(pendingPreloadPosition != RecyclerView.NO_POSITION)
+                schedulePreloadAroundScrollPosition(pendingPreloadPosition);
+        }
     }
 
     public void onScrollAnchor(int adapterPosition, int direction, boolean busy) {
@@ -449,7 +457,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         items.clear();
         preloadedImages.clear();
         decodedBitmapCache.evictAll();
-        pageHeights.clear();
+        clearPageHeightState();
         decoders.clear();
         clearDecodedPreloadTargets();
         clearCurrentPage();
@@ -461,6 +469,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         released = true;
         pendingPreloadPosition = RecyclerView.NO_POSITION;
         pendingPreloadScheduled = false;
+        pendingHeightCorrectionScheduled = false;
         mainHandler.removeCallbacksAndMessages(null);
         clearDecodedPageState();
     }
@@ -505,6 +514,20 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 return;
             }
         }
+    }
+
+    @Override
+    public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int pos, @NonNull List<Object> payloads) {
+        if(payloads != null && payloads.contains(PAYLOAD_HEIGHT) && holder instanceof ImgViewHolder
+                && items != null && pos >= 0 && pos < items.size() && items.get(pos) instanceof PageItem) {
+            ImgViewHolder imageHolder = (ImgViewHolder) holder;
+            String pageKey = pageBindKey((PageItem) items.get(pos));
+            if(pageKey.equals(imageHolder.boundPageKey)) {
+                applyKnownHeight(imageHolder, pageKey);
+                return;
+            }
+        }
+        super.onBindViewHolder(holder, pos, payloads);
     }
 
 
@@ -625,8 +648,9 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private void bindBitmap(ImgViewHolder holder, String pageKey, Bitmap bitmap) {
+        boolean hadKnownHeight = hasKnownPageHeight(pageKey);
         rememberPageHeight(pageKey, bitmap);
-        applyKnownHeight(holder, pageKey);
+        applyPageHeight(holder, pageKey, !scrollBusy || hadKnownHeight);
         holder.frame.setImageBitmap(bitmap);
     }
 
@@ -638,25 +662,107 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(bitmapWidth <= 0 || bitmapHeight <= 0)
             return;
         int targetHeight = Math.max(1, Math.round((float)Math.max(width, 1) * bitmapHeight / bitmapWidth));
-        pageHeights.put(pageKey, targetHeight);
+        Integer previousHeight = pageHeights.put(pageKey, targetHeight);
+        if(previousHeight == null) {
+            pageHeightTotal += targetHeight;
+            pageHeightSampleCount++;
+        } else {
+            pageHeightTotal += targetHeight - previousHeight;
+        }
+        if(scrollBusy)
+            pendingHeightCorrections.add(pageKey);
     }
 
     private void applyKnownHeight(ImgViewHolder holder, String pageKey) {
+        applyPageHeight(holder, pageKey, true);
+    }
+
+    private void applyPageHeight(ImgViewHolder holder, String pageKey, boolean allowKnownCorrection) {
         if(holder == null || holder.frame == null)
             return;
         Integer knownHeight = pageKey == null ? null : pageHeights.get(pageKey);
-        ViewGroup.LayoutParams params = holder.frame.getLayoutParams();
-        if(params != null) {
-            int targetHeight = knownHeight == null || knownHeight <= 0
-                    ? ViewGroup.LayoutParams.WRAP_CONTENT
-                    : knownHeight;
-            if(params.height != targetHeight || params.width != ViewGroup.LayoutParams.MATCH_PARENT) {
-                params.width = ViewGroup.LayoutParams.MATCH_PARENT;
-                params.height = targetHeight;
-                holder.frame.setLayoutParams(params);
+        boolean hasKnownHeight = knownHeight != null && knownHeight > 0;
+        if(hasKnownHeight && !allowKnownCorrection)
+            pendingHeightCorrections.add(pageKey);
+        int targetHeight = pageKey == null
+                ? ViewGroup.LayoutParams.WRAP_CONTENT
+                : (hasKnownHeight && allowKnownCorrection ? knownHeight : estimatedPageHeight());
+        applyHeight(holder.itemView, targetHeight, false);
+        applyHeight(holder.frame, targetHeight == ViewGroup.LayoutParams.WRAP_CONTENT
+                ? ViewGroup.LayoutParams.WRAP_CONTENT
+                : ViewGroup.LayoutParams.MATCH_PARENT, true);
+        int minHeight = targetHeight == ViewGroup.LayoutParams.WRAP_CONTENT ? 0 : targetHeight;
+        holder.itemView.setMinimumHeight(minHeight);
+        holder.frame.setMinimumHeight(minHeight);
+        holder.appliedItemHeight = targetHeight;
+    }
+
+    private void applyHeight(View view, int height, boolean matchWidth) {
+        if(view == null)
+            return;
+        ViewGroup.LayoutParams params = view.getLayoutParams();
+        if(params == null)
+            return;
+        int targetWidth = matchWidth ? ViewGroup.LayoutParams.MATCH_PARENT : params.width;
+        if(params.height != height || params.width != targetWidth) {
+            params.width = targetWidth;
+            params.height = height;
+            view.setLayoutParams(params);
+        }
+    }
+
+    private boolean hasKnownPageHeight(String pageKey) {
+        return pageKey != null && pageHeights.containsKey(pageKey);
+    }
+
+    private int estimatedPageHeight() {
+        if(pageHeightSampleCount > 0)
+            return Math.max(width, Math.round((float) pageHeightTotal / pageHeightSampleCount));
+        return Math.max(width, Math.round(width * 1.45f));
+    }
+
+    private void schedulePendingHeightCorrections() {
+        if(released || pendingHeightCorrections.isEmpty() || pendingHeightCorrectionScheduled)
+            return;
+        pendingHeightCorrectionScheduled = true;
+        mainHandler.postDelayed(() -> {
+            pendingHeightCorrectionScheduled = false;
+            flushPendingHeightCorrections();
+        }, 120);
+    }
+
+    private void flushPendingHeightCorrections() {
+        if(released || scrollBusy || pendingHeightCorrections.isEmpty() || items == null)
+            return;
+        Set<String> keys = new LinkedHashSet<>(pendingHeightCorrections);
+        pendingHeightCorrections.clear();
+        int anchor = lastPreloadAnchorPosition != RecyclerView.NO_POSITION
+                ? lastPreloadAnchorPosition
+                : Math.max(0, Math.min(pendingPreloadPosition, items.size() - 1));
+        int start = Math.max(0, anchor - 6);
+        int end = Math.min(items.size() - 1, anchor + 6);
+        int notified = notifyHeightCorrectionsInRange(keys, start, end, 8);
+        if(notified == 0)
+            notifyHeightCorrectionsInRange(keys, 0, items.size() - 1, 4);
+    }
+
+    private int notifyHeightCorrectionsInRange(Set<String> keys, int start, int end, int limit) {
+        int notified = 0;
+        for(int i = start; i <= end && notified < limit; i++) {
+            Object item = items.get(i);
+            if(item instanceof PageItem && keys.contains(pageBindKey((PageItem) item))) {
+                notifyItemChanged(i, PAYLOAD_HEIGHT);
+                notified++;
             }
         }
-        holder.frame.setMinimumHeight(knownHeight == null || knownHeight <= 0 ? Math.max(width, 1) : knownHeight);
+        return notified;
+    }
+
+    private void clearPageHeightState() {
+        pageHeights.clear();
+        pendingHeightCorrections.clear();
+        pageHeightTotal = 0L;
+        pageHeightSampleCount = 0;
     }
 
     private void markDisplayedAndPreload(ImgViewHolder holder, PageItem item, String pageKey) {
@@ -860,7 +966,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private void preloadPageIntoDecodedCache(PageItem page, Priority priority, long generation) {
         if(!canStartGlideRequest())
             return;
-        if(scrollBusy || decodedPreloadTargets.size() >= DECODED_PRELOAD_ACTIVE_LIMIT) {
+        int activeLimit = scrollBusy ? (p.getDataSave() ? 0 : 1) : DECODED_PRELOAD_ACTIVE_LIMIT;
+        if(activeLimit <= 0 || decodedPreloadTargets.size() >= activeLimit) {
             preloadPage(page, Priority.HIGH);
             return;
         }
@@ -887,7 +994,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 if(resource == null || resource.isRecycled() || isContextDestroyed())
                     return;
                 decodedBitmapCache.put(key, resource);
-                pageHeights.put(key, Math.max(1, Math.round((float)Math.max(width, 1) * resource.getHeight() / Math.max(resource.getWidth(), 1))));
+                rememberPageHeight(key, resource);
             }
 
             @Override
@@ -952,7 +1059,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private void clearDecodedPageState() {
         preloadedImages.clear();
         decodedBitmapCache.evictAll();
-        pageHeights.clear();
+        clearPageHeightState();
         decoders.clear();
         clearDecodedPreloadTargets();
     }
@@ -1077,6 +1184,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         CustomTarget<Bitmap> imageTarget;
         String boundPageKey;
         int bindGeneration = 0;
+        int appliedItemHeight = ViewGroup.LayoutParams.WRAP_CONTENT;
         ImgViewHolder(View itemView) {
             super(itemView);
             frame = itemView.findViewById(R.id.frame);
