@@ -45,7 +45,7 @@
     <androidx.constraintlayout.widget.ConstraintLayout
         android:id="@+id/tagSearchMeta"
         android:layout_width="0dp"
-        android:layout_height="88dp"
+        android:layout_height="74dp"
         android:background="@color/appSurface"
         android:paddingStart="20dp"
         android:paddingEnd="20dp"
@@ -67,42 +67,44 @@
             android:text="결과 목록"
             android:textColor="@color/appAccent"
             android:textStyle="bold"
-            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintBottom_toTopOf="@+id/tagSearchStatusFilters"
             app:layout_constraintEnd_toStartOf="@+id/tagSearchMetaHint"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toTopOf="parent" />
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintVertical_chainStyle="packed" />
 
         <TextView
             android:id="@+id/tagSearchMetaHint"
             style="@style/AppText.Caption"
             android:layout_width="wrap_content"
-            android:layout_height="32dp"
+            android:layout_height="30dp"
             android:layout_marginStart="@dimen/app_space_sm"
             android:gravity="center"
-            android:text="스크롤로 계속 보기"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="결과 준비 중"
             android:textColor="@color/appTextSecondary"
-            app:layout_constraintBottom_toBottomOf="@+id/tagSearchMetaTitle"
             app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintTop_toTopOf="@+id/tagSearchMetaTitle" />
+            app:layout_constraintTop_toTopOf="parent" />
 
         <LinearLayout
             android:id="@+id/tagSearchStatusFilters"
             android:layout_width="0dp"
-            android:layout_height="34dp"
-            android:layout_marginTop="6dp"
+            android:layout_height="40dp"
+            android:layout_marginTop="4dp"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:visibility="gone"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toBottomOf="@+id/tagSearchMetaTitle"
+            app:layout_constraintTop_toBottomOf="@+id/tagSearchMetaHint"
             tools:visibility="visible">
 
             <TextView
                 android:id="@+id/tagSearchFilterAll"
                 style="@style/AppText.Caption"
                 android:layout_width="0dp"
-                android:layout_height="30dp"
+                android:layout_height="36dp"
                 android:layout_marginEnd="8dp"
                 android:layout_weight="1"
                 android:background="@drawable/app_soft_chip_bg"
@@ -115,7 +117,7 @@
                 android:id="@+id/tagSearchFilterOngoing"
                 style="@style/AppText.Caption"
                 android:layout_width="0dp"
-                android:layout_height="30dp"
+                android:layout_height="36dp"
                 android:layout_marginEnd="8dp"
                 android:layout_weight="1"
                 android:background="@drawable/app_soft_chip_bg"
@@ -128,7 +130,7 @@
                 android:id="@+id/tagSearchFilterCompleted"
                 style="@style/AppText.Caption"
                 android:layout_width="0dp"
-                android:layout_height="30dp"
+                android:layout_height="36dp"
                 android:layout_weight="1"
                 android:background="@drawable/app_soft_chip_bg"
                 android:gravity="center"

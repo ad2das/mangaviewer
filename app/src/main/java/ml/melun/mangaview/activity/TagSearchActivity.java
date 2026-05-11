@@ -247,15 +247,29 @@ public class TagSearchActivity extends AppCompatActivity {
     }
 
     private void setupStatusFilters() {
-        boolean show = mode == 8 && query != null && query.startsWith("/ntk-genre?");
+        boolean show = isNtkCombinedGenreResult();
         if(statusFilters != null)
             statusFilters.setVisibility(show ? View.VISIBLE : View.GONE);
+        View meta = findViewById(R.id.tagSearchMeta);
+        if(meta != null) {
+            ViewGroup.LayoutParams params = meta.getLayoutParams();
+            params.height = dp(show ? 74 : 48);
+            meta.setLayoutParams(params);
+        }
         if(!show)
             return;
         filterAll.setOnClickListener(v -> applyStatusFilter(""));
         filterOngoing.setOnClickListener(v -> applyStatusFilter("연재"));
         filterCompleted.setOnClickListener(v -> applyStatusFilter("완결"));
         updateStatusFilterChips();
+    }
+
+    private boolean isNtkCombinedGenreResult() {
+        return mode == 8 && query != null && query.startsWith("/ntk-genre?");
+    }
+
+    private int dp(int value) {
+        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
     }
 
     private void applyStatusFilter(String value) {
@@ -805,7 +819,22 @@ public class TagSearchActivity extends AppCompatActivity {
         } else {
             label = "검색 결과";
         }
-        resultMetaTitle.setText(label);
+        boolean combinedGenre = isNtkCombinedGenreResult();
+        resultMetaTitle.setVisibility(combinedGenre ? View.GONE : View.VISIBLE);
+        resultMetaTitle.setText(combinedGenre ? "" : label);
+        if(combinedGenre && adapter != null) {
+            total = search == null ? 0 : search.getNtkStatusTotalCount(statusFilter);
+            if(total <= 0)
+                total = statusFilter.length() > 0 ? adapter.getNtkStatusCount(statusFilter) : adapter.getUnfilteredItemCount();
+            String prefix = statusFilter.length() > 0 ? statusFilter : "전체";
+            if(total > loaded)
+                resultMetaHint.setText(prefix + " " + loaded + "/" + total + "개 표시");
+            else if(loaded > 0)
+                resultMetaHint.setText(prefix + " " + loaded + "개 표시");
+            else
+                resultMetaHint.setText("결과 준비 중");
+            return;
+        }
         if(total > loaded)
             resultMetaHint.setText(loaded + "/" + total + "개 표시");
         else if(loaded > 0)

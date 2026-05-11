@@ -276,6 +276,20 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         dispatchFilteredList(this.statusFilter.length() == 0 ? new ArrayList<>(mData) : filteredByStatus());
     }
 
+    public int getUnfilteredItemCount() {
+        return mData == null ? 0 : mData.size();
+    }
+
+    public int getNtkStatusCount(String status) {
+        if(mData == null || status == null)
+            return 0;
+        int count = 0;
+        for(Title title : mData)
+            if(title != null && status.equals(title.getNtkStatusLabel()))
+                count++;
+        return count;
+    }
+
     private ArrayList<Title> filteredByStatus() {
         ArrayList<Title> filtered = new ArrayList<>();
         for(Title title : mData) {

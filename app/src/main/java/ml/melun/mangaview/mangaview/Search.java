@@ -45,6 +45,8 @@ public class Search {
     int timeoutRetries = 0;
     int classificationDbOffset = 0;
     int classificationDbTotalCount = 0;
+    int ntkOngoingTotalCount = 0;
+    int ntkCompletedTotalCount = 0;
     boolean classificationSourceFetched = false;
     String ntkCategoryNextPath = null;
     String ntkSearchNextPath = null;
@@ -71,6 +73,15 @@ public class Search {
 
     public int getVirtualResultCount() {
         return Math.max(classificationDbTotalCount, classificationDbOffset);
+    }
+
+    public int getNtkStatusTotalCount(String status) {
+        if("연재".equals(status))
+            return ntkOngoingTotalCount;
+        if("완결".equals(status))
+            return ntkCompletedTotalCount;
+        int total = ntkOngoingTotalCount + ntkCompletedTotalCount;
+        return total > 0 ? total : getVirtualResultCount();
     }
 
     public int fetch(CustomHttpClient client) {
@@ -433,14 +444,20 @@ public class Search {
         Exception lastError = null;
         if(ongoing != null && ongoing.length() > 0) {
             try {
-                pages.add(fetchCombinedGenreStatusPage(client, ongoing, targetBaseMode, "연재", limit));
+                PageTitles pageTitles = fetchCombinedGenreStatusPage(client, ongoing, targetBaseMode, "연재", limit);
+                if(pageTitles.totalCount > 0)
+                    ntkOngoingTotalCount = pageTitles.totalCount;
+                pages.add(pageTitles);
             } catch (Exception e) {
                 lastError = e;
             }
         }
         if(completed != null && completed.length() > 0) {
             try {
-                pages.add(fetchCombinedGenreStatusPage(client, completed, targetBaseMode, "완결", limit));
+                PageTitles pageTitles = fetchCombinedGenreStatusPage(client, completed, targetBaseMode, "완결", limit);
+                if(pageTitles.totalCount > 0)
+                    ntkCompletedTotalCount = pageTitles.totalCount;
+                pages.add(pageTitles);
             } catch (Exception e) {
                 lastError = e;
             }
