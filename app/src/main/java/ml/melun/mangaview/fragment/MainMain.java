@@ -2,6 +2,7 @@ package ml.melun.mangaview.fragment;
 
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.ColorStateList;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -17,6 +18,7 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.material.tabs.TabLayout;
+import com.google.android.material.button.MaterialButton;
 import ml.melun.mangaview.interfaces.MainActivityCallback;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Preference;
@@ -486,6 +488,16 @@ public class MainMain extends Fragment{
     }
 
     private void styleModeButton(TextView view, boolean selected) {
+        if(view instanceof MaterialButton) {
+            MaterialButton button = (MaterialButton)view;
+            int background = ContextCompat.getColor(getContext(), selected ? R.color.appAccent : android.R.color.transparent);
+            int stroke = ContextCompat.getColor(getContext(), selected ? R.color.appAccent : R.color.appDivider);
+            button.setChecked(selected);
+            button.setBackgroundTintList(ColorStateList.valueOf(background));
+            button.setStrokeColor(ColorStateList.valueOf(stroke));
+            button.setTextColor(ContextCompat.getColor(getContext(), selected ? android.R.color.white : R.color.appTextSecondary));
+            return;
+        }
         view.setBackgroundResource(selected ? R.drawable.app_accent_button_bg : android.R.color.transparent);
         view.setTextColor(ContextCompat.getColor(getContext(), selected ? android.R.color.white : R.color.appTextSecondary));
     }

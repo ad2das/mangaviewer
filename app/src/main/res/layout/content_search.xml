@@ -43,22 +43,18 @@
 
     </androidx.cardview.widget.CardView>
 
-    <TextView
+    <com.google.android.material.button.MaterialButton
         android:id="@+id/searchSubmitButton"
-        style="@style/AppText.Action"
         android:layout_width="80dp"
         android:layout_height="52dp"
         android:layout_marginTop="12dp"
         android:layout_marginEnd="16dp"
-        android:background="@drawable/app_accent_button_bg"
-        android:gravity="center"
-        android:includeFontPadding="false"
-        android:maxLines="1"
-        android:minWidth="80dp"
-        android:singleLine="true"
         android:text="@string/search_action"
-        android:textColor="@android:color/white"
+        android:textColor="@color/colorTextOnPrimary"
         android:textSize="15sp"
+        android:textStyle="bold"
+        app:backgroundTint="@color/appAccent"
+        app:cornerRadius="12dp"
         app:layout_constraintBottom_toBottomOf="@+id/searchCard"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintTop_toTopOf="@+id/searchCard" />

@@ -16,6 +16,9 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import com.google.android.material.button.MaterialButton;
+import com.google.android.material.tabs.TabLayout;
+
 import androidx.annotation.NonNull;
 import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.DiffUtil;
@@ -1126,8 +1129,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         TextView title;
         TextView badge;
         TextView meta;
-        TextView dots;
-        TextView readButton;
+        TabLayout dots;
+        MaterialButton readButton;
         float downX;
         float downY;
         boolean dragging;
@@ -1260,21 +1263,23 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             meta.setText(release == null || release.length() == 0 ? "지금 볼만한 추천 작품" : release);
             badge.setText("추천");
             bindTitleThumb(thumb, hero, 240, 140);
-            dots.setText(heroDots(row));
+            bindHeroDots(row);
         }
 
-        private String heroDots(HeroRow row) {
-            if(row == null || row.titles == null || row.titles.size() <= 1)
-                return "";
-            StringBuilder builder = new StringBuilder();
+        private void bindHeroDots(HeroRow row) {
+            dots.removeAllTabs();
+            if(row == null || row.titles == null || row.titles.size() <= 1) {
+                dots.setVisibility(View.GONE);
+                return;
+            }
+            dots.setVisibility(View.VISIBLE);
             int count = Math.min(5, row.titles.size());
             int selected = row.index % count;
             for(int i = 0; i < count; i++) {
-                if(i > 0)
-                    builder.append("  ");
-                builder.append(i == selected ? "●" : "○");
+                dots.addTab(dots.newTab(), false);
             }
-            return builder.toString();
+            TabLayout.Tab selectedTab = dots.getTabAt(selected);
+            if(selectedTab != null) selectedTab.select();
         }
     }
 

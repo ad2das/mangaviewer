@@ -17,106 +17,100 @@
         android:background="@drawable/app_home_card_bg"
         android:clickable="true"
         android:focusable="true"
+        android:foreground="?attr/selectableItemBackground"
         app:layout_constraintBottom_toTopOf="@+id/hero_dots"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent">
 
-        <androidx.constraintlayout.widget.ConstraintLayout
+        <ImageView
+            android:id="@+id/hero_thumb"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:background="@drawable/app_hero_placeholder"
+            android:scaleType="centerCrop"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <View
             android:layout_width="match_parent"
-            android:layout_height="match_parent">
+            android:layout_height="match_parent"
+            android:background="@drawable/app_hero_scrim"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
 
-            <ImageView
-                android:id="@+id/hero_thumb"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:background="@drawable/app_hero_placeholder"
-                android:scaleType="centerCrop"
-                app:layout_constraintBottom_toBottomOf="parent"
-                app:layout_constraintEnd_toEndOf="parent"
-                app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toTopOf="parent" />
+        <TextView
+            android:id="@+id/hero_badge"
+            style="@style/AppText.Caption"
+            android:layout_width="wrap_content"
+            android:layout_height="26dp"
+            android:layout_marginStart="@dimen/app_space_lg"
+            android:layout_marginTop="@dimen/app_space_lg"
+            android:background="@drawable/app_soft_chip_bg"
+            android:gravity="center"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:text="@string/hero_badge_recommended"
+            android:textColor="@color/appInk"
+            android:textStyle="bold"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
 
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:background="@drawable/app_hero_scrim"
-                app:layout_constraintBottom_toBottomOf="parent"
-                app:layout_constraintEnd_toEndOf="parent"
-                app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toTopOf="parent" />
+        <TextView
+            android:id="@+id/hero_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/app_space_lg"
+            android:layout_marginTop="@dimen/app_space_md"
+            android:layout_marginEnd="@dimen/app_space_lg"
+            android:ellipsize="end"
+            android:maxLines="2"
+            android:textColor="@color/colorTextOnPrimary"
+            android:textSize="25sp"
+            android:textStyle="bold"
+            app:autoSizeMaxTextSize="25sp"
+            app:autoSizeMinTextSize="16sp"
+            app:autoSizeStepGranularity="1sp"
+            app:autoSizeTextType="uniform"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@+id/hero_badge"
+            tools:text="Solo Leveling" />
 
-            <TextView
-                android:id="@+id/hero_badge"
-                style="@style/AppText.Caption"
-                android:layout_width="wrap_content"
-                android:layout_height="26dp"
-                android:layout_marginStart="@dimen/app_space_lg"
-                android:layout_marginTop="@dimen/app_space_lg"
-                android:background="@drawable/app_soft_chip_bg"
-                android:gravity="center"
-                android:paddingStart="10dp"
-                android:paddingEnd="10dp"
-                android:text="추천"
-                android:textColor="@color/appInk"
-                android:textStyle="bold"
-                app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toTopOf="parent" />
+        <TextView
+            android:id="@+id/hero_meta"
+            style="@style/AppText.Body"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/app_space_lg"
+            android:layout_marginTop="@dimen/app_space_sm"
+            android:layout_marginEnd="@dimen/app_space_lg"
+            android:ellipsize="end"
+            android:maxLines="2"
+            android:textColor="@color/colorTextOnPrimary"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@+id/hero_title"
+            tools:text="Latest chapter is ready." />
 
-            <TextView
-                android:id="@+id/hero_title"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="@dimen/app_space_lg"
-                android:layout_marginTop="@dimen/app_space_md"
-                android:layout_marginEnd="@dimen/app_space_lg"
-                android:ellipsize="end"
-                android:maxLines="2"
-                android:textColor="@android:color/white"
-                android:textSize="25sp"
-                android:textStyle="bold"
-                app:autoSizeMaxTextSize="25sp"
-                app:autoSizeMinTextSize="16sp"
-                app:autoSizeStepGranularity="1sp"
-                app:autoSizeTextType="uniform"
-                app:layout_constraintEnd_toEndOf="parent"
-                app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toBottomOf="@+id/hero_badge"
-                tools:text="Solo Leveling" />
-
-            <TextView
-                android:id="@+id/hero_meta"
-                style="@style/AppText.Body"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="@dimen/app_space_lg"
-                android:layout_marginTop="@dimen/app_space_sm"
-                android:layout_marginEnd="@dimen/app_space_lg"
-                android:ellipsize="end"
-                android:maxLines="2"
-                android:textColor="#F4F0FF"
-                app:layout_constraintEnd_toEndOf="parent"
-                app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toBottomOf="@+id/hero_title"
-                tools:text="Latest chapter is ready." />
-
-            <TextView
-                android:id="@+id/hero_read_button"
-                style="@style/AppText.Action"
-                android:layout_width="128dp"
-                android:layout_height="42dp"
-                android:layout_marginStart="@dimen/app_space_lg"
-                android:layout_marginBottom="@dimen/app_space_lg"
-                android:background="@drawable/app_accent_button_bg"
-                android:clickable="true"
-                android:focusable="true"
-                android:gravity="center"
-                android:text="보러가기"
-                android:textColor="@android:color/white"
-                app:layout_constraintBottom_toBottomOf="parent"
-                app:layout_constraintStart_toStartOf="parent" />
-
-        </androidx.constraintlayout.widget.ConstraintLayout>
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/hero_read_button"
+            android:layout_width="128dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="@dimen/app_space_lg"
+            android:layout_marginBottom="@dimen/app_space_lg"
+            android:text="@string/hero_read_button"
+            android:textColor="@color/colorTextOnPrimary"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            app:backgroundTint="@color/appAccent"
+            app:cornerRadius="12dp"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent" />
 
     </androidx.constraintlayout.widget.ConstraintLayout>
 
