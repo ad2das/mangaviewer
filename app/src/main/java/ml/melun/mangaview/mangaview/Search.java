@@ -472,7 +472,7 @@ public class Search {
         }
         if(baseMode == base_webtoon && (route.startsWith("/ing") || route.startsWith("/end"))) {
             ArrayList<String> api = new ArrayList<>();
-            api.add("status=" + (route.startsWith("/end") ? "end" : "ing"));
+            api.add("status=" + (route.startsWith("/end") ? "completed" : "ing"));
             api.addAll(params);
             api.add("page=" + page);
             api.add("pageSize=" + NTK_CATEGORY_PAGE_SIZE);
@@ -505,10 +505,6 @@ public class Search {
             if("day".equals(key)) {
                 String day = webtoonDay(percentDecode(value, Charset.forName("UTF-8")));
                 result.add("day=" + (day.length() > 0 ? day : value));
-                continue;
-            }
-            if("tag".equals(key) && "16".equals(value)) {
-                result.add("tag=" + percentEncode("성인", StandardCharsets.UTF_8));
                 continue;
             }
             result.add(param);
@@ -1140,7 +1136,8 @@ public class Search {
         if(path == null)
             return "";
         String ntkGenre = rawQueryValue(path, baseMode == base_comic ? "g" : "tag");
-        if(baseMode == base_webtoon && "16".equals(ntkGenre))
+        String ntkCategory = rawQueryValue(path, "cat");
+        if(baseMode == base_webtoon && "adult".equals(ntkCategory))
             return "성인";
         if(ntkGenre != null && ntkGenre.length() > 0)
             return percentDecode(ntkGenre, Charset.forName("UTF-8")).trim();

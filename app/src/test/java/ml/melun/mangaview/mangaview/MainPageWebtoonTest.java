@@ -122,7 +122,7 @@ public class MainPageWebtoonTest {
                 Search.ntkCategoryApiPathForTest("/manhwa?g=%EC%8A%A4%EB%A6%B4%EB%9F%AC", 2, base_comic));
         assertEquals("/api/works?status=ing&tag=%EC%8A%A4%EB%A6%B4%EB%9F%AC&page=3&pageSize=30&withTotal=1",
                 Search.ntkCategoryApiPathForTest("/ing?tag=%EC%8A%A4%EB%A6%B4%EB%9F%AC", 3, base_webtoon));
-        assertEquals("/api/works?status=end&tag=%EC%8A%A4%EB%A6%B4%EB%9F%AC&page=4&pageSize=30&withTotal=1",
+        assertEquals("/api/works?status=completed&tag=%EC%8A%A4%EB%A6%B4%EB%9F%AC&page=4&pageSize=30&withTotal=1",
                 Search.ntkCategoryApiPathForTest("/end?tag=%EC%8A%A4%EB%A6%B4%EB%9F%AC", 4, base_webtoon));
         assertEquals("/api/works?status=ing&day=1&page=1&pageSize=30&withTotal=1",
                 Search.ntkCategoryApiPathForTest("/ing?day=%EC%9B%94", 1, base_webtoon));
@@ -276,7 +276,7 @@ public class MainPageWebtoonTest {
 
         assertEquals(24, genres.length);
         assertEquals(53, completedGenres.length);
-        assertTrue(containsFilter(genres, "성인", "/ing?tag=%EC%84%B1%EC%9D%B8"));
+        assertTrue(containsFilter(genres, "성인", "/ing?cat=adult"));
         assertTrue(containsFilter(genres, "액션", "/ing?tag=2"));
         assertTrue(containsFilter(genres, "BL", "/ing?tag=6"));
         assertTrue(containsFilter(genres, "연애", "/ing?tag=8"));
@@ -290,10 +290,12 @@ public class MainPageWebtoonTest {
     }
 
     @Test
-    public void ntkAdultWebtoonLegacyTagUsesAdultGenreName() {
-        assertEquals("/api/works?status=ing&tag=%EC%84%B1%EC%9D%B8&page=1&pageSize=30&withTotal=1",
-                Search.ntkCategoryApiPathForTest("/ing?tag=16", 1, base_webtoon));
-        assertEquals("성인", Search.genreFromCategoryPath("/ing?tag=16", base_webtoon));
+    public void ntkAdultWebtoonUsesCategoryFilter() {
+        assertEquals("/api/works?status=ing&cat=adult&page=1&pageSize=30&withTotal=1",
+                Search.ntkCategoryApiPathForTest("/ing?cat=adult", 1, base_webtoon));
+        assertEquals("/api/works?status=completed&tag=16&page=1&pageSize=30&withTotal=1",
+                Search.ntkCategoryApiPathForTest("/end?tag=16", 1, base_webtoon));
+        assertEquals("성인", Search.genreFromCategoryPath("/ing?cat=adult", base_webtoon));
     }
 
     @Test
