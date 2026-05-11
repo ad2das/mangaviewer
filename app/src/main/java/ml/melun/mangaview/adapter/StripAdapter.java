@@ -258,6 +258,10 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         return page == null ? RecyclerView.NO_POSITION : findFirstPagePosition(page.manga);
     }
 
+    public int findExactPagePosition(PageItem page) {
+        return findFirstMatchingPagePosition(page);
+    }
+
     private boolean sameManga(Manga a, Manga b) {
         return a != null && b != null
                 && a.getId() == b.getId()

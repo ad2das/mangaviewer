@@ -1082,24 +1082,34 @@ public class Preference {
     }
 
     public void setViewerBookmark(Manga m, int index, int offset){
+        setViewerBookmark(m, index, offset, 0);
+    }
+
+    public void setViewerBookmark(Manga m, int index, int offset, int side){
         ensureViewerBookmarkLoaded();
         if(m == null)
             return;
         if(m.getId()>-1) {
-            if(index <= 0 && offset == 0) {
+            if(index <= 0 && offset == 0 && side == 0) {
                 removeViewerBookmark(m);
                 return;
             }
-            if (index > 0 || offset != 0) {
+            if (index > 0 || offset != 0 || side != 0) {
                 String key = viewerBookmarkKey(m);
                 String offsetKey = viewerBookmarkOffsetKey(m);
+                String sideKey = viewerBookmarkSideKey(m);
                 try {
                     int existingIndex = pagebookmark.has(key) ? pagebookmark.getInt(key) : 0;
                     int existingOffset = pagebookmark.has(offsetKey) ? pagebookmark.getInt(offsetKey) : 0;
-                    if(existingIndex == index && existingOffset == offset)
+                    int existingSide = pagebookmark.has(sideKey) ? pagebookmark.getInt(sideKey) : 0;
+                    if(existingIndex == index && existingOffset == offset && existingSide == side)
                         return;
                     pagebookmark.put(key, index);
                     pagebookmark.put(offsetKey, offset);
+                    if(side == 0)
+                        pagebookmark.remove(sideKey);
+                    else
+                        pagebookmark.put(sideKey, side);
                 } catch (Exception e) {
                     //
                 }
@@ -1157,27 +1167,61 @@ public class Preference {
         }
         return 0;
     }
+    public int getViewerBookmarkSide(Manga m){
+        ensureViewerBookmarkLoaded();
+        if(m == null)
+            return 0;
+        if(m.getId()>-1) {
+            try {
+                return pagebookmark.getInt(viewerBookmarkSideKey(m));
+            } catch (Exception e) {
+                //
+            }
+            try {
+                return pagebookmark.getInt(legacyViewerBookmarkKeyWithTitle(m) + ".side");
+            } catch (Exception e) {
+                //
+            }
+            try {
+                String legacyKey = legacyViewerBookmarkKey(m);
+                if(legacyKey != null)
+                    return pagebookmark.getInt(legacyKey + ".side");
+            } catch (Exception e) {
+                //
+            }
+        }
+        return 0;
+    }
     public void removeViewerBookmark(Manga m){
         ensureViewerBookmarkLoaded();
         if(m == null)
             return;
         String key = viewerBookmarkKey(m);
         String offsetKey = viewerBookmarkOffsetKey(m);
+        String sideKey = viewerBookmarkSideKey(m);
         String legacyWithTitle = legacyViewerBookmarkKeyWithTitle(m);
         String legacyWithTitleOffset = legacyWithTitle + ".offset";
+        String legacyWithTitleSide = legacyWithTitle + ".side";
         String legacy = legacyViewerBookmarkKey(m);
         String legacyOffset = legacy == null ? null : legacy + ".offset";
+        String legacySide = legacy == null ? null : legacy + ".side";
         if(!pagebookmark.has(key) && !pagebookmark.has(offsetKey)
+                && !pagebookmark.has(sideKey)
                 && !pagebookmark.has(legacyWithTitle) && !pagebookmark.has(legacyWithTitleOffset)
-                && (legacy == null || (!pagebookmark.has(legacy) && !pagebookmark.has(legacyOffset))))
+                && !pagebookmark.has(legacyWithTitleSide)
+                && (legacy == null || (!pagebookmark.has(legacy) && !pagebookmark.has(legacyOffset)
+                && !pagebookmark.has(legacySide))))
             return;
         pagebookmark.remove(key);
         pagebookmark.remove(offsetKey);
+        pagebookmark.remove(sideKey);
         pagebookmark.remove(legacyWithTitle);
         pagebookmark.remove(legacyWithTitleOffset);
+        pagebookmark.remove(legacyWithTitleSide);
         if(legacy != null) {
             pagebookmark.remove(legacy);
             pagebookmark.remove(legacyOffset);
+            pagebookmark.remove(legacySide);
         }
         writeViewerBookmark();
     }
@@ -1192,6 +1236,10 @@ public class Preference {
 
     private String viewerBookmarkOffsetKey(Manga m) {
         return viewerBookmarkKey(m) + ".offset";
+    }
+
+    private String viewerBookmarkSideKey(Manga m) {
+        return viewerBookmarkKey(m) + ".side";
     }
 
     private String legacyViewerBookmarkKeyWithTitle(Manga m) {

@@ -118,6 +118,8 @@ public class ViewerActivity extends AppCompatActivity {
     private static final int NEXT_EPISODE_ATTACH_THRESHOLD = 22;
     private static final int DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD = 12;
     private static final int PREVIOUS_EPISODE_PULL_THRESHOLD_DP = 36;
+    private static final long SCROLL_BOOKMARK_SAVE_DELAY_MS = 350L;
+    final Runnable delayedScrollBookmarkSave = this::saveCurrentScrollBookmark;
     float topPullStartY = 0;
     boolean topPullTriggered = false;
     boolean topPullEligible = false;
@@ -305,8 +307,10 @@ public class ViewerActivity extends AppCompatActivity {
                     }
                     if(newState == RecyclerView.SCROLL_STATE_IDLE)
                         loadEpisodeAtBoundaryIfNeeded();
-                    if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                    if(newState == RecyclerView.SCROLL_STATE_IDLE) {
+                        mainHandler.removeCallbacks(delayedScrollBookmarkSave);
                         saveCurrentScrollBookmark();
+                    }
                     if(newState == RecyclerView.SCROLL_STATE_IDLE)
                         PerformanceMonitor.reportNow("viewer_scroll_idle");
                 }
@@ -315,6 +319,7 @@ public class ViewerActivity extends AppCompatActivity {
                 public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
                     super.onScrolled(recyclerView, dx, dy);
                     loadEpisodeAtBoundaryIfNeededThrottled();
+                    scheduleScrollBookmarkSave();
                 }
             });
             strip.addOnItemTouchListener(new RecyclerView.SimpleOnItemTouchListener() {
@@ -823,6 +828,7 @@ public class ViewerActivity extends AppCompatActivity {
 
     @Override
     protected void onPause() {
+        mainHandler.removeCallbacks(delayedScrollBookmarkSave);
         saveCurrentScrollBookmark();
         PerformanceMonitor.pause();
         super.onPause();
@@ -830,6 +836,7 @@ public class ViewerActivity extends AppCompatActivity {
 
     @Override
     protected void onStop() {
+        mainHandler.removeCallbacks(delayedScrollBookmarkSave);
         saveCurrentScrollBookmark();
         super.onStop();
     }
@@ -888,6 +895,8 @@ public class ViewerActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
+        mainHandler.removeCallbacks(delayedScrollBookmarkSave);
+        saveCurrentScrollBookmark();
         Utils.cancelPendingViewerLaunches(this);
         cancelActiveEpisodeLoader();
         cancelNextPrefetcher();
@@ -1120,15 +1129,22 @@ public class ViewerActivity extends AppCompatActivity {
         if(policy == null)
             policy = ViewerLoadPolicy.RESUME;
         if(m.useBookmark()) {
-            int pageIndex = initialPageIndex(m, policy);
+            PageItem page = initialPageItem(m, policy);
+            int pageIndex = page.index;
             List<String> images = MangaRepository.imageUrls(m, context);
-            if(images != null && images.size() > 0 && pageIndex >= images.size())
+            if(images != null && images.size() > 0 && pageIndex >= images.size()) {
                 pageIndex = images.size() - 1;
+                page = new PageItem(pageIndex, "", m, PageItem.FIRST);
+            }
             if(pageIndex < 0)
                 pageIndex = 0;
-            PageItem page = new PageItem(pageIndex, "", m);
-            if(stripAdapter != null && stripAdapter.findPagePosition(page) != RecyclerView.NO_POSITION)
-                manager.scrollToPageWithOffset(page, initialPageOffset(m, policy));
+            int position = exactInitialPagePosition(page);
+            if(position == RecyclerView.NO_POSITION && page.side != PageItem.FIRST) {
+                page = new PageItem(pageIndex, "", m, PageItem.FIRST);
+                position = exactInitialPagePosition(page);
+            }
+            if(position != RecyclerView.NO_POSITION)
+                manager.scrollToPositionWithOffset(position, initialPageOffset(m, policy));
             else
                 manager.scrollToPage(new PageItem(0,"",m));
             if (m.isOnline()) {
@@ -1351,21 +1367,27 @@ public class ViewerActivity extends AppCompatActivity {
         if(view == null)
             return;
         int offset = view.getTop() - strip.getPaddingTop();
-        p.setViewerBookmark(page.manga, page.index, offset);
+        p.setViewerBookmark(page.manga, page.index, offset, page.side);
         Title bookmarkTitle = titleForProgress(page.manga);
         if(title == null)
             title = bookmarkTitle;
         p.setBookmark(bookmarkTitle, page.manga.getId());
     }
 
+    private void scheduleScrollBookmarkSave() {
+        mainHandler.removeCallbacks(delayedScrollBookmarkSave);
+        mainHandler.postDelayed(delayedScrollBookmarkSave, SCROLL_BOOKMARK_SAVE_DELAY_MS);
+    }
+
     private void prepareInitialViewerPosition(Manga target, ViewerLoadPolicy policy) {
         if(stripAdapter == null || manager == null || target == null)
             return;
-        int pageIndex = initialPageIndex(target, policy);
-        if(pageIndex < 0)
-            pageIndex = 0;
-        PageItem page = new PageItem(pageIndex, "", target);
-        int position = stripAdapter.findPagePosition(page);
+        PageItem page = initialPageItem(target, policy);
+        int position = exactInitialPagePosition(page);
+        if(position == RecyclerView.NO_POSITION && page.side != PageItem.FIRST) {
+            page = new PageItem(page.index, "", target, PageItem.FIRST);
+            position = exactInitialPagePosition(page);
+        }
         if(position == RecyclerView.NO_POSITION)
             return;
         int offset = initialPageOffset(target, policy);
@@ -2063,6 +2085,25 @@ public class ViewerActivity extends AppCompatActivity {
         return p.getViewerBookmarkOffset(target);
     }
 
+    private int initialPageSide(Manga target, ViewerLoadPolicy policy) {
+        if(target == null || policy == ViewerLoadPolicy.EXACT || !target.useBookmark())
+            return PageItem.FIRST;
+        return p.getViewerBookmarkSide(target) == PageItem.SECOND ? PageItem.SECOND : PageItem.FIRST;
+    }
+
+    private PageItem initialPageItem(Manga target, ViewerLoadPolicy policy) {
+        int pageIndex = initialPageIndex(target, policy);
+        if(pageIndex < 0)
+            pageIndex = 0;
+        return new PageItem(pageIndex, "", target, initialPageSide(target, policy));
+    }
+
+    private int exactInitialPagePosition(PageItem page) {
+        if(stripAdapter == null || page == null)
+            return RecyclerView.NO_POSITION;
+        return stripAdapter.findExactPagePosition(page);
+    }
+
     @Override
     public boolean onMenuOpened(int featureId, Menu menu) {
         return super.onMenuOpened(featureId, menu);
@@ -2104,6 +2145,7 @@ public class ViewerActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         Utils.cancelPendingViewerLaunches(this);
+        mainHandler.removeCallbacks(delayedScrollBookmarkSave);
         if(loader != null)
             loader.cancel();
         cancelNextPrefetcher();
