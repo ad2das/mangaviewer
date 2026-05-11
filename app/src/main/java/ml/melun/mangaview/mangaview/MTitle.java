@@ -14,6 +14,7 @@ public class MTitle{
     String release;
     String path;
     String sourceSite;
+    String ntkStatusLabel;
     int bookmarkEpisodeId = -1;
     int bookmarkEpisodeIndex = -1;
     int episodeCount = 0;
@@ -46,6 +47,14 @@ public class MTitle{
 
     public void setSourceSite(String sourceSite) {
         this.sourceSite = sourceSite == null ? "" : sourceSite;
+    }
+
+    public String getNtkStatusLabel() {
+        return ntkStatusLabel == null ? "" : ntkStatusLabel;
+    }
+
+    public void setNtkStatusLabel(String ntkStatusLabel) {
+        this.ntkStatusLabel = ntkStatusLabel == null ? "" : ntkStatusLabel;
     }
 
     public int getBaseMode() {
@@ -157,6 +166,7 @@ public class MTitle{
         clone.setReadingProgress(bookmarkEpisodeId, bookmarkEpisodeIndex, episodeCount);
         clone.setPath(path);
         clone.setSourceSite(sourceSite);
+        clone.setNtkStatusLabel(ntkStatusLabel);
         return clone;
     }
 

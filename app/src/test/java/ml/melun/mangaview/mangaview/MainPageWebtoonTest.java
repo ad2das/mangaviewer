@@ -276,21 +276,21 @@ public class MainPageWebtoonTest {
     @Test
     public void ntkWebtoonGenreFiltersExposeFullGenreList() {
         String[] genres = MainPageWebtoon.NTK_WEBTOON_FILTER_GROUPS[1];
-        String[] completedGenres = MainPageWebtoon.NTK_WEBTOON_FILTER_GROUPS[2];
 
-        assertEquals(24, genres.length);
-        assertEquals(53, completedGenres.length);
-        assertTrue(containsFilter(genres, "성인", "/ing?cat=adult"));
-        assertTrue(containsFilter(genres, "액션", "/ing?tag=2"));
-        assertTrue(containsFilter(genres, "BL", "/ing?tag=6"));
-        assertTrue(containsFilter(genres, "연애", "/ing?tag=8"));
-        assertTrue(containsFilter(genres, "공포", "/ing?tag=15"));
-        assertTrue(containsFilter(genres, "미스터리", "/ing?tag=%EB%AF%B8%EC%8A%A4%ED%84%B0%EB%A6%AC"));
-        assertTrue(containsFilter(genres, "순정", "/ing?tag=%EC%88%9C%EC%A0%95"));
-        assertTrue(containsFilter(genres, "스릴러", "/ing?tag=%EC%8A%A4%EB%A6%B4%EB%9F%AC"));
-        assertTrue(containsFilter(genres, "기타", "/ing?tag=99"));
-        assertTrue(containsFilter(completedGenres, "현대판타", "/end?tag=105"));
-        assertTrue(containsFilter(completedGenres, "관계역전", "/end?tag=128"));
+        assertEquals(53, genres.length);
+        assertTrue(containsFilterPathPart(genres, "성인", "ongoing=%2Fing%3Fcat%3Dadult"));
+        assertTrue(containsFilterPathPart(genres, "성인", "completed=%2Fend%3Ftag%3D16"));
+        assertTrue(containsFilterPathPart(genres, "액션", "ongoing=%2Fing%3Ftag%3D2"));
+        assertTrue(containsFilterPathPart(genres, "액션", "completed=%2Fend%3Ftag%3D2"));
+        assertTrue(containsFilterPathPart(genres, "BL", "ongoing=%2Fing%3Ftag%3D6"));
+        assertTrue(containsFilterPathPart(genres, "연애", "ongoing=%2Fing%3Ftag%3D8"));
+        assertTrue(containsFilterPathPart(genres, "공포", "ongoing=%2Fing%3Ftag%3D15"));
+        assertTrue(containsFilterPathPart(genres, "미스터리", "ongoing=%2Fing%3Ftag%3D%25EB%25AF%25B8%25EC%258A%25A4%25ED%2584%25B0%25EB%25A6%25AC"));
+        assertTrue(containsFilterPathPart(genres, "순정", "ongoing=%2Fing%3Ftag%3D%25EC%2588%259C%25EC%25A0%2595"));
+        assertTrue(containsFilterPathPart(genres, "스릴러", "ongoing=%2Fing%3Ftag%3D%25EC%258A%25A4%25EB%25A6%25B4%25EB%259F%25AC"));
+        assertTrue(containsFilterPathPart(genres, "기타", "ongoing=%2Fing%3Ftag%3D99"));
+        assertTrue(containsFilterPathPart(genres, "현대판타", "completed=%2Fend%3Ftag%3D105"));
+        assertTrue(containsFilterPathPart(genres, "관계역전", "completed=%2Fend%3Ftag%3D128"));
     }
 
     @Test
@@ -305,30 +305,18 @@ public class MainPageWebtoonTest {
     @Test
     public void ntkComicGenreFiltersExposeFullGenreList() {
         String[] genres = MainPageWebtoon.NTK_COMIC_FILTER_GROUPS[1];
-        String[] completedGenres = MainPageWebtoon.NTK_COMIC_FILTER_GROUPS[2];
 
         assertEquals(34, genres.length);
-        assertEquals(29, completedGenres.length);
-        assertTrue(containsFilter(genres, "17", "/manhwa?g=17"));
-        assertTrue(containsFilter(genres, "TS", "/manhwa?g=TS"));
-        assertTrue(containsFilter(genres, "소년", "/manhwa?g=%EC%86%8C%EB%85%84"));
-        assertTrue(containsFilter(genres, "백합", "/manhwa?g=%EB%B0%B1%ED%95%A9"));
-        assertTrue(containsFilter(genres, "이세계", "/manhwa?g=%EC%9D%B4%EC%84%B8%EA%B3%84"));
-        assertTrue(containsFilter(genres, "무협", "/manhwa?g=%EB%AC%B4%ED%98%91"));
-        assertTrue(containsFilter(genres, "애니화", "/manhwa?g=%EC%95%A0%EB%8B%88%ED%99%94"));
-        assertTrue(containsFilter(genres, "도박", "/manhwa?g=%EB%8F%84%EB%B0%95"));
-        assertTrue(containsFilter(genres, "미스터리", "/manhwa?g=%EB%AF%B8%EC%8A%A4%ED%84%B0%EB%A6%AC"));
-        assertTrue(containsFilter(genres, "여장", "/manhwa?g=%EC%97%AC%EC%9E%A5"));
-        assertTrue(containsFilter(genres, "역사", "/manhwa?g=%EC%97%AD%EC%82%AC"));
-        assertTrue(containsFilter(genres, "요리", "/manhwa?g=%EC%9A%94%EB%A6%AC"));
-        assertTrue(containsFilter(completedGenres, "17", "/manhwa-end?g=17"));
-        assertTrue(containsFilter(completedGenres, "액션", "/manhwa-end?g=%EC%95%A1%EC%85%98"));
-        assertTrue(containsFilter(completedGenres, "무협", "/manhwa-end?g=%EB%AC%B4%ED%98%91"));
-        assertTrue(!containsLabel(completedGenres, "도박"));
-        assertTrue(!containsLabel(completedGenres, "미스터리"));
-        assertTrue(!containsLabel(completedGenres, "여장"));
-        assertTrue(!containsLabel(completedGenres, "역사"));
-        assertTrue(!containsLabel(completedGenres, "요리"));
+        assertTrue(containsFilterPathPart(genres, "17", "ongoing=%2Fmanhwa%3Fg%3D17"));
+        assertTrue(containsFilterPathPart(genres, "17", "completed=%2Fmanhwa-end%3Fg%3D17"));
+        assertTrue(containsFilterPathPart(genres, "TS", "ongoing=%2Fmanhwa%3Fg%3DTS"));
+        assertTrue(containsFilterPathPart(genres, "소년", "ongoing=%2Fmanhwa%3Fg%3D%25EC%2586%258C%25EB%2585%2584"));
+        assertTrue(containsFilterPathPart(genres, "백합", "completed=%2Fmanhwa-end%3Fg%3D%25EB%25B0%25B1%25ED%2595%25A9"));
+        assertTrue(containsFilterPathPart(genres, "이세계", "completed=%2Fmanhwa-end%3Fg%3D%25EC%259D%25B4%25EC%2584%25B8%25EA%25B3%2584"));
+        assertTrue(containsFilterPathPart(genres, "무협", "completed=%2Fmanhwa-end%3Fg%3D%25EB%25AC%25B4%25ED%2598%2591"));
+        assertTrue(containsFilterPathPart(genres, "애니화", "completed=%2Fmanhwa-end%3Fg%3D%25EC%2595%25A0%25EB%258B%2588%25ED%2599%2594"));
+        assertTrue(containsFilterPathPart(genres, "도박", "ongoing=%2Fmanhwa%3Fg%3D%25EB%258F%2584%25EB%25B0%2595"));
+        assertTrue(!containsFilterPathPart(genres, "도박", "completed="));
     }
 
     @Test
@@ -433,6 +421,14 @@ public class MainPageWebtoonTest {
         String expected = "|" + label + "|";
         for(String filter : filters)
             if(filter.contains(expected))
+                return true;
+        return false;
+    }
+
+    private boolean containsFilterPathPart(String[] filters, String label, String pathPart) {
+        String expected = "|" + label + "|";
+        for(String filter : filters)
+            if(filter.contains(expected) && filter.contains(pathPart))
                 return true;
         return false;
     }

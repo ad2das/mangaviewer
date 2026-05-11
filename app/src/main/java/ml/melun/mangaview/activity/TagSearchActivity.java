@@ -70,7 +70,12 @@ public class TagSearchActivity extends AppCompatActivity {
     TextView noresult;
     TextView resultMetaTitle;
     TextView resultMetaHint;
+    View statusFilters;
+    TextView filterAll;
+    TextView filterOngoing;
+    TextView filterCompleted;
     String resultLabel;
+    String statusFilter = "";
     SwipyRefreshLayout swipe;
     Bookmark bookmark;
     int baseMode;
@@ -114,6 +119,10 @@ public class TagSearchActivity extends AppCompatActivity {
         noresult = this.findViewById(R.id.tagSearchNoResult);
         resultMetaTitle = this.findViewById(R.id.tagSearchMetaTitle);
         resultMetaHint = this.findViewById(R.id.tagSearchMetaHint);
+        statusFilters = this.findViewById(R.id.tagSearchStatusFilters);
+        filterAll = this.findViewById(R.id.tagSearchFilterAll);
+        filterOngoing = this.findViewById(R.id.tagSearchFilterOngoing);
+        filterCompleted = this.findViewById(R.id.tagSearchFilterCompleted);
         LinearLayoutManager lm = new NpaLinearLayoutManager(context);
         searchResult.setLayoutManager(lm);
         searchResult.setHasFixedSize(true);
@@ -200,6 +209,7 @@ public class TagSearchActivity extends AppCompatActivity {
             resultLabel = title == null ? "분류 결과" : title;
             ab.setTitle(resultLabel);
         }
+        setupStatusFilters();
         updateResultMeta();
         ab.setDisplayHomeAsUpEnabled(true);
         swipe.setRefreshing(true);
@@ -234,6 +244,40 @@ public class TagSearchActivity extends AppCompatActivity {
                 } else swipe.setRefreshing(false);
             });
         }
+    }
+
+    private void setupStatusFilters() {
+        boolean show = mode == 8 && query != null && query.startsWith("/ntk-genre?");
+        if(statusFilters != null)
+            statusFilters.setVisibility(show ? View.VISIBLE : View.GONE);
+        if(!show)
+            return;
+        filterAll.setOnClickListener(v -> applyStatusFilter(""));
+        filterOngoing.setOnClickListener(v -> applyStatusFilter("연재"));
+        filterCompleted.setOnClickListener(v -> applyStatusFilter("완결"));
+        updateStatusFilterChips();
+    }
+
+    private void applyStatusFilter(String value) {
+        statusFilter = value == null ? "" : value;
+        if(adapter != null)
+            adapter.setNtkStatusFilter(statusFilter);
+        updateStatusFilterChips();
+        updateResultMeta();
+        if(noresult != null && adapter != null)
+            noresult.setVisibility(adapter.getItemCount() > 0 ? View.GONE : View.VISIBLE);
+    }
+
+    private void updateStatusFilterChips() {
+        updateStatusFilterChip(filterAll, statusFilter.length() == 0);
+        updateStatusFilterChip(filterOngoing, "연재".equals(statusFilter));
+        updateStatusFilterChip(filterCompleted, "완결".equals(statusFilter));
+    }
+
+    private void updateStatusFilterChip(TextView view, boolean selected) {
+        if(view == null)
+            return;
+        view.setTextColor(ContextCompat.getColor(context, selected ? R.color.appAccent : R.color.appTextSecondary));
     }
 
     private void handleTitleTouch(MotionEvent event) {
@@ -562,6 +606,8 @@ public class TagSearchActivity extends AppCompatActivity {
             }else{
                 adapter.addData(search.getResult());
             }
+            if(statusFilter.length() > 0)
+                adapter.setNtkStatusFilter(statusFilter);
 
             if(adapter.getItemCount()>0) {
                 noresult.setVisibility(View.GONE);

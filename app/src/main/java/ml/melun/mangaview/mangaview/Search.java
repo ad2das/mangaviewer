@@ -390,6 +390,8 @@ public class Search {
     }
 
     private boolean appendNextNtkCategoryPage(CustomHttpClient client, ArrayList<Title> target, String path, int limit) throws Exception {
+        if(isNtkCombinedGenrePath(path))
+            return appendNextNtkCombinedGenrePage(client, target, path, limit);
         ArrayList<String> candidates = new ArrayList<>();
         if(ntkCategoryNextPath != null && ntkCategoryNextPath.length() > 0)
             addCandidate(candidates, ntkCategoryNextPath);
@@ -421,6 +423,67 @@ public class Search {
             throw lastError;
         classificationSourceFetched = true;
         return true;
+    }
+
+    private boolean appendNextNtkCombinedGenrePage(CustomHttpClient client, ArrayList<Title> target, String path, int limit) throws Exception {
+        String ongoing = decodedRawQueryValue(path, "ongoing");
+        String completed = decodedRawQueryValue(path, "completed");
+        int targetBaseMode = "webtoon".equals(rawQueryValue(path, "kind")) ? base_webtoon : base_comic;
+        ArrayList<PageTitles> pages = new ArrayList<>();
+        Exception lastError = null;
+        if(ongoing != null && ongoing.length() > 0) {
+            try {
+                pages.add(fetchCombinedGenreStatusPage(client, ongoing, targetBaseMode, "연재", limit));
+            } catch (Exception e) {
+                lastError = e;
+            }
+        }
+        if(completed != null && completed.length() > 0) {
+            try {
+                pages.add(fetchCombinedGenreStatusPage(client, completed, targetBaseMode, "완결", limit));
+            } catch (Exception e) {
+                lastError = e;
+            }
+        }
+        if(pages.size() == 0) {
+            if(lastError != null)
+                throw lastError;
+            classificationSourceFetched = true;
+            return true;
+        }
+        boolean hasMore = false;
+        int total = 0;
+        for(PageTitles pageTitles : pages) {
+            appendUniquePageTitles(target, pageTitles.titles);
+            hasMore = hasMore || pageTitles.hasMore;
+            if(pageTitles.totalCount > 0)
+                total += pageTitles.totalCount;
+        }
+        page++;
+        if(total > 0)
+            classificationDbTotalCount = total;
+        classificationSourceFetched = true;
+        return !hasMore;
+    }
+
+    private PageTitles fetchCombinedGenreStatusPage(CustomHttpClient client, String sourcePath, int targetBaseMode, String statusLabel, int limit) throws Exception {
+        String apiPath = ntkCategoryApiPath(sourcePath, page, targetBaseMode);
+        if(apiPath == null || apiPath.length() == 0)
+            apiPath = sourcePath;
+        PageTitles pageTitles = fetchWebtoonResults(client, apiPath, limit, page);
+        for(Title title : pageTitles.titles)
+            if(title != null)
+                title.setNtkStatusLabel(statusLabel);
+        return pageTitles;
+    }
+
+    private static boolean isNtkCombinedGenrePath(String path) {
+        return path != null && path.startsWith("/ntk-genre?");
+    }
+
+    private static String decodedRawQueryValue(String path, String key) {
+        String value = rawQueryValue(path, key);
+        return value == null ? "" : percentDecode(value, Charset.forName("UTF-8"));
     }
 
     private int appendUniquePageTitles(ArrayList<Title> target, ArrayList<Title> parsed) {
@@ -618,6 +681,7 @@ public class Search {
                     release = jsonString(work, "ep");
                 Title title = new Title(name, thumb, "", tags, release, id, baseMode);
                 title.setSourceSite("ntk");
+                title.setNtkStatusLabel(ntkStatusLabelFromApiPath(path));
                 titles.add(title);
                 if(limit > 0 && titles.size() >= limit)
                     break;
@@ -629,6 +693,17 @@ public class Search {
         int total = json.has("total") ? jsonInt(json, "total", 0) : 0;
         String nextPath = hasMore ? replaceNtkQueryParam(replaceNtkQueryParam(path, "page", String.valueOf(apiPage + 1)), "pageSize", String.valueOf(pageSize)) : null;
         return new PageTitles(titles, nextPath, true, hasMore, total);
+    }
+
+    private static String ntkStatusLabelFromApiPath(String path) {
+        String status = rawQueryValue(path, "status");
+        if("completed".equals(status))
+            return "완결";
+        if("ing".equals(status))
+            return "연재";
+        if(path != null && path.startsWith("/api/manhwa-list"))
+            return "연재";
+        return "";
     }
 
     static ArrayList<Title> parseNtkApiTitles(String body, int baseMode, int limit) throws Exception {

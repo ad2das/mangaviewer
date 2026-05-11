@@ -47,6 +47,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     boolean updated = false;
     boolean forceThumbnail = false;
     boolean longClickEnabled = true;
+    String statusFilter = "";
     String path = "";
     Filter filter;
     boolean searching = false;
@@ -153,10 +154,12 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                 inserted++;
             }
         }
-        mDataFiltered = mData;
+        mDataFiltered = statusFilter.length() == 0 ? mData : filteredByStatus();
         bindMetaCache.clear();
-        if(inserted > 0)
+        if(inserted > 0 && statusFilter.length() == 0)
             notifyItemRangeInserted(oSize, inserted);
+        else if(inserted > 0)
+            notifyDataSetChanged();
     }
 
     public void preloadThumbnails(int startPosition, int count) {
@@ -187,13 +190,13 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         searching = false;
         tagTextCache.clear();
         bindMetaCache.clear();
-        dispatchFilteredList(next);
+        dispatchFilteredList(statusFilter.length() == 0 ? next : filteredByStatus());
     }
 
     public void setDataImmediate(List<?> t){
         ArrayList<Title> next = normalizeTitles(t);
         mData = next;
-        mDataFiltered = new ArrayList<>(next);
+        mDataFiltered = statusFilter.length() == 0 ? new ArrayList<>(next) : filteredByStatus();
         searching = false;
         diffGeneration++;
         tagTextCache.clear();
@@ -267,6 +270,23 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         return titles;
     }
 
+    public void setNtkStatusFilter(String statusFilter) {
+        this.statusFilter = statusFilter == null ? "" : statusFilter;
+        searching = this.statusFilter.length() > 0;
+        dispatchFilteredList(this.statusFilter.length() == 0 ? new ArrayList<>(mData) : filteredByStatus());
+    }
+
+    private ArrayList<Title> filteredByStatus() {
+        ArrayList<Title> filtered = new ArrayList<>();
+        for(Title title : mData) {
+            if(title == null)
+                continue;
+            if(statusFilter.length() == 0 || statusFilter.equals(title.getNtkStatusLabel()))
+                filtered.add(title);
+        }
+        return filtered;
+    }
+
     private boolean sameTitle(Title a, Title b) {
         return a != null && b != null
                 && a.getId() == b.getId()
@@ -279,7 +299,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             return "";
         return title.getName() + "|" + title.getThumb() + "|" + title.getAuthor() + "|"
                 + title.getRelease() + "|" + title.getBookmark() + "|" + title.getTags()
-                + "|" + title.getSourceSite();
+                + "|" + title.getSourceSite() + "|" + title.getNtkStatusLabel();
     }
 
     public void clearData(){
@@ -332,6 +352,8 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         String author = data.getAuthor();
         int bookmark = bindMeta.bookmark;
         holder.baseModeStr.setText(data.getBaseModeStr());
+        holder.status.setText(bindMeta.statusLabel);
+        holder.status.setVisibility(bindMeta.statusLabel.length() > 0 ? View.VISIBLE : View.GONE);
         holder.tags.setText(bindMeta.tags);
         holder.tagContainer.setVisibility(View.VISIBLE);
 
@@ -411,7 +433,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             return cached;
         applyStoredBookmark(title);
         int progressPercent = readingProgressPercent(title);
-        BindMeta meta = new BindMeta(title.getBookmark(), displayTags(title), progressLabel(title), progressPercent, sourceSiteForTitle(title));
+        BindMeta meta = new BindMeta(title.getBookmark(), displayTags(title), progressLabel(title), progressPercent, sourceSiteForTitle(title), title.getNtkStatusLabel());
         if(bindMetaCache.size() > 512)
             bindMetaCache.clear();
         bindMetaCache.put(key, meta);
@@ -533,19 +555,21 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     }
 
     private static final class BindMeta {
-        static final BindMeta EMPTY = new BindMeta(0, "", "", 0, "wfwf");
+        static final BindMeta EMPTY = new BindMeta(0, "", "", 0, "wfwf", "");
         final int bookmark;
         final String tags;
         final String progressLabel;
         final int progressPercent;
         final String sourceSite;
+        final String statusLabel;
 
-        BindMeta(int bookmark, String tags, String progressLabel, int progressPercent, String sourceSite) {
+        BindMeta(int bookmark, String tags, String progressLabel, int progressPercent, String sourceSite, String statusLabel) {
             this.bookmark = bookmark;
             this.tags = tags == null ? "" : tags;
             this.progressLabel = progressLabel == null ? "" : progressLabel;
             this.progressPercent = progressPercent;
             this.sourceSite = sourceSite == null ? "wfwf" : sourceSite;
+            this.statusLabel = statusLabel == null ? "" : statusLabel;
         }
     }
 
@@ -592,6 +616,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         ImageView resumeSiteIcon;
         TextView author;
         TextView tags;
+        TextView status;
         TextView recommend_c, battery_c, bookmark_c;
         TextView baseModeStr;
         TextView progressText;
@@ -610,6 +635,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             thumb = itemView.findViewById(R.id.Thumb);
             author =itemView.findViewById(R.id.TitleAuthor);
             tags = itemView.findViewById(R.id.TitleTag);
+            status = itemView.findViewById(R.id.TitleStatus);
             card = itemView.findViewById(R.id.titleCard);
             content = itemView.findViewById(R.id.titleContent);
             thumbCard = itemView.findViewById(R.id.Thumb);
@@ -638,6 +664,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             disableTouchTarget(thumb);
             disableTouchTarget(author);
             disableTouchTarget(tags);
+            disableTouchTarget(status);
             disableTouchTarget(baseModeStr);
             disableTouchTarget(progress);
             disableTouchTarget(progressText);

@@ -54,6 +54,7 @@ public class Title extends MTitle {
         super(title.getName(), title.getId(), title.getThumb(), title.getAuthor(), title.getTags(), title.getRelease(), title.getBaseMode());
         setPath(title.getPath());
         setSourceSite(title.getSourceSite());
+        setNtkStatusLabel(title.getNtkStatusLabel());
         setReadingProgress(title.getBookmarkEpisodeId(), title.getBookmarkEpisodeIndex(), title.getEpisodeCount());
         bookmark = title.getBookmarkEpisodeId();
     }
