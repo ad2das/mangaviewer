@@ -358,6 +358,13 @@ public class MainPageWebtoonTest {
     }
 
     @Test
+    public void queryParsingMatchesWholeParameterNamesOnly() {
+        assertEquals(55, MainPageWebtoon.getQueryInt("/list?cartoon=44&toon=55", "toon"));
+        assertEquals(-1, MainPageWebtoon.getQueryInt("/list?cartoon=44", "toon"));
+        assertEquals("정상 제목", MainPageWebtoon.getQueryString("/list?subtitle=bad&title=%EC%A0%95%EC%83%81%20%EC%A0%9C%EB%AA%A9#frag", "title"));
+    }
+
+    @Test
     public void classificationDbGenreLookupSupportsPaging() {
         MainPageWebtoon.clearClassificationDbForTest();
         try {

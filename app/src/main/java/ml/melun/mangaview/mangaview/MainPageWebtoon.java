@@ -1705,13 +1705,22 @@ public class MainPageWebtoon {
 
     static String getQueryString(String href, String key){
         try{
+            if(href == null || key == null || key.length() == 0)
+                return "";
             String target = key + "=";
-            int start = href.indexOf(target);
-            if(start < 0) return "";
-            start += target.length();
-            int end = href.indexOf('&', start);
-            if(end < 0) end = href.length();
-            return URLDecoder.decode(href.substring(start, end), "UTF-8");
+            int queryStart = href.indexOf('?');
+            int fragmentStart = href.indexOf('#');
+            int start = queryStart >= 0 ? queryStart + 1 : 0;
+            int endLimit = fragmentStart >= 0 ? fragmentStart : href.length();
+            while(start < endLimit) {
+                int end = href.indexOf('&', start);
+                if(end < 0 || end > endLimit)
+                    end = endLimit;
+                if(href.startsWith(target, start))
+                    return URLDecoder.decode(href.substring(start + target.length(), end), "UTF-8");
+                start = end + 1;
+            }
+            return "";
         }catch (Exception e){
             return "";
         }
