@@ -245,9 +245,7 @@ public class Utils {
             launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken, exactEpisode);
             return;
         }
-        Manga immediate = exactEpisode
-                ? ViewerWarmupManager.usePreparedFirstFrame(context, manga, launchTitle, false, p.getReverse(), 0)
-                : ViewerWarmupManager.usePreparedFirstFrame(context, manga, launchTitle, false, p.getReverse());
+        Manga immediate = ViewerWarmupManager.usePreparedFirstFrame(context, manga, launchTitle, false, p.getReverse());
         if(immediate != null) {
             launchPreparedViewer(context, immediate, code, returnToEpisodes, online, recent,
                     launchTitle != null ? launchTitle : immediate.getTitle(), includeTitleEpisodes, launchToken, exactEpisode);
@@ -255,7 +253,7 @@ public class Utils {
         }
         if(!exactEpisode)
             ViewerWarmupManager.warmupContinueImmediate(context, manga, launchTitle);
-        launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken);
+        launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken, exactEpisode);
     }
 
     private static void switchToTitleSourceSite(Title title) {

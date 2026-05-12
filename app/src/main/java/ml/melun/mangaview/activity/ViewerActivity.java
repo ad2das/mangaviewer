@@ -1469,7 +1469,7 @@ public class ViewerActivity extends AppCompatActivity {
 
     private void scheduleInitialResumeRestores(Manga target, ViewerLoadPolicy policy, PageItem page, int offset) {
         clearInitialResumeRestore();
-        if(target == null || policy == ViewerLoadPolicy.EXACT || !target.useBookmark() || page == null)
+        if(target == null || !target.useBookmark() || page == null)
             return;
         if(page.index <= 0 && offset == 0 && page.side == PageItem.FIRST)
             return;
@@ -2279,19 +2279,19 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private int initialPageIndex(Manga target, ViewerLoadPolicy policy) {
-        if(target == null || policy == ViewerLoadPolicy.EXACT || !target.useBookmark())
+        if(target == null || !target.useBookmark())
             return 0;
         return p.getViewerBookmark(target);
     }
 
     private int initialPageOffset(Manga target, ViewerLoadPolicy policy) {
-        if(target == null || policy == ViewerLoadPolicy.EXACT || !target.useBookmark())
+        if(target == null || !target.useBookmark())
             return 0;
         return p.getViewerBookmarkOffset(target);
     }
 
     private int initialPageSide(Manga target, ViewerLoadPolicy policy) {
-        if(target == null || policy == ViewerLoadPolicy.EXACT || !target.useBookmark())
+        if(target == null || !target.useBookmark())
             return PageItem.FIRST;
         return p.getViewerBookmarkSide(target) == PageItem.SECOND ? PageItem.SECOND : PageItem.FIRST;
     }
