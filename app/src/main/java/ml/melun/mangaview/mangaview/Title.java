@@ -151,28 +151,9 @@ public class Title extends MTitle {
                     }catch (Exception e2){continue;}
                 }
 
-                //eps
-                String title, date;
-                Manga tmp;
-                int id;
-                eps = new ArrayList<>();
-                Set<Integer> seenEpisodeIds = new HashSet<>();
-                try{
-                    for(Element e : d.selectFirst("ul.list-body").select("li.list-item")) {
-                        Element titlee = e.selectFirst("a.item-subject");
-                        id = getNumberFromString(titlee.attr("href").split(baseModeStr(baseMode)+'/')[1]);
-                        if(!seenEpisodeIds.add(id)) continue;
-
-                        title = titlee.ownText();
-
-                        Elements infoe = e.selectFirst("div.item-details").select("span");
-                        date = infoe.get(0).ownText();
-                        //has view-count, thumb-count and other extra info, implement later
-                        tmp = new Manga(id, title, date, baseMode);
-                        tmp.setMode(0);
-                        eps.add(tmp);
-                    }
-                }catch (Exception e){ml.melun.mangaview.report.CrashReporter.record(e);}
+                eps = parseLegacyEpisodes(d, baseMode);
+                for(Manga episode : eps)
+                    episode.setTitle(this);
                 break;
             }catch(Exception e) {
                 ml.melun.mangaview.report.CrashReporter.record(e);
@@ -243,6 +224,69 @@ public class Title extends MTitle {
     private static boolean isCloudflareChallenge(Exception e) {
         String message = e == null ? null : e.getMessage();
         return message != null && message.toLowerCase(java.util.Locale.ROOT).contains("cloudflare");
+    }
+
+    static List<Manga> parseLegacyEpisodesForTest(String html, int baseMode) {
+        return parseLegacyEpisodes(Jsoup.parse(html), baseMode);
+    }
+
+    private static List<Manga> parseLegacyEpisodes(Document d, int baseMode) {
+        ArrayList<Manga> result = new ArrayList<>();
+        Set<Integer> seenEpisodeIds = new HashSet<>();
+        if(d == null)
+            return result;
+        Element list = d.selectFirst("ul.list-body");
+        if(list == null)
+            return result;
+        for(Element row : list.select("li.list-item")) {
+            Element titleElement = row.selectFirst("a.item-subject");
+            if(titleElement == null)
+                continue;
+            int episodeId = legacyEpisodeId(titleElement.attr("href"), baseMode);
+            if(episodeId <= 0 || !seenEpisodeIds.add(episodeId))
+                continue;
+            String episodeTitle = titleElement.ownText();
+            String date = "";
+            Element detail = row.selectFirst("div.item-details");
+            if(detail != null) {
+                Elements spans = detail.select("span");
+                if(spans.size() > 0)
+                    date = spans.get(0).ownText();
+            }
+            Manga episode = new Manga(episodeId, episodeTitle, date, baseMode);
+            episode.setMode(0);
+            result.add(episode);
+        }
+        return result;
+    }
+
+    private static int legacyEpisodeId(String href, int baseMode) {
+        if(href == null)
+            return -1;
+        int id = legacyEpisodeIdAfterMarker(href, baseModeStr(baseMode) + '/');
+        if(id > 0)
+            return id;
+        id = legacyEpisodeIdAfterMarker(href, "webtoon/");
+        if(id > 0)
+            return id;
+        return legacyEpisodeIdAfterMarker(href, "comic/");
+    }
+
+    private static int legacyEpisodeIdAfterMarker(String href, String marker) {
+        int start = href.indexOf(marker);
+        if(start < 0)
+            return -1;
+        start += marker.length();
+        int end = start;
+        while(end < href.length() && Character.isDigit(href.charAt(end)))
+            end++;
+        if(end == start)
+            return -1;
+        try {
+            return Integer.parseInt(href.substring(start, end));
+        }catch(NumberFormatException e) {
+            return -1;
+        }
     }
 
     static String cleanNtkEpisodeTitleForTest(String html) {

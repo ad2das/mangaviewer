@@ -2,6 +2,8 @@ package ml.melun.mangaview.mangaview;
 
 import org.junit.Test;
 
+import java.util.List;
+
 import static org.junit.Assert.assertEquals;
 
 public class TitleTest {
@@ -77,5 +79,22 @@ public class TitleTest {
         title.setReadingProgress(7, 43, 49);
 
         assertEquals(13, title.getDisplayEpisodeCount(0));
+    }
+
+    @Test
+    public void legacyEpisodeParserKeepsRowsWithMissingDetails() {
+        List<Manga> episodes = Title.parseLegacyEpisodesForTest(
+                "<ul class=\"list-body\">"
+                        + "<li class=\"list-item\"><a class=\"item-subject\" href=\"/webtoon/12\">12화</a></li>"
+                        + "<li class=\"list-item\"><a class=\"item-subject\" href=\"/webtoon/11\"><span>11화</span></a><div class=\"item-details\"><span>2026.05.01</span></div></li>"
+                        + "<li class=\"list-item\"><a class=\"item-subject\" href=\"/webtoon/not-an-id\">깨진 행</a></li>"
+                        + "</ul>",
+                MTitle.base_webtoon);
+
+        assertEquals(2, episodes.size());
+        assertEquals(12, episodes.get(0).getId());
+        assertEquals("", episodes.get(0).getDate());
+        assertEquals(11, episodes.get(1).getId());
+        assertEquals("2026.05.01", episodes.get(1).getDate());
     }
 }
