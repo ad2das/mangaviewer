@@ -218,7 +218,9 @@ public class FolderSelectActivity extends AppCompatActivity {
             }
             //registering popup with OnMenuItemClickListener
             popup.setOnMenuItemClickListener(item -> {
-                int index = Integer.parseInt(item.getTitle().toString().split("\\.")[0]);
+                int index = storageMenuIndex(item.getTitle());
+                if(index < 0 || index >= dirs.length || dirs[index] == null)
+                    return true;
                 currentDir = dirs[index];
                 if(!currentDir.exists()) currentDir.mkdirs();
                 populate();
@@ -261,6 +263,20 @@ public class FolderSelectActivity extends AppCompatActivity {
             return true;
         }
         return super.onOptionsItemSelected(item);
+    }
+
+    static int storageMenuIndex(CharSequence title) {
+        if(title == null)
+            return -1;
+        String text = title.toString();
+        int dot = text.indexOf('.');
+        if(dot <= 0)
+            return -1;
+        try {
+            return Integer.parseInt(text.substring(0, dot));
+        }catch(NumberFormatException e) {
+            return -1;
+        }
     }
 
     public ArrayList<String> refresh(){
