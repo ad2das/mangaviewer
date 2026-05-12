@@ -7,6 +7,8 @@ import org.jsoup.select.Elements;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import okhttp3.Response;
 
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
@@ -15,6 +17,7 @@ import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 public class MainPage {
     private static final long PAGE_CACHE_TTL_MS = 3 * 60 * 1000L;
     private static final int MAX_TIMEOUT_RETRIES = 2;
+    private static final Pattern COMIC_ID_PATH = Pattern.compile("(?:^|/)comic/(\\d+)(?:[/?#].*)?$");
     List<Manga> recent, favUpdate, onlineRecent;
     List<RankingTitle> ranking;
 
@@ -152,12 +155,15 @@ public class MainPage {
 */
     }
 
-    private int parseComicId(String href) {
+    static int parseComicId(String href) {
+        if(href == null)
+            return -1;
+        Matcher matcher = COMIC_ID_PATH.matcher(href);
+        if(!matcher.find())
+            return -1;
         try {
-            if(href == null || !href.contains("comic/"))
-                return -1;
-            return Integer.parseInt(href.split("comic/")[1].split("\\?")[0]);
-        } catch (Exception e) {
+            return Integer.parseInt(matcher.group(1));
+        } catch (NumberFormatException e) {
             return -1;
         }
     }
