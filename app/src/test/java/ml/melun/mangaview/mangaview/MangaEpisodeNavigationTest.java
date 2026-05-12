@@ -127,6 +127,22 @@ public class MangaEpisodeNavigationTest {
         assertEquals(53, current.prevEp().getId());
     }
 
+    @Test
+    public void parseEpisodeId_acceptsSluggedViewerPaths() {
+        assertEquals(123, Manga.parseEpisodeId("/webtoon/123", "webtoon/"));
+        assertEquals(123, Manga.parseEpisodeId("/webtoon/123/title-slug", "webtoon/"));
+        assertEquals(123, Manga.parseEpisodeId("https://example.com/webtoon/123?x=1", "webtoon/"));
+        assertEquals(-1, Manga.parseEpisodeId("/webtoon/title", "webtoon/"));
+    }
+
+    @Test
+    public void parseEpisodeOptionId_skipsInvalidSelectValues() {
+        assertEquals(77, Manga.parseEpisodeOptionId("77"));
+        assertEquals(77, Manga.parseEpisodeOptionId(" 77 "));
+        assertEquals(-1, Manga.parseEpisodeOptionId(""));
+        assertEquals(-1, Manga.parseEpisodeOptionId("latest"));
+    }
+
     private Title titleWithEpisodes(int... ids) {
         Title title = new Title("title", "", "", new ArrayList<>(), "", 1, base_webtoon);
         List<Manga> episodes = new ArrayList<>();

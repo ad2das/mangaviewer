@@ -196,9 +196,9 @@ public class Manga {
                     Element select = navbar.selectFirst("select");
                     if(select != null) {
                         for (Element e : select.select("option")) {
-                            String idstr = e.attr("value");
-                            if (idstr.length() > 0)
-                                eps.add(new Manga(Integer.parseInt(idstr), e.ownText(), "", baseMode));
+                            int episodeId = parseEpisodeOptionId(e.attr("value"));
+                            if (episodeId > 0)
+                                eps.add(new Manga(episodeId, e.ownText(), "", baseMode));
                         }
                     }
                 }
@@ -308,12 +308,31 @@ public class Manga {
         return message != null && message.toLowerCase(Locale.ROOT).contains("cloudflare");
     }
 
-    private int parseEpisodeId(String href, String marker) {
+    static int parseEpisodeId(String href, String marker) {
+        if(href == null || marker == null || marker.length() == 0)
+            return -1;
+        int start = href.indexOf(marker);
+        if(start < 0)
+            return -1;
+        start += marker.length();
+        int end = start;
+        while(end < href.length() && Character.isDigit(href.charAt(end)))
+            end++;
+        if(end == start)
+            return -1;
         try {
-            if(href == null || !href.contains(marker))
-                return -1;
-            return Integer.parseInt(href.split(marker)[1].split("\\?")[0]);
-        } catch (Exception e) {
+            return Integer.parseInt(href.substring(start, end));
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    static int parseEpisodeOptionId(String value) {
+        if(value == null)
+            return -1;
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (NumberFormatException e) {
             return -1;
         }
     }
