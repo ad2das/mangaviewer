@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-05-11",
+  "updated": "2026-05-12",
   "sourceRoot": "https://wfwf450.com",
   "sources": [
     "source-comic-genre"
@@ -19679,7 +19679,7 @@
       "thumb": "https://i6.imgcloud18.com/12149/3f4da450.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12150": {
@@ -22145,7 +22145,7 @@
       "thumb": "https://i6.imgcloud18.com/12430/aee4b074.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "학원"
       ]
     },
     "12431": {
@@ -22244,7 +22244,7 @@
       "thumb": "https://i6.imgcloud18.com/12441/82af3261.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12442": {
@@ -22252,7 +22252,7 @@
       "thumb": "https://i6.imgcloud18.com/12442/7b2779fd.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12443": {
@@ -22510,7 +22510,7 @@
       "thumb": "https://i6.imgcloud18.com/12471/8133da97.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12472": {
@@ -23522,7 +23522,7 @@
       "thumb": "https://i0.imgcloud18.com/12586/71f2d602.jpg?v=1",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12587": {
@@ -25471,9 +25471,9 @@
       "thumb": "https://i1.imgcloud18.com/12797/d4a785e9.jpg",
       "release": "",
       "inferredTags": [
-        "이세계",
         "라노벨",
-        "공포"
+        "이세계",
+        "판타지"
       ]
     },
     "12798": {
@@ -32451,8 +32451,8 @@
       "release": "",
       "inferredTags": [
         "TS",
-        "라노벨",
-        "붕탁"
+        "붕탁",
+        "라노벨"
       ]
     },
     "13587": {
@@ -72266,16 +72266,6 @@
         "판타지"
       ]
     },
-    "17986": {
-      "name": "달콤한 생활",
-      "thumb": "https://c11cm.net/17986/4a3b3de9.jpg",
-      "release": "",
-      "sourceTags": [
-        "성인",
-        "러브코미디",
-        "개그"
-      ]
-    },
     "17987": {
       "name": "고물로이드! 하마 양",
       "thumb": "https://c11cm.net/17987/cddb08b9.jpg",
@@ -77778,7 +77768,8 @@
       "release": "",
       "inferredTags": [
         "학원",
-        "러브코미디"
+        "러브코미디",
+        "개그"
       ]
     },
     "18593": {
@@ -77938,6 +77929,170 @@
         "라노벨",
         "이세계",
         "전생"
+      ]
+    },
+    "18611": {
+      "name": "별을 여행하는 소년",
+      "thumb": "https://c11cm.net/18611/fz3xmrnncshtp3ulzhmucchdgi3omp3tbl.jpg",
+      "release": "",
+      "sourceTags": [
+        "판타지",
+        "SF"
+      ]
+    },
+    "18612": {
+      "name": "트랜스 비너스",
+      "thumb": "https://c11cm.net/18612/uteiikdfw0zxjdej8m3snlsgsen3ftuk6b.jpg",
+      "release": "",
+      "sourceTags": [
+        "성인",
+        "TS",
+        "SF"
+      ]
+    },
+    "18614": {
+      "name": "네? 사내 시스템을 전부 혼",
+      "thumb": "https://c11cm.net/18614/v0nvv6ah6bm0sxjudxgrfyiczcujwm3zxo.jpg",
+      "release": "",
+      "sourceTags": [
+        "드라마",
+        "라노벨"
+      ]
+    },
+    "18616": {
+      "name": "엑소시스트 키요시",
+      "thumb": "https://c11cm.net/18616/hwl76z7qnygnbbj6yqv4ieoyhy9kqlhtnh.jpg",
+      "release": "",
+      "sourceTags": [
+        "판타지",
+        "개그",
+        "액션"
+      ]
+    },
+    "18617": {
+      "name": "하이스쿨 DxD",
+      "thumb": "https://c11cm.net/18617/dudaw8d5aqxusptwurdo7omvcgaasdzmzg.jpg",
+      "release": "",
+      "sourceTags": [
+        "학원",
+        "액션",
+        "성인"
+      ]
+    },
+    "18619": {
+      "name": "아야카시 장의사",
+      "thumb": "https://c11cm.net/18619/b5qiif4tliavahr1k5nkcqyiwsj2flmxwm.jpg",
+      "release": "",
+      "sourceTags": [
+        "판타지",
+        "액션",
+        "이세계"
+      ]
+    },
+    "18620": {
+      "name": "마왕님에게 소환됐는데 말이",
+      "thumb": "https://c11cm.net/18620/ifqgagdc4znlwqcerrgjpsfnpnmvrnl4ng.jpg",
+      "release": "",
+      "sourceTags": [
+        "이세계",
+        "러브코미디",
+        "개그"
+      ]
+    },
+    "18621": {
+      "name": "미유 짱은 계속 친구",
+      "thumb": "https://c11cm.net/18621/cp9zagtje5su2miu7vjkziob4urksguwct.jpg",
+      "release": "",
+      "sourceTags": [
+        "러브코미디",
+        "개그",
+        "스릴러"
+      ]
+    },
+    "18622": {
+      "name": "공략! 대던전 시대 나만 스",
+      "thumb": "https://c11cm.net/18622/wevt7bw0h5i4unusnq2x4o47iddmk5eeli.jpg",
+      "release": "",
+      "sourceTags": [
+        "판타지",
+        "학원",
+        "이세계"
+      ]
+    },
+    "18623": {
+      "name": "전생했더니 슬라임이었던 건에",
+      "thumb": "https://c11cm.net/18623/hbkjw7ml01h3fuiqz09pawkhcdn0ldythz.jpg",
+      "release": "",
+      "sourceTags": [
+        "라노벨",
+        "액션",
+        "전생"
+      ]
+    },
+    "18629": {
+      "name": "나쁜 X에게 행복 있으라",
+      "thumb": "https://c11cm.net/18629/rybwwvrxwige0vmpz5xqgybltormfjxtpj.jpg",
+      "release": "",
+      "sourceTags": [
+        "TS",
+        "러브코미디",
+        "개그"
+      ]
+    },
+    "18632": {
+      "name": "더 화이팅 신장재편판(더 파",
+      "thumb": "https://c11cm.net/18632/zdysi9221iycy0aek0gy5aqz5nphs1smze.jpg",
+      "release": "",
+      "sourceTags": [
+        "스포츠",
+        "애니화",
+        "액션"
+      ]
+    },
+    "18633": {
+      "name": "나의 이상적인 이세계 생활",
+      "thumb": "https://c11cm.net/18633/vnfjcpgc4wrn5x2zfjff5i73o0yqbeqprr.jpg",
+      "release": "",
+      "sourceTags": [
+        "성인",
+        "전생",
+        "이세계"
+      ]
+    },
+    "18636": {
+      "name": "하루카제 마운드",
+      "thumb": "https://c11cm.net/18636/od43tuqj5i36uj6cr0r3mls6vtjzjfu6k6.jpg",
+      "release": "",
+      "sourceTags": [
+        "스포츠"
+      ]
+    },
+    "18637": {
+      "name": "여명의 마녀",
+      "thumb": "https://c11cm.net/18637/kawzbwfyup9ptad86zho8my0eop9xqnrro.jpg",
+      "release": "",
+      "sourceTags": [
+        "판타지"
+      ]
+    },
+    "18641": {
+      "name": "유희왕 애장판",
+      "thumb": "https://c11cm.net/18641/mp2c9rplphzeewvm5xgi9t5ug6zjdtu9vk.jpg",
+      "release": "",
+      "sourceTags": [
+        "판타지",
+        "학원"
+      ]
+    },
+    "18642": {
+      "name": "온라인 수업이 되자 반에서",
+      "thumb": "https://c11cm.net/18642/tavu6q6gtyencgzigisdgom7cgacsqgeu1.jpg",
+      "release": "",
+      "sourceTags": [
+        "러브코미디",
+        "개그",
+        "학원",
+        "라노벨"
       ]
     }
   }
