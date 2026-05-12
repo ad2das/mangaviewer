@@ -17,7 +17,7 @@ import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 public class MainPage {
     private static final long PAGE_CACHE_TTL_MS = 3 * 60 * 1000L;
     private static final int MAX_TIMEOUT_RETRIES = 2;
-    private static final Pattern COMIC_ID_PATH = Pattern.compile("(?:^|/)comic/(\\d+)(?:[/?#].*)?$");
+    private static final Pattern COMIC_ID_PATH = Pattern.compile("(?:^|/)comic/(\\d+)(?:[-/?#].*)?$");
     List<Manga> recent, favUpdate, onlineRecent;
     List<RankingTitle> ranking;
 

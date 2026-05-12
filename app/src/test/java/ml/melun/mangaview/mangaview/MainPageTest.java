@@ -10,6 +10,7 @@ public class MainPageTest {
         assertEquals(123, MainPage.parseComicId("/comic/123"));
         assertEquals(123, MainPage.parseComicId("/comic/123/"));
         assertEquals(123, MainPage.parseComicId("/comic/123/title-slug"));
+        assertEquals(123, MainPage.parseComicId("/comic/123-title-slug"));
         assertEquals(123, MainPage.parseComicId("https://example.com/comic/123?foo=bar"));
         assertEquals(123, MainPage.parseComicId("/comic/123#comments"));
     }
