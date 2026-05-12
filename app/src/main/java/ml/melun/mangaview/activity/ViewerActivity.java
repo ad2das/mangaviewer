@@ -388,7 +388,13 @@ public class ViewerActivity extends AppCompatActivity {
             alert.setPositiveButton("이동", (dialog, button) -> {
                 //이동 시
                 if (input.getText().length() > 0) {
-                    int page = Integer.parseInt(input.getText().toString());
+                    int page;
+                    try {
+                        page = Integer.parseInt(input.getText().toString());
+                    } catch(NumberFormatException e) {
+                        ml.melun.mangaview.report.CrashReporter.record(e);
+                        return;
+                    }
                     if (page < 1) page = 1;
                     if (page > MangaRepository.imageUrls(current.manga, context).size())
                         page = MangaRepository.imageUrls(current.manga, context).size();
