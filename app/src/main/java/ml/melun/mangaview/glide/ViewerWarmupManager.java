@@ -13,6 +13,7 @@ import android.util.LruCache;
 
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.Priority;
+import com.bumptech.glide.RequestManager;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy;
 import com.bumptech.glide.request.RequestOptions;
@@ -481,11 +482,12 @@ public class ViewerWarmupManager {
             decodedTargets.clear();
             decodedBitmapCache.evictAll();
         }
-        if(context == null)
+        RequestManager requestManager = glideRequestManager(context);
+        if(requestManager == null)
             return;
         for(CustomTarget<Bitmap> target : targets) {
             try {
-                Glide.with(context).clear(target);
+                requestManager.clear(target);
             } catch (Exception ignored) {
             }
         }
@@ -502,6 +504,9 @@ public class ViewerWarmupManager {
         List<String> images = manga.getImgs(context);
         if(images == null || images.size() == 0)
             return;
+        RequestManager requestManager = glideRequestManager(context);
+        if(requestManager == null)
+            return;
         if(pageIndex < 0 || pageIndex >= images.size())
             pageIndex = 0;
         int end = Math.min(images.size(), pageIndex + Math.max(1, limit));
@@ -513,7 +518,7 @@ public class ViewerWarmupManager {
                 preloadDecoded(context, page, options, priority, autoCut, reverse, width);
                 continue;
             }
-            Glide.with(context)
+            requestManager
                     .asBitmap()
                     .priority(priority)
                     .apply(options)
@@ -529,6 +534,9 @@ public class ViewerWarmupManager {
         List<String> images = manga.getImgs(context);
         if(images == null || images.size() == 0)
             return;
+        RequestManager requestManager = glideRequestManager(context);
+        if(requestManager == null)
+            return;
         if(pageIndex < 0 || pageIndex >= images.size())
             pageIndex = 0;
         int preloaded = 0;
@@ -540,7 +548,7 @@ public class ViewerWarmupManager {
             if(tier == ViewerPreloadPolicy.TIER_DECODED && canStartDecodedTarget()) {
                 preloadDecoded(context, page, options, Priority.IMMEDIATE, autoCut, reverse, width);
             } else {
-                Glide.with(context)
+                requestManager
                         .asBitmap()
                         .priority(priorityForTier(tier))
                         .apply(options)
@@ -569,6 +577,9 @@ public class ViewerWarmupManager {
 
     private static void preloadDecoded(Context context, PageItem page, RequestOptions options, Priority priority, boolean autoCut, boolean reverse, int width) {
         if(page == null || page.manga == null || page.img == null)
+            return;
+        RequestManager requestManager = glideRequestManager(context);
+        if(requestManager == null)
             return;
         String key = decodedPageKey(page, autoCut, reverse, width);
         if(key.length() == 0)
@@ -613,7 +624,7 @@ public class ViewerWarmupManager {
             decodedTargets.put(key, target);
             trimDecodedTargets();
         }
-        Glide.with(context)
+        requestManager
                 .asBitmap()
                 .priority(priority)
                 .apply(options)
@@ -663,8 +674,11 @@ public class ViewerWarmupManager {
         boolean cachedResult = false;
         long timeoutMs = firstPage ? 1800L : 300L;
         long decodeStart = SystemClock.elapsedRealtime();
+        RequestManager requestManager = glideRequestManager(context);
+        if(requestManager == null)
+            return false;
         try {
-            target = Glide.with(context)
+            target = requestManager
                     .asBitmap()
                     .priority(Priority.IMMEDIATE)
                     .apply(options)
@@ -683,7 +697,7 @@ public class ViewerWarmupManager {
         } finally {
             if(target != null && !cachedResult) {
                 try {
-                    Glide.with(context).clear(target);
+                    requestManager.clear(target);
                 } catch (Exception ignored) {
                 }
             }
@@ -738,6 +752,21 @@ public class ViewerWarmupManager {
             return Utils.getScreenWidth(((Activity) context).getWindowManager().getDefaultDisplay());
         DisplayMetrics metrics = context.getResources().getDisplayMetrics();
         return Math.min(Math.max(metrics.widthPixels, 1), 3000);
+    }
+
+    private static RequestManager glideRequestManager(Context context) {
+        if(context == null)
+            return null;
+        if(context instanceof Activity) {
+            Activity activity = (Activity) context;
+            if(activity.isFinishing() || activity.isDestroyed())
+                return null;
+        }
+        try {
+            return Glide.with(context);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     private static String episodeKey(Manga manga, Title title) {
