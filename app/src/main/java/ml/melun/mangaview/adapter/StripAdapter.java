@@ -422,6 +422,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             return;
         ViewerPreloadPolicy.Window policy = ViewerPreloadPolicy.scrollAheadWindow(p.getDataSave());
         preloadDirectionalWindow(start, 1, clampWindow(policy, aheadCount));
+        preloadDirectionalWindow(start - 1, -1, reversePreloadWindow());
     }
 
     public void preloadInitialAroundPage(PageItem page) {
@@ -433,6 +434,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(start == RecyclerView.NO_POSITION)
             return;
         preloadDirectionalWindow(start, 1, ViewerPreloadPolicy.initialScrollWindow(p.getDataSave()));
+        preloadDirectionalWindow(start - 1, -1, reversePreloadWindow());
     }
 
     final static int IMG = 0;
@@ -915,6 +917,12 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 Math.min(policy.highLimit, limit),
                 limit
         );
+    }
+
+    private ViewerPreloadPolicy.Window reversePreloadWindow() {
+        return p.getDataSave()
+                ? new ViewerPreloadPolicy.Window(0, 1, 2, 2)
+                : new ViewerPreloadPolicy.Window(1, 2, 4, 4);
     }
 
     private Priority priorityForTier(int tier) {
