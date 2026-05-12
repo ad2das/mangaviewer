@@ -128,6 +128,10 @@ public class ViewerActivity extends AppCompatActivity {
     private boolean initialResumeRestorePending = false;
     private boolean userScrolledAfterInitialResume = false;
     private final Runnable clearInitialResumeRestore = this::clearInitialResumeRestore;
+    private Manga initialToolbarGuardManga = null;
+    private boolean initialToolbarGuardActive = false;
+    private final Runnable clearInitialToolbarGuard = this::clearInitialToolbarGuard;
+    private final Runnable syncToolbarToFocusedPage = () -> syncToolbarToFocusedPage(null);
     private int lastViewerScrollDirection = 1;
     float topPullStartY = 0;
     boolean topPullTriggered = false;
@@ -257,6 +261,8 @@ public class ViewerActivity extends AppCompatActivity {
 
             @Override
             public void updateInfo(Manga m) {
+                if(shouldIgnoreInitialToolbarUpdate(m))
+                    return;
                 manga = m;
                 updateIntent(m);
                 refreshToolbar(m);
@@ -333,6 +339,8 @@ public class ViewerActivity extends AppCompatActivity {
                     super.onScrolled(recyclerView, dx, dy);
                     if(dy != 0)
                         lastViewerScrollDirection = dy < 0 ? -1 : 1;
+                    if(dy != 0)
+                        clearInitialToolbarGuard();
                     dispatchScrollAnchorToAdapter(recyclerView.getScrollState() != RecyclerView.SCROLL_STATE_IDLE);
                     loadEpisodeAtBoundaryIfNeededThrottled();
                     scheduleScrollBookmarkSave();
@@ -406,10 +414,11 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private void showEpisodePicker() {
-        List<Manga> data = currentEpisodeList();
+        Manga current = focusedManga();
+        List<Manga> data = episodeListFor(current);
         if(data == null || data.size() == 0)
             return;
-        int selected = findEpisodeIndex(data, manga);
+        int selected = findEpisodeIndex(data, current);
         RecyclerView episodeList = new RecyclerView(context);
         int maxHeight = Math.min(dp(520), getResources().getDisplayMetrics().heightPixels - dp(160));
         episodeList.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxHeight));
@@ -444,7 +453,7 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private List<Manga> currentEpisodeList() {
-        return episodeListFor(manga);
+        return episodeListFor(focusedManga());
     }
 
     private List<Manga> episodeListFor(Manga current) {
@@ -791,6 +800,7 @@ public class ViewerActivity extends AppCompatActivity {
                 return;
             }
             releaseStripAdapter();
+            beginInitialToolbarGuard(m);
             stripAdapter = new StripAdapter(context, m, autoCut, width,title, infiniteScrollCallback);
 
             refreshAdapter();
@@ -1386,9 +1396,9 @@ public class ViewerActivity extends AppCompatActivity {
             return;
         if(strip == null || manager == null || stripAdapter == null)
             return;
-        PageItem page = getFirstVisiblePage();
+        PageItem page = getFocusedVisiblePage();
         if(page == null)
-            page = getFocusedVisiblePage();
+            page = getFirstVisiblePage();
         if(page == null || page.manga == null || !page.manga.useBookmark())
             return;
         int position = stripAdapter.findPagePosition(page);
@@ -1492,6 +1502,29 @@ public class ViewerActivity extends AppCompatActivity {
             mainHandler.post(() -> restorePendingInitialResumePosition(true));
     }
 
+    public void onViewerPageAttached(PageItem item) {
+        if(strip == null || item == null || item.manga == null)
+            return;
+        mainHandler.removeCallbacks(syncToolbarToFocusedPage);
+        strip.post(() -> {
+            mainHandler.removeCallbacks(syncToolbarToFocusedPage);
+            syncToolbarToFocusedPage(item);
+        });
+    }
+
+    private void syncToolbarToFocusedPage(PageItem fallback) {
+        if(isFinishing())
+            return;
+        PageItem page = getFocusedVisiblePage();
+        if(page == null || page.manga == null)
+            return;
+        if(shouldIgnoreInitialToolbarUpdate(page.manga))
+            return;
+        manga = page.manga;
+        updateIntent(manga);
+        refreshToolbar(manga);
+    }
+
     private boolean shouldHoldBookmarkSaveForInitialRestore() {
         return initialResumeRestorePending && !userScrolledAfterInitialResume;
     }
@@ -1509,6 +1542,26 @@ public class ViewerActivity extends AppCompatActivity {
         pendingInitialResumePage = null;
         pendingInitialResumeOffset = 0;
         userScrolledAfterInitialResume = false;
+    }
+
+    private void beginInitialToolbarGuard(Manga target) {
+        mainHandler.removeCallbacks(clearInitialToolbarGuard);
+        initialToolbarGuardManga = target;
+        initialToolbarGuardActive = target != null;
+        mainHandler.postDelayed(clearInitialToolbarGuard, 1200);
+    }
+
+    private boolean shouldIgnoreInitialToolbarUpdate(Manga candidate) {
+        return initialToolbarGuardActive
+                && initialToolbarGuardManga != null
+                && candidate != null
+                && !sameManga(initialToolbarGuardManga, candidate);
+    }
+
+    private void clearInitialToolbarGuard() {
+        mainHandler.removeCallbacks(clearInitialToolbarGuard);
+        initialToolbarGuardActive = false;
+        initialToolbarGuardManga = null;
     }
 
     private boolean sameInitialResumePage(PageItem a, PageItem b) {
@@ -1611,11 +1664,11 @@ public class ViewerActivity extends AppCompatActivity {
         int last = manager.findLastVisibleItemPosition();
         int total = manager.getItemCount();
         int attachThreshold = p.getDataSave() ? DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD : NEXT_EPISODE_ATTACH_THRESHOLD;
-        if(first <= 0 && !previousEpisodeBoundaryLoading)
-            attachPreviousEpisode(false);
+        // Previous episodes are loaded by the explicit top-pull gesture. Loading
+        // them just because the viewer opens at the top can move resume backward.
         if(last != RecyclerView.NO_POSITION && last >= total - attachThreshold)
             attachNextEpisode(false);
-        if(last != RecyclerView.NO_POSITION && (last >= total - 2 || !strip.canScrollVertically(1)))
+        if(last != RecyclerView.NO_POSITION && last >= total - 2)
             attachNextEpisode(true);
     }
 
@@ -1883,11 +1936,12 @@ public class ViewerActivity extends AppCompatActivity {
                     int position = stripAdapter.findFirstPagePosition(m);
                     if(position == RecyclerView.NO_POSITION)
                         return;
-                    manga = m;
-                    updateIntent(m);
-                    refreshToolbar(m);
-                    if(shouldJump)
+                    if(shouldJump) {
+                        manga = m;
+                        updateIntent(m);
+                        refreshToolbar(m);
                         manager.scrollToPositionWithOffset(position, strip.getPaddingTop());
+                    }
                 });
             }
         }, page.manga);

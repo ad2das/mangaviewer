@@ -1143,7 +1143,10 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             if(needUpdate || currentMangaId != pi.manga.getId()){
                 needUpdate = false;
                 currentMangaId = pi.manga.getId();
-                callback.updateInfo(pi.manga);
+                if(mainContext instanceof ViewerActivity)
+                    ((ViewerActivity) mainContext).onViewerPageAttached(pi);
+                else
+                    callback.updateInfo(pi.manga);
             }
         } else if(type == INFO){
             needUpdate = true;
