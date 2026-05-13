@@ -105,6 +105,20 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position) {
         viewHolder h = (viewHolder) holder;
         UpdatedManga m = mData.get(position);
+        if(m == null) {
+            h.text.setText("");
+            h.date.setText("");
+            h.author.setText("");
+            h.tags.setText("");
+            safeGlideClear(h.thumb);
+            h.thumb.setTag("empty");
+            h.thumb.setImageBitmap(null);
+            h.thumb.setVisibility(save ? View.GONE : View.VISIBLE);
+            h.seen.setVisibility(View.GONE);
+            h.fav.setVisibility(View.GONE);
+            h.thumbStatusBadge.setVisibility(View.GONE);
+            return;
+        }
         h.text.setText(m.getName() == null ? "" : m.getName());
         h.date.setText(m.getDate() == null ? "" : m.getDate());
         String thumb = m.getThumb();
@@ -214,15 +228,19 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             }
             card.setOnClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || olisten == null)
+                if(position == RecyclerView.NO_POSITION || olisten == null || position >= mData.size())
                     return;
-                olisten.onClick(mData.get(position));
+                UpdatedManga manga = mData.get(position);
+                if(manga != null)
+                    olisten.onClick(manga);
             });
             viewEps.setOnClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || olisten == null)
+                if(position == RecyclerView.NO_POSITION || olisten == null || position >= mData.size())
                     return;
-                olisten.onEpsClick(mData.get(position).getTitle());
+                UpdatedManga manga = mData.get(position);
+                if(manga != null)
+                    olisten.onEpsClick(manga.getTitle());
             });
         }
     }
