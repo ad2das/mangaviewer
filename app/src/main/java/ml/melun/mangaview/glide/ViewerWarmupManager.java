@@ -879,7 +879,7 @@ public class ViewerWarmupManager {
         }
         if(snapshot == null)
             return null;
-        if(System.currentTimeMillis() - snapshot.createdAt > SNAPSHOT_TTL_MS) {
+        if(!isDiskSnapshotFresh(snapshot.createdAt, System.currentTimeMillis())) {
             continueSnapshots.remove(key);
             snapshot = readDiskSnapshot(context, "viewerContinueSnapshotV1_", key);
             if(snapshot == null)
@@ -893,7 +893,7 @@ public class ViewerWarmupManager {
         WarmupSnapshot snapshot = continueSnapshots.get(key);
         if(snapshot == null)
             return null;
-        if(System.currentTimeMillis() - snapshot.createdAt > SNAPSHOT_TTL_MS) {
+        if(!isDiskSnapshotFresh(snapshot.createdAt, System.currentTimeMillis())) {
             continueSnapshots.remove(key);
             return null;
         }
@@ -909,7 +909,7 @@ public class ViewerWarmupManager {
         }
         if(snapshot == null)
             return false;
-        if(System.currentTimeMillis() - snapshot.createdAt > SNAPSHOT_TTL_MS) {
+        if(!isDiskSnapshotFresh(snapshot.createdAt, System.currentTimeMillis())) {
             snapshots.remove(key);
             snapshot = readDiskSnapshot(context, "viewerSnapshotV1_", key);
             if(snapshot == null)
