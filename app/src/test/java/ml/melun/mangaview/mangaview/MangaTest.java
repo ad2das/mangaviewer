@@ -44,4 +44,10 @@ public class MangaTest {
         assertEquals(1, Decoder.scaledDimensionForTest(1, 0.01f));
         assertEquals(50, Decoder.scaledDimensionForTest(100, 0.5f));
     }
+
+    @Test
+    public void decodeGridUsesAtLeastOnePixelCells() {
+        assertEquals(1, Decoder.gridCellSizeForTest(3, 5));
+        assertEquals(20, Decoder.gridCellSizeForTest(100, 5));
+    }
 }

@@ -73,8 +73,8 @@ public class Decoder {
 
         Canvas canvas = new Canvas(output);
 
-        int row_w = input.getWidth() / cx;
-        int row_h = input.getHeight() / cy;
+        int row_w = gridCellSize(input.getWidth(), cx);
+        int row_h = gridCellSize(input.getHeight(), cy);
         Rect src = new Rect();
         Rect dst = new Rect();
         for (int i = 0; i < cx*cy; i++) {
@@ -93,6 +93,16 @@ public class Decoder {
     private int _random(int index){
         double x = Math.sin(__seed+index) * 10000;
         return (int) Math.floor((x - Math.floor(x)) * 100000);
+    }
+
+    static int gridCellSizeForTest(int size, int cells) {
+        return gridCellSize(size, cells);
+    }
+
+    private static int gridCellSize(int size, int cells) {
+        if(cells <= 0)
+            return Math.max(1, size);
+        return Math.max(1, size / cells);
     }
 
     private int newRandom(int index){
