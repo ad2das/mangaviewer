@@ -699,7 +699,7 @@ public class CustomHttpClient {
         CachedPage staleCached = null;
         synchronized (this) {
             CachedPage cached = pageCache.get(cacheKey);
-            if(cached != null && now - cached.time < ttlMillis)
+            if(cached != null && isPageCacheFresh(cached.time, now, ttlMillis))
                 return new PageResponse(cached.code, cached.body, true);
             staleCached = cached;
             activeLoad = pageLoads.get(cacheKey);
@@ -793,12 +793,12 @@ public class CustomHttpClient {
         long now = System.currentTimeMillis();
         synchronized (this) {
             CachedPage cached = pageCache.get(cacheKey);
-            if(cached != null && now - cached.time < ttlMillis)
+            if(cached != null && isPageCacheFresh(cached.time, now, ttlMillis))
                 return new PageResponse(cached.code, cached.body, true);
             String currentCacheKey = getBaseUrl(normalized) + normalized;
             if(!currentCacheKey.equals(cacheKey)) {
                 cached = pageCache.get(currentCacheKey);
-                if(cached != null && now - cached.time < ttlMillis)
+                if(cached != null && isPageCacheFresh(cached.time, now, ttlMillis))
                     return new PageResponse(cached.code, cached.body, true);
             }
         }
@@ -813,6 +813,14 @@ public class CustomHttpClient {
 
     private static boolean shouldWaitForActivePageLoad(boolean hasStaleCache) {
         return !hasStaleCache;
+    }
+
+    static boolean isPageCacheFreshForTest(long cachedAt, long now, long ttlMillis) {
+        return isPageCacheFresh(cachedAt, now, ttlMillis);
+    }
+
+    private static boolean isPageCacheFresh(long cachedAt, long now, long ttlMillis) {
+        return cachedAt <= now && now - cachedAt < ttlMillis;
     }
 
     public synchronized void clearPageCache() {
