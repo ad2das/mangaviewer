@@ -59,4 +59,16 @@ public class DownloaderTest {
         assertEquals("thumb.webp", Downloader.fileOutputNameForTest("thumb", "webp"));
         assertEquals("thumb.webp.part", Downloader.filePartOutputNameForTest("thumb", "webp"));
     }
+
+    @Test
+    public void retryableDownloadRunKeepsQueueFile() {
+        assertEquals(false, Downloader.shouldDeleteQueueFileAfterRunForTest(false, 3));
+    }
+
+    @Test
+    public void finishedDownloadRunDeletesQueueFile() {
+        assertEquals(true, Downloader.shouldDeleteQueueFileAfterRunForTest(false, null));
+        assertEquals(true, Downloader.shouldDeleteQueueFileAfterRunForTest(false, 1));
+        assertEquals(true, Downloader.shouldDeleteQueueFileAfterRunForTest(true, null));
+    }
 }

@@ -119,16 +119,20 @@ public class Downloader extends Worker {
             DownloadTitle target = new Gson().fromJson(payload.substring(0, split), new TypeToken<DownloadTitle>() {}.getType());
             JSONArray selection = new JSONArray(payload.substring(split + 1));
             queueTitle(target, selection);
-            file.delete();
 
             if(dt == null)
                 dt = new downloadTitle();
             dt.prepare();
             Integer result = dt.run();
-            if(isStopped() || result != null) {
+            boolean stopped = isStopped();
+            if(stopped || result != null) {
+                if(shouldDeleteQueueFileAfterRun(stopped, result))
+                    file.delete();
                 dt.cancelWith(result == null ? 0 : result);
                 return result != null && result == 3 ? Result.retry() : Result.failure();
             }
+            if(shouldDeleteQueueFileAfterRun(false, null))
+                file.delete();
             dt.complete();
             finishNotification();
             return Result.success();
@@ -216,6 +220,16 @@ public class Downloader extends Worker {
 
     static float progressStepForTest(int maxProgress, int itemCount) {
         return progressStep(maxProgress, itemCount);
+    }
+
+    static boolean shouldDeleteQueueFileAfterRunForTest(boolean stopped, Integer result) {
+        return shouldDeleteQueueFileAfterRun(stopped, result);
+    }
+
+    private static boolean shouldDeleteQueueFileAfterRun(boolean stopped, Integer result) {
+        if(result != null && result == 3)
+            return false;
+        return true;
     }
 
     private static String fileExtension(String url) {
