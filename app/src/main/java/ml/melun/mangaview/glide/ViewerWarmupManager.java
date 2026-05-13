@@ -518,7 +518,10 @@ public class ViewerWarmupManager {
             pageIndex = 0;
         int end = Math.min(images.size(), pageIndex + Math.max(1, limit));
         for(int i = pageIndex; i < end; i++) {
-            PageItem page = new PageItem(i, images.get(i), manga);
+            String image = images.get(i);
+            if(!isUsablePageImage(image))
+                continue;
+            PageItem page = new PageItem(i, image, manga);
             RequestOptions options = viewerOptions(page, autoCut, reverse, width);
             boolean cacheDecoded = i - pageIndex < decodedLimit;
             if(cacheDecoded) {
@@ -529,7 +532,7 @@ public class ViewerWarmupManager {
                     .asBitmap()
                     .priority(priority)
                     .apply(options)
-                    .load(Utils.getGlideUrl(images.get(i), manga.getBaseMode()))
+                    .load(Utils.getGlideUrl(image, manga.getBaseMode()))
                     .preload();
         }
     }
@@ -547,9 +550,11 @@ public class ViewerWarmupManager {
         if(pageIndex < 0 || pageIndex >= images.size())
             pageIndex = 0;
         int preloaded = 0;
-        int end = Math.min(images.size(), pageIndex + window.totalLimit);
-        for(int i = pageIndex; i < end; i++) {
-            PageItem page = new PageItem(i, images.get(i), manga);
+        for(int i = pageIndex; i < images.size() && preloaded < window.totalLimit; i++) {
+            String image = images.get(i);
+            if(!isUsablePageImage(image))
+                continue;
+            PageItem page = new PageItem(i, image, manga);
             RequestOptions options = viewerOptions(page, autoCut, reverse, width);
             int tier = ViewerPreloadPolicy.tierForOffset(window, preloaded);
             if(tier == ViewerPreloadPolicy.TIER_DECODED && canStartDecodedTarget()) {
@@ -559,7 +564,7 @@ public class ViewerWarmupManager {
                         .asBitmap()
                         .priority(priorityForTier(tier))
                         .apply(options)
-                        .load(Utils.getGlideUrl(images.get(i), manga.getBaseMode()))
+                        .load(Utils.getGlideUrl(image, manga.getBaseMode()))
                         .preload();
             }
             preloaded++;
@@ -583,7 +588,7 @@ public class ViewerWarmupManager {
     }
 
     private static void preloadDecoded(Context context, PageItem page, RequestOptions options, Priority priority, boolean autoCut, boolean reverse, int width) {
-        if(page == null || page.manga == null || page.img == null)
+        if(page == null || page.manga == null || !isUsablePageImage(page.img))
             return;
         RequestManager requestManager = glideRequestManager(context);
         if(requestManager == null)
@@ -654,7 +659,10 @@ public class ViewerWarmupManager {
         long startedAt = SystemClock.elapsedRealtime();
         boolean firstReady = false;
         for(int i = pageIndex; i < end; i++) {
-            PageItem page = new PageItem(i, images.get(i), manga);
+            String image = images.get(i);
+            if(!isUsablePageImage(image))
+                continue;
+            PageItem page = new PageItem(i, image, manga);
             boolean decoded = decodePageBlocking(context, page, viewerOptions(page, autoCut, reverse, width), autoCut, reverse, width, i == pageIndex);
             if(i == pageIndex)
                 firstReady = decoded || hasDecodedFrame(context, manga, pageIndex, width, autoCut, reverse);
@@ -665,7 +673,7 @@ public class ViewerWarmupManager {
 
     private static boolean decodePageBlocking(Context context, PageItem page, RequestOptions options,
                                            boolean autoCut, boolean reverse, int width, boolean firstPage) {
-        if(page == null || page.manga == null || page.img == null)
+        if(page == null || page.manga == null || !isUsablePageImage(page.img))
             return false;
         String key = decodedPageKey(page, autoCut, reverse, width);
         if(key.length() == 0)
@@ -718,9 +726,20 @@ public class ViewerWarmupManager {
             return false;
         if(pageIndex < 0 || pageIndex >= images.size())
             pageIndex = 0;
-        PageItem page = new PageItem(pageIndex, images.get(pageIndex), manga);
+        String image = images.get(pageIndex);
+        if(!isUsablePageImage(image))
+            return false;
+        PageItem page = new PageItem(pageIndex, image, manga);
         Bitmap cached = getDecodedBitmap(page, autoCut, reverse, width);
         return cached != null && !cached.isRecycled();
+    }
+
+    static boolean isUsablePageImageForTest(String image) {
+        return isUsablePageImage(image);
+    }
+
+    private static boolean isUsablePageImage(String image) {
+        return image != null && image.trim().length() > 0;
     }
 
     private static Priority priorityForTier(int tier) {
