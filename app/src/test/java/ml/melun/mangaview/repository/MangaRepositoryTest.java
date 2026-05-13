@@ -9,6 +9,8 @@ import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class MangaRepositoryTest {
     @Test
@@ -26,5 +28,15 @@ public class MangaRepositoryTest {
     @Test
     public void imageUrlsReturnEmptyListForMissingManga() {
         assertEquals(0, MangaRepository.imageUrls(null, null).size());
+    }
+
+    @Test
+    public void cacheFreshnessRejectsExpiredAndFutureEntries() {
+        long now = 10_000L;
+        long ttl = 1_000L;
+
+        assertTrue(MangaRepository.isCacheFreshForTest(now - 999L, now, ttl));
+        assertFalse(MangaRepository.isCacheFreshForTest(now - 1001L, now, ttl));
+        assertFalse(MangaRepository.isCacheFreshForTest(now + 1L, now, ttl));
     }
 }

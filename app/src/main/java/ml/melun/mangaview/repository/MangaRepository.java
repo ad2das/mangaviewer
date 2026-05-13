@@ -237,7 +237,7 @@ public final class MangaRepository {
     private static <T> T cached(String key, long ttlMs, Callable<T> loader) throws Exception {
         long now = System.currentTimeMillis();
         CacheEntry cached = CACHE.get(key);
-        if(cached != null && now - cached.loadedAt < ttlMs)
+        if(cached != null && isCacheFresh(cached.loadedAt, now, ttlMs))
             return (T) cached.value;
 
         FutureTask<Object> task = new FutureTask<>(() -> loader.call());
@@ -259,6 +259,14 @@ public final class MangaRepository {
         } finally {
             IN_FLIGHT.remove(key, running);
         }
+    }
+
+    static boolean isCacheFreshForTest(long loadedAt, long now, long ttlMs) {
+        return isCacheFresh(loadedAt, now, ttlMs);
+    }
+
+    private static boolean isCacheFresh(long loadedAt, long now, long ttlMs) {
+        return loadedAt <= now && now - loadedAt < ttlMs;
     }
 
     private static final class CacheEntry {
