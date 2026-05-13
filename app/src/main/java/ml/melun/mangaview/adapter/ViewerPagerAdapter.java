@@ -44,6 +44,8 @@ public class ViewerPagerAdapter extends FragmentStatePagerAdapter
         for(int i = 0; i<imgs.size(); i++){
             int sourceIndex = p.getPageRtl() ? source.size() - i - 1 : i;
             String s = imgs.get(i);
+            if(!isUsablePageImage(s))
+                continue;
             PageItem page = new PageItem(sourceIndex, s, m);
 
             fragments.add(ViewerPageFragment.create(s, new Decoder(m.getSeed(), m.getId()), width, context, () -> itf.onPageClick(), page));
@@ -89,6 +91,14 @@ public class ViewerPagerAdapter extends FragmentStatePagerAdapter
 
     static boolean isValidFragmentPositionForTest(List<?> fragments, int position) {
         return isValidFragmentPosition(fragments, position);
+    }
+
+    static boolean isUsablePageImageForTest(String image) {
+        return isUsablePageImage(image);
+    }
+
+    private static boolean isUsablePageImage(String image) {
+        return image != null && image.trim().length() > 0;
     }
 
 }

@@ -25,4 +25,16 @@ public class ViewerPagerAdapterTest {
     public void validFragmentPositionAcceptsExistingFragment() {
         assertTrue(ViewerPagerAdapter.isValidFragmentPositionForTest(Arrays.asList("a", "b"), 1));
     }
+
+    @Test
+    public void usablePageImageRejectsMissingImages() {
+        assertFalse(ViewerPagerAdapter.isUsablePageImageForTest(null));
+        assertFalse(ViewerPagerAdapter.isUsablePageImageForTest(""));
+        assertFalse(ViewerPagerAdapter.isUsablePageImageForTest("   "));
+    }
+
+    @Test
+    public void usablePageImageAcceptsNonBlankImages() {
+        assertTrue(ViewerPagerAdapter.isUsablePageImageForTest("/image/1.jpg"));
+    }
 }
