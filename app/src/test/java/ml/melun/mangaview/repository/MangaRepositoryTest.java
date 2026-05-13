@@ -22,4 +22,9 @@ public class MangaRepositoryTest {
 
         assertEquals(Arrays.asList("a.jpg", "b.jpg"), MangaRepository.imageUrls(manga, null));
     }
+
+    @Test
+    public void imageUrlsReturnEmptyListForMissingManga() {
+        assertEquals(0, MangaRepository.imageUrls(null, null).size());
+    }
 }

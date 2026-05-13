@@ -143,7 +143,7 @@ public final class MangaRepository {
 
     private static List<String> usableImageUrls(List<String> images) {
         if(images == null)
-            return null;
+            return new ArrayList<>();
         ArrayList<String> usable = new ArrayList<>(images.size());
         for(String image : images) {
             if(image != null && image.trim().length() > 0)
