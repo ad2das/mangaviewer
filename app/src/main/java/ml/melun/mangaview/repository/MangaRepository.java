@@ -134,7 +134,22 @@ public final class MangaRepository {
     }
 
     public static List<String> imageUrls(Manga manga, Context context) {
-        return manga.getImgs(context);
+        return usableImageUrls(manga == null ? null : manga.getImgs(context));
+    }
+
+    static List<String> usableImageUrlsForTest(List<String> images) {
+        return usableImageUrls(images);
+    }
+
+    private static List<String> usableImageUrls(List<String> images) {
+        if(images == null)
+            return null;
+        ArrayList<String> usable = new ArrayList<>(images.size());
+        for(String image : images) {
+            if(image != null && image.trim().length() > 0)
+                usable.add(image);
+        }
+        return usable;
     }
 
     public static void backfillRecentProgress(int limit) {
