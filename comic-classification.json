@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "updated": "2026-05-12",
-  "sourceRoot": "https://wfwf450.com",
+  "updated": "2026-05-13",
+  "sourceRoot": "https://wfwf451.com",
   "sources": [
     "source-comic-genre"
   ],
@@ -12800,7 +12800,7 @@
       "thumb": "https://i4.imgcloud18.com/11388/c279f020.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "11389": {
@@ -13264,13 +13264,13 @@
     },
     "11439": {
       "name": "벗겨줘! 류가사키 양",
-      "thumb": "https://i0.imgcloud18.com/11439/c0ddfbcb.jpg?v=1",
+      "thumb": "https://i0.imgcloud18.com/11439/7db7cb9f.jpg?v=1",
       "release": "",
       "sourceTags": [
-        "러브코미디",
-        "개그",
+        "학원",
         "판타지",
-        "학원"
+        "러브코미디",
+        "개그"
       ]
     },
     "11440": {
@@ -14056,7 +14056,7 @@
       "thumb": "https://i4.imgcloud18.com/11525/80f23440.jpg",
       "release": "",
       "inferredTags": [
-        "순정"
+        "판타지"
       ]
     },
     "11526": {
@@ -19679,7 +19679,7 @@
       "thumb": "https://i6.imgcloud18.com/12149/3f4da450.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12150": {
@@ -21919,7 +21919,7 @@
       "thumb": "https://i6.imgcloud18.com/12403/e597f9f0.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12404": {
@@ -22244,7 +22244,7 @@
       "thumb": "https://i6.imgcloud18.com/12441/82af3261.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12442": {
@@ -22252,7 +22252,7 @@
       "thumb": "https://i6.imgcloud18.com/12442/7b2779fd.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12443": {
@@ -22464,7 +22464,7 @@
       "thumb": "https://i6.imgcloud18.com/12466/63393722.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12467": {
@@ -23522,7 +23522,7 @@
       "thumb": "https://i0.imgcloud18.com/12586/71f2d602.jpg?v=1",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12587": {
@@ -38624,8 +38624,8 @@
       "release": "",
       "inferredTags": [
         "순정",
-        "라노벨",
-        "이세계"
+        "개그",
+        "라노벨"
       ]
     },
     "14254": {
@@ -78075,6 +78075,26 @@
         "판타지"
       ]
     },
+    "18639": {
+      "name": "타몬 군 지금 어느 쪽?!",
+      "thumb": "https://c11cm.net/18639/7djbocbmqsyqlqs7rwfr9iiff6xqxnguat.jpg",
+      "release": "",
+      "sourceTags": [
+        "러브코미디",
+        "개그",
+        "순정"
+      ]
+    },
+    "18640": {
+      "name": "뇌신과 샐러리맨",
+      "thumb": "https://c11cm.net/18640/5vhlqm17z3pjbzqqlcdtbg33attwg0bd8g.jpg",
+      "release": "",
+      "sourceTags": [
+        "BL",
+        "판타지",
+        "개그"
+      ]
+    },
     "18641": {
       "name": "유희왕 애장판",
       "thumb": "https://c11cm.net/18641/mp2c9rplphzeewvm5xgi9t5ug6zjdtu9vk.jpg",
@@ -78093,6 +78113,53 @@
         "개그",
         "학원",
         "라노벨"
+      ]
+    },
+    "18643": {
+      "name": "달콤한 생활",
+      "thumb": "https://c11cm.net/18643/ixn95sfv8hhcseuw9gkmzfbiqztnkpotqv.jpg",
+      "release": "",
+      "sourceTags": [
+        "러브코미디",
+        "개그",
+        "성인"
+      ]
+    },
+    "18644": {
+      "name": "햇빛이 들린다",
+      "thumb": "https://c11cm.net/18644/rcgefydtkmfgtmeqcr46rzouw04b0bghph.jpg",
+      "release": "",
+      "sourceTags": [
+        "BL"
+      ]
+    },
+    "18645": {
+      "name": "3월의 벽력",
+      "thumb": "https://c11cm.net/18645/94azzkuh0mnowxhkhkz30hs4nvw692bbnz.jpg",
+      "release": "",
+      "sourceTags": [
+        "순정",
+        "학원"
+      ]
+    },
+    "18646": {
+      "name": "타카모리 군을 조용히 시키고",
+      "thumb": "https://c11cm.net/18646/u9b7mm9uarao1vfketgau1gmz4radgqpgg.jpg",
+      "release": "",
+      "sourceTags": [
+        "학원",
+        "러브코미디",
+        "개그"
+      ]
+    },
+    "18647": {
+      "name": "좀먹는 공주",
+      "thumb": "https://c11cm.net/18647/c9cy0qc6jr4im8u5i40mdd7v2ipjyotxy8.jpg",
+      "release": "",
+      "sourceTags": [
+        "추리",
+        "드라마",
+        "공포"
       ]
     }
   }
