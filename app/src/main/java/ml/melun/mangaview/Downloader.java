@@ -204,6 +204,16 @@ public class Downloader extends Worker {
         return ((float) maxProgress) / itemCount;
     }
 
+    private static int imageDownloadParallelism(int itemCount) {
+        if(itemCount <= 0)
+            return 0;
+        return Math.max(1, Math.min(PARALLEL_IMAGE_DOWNLOADS, itemCount));
+    }
+
+    static int imageDownloadParallelismForTest(int itemCount) {
+        return imageDownloadParallelism(itemCount);
+    }
+
     static float progressStepForTest(int maxProgress, int itemCount) {
         return progressStep(maxProgress, itemCount);
     }
@@ -578,28 +588,19 @@ public class Downloader extends Worker {
                                          Manga target, int currentEpisode, int totalEpisodes) {
         if(urls == null || urls.size() == 0)
             return 0;
-        int workers = Math.max(1, Math.min(PARALLEL_IMAGE_DOWNLOADS, urls.size()));
+        int workers = imageDownloadParallelism(urls.size());
         CompletionService<Boolean> completion = AppDispatchers.ioCompletionService();
         ArrayList<Future> running = new ArrayList<>();
         int submitted = 0;
+        int nextIndex = 0;
         try {
-            for(int i = 0; i < urls.size(); i++) {
-                final int index = i;
-                running.add(completion.submit(AppDispatchers.safeCallable(() -> {
-                    int tries = 0;
-                    while(tries < 5) {
-                        if(Thread.currentThread().isInterrupted())
-                            return false;
-                        if(task.download(index))
-                            return true;
-                        tries++;
-                    }
-                    return false;
-                })));
+            while(nextIndex < urls.size() && submitted < workers) {
+                running.add(submitImageDownload(completion, task, nextIndex));
                 submitted++;
+                nextIndex++;
             }
             int downloadedImages = 0;
-            for(int completed = 0; completed < submitted; completed++) {
+            for(int completed = 0; completed < urls.size(); completed++) {
                 if(Thread.currentThread().isInterrupted() || isStopped())
                     break;
                 Future future = completion.take();
@@ -613,6 +614,11 @@ public class Downloader extends Worker {
                     downloadedImages++;
                 progress += imgStepSize;
                 updateNotification(target, currentEpisode, totalEpisodes, completed + 1, urls.size());
+                if(nextIndex < urls.size()) {
+                    running.add(submitImageDownload(completion, task, nextIndex));
+                    submitted++;
+                    nextIndex++;
+                }
             }
             return downloadedImages;
         } catch (InterruptedException e) {
@@ -623,6 +629,20 @@ public class Downloader extends Worker {
                 if(future != null && !future.isDone())
                     future.cancel(true);
         }
+    }
+
+    private Future<Boolean> submitImageDownload(CompletionService<Boolean> completion, ImageDownloadTask task, int index) {
+        return completion.submit(AppDispatchers.safeCallable(() -> {
+            int tries = 0;
+            while(tries < 5) {
+                if(Thread.currentThread().isInterrupted())
+                    return false;
+                if(task.download(index))
+                    return true;
+                tries++;
+            }
+            return false;
+        }));
     }
 
     private interface ImageDownloadTask {

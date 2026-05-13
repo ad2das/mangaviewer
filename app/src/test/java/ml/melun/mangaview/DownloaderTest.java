@@ -40,4 +40,11 @@ public class DownloaderTest {
         assertArrayEquals(payload.getBytes(StandardCharsets.UTF_8), Downloader.encodePayloadForTest(payload));
         assertEquals(payload, Downloader.decodePayloadForTest(payload.getBytes(StandardCharsets.UTF_8)));
     }
+
+    @Test
+    public void imageDownloadParallelismIsBounded() {
+        assertEquals(0, Downloader.imageDownloadParallelismForTest(0));
+        assertEquals(1, Downloader.imageDownloadParallelismForTest(1));
+        assertEquals(4, Downloader.imageDownloadParallelismForTest(100));
+    }
 }
