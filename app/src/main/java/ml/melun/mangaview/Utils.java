@@ -1556,7 +1556,7 @@ public class Utils {
     }
 
     public static List<File> getOfflineEpisodes(String path){
-        File[] episodeFiles = new File(path).listFiles(pathname -> pathname.isDirectory());
+        File[] episodeFiles = new File(path).listFiles(pathname -> pathname.isDirectory() && isCompleteOfflineDirectory(pathname));
         if(episodeFiles == null)
             return new ArrayList<>();
         //sort
@@ -1575,9 +1575,17 @@ public class Utils {
                 t1 == null ? null : t1.getName()));
         List<DocumentFile> res = new ArrayList<>();
         for(DocumentFile f : files){
-            if(f != null && f.isDirectory()) res.add(f);
+            if(f != null && f.isDirectory() && isCompleteOfflineDirectory(f)) res.add(f);
         }
         return res;
+    }
+
+    private static boolean isCompleteOfflineDirectory(File directory) {
+        return directory != null && !new File(directory, "downloading").exists();
+    }
+
+    private static boolean isCompleteOfflineDirectory(DocumentFile directory) {
+        return directory != null && directory.findFile("downloading") == null;
     }
 
     static int compareDocumentNamesForTest(String left, String right) {

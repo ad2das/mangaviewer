@@ -3,7 +3,10 @@ package ml.melun.mangaview;
 import org.junit.Test;
 
 import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.nio.file.Files;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 
@@ -35,5 +38,27 @@ public class UtilsTest {
         assertEquals(1, Utils.sampleWidthForTest(100, 0));
         assertEquals(1, Utils.sampleHeightForTest(100, 100, 0));
         assertEquals(50, Utils.sampleHeightForTest(200, 100, 100));
+    }
+
+    @Test
+    public void offlineEpisodesSkipIncompleteDownloadFolders() throws Exception {
+        File root = Files.createTempDirectory("offline-root").toFile();
+        File complete = new File(root, "0001.done.1");
+        File incomplete = new File(root, "0002.partial.2");
+        try {
+            complete.mkdirs();
+            incomplete.mkdirs();
+            new File(incomplete, "downloading").createNewFile();
+
+            List<File> episodes = Utils.getOfflineEpisodes(root.getAbsolutePath());
+
+            assertEquals(1, episodes.size());
+            assertEquals(complete.getName(), episodes.get(0).getName());
+        } finally {
+            new File(incomplete, "downloading").delete();
+            incomplete.delete();
+            complete.delete();
+            root.delete();
+        }
     }
 }
