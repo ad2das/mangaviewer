@@ -191,6 +191,29 @@ public class Downloader extends Worker {
         return progressStep(maxProgress, itemCount);
     }
 
+    private static String fileExtension(String url) {
+        if(url == null || url.length() == 0)
+            return "jpg";
+        int end = url.length();
+        int query = url.indexOf('?');
+        if(query >= 0)
+            end = Math.min(end, query);
+        int fragment = url.indexOf('#');
+        if(fragment >= 0)
+            end = Math.min(end, fragment);
+        String path = url.substring(0, end);
+        int slash = path.lastIndexOf('/');
+        int dot = path.lastIndexOf('.');
+        if(dot <= slash || dot + 1 >= path.length())
+            return "jpg";
+        String ext = path.substring(dot + 1).toLowerCase(java.util.Locale.ROOT);
+        return ext.matches("[a-z0-9]{1,8}") ? ext : "jpg";
+    }
+
+    static String fileExtensionForTest(String url) {
+        return fileExtension(url);
+    }
+
     private class downloadTitle {
         void prepare() {
             cookies = new HashMap<>();
@@ -599,7 +622,7 @@ public class Downloader extends Worker {
         try {
             URL url = resolveUrl(urlStr);
             if(url == null) return outputFile;
-            String fileType = url.toString().substring(url.toString().lastIndexOf('.') + 1);
+            String fileType = fileExtension(url.toString());
             URLConnection connection = openDownloadConnection(url);
             filesize = connection.getContentLength();
 
@@ -632,7 +655,7 @@ public class Downloader extends Worker {
         try {
             URL url = resolveUrl(urlStr);
             if(url == null) return null;
-            String fileType = url.toString().substring(url.toString().lastIndexOf('.') + 1);
+            String fileType = fileExtension(url.toString());
             URLConnection connection = openDownloadConnection(url);
             filesize = connection.getContentLength();
 

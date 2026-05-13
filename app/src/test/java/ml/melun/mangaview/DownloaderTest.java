@@ -16,4 +16,17 @@ public class DownloaderTest {
         assertEquals(0f, Downloader.progressStepForTest(1000, 0), 0.0001f);
         assertEquals(0f, Downloader.progressStepForTest(1000, -1), 0.0001f);
     }
+
+    @Test
+    public void fileExtensionIgnoresQueryAndFragment() {
+        assertEquals("jpg", Downloader.fileExtensionForTest("https://example.com/image.jpg?token=abc#part"));
+        assertEquals("webp", Downloader.fileExtensionForTest("https://example.com/a.b/image.webp"));
+    }
+
+    @Test
+    public void fileExtensionFallsBackWhenMissingOrUnsafe() {
+        assertEquals("jpg", Downloader.fileExtensionForTest("https://example.com/image"));
+        assertEquals("jpg", Downloader.fileExtensionForTest("https://example.com/image."));
+        assertEquals("jpg", Downloader.fileExtensionForTest(null));
+    }
 }
