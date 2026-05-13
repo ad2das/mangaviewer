@@ -22,4 +22,11 @@ public class UtilsTest {
         assertEquals(-1, Utils.compareDocumentNamesForTest("0001.title", null));
         assertEquals(-1, Utils.compareDocumentNamesForTest("0001.title", "0002.title"));
     }
+
+    @Test
+    public void textBytesUseUtf8() {
+        String text = "{\"favorite\":\"데스러버\"}";
+
+        assertEquals(text, new String(Utils.utf8BytesForTest(text), StandardCharsets.UTF_8));
+    }
 }

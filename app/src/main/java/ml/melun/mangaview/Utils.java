@@ -1292,11 +1292,9 @@ public class Utils {
     }
 
     public static boolean writePreferenceToFile(Context c, File f){
-        try {
-            FileOutputStream stream = new FileOutputStream(f);
-            stream.write(readPref(c).getBytes());
+        try (FileOutputStream stream = new FileOutputStream(f)) {
+            stream.write(utf8Bytes(readPref(c)));
             stream.flush();
-            stream.close();
         }catch (Exception e){
             ml.melun.mangaview.report.CrashReporter.record(e);
             return false;
@@ -1305,16 +1303,24 @@ public class Utils {
     }
 
     public static boolean writePreferenceToFile(Context c, Uri uri){
-        try {
-            OutputStream stream = c.getContentResolver().openOutputStream(uri);
-            stream.write(readPref(c).getBytes());
+        try (OutputStream stream = c.getContentResolver().openOutputStream(uri)) {
+            if(stream == null)
+                return false;
+            stream.write(utf8Bytes(readPref(c)));
             stream.flush();
-            stream.close();
         }catch (Exception e){
             ml.melun.mangaview.report.CrashReporter.record(e);
             return false;
         }
         return true;
+    }
+
+    static byte[] utf8BytesForTest(String text) {
+        return utf8Bytes(text);
+    }
+
+    private static byte[] utf8Bytes(String text) {
+        return text.getBytes(StandardCharsets.UTF_8);
     }
 
     public static void jsonToPref(Context c, CustomJSONObject data){
