@@ -103,16 +103,19 @@ public class Utils {
     public static final String ReservedChars = "|\\?*<\":>+[]/'";
 
     public static boolean deleteRecursive(File fileOrDirectory) {
+        if(fileOrDirectory == null || !fileOrDirectory.exists()) return false;
         if(!checkWriteable(fileOrDirectory)) return false;
         try {
-            if (fileOrDirectory.isDirectory())
-                for (File child : fileOrDirectory.listFiles())
+            if (fileOrDirectory.isDirectory()) {
+                File[] children = fileOrDirectory.listFiles();
+                if(children == null) return false;
+                for (File child : children)
                     if(!deleteRecursive(child)) return false;
-            fileOrDirectory.delete();
+            }
+            return fileOrDirectory.delete();
         }catch (Exception e){
             return false;
         }
-        return true;
     }
 
     public static boolean checkWriteable(File targetDir) {

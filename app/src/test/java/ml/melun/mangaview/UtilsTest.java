@@ -57,6 +57,17 @@ public class UtilsTest {
     }
 
     @Test
+    public void deleteRecursiveReportsMissingTargetAsFailure() throws Exception {
+        File root = Files.createTempDirectory("delete-missing").toFile();
+        File missing = new File(root, "missing");
+        try {
+            assertEquals(false, Utils.deleteRecursive(missing));
+        } finally {
+            root.delete();
+        }
+    }
+
+    @Test
     public void offlineEpisodesSkipIncompleteDownloadFolders() throws Exception {
         File root = Files.createTempDirectory("offline-root").toFile();
         File complete = new File(root, "0001.done.1");
