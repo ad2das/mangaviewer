@@ -78,6 +78,8 @@ public class MainUpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(mData == null || position < 0 || position >= mData.size())
             return RecyclerView.NO_ID;
         Manga manga = mData.get(position);
+        if(manga == null)
+            return RecyclerView.NO_ID;
         if(manga.getId() > 0)
             return (((long) manga.getBaseMode()) << 32) ^ manga.getId();
         return position;
@@ -94,7 +96,13 @@ public class MainUpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position) {
         viewHolder h = (viewHolder) holder;
         Manga manga = mData.get(position);
-        h.title.setText(manga.getName());
+        if(manga == null) {
+            h.title.setText("");
+            h.thumb.setColorFilter(null);
+            bindStatic(h.thumb, "transparent", android.R.color.transparent);
+            return;
+        }
+        h.title.setText(manga.getName() == null ? "" : manga.getName());
         String thumb = manga.getThumb();
         h.thumb.setColorFilter(null);
         if(thumb != null && thumb.length()==0) {
@@ -108,6 +116,8 @@ public class MainUpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             h.thumb.setColorFilter(dark ? Color.WHITE : Color.DKGRAY);
         }else if(save) {
             bindStatic(h.thumb, "launcher", R.mipmap.ic_launcher);
+        } else if(thumb == null) {
+            bindStatic(h.thumb, "placeholder", R.drawable.app_cover_placeholder);
         } else {
             Object source = getGlideUrl(thumb, manga.getBaseMode());
             String key = String.valueOf(source);
@@ -173,7 +183,9 @@ public class MainUpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     int position = getAdapterPosition();
                     if(position == RecyclerView.NO_POSITION || position >= mData.size())
                         return;
-                    monclick.onclick(mData.get(position));
+                    Manga manga = mData.get(position);
+                    if(manga != null)
+                        monclick.onclick(manga);
                 }else
                     monclick.refresh();
             });
