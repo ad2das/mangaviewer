@@ -13,6 +13,7 @@ import android.widget.TextView;
 
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 import ml.melun.mangaview.R;
@@ -33,11 +34,11 @@ public class MainTagAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
 
     public MainTagAdapter(Context m, List<String> t , int type) {
         mcontext = m;
-        tags = t;
+        tags = t == null ? Collections.emptyList() : t;
         this.type = type;
         this.mInflater = LayoutInflater.from(m);
         dark = p.getDarkTheme();
-        selected = new boolean[t.size()];
+        selected = new boolean[tags.size()];
         Arrays.fill(selected,Boolean.FALSE);
         setHasStableIds(true);
     }
@@ -68,6 +69,8 @@ public class MainTagAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         return new tagHolder(view);
     }
     public void toggleSelect(int position){
+        if(!isValidTagPosition(tags, selected, position))
+            return;
         if(singleSelect){
             if(position == selection) selection = -1;
             else{
@@ -89,6 +92,8 @@ public class MainTagAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
 
     @Override
     public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position) {
+        if(!isValidTagPosition(tags, selected, position))
+            return;
         tagHolder h = (tagHolder) holder;
         h.tag.setText(tags.get(position));
         if(singleSelect){
@@ -120,7 +125,7 @@ public class MainTagAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
 
     @Override
     public int getItemCount() {
-        return tags.size();
+        return tags == null ? 0 : tags.size();
     }
 
     public void setClickListener(tagOnclick t){
@@ -147,7 +152,7 @@ public class MainTagAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
 
             card.setOnClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || mClickListener == null)
+                if(position == RecyclerView.NO_POSITION || mClickListener == null || !isValidTagPosition(tags, selected, position))
                     return;
                 mClickListener.onClick(position, tags.get(position));
             });
@@ -155,8 +160,10 @@ public class MainTagAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     }
     public String getSelectedValues(){
         StringBuilder res = new StringBuilder();
+        if(tags == null || selected == null)
+            return "";
         for(int i=0; i<tags.size(); i++){
-            if(selected[i]){
+            if(i < selected.length && selected[i]){
                 if(res.length()>0) res.append(',').append(tags.get(i));
                 else res = new StringBuilder(tags.get(i));
             }
@@ -166,18 +173,33 @@ public class MainTagAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     public String getSelectedIndex(){
         StringBuilder res = new StringBuilder();
         if(singleSelect) {
-            if(selection>-1) return Integer.toString(type==2 ? selection+1 : selection);
+            if(isValidTagPosition(tags, selected, selection)) return Integer.toString(type==2 ? selection+1 : selection);
             else return "";
         }
 
+        if(tags == null || selected == null)
+            return "";
         for(int i=0; i<tags.size(); i++){
-            if(selected[i]){
+            if(i < selected.length && selected[i]){
                 if(res.length()>0) res.append(",").append(type == 2 ? i + 1 : i);
                 else res = new StringBuilder(Integer.toString(type == 2 ? i + 1 : i));
             }
         }
         return res.toString();
     }
+
+    private static boolean isValidTagPosition(List<String> tags, boolean[] selected, int position) {
+        return tags != null
+                && selected != null
+                && position >= 0
+                && position < tags.size()
+                && position < selected.length;
+    }
+
+    static boolean isValidTagPositionForTest(List<String> tags, boolean[] selected, int position) {
+        return isValidTagPosition(tags, selected, position);
+    }
+
     public interface tagOnclick{
         void onClick(int position, String value);
     }
