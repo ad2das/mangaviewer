@@ -29,4 +29,11 @@ public class StripAdapterTest {
         assertEquals("", StripAdapter.imageModelForTest(null));
         assertEquals("img", StripAdapter.imageModelForTest(new PageItem(0, "img", null)));
     }
+
+    @Test
+    public void imageModelRejectsBlankImageWithManga() {
+        Manga manga = new Manga(12, "episode", "", MTitle.base_comic);
+
+        assertEquals("", StripAdapter.imageModelForTest(new PageItem(0, "   ", manga)));
+    }
 }

@@ -803,8 +803,10 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private static Object imageModel(PageItem item) {
         if(item == null)
             return "";
+        if(!isUsableImageUrl(item.img))
+            return "";
         if(item.manga == null)
-            return item.img == null ? "" : item.img;
+            return item.img;
         return item.manga.isOnline() ? getGlideUrl(item.img, item.manga.getBaseMode()) : item.img;
     }
 
@@ -1062,7 +1064,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private String preloadKey(PageItem page) {
-        if(page == null || page.manga == null)
+        if(page == null || page.manga == null || !isUsableImageUrl(page.img))
             return "";
         return pageBindKey(page);
     }
@@ -1072,9 +1074,13 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private String pageBindKey(PageItem page) {
-        if(page == null || page.manga == null)
+        if(page == null || page.manga == null || !isUsableImageUrl(page.img))
             return "";
         return page.pageKey(autoCut, reverse, width);
+    }
+
+    private static boolean isUsableImageUrl(String image) {
+        return image != null && image.trim().length() > 0;
     }
 
     private Decoder decoderFor(PageItem page) {
