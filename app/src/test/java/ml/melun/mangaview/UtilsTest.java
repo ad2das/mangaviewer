@@ -27,6 +27,12 @@ public class UtilsTest {
     }
 
     @Test
+    public void documentNamesSortNumericPrefixesNaturally() {
+        assertEquals(-1, Integer.signum(Utils.compareDocumentNamesForTest("2.episode.2", "10.episode.10")));
+        assertEquals(1, Integer.signum(Utils.compareDocumentNamesForTest("10.episode.10", "2.episode.2")));
+    }
+
+    @Test
     public void textBytesUseUtf8() {
         String text = "{\"favorite\":\"데스러버\"}";
 
@@ -58,6 +64,26 @@ public class UtilsTest {
             new File(incomplete, "downloading").delete();
             incomplete.delete();
             complete.delete();
+            root.delete();
+        }
+    }
+
+    @Test
+    public void offlineEpisodesSortNumericPrefixesNaturally() throws Exception {
+        File root = Files.createTempDirectory("offline-sort").toFile();
+        File second = new File(root, "2.episode.2");
+        File tenth = new File(root, "10.episode.10");
+        try {
+            second.mkdirs();
+            tenth.mkdirs();
+
+            List<File> episodes = Utils.getOfflineEpisodes(root.getAbsolutePath());
+
+            assertEquals(second.getName(), episodes.get(0).getName());
+            assertEquals(tenth.getName(), episodes.get(1).getName());
+        } finally {
+            second.delete();
+            tenth.delete();
             root.delete();
         }
     }

@@ -1560,7 +1560,9 @@ public class Utils {
         if(episodeFiles == null)
             return new ArrayList<>();
         //sort
-        Arrays.sort(episodeFiles);
+        Arrays.sort(episodeFiles, (left, right) -> compareDocumentNames(
+                left == null ? null : left.getName(),
+                right == null ? null : right.getName()));
         //add as manga
         return Arrays.asList(episodeFiles);
     }
@@ -1599,7 +1601,26 @@ public class Utils {
             return 1;
         if(right == null)
             return -1;
+        int leftNumber = leadingNumber(left);
+        int rightNumber = leadingNumber(right);
+        if(leftNumber >= 0 && rightNumber >= 0 && leftNumber != rightNumber)
+            return Integer.compare(leftNumber, rightNumber);
         return left.compareTo(right);
+    }
+
+    private static int leadingNumber(String value) {
+        if(value == null || value.length() == 0)
+            return -1;
+        int end = 0;
+        while(end < value.length() && Character.isDigit(value.charAt(end)))
+            end++;
+        if(end == 0)
+            return -1;
+        try {
+            return Integer.parseInt(value.substring(0, end));
+        } catch (NumberFormatException e) {
+            return -1;
+        }
     }
 
     public static boolean useScopedStorageHome(String homeDir) {
