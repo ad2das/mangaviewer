@@ -748,12 +748,22 @@ public final class AppUpdateManager {
                     }
                     output.flush();
                 }
-                return apk.exists() && apk.length() > 0 ? apk : null;
+                return apk.exists() && isCompleteDownload(apk.length(), total) ? apk : null;
             }
         } catch (Exception e) {
             CrashReporter.record(e);
             return null;
         }
+    }
+
+    static boolean isCompleteDownloadForTest(long actualLength, long expectedLength) {
+        return isCompleteDownload(actualLength, expectedLength);
+    }
+
+    private static boolean isCompleteDownload(long actualLength, long expectedLength) {
+        if(expectedLength > 0)
+            return actualLength == expectedLength;
+        return actualLength > 0;
     }
 
     private static void log(String message) {
