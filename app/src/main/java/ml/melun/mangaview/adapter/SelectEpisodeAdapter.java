@@ -16,6 +16,7 @@ import org.json.JSONArray;
 
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 import ml.melun.mangaview.R;
@@ -40,9 +41,9 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
     public SelectEpisodeAdapter(Context context, List<Manga> list) {
         this.mInflater = LayoutInflater.from(context);
         mainContext = context;
-        this.data = list;
+        this.data = list == null ? Collections.emptyList() : list;
         outValue = new TypedValue();
-        selected = new boolean[list.size()];
+        selected = new boolean[data.size()];
         Arrays.fill(selected,Boolean.FALSE);
         dark = p.getDarkTheme();
         mainContext.getTheme().resolveAttribute(android.R.attr.selectableItemBackground, outValue, true);
@@ -66,9 +67,15 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
     public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {
         ViewHolder h = (ViewHolder) holder;
         try {
+            if(!isValidSelectionPosition(data, selected, position)) {
+                h.episode.setText("");
+                h.date.setText("");
+                h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, dark ? R.color.colorDarkItem : R.color.appCard));
+                return;
+            }
             Manga m = data.get(position);
-            h.episode.setText(m.getName());
-            h.date.setText(m.getDate());
+            h.episode.setText(m == null ? "" : m.getName());
+            h.date.setText(m == null ? "" : m.getDate());
             if (selected[position]) {
                 if(dark) h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.selectedDark));
                 else h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.appAccentLight));
@@ -87,10 +94,12 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
     // total number of rows
     @Override
     public int getItemCount() {
-        return data.size();
+        return data == null ? 0 : data.size();
     }
 
     public void select(int position){
+        if(!isValidSelectionPosition(data, selected, position))
+            return;
         if(single) {
             selected[position] = !selected[position];
             notifyItemChanged(position);
@@ -108,14 +117,18 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
             else if(rs != -1 && re == -1){
                 re = position;
                 while(rs != re){
+                    if(!isValidSelectionPosition(data, selected, rs))
+                        break;
                     selected[rs] = !selected[rs];
                     notifyItemChanged(rs);
 
                     if(rs>re) rs--;
                     else rs++;
                 }
-                selected[rs] = !selected[rs];
-                notifyItemChanged(rs);
+                if(isValidSelectionPosition(data, selected, rs)) {
+                    selected[rs] = !selected[rs];
+                    notifyItemChanged(rs);
+                }
 
                 rs = -1;
                 re = -1;
@@ -161,7 +174,7 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
             }
             itemView.setOnClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || mClickListener == null)
+                if(position == RecyclerView.NO_POSITION || mClickListener == null || !isValidSelectionPosition(data, selected, position))
                     return;
                 mClickListener.onItemClick(v, position);
             });
@@ -180,8 +193,20 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
     }
 
     private void notifySelectionChanged(int position) {
-        if(position >= 0 && position < getItemCount())
+        if(isValidSelectionPosition(data, selected, position))
             notifyItemChanged(position);
+    }
+
+    private static boolean isValidSelectionPosition(List<?> data, boolean[] selected, int position) {
+        return data != null
+                && selected != null
+                && position >= 0
+                && position < data.size()
+                && position < selected.length;
+    }
+
+    static boolean isValidSelectionPositionForTest(List<?> data, boolean[] selected, int position) {
+        return isValidSelectionPosition(data, selected, position);
     }
 
     public interface ItemClickListener {
