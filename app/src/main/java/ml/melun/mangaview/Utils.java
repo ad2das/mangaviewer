@@ -1503,13 +1503,22 @@ public class Utils {
         if(input == null || input.isEmpty()) return -1;
         for(int i = 0; i < input.length(); i++) {
             if(Character.digit(input.charAt(i),10) < 0){
-                if(i>0)
-                    return Integer.parseInt(input.substring(0,i));
+                if(i>0) {
+                    try {
+                        return Integer.parseInt(input.substring(0,i));
+                    } catch (NumberFormatException e) {
+                        return -1;
+                    }
+                }
                 else
                     return -1;
             }
         }
-        return Integer.parseInt(input);
+        try {
+            return Integer.parseInt(input);
+        } catch (NumberFormatException e) {
+            return -1;
+        }
     }
 
 

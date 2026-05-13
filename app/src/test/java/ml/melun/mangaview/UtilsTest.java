@@ -44,6 +44,7 @@ public class UtilsTest {
         assertEquals(-1, Utils.getNumberFromString(null));
         assertEquals(-1, Utils.getNumberFromString(""));
         assertEquals(-1, Utils.getNumberFromString("abc123"));
+        assertEquals(-1, Utils.getNumberFromString("999999999999999999999"));
         assertEquals(123, Utils.getNumberFromString("123"));
         assertEquals(123, Utils.getNumberFromString("123abc"));
     }
