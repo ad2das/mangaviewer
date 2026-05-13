@@ -728,7 +728,7 @@ public class ViewerActivity2 extends AppCompatActivity {
         if(manga == null || imgs == null || pageIndex < 0 || pageIndex >= imgs.size())
             return null;
         String url = Utils.safeGet(imgs, pageIndex);
-        if(url == null)
+        if(!isUsablePageUrl(url))
             return null;
         return ViewerWarmupManager.getDecodedBitmap(new PageItem(pageIndex, url, manga), false, reverse, swidth);
     }
@@ -1238,9 +1238,17 @@ public class ViewerActivity2 extends AppCompatActivity {
 
     private Object pageImageAt(int pageIndex) {
         String url = Utils.safeGet(imgs, pageIndex);
-        if(url == null || manga == null)
+        if(!isUsablePageUrl(url) || manga == null)
             return null;
         return manga.isOnline() ? getGlideUrl(url, manga.getBaseMode()) : url;
+    }
+
+    static boolean isUsablePageUrlForTest(String url) {
+        return isUsablePageUrl(url);
+    }
+
+    private static boolean isUsablePageUrl(String url) {
+        return url != null && url.trim().length() > 0;
     }
 
     private void prewarmAdjacentEpisodes() {
