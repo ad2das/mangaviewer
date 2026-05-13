@@ -97,7 +97,12 @@ public class ViewerPageFragment extends Fragment {
             return;
         }
         long bindStart = android.os.SystemClock.elapsedRealtime();
-        Object target = image.startsWith("http") ? getGlideUrl(image) : image;
+        Object target = imageTarget(image);
+        if("".equals(target)) {
+            frame.setImageDrawable(null);
+            refresh.setVisibility(View.GONE);
+            return;
+        }
         Glide.with(frame)
                 .asBitmap()
                 .priority(Priority.IMMEDIATE)
@@ -126,6 +131,16 @@ public class ViewerPageFragment extends Fragment {
                         }
                     }
                 });
+    }
+
+    static Object imageTargetForTest(String image) {
+        return imageTarget(image);
+    }
+
+    private static Object imageTarget(String image) {
+        if(image == null || image.trim().length() == 0)
+            return "";
+        return image.startsWith("http") ? getGlideUrl(image) : image;
     }
 
     private RequestOptions viewerImageOptions() {
