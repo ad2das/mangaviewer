@@ -834,14 +834,18 @@ public class ViewerActivity extends AppCompatActivity {
     public boolean dispatchKeyEvent(KeyEvent event) {
         int keyCode = event.getKeyCode();
         if(keyCode == p.getPrevPageKey() || keyCode == p.getNextPageKey()) {
+            if(manager == null || manager.getItemCount() <= 0)
+                return true;
             int index = manager.findFirstVisibleItemPosition();
+            if(index == RecyclerView.NO_POSITION)
+                return true;
             if (keyCode == p.getNextPageKey()) {
                 if (event.getAction() == KeyEvent.ACTION_UP) {
-                    manager.scrollToPosition(index+1);
+                    manager.scrollToPosition(Math.min(index + 1, manager.getItemCount() - 1));
                 }
             } else if (keyCode == p.getPrevPageKey()) {
                 if (event.getAction() == KeyEvent.ACTION_UP) {
-                    manager.scrollToPosition(index-1);
+                    manager.scrollToPosition(Math.max(index - 1, 0));
                 }
             }
             if(toolbarshow) toggleToolbar();
