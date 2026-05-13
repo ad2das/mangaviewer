@@ -338,6 +338,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     @Override
     public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position) {
+        if(!AdapterPositionGuard.isValidPosition(rows, position))
+            return;
         Object row = rows.get(position);
         if(holder instanceof HeroHolder)
             ((HeroHolder) holder).bind((HeroRow) row);
@@ -355,15 +357,18 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     @Override
     public int getItemViewType(int position) {
-        if(rows.get(position) instanceof HeroRow)
+        if(!AdapterPositionGuard.isValidPosition(rows, position))
+            return SECTION;
+        Object row = rows.get(position);
+        if(row instanceof HeroRow)
             return HERO;
-        if(rows.get(position) instanceof HomeSection)
+        if(row instanceof HomeSection)
             return HOME_SECTION;
-        if(rows.get(position) instanceof ActionStrip)
+        if(row instanceof ActionStrip)
             return ACTION_STRIP;
-        if(rows.get(position) instanceof CategoryPanel)
+        if(row instanceof CategoryPanel)
             return CATEGORY;
-        return rows.get(position) instanceof String ? GROUP : SECTION;
+        return row instanceof String ? GROUP : SECTION;
     }
 
     @Override
@@ -395,7 +400,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     @Override
     public long getItemId(int position) {
-        if(rows == null || position < 0 || position >= rows.size())
+        if(!AdapterPositionGuard.isValidPosition(rows, position))
             return RecyclerView.NO_ID;
         return rowKey(rows.get(position)).hashCode();
     }
@@ -1383,7 +1388,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
         @Override
         public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position) {
-            Title item = position < items.size() ? items.get(position) : null;
+            Title item = AdapterPositionGuard.isValidPosition(items, position) ? items.get(position) : null;
             if(holder instanceof RankHolder)
                 ((RankHolder) holder).bind(item, position);
             else
@@ -1407,9 +1412,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
         @Override
         public long getItemId(int position) {
-            if(items != null && position < items.size()) {
+            if(AdapterPositionGuard.isValidPosition(items, position)) {
                 Title item = items.get(position);
-                return (((long) item.getBaseMode()) << 32) ^ item.getId();
+                if(item != null)
+                    return (((long) item.getBaseMode()) << 32) ^ item.getId();
             }
             return -1000L - position - style * 100L;
         }
@@ -2018,6 +2024,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
         @Override
         public void onBindViewHolder(@NonNull CardHolder holder, int position) {
+            if(!AdapterPositionGuard.isValidPosition(items, position))
+                return;
             Object item = items.get(position);
             if(!(item instanceof Title))
                 return;
