@@ -592,18 +592,37 @@ public class Downloader extends Worker {
             if(bitmap == null) return false;
             bitmap = d.decode(bitmap);
             //save image
-            String fname = name +".jpg";
-            DocumentFile outputFile = parent.findFile(fname);
-            if(outputFile != null) outputFile.delete();
-            outputFile = parent.createFile("image/jpeg",fname);
-            if(outputFile == null) return false;
+            String fname = imageOutputName(name);
+            String partName = imagePartOutputName(name);
+            DocumentFile partFile = parent.findFile(partName);
+            if(partFile != null)
+                partFile.delete();
+            partFile = parent.createFile("application/octet-stream", partName);
+            if(partFile == null) return false;
 
-            try (OutputStream outputStream = serviceContext.getContentResolver().openOutputStream(outputFile.getUri())) {
-                if(outputStream == null) return false;
-                if(!bitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream)) return false;
+            boolean compressed;
+            try (OutputStream outputStream = serviceContext.getContentResolver().openOutputStream(partFile.getUri())) {
+                if(outputStream == null) {
+                    partFile.delete();
+                    return false;
+                }
+                compressed = bitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream);
                 outputStream.flush();
             } finally {
                 bitmap.recycle();
+            }
+            if(!compressed) {
+                partFile.delete();
+                return false;
+            }
+            DocumentFile outputFile = parent.findFile(fname);
+            if(outputFile != null && !outputFile.delete()) {
+                partFile.delete();
+                return false;
+            }
+            if(!partFile.renameTo(fname)) {
+                partFile.delete();
+                return false;
             }
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
