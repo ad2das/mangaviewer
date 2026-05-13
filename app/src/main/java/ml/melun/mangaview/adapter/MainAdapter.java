@@ -56,7 +56,10 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         data = new ArrayList<>();
 
         uadapter = new MainUpdatedAdapter(main);
-        addh = new ButtonHeader("최근 추가된 만화", () -> mainClickListener.clickedMoreUpdated());
+        addh = new ButtonHeader("최근 추가된 만화", () -> {
+            if(mainClickListener != null)
+                mainClickListener.clickedMoreUpdated();
+        });
 
         data.add(addh);
         data.add(null);
@@ -197,13 +200,15 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             uadapter.setClickListener(new MainUpdatedAdapter.OnClickCallback() {
                 @Override
                 public void onclick(Manga m) {
-                    mainClickListener.clickedManga(m);
+                    if(mainClickListener != null && m != null)
+                        mainClickListener.clickedManga(m);
                 }
 
                 @Override
                 public void refresh() {
                     fetch();
-                    mainClickListener.clickedRetry();
+                    if(mainClickListener != null)
+                        mainClickListener.clickedRetry();
                 }
             });
         }
@@ -229,9 +234,9 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         }
 
         public void setManga(Manga m, int r){
-            text.setText(m.getName());
+            text.setText(m == null ? "" : m.getName());
             card.setOnClickListener(v -> {
-                if(m!=null && m.getId()>0)
+                if(m!=null && m.getId()>0 && mainClickListener != null)
                     mainClickListener.clickedManga(m);
             });
 
@@ -290,9 +295,9 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             }
         }
         public void setTitle(Title t, int r){
-            text.setText(t.getName());
+            text.setText(t == null ? "" : t.getName());
             card.setOnClickListener(v -> {
-                if(t!=null && t.getId()>0)
+                if(t!=null && t.getId()>0 && mainClickListener != null)
                     mainClickListener.clickedTitle(t);
             });
 
@@ -319,9 +324,12 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
             card.setOnClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || mainClickListener == null)
+                if(position == RecyclerView.NO_POSITION || mainClickListener == null || !isValidDataPosition(data, position))
                     return;
-                Tag t = (Tag) data.get(position);
+                Object item = data.get(position);
+                if(!(item instanceof Tag))
+                    return;
+                Tag t = (Tag) item;
                 if(t instanceof NameTag) mainClickListener.clickedName(t.tag);
                 else if(t instanceof GenreTag) mainClickListener.clickedGenre(t.tag);
                 else if(t instanceof ReleaseTag) mainClickListener.clickedRelease(t.tag);
@@ -371,7 +379,8 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         }
 
         public void callback() {
-            callback.run();
+            if(callback != null)
+                callback.run();
         }
     }
     static class NoResultManga extends Manga{
@@ -408,6 +417,14 @@ public class MainAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
     public void setMainClickListener(onItemClick main) {
         this.mainClickListener = main;
+    }
+
+    private static boolean isValidDataPosition(List<?> data, int position) {
+        return data != null && position >= 0 && position < data.size();
+    }
+
+    static boolean isValidDataPositionForTest(List<?> data, int position) {
+        return isValidDataPosition(data, position);
     }
 
     public interface onItemClick{
