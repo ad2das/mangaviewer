@@ -24,12 +24,12 @@ public class MTitle{
 
     }
     public MTitle(String name, int id, String thumb, String author, List<String> tags, String release, int baseMode) {
-        this.name = name.replace("\"", "");
+        this.name = cleanText(name);
         this.id = id;
-        this.thumb = thumb;
+        this.thumb = cleanNullable(thumb);
         this.tags = tags;
-        this.release = release;
-        this.author = author;
+        this.release = cleanNullable(release);
+        this.author = cleanNullable(author);
         this.baseMode = baseMode;
     }
 
@@ -86,7 +86,7 @@ public class MTitle{
     }
 
     public String getName() {
-        return name;
+        return cleanNullable(name);
     }
 
     public int getId() {
@@ -94,7 +94,7 @@ public class MTitle{
     }
 
     public String getThumb() {
-        return thumb;
+        return cleanNullable(thumb);
     }
 
     public String getAuthor() {
@@ -108,7 +108,7 @@ public class MTitle{
     }
 
     public String getRelease() {
-        return release;
+        return cleanNullable(release);
     }
 
     public int getBookmarkEpisodeId() {
@@ -155,15 +155,15 @@ public class MTitle{
     }
 
     public void setName(String name) {
-        this.name = name.replace("\"", "");
+        this.name = cleanText(name);
     }
 
     public void setThumb(String thumb) {
-        this.thumb = thumb;
+        this.thumb = cleanNullable(thumb);
     }
 
     public void setAuthor(String author) {
-        this.author = author;
+        this.author = cleanNullable(author);
     }
 
     public void setTags(List<String> tags) {
@@ -171,7 +171,7 @@ public class MTitle{
     }
 
     public void setRelease(String release) {
-        this.release = release;
+        this.release = cleanNullable(release);
     }
 
     @Override
@@ -207,6 +207,14 @@ public class MTitle{
             default:
                 return "만화";
         }
+    }
+
+    private static String cleanText(String value) {
+        return cleanNullable(value).replace("\"", "");
+    }
+
+    private static String cleanNullable(String value) {
+        return value == null ? "" : value;
     }
 
     @NonNull
