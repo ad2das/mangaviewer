@@ -486,7 +486,8 @@ public class ViewerWarmupManager {
         synchronized (ViewerWarmupManager.class) {
             targets = new ArrayList<>(decodedTargets.values());
             decodedTargets.clear();
-            decodedBitmapCache.evictAll();
+            if(ViewerWarmupCachePolicy.shouldEvictDecodedCacheWhenClearingWork())
+                decodedBitmapCache.evictAll();
         }
         RequestManager requestManager = glideRequestManager(context);
         if(requestManager == null)
