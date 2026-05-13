@@ -738,8 +738,31 @@ public class ViewerWarmupManager {
         return isUsablePageImage(image);
     }
 
+    static boolean hasUsableImagesForTest(List<String> images) {
+        return hasUsableImages(images);
+    }
+
     private static boolean isUsablePageImage(String image) {
         return image != null && image.trim().length() > 0;
+    }
+
+    private static boolean hasUsableImages(List<String> images) {
+        if(images == null || images.size() == 0)
+            return false;
+        for(String image : images)
+            if(isUsablePageImage(image))
+                return true;
+        return false;
+    }
+
+    private static ArrayList<String> usablePageImages(List<String> images) {
+        ArrayList<String> filtered = new ArrayList<>();
+        if(images == null)
+            return filtered;
+        for(String image : images)
+            if(isUsablePageImage(image))
+                filtered.add(image);
+        return filtered;
     }
 
     private static Priority priorityForTier(int tier) {
@@ -761,7 +784,7 @@ public class ViewerWarmupManager {
 
     private static boolean hasImages(Manga manga, Context context) {
         List<String> images = manga == null ? null : manga.getImgs(context);
-        return images != null && images.size() > 0;
+        return hasUsableImages(images);
     }
 
     private static boolean hasReachableImages(Manga manga) {
@@ -1018,7 +1041,7 @@ public class ViewerWarmupManager {
             seed = source.getSeed();
             title = source.getTitle();
             List<String> sourceImages = source.getImgs(null);
-            images = Utils.snapshotList(sourceImages);
+            images = usablePageImages(sourceImages);
             episodes = Utils.snapshotEpisodes(source);
             createdAt = System.currentTimeMillis();
         }
@@ -1031,7 +1054,7 @@ public class ViewerWarmupManager {
             name = source.name;
             seed = source.seed;
             title = source.title;
-            images = source.images == null ? new ArrayList<>() : new ArrayList<>(source.images);
+            images = usablePageImages(source.images);
             episodes = source.episodes == null ? new ArrayList<>() : new ArrayList<>(source.episodes);
             createdAt = source.createdAt;
         }
@@ -1087,7 +1110,7 @@ public class ViewerWarmupManager {
             name = source.name;
             seed = source.seed;
             title = source.title == null ? null : new Title(source.title.minimize());
-            images = source.images == null ? new ArrayList<>() : new ArrayList<>(source.images);
+            images = usablePageImages(source.images);
             episodes = slimEpisodes(source.episodes);
             createdAt = source.createdAt;
         }
