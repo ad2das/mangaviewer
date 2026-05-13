@@ -60,6 +60,8 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     }
 
     public void addData(ArrayList<UpdatedManga> data){
+        if(data == null || data.size() == 0)
+            return;
         int oSize = mData.size();
         mData.addAll(data);
         notifyItemRangeInserted(oSize,data.size());
@@ -71,6 +73,8 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         int start = Math.max(0, startPosition);
         int end = Math.min(mData.size(), start + Math.min(count, 8));
         for(int i = start; i < end; i++) {
+            if(!isValidUpdatedListPosition(mData, i))
+                continue;
             UpdatedManga manga = mData.get(i);
             if(manga == null)
                 continue;
@@ -104,19 +108,13 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     @Override
     public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position) {
         viewHolder h = (viewHolder) holder;
+        if(!isValidUpdatedListPosition(mData, position)) {
+            bindEmpty(h);
+            return;
+        }
         UpdatedManga m = mData.get(position);
         if(m == null) {
-            h.text.setText("");
-            h.date.setText("");
-            h.author.setText("");
-            h.tags.setText("");
-            safeGlideClear(h.thumb);
-            h.thumb.setTag("empty");
-            h.thumb.setImageBitmap(null);
-            h.thumb.setVisibility(save ? View.GONE : View.VISIBLE);
-            h.seen.setVisibility(View.GONE);
-            h.fav.setVisibility(View.GONE);
-            h.thumbStatusBadge.setVisibility(View.GONE);
+            bindEmpty(h);
             return;
         }
         h.text.setText(m.getName() == null ? "" : m.getName());
@@ -193,9 +191,23 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         return (int) (value * context.getResources().getDisplayMetrics().density + 0.5f);
     }
 
+    private void bindEmpty(viewHolder h) {
+        h.text.setText("");
+        h.date.setText("");
+        h.author.setText("");
+        h.tags.setText("");
+        safeGlideClear(h.thumb);
+        h.thumb.setTag("empty");
+        h.thumb.setImageBitmap(null);
+        h.thumb.setVisibility(save ? View.GONE : View.VISIBLE);
+        h.seen.setVisibility(View.GONE);
+        h.fav.setVisibility(View.GONE);
+        h.thumbStatusBadge.setVisibility(View.GONE);
+    }
+
     @Override
     public int getItemCount() {
-        return mData.size();
+        return mData == null ? 0 : mData.size();
     }
 
     class viewHolder extends RecyclerView.ViewHolder{
@@ -228,7 +240,7 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             }
             card.setOnClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || olisten == null || position >= mData.size())
+                if(position == RecyclerView.NO_POSITION || olisten == null || !isValidUpdatedListPosition(mData, position))
                     return;
                 UpdatedManga manga = mData.get(position);
                 if(manga != null)
@@ -236,13 +248,21 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             });
             viewEps.setOnClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || olisten == null || position >= mData.size())
+                if(position == RecyclerView.NO_POSITION || olisten == null || !isValidUpdatedListPosition(mData, position))
                     return;
                 UpdatedManga manga = mData.get(position);
                 if(manga != null)
                     olisten.onEpsClick(manga.getTitle());
             });
         }
+    }
+
+    private static boolean isValidUpdatedListPosition(List<?> data, int position) {
+        return data != null && position >= 0 && position < data.size();
+    }
+
+    static boolean isValidUpdatedListPositionForTest(List<?> data, int position) {
+        return isValidUpdatedListPosition(data, position);
     }
 
     public interface onclickListener {
