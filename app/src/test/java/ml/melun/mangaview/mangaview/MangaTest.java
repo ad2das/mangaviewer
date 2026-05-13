@@ -2,6 +2,10 @@ package ml.melun.mangaview.mangaview;
 
 import org.junit.Test;
 
+import java.io.File;
+import java.nio.file.Files;
+import java.util.List;
+
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
@@ -37,6 +41,36 @@ public class MangaTest {
         manga.setMode(1);
 
         assertTrue(manga.getImgs(null).isEmpty());
+    }
+
+    @Test
+    public void offlineImagesSkipDownloadArtifacts() throws Exception {
+        File dir = Files.createTempDirectory("offline-images").toFile();
+        File image = new File(dir, "0001.jpg");
+        File part = new File(dir, "0002.jpg.part");
+        File flag = new File(dir, "downloading");
+        File text = new File(dir, "note.txt");
+        try {
+            image.createNewFile();
+            part.createNewFile();
+            flag.createNewFile();
+            text.createNewFile();
+
+            Manga manga = new Manga(12, "episode", "", MTitle.base_comic);
+            manga.setMode(1);
+            manga.setOfflinePath(dir.getAbsolutePath());
+
+            List<String> images = manga.getImgs(null);
+
+            assertEquals(1, images.size());
+            assertEquals(image.getAbsolutePath(), images.get(0));
+        } finally {
+            image.delete();
+            part.delete();
+            flag.delete();
+            text.delete();
+            dir.delete();
+        }
     }
 
     @Test

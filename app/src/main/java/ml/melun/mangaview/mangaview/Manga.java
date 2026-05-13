@@ -718,7 +718,8 @@ public class Manga {
                         return imgs;
                     Arrays.sort(offimgs, (documentFile, t1) -> String.valueOf(documentFile.getName()).compareTo(String.valueOf(t1.getName())));
                     for (DocumentFile f : offimgs) {
-                        imgs.add(f.getUri().toString());
+                        if(isOfflineImageFile(f == null ? null : f.getName(), f != null && f.isFile()))
+                            imgs.add(f.getUri().toString());
                     }
                 } else {
                     File[] offimgs = new File(offlinePath).listFiles();
@@ -726,12 +727,26 @@ public class Manga {
                         return imgs;
                     Arrays.sort(offimgs);
                     for (File img : offimgs) {
-                        imgs.add(img.getAbsolutePath());
+                        if(isOfflineImageFile(img == null ? null : img.getName(), img != null && img.isFile()))
+                            imgs.add(img.getAbsolutePath());
                     }
                 }
             }
         }
         return imgs;
+    }
+
+    private static boolean isOfflineImageFile(String name, boolean file) {
+        if(!file || name == null)
+            return false;
+        String lower = name.toLowerCase(Locale.ROOT);
+        if(lower.endsWith(".part") || "downloading".equals(lower))
+            return false;
+        return lower.endsWith(".jpg")
+                || lower.endsWith(".jpeg")
+                || lower.endsWith(".png")
+                || lower.endsWith(".webp")
+                || lower.endsWith(".gif");
     }
 
     public int getSeed() {
