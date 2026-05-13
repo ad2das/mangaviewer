@@ -2,6 +2,7 @@ package ml.melun.mangaview.mangaview;
 
 import org.junit.Test;
 
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
@@ -28,5 +29,13 @@ public class MangaTest {
         Manga manga = new Manga(12, "episode", "", MTitle.base_comic);
 
         assertEquals("/comic/12", Manga.safeUrl(manga));
+    }
+
+    @Test
+    public void offlineImagesReturnEmptyListWithoutPath() {
+        Manga manga = new Manga(12, "episode", "", MTitle.base_comic);
+        manga.setMode(1);
+
+        assertTrue(manga.getImgs(null).isEmpty());
     }
 }

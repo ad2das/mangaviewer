@@ -708,6 +708,8 @@ public class Manga {
         if (mode != 0) {
             if (imgs == null) {
                 imgs = new ArrayList<>();
+                if(offlinePath == null || offlinePath.length() == 0)
+                    return imgs;
                 //is offline : read image list
                 if (useScopedStorageHome(offlinePath)) {
                     DocumentFile root = documentFileFromUri(context, offlinePath);
