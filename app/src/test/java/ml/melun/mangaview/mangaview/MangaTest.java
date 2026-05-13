@@ -38,4 +38,10 @@ public class MangaTest {
 
         assertTrue(manga.getImgs(null).isEmpty());
     }
+
+    @Test
+    public void scaledDimensionNeverDropsBelowOnePixel() {
+        assertEquals(1, Decoder.scaledDimensionForTest(1, 0.01f));
+        assertEquals(50, Decoder.scaledDimensionForTest(100, 0.5f));
+    }
 }

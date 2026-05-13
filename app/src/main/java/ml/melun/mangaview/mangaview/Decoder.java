@@ -43,8 +43,16 @@ public class Decoder {
         return input;
     }
     public Bitmap downSize(final Bitmap input, Float ratio) {
-        Bitmap bitmap = Bitmap.createScaledBitmap(input, ((Float)(input.getWidth()*ratio)).intValue(), ((Float)(input.getHeight()*ratio)).intValue(), true);
+        Bitmap bitmap = Bitmap.createScaledBitmap(input, scaledDimension(input.getWidth(), ratio), scaledDimension(input.getHeight(), ratio), true);
         return bitmap;
+    }
+
+    static int scaledDimensionForTest(int size, float ratio) {
+        return scaledDimension(size, ratio);
+    }
+
+    private static int scaledDimension(int size, float ratio) {
+        return Math.max(1, (int) (size * ratio));
     }
 
     public Bitmap decode(Bitmap input){
