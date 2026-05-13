@@ -47,4 +47,10 @@ public class DownloaderTest {
         assertEquals(1, Downloader.imageDownloadParallelismForTest(1));
         assertEquals(4, Downloader.imageDownloadParallelismForTest(100));
     }
+
+    @Test
+    public void imageTempFileUsesPartSuffixBesideFinalImage() {
+        assertEquals("0001.jpg", Downloader.imageOutputNameForTest("0001"));
+        assertEquals("0001.jpg.part", Downloader.imagePartOutputNameForTest("0001"));
+    }
 }

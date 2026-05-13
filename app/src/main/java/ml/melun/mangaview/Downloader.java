@@ -525,11 +525,28 @@ public class Downloader extends Worker {
             }
             if(bitmap == null) return false;
             bitmap = d.decode(bitmap);
-            try (OutputStream outputStream = new FileOutputStream(outputFile.getAbsolutePath() + ".jpg")) {
-                if(!bitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream)) return false;
+            File finalFile = imageOutputFile(outputFile);
+            File partFile = imagePartOutputFile(outputFile);
+            if(partFile.exists() && !partFile.delete())
+                return false;
+            boolean compressed;
+            try (OutputStream outputStream = new FileOutputStream(partFile)) {
+                compressed = bitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream);
                 outputStream.flush();
             } finally {
                 bitmap.recycle();
+            }
+            if(!compressed) {
+                partFile.delete();
+                return false;
+            }
+            if(finalFile.exists() && !finalFile.delete()) {
+                partFile.delete();
+                return false;
+            }
+            if(!partFile.renameTo(finalFile)) {
+                partFile.delete();
+                return false;
             }
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
@@ -537,6 +554,30 @@ public class Downloader extends Worker {
             return false;
         }
         return true;
+    }
+
+    static String imageOutputNameForTest(String baseName) {
+        return imageOutputName(baseName);
+    }
+
+    static String imagePartOutputNameForTest(String baseName) {
+        return imagePartOutputName(baseName);
+    }
+
+    private static File imageOutputFile(File outputFile) {
+        return new File(outputFile.getAbsolutePath() + ".jpg");
+    }
+
+    private static File imagePartOutputFile(File outputFile) {
+        return new File(outputFile.getAbsolutePath() + ".jpg.part");
+    }
+
+    private static String imageOutputName(String baseName) {
+        return baseName + ".jpg";
+    }
+
+    private static String imagePartOutputName(String baseName) {
+        return imageOutputName(baseName) + ".part";
     }
 
     boolean downloadImage(String urlStr, DocumentFile parent, String name, Decoder d) {
