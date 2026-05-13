@@ -54,6 +54,7 @@ import ml.melun.mangaview.mangaview.CustomHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.openViewerPrepared;
 import static ml.melun.mangaview.Utils.queueOfflineDownload;
+import static ml.melun.mangaview.Utils.safeGet;
 import static ml.melun.mangaview.Utils.showCaptchaPopup;
 import static ml.melun.mangaview.Utils.toViewerMangaJson;
 import static ml.melun.mangaview.Utils.toViewerTitleJson;
@@ -164,7 +165,8 @@ public class EpisodeActivity extends AppCompatActivity {
                 //find index of bookmark;
                 if(episodes != null)
                     for(int i=0; i< episodes.size(); i++){
-                            if(episodes.get(i).getId()==bookmarkId){
+                            Manga episode = safeGet(episodes, i);
+                            if(episode != null && episode.getId()==bookmarkId){
                                 bookmarkIndex = i+1;
                                 if(episodeAdapter != null)
                                     episodeAdapter.setBookmark(bookmarkIndex);
@@ -276,7 +278,8 @@ public class EpisodeActivity extends AppCompatActivity {
         if(bookmarkId>-1){
             if(episodes != null)
                 for(int i=0; i< episodes.size(); i++){
-                    if(episodes.get(i).getId()==bookmarkId){
+                    Manga episode = safeGet(episodes, i);
+                    if(episode != null && episode.getId()==bookmarkId){
                         bookmarkIndex=i+1;
                         episodeAdapter.setBookmark(bookmarkIndex);
                         break;
@@ -286,8 +289,14 @@ public class EpisodeActivity extends AppCompatActivity {
         if(bookmarkIndex < 0 && title.getBookmarkEpisodeIndex() > 0 && episodes != null
                 && title.getBookmarkEpisodeIndex() <= episodes.size()) {
             bookmarkIndex = title.getBookmarkEpisodeIndex();
-            bookmarkId = episodes.get(bookmarkIndex - 1).getId();
-            episodeAdapter.setBookmark(bookmarkIndex);
+            Manga episode = safeGet(episodes, bookmarkIndex - 1);
+            if(episode != null) {
+                bookmarkId = episode.getId();
+                episodeAdapter.setBookmark(bookmarkIndex);
+            } else {
+                bookmarkIndex = -1;
+                bookmarkId = -1;
+            }
         }
         episodeAdapter.setFavorite(p.findFavorite(title)>-1);
         episodeList.setAdapter(episodeAdapter);
@@ -296,6 +305,8 @@ public class EpisodeActivity extends AppCompatActivity {
         }
         findViewById(R.id.upfab).setOnClickListener(v -> episodeList.scrollToPosition(0));
         findViewById(R.id.downfab).setOnClickListener(v -> {
+            if(episodes == null)
+                return;
             episodeList.scrollToPosition(episodes.size()); //헤더가 0이기 때문
         });
         if(bookmarkIndex>-1)
@@ -305,7 +316,9 @@ public class EpisodeActivity extends AppCompatActivity {
         resumefab.setOnClickListener(v -> {
             if(episodes == null || bookmarkIndex <= 0 || bookmarkIndex > episodes.size())
                 return;
-            openViewer(episodes.get(bookmarkIndex - 1),0);
+            Manga episode = safeGet(episodes, bookmarkIndex - 1);
+            if(episode != null)
+                openViewer(episode,0);
         });
 
         episodeAdapter.setClickListener(new EpisodeAdapter.ItemClickListener() {
@@ -450,12 +463,15 @@ public class EpisodeActivity extends AppCompatActivity {
     private Manga quickReadEpisode() {
         if(episodes == null || episodes.size() == 0)
             return null;
-        if(bookmarkIndex > 0 && bookmarkIndex <= episodes.size())
-            return episodes.get(bookmarkIndex - 1);
+        if(bookmarkIndex > 0 && bookmarkIndex <= episodes.size()) {
+            Manga episode = safeGet(episodes, bookmarkIndex - 1);
+            if(episode != null)
+                return episode;
+        }
         int restoredId = restoredBookmarkId(title);
         if(restoredId > 0) {
             for(int i = 0; i < episodes.size(); i++) {
-                Manga episode = episodes.get(i);
+                Manga episode = safeGet(episodes, i);
                 if(episode != null && episode.getId() == restoredId) {
                     bookmarkId = restoredId;
                     bookmarkIndex = i + 1;

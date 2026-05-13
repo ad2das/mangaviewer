@@ -82,6 +82,8 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         if(mData == null || position < 1 || position > mData.size())
             return RecyclerView.NO_ID;
         Manga manga = mData.get(position - 1);
+        if(manga == null)
+            return RecyclerView.NO_ID;
         if(manga.getId() >= 0)
             return (((long) manga.getBaseMode()) << 32) ^ (manga.getId() & 0xffffffffL);
         String key = manga.getOfflinePath();
@@ -163,6 +165,16 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             ViewHolder h = (ViewHolder) holder;
             int Dposition = position-1;
             Manga episode = mData.get(Dposition);
+            if(episode == null) {
+                setTextIfChanged(h.episode, "");
+                setTextIfChanged(h.date, "");
+                setVisibilityIfChanged(h.newBadge, View.GONE);
+                setVisibilityIfChanged(h.action, View.GONE);
+                h.boundKey = "null:" + Dposition;
+                bindEmptyThumbnail(h.thumb, true);
+                bindSelection(h, position);
+                return;
+            }
             String rowKey = episode.getId() + ":" + episode.getName() + ":" + episode.getDate() + ":" + mode + ":" + Dposition;
             if(!rowKey.equals(h.boundKey)) {
                 setTextIfChanged(h.episode, episode.getName());
@@ -247,7 +259,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     // total number of rows
     @Override
     public int getItemCount() {
-        return mData.size()+1;
+        return (mData == null ? 0 : mData.size())+1;
     }
 
     public class ViewHolder extends RecyclerView.ViewHolder{
@@ -268,6 +280,8 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
                 if(position == RecyclerView.NO_POSITION || position == 0 || mClickListener == null)
                     return;
                 Manga m = mData.get(position - 1);
+                if(m == null)
+                    return;
                 if(m.getId()>-1) {
                     if (bookmark != -1) {
                         int pre = bookmark;
@@ -282,7 +296,9 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
                 int position = getAdapterPosition();
                 if(position == RecyclerView.NO_POSITION || position == 0 || mClickListener == null)
                     return;
-                mClickListener.onDownloadClick(position - 1, mData.get(position - 1));
+                Manga m = mData.get(position - 1);
+                if(m != null)
+                    mClickListener.onDownloadClick(position - 1, m);
             });
         }
     }
