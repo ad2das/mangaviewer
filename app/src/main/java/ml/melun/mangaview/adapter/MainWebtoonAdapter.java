@@ -1521,7 +1521,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 if(position >= 0 && position < items.size())
                     return items.get(position);
             }
-            return items.get(0);
+            return HomeTitleSelector.firstValidTitle(items);
         }
 
         private void openContinueOrTitle(Title item, boolean continueStyle) {
@@ -1752,7 +1752,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 HomeSection section = (HomeSection) row;
                 if(!"이어보기".equals(section.title) || section.titles == null || section.titles.size() == 0)
                     continue;
-                return section.titles.get(0);
+                Title first = HomeTitleSelector.firstValidTitle(section.titles);
+                if(first != null)
+                    return first;
             }
         }
         List<MTitle> recent = Utils.snapshotList(p.getRecent());

@@ -2,9 +2,14 @@ package ml.melun.mangaview.adapter;
 
 import org.junit.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 
+import ml.melun.mangaview.mangaview.Title;
+
+import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -24,5 +29,15 @@ public class MainWebtoonAdapterTest {
     @Test
     public void validPositionAcceptsExistingRow() {
         assertTrue(AdapterPositionGuard.isValidPositionForTest(Arrays.asList("a", "b"), 1));
+    }
+
+    @Test
+    public void firstValidTitleSkipsMissingAndInvalidTitles() {
+        ArrayList<Title> titles = new ArrayList<>();
+        titles.add(null);
+        titles.add(new Title("invalid", "", "", Collections.emptyList(), "", 0, base_webtoon));
+        titles.add(new Title("valid", "", "", Collections.emptyList(), "", 12, base_webtoon));
+
+        assertEquals(12, HomeTitleSelector.firstValidTitleForTest(titles).getId());
     }
 }
