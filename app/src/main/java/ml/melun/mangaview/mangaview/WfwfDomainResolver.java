@@ -17,7 +17,7 @@ import okhttp3.Response;
 
 public class WfwfDomainResolver {
     private static final Pattern WFWF_PATTERN = Pattern.compile("^https?://wfwf(\\d+)\\.com(?:/cm)?/?$");
-    private static final Pattern NUMBERED_DOMAIN_PATTERN = Pattern.compile("^https?://(wfwf|ntk)(\\d+)\\.com(?:/cm)?/?$");
+    private static final Pattern NUMBERED_DOMAIN_PATTERN = Pattern.compile("^https?://(wfwf|ntk)(\\d+)\\.com(?:/(?:cm|manhwa))?/?$");
     private static final int DEFAULT_NUMBER = 450;
     private static final int DEFAULT_NTK_NUMBER = 1;
     private static final int FORWARD_SCAN_LIMIT = 300;
