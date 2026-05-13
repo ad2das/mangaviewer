@@ -770,7 +770,7 @@ public class ViewerWarmupManager {
     }
 
     private static boolean isDiskSnapshotFresh(long createdAt, long now) {
-        return now - createdAt <= DISK_SNAPSHOT_TTL_MS;
+        return createdAt <= now && now - createdAt <= DISK_SNAPSHOT_TTL_MS;
     }
 
     private static Priority priorityForTier(int tier) {

@@ -40,4 +40,11 @@ public class ViewerWarmupManagerTest {
         assertFalse(ViewerWarmupManager.isDiskSnapshotFreshForTest(now - 21 * 60 * 1000L, now));
         assertTrue(ViewerWarmupManager.isDiskSnapshotFreshForTest(now - 19 * 60 * 1000L, now));
     }
+
+    @Test
+    public void diskSnapshotFreshnessRejectsFutureTimestamps() {
+        long now = 30 * 60 * 1000L;
+
+        assertFalse(ViewerWarmupManager.isDiskSnapshotFreshForTest(now + 1, now));
+    }
 }
