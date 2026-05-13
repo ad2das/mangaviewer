@@ -61,7 +61,6 @@ import ml.melun.mangaview.repository.CachePolicy;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
-import ml.melun.mangaview.runtime.PrefetchCoordinator;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.MainApplication.getHttpClient;
@@ -821,7 +820,6 @@ public class ViewerActivity extends AppCompatActivity {
             refreshToolbar(m);
             updateIntent(m);
             prefetchNextEpisode(m);
-            PrefetchCoordinator.prefetchAdjacentEpisode(context, m, title, width, autoCut, p.getReverse());
 
         }catch (Exception e){
             Utils.showCaptchaPopup(m.getUrl(), context, e, p);
