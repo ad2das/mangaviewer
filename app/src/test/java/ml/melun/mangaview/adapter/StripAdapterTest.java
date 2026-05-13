@@ -36,4 +36,12 @@ public class StripAdapterTest {
 
         assertEquals("", StripAdapter.imageModelForTest(new PageItem(0, "   ", manga)));
     }
+
+    @Test
+    public void displayedBitmapCacheRequiresValidKeyAndBitmap() {
+        assertFalse(StripAdapter.shouldCacheDisplayedBitmapForTest("", true, true));
+        assertFalse(StripAdapter.shouldCacheDisplayedBitmapForTest("page", false, true));
+        assertFalse(StripAdapter.shouldCacheDisplayedBitmapForTest("page", true, false));
+        assertTrue(StripAdapter.shouldCacheDisplayedBitmapForTest("page", true, true));
+    }
 }

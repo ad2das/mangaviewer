@@ -576,6 +576,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
                     bindBitmap(holder, pageKey, bitmap);
+                    cacheDisplayedBitmap(cacheKey, bitmap);
                     holder.refresh.setVisibility(View.GONE);
                     if(item.index == 0)
                         ViewerWarmupManager.logMetric("viewer_first_bind_ms", android.os.SystemClock.elapsedRealtime() - bindStart);
@@ -616,6 +617,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
                     bindBitmap(holder, pageKey, resource);
+                    cacheDisplayedBitmap(cacheKey, resource);
                     holder.refresh.setVisibility(View.GONE);
                     if(item.index == 0)
                         ViewerWarmupManager.logMetric("viewer_first_bind_ms", android.os.SystemClock.elapsedRealtime() - bindStart);
@@ -655,6 +657,19 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         rememberPageHeight(pageKey, bitmap);
         applyPageHeight(holder, pageKey, !scrollBusy || hadKnownHeight);
         holder.frame.setImageBitmap(bitmap);
+    }
+
+    private void cacheDisplayedBitmap(String cacheKey, Bitmap bitmap) {
+        if(shouldCacheDisplayedBitmap(cacheKey, bitmap != null && !bitmap.isRecycled()))
+            decodedBitmapCache.put(cacheKey, bitmap);
+    }
+
+    static boolean shouldCacheDisplayedBitmapForTest(String cacheKey, boolean holderActive, boolean bitmapUsable) {
+        return holderActive && shouldCacheDisplayedBitmap(cacheKey, bitmapUsable);
+    }
+
+    private static boolean shouldCacheDisplayedBitmap(String cacheKey, boolean bitmapUsable) {
+        return cacheKey != null && cacheKey.length() > 0 && bitmapUsable;
     }
 
     private void rememberPageHeight(String pageKey, Bitmap bitmap) {
