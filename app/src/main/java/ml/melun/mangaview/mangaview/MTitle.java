@@ -225,6 +225,16 @@ public class MTitle{
 
     @Override
     public boolean equals(Object obj) {
-        return ((MTitle)obj).getBaseMode() == this.baseMode && ((MTitle)obj).getId() == this.id ;
+        if(this == obj)
+            return true;
+        if(!(obj instanceof MTitle))
+            return false;
+        MTitle other = (MTitle) obj;
+        return other.getBaseMode() == this.getBaseMode() && other.getId() == this.id;
+    }
+
+    @Override
+    public int hashCode() {
+        return 31 * getBaseMode() + id;
     }
 }

@@ -81,6 +81,14 @@ public class TitleTest {
     }
 
     @Test
+    public void titleEqualsReturnsFalseForOtherTypes() {
+        Title title = new Title("title", "", "", null, "", 10, MTitle.base_webtoon);
+
+        assertEquals(false, title.equals("title"));
+        assertEquals(false, title.equals(null));
+    }
+
+    @Test
     public void displayEpisodeCountUsesNtkReleaseWhenStoredCountIsStale() {
         Title title = new Title("성순 엑스터시", "", "", null, "13화", 36716, MTitle.base_comic);
         title.setSourceSite("ntk");
