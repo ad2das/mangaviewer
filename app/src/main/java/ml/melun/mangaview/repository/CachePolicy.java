@@ -10,6 +10,14 @@ public final class CachePolicy {
     }
 
     public static boolean isFresh(long savedAt, long ttlMs) {
-        return savedAt > 0 && System.currentTimeMillis() - savedAt <= ttlMs;
+        return isFresh(savedAt, ttlMs, System.currentTimeMillis());
+    }
+
+    static boolean isFreshForTest(long savedAt, long ttlMs, long now) {
+        return isFresh(savedAt, ttlMs, now);
+    }
+
+    private static boolean isFresh(long savedAt, long ttlMs, long now) {
+        return savedAt > 0 && savedAt <= now && now - savedAt <= ttlMs;
     }
 }
