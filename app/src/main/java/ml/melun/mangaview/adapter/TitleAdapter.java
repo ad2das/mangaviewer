@@ -435,6 +435,8 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
 
     @Override
     public void onBindViewHolder(ViewHolder holder, int position) {
+        if(!isValidPosition(position))
+            return;
         Title data = mDataFiltered.get(position);
         BindMeta bindMeta = bindMeta(data);
         String title = data.getName();
@@ -801,10 +803,18 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     }
 
     private boolean isValidPosition(int position) {
+        return isValidTitlePosition(mDataFiltered, position);
+    }
+
+    private static boolean isValidTitlePosition(List<?> data, int position) {
         return position != RecyclerView.NO_POSITION
-                && mDataFiltered != null
+                && data != null
                 && position >= 0
-                && position < mDataFiltered.size();
+                && position < data.size();
+    }
+
+    static boolean isValidTitlePositionForTest(List<?> data, int position) {
+        return isValidTitlePosition(data, position);
     }
 
     public void setClickListener(ItemClickListener itemClickListener) {
