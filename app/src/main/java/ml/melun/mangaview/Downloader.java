@@ -32,6 +32,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.net.URL;
 import java.net.URLConnection;
 import java.text.DecimalFormat;
@@ -170,8 +171,24 @@ public class Downloader extends Worker {
             int read;
             while((read = input.read(buffer)) > 0)
                 output.write(buffer, 0, read);
-            return output.toString();
+            return decodePayload(output.toByteArray());
         }
+    }
+
+    public static byte[] encodePayloadForTest(String payload) {
+        return encodePayload(payload);
+    }
+
+    public static String decodePayloadForTest(byte[] payload) {
+        return decodePayload(payload);
+    }
+
+    public static byte[] encodePayload(String payload) {
+        return payload.getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static String decodePayload(byte[] payload) {
+        return new String(payload, StandardCharsets.UTF_8);
     }
 
     public void queueTitle(DownloadTitle title, JSONArray selection){
@@ -302,7 +319,7 @@ public class Downloader extends Worker {
                                     try (OutputStream stream = serviceContext.getContentResolver().openOutputStream(data)) {
                                         if(stream == null)
                                             throw new IOException("Failed to open title.gson");
-                                        stream.write(new Gson().toJson(title).getBytes());
+                                        stream.write(encodePayload(new Gson().toJson(title)));
                                         stream.flush();
                                     }
                                 } catch (Exception e) {
@@ -387,7 +404,7 @@ public class Downloader extends Worker {
                                     summary.createNewFile();
 
                                     try (FileOutputStream stream = new FileOutputStream(summary)) {
-                                        stream.write(new Gson().toJson(title).getBytes());
+                                        stream.write(encodePayload(new Gson().toJson(title)));
                                         stream.flush();
                                     }
                                 } catch (Exception e) {

@@ -2,7 +2,10 @@ package ml.melun.mangaview;
 
 import org.junit.Test;
 
+import java.nio.charset.StandardCharsets;
+
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertArrayEquals;
 
 public class DownloaderTest {
     @Test
@@ -28,5 +31,13 @@ public class DownloaderTest {
         assertEquals("jpg", Downloader.fileExtensionForTest("https://example.com/image"));
         assertEquals("jpg", Downloader.fileExtensionForTest("https://example.com/image."));
         assertEquals("jpg", Downloader.fileExtensionForTest(null));
+    }
+
+    @Test
+    public void payloadEncodingUsesUtf8() {
+        String payload = "{\"name\":\"데스러버\"}\n[0,1]";
+
+        assertArrayEquals(payload.getBytes(StandardCharsets.UTF_8), Downloader.encodePayloadForTest(payload));
+        assertEquals(payload, Downloader.decodePayloadForTest(payload.getBytes(StandardCharsets.UTF_8)));
     }
 }

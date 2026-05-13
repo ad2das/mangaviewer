@@ -32,7 +32,7 @@ public final class DownloadRepository {
         File queueFile = new File(queueDir, queueId + ".json");
         try (FileOutputStream stream = new FileOutputStream(queueFile)) {
             String payload = new Gson().toJson(new DownloadTitle(title)) + "\n" + selected.toString();
-            stream.write(payload.getBytes());
+            stream.write(Downloader.encodePayload(payload));
             stream.flush();
         }
         Data input = new Data.Builder()
