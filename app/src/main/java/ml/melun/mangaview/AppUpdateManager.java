@@ -791,8 +791,7 @@ public final class AppUpdateManager {
     private static void deleteStaleUpdateApksInDir(File dir, File keep) {
         if(dir == null || !dir.exists() || !dir.isDirectory())
             return;
-        File[] files = dir.listFiles((parent, name) ->
-                name != null && name.startsWith(UPDATE_APK_PREFIX) && name.endsWith(UPDATE_APK_SUFFIX));
+        File[] files = dir.listFiles((parent, name) -> isStaleUpdateArtifact(name));
         if(files == null)
             return;
         String keepPath = null;
@@ -811,6 +810,16 @@ public final class AppUpdateManager {
                 CrashReporter.record(e);
             }
         }
+    }
+
+    static boolean isStaleUpdateArtifactForTest(String name) {
+        return isStaleUpdateArtifact(name);
+    }
+
+    private static boolean isStaleUpdateArtifact(String name) {
+        return name != null
+                && name.startsWith(UPDATE_APK_PREFIX)
+                && (name.endsWith(UPDATE_APK_SUFFIX) || name.endsWith(UPDATE_APK_SUFFIX + ".part"));
     }
 
     private static void installApk(Activity activity, File apk) {

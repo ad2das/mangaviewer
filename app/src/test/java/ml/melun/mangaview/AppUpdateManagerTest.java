@@ -38,4 +38,11 @@ public class AppUpdateManagerTest {
         assertTrue(AppUpdateManager.isCompleteDownloadForTest(1, -1));
         assertFalse(AppUpdateManager.isCompleteDownloadForTest(0, -1));
     }
+
+    @Test
+    public void staleUpdateArtifactsIncludePartialDownloads() {
+        assertTrue(AppUpdateManager.isStaleUpdateArtifactForTest("mangaViewer-update-123.apk"));
+        assertTrue(AppUpdateManager.isStaleUpdateArtifactForTest("mangaViewer-update-123.apk.part"));
+        assertFalse(AppUpdateManager.isStaleUpdateArtifactForTest("mangaViewer_123.apk"));
+    }
 }
