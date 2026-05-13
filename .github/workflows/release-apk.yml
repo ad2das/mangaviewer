@@ -71,4 +71,16 @@ jobs:
 
       - name: Release latest signed APK
         shell: pwsh
-        run: ./tools/release_latest.ps1 -TargetBranch "${{ github.ref_name }}" -SkipTests -DeleteOldReleaseApks
+        run: |
+          $patchMatch = Select-String -Path app/build.gradle -Pattern 'def\s+defaultReleasePatch\s*=\s*(\d+)'
+          if (-not $patchMatch) {
+            throw "Could not find defaultReleasePatch in app/build.gradle"
+          }
+          $patchBase = [int]$patchMatch.Matches[0].Groups[1].Value
+          $releasePatch = $patchBase + [int]"${{ github.run_number }}"
+          ./tools/release_latest.ps1 `
+            -TargetBranch "${{ github.ref_name }}" `
+            -ReleasePatch $releasePatch `
+            -SkipTests `
+            -NoCommit `
+            -DeleteOldReleaseApks

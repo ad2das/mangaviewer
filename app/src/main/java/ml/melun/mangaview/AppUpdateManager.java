@@ -208,6 +208,9 @@ public final class AppUpdateManager {
 
     private static UpdateInfo fetchUpdateInfo(Context context) {
         long now = System.currentTimeMillis();
+        UpdateInfo releaseInfo = fetchUpdateInfoFromLatestRelease();
+        if(releaseInfo != null)
+            return releaseInfo;
         UpdateInfo apiInfo = fetchUpdateInfoFromUrl("github-api", VERSION_API_URL, true);
         if(apiInfo != null)
             return apiInfo;
@@ -217,7 +220,7 @@ public final class AppUpdateManager {
         UpdateInfo cdnInfo = fetchUpdateInfoFromUrl("jsdelivr", CDN_VERSION_URL + "?t=" + now, false);
         if(cdnInfo != null)
             return cdnInfo;
-        return fetchUpdateInfoFromLatestRelease();
+        return null;
     }
 
     private static UpdateInfo fetchUpdateInfoFromUrl(String source, String url, boolean allowGithubContentsEnvelope) {
