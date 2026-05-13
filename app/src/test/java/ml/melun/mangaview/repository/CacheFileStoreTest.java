@@ -17,6 +17,14 @@ public class CacheFileStoreTest {
         assertEquals(text, CacheFileStore.readUtf8TextForTest(new OneByteInputStream(bytes)));
     }
 
+    @Test
+    public void cacheFileNamesDoNotCollideForSimilarKeys() {
+        String first = CacheFileStore.fileNameForKeyForTest("viewer/a?episode=1");
+        String second = CacheFileStore.fileNameForKeyForTest("viewer_a_episode_1");
+
+        org.junit.Assert.assertNotEquals(first, second);
+    }
+
     private static final class OneByteInputStream extends InputStream {
         private final byte[] bytes;
         private int index;

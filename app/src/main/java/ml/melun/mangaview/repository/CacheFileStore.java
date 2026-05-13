@@ -7,10 +7,12 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.security.MessageDigest;
 import java.nio.charset.StandardCharsets;
 
 public final class CacheFileStore {
     private static final String DIR_NAME = "structured_cache";
+    private static final char[] HEX = "0123456789abcdef".toCharArray();
 
     private CacheFileStore() {
     }
@@ -57,12 +59,15 @@ public final class CacheFileStore {
     }
 
     private static File file(Context context, String key) {
-        String safeKey = key.replaceAll("[^A-Za-z0-9_.-]", "_");
-        return new File(new File(context.getCacheDir(), DIR_NAME), safeKey + ".json");
+        return new File(new File(context.getCacheDir(), DIR_NAME), fileNameForKey(key));
     }
 
     static String readUtf8TextForTest(InputStream input) throws Exception {
         return readUtf8Text(input);
+    }
+
+    static String fileNameForKeyForTest(String key) {
+        return fileNameForKey(key);
     }
 
     private static String readUtf8Text(InputStream input) throws Exception {
@@ -72,5 +77,28 @@ public final class CacheFileStore {
         while((read = input.read(buffer)) > 0)
             output.write(buffer, 0, read);
         return output.toString(StandardCharsets.UTF_8.name());
+    }
+
+    private static String fileNameForKey(String key) {
+        String safeKey = key == null ? "" : key.replaceAll("[^A-Za-z0-9_.-]", "_");
+        if(safeKey.length() > 48)
+            safeKey = safeKey.substring(0, 48);
+        return safeKey + "_" + sha256(key == null ? "" : key) + ".json";
+    }
+
+    private static String sha256(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(value.getBytes(StandardCharsets.UTF_8));
+            char[] hex = new char[hash.length * 2];
+            for(int i = 0; i < hash.length; i++) {
+                int valueByte = hash[i] & 0xff;
+                hex[i * 2] = HEX[valueByte >>> 4];
+                hex[i * 2 + 1] = HEX[valueByte & 0x0f];
+            }
+            return new String(hex);
+        } catch (Exception e) {
+            return Integer.toHexString(value.hashCode());
+        }
     }
 }
