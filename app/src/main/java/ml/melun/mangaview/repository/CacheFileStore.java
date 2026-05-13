@@ -38,9 +38,8 @@ public final class CacheFileStore {
         File dir = file.getParentFile();
         if(dir != null && !dir.exists() && !dir.mkdirs())
             return;
-        try (FileOutputStream stream = new FileOutputStream(file, false)) {
-            stream.write(value.getBytes(StandardCharsets.UTF_8));
-            stream.flush();
+        try {
+            writeUtf8Text(file, value);
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
@@ -70,6 +69,10 @@ public final class CacheFileStore {
         return fileNameForKey(key);
     }
 
+    static void writeUtf8TextForTest(File file, String value) throws Exception {
+        writeUtf8Text(file, value);
+    }
+
     private static String readUtf8Text(InputStream input) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         byte[] buffer = new byte[8192];
@@ -77,6 +80,33 @@ public final class CacheFileStore {
         while((read = input.read(buffer)) > 0)
             output.write(buffer, 0, read);
         return output.toString(StandardCharsets.UTF_8.name());
+    }
+
+    private static void writeUtf8Text(File file, String value) throws Exception {
+        File dir = file.getParentFile();
+        File temp = File.createTempFile(file.getName(), ".tmp", dir);
+        File backup = new File(file.getAbsolutePath() + ".bak");
+        try {
+            try (FileOutputStream stream = new FileOutputStream(temp, false)) {
+                stream.write(value.getBytes(StandardCharsets.UTF_8));
+                stream.flush();
+            }
+            if(backup.exists())
+                backup.delete();
+            boolean hadExisting = file.exists();
+            if(hadExisting && !file.renameTo(backup))
+                throw new IllegalStateException("Failed to backup cache file");
+            if(!temp.renameTo(file)) {
+                if(hadExisting)
+                    backup.renameTo(file);
+                throw new IllegalStateException("Failed to replace cache file");
+            }
+            if(backup.exists())
+                backup.delete();
+        } finally {
+            if(temp.exists())
+                temp.delete();
+        }
     }
 
     private static String fileNameForKey(String key) {

@@ -4,6 +4,7 @@ import org.junit.Test;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.File;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.Assert.assertEquals;
@@ -23,6 +24,19 @@ public class CacheFileStoreTest {
         String second = CacheFileStore.fileNameForKeyForTest("viewer_a_episode_1");
 
         org.junit.Assert.assertNotEquals(first, second);
+    }
+
+    @Test
+    public void writeUtf8TextReplacesFileContents() throws Exception {
+        File file = File.createTempFile("cache", ".json");
+        try {
+            CacheFileStore.writeUtf8TextForTest(file, "{\"old\":true}");
+            CacheFileStore.writeUtf8TextForTest(file, "{\"title\":\"데스러버\"}");
+
+            assertEquals("{\"title\":\"데스러버\"}", CacheFileStore.readUtf8TextForTest(new java.io.FileInputStream(file)));
+        } finally {
+            file.delete();
+        }
     }
 
     private static final class OneByteInputStream extends InputStream {
