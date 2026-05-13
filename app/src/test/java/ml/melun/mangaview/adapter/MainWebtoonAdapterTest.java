@@ -40,4 +40,10 @@ public class MainWebtoonAdapterTest {
 
         assertEquals(12, HomeTitleSelector.firstValidTitleForTest(titles).getId());
     }
+
+    @Test
+    public void sectionFailurePolicyKeepsLoadingAfterSingleSectionFailure() {
+        assertFalse(HomeSectionFetchFailurePolicy.shouldAbortForTest(new RuntimeException("section failed"), false));
+        assertTrue(HomeSectionFetchFailurePolicy.shouldAbortForTest(new RuntimeException("cancelled"), true));
+    }
 }

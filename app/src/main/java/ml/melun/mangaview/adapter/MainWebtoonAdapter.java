@@ -41,6 +41,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletionService;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 
 import ml.melun.mangaview.R;
@@ -2454,7 +2455,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
                 for(int i = 0; i < submitted && !cancelled; i++) {
                     Future future = completion.take();
-                    SectionResult result = (SectionResult) future.get();
+                    SectionResult result;
+                    try {
+                        result = (SectionResult) future.get();
+                    } catch (ExecutionException e) {
+                        Throwable cause = e.getCause() == null ? e : e.getCause();
+                        if(HomeSectionFetchFailurePolicy.shouldAbort(cause, isCancelled()))
+                            break;
+                        ml.melun.mangaview.report.CrashReporter.record(cause);
+                        continue;
+                    }
                     if(result != null && result.ranking != null) {
                         if(result.ranking.size() > 0)
                             loaded++;
