@@ -103,9 +103,9 @@ public class Title extends MTitle {
                 try{
                     Element infoTable = d.selectFirst("table.table");
                     //recommend
-                    rc = Integer.parseInt(infoTable.selectFirst("button.btn-red").selectFirst("b").ownText());
+                    rc = legacyRecommendCount(infoTable);
                     //bookmark
-                    Element bookmark = infoTable.selectFirst("a#webtoon_bookmark");
+                    Element bookmark = infoTable == null ? null : infoTable.selectFirst("a#webtoon_bookmark");
                     if(bookmark != null) {
                         //logged in
                         bookmarked = bookmark.hasClass("btn-orangered");
@@ -234,6 +234,18 @@ public class Title extends MTitle {
         Element root = legacyInfoRoot(Jsoup.parse(html));
         Element item = root == null ? null : root.selectFirst(selector);
         return item == null ? "" : item.text();
+    }
+
+    static int legacyRecommendCountForTest(String html) {
+        Document d = Jsoup.parseBodyFragment(html);
+        return legacyRecommendCount(d.selectFirst("table.table"));
+    }
+
+    private static int legacyRecommendCount(Element infoTable) {
+        if(infoTable == null)
+            return 0;
+        Element value = infoTable.selectFirst("button.btn-red b");
+        return value == null ? 0 : parsePositiveInt(value.ownText());
     }
 
     private static Element legacyInfoRoot(Document d) {

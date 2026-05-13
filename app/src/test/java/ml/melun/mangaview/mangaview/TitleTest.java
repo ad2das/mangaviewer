@@ -120,4 +120,11 @@ public class TitleTest {
                 "<html><body><ul class=\"list-body\"><li class=\"list-item\">episode</li></ul></body></html>",
                 "ul.list-body li"));
     }
+
+    @Test
+    public void legacyRecommendCountIgnoresMissingOrInvalidMarkup() {
+        assertEquals(0, Title.legacyRecommendCountForTest("<table class=\"table\"></table>"));
+        assertEquals(0, Title.legacyRecommendCountForTest("<table class=\"table\"><tr><td><button class=\"btn-red\"><b>n/a</b></button></td></tr></table>"));
+        assertEquals(42, Title.legacyRecommendCountForTest("<table class=\"table\"><tr><td><button class=\"btn-red\"><b>42</b></button></td></tr></table>"));
+    }
 }
