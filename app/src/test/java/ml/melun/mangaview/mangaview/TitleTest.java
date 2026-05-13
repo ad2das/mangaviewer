@@ -113,4 +113,11 @@ public class TitleTest {
         assertEquals(11, episodes.get(1).getId());
         assertEquals("2026.05.01", episodes.get(1).getDate());
     }
+
+    @Test
+    public void legacyInfoRootFallsBackToDocumentWhenHeaderIsMissing() {
+        assertEquals("episode", Title.legacyInfoRootTextForTest(
+                "<html><body><ul class=\"list-body\"><li class=\"list-item\">episode</li></ul></body></html>",
+                "ul.list-body li"));
+    }
 }

@@ -97,7 +97,7 @@ public class Title extends MTitle {
                 if(body.contains("Connect Error: Connection timed out"))
                     continue;
                 Document d = Jsoup.parse(body);
-                Element header = d.selectFirst("div.view-title");
+                Element header = legacyInfoRoot(d);
 
                 //extra info
                 try{
@@ -228,6 +228,19 @@ public class Title extends MTitle {
 
     static List<Manga> parseLegacyEpisodesForTest(String html, int baseMode) {
         return parseLegacyEpisodes(Jsoup.parse(html), baseMode);
+    }
+
+    static String legacyInfoRootTextForTest(String html, String selector) {
+        Element root = legacyInfoRoot(Jsoup.parse(html));
+        Element item = root == null ? null : root.selectFirst(selector);
+        return item == null ? "" : item.text();
+    }
+
+    private static Element legacyInfoRoot(Document d) {
+        if(d == null)
+            return null;
+        Element header = d.selectFirst("div.view-title");
+        return header == null ? d : header;
     }
 
     private static List<Manga> parseLegacyEpisodes(Document d, int baseMode) {
