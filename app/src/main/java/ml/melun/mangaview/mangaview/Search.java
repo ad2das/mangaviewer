@@ -646,7 +646,7 @@ public class Search {
         long now = System.currentTimeMillis();
         synchronized (NTK_RESULT_CACHE) {
             CachedPageTitles cached = NTK_RESULT_CACHE.get(key);
-            if(cached != null && now - cached.loadedAt < NTK_RESULT_CACHE_TTL_MS)
+            if(cached != null && isNtkResultCacheFresh(cached.loadedAt, now, NTK_RESULT_CACHE_TTL_MS))
                 return copyPageTitles(cached.pageTitles);
         }
         PageTitles loaded = loader.load();
@@ -662,6 +662,14 @@ public class Search {
         if(source == null)
             return new PageTitles(new ArrayList<>(), null);
         return new PageTitles(new ArrayList<>(source.titles), source.nextPath, source.hasMoreKnown, source.hasMore, source.totalCount);
+    }
+
+    static boolean isNtkResultCacheFreshForTest(long loadedAt, long now, long ttlMs) {
+        return isNtkResultCacheFresh(loadedAt, now, ttlMs);
+    }
+
+    private static boolean isNtkResultCacheFresh(long loadedAt, long now, long ttlMs) {
+        return loadedAt <= now && now - loadedAt < ttlMs;
     }
 
     private static boolean isNtkApiListPath(String path) {

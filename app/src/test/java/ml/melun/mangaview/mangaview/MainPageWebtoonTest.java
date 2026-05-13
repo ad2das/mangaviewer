@@ -9,6 +9,7 @@ import java.util.List;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class MainPageWebtoonTest {
@@ -216,6 +217,16 @@ public class MainPageWebtoonTest {
                 Search.ntkSearchPathForTest("원피", base_webtoon, 1));
         assertEquals("/search?q=%EC%9B%90%ED%94%BC&kind=manhwa&page=2",
                 Search.ntkSearchPathForTest("원피", base_comic, 2));
+    }
+
+    @Test
+    public void ntkResultCacheFreshnessRejectsExpiredAndFutureEntries() {
+        long now = 10_000L;
+        long ttl = 1_000L;
+
+        assertTrue(Search.isNtkResultCacheFreshForTest(now - 999L, now, ttl));
+        assertFalse(Search.isNtkResultCacheFreshForTest(now - 1001L, now, ttl));
+        assertFalse(Search.isNtkResultCacheFreshForTest(now + 1L, now, ttl));
     }
 
     @Test
