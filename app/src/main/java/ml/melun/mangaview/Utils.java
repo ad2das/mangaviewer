@@ -42,12 +42,13 @@ import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileFilter;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.FileReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -1228,15 +1229,28 @@ public class Utils {
     }
 
     static public String readFileToString(File data){
-        StringBuilder raw = new StringBuilder();
-        try {
-            BufferedReader br = new BufferedReader(new FileReader(data));
-            String line;
-            while ((line = br.readLine()) != null) {
-                raw.append(line);
-            }
-            br.close();
+        try (InputStream input = new FileInputStream(data)) {
+            return readUtf8Text(input, false);
         }catch (Exception e){
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+        return "";
+    }
+
+    static String readTextStreamForTest(InputStream input) {
+        return readUtf8Text(input, false);
+    }
+
+    private static String readUtf8Text(InputStream input, boolean appendLineBreaks) {
+        StringBuilder raw = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                raw.append(line);
+                if(appendLineBreaks)
+                    raw.append('\n');
+            }
+        } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return raw.toString();
@@ -1566,14 +1580,8 @@ public class Utils {
     }
 
     public static String readUriToString(Context context, Uri uri){
-        try {
-            InputStream in = context.getContentResolver().openInputStream(uri);
-            BufferedReader r = new BufferedReader(new InputStreamReader(in));
-            StringBuilder s = new StringBuilder();
-            for (String line; (line = r.readLine()) != null; ) {
-                s.append(line).append('\n');
-            }
-            return s.toString();
+        try (InputStream in = context.getContentResolver().openInputStream(uri)) {
+            return readUtf8Text(in, true);
         }catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
