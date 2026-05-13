@@ -77,10 +77,9 @@ public final class PrefetchCoordinator {
         if(bookmarkIndex > 0 && bookmarkIndex <= episodes.size()) {
             int current = bookmarkIndex - 1;
             addTarget(targets, episodes, current, limit);
-            addTarget(targets, episodes, current + 1, limit);
             addTarget(targets, episodes, current - 1, limit);
-            addTarget(targets, episodes, current + 2, limit);
             addTarget(targets, episodes, current - 2, limit);
+            return targets;
         }
         for(int i = episodes.size() - 1; i >= 0 && targets.size() < limit; i--)
             addTarget(targets, episodes, i, limit);
