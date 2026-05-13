@@ -29,4 +29,11 @@ public class UtilsTest {
 
         assertEquals(text, new String(Utils.utf8BytesForTest(text), StandardCharsets.UTF_8));
     }
+
+    @Test
+    public void sampleBitmapDimensionsNeverDropBelowOnePixel() {
+        assertEquals(1, Utils.sampleWidthForTest(100, 0));
+        assertEquals(1, Utils.sampleHeightForTest(100, 100, 0));
+        assertEquals(50, Utils.sampleHeightForTest(200, 100, 100));
+    }
 }

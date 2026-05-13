@@ -1258,13 +1258,36 @@ public class Utils {
 
     public static Bitmap getSample(Bitmap input, int width){
         //scale down bitmap to avoid outofmem exception
+        width = sampleWidth(input.getWidth(), width);
         if(input.getWidth()<=width) return input;
         else{
             //ratio
-            float ratio = (float)input.getHeight()/(float)input.getWidth();
-            int height = Math.round(ratio*width);
+            int height = sampleHeight(input.getWidth(), input.getHeight(), width);
             return Bitmap.createScaledBitmap(input, width, height,false);
         }
+    }
+
+    static int sampleWidthForTest(int inputWidth, int requestedWidth) {
+        return sampleWidth(inputWidth, requestedWidth);
+    }
+
+    static int sampleHeightForTest(int inputWidth, int inputHeight, int targetWidth) {
+        return sampleHeight(inputWidth, inputHeight, sampleWidth(inputWidth, targetWidth));
+    }
+
+    private static int sampleWidth(int inputWidth, int requestedWidth) {
+        if(inputWidth <= 0)
+            return 1;
+        if(requestedWidth <= 0)
+            return 1;
+        return Math.max(1, Math.min(inputWidth, requestedWidth));
+    }
+
+    private static int sampleHeight(int inputWidth, int inputHeight, int targetWidth) {
+        if(inputWidth <= 0 || inputHeight <= 0)
+            return 1;
+        float ratio = (float) inputHeight / (float) inputWidth;
+        return Math.max(1, Math.round(ratio * Math.max(1, targetWidth)));
     }
 
     public static int getScreenSize(Display display){
