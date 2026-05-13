@@ -1541,12 +1541,28 @@ public class Utils {
         DocumentFile[] files = home.listFiles();
         if(files == null)
             return new ArrayList<>();
-        Arrays.sort(files, (documentFile, t1) -> documentFile.getName().compareTo(t1.getName()));
+        Arrays.sort(files, (documentFile, t1) -> compareDocumentNames(
+                documentFile == null ? null : documentFile.getName(),
+                t1 == null ? null : t1.getName()));
         List<DocumentFile> res = new ArrayList<>();
         for(DocumentFile f : files){
-            if(f.isDirectory()) res.add(f);
+            if(f != null && f.isDirectory()) res.add(f);
         }
         return res;
+    }
+
+    static int compareDocumentNamesForTest(String left, String right) {
+        return compareDocumentNames(left, right);
+    }
+
+    private static int compareDocumentNames(String left, String right) {
+        if(left == null && right == null)
+            return 0;
+        if(left == null)
+            return 1;
+        if(right == null)
+            return -1;
+        return left.compareTo(right);
     }
 
     public static boolean useScopedStorageHome(String homeDir) {
