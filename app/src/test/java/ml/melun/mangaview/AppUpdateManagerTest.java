@@ -17,4 +17,15 @@ public class AppUpdateManagerTest {
                 field.get(null)
         );
     }
+
+    @Test
+    public void releaseVersionFallbackUsesMainLatestAsset() throws Exception {
+        Field field = AppUpdateManager.class.getDeclaredField("RELEASE_VERSION_URL");
+        field.setAccessible(true);
+
+        assertEquals(
+                "https://github.com/ad2das/mangaviewer/releases/download/main-latest/version.json",
+                field.get(null)
+        );
+    }
 }

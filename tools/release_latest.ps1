@@ -179,6 +179,12 @@ if (-not $NoUpload) {
         throw "gh release upload failed"
     }
 
+    Write-Step "Uploading version metadata release asset"
+    gh release upload $ReleaseTag $versionJsonPath --clobber --repo $Repo
+    if ($LASTEXITCODE -ne 0) {
+        throw "gh release upload version metadata failed"
+    }
+
     if ($DeleteOldReleaseApks) {
         Write-Step "Deleting old APK release assets"
         $assetNames = gh release view $ReleaseTag --repo $Repo --json assets --jq ".assets[].name"

@@ -54,6 +54,7 @@ public final class AppUpdateManager {
     private static final String RAW_VERSION_URL = "https://raw.githubusercontent.com/ad2das/mangaviewer/" + UPDATE_CHANNEL + "/version.json";
     private static final String CDN_VERSION_URL = "https://cdn.jsdelivr.net/gh/ad2das/mangaviewer@" + UPDATE_CHANNEL + "/version.json";
     private static final String LATEST_RELEASE_API_URL = "https://api.github.com/repos/ad2das/mangaviewer/releases/tags/main-latest";
+    private static final String RELEASE_VERSION_URL = "https://github.com/ad2das/mangaviewer/releases/download/main-latest/version.json";
     private static final String UPDATE_USER_AGENT = "MangaView Update";
     private static final String PREF = "appUpdate";
     private static final String KEY_VERSION = UPDATE_CHANNEL + "_latestVersion";
@@ -211,6 +212,9 @@ public final class AppUpdateManager {
         UpdateInfo releaseInfo = fetchUpdateInfoFromLatestRelease();
         if(releaseInfo != null)
             return releaseInfo;
+        UpdateInfo releaseAssetInfo = fetchUpdateInfoFromUrl("github-main-latest-version-asset", RELEASE_VERSION_URL + "?t=" + now, false);
+        if(releaseAssetInfo != null)
+            return releaseAssetInfo;
         UpdateInfo apiInfo = fetchUpdateInfoFromUrl("github-api", VERSION_API_URL, true);
         if(apiInfo != null)
             return apiInfo;
