@@ -782,11 +782,13 @@ public class CustomHttpClient {
     }
 
     private PageResponse waitForCachedPage(String normalized, String cacheKey, PageLoadState loadState, long ttlMillis, CachedPage staleCached) throws Exception {
-        try {
-            loadState.done.await(10, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw e;
+        if(shouldWaitForActivePageLoad(staleCached != null)) {
+            try {
+                loadState.done.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw e;
+            }
         }
         long now = System.currentTimeMillis();
         synchronized (this) {
@@ -803,6 +805,14 @@ public class CustomHttpClient {
         if(staleCached != null)
             return new PageResponse(staleCached.code, staleCached.body, true);
         throw new Exception("Request failed: " + cacheKey);
+    }
+
+    static boolean shouldWaitForActivePageLoadForTest(boolean hasStaleCache) {
+        return shouldWaitForActivePageLoad(hasStaleCache);
+    }
+
+    private static boolean shouldWaitForActivePageLoad(boolean hasStaleCache) {
+        return !hasStaleCache;
     }
 
     public synchronized void clearPageCache() {
