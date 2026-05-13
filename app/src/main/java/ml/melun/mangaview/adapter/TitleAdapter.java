@@ -394,7 +394,11 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
 
 
     public void moveItemToTop(int from){
+        if(!isValidPosition(from))
+            return;
         if(!searching) {
+            if(mData == null || from >= mData.size())
+                return;
             mData.add(0, mData.get(from));
             mData.remove(from + 1);
             for (int i = from; i > 0; i--) {
@@ -403,18 +407,26 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         }else{
             Title t = mDataFiltered.get(from);
             int index = mData.indexOf(t);
+            if(index < 0 || index >= mData.size())
+                return;
             mData.add(0, mData.get(index));
             mData.remove(index + 1);
         }
     }
 
     public void remove(int pos){
+        if(!isValidPosition(pos))
+            return;
         if(!searching) {
+            if(mData == null || pos >= mData.size())
+                return;
             mData.remove(pos);
             notifyItemRemoved(pos);
         }else{
             Title t = mDataFiltered.get(pos);
             int index = mData.indexOf(t);
+            if(index < 0 || index >= mData.size())
+                return;
             mData.remove(index);
             mDataFiltered.remove(pos);
             notifyItemRemoved(pos);
