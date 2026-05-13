@@ -163,16 +163,14 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
 
         }else {
             ViewHolder h = (ViewHolder) holder;
+            if(!isValidEpisodePosition(mData, position)) {
+                clearEpisodeRow(h, position);
+                return;
+            }
             int Dposition = position-1;
             Manga episode = mData.get(Dposition);
             if(episode == null) {
-                setTextIfChanged(h.episode, "");
-                setTextIfChanged(h.date, "");
-                setVisibilityIfChanged(h.newBadge, View.GONE);
-                setVisibilityIfChanged(h.action, View.GONE);
-                h.boundKey = "null:" + Dposition;
-                bindEmptyThumbnail(h.thumb, true);
-                bindSelection(h, position);
+                clearEpisodeRow(h, position);
                 return;
             }
             String rowKey = episode.getId() + ":" + episode.getName() + ":" + episode.getDate() + ":" + mode + ":" + Dposition;
@@ -241,6 +239,16 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         }
     }
 
+    private void clearEpisodeRow(ViewHolder holder, int position) {
+        setTextIfChanged(holder.episode, "");
+        setTextIfChanged(holder.date, "");
+        setVisibilityIfChanged(holder.newBadge, View.GONE);
+        setVisibilityIfChanged(holder.action, View.GONE);
+        holder.boundKey = "null:" + position;
+        bindEmptyThumbnail(holder.thumb, true);
+        bindSelection(holder, position);
+    }
+
     private void setTextIfChanged(TextView view, CharSequence text) {
         CharSequence next = text == null ? "" : text;
         if(!android.text.TextUtils.equals(view.getText(), next))
@@ -277,7 +285,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             action = itemView.findViewById(R.id.episodeAction);
             itemView.setOnClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || position == 0 || mClickListener == null)
+                if(position == RecyclerView.NO_POSITION || mClickListener == null || !isValidEpisodePosition(mData, position))
                     return;
                 Manga m = mData.get(position - 1);
                 if(m == null)
@@ -294,7 +302,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             });
             action.setOnClickListener(v -> {
                 int position = getAdapterPosition();
-                if(position == RecyclerView.NO_POSITION || position == 0 || mClickListener == null)
+                if(position == RecyclerView.NO_POSITION || mClickListener == null || !isValidEpisodePosition(mData, position))
                     return;
                 Manga m = mData.get(position - 1);
                 if(m != null)
@@ -442,6 +450,14 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     // allows clicks events to be caught
     public void setClickListener(ItemClickListener itemClickListener) {
         this.mClickListener = itemClickListener;
+    }
+
+    private static boolean isValidEpisodePosition(List<?> data, int adapterPosition) {
+        return data != null && adapterPosition > 0 && adapterPosition <= data.size();
+    }
+
+    static boolean isValidEpisodePositionForTest(List<?> data, int adapterPosition) {
+        return isValidEpisodePosition(data, adapterPosition);
     }
 
     public void setTagClickListener(TagAdapter.tagOnclick t){
