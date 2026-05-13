@@ -57,6 +57,8 @@ public class ViewerPagerAdapter extends FragmentStatePagerAdapter
     @Override
     public Fragment getItem(int position)
     {
+        if(!isValidFragmentPosition(fragments, position))
+            return new Fragment();
         return fragments.get(position);
     }
     @Override
@@ -79,6 +81,14 @@ public class ViewerPagerAdapter extends FragmentStatePagerAdapter
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
+    }
+
+    private static boolean isValidFragmentPosition(List<?> fragments, int position) {
+        return fragments != null && position >= 0 && position < fragments.size();
+    }
+
+    static boolean isValidFragmentPositionForTest(List<?> fragments, int position) {
+        return isValidFragmentPosition(fragments, position);
     }
 
 }
