@@ -75,10 +75,12 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_OK;
 
 public class ViewerActivity extends AppCompatActivity {
     public static final String EXTRA_EXACT_EPISODE = "ml.melun.mangaview.EXTRA_EXACT_EPISODE";
+    public static final String EXTRA_START_AT_FIRST_PAGE = "ml.melun.mangaview.EXTRA_START_AT_FIRST_PAGE";
 
     private enum ViewerLoadPolicy {
         RESUME,
-        EXACT
+        EXACT,
+        EXACT_FIRST_PAGE
     }
 
     Manga manga;
@@ -210,7 +212,7 @@ public class ViewerActivity extends AppCompatActivity {
                         } else {
                             callback.prevLoaded(m);
                         }
-                    }, false, ViewerLoadPolicy.EXACT);
+                    }, false, ViewerLoadPolicy.EXACT_FIRST_PAGE);
                     loader.start();
                     return target;
                 }else{
@@ -250,7 +252,7 @@ public class ViewerActivity extends AppCompatActivity {
                         } else {
                             callback.nextLoaded(m);
                         }
-                    }, false, ViewerLoadPolicy.EXACT);
+                    }, false, ViewerLoadPolicy.EXACT_FIRST_PAGE);
                     loader.start();
                     return target;
                 }else{
@@ -274,8 +276,10 @@ public class ViewerActivity extends AppCompatActivity {
 
         try {
             intent = getIntent();
-            ViewerLoadPolicy initialLoadPolicy = intent.getBooleanExtra(EXTRA_EXACT_EPISODE, false)
-                    ? ViewerLoadPolicy.EXACT
+            boolean exactEpisode = intent.getBooleanExtra(EXTRA_EXACT_EPISODE, false);
+            boolean startAtFirstPage = intent.getBooleanExtra(EXTRA_START_AT_FIRST_PAGE, false);
+            ViewerLoadPolicy initialLoadPolicy = exactEpisode
+                    ? (startAtFirstPage ? ViewerLoadPolicy.EXACT_FIRST_PAGE : ViewerLoadPolicy.EXACT)
                     : ViewerLoadPolicy.RESUME;
             title = new Gson().fromJson(intent.getStringExtra("title"), new TypeToken<Title>() {
             }.getType());
@@ -438,7 +442,7 @@ public class ViewerActivity extends AppCompatActivity {
             if(episodePickerDialog != null)
                 episodePickerDialog.dismiss();
             lockUi(true);
-            loadManga(selectedManga, ViewerLoadPolicy.EXACT);
+            loadManga(selectedManga, ViewerLoadPolicy.EXACT_FIRST_PAGE);
         });
         episodeList.setAdapter(adapter);
 
@@ -534,7 +538,7 @@ public class ViewerActivity extends AppCompatActivity {
         Manga source = focusedManga();
         Manga target = nextDirection ? nextEpisodeCandidate(source) : previousEpisodeCandidate(source);
         if(target != null) {
-            loadManga(target, ViewerLoadPolicy.EXACT);
+            loadManga(target, ViewerLoadPolicy.EXACT_FIRST_PAGE);
             return;
         }
         if(source == null || !source.isOnline())
@@ -560,7 +564,7 @@ public class ViewerActivity extends AppCompatActivity {
                     return;
                 }
                 if(resolved != null)
-                    loadManga(resolved, ViewerLoadPolicy.EXACT);
+                    loadManga(resolved, ViewerLoadPolicy.EXACT_FIRST_PAGE);
                 else
                     refreshToolbar(source);
             });
@@ -1149,7 +1153,7 @@ public class ViewerActivity extends AppCompatActivity {
                             target = resolvedEpisode(target);
                     }
                     if(target != null && target.isOnline() && result == LOAD_OK)
-                        result = ViewerWarmupManager.prepareFirstFrame(context, target, title, 0, width, autoCut, p.getReverse(), cancellation);
+                        result = ViewerWarmupManager.prepareFirstFrame(context, target, title, initialPageIndex(target, ViewerLoadPolicy.EXACT_FIRST_PAGE), width, autoCut, p.getReverse(), cancellation);
                 } catch (Exception e) {
                     if(!cancelled && !isFinishing())
                         ml.melun.mangaview.report.CrashReporter.record(e);
@@ -2058,7 +2062,7 @@ public class ViewerActivity extends AppCompatActivity {
             ViewerWarmupManager.preloadWindow(context, target, 0, width, autoCut, p.getReverse(), ViewerPreloadPolicy.nextEpisodeWindow(p.getDataSave()));
             return;
         }
-        ViewerWarmupManager.warmup(context, target, title);
+        ViewerWarmupManager.warmup(context, target, title, 0);
     }
 
     private void cancelNextPrefetcher() {
@@ -2279,21 +2283,25 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private int initialPageIndex(Manga target, ViewerLoadPolicy policy) {
-        if(target == null || !target.useBookmark())
+        if(target == null || !usesInitialViewerBookmark(target, policy))
             return 0;
         return p.getViewerBookmark(target);
     }
 
     private int initialPageOffset(Manga target, ViewerLoadPolicy policy) {
-        if(target == null || !target.useBookmark())
+        if(target == null || !usesInitialViewerBookmark(target, policy))
             return 0;
         return p.getViewerBookmarkOffset(target);
     }
 
     private int initialPageSide(Manga target, ViewerLoadPolicy policy) {
-        if(target == null || !target.useBookmark())
+        if(target == null || !usesInitialViewerBookmark(target, policy))
             return PageItem.FIRST;
         return p.getViewerBookmarkSide(target) == PageItem.SECOND ? PageItem.SECOND : PageItem.FIRST;
+    }
+
+    private boolean usesInitialViewerBookmark(Manga target, ViewerLoadPolicy policy) {
+        return target != null && target.useBookmark() && policy != ViewerLoadPolicy.EXACT_FIRST_PAGE;
     }
 
     private PageItem initialPageItem(Manga target, ViewerLoadPolicy policy) {

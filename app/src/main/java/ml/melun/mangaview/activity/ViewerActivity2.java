@@ -110,6 +110,7 @@ public class ViewerActivity2 extends AppCompatActivity {
     TextView info;
     int imageLoadGeneration = 0;
     loadImages activeImageLoad;
+    boolean startCurrentEpisodeAtFirstPage = false;
 
     @Override
     protected void onResume() {
@@ -201,6 +202,8 @@ public class ViewerActivity2 extends AppCompatActivity {
             spinner.setSelection(m);
             index = i;
             manga = m;
+            startCurrentEpisodeAtFirstPage = true;
+            viewerBookmark = 0;
             if(title != null)
                 manga.setTitle(title);
             hideSpinnerDropDown(spinner);
@@ -230,6 +233,8 @@ public class ViewerActivity2 extends AppCompatActivity {
         swidth = getScreenSize(getWindowManager().getDefaultDisplay());
 
         intent = getIntent();
+        startCurrentEpisodeAtFirstPage = savedInstanceState == null
+                && intent.getBooleanExtra(ViewerActivity.EXTRA_START_AT_FIRST_PAGE, false);
         title = new Gson().fromJson(intent.getStringExtra("title"), new TypeToken<Title>() {
         }.getType());
         if(savedInstanceState == null) {
@@ -377,6 +382,8 @@ public class ViewerActivity2 extends AppCompatActivity {
         manga = target;
         id = manga.getId();
         name = manga.getName();
+        startCurrentEpisodeAtFirstPage = true;
+        viewerBookmark = 0;
         loadManga(manga);
     }
 
@@ -908,9 +915,11 @@ public class ViewerActivity2 extends AppCompatActivity {
         MangaRepository.Cancellation cancellation = MangaRepository.cancellation();
         volatile boolean cancelled;
         final boolean allowResumeFallback;
+        final boolean startAtFirstPage;
 
-        loadImages(boolean allowResumeFallback) {
+        loadImages(boolean allowResumeFallback, boolean startAtFirstPage) {
             this.allowResumeFallback = allowResumeFallback;
+            this.startAtFirstPage = startAtFirstPage;
         }
 
         private void postProgress(String value) {
@@ -929,12 +938,12 @@ public class ViewerActivity2 extends AppCompatActivity {
             if(res == LOAD_CAPTCHA)
                 return res;
             try {
-                int firstPage = manga.useBookmark() ? p.getViewerBookmark(manga) : viewerBookmark;
-                if(allowResumeFallback && ViewerResumeResolver.shouldResolveBeforeDirectFetch(manga, title)) {
+                int firstPage = startAtFirstPage ? 0 : (manga.useBookmark() ? p.getViewerBookmark(manga) : viewerBookmark);
+                if(!startAtFirstPage && allowResumeFallback && ViewerResumeResolver.shouldResolveBeforeDirectFetch(manga, title)) {
                     res = prepareFirstAvailableManga(firstPage, true, cancellation);
                 } else {
                     res = ViewerWarmupManager.prepareFirstFrame(context, manga, title, firstPage, swidth, false, reverse, cancellation);
-                    if(allowResumeFallback && (res == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !hasLoadedImages()))
+                    if(!startAtFirstPage && allowResumeFallback && (res == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !hasLoadedImages()))
                         res = prepareFirstAvailableManga(firstPage, false, cancellation);
                 }
                 if(title == null)
@@ -963,7 +972,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                 return;
             }
 
-            reloadManga();
+            reloadManga(startAtFirstPage);
 
             //show info overlay
             if(!dirty) {
@@ -1085,6 +1094,10 @@ public class ViewerActivity2 extends AppCompatActivity {
     }
 
     public void reloadManga(){
+        reloadManga(consumeStartAtFirstPage());
+    }
+
+    public void reloadManga(boolean startAtFirstPage){
         try{
             lockUi(false);
             imgs = MangaRepository.imageUrls(manga, context);
@@ -1093,7 +1106,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                 return;
             }
             d = new Decoder(manga.getSeed(), manga.getId());
-            bookmarkRefresh();
+            bookmarkRefresh(startAtFirstPage);
             ViewerWarmupManager.preloadWindow(context, manga, viewerBookmark, swidth, false, reverse, ViewerPreloadPolicy.firstFrameWindow(p.getDataSave()));
             refreshToolbar();
             updateIntent();
@@ -1105,14 +1118,18 @@ public class ViewerActivity2 extends AppCompatActivity {
     }
 
     public void bookmarkRefresh(){
-        if(manga.useBookmark()) {
+        bookmarkRefresh(false);
+    }
+
+    public void bookmarkRefresh(boolean startAtFirstPage){
+        if(manga.useBookmark() && !startAtFirstPage)
             viewerBookmark = p.getViewerBookmark(manga);
-            if(manga.isOnline()) {
-                p.addRecent(title);
-                p.setBookmark(title, id);
-            }
-        }else
+        else
             viewerBookmark = 0;
+        if(manga.useBookmark() && manga.isOnline()) {
+            p.addRecent(title);
+            p.setBookmark(title, id);
+        }
         if(imgs != null && imgs.size() > 0)
             viewerBookmark = Utils.clampIndex(viewerBookmark, imgs.size());
     }
@@ -1144,8 +1161,14 @@ public class ViewerActivity2 extends AppCompatActivity {
         captchaChecked = false;
         if(activeImageLoad != null)
             activeImageLoad.cancel();
-        activeImageLoad = new loadImages(allowResumeFallback);
+        activeImageLoad = new loadImages(allowResumeFallback, consumeStartAtFirstPage());
         activeImageLoad.start();
+    }
+
+    private boolean consumeStartAtFirstPage() {
+        boolean result = startCurrentEpisodeAtFirstPage;
+        startCurrentEpisodeAtFirstPage = false;
+        return result;
     }
 
     private boolean hasLoadedImages() {

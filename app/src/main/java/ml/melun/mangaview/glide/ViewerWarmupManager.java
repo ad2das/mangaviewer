@@ -71,6 +71,13 @@ public class ViewerWarmupManager {
     };
 
     public static void warmup(Context context, Manga manga, Title title) {
+        int pageIndex = context != null && manga != null && manga.isOnline() && manga.useBookmark()
+                ? p.getViewerBookmark(manga)
+                : 0;
+        warmup(context, manga, title, pageIndex);
+    }
+
+    public static void warmup(Context context, Manga manga, Title title, int pageIndex) {
         if(context == null || manga == null || !manga.isOnline())
             return;
         if(shouldSkipNtkWarmup())
@@ -82,7 +89,6 @@ public class ViewerWarmupManager {
             title = manga.getTitle();
         }
         int width = viewerWidth(context);
-        int pageIndex = manga.useBookmark() ? p.getViewerBookmark(manga) : 0;
         if(pageIndex < 0)
             pageIndex = 0;
         String key = episodeKey(manga, title);

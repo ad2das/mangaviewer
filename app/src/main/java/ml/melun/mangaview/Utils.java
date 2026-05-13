@@ -245,14 +245,16 @@ public class Utils {
             launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken, exactEpisode);
             return;
         }
-        Manga immediate = ViewerWarmupManager.usePreparedFirstFrame(context, manga, launchTitle, false, p.getReverse());
+        Manga immediate = exactEpisode
+                ? ViewerWarmupManager.usePreparedFirstFrame(context, manga, launchTitle, false, p.getReverse(), 0)
+                : ViewerWarmupManager.usePreparedFirstFrame(context, manga, launchTitle, false, p.getReverse());
         if(immediate != null) {
             launchPreparedViewer(context, immediate, code, returnToEpisodes, online, recent,
                     launchTitle != null ? launchTitle : immediate.getTitle(), includeTitleEpisodes, launchToken, exactEpisode);
             return;
         }
         if(exactEpisode)
-            ViewerWarmupManager.warmup(context, manga, launchTitle);
+            ViewerWarmupManager.warmup(context, manga, launchTitle, 0);
         else
             ViewerWarmupManager.warmupContinueImmediate(context, manga, launchTitle);
         launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken, exactEpisode);
@@ -290,8 +292,10 @@ public class Utils {
             return;
         Intent viewer = viewerIntent(context, manga, !exactEpisode);
         viewer.putExtra("online", online);
-        if(exactEpisode)
+        if(exactEpisode) {
             viewer.putExtra(ViewerActivity.EXTRA_EXACT_EPISODE, true);
+            viewer.putExtra(ViewerActivity.EXTRA_START_AT_FIRST_PAGE, true);
+        }
         if(returnToEpisodes)
             viewer.putExtra("returnToEpisodes", true);
         Title launchTitle = title != null ? title : manga.getTitle();
