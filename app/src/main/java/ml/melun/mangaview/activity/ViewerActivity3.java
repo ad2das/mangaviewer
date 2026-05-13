@@ -683,12 +683,9 @@ public class ViewerActivity3 extends AppCompatActivity {
     private void prewarmAdjacentEpisodes() {
         if(eps == null || eps.size() == 0 || title == null)
             return;
-        Manga previous = Utils.safeGet(eps, index - 1);
-        Manga nextEpisode = Utils.safeGet(eps, index + 1);
-        if(previous != null)
-            ViewerWarmupManager.warmup(context, previous, title);
+        Manga nextEpisode = nextEpisodeCandidate();
         if(nextEpisode != null)
-            ViewerWarmupManager.warmup(context, nextEpisode, title);
+            ViewerWarmupManager.warmup(context, nextEpisode, title, 0);
     }
 
     void lockUi(boolean lock){

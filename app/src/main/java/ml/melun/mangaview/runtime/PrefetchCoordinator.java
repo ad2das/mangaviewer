@@ -30,6 +30,7 @@ public final class PrefetchCoordinator {
             return;
         Context appContext = context.getApplicationContext();
         List<Integer> targets = viewerTargets(episodes, bookmarkIndex, aggressiveAllowed(appContext) ? 3 : 2);
+        int resumeIndex = bookmarkIndex > 0 && bookmarkIndex <= episodes.size() ? bookmarkIndex - 1 : -1;
         for(Integer index : targets) {
             Manga manga = episodes.get(index);
             if(manga == null)
@@ -37,7 +38,10 @@ public final class PrefetchCoordinator {
             manga.setMode(mode);
             manga.setTitle(title);
             manga.setTitleId(title.getId());
-            ViewerWarmupManager.warmup(appContext, manga, title);
+            if(index == resumeIndex)
+                ViewerWarmupManager.warmup(appContext, manga, title);
+            else
+                ViewerWarmupManager.warmup(appContext, manga, title, 0);
         }
     }
 
@@ -46,8 +50,6 @@ public final class PrefetchCoordinator {
             return;
         Context appContext = context.getApplicationContext();
         warmAndPreload(appContext, current.nextEp(), title, width, autoCut, reverse);
-        if(aggressiveAllowed(appContext))
-            warmAndPreload(appContext, current.prevEp(), title, width, autoCut, reverse);
     }
 
     public static void prefetchViewerWindow(Context context, Manga manga, int pageIndex, int width, boolean autoCut, boolean reverse) {
@@ -64,7 +66,7 @@ public final class PrefetchCoordinator {
             return;
         if(title != null)
             manga.setTitle(title);
-        ViewerWarmupManager.warmup(context, manga, title);
+        ViewerWarmupManager.warmup(context, manga, title, 0);
         List<String> imageUrls = MangaRepository.imageUrls(manga, context);
         if(imageUrls != null && imageUrls.size() > 0)
             ViewerWarmupManager.preloadWindow(context, manga, 0, width, autoCut, reverse, ViewerPreloadPolicy.nextEpisodeWindow(p.getDataSave()));

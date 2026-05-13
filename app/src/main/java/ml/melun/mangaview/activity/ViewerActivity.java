@@ -821,7 +821,6 @@ public class ViewerActivity extends AppCompatActivity {
             refreshToolbar(m);
             updateIntent(m);
             prefetchNextEpisode(m);
-            prefetchPreviousEpisode(m);
             PrefetchCoordinator.prefetchAdjacentEpisode(context, m, title, width, autoCut, p.getReverse());
 
         }catch (Exception e){
@@ -2050,19 +2049,6 @@ public class ViewerActivity extends AppCompatActivity {
         nextPrefetchBaseMode = target.getBaseMode();
         nextPrefetcher = new PrefetchImagesJob(target);
         nextPrefetcher.start();
-    }
-
-    private void prefetchPreviousEpisode(Manga current) {
-        if(current == null || !current.isOnline())
-            return;
-        Manga target = previousEpisodeCandidate(current);
-        if(target == null)
-            return;
-        if(hasLoadedImages(target)) {
-            ViewerWarmupManager.preloadWindow(context, target, 0, width, autoCut, p.getReverse(), ViewerPreloadPolicy.nextEpisodeWindow(p.getDataSave()));
-            return;
-        }
-        ViewerWarmupManager.warmup(context, target, title, 0);
     }
 
     private void cancelNextPrefetcher() {
