@@ -800,8 +800,22 @@ public class ViewerWarmupManager {
     }
 
     public static void logMetric(String name, long valueMs) {
-        Log.d(TAG, name + "=" + valueMs);
-        PerfTrace.mark(name, valueMs);
+        boolean viewerLoggable = Log.isLoggable(TAG, Log.DEBUG);
+        boolean perfLoggable = PerfTrace.shouldLog();
+        if(!shouldLogMetric(viewerLoggable, perfLoggable))
+            return;
+        if(viewerLoggable)
+            Log.d(TAG, name + "=" + valueMs);
+        if(perfLoggable)
+            PerfTrace.mark(name, valueMs);
+    }
+
+    static boolean shouldLogMetricForTest(boolean viewerTagLoggable, boolean perfTagLoggable) {
+        return shouldLogMetric(viewerTagLoggable, perfTagLoggable);
+    }
+
+    private static boolean shouldLogMetric(boolean viewerTagLoggable, boolean perfTagLoggable) {
+        return viewerTagLoggable || perfTagLoggable;
     }
 
     private static int viewerWidth(Context context) {

@@ -47,4 +47,15 @@ public class ViewerWarmupManagerTest {
 
         assertFalse(ViewerWarmupManager.isDiskSnapshotFreshForTest(now + 1, now));
     }
+
+    @Test
+    public void metricLoggingStaysOffWhenDebugTagsAreNotLoggable() {
+        assertFalse(ViewerWarmupManager.shouldLogMetricForTest(false, false));
+    }
+
+    @Test
+    public void metricLoggingCanBeEnabledByEitherDebugTag() {
+        assertTrue(ViewerWarmupManager.shouldLogMetricForTest(true, false));
+        assertTrue(ViewerWarmupManager.shouldLogMetricForTest(false, true));
+    }
 }
