@@ -89,6 +89,9 @@ public final class PrefetchCoordinator {
     private static void addTarget(List<Integer> targets, List<Manga> episodes, int index, int limit) {
         if(index < 0 || index >= episodes.size() || targets.size() >= limit || targets.contains(index))
             return;
+        Manga episode = episodes.get(index);
+        if(episode == null || !episode.isOnline())
+            return;
         targets.add(index);
     }
 

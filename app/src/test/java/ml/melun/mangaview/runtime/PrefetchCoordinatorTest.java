@@ -24,6 +24,19 @@ public class PrefetchCoordinatorTest {
         assertEquals(asList(2, 1, 0), targets);
     }
 
+    @Test
+    public void viewerTargetsSkipMissingEpisodes() throws Exception {
+        List<Manga> episodes = episodes(60, 50, 40, 30, 20, 10);
+        episodes.set(1, null);
+        Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class);
+        method.setAccessible(true);
+
+        @SuppressWarnings("unchecked")
+        List<Integer> targets = (List<Integer>) method.invoke(null, episodes, 3, 4);
+
+        assertEquals(asList(2, 0), targets);
+    }
+
     private static List<Manga> episodes(int... ids) {
         ArrayList<Manga> episodes = new ArrayList<>();
         for(int id : ids)
