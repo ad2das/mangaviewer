@@ -32,4 +32,12 @@ public class ViewerWarmupManagerTest {
     public void usableImageListAcceptsAnyNonBlankUrl() {
         assertTrue(ViewerWarmupManager.hasUsableImagesForTest(Arrays.asList("", "/image/1.jpg")));
     }
+
+    @Test
+    public void diskSnapshotFreshnessRejectsExpiredSnapshots() {
+        long now = 30 * 60 * 1000L;
+
+        assertFalse(ViewerWarmupManager.isDiskSnapshotFreshForTest(now - 21 * 60 * 1000L, now));
+        assertTrue(ViewerWarmupManager.isDiskSnapshotFreshForTest(now - 19 * 60 * 1000L, now));
+    }
 }

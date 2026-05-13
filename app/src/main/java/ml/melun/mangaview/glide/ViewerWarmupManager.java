@@ -742,6 +742,10 @@ public class ViewerWarmupManager {
         return hasUsableImages(images);
     }
 
+    static boolean isDiskSnapshotFreshForTest(long createdAt, long now) {
+        return isDiskSnapshotFresh(createdAt, now);
+    }
+
     private static boolean isUsablePageImage(String image) {
         return image != null && image.trim().length() > 0;
     }
@@ -763,6 +767,10 @@ public class ViewerWarmupManager {
             if(isUsablePageImage(image))
                 filtered.add(image);
         return filtered;
+    }
+
+    private static boolean isDiskSnapshotFresh(long createdAt, long now) {
+        return now - createdAt <= DISK_SNAPSHOT_TTL_MS;
     }
 
     private static Priority priorityForTier(int tier) {
@@ -931,8 +939,10 @@ public class ViewerWarmupManager {
             PersistedSnapshot persisted = GSON.fromJson(json, PersistedSnapshot.class);
             if(persisted == null || persisted.images == null || persisted.images.size() == 0)
                 return null;
-            if(System.currentTimeMillis() - persisted.createdAt > DISK_SNAPSHOT_TTL_MS)
+            if(!isDiskSnapshotFresh(persisted.createdAt, System.currentTimeMillis())) {
+                CacheFileStore.delete(context.getApplicationContext(), prefix + key);
                 return null;
+            }
             return new WarmupSnapshot(persisted);
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
