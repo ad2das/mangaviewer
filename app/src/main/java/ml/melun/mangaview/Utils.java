@@ -1500,7 +1500,7 @@ public class Utils {
     }
 
     public static int getNumberFromString(String input){
-        if(input.isEmpty()) return -1;
+        if(input == null || input.isEmpty()) return -1;
         for(int i = 0; i < input.length(); i++) {
             if(Character.digit(input.charAt(i),10) < 0){
                 if(i>0)
@@ -1509,7 +1509,7 @@ public class Utils {
                     return -1;
             }
         }
-        return -1;
+        return Integer.parseInt(input);
     }
 
 

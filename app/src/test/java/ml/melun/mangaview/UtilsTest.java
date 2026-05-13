@@ -40,6 +40,15 @@ public class UtilsTest {
     }
 
     @Test
+    public void numberFromStringHandlesMissingAndWholeNumberInput() {
+        assertEquals(-1, Utils.getNumberFromString(null));
+        assertEquals(-1, Utils.getNumberFromString(""));
+        assertEquals(-1, Utils.getNumberFromString("abc123"));
+        assertEquals(123, Utils.getNumberFromString("123"));
+        assertEquals(123, Utils.getNumberFromString("123abc"));
+    }
+
+    @Test
     public void sampleBitmapDimensionsNeverDropBelowOnePixel() {
         assertEquals(1, Utils.sampleWidthForTest(100, 0));
         assertEquals(1, Utils.sampleHeightForTest(100, 100, 0));
