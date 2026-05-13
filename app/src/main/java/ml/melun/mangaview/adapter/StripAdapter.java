@@ -793,7 +793,27 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private Object getImageModel(PageItem item) {
+        return imageModel(item);
+    }
+
+    static Object imageModelForTest(PageItem item) {
+        return imageModel(item);
+    }
+
+    private static Object imageModel(PageItem item) {
+        if(item == null)
+            return "";
+        if(item.manga == null)
+            return item.img == null ? "" : item.img;
         return item.manga.isOnline() ? getGlideUrl(item.img, item.manga.getBaseMode()) : item.img;
+    }
+
+    static boolean isAttachableImagePageForTest(PageItem item) {
+        return isAttachableImagePage(item);
+    }
+
+    private static boolean isAttachableImagePage(PageItem item) {
+        return item != null && item.manga != null;
     }
 
     private void clearImageTarget(ImgViewHolder holder) {
@@ -1148,6 +1168,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         int type = getItemViewType(layoutPos);
         if(type == IMG) {
             PageItem pi = (PageItem) items.get(layoutPos);
+            if(!isAttachableImagePage(pi))
+                return;
             current = pi;
             if(displayedImages.contains(pageBindKey(pi)))
                 preloadAroundScrollPosition(layoutPos);
@@ -1156,7 +1178,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 currentMangaId = pi.manga.getId();
                 if(mainContext instanceof ViewerActivity)
                     ((ViewerActivity) mainContext).onViewerPageAttached(pi);
-                else
+                else if(callback != null)
                     callback.updateInfo(pi.manga);
             }
         } else if(type == INFO){
