@@ -53,7 +53,7 @@ public final class AppUpdateManager {
     private static final String VERSION_API_URL = "https://api.github.com/repos/ad2das/mangaviewer/contents/version.json?ref=" + UPDATE_CHANNEL;
     private static final String RAW_VERSION_URL = "https://raw.githubusercontent.com/ad2das/mangaviewer/" + UPDATE_CHANNEL + "/version.json";
     private static final String CDN_VERSION_URL = "https://cdn.jsdelivr.net/gh/ad2das/mangaviewer@" + UPDATE_CHANNEL + "/version.json";
-    private static final String LATEST_RELEASE_API_URL = "https://api.github.com/repos/ad2das/mangaviewer/releases/latest";
+    private static final String LATEST_RELEASE_API_URL = "https://api.github.com/repos/ad2das/mangaviewer/releases/tags/main-latest";
     private static final String UPDATE_USER_AGENT = "MangaView Update";
     private static final String PREF = "appUpdate";
     private static final String KEY_VERSION = UPDATE_CHANNEL + "_latestVersion";
@@ -276,20 +276,20 @@ public final class AppUpdateManager {
                     .build();
             try(Response response = VERSION_CLIENT.newCall(request).execute()) {
                 if(!response.isSuccessful() || response.body() == null) {
-                    log("versionFetchFailed source=github-latest-release code=" + response.code()
+                    log("versionFetchFailed source=github-main-latest-release code=" + response.code()
                             + " ms=" + (System.currentTimeMillis() - started));
                     return null;
                 }
                 JSONObject json = new JSONObject(response.body().string());
                 UpdateInfo info = parseLatestReleaseInfo(json);
                 if(info != null)
-                    log("versionFetchOk source=github-latest-release version=" + info.version
+                    log("versionFetchOk source=github-main-latest-release version=" + info.version
                             + " ms=" + (System.currentTimeMillis() - started));
                 return info;
             }
         } catch (Exception e) {
             CrashReporter.record(e);
-            log("versionFetchException source=github-latest-release "
+            log("versionFetchException source=github-main-latest-release "
                     + e.getClass().getSimpleName() + ": " + e.getMessage()
                     + " ms=" + (System.currentTimeMillis() - started));
             return null;
