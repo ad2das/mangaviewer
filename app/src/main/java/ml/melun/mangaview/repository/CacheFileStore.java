@@ -2,9 +2,11 @@ package ml.melun.mangaview.repository;
 
 import android.content.Context;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 
 public final class CacheFileStore {
@@ -20,11 +22,7 @@ public final class CacheFileStore {
         if(!file.exists())
             return "";
         try (FileInputStream stream = new FileInputStream(file)) {
-            byte[] data = new byte[(int) file.length()];
-            int read = stream.read(data);
-            if(read <= 0)
-                return "";
-            return new String(data, 0, read, StandardCharsets.UTF_8);
+            return readUtf8Text(stream);
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
             return "";
@@ -61,5 +59,18 @@ public final class CacheFileStore {
     private static File file(Context context, String key) {
         String safeKey = key.replaceAll("[^A-Za-z0-9_.-]", "_");
         return new File(new File(context.getCacheDir(), DIR_NAME), safeKey + ".json");
+    }
+
+    static String readUtf8TextForTest(InputStream input) throws Exception {
+        return readUtf8Text(input);
+    }
+
+    private static String readUtf8Text(InputStream input) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        int read;
+        while((read = input.read(buffer)) > 0)
+            output.write(buffer, 0, read);
+        return output.toString(StandardCharsets.UTF_8.name());
     }
 }
