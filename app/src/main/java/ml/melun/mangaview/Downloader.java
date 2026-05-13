@@ -181,6 +181,16 @@ public class Downloader extends Worker {
         running = true;
     }
 
+    private static float progressStep(int maxProgress, int itemCount) {
+        if(maxProgress <= 0 || itemCount <= 0)
+            return 0f;
+        return ((float) maxProgress) / itemCount;
+    }
+
+    static float progressStepForTest(int maxProgress, int itemCount) {
+        return progressStep(maxProgress, itemCount);
+    }
+
     private class downloadTitle {
         void prepare() {
             cookies = new HashMap<>();
@@ -236,7 +246,7 @@ public class Downloader extends Worker {
                     }
                     //todo: minimize eps object(remove 'mode')
 
-                    float stepSize = maxProgress / selectedEps.length();
+                    float stepSize = progressStep(maxProgress, selectedEps.length());
                     for (int queueIndex = selectedEps.length()-1; queueIndex >= 0; queueIndex--) {
                         if (Downloader.this.isStopped()) return 0;
 
