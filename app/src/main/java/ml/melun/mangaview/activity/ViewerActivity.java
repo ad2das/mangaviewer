@@ -822,7 +822,7 @@ public class ViewerActivity extends AppCompatActivity {
             prefetchNextEpisode(m);
 
         }catch (Exception e){
-            Utils.showCaptchaPopup(m.getUrl(), context, e, p);
+            Utils.showCaptchaPopup(Manga.safeUrl(m), context, e, p);
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
     }
@@ -2379,7 +2379,7 @@ public class ViewerActivity extends AppCompatActivity {
 
     private void showViewerCaptchaRequired(Manga target) {
         ViewerWarmupManager.logMetric("viewer_ntk_captcha_required", target == null ? -1 : target.getId());
-        showCaptchaPopup(target == null ? null : target.getUrl(), this, RESULT_CAPTCHA, p);
+        showCaptchaPopup(Manga.safeUrl(target), this, RESULT_CAPTCHA, p);
     }
 
     public interface InfiniteScrollCallback{

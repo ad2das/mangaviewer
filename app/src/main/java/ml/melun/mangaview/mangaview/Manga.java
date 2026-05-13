@@ -819,6 +819,16 @@ public class Manga {
         return '/' + baseModeStr(baseMode) + '/' + id;
     }
 
+    public static String safeUrl(Manga manga) {
+        if(manga == null)
+            return null;
+        try {
+            return manga.getUrl();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private boolean isWebtoonWolfSource() {
         return baseMode == MTitle.base_webtoon;
     }

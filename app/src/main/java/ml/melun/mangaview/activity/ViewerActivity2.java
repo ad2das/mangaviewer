@@ -587,7 +587,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                             });
                 }catch(Exception e) {
                     ml.melun.mangaview.report.CrashReporter.record(e);
-                    Utils.showCaptchaPopup(manga.getUrl(), context, e, p);
+                    Utils.showCaptchaPopup(Manga.safeUrl(manga), context, e, p);
                 }
                 //일단 왼쪽거 냅두다가, 오른쪽이 landscape일 경우, GONE 처리
             }
@@ -720,7 +720,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                     });
         }catch(Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
-            Utils.showCaptchaPopup(manga.getUrl(), context, e, p);
+            Utils.showCaptchaPopup(Manga.safeUrl(manga), context, e, p);
         }
     }
 
@@ -963,7 +963,7 @@ public class ViewerActivity2 extends AppCompatActivity {
 
             if(res == LOAD_CAPTCHA) {
                 //캡차 처리 팝업
-                showCaptchaPopup(manga.getUrl(), context, RESULT_CAPTCHA, p);
+                showCaptchaPopup(Manga.safeUrl(manga), context, RESULT_CAPTCHA, p);
                 return;
             }
 

@@ -442,7 +442,7 @@ public class ViewerActivity3 extends AppCompatActivity {
                 imageLoad = null;
             if(res == LOAD_CAPTCHA){
                 //캡차 처리 팝업
-                showCaptchaPopup(manga.getUrl(), context, RESULT_CAPTCHA, p);
+                showCaptchaPopup(Manga.safeUrl(manga), context, RESULT_CAPTCHA, p);
                 return;
             }
             if(res == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !hasLoadedImages()) {
@@ -576,7 +576,7 @@ public class ViewerActivity3 extends AppCompatActivity {
 
         }catch (Exception e){
             ml.melun.mangaview.report.CrashReporter.record(e);
-            Utils.showCaptchaPopup(manga.getUrl(), context, e, p);
+            Utils.showCaptchaPopup(Manga.safeUrl(manga), context, e, p);
         }
     }
 
