@@ -695,6 +695,12 @@ public class ViewerActivity extends AppCompatActivity {
 
         @Override
         public void onBindViewHolder(@NonNull EpisodeHolder holder, int position) {
+            if(!isValidEpisodePickerPosition(data, position)) {
+                holder.text.setText("");
+                holder.text.setSelected(false);
+                holder.text.setOnClickListener(null);
+                return;
+            }
             Manga item = data.get(position);
             boolean isSelected = position == selected;
             holder.text.setText(item == null ? "" : item.getName());
@@ -738,6 +744,14 @@ public class ViewerActivity extends AppCompatActivity {
 
     private interface EpisodeClickListener {
         void onClick(Manga manga);
+    }
+
+    private static boolean isValidEpisodePickerPosition(List<?> data, int position) {
+        return data != null && position >= 0 && position < data.size();
+    }
+
+    static boolean isValidEpisodePickerPositionForTest(List<?> data, int position) {
+        return isValidEpisodePickerPosition(data, position);
     }
 
     void loadManga(Manga m, LoadMangaCallback callback){
