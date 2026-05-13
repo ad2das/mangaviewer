@@ -53,4 +53,10 @@ public class DownloaderTest {
         assertEquals("0001.jpg", Downloader.imageOutputNameForTest("0001"));
         assertEquals("0001.jpg.part", Downloader.imagePartOutputNameForTest("0001"));
     }
+
+    @Test
+    public void genericTempFileUsesPartSuffixBesideFinalFile() {
+        assertEquals("thumb.webp", Downloader.fileOutputNameForTest("thumb", "webp"));
+        assertEquals("thumb.webp.part", Downloader.filePartOutputNameForTest("thumb", "webp"));
+    }
 }

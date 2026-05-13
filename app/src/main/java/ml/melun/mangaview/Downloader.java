@@ -564,6 +564,14 @@ public class Downloader extends Worker {
         return imagePartOutputName(baseName);
     }
 
+    static String fileOutputNameForTest(String baseName, String extension) {
+        return fileOutputName(baseName, extension);
+    }
+
+    static String filePartOutputNameForTest(String baseName, String extension) {
+        return filePartOutputName(baseName, extension);
+    }
+
     private static File imageOutputFile(File outputFile) {
         return new File(outputFile.getAbsolutePath() + ".jpg");
     }
@@ -578,6 +586,22 @@ public class Downloader extends Worker {
 
     private static String imagePartOutputName(String baseName) {
         return imageOutputName(baseName) + ".part";
+    }
+
+    private static File fileOutputFile(File outputFile, String extension) {
+        return new File(outputFile.getAbsolutePath() + "." + extension);
+    }
+
+    private static File filePartOutputFile(File outputFile, String extension) {
+        return new File(outputFile.getAbsolutePath() + "." + extension + ".part");
+    }
+
+    private static String fileOutputName(String baseName, String extension) {
+        return baseName + "." + extension;
+    }
+
+    private static String filePartOutputName(String baseName, String extension) {
+        return fileOutputName(baseName, extension) + ".part";
     }
 
     boolean downloadImage(String urlStr, DocumentFile parent, String name, Decoder d) {
@@ -714,59 +738,20 @@ public class Downloader extends Worker {
     }
     File downloadFile(String urlStr, File outputFile, ProgressInterface publisher){
         //returns file name with extension
-        String name = "";
-        int filesize;
-        try {
-            URL url = resolveUrl(urlStr);
-            if(url == null) return outputFile;
-            String fileType = fileExtension(url.toString());
-            URLConnection connection = openDownloadConnection(url);
-            filesize = connection.getContentLength();
-
-            //load file
-            outputFile = new File(outputFile.getAbsolutePath()+'.'+fileType);
-            name = outputFile.getName();
-            try (InputStream in = connection.getInputStream();
-                 OutputStream outputStream = new FileOutputStream(outputFile)) {
-                byte[] buf = new byte[BUFFER_SIZE];
-                int len;
-                int cursize = 0;
-                while ((len = in.read(buf)) > 0){
-                    outputStream.write(buf, 0, len);
-                    cursize += len;
-                    publishDownloadProgress(publisher, cursize, filesize);
-                }
-                outputStream.flush();
-            }
-        } catch (Exception e) {
-            //
-            ml.melun.mangaview.report.CrashReporter.record(e);
-        }
-        return outputFile;
-    }
-
-    DocumentFile downloadFile(String urlStr, DocumentFile parent, String name, ProgressInterface publisher){
-        //returns file name with extension
-        DocumentFile outputFile = null;
-        int filesize;
         try {
             URL url = resolveUrl(urlStr);
             if(url == null) return null;
             String fileType = fileExtension(url.toString());
             URLConnection connection = openDownloadConnection(url);
-            filesize = connection.getContentLength();
+            int filesize = connection.getContentLength();
 
             //load file
-            //create file
-            DocumentFile pfile = parent.findFile(name+'.'+fileType);
-            if(pfile != null)
-                pfile.delete();
-            outputFile = parent.createFile("image", name+"."+fileType);
-            if(outputFile == null) return null;
-            //open stream
+            File finalFile = fileOutputFile(outputFile, fileType);
+            File partFile = filePartOutputFile(outputFile, fileType);
+            if(partFile.exists() && !partFile.delete())
+                return null;
             try (InputStream in = connection.getInputStream();
-                 OutputStream outputStream = serviceContext.getContentResolver().openOutputStream(outputFile.getUri())) {
-                if(outputStream == null) return null;
+                 OutputStream outputStream = new FileOutputStream(partFile)) {
                 byte[] buf = new byte[BUFFER_SIZE];
                 int len;
                 int cursize = 0;
@@ -777,11 +762,75 @@ public class Downloader extends Worker {
                 }
                 outputStream.flush();
             }
+            if(finalFile.exists() && !finalFile.delete()) {
+                partFile.delete();
+                return null;
+            }
+            if(!partFile.renameTo(finalFile)) {
+                partFile.delete();
+                return null;
+            }
+            return finalFile;
         } catch (Exception e) {
             //
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
-        return outputFile;
+        return null;
+    }
+
+    DocumentFile downloadFile(String urlStr, DocumentFile parent, String name, ProgressInterface publisher){
+        //returns file name with extension
+        DocumentFile partFile = null;
+        try {
+            URL url = resolveUrl(urlStr);
+            if(url == null) return null;
+            String fileType = fileExtension(url.toString());
+            URLConnection connection = openDownloadConnection(url);
+            int filesize = connection.getContentLength();
+
+            //load file
+            //create file
+            String finalName = fileOutputName(name, fileType);
+            String partName = filePartOutputName(name, fileType);
+            partFile = parent.findFile(partName);
+            if(partFile != null)
+                partFile.delete();
+            partFile = parent.createFile("application/octet-stream", partName);
+            if(partFile == null) return null;
+            //open stream
+            try (InputStream in = connection.getInputStream();
+                 OutputStream outputStream = serviceContext.getContentResolver().openOutputStream(partFile.getUri())) {
+                if(outputStream == null) {
+                    partFile.delete();
+                    return null;
+                }
+                byte[] buf = new byte[BUFFER_SIZE];
+                int len;
+                int cursize = 0;
+                while ((len = in.read(buf)) > 0){
+                    outputStream.write(buf, 0, len);
+                    cursize += len;
+                    publishDownloadProgress(publisher, cursize, filesize);
+                }
+                outputStream.flush();
+            }
+            DocumentFile finalFile = parent.findFile(finalName);
+            if(finalFile != null && !finalFile.delete()) {
+                partFile.delete();
+                return null;
+            }
+            if(!partFile.renameTo(finalName)) {
+                partFile.delete();
+                return null;
+            }
+            return parent.findFile(finalName);
+        } catch (Exception e) {
+            //
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            if(partFile != null)
+                partFile.delete();
+        }
+        return null;
     }
 
     private URL resolveUrl(String urlStr) throws IOException {
