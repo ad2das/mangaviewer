@@ -825,7 +825,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private boolean isActiveHolder(ImgViewHolder holder, PageItem item, CustomTarget<Bitmap> target, String pageKey, int bindGeneration) {
-        return holder.imageTarget == target
+        return !released
+                && holder.imageTarget == target
                 && holder.bindGeneration == bindGeneration
                 && pageKey != null
                 && pageKey.equals(holder.boundPageKey)
@@ -833,6 +834,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private boolean isHolderStillBound(ImgViewHolder holder, PageItem item, String pageKey) {
+        if(holder == null || item == null || pageKey == null || items == null)
+            return false;
         int position = holder.getAdapterPosition();
         return position != RecyclerView.NO_POSITION
                 && position < items.size()
