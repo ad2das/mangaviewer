@@ -95,11 +95,13 @@ public class MainUpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     @Override
     public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position) {
         viewHolder h = (viewHolder) holder;
+        if(!isValidUpdatedPosition(mData, position)) {
+            bindEmpty(h);
+            return;
+        }
         Manga manga = mData.get(position);
         if(manga == null) {
-            h.title.setText("");
-            h.thumb.setColorFilter(null);
-            bindStatic(h.thumb, "transparent", android.R.color.transparent);
+            bindEmpty(h);
             return;
         }
         h.title.setText(manga.getName() == null ? "" : manga.getName());
@@ -149,6 +151,12 @@ public class MainUpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         view.setImageResource(resId);
     }
 
+    private void bindEmpty(viewHolder holder) {
+        holder.title.setText("");
+        holder.thumb.setColorFilter(null);
+        bindStatic(holder.thumb, "transparent", android.R.color.transparent);
+    }
+
     int dp(int value) {
         return (int) (value * context.getResources().getDisplayMetrics().density + 0.5f);
     }
@@ -181,7 +189,7 @@ public class MainUpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     return;
                 if(loaded){
                     int position = getAdapterPosition();
-                    if(position == RecyclerView.NO_POSITION || position >= mData.size())
+                    if(position == RecyclerView.NO_POSITION || !isValidUpdatedPosition(mData, position))
                         return;
                     Manga manga = mData.get(position);
                     if(manga != null)
@@ -197,6 +205,14 @@ public class MainUpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
     public void setClickListener(OnClickCallback o){
         this.monclick = o;
+    }
+
+    private static boolean isValidUpdatedPosition(List<?> data, int position) {
+        return data != null && position >= 0 && position < data.size();
+    }
+
+    static boolean isValidUpdatedPositionForTest(List<?> data, int position) {
+        return isValidUpdatedPosition(data, position);
     }
 
     public void setData(List<Manga> data){
