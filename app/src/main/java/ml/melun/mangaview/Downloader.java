@@ -60,6 +60,8 @@ public class Downloader extends Worker {
     private static final int READ_TIMEOUT_MS = 30000;
     private static final int BUFFER_SIZE = 8192;
     private static final int PARALLEL_IMAGE_DOWNLOADS = 4;
+    private static final String TITLE_SUMMARY_NAME = "title.gson";
+    private static final String TITLE_SUMMARY_PART_NAME = TITLE_SUMMARY_NAME + ".part";
     String homeDir;
     String baseUrl;
     ArrayList<DownloadTitle> titles;
@@ -226,10 +228,76 @@ public class Downloader extends Worker {
         return shouldDeleteQueueFileAfterRun(stopped, result);
     }
 
+    static String titleSummaryPartNameForTest() {
+        return titleSummaryPartName();
+    }
+
+    static void writeTitleSummaryForTest(File file, String json) throws Exception {
+        writeTitleSummary(file, json);
+    }
+
     private static boolean shouldDeleteQueueFileAfterRun(boolean stopped, Integer result) {
         if(result != null && result == 3)
             return false;
         return true;
+    }
+
+    private static String titleSummaryPartName() {
+        return TITLE_SUMMARY_PART_NAME;
+    }
+
+    private static void writeTitleSummary(File file, String json) throws Exception {
+        File part = new File(file.getParentFile(), titleSummaryPartName());
+        File backup = new File(file.getAbsolutePath() + ".bak");
+        try {
+            if(part.exists() && !part.delete())
+                throw new IOException("Failed to delete stale title summary temp file");
+            try (FileOutputStream stream = new FileOutputStream(part, false)) {
+                stream.write(encodePayload(json));
+                stream.flush();
+            }
+            if(backup.exists())
+                backup.delete();
+            boolean hadExisting = file.exists();
+            if(hadExisting && !file.renameTo(backup))
+                throw new IOException("Failed to backup title summary");
+            if(!part.renameTo(file)) {
+                if(hadExisting)
+                    backup.renameTo(file);
+                throw new IOException("Failed to publish title summary");
+            }
+            if(backup.exists())
+                backup.delete();
+        } finally {
+            if(part.exists())
+                part.delete();
+        }
+    }
+
+    private void writeTitleSummary(DocumentFile parent, String json) throws IOException {
+        DocumentFile part = parent.findFile(titleSummaryPartName());
+        if(part != null)
+            part.delete();
+        part = parent.createFile("application/octet-stream", titleSummaryPartName());
+        if(part == null)
+            throw new IOException("Failed to create title summary temp file");
+        try {
+            try (OutputStream stream = serviceContext.getContentResolver().openOutputStream(part.getUri())) {
+                if(stream == null)
+                    throw new IOException("Failed to open title summary temp file");
+                stream.write(encodePayload(json));
+                stream.flush();
+            }
+            DocumentFile summary = parent.findFile(TITLE_SUMMARY_NAME);
+            if(summary != null && !summary.delete())
+                throw new IOException("Failed to replace title summary");
+            if(!part.renameTo(TITLE_SUMMARY_NAME))
+                throw new IOException("Failed to publish title summary");
+        } finally {
+            DocumentFile stalePart = parent.findFile(titleSummaryPartName());
+            if(stalePart != null)
+                stalePart.delete();
+        }
     }
 
     private static String fileExtension(String url) {
@@ -331,21 +399,7 @@ public class Downloader extends Worker {
                                     if(thumb != null)
                                         title.setThumb(thumb.getName());
 
-                                    //save the whole title as gson
-                                    DocumentFile dataf = titleDir.findFile("title.gson");
-                                    if(dataf != null)
-                                        dataf.delete();
-                                    DocumentFile summary = titleDir.createFile("application/json", "title.gson");
-                                    if(summary == null)
-                                        throw new IOException("Failed to create title.gson");
-                                    Uri data = summary.getUri();
-
-                                    try (OutputStream stream = serviceContext.getContentResolver().openOutputStream(data)) {
-                                        if(stream == null)
-                                            throw new IOException("Failed to open title.gson");
-                                        stream.write(encodePayload(new Gson().toJson(title)));
-                                        stream.flush();
-                                    }
+                                    writeTitleSummary(titleDir, new Gson().toJson(title));
                                 } catch (Exception e) {
                                     ml.melun.mangaview.report.CrashReporter.record(e);
                                 }
@@ -423,14 +477,7 @@ public class Downloader extends Worker {
                                     File old = new File(titleDir, "title.data");
                                     if (old.exists()) old.delete();
 
-                                    //save the whole title as gson
-                                    File summary = new File(titleDir, "title.gson");
-                                    summary.createNewFile();
-
-                                    try (FileOutputStream stream = new FileOutputStream(summary)) {
-                                        stream.write(encodePayload(new Gson().toJson(title)));
-                                        stream.flush();
-                                    }
+                                    writeTitleSummary(new File(titleDir, TITLE_SUMMARY_NAME), new Gson().toJson(title));
                                 } catch (Exception e) {
                                     ml.melun.mangaview.report.CrashReporter.record(e);
                                 }

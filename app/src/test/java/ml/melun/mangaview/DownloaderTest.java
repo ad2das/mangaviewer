@@ -2,10 +2,13 @@ package ml.melun.mangaview;
 
 import org.junit.Test;
 
+import java.io.File;
+import java.nio.file.Files;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertFalse;
 
 public class DownloaderTest {
     @Test
@@ -58,6 +61,30 @@ public class DownloaderTest {
     public void genericTempFileUsesPartSuffixBesideFinalFile() {
         assertEquals("thumb.webp", Downloader.fileOutputNameForTest("thumb", "webp"));
         assertEquals("thumb.webp.part", Downloader.filePartOutputNameForTest("thumb", "webp"));
+    }
+
+    @Test
+    public void titleSummaryTempFileUsesPartSuffixBesideFinalFile() {
+        assertEquals("title.gson.part", Downloader.titleSummaryPartNameForTest());
+    }
+
+    @Test
+    public void writeTitleSummaryReplacesFileAtomically() throws Exception {
+        File dir = Files.createTempDirectory("title-summary").toFile();
+        File file = new File(dir, "title.gson");
+        File temp = new File(dir, "title.gson.part");
+        try {
+            Downloader.writeTitleSummaryForTest(file, "{\"old\":true}");
+            Downloader.writeTitleSummaryForTest(file, "{\"new\":true}");
+
+            assertEquals("{\"new\":true}", new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8));
+            assertFalse(temp.exists());
+        } finally {
+            file.delete();
+            temp.delete();
+            new File(dir, "title.gson.bak").delete();
+            dir.delete();
+        }
     }
 
     @Test
