@@ -257,9 +257,10 @@ public class Utils {
                     launchTitle != null ? launchTitle : immediate.getTitle(), includeTitleEpisodes, launchToken, exactEpisode);
             return;
         }
-        if(exactEpisode)
-            ViewerWarmupManager.warmup(context, manga, launchTitle, 0);
-        else
+        if(exactEpisode) {
+            if(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunch(launchTitle))
+                ViewerWarmupManager.warmup(context, manga, launchTitle, 0);
+        } else
             ViewerWarmupManager.warmupContinueImmediate(context, manga, launchTitle);
         launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken, exactEpisode);
     }

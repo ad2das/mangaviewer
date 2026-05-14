@@ -759,6 +759,14 @@ public class ViewerWarmupManager {
         return sourceMatchesCurrentSite(sourceSite, ntkSite);
     }
 
+    public static boolean shouldWarmupExactEpisodeOnLaunch(MTitle title) {
+        return shouldWarmupExactEpisodeOnLaunch(title == null ? null : title.getSourceSite(), isCurrentNtkSite());
+    }
+
+    static boolean shouldWarmupExactEpisodeOnLaunchForTest(String sourceSite, boolean ntkSite) {
+        return shouldWarmupExactEpisodeOnLaunch(sourceSite, ntkSite);
+    }
+
     private static boolean isUsablePageImage(String image) {
         return image != null && image.trim().length() > 0;
     }
@@ -799,6 +807,17 @@ public class ViewerWarmupManager {
         if(ntkSite)
             return "ntk".equals(normalized);
         return !"ntk".equals(normalized);
+    }
+
+    private static boolean shouldWarmupExactEpisodeOnLaunch(String sourceSite, boolean ntkSite) {
+        if(!sourceMatchesCurrentSite(sourceSite, ntkSite))
+            return false;
+        if(!ntkSite)
+            return true;
+        if(sourceSite == null)
+            return false;
+        String normalized = sourceSite.trim().toLowerCase(Locale.ROOT);
+        return normalized.length() > 0 && !"ntk".equals(normalized);
     }
 
     private static boolean isCurrentNtkSite() {

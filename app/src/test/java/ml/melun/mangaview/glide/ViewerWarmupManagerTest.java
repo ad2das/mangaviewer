@@ -76,4 +76,17 @@ public class ViewerWarmupManagerTest {
         assertTrue(ViewerWarmupManager.sourceMatchesCurrentSiteForTest("", true));
         assertTrue(ViewerWarmupManager.sourceMatchesCurrentSiteForTest(null, false));
     }
+
+    @Test
+    public void exactEpisodeLaunchSkipsNtkWarmupOnNtkSite() {
+        assertFalse(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunchForTest("ntk", true));
+        assertFalse(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunchForTest("", true));
+        assertFalse(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunchForTest(null, true));
+    }
+
+    @Test
+    public void exactEpisodeLaunchKeepsLegacyWarmupOffNtkSite() {
+        assertTrue(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunchForTest("wfwf", false));
+        assertFalse(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunchForTest("ntk", false));
+    }
 }
