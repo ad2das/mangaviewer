@@ -15,6 +15,7 @@ import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.repository.MangaRepository;
 
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 
 public final class PrefetchCoordinator {
@@ -27,6 +28,8 @@ public final class PrefetchCoordinator {
 
     public static void prefetchEpisodeList(Context context, Title title, List<Manga> episodes, int bookmarkIndex, int mode) {
         if(context == null || title == null || episodes == null || episodes.size() == 0)
+            return;
+        if(shouldSkipNtkPrefetchForTest(title == null ? null : title.getSourceSite(), p != null && p.isNtkSite(), getHttpClient().isNtk()))
             return;
         Context appContext = context.getApplicationContext();
         List<Integer> targets = viewerTargets(episodes, bookmarkIndex, aggressiveAllowed(appContext) ? 3 : 2);
@@ -47,6 +50,8 @@ public final class PrefetchCoordinator {
 
     public static void prefetchAdjacentEpisode(Context context, Manga current, Title title, int width, boolean autoCut, boolean reverse) {
         if(context == null || current == null || !current.isOnline())
+            return;
+        if(shouldSkipNtkPrefetchForTest(title == null ? null : title.getSourceSite(), p != null && p.isNtkSite(), getHttpClient().isNtk()))
             return;
         Context appContext = context.getApplicationContext();
         warmAndPreload(appContext, current.nextEp(), title, width, autoCut, reverse);
@@ -105,5 +110,14 @@ public final class PrefetchCoordinator {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    public static boolean shouldSkipNtkPrefetchForTest(String sourceSite, boolean ntkPreference, boolean ntkClient) {
+        if(!ntkPreference && !ntkClient)
+            return false;
+        if(sourceSite == null)
+            return true;
+        String normalized = sourceSite.trim();
+        return normalized.length() == 0 || "ntk".equalsIgnoreCase(normalized);
     }
 }

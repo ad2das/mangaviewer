@@ -10,6 +10,8 @@ import ml.melun.mangaview.mangaview.Manga;
 
 import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class PrefetchCoordinatorTest {
     @Test
@@ -35,6 +37,15 @@ public class PrefetchCoordinatorTest {
         List<Integer> targets = (List<Integer>) method.invoke(null, episodes, 3, 4);
 
         assertEquals(asList(2, 0), targets);
+    }
+
+    @Test
+    public void ntkPrefetchSkipsUnverifiedNtkTitles() {
+        assertTrue(PrefetchCoordinator.shouldSkipNtkPrefetchForTest("ntk", true, true));
+        assertTrue(PrefetchCoordinator.shouldSkipNtkPrefetchForTest("", true, true));
+        assertTrue(PrefetchCoordinator.shouldSkipNtkPrefetchForTest(null, true, true));
+        assertFalse(PrefetchCoordinator.shouldSkipNtkPrefetchForTest("wfwf", true, true));
+        assertFalse(PrefetchCoordinator.shouldSkipNtkPrefetchForTest("ntk", false, false));
     }
 
     private static List<Manga> episodes(int... ids) {

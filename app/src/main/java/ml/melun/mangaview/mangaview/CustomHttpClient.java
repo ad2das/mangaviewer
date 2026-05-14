@@ -6,6 +6,7 @@ import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
 import android.webkit.CookieManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -967,17 +968,30 @@ public class CustomHttpClient {
         if(Looper.myLooper() == Looper.getMainLooper())
             return null;
         java.util.concurrent.atomic.AtomicReference<Response> result = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<WebView> webViewRef = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicBoolean completed = new java.util.concurrent.atomic.AtomicBoolean(false);
         java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+        Runnable finish = () -> {
+            WebView webView = webViewRef.getAndSet(null);
+            if(webView != null)
+                webView.destroy();
+            done.countDown();
+        };
+        Runnable timeout = () -> {
+            if(completed.compareAndSet(false, true))
+                finish.run();
+        };
         mainHandler.post(() -> {
             WebView webView = null;
             try {
                 webView = new WebView(context);
+                webViewRef.set(webView);
                 WebSettings settings = webView.getSettings();
                 settings.setJavaScriptEnabled(true);
                 settings.setDomStorageEnabled(true);
                 settings.setUserAgentString(agent);
                 CookieManager.getInstance().setAcceptCookie(true);
-                WebView finalWebView = webView;
+                webView.addJavascriptInterface(new NtkWebViewBridge(baseUrl, path, result, completed, done, mainHandler, webViewRef), "NtkBridge");
                 webView.setWebViewClient(new WebViewClient() {
                     boolean requested = false;
 
@@ -987,23 +1001,16 @@ public class CustomHttpClient {
                             return;
                         requested = true;
                         String js = buildNtkWebViewFetchScript(path, headers);
-                        view.evaluateJavascript(js, value -> {
-                            try {
-                                Response response = responseFromWebViewFetch(baseUrl, path, value);
-                                result.set(response);
-                            } catch (Exception e) {
-                                ml.melun.mangaview.report.CrashReporter.record(e);
-                            } finally {
-                                finalWebView.destroy();
-                                done.countDown();
-                            }
-                        });
+                        view.evaluateJavascript(js, null);
                     }
                 });
                 webView.loadDataWithBaseURL(baseUrl, "<!doctype html><html><body></body></html>", "text/html", "UTF-8", null);
+                mainHandler.postDelayed(timeout, 10000);
             } catch (Exception e) {
-                if(webView != null)
+                if(webView != null) {
+                    webViewRef.compareAndSet(webView, null);
                     webView.destroy();
+                }
                 ml.melun.mangaview.report.CrashReporter.record(e);
                 done.countDown();
             }
@@ -1016,24 +1023,68 @@ public class CustomHttpClient {
         return result.get();
     }
 
-    private String buildNtkWebViewFetchScript(String path, Map<String, String> headers) {
+    private static String buildNtkWebViewFetchScript(String path, Map<String, String> headers) {
         String accept = headers == null ? null : headers.get("Accept");
         StringBuilder js = new StringBuilder();
         js.append("(function(){");
         js.append("try{");
+        js.append("var done=false;");
+        js.append("function finish(v){if(done)return;done=true;window.NtkBridge.onResult(JSON.stringify(v));}");
         js.append("var x=new XMLHttpRequest();");
-        js.append("x.open('GET',").append(JSONObject.quote(path)).append(",false);");
+        js.append("x.open('GET',").append(jsQuote(path)).append(",true);");
         js.append("x.withCredentials=true;");
+        js.append("x.timeout=8000;");
         if(accept != null && accept.length() > 0)
-            js.append("x.setRequestHeader('Accept'," + JSONObject.quote(accept) + ");");
+            js.append("x.setRequestHeader('Accept'," + jsQuote(accept) + ");");
+        js.append("x.onreadystatechange=function(){if(x.readyState===4)finish({code:x.status,body:x.responseText||''});};");
+        js.append("x.onerror=function(){finish({code:0,error:'error'});};");
+        js.append("x.ontimeout=function(){finish({code:0,error:'timeout'});};");
         js.append("x.send(null);");
-        js.append("return JSON.stringify({code:x.status,body:x.responseText});");
-        js.append("}catch(e){return JSON.stringify({code:0,error:String(e)});}");
+        js.append("}catch(e){window.NtkBridge.onResult(JSON.stringify({code:0,error:String(e)}));}");
         js.append("})()");
         return js.toString();
     }
 
-    private Response responseFromWebViewFetch(String baseUrl, String path, String value) throws Exception {
+    static String buildNtkWebViewFetchScriptForTest(String path, String accept) {
+        Map<String, String> headers = new HashMap<>();
+        if(accept != null)
+            headers.put("Accept", accept);
+        return buildNtkWebViewFetchScript(path, headers);
+    }
+
+    private static String jsQuote(String value) {
+        if(value == null)
+            return "null";
+        StringBuilder builder = new StringBuilder(value.length() + 2);
+        builder.append('"');
+        for(int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch(c) {
+                case '\\':
+                    builder.append("\\\\");
+                    break;
+                case '"':
+                    builder.append("\\\"");
+                    break;
+                case '\n':
+                    builder.append("\\n");
+                    break;
+                case '\r':
+                    builder.append("\\r");
+                    break;
+                case '\t':
+                    builder.append("\\t");
+                    break;
+                default:
+                    builder.append(c);
+                    break;
+            }
+        }
+        builder.append('"');
+        return builder.toString();
+    }
+
+    private static Response responseFromWebViewFetch(String baseUrl, String path, String value) throws Exception {
         if(value == null || value.length() == 0 || "null".equals(value))
             return null;
         String clean = value;
@@ -1058,6 +1109,50 @@ public class CustomHttpClient {
         if(!ntkUrl || !missingResponse || path == null)
             return false;
         return path.startsWith("/api/") || path.startsWith("/webtoon/") || path.startsWith("/manhwa/");
+    }
+
+    private static class NtkWebViewBridge {
+        private final String baseUrl;
+        private final String path;
+        private final java.util.concurrent.atomic.AtomicReference<Response> result;
+        private final java.util.concurrent.atomic.AtomicBoolean completed;
+        private final java.util.concurrent.CountDownLatch done;
+        private final Handler mainHandler;
+        private final java.util.concurrent.atomic.AtomicReference<WebView> webViewRef;
+
+        NtkWebViewBridge(String baseUrl, String path,
+                         java.util.concurrent.atomic.AtomicReference<Response> result,
+                         java.util.concurrent.atomic.AtomicBoolean completed,
+                         java.util.concurrent.CountDownLatch done,
+                         Handler mainHandler,
+                         java.util.concurrent.atomic.AtomicReference<WebView> webViewRef) {
+            this.baseUrl = baseUrl;
+            this.path = path;
+            this.result = result;
+            this.completed = completed;
+            this.done = done;
+            this.mainHandler = mainHandler;
+            this.webViewRef = webViewRef;
+        }
+
+        @JavascriptInterface
+        public void onResult(String value) {
+            if(!completed.compareAndSet(false, true))
+                return;
+            try {
+                Response response = responseFromWebViewFetch(baseUrl, path, value);
+                result.set(response);
+            } catch (Exception e) {
+                ml.melun.mangaview.report.CrashReporter.record(e);
+            } finally {
+                mainHandler.post(() -> {
+                    WebView webView = webViewRef.getAndSet(null);
+                    if(webView != null)
+                        webView.destroy();
+                    done.countDown();
+                });
+            }
+        }
     }
 
     private Map<String, String> buildHeaders(String baseUrl, Boolean useDefaultCookies, Map<String, String> customCookie) {

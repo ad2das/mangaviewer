@@ -364,7 +364,7 @@ public class EpisodeActivity extends AppCompatActivity {
             public void onFirstClick(){
                 Manga target = quickReadEpisode();
                 if(target != null)
-                    openViewer(target,0);
+                    openViewer(target,0, true);
             }
         });
         episodeAdapter.setTagClickListener(tag -> {

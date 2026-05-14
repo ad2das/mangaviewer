@@ -41,6 +41,15 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkWebViewFallbackScriptUsesAsyncRequestBridge() {
+        String script = CustomHttpClient.buildNtkWebViewFetchScriptForTest("/manhwa/1", "text/html");
+
+        assertTrue(script.contains("window.NtkBridge.onResult"));
+        assertTrue(script.contains("x.open('GET',\"/manhwa/1\",true)"));
+        assertFalse(script.contains("x.open('GET',\"/manhwa/1\",false)"));
+    }
+
+    @Test
     public void ntkUrlDetectionHandlesResolvedHosts() {
         assertTrue(CustomHttpClient.isNtkUrlForTest("https://sbxh1.com/manhwa"));
         assertTrue(CustomHttpClient.isNtkUrlForTest("https://img.sbxh1.com/manhwa/1"));
