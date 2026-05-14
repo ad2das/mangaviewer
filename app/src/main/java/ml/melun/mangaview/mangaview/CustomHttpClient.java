@@ -52,6 +52,7 @@ public class CustomHttpClient {
     public static final String WEBTOON_URL = "https://wfwf450.com";
     public static final String NTK_COMIC_URL = "https://sbxh1.com/manhwa";
     public static final String NTK_WEBTOON_URL = "https://sbxh1.com";
+    public static final String NTK_REACHABLE_FALLBACK_URL = "https://ntk01.com";
     private static final String NTK_HOST = "sbxh1.com";
     private static final String LEGACY_NTK_HOST = "ntk01.com";
     private static final long WFWF_DOMAIN_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L;
@@ -611,7 +612,15 @@ public class CustomHttpClient {
         return ensureNumberedDomain(true);
     }
 
+    public boolean resolveNtkDomainNow() {
+        if(!isNtk())
+            return false;
+        return ensureNumberedDomain(true);
+    }
+
     private boolean ensureWfwfDomainForRetry() {
+        if(isNtk())
+            return ensureNumberedDomain(true);
         long now = System.currentTimeMillis();
         synchronized (wfwfDomainLock) {
             if(now - wfwfDomainLastForcedRetry < WFWF_DOMAIN_FORCE_RETRY_INTERVAL_MS)
@@ -704,8 +713,9 @@ public class CustomHttpClient {
                 headers.put("User-Agent", agent);
                 headers.put("Referer", NtkDomainResolver.CHANNEL_URL);
                 String resolved = NtkDomainResolver.resolve(client, headers, currentRequestGroup.get());
-                if(resolved != null && isNtkUrl(resolved) && !resolved.equals(currentRoot)) {
-                    p.setNtkSitePreset(resolved);
+                String reachable = reachableNtkRoot(currentRoot, resolved, headers);
+                if(reachable != null && isNtkUrl(reachable) && !reachable.equals(currentRoot)) {
+                    p.setNtkSitePreset(reachable);
                     resetCookie();
                     clearPageCache();
                     changed = true;
@@ -722,6 +732,57 @@ public class CustomHttpClient {
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
             return false;
+        }
+    }
+
+    private String reachableNtkRoot(String currentRoot, String resolvedRoot, Map<String, String> headers) {
+        ArrayList<String> candidates = new ArrayList<>();
+        addNtkRootCandidate(candidates, resolvedRoot);
+        addNtkRootCandidate(candidates, currentRoot);
+        addNtkRootCandidate(candidates, "https://" + LEGACY_NTK_HOST);
+        addNtkRootCandidate(candidates, NTK_WEBTOON_URL);
+        for(String candidate : candidates)
+            if(canReachNtkRoot(candidate, headers))
+                return candidate;
+        return NtkDomainResolver.normalizeRoot(resolvedRoot);
+    }
+
+    private void addNtkRootCandidate(List<String> candidates, String root) {
+        root = NtkDomainResolver.normalizeRoot(root);
+        if(root == null || root.length() == 0 || !isNtkUrl(root) || candidates.contains(root))
+            return;
+        candidates.add(root);
+    }
+
+    private boolean canReachNtkRoot(String root, Map<String, String> headers) {
+        Response response = null;
+        Call call = null;
+        try {
+            OkHttpClient probeClient = client.newBuilder()
+                    .connectTimeout(2, TimeUnit.SECONDS)
+                    .readTimeout(2, TimeUnit.SECONDS)
+                    .callTimeout(3, TimeUnit.SECONDS)
+                    .build();
+            Request.Builder builder = new Request.Builder().url(trimTrailingSlash(root) + "/").get();
+            if(headers != null)
+                for(String key : headers.keySet())
+                    builder.addHeader(key, headers.get(key));
+            call = probeClient.newCall(builder.build());
+            response = call.execute();
+            if(response == null)
+                return false;
+            int code = response.code();
+            String location = response.header("location", "");
+            if(location != null && location.toLowerCase(Locale.ROOT).contains("t.me/"))
+                return false;
+            return code > 0 && code < 500;
+        } catch (Exception e) {
+            return false;
+        } finally {
+            if(call != null)
+                call.cancel();
+            if(response != null)
+                response.close();
         }
     }
 
@@ -1113,8 +1174,12 @@ public class CustomHttpClient {
         applyNtkApiHeaders(headers, baseUrl, url);
 
         Response response = get(baseUrl + url, headers);
-        if(shouldUseNtkWebViewFallback(isNtkUrl(baseUrl), response == null, url, fetchMode))
+        if(shouldUseNtkWebViewFallback(isNtkUrl(baseUrl),
+                response == null || isNtkWebViewFallbackCandidate(response, url), url, fetchMode)) {
+            if(response != null)
+                response.close();
             response = getWithNtkWebViewFallback(baseUrl, url, headers);
+        }
         if(shouldRetryWithResolvedDomain(response)) {
             if(response != null)
                 response.close();
@@ -1123,10 +1188,24 @@ public class CustomHttpClient {
             headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
             applyNtkApiHeaders(headers, baseUrl, url);
             response = get(baseUrl + url, headers);
-            if(shouldUseNtkWebViewFallback(isNtkUrl(baseUrl), response == null, url, fetchMode))
+            if(shouldUseNtkWebViewFallback(isNtkUrl(baseUrl),
+                    response == null || isNtkWebViewFallbackCandidate(response, url), url, fetchMode)) {
+                if(response != null)
+                    response.close();
                 response = getWithNtkWebViewFallback(baseUrl, url, headers);
+            }
         }
         return response;
+    }
+
+    private boolean isNtkWebViewFallbackCandidate(Response response, String path) {
+        if(response == null || path == null || !(path.startsWith("/webtoon/") || path.startsWith("/manhwa/")))
+            return false;
+        int code = response.code();
+        String location = response.header("location", "");
+        if((code == 301 || code == 302) && location != null && location.toLowerCase(Locale.ROOT).contains("t.me/"))
+            return false;
+        return code == 301 || code == 302 || code == 403 || code == 404 || code >= 500;
     }
 
     private Response getWithNtkWebViewFallback(String baseUrl, String path, Map<String, String> headers) {
@@ -1233,7 +1312,7 @@ public class CustomHttpClient {
     private static boolean shouldUseNtkWebViewFallback(boolean ntkUrl, boolean missingResponse, String path, FetchMode fetchMode) {
         if(fetchMode != FetchMode.ALLOW_SHARED_WEBVIEW || !ntkUrl || !missingResponse || path == null)
             return false;
-        return path.startsWith("/api/") || path.startsWith("/webtoon/") || path.startsWith("/manhwa/");
+        return path.startsWith("/webtoon/") || path.startsWith("/manhwa/");
     }
 
     private Map<String, String> buildHeaders(String baseUrl, Boolean useDefaultCookies, Map<String, String> customCookie) {
@@ -1364,7 +1443,13 @@ public class CustomHttpClient {
                 && !lower.contains("net::err_")
                 && !lower.contains("err_connection_reset")
                 && !lower.contains("err_name_not_resolved")
-                && !lower.contains("err_timed_out");
+                && !lower.contains("err_timed_out")
+                && !lower.contains("just a moment")
+                && !lower.contains("challenges.cloudflare.com")
+                && !lower.contains("cf-challenge")
+                && !lower.contains("cf_chl")
+                && !lower.contains("cf-mitigated")
+                && !lower.contains("turnstile");
     }
 
     private boolean isCloudflareChallenge(int code, String body) {

@@ -1,5 +1,6 @@
 package ml.melun.mangaview.mangaview;
 import androidx.annotation.NonNull;
+import android.util.Log;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -18,6 +19,7 @@ import static ml.melun.mangaview.Utils.getNumberFromString;
 
 
 public class Title extends MTitle {
+    private static final String TAG = "ViewerPerf";
     private List<Manga> eps = null;
     int bookmark = 0;
     Boolean bookmarked = false;
@@ -167,6 +169,10 @@ public class Title extends MTitle {
         try {
             String segment = ntkSegment();
             CustomHttpClient.PageResponse page = client.mgetCachedPage("/" + segment + "/" + id, PAGE_CACHE_TTL_MS);
+            if(client.isCloudflareChallengeResponse(page.code, page.body) || looksLikeNtkErrorPage(page.body)) {
+                logNtkEpisodeParse("challenge_or_error", page, segment, 0, 0);
+                return LOAD_CAPTCHA;
+            }
             Document d = Jsoup.parse(page.body);
 
             Element h1 = d.selectFirst("h1");
@@ -189,7 +195,8 @@ public class Title extends MTitle {
 
             eps = new ArrayList<>();
             Set<String> seenEpisodePaths = new HashSet<>();
-            for(Element link : d.select("a[href^=\"/" + segment + "/" + id + "/\"]")) {
+            Elements episodeLinks = d.select("a[href^=\"/" + segment + "/" + id + "/\"]");
+            for(Element link : episodeLinks) {
                 if(link.hasClass("cta"))
                     continue;
                 String href = link.attr("href");
@@ -213,17 +220,71 @@ public class Title extends MTitle {
                 eps.add(tmp);
             }
             eps.sort((left, right) -> Integer.compare(right.getId(), left.getId()));
-        }catch(Exception e) {
-            if(isCloudflareChallenge(e))
+            if(eps.size() == 0) {
+                logNtkEpisodeParse("empty", page, segment, episodeLinks.size(), d.select("a[href]").size());
                 return LOAD_CAPTCHA;
+            }
+        }catch(Exception e) {
+            if(isNtkLoadBlocked(e))
+                return LOAD_CAPTCHA;
+            Log.w(TAG, "ntk_episode_parse_error id=" + id + ",url=" + getUrl(), e);
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return LOAD_OK;
     }
 
+    private static boolean looksLikeNtkErrorPage(String body) {
+        if(body == null || body.length() == 0)
+            return true;
+        if(body.length() < 160 && body.toLowerCase(java.util.Locale.ROOT).contains("<body></body>"))
+            return true;
+        String lower = body.toLowerCase(java.util.Locale.ROOT);
+        return lower.contains("webpage not available")
+                || lower.contains("net::err_")
+                || lower.contains("err_connection_reset")
+                || lower.contains("err_name_not_resolved")
+                || lower.contains("err_timed_out")
+                || lower.contains("just a moment")
+                || lower.contains("challenges.cloudflare.com")
+                || lower.contains("cf-challenge")
+                || lower.contains("cf_chl")
+                || lower.contains("turnstile");
+    }
+
+    private void logNtkEpisodeParse(String reason, CustomHttpClient.PageResponse page, String segment,
+                                    int episodeLinkCount, int allLinkCount) {
+        if(!Log.isLoggable(TAG, Log.DEBUG) && !"challenge_or_error".equals(reason))
+            return;
+        String sample = page == null || page.body == null ? "" : page.body.replace('\n', ' ').replace('\r', ' ');
+        if(sample.length() > 220)
+            sample = sample.substring(0, 220);
+        Log.d(TAG, "ntk_episode_parse reason=" + reason
+                + ",id=" + id
+                + ",segment=" + segment
+                + ",code=" + (page == null ? 0 : page.code)
+                + ",fromCache=" + (page != null && page.fromCache)
+                + ",bodyLen=" + (page == null || page.body == null ? 0 : page.body.length())
+                + ",episodeLinks=" + episodeLinkCount
+                + ",allLinks=" + allLinkCount
+                + ",sample=" + sample);
+    }
+
     private static boolean isCloudflareChallenge(Exception e) {
         String message = e == null ? null : e.getMessage();
         return message != null && message.toLowerCase(java.util.Locale.ROOT).contains("cloudflare");
+    }
+
+    private static boolean isNtkLoadBlocked(Exception e) {
+        String message = e == null ? null : e.getMessage();
+        if(message == null)
+            return false;
+        String lower = message.toLowerCase(java.util.Locale.ROOT);
+        return lower.contains("cloudflare")
+                || lower.contains("request failed")
+                || lower.contains("connectexception")
+                || lower.contains("connection refused")
+                || lower.contains("connection reset")
+                || lower.contains("timed out");
     }
 
     static List<Manga> parseLegacyEpisodesForTest(String html, int baseMode) {

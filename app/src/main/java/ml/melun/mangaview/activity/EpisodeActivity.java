@@ -88,6 +88,7 @@ public class EpisodeActivity extends AppCompatActivity {
     EpisodeViewModel episodeViewModel;
     long firstContentStartedAt;
     boolean firstContentLogged = false;
+    boolean ntkLoadTimeoutHandled = false;
 
 
     public boolean onOptionsItemSelected(MenuItem item){
@@ -249,6 +250,7 @@ public class EpisodeActivity extends AppCompatActivity {
             episodeViewModel = new ViewModelProvider(this).get(EpisodeViewModel.class);
             episodeViewModel.state().observe(this, this::renderEpisodeState);
             episodeViewModel.loadEpisodes(title);
+            scheduleNtkEpisodeLoadWatchdog();
         }else{
             OfflineStore.OfflineEpisodes offlineEpisodes = OfflineStore.loadEpisodes(context, title);
             episodes = offlineEpisodes.episodes;
@@ -534,15 +536,22 @@ public class EpisodeActivity extends AppCompatActivity {
             return;
         EpisodeLoadResult result = ((UiState.Content<EpisodeLoadResult>) state).getValue();
         if(result.getResultCode() == LOAD_CAPTCHA){
-            showCaptchaPopup(title.getUrl(), context, RESULT_CAPTCHA, p);
+            ntkLoadTimeoutHandled = true;
+            if(p != null && p.isNtkSite())
+                openNtkCaptchaDirect();
+            else
+                showCaptchaPopup(title.getUrl(), context, RESULT_CAPTCHA, p);
             return;
         }
         episodes = result.getEpisodes();
         if(episodes == null || episodes.size()==0){
-            if(this.episodes == null || this.episodes.size() == 0)
+            if(this.episodes == null || this.episodes.size() == 0) {
+                ntkLoadTimeoutHandled = true;
                 showCaptchaPopup(title.getUrl(), context, p);
+            }
             return;
         }
+        ntkLoadTimeoutHandled = true;
         saveEpisodeCache(episodes);
         episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
         afterLoad();
@@ -550,6 +559,33 @@ public class EpisodeActivity extends AppCompatActivity {
         loaded = true;
         fab_container.setVisibility(View.GONE);
         invalidateOptionsMenu();
+    }
+
+    private void scheduleNtkEpisodeLoadWatchdog() {
+        if(!online || p == null || !p.isNtkSite())
+            return;
+        episodeList.postDelayed(() -> {
+            if(isFinishing() || loaded || ntkLoadTimeoutHandled)
+                return;
+            if(episodeAdapter != null && episodeAdapter.getItemCount() > 0)
+                return;
+            ntkLoadTimeoutHandled = true;
+            hideProgress();
+            openNtkCaptchaDirect();
+        }, 3000L);
+    }
+
+    private void openNtkCaptchaDirect() {
+        if(isFinishing())
+            return;
+        Intent captchaIntent = new Intent(context, CaptchaActivity.class);
+        String url = title == null ? null : title.getUrl();
+        if(url != null && url.startsWith("/"))
+            url = getHttpClient().getUrl(url) + url;
+        if(url == null || url.length() == 0)
+            url = p == null ? CustomHttpClient.NTK_WEBTOON_URL : p.getWebtoonUrl();
+        captchaIntent.putExtra("url", url);
+        startActivityForResult(captchaIntent, RESULT_CAPTCHA);
     }
 
     private void showCachedEpisodes() {

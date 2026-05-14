@@ -7,6 +7,8 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -137,6 +139,8 @@ final class NtkWebViewFallbackManager {
             task.requested = false;
             if(shouldNavigateDocument(task.path)) {
                 webView.loadUrl(task.baseUrl + task.path, webViewHeaders(task.headers));
+                mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task), 1500L);
+                mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task), 4000L);
             } else {
                 webView.loadDataWithBaseURL(task.baseUrl, "<!doctype html><html><body></body></html>",
                         "text/html", "UTF-8", null);
@@ -162,6 +166,22 @@ final class NtkWebViewFallbackManager {
         webView.addJavascriptInterface(new Bridge(), "NtkBridge");
         webView.setWebViewClient(new WebViewClient() {
             @Override
+            public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                super.onPageStarted(view, url, favicon);
+                if(Log.isLoggable(TAG, Log.DEBUG))
+                    Log.d(TAG, "ntk_webview_page_started url=" + url);
+                FetchTask task;
+                synchronized (lock) {
+                    task = activeTask;
+                }
+                if(task != null && shouldNavigateDocument(task.path) && isExternalDocumentRedirect(url, task.baseUrl, task.path)) {
+                    if(Log.isLoggable(TAG, Log.DEBUG))
+                        Log.d(TAG, "ntk_webview_external_redirect url=" + url);
+                    finishOnMain(task, 403, "<html><body>cf-challenge external redirect " + url + "</body></html>", true);
+                }
+            }
+
+            @Override
             public void onPageFinished(WebView view, String url) {
                 FetchTask task;
                 synchronized (lock) {
@@ -171,14 +191,34 @@ final class NtkWebViewFallbackManager {
                     return;
                 if(shouldNavigateDocument(task.path) && !isFinishedDocumentUrl(url, task.baseUrl, task.path))
                     return;
-                task.requested = true;
-                task.loadStartedAt = SystemClock.elapsedRealtime();
                 if(shouldNavigateDocument(task.path))
-                    view.evaluateJavascript(buildDocumentHtmlScript(task.token), null);
+                    requestDocumentHtmlOnMain(task);
                 else
                     view.evaluateJavascript(CustomHttpClient.buildNtkWebViewFetchScript(task.path, task.headers, task.token), null);
             }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                super.onReceivedError(view, request, error);
+                if(Log.isLoggable(TAG, Log.DEBUG) && request != null && request.isForMainFrame()) {
+                    CharSequence description = error == null ? "" : error.getDescription();
+                    Log.d(TAG, "ntk_webview_error url=" + request.getUrl()
+                            + ",code=" + (error == null ? 0 : error.getErrorCode())
+                            + ",description=" + description);
+                }
+            }
         });
+    }
+
+    private void requestDocumentHtmlOnMain(FetchTask task) {
+        if(task == null || task.completed || task.requested || webView == null)
+            return;
+        String currentUrl = webView.getUrl();
+        if(!isFinishedDocumentUrl(currentUrl, task.baseUrl, task.path))
+            return;
+        task.requested = true;
+        task.loadStartedAt = SystemClock.elapsedRealtime();
+        webView.evaluateJavascript(buildDocumentHtmlScript(task.token), null);
     }
 
     private void onBridgeResult(String token, String value) {
@@ -290,6 +330,17 @@ final class NtkWebViewFallbackManager {
         return url.equals(expected) || url.startsWith(expected + "?") || url.startsWith(expected + "#");
     }
 
+    private static boolean isExternalDocumentRedirect(String url, String baseUrl, String path) {
+        if(url == null || baseUrl == null || path == null)
+            return false;
+        if(isFinishedDocumentUrl(url, baseUrl, path))
+            return false;
+        String lower = url.toLowerCase();
+        if(lower.startsWith("about:") || lower.startsWith("data:"))
+            return false;
+        return lower.contains("t.me/") || !lower.startsWith(baseUrl.toLowerCase());
+    }
+
     private static Map<String, String> webViewHeaders(Map<String, String> headers) {
         Map<String, String> result = new HashMap<>();
         if(headers == null)
@@ -307,10 +358,21 @@ final class NtkWebViewFallbackManager {
 
     private static String buildDocumentHtmlScript(String token) {
         String quotedToken = jsonQuote(token);
-        return "(function(){try{"
-                + "var html=document.documentElement?document.documentElement.outerHTML:(document.body?document.body.innerHTML:'');"
-                + "window.NtkBridge.onFetchResult(" + quotedToken + ",JSON.stringify({code:200,body:html||''}));"
-                + "}catch(e){window.NtkBridge.onFetchResult(" + quotedToken + ",JSON.stringify({code:0,error:String(e)}));}})()";
+        return "(function(){var token=" + quotedToken + ";var started=Date.now();"
+                + "function html(){return document.documentElement?document.documentElement.outerHTML:(document.body?document.body.innerHTML:'');}"
+                + "function lower(v){return (v||'').toLowerCase();}"
+                + "function emptyDoc(v){var b=document.body;return !v||v.length<160||(!document.querySelector('a[href],img,script[src],link[href]')&&(!b||!(b.innerText||'').trim()));}"
+                + "function webviewError(v){v=lower(v);return v.indexOf('webpage not available')>=0||v.indexOf('net::err_')>=0||v.indexOf('err_connection_reset')>=0||v.indexOf('err_name_not_resolved')>=0||v.indexOf('err_timed_out')>=0;}"
+                + "function challenge(v){v=lower(v);return v.indexOf('just a moment')>=0||v.indexOf('challenges.cloudflare.com')>=0||v.indexOf('cf-challenge')>=0||v.indexOf('cf_chl')>=0||v.indexOf('cf-mitigated')>=0||v.indexOf('turnstile')>=0;}"
+                + "function send(code,body){window.NtkBridge.onFetchResult(token,JSON.stringify({code:code,body:body||''}));}"
+                + "function check(){try{var v=html();"
+                + "if((emptyDoc(v)||webviewError(v))&&Date.now()-started<8500){setTimeout(check,250);return;}"
+                + "if(challenge(v)&&Date.now()-started<8500){setTimeout(check,350);return;}"
+                + "if(emptyDoc(v)||webviewError(v)){send(0,v||'');return;}"
+                + "if(challenge(v)){send(403,v);return;}"
+                + "send(200,v);"
+                + "}catch(e){send(0,String(e));}}"
+                + "check();})()";
     }
 
     private static String jsonQuote(String value) {

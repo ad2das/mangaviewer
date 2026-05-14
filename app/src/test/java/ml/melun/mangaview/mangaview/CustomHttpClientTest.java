@@ -32,8 +32,8 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void ntkWebViewFallbackOnlyHandlesPageAndApiMisses() {
-        assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/api/manhwa-list"));
+    public void ntkWebViewFallbackOnlyHandlesPageMisses() {
+        assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/api/manhwa-list"));
         assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1"));
         assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(false, true, "/api/manhwa-list"));
         assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, false, "/api/manhwa-list"));
@@ -80,8 +80,11 @@ public class CustomHttpClientTest {
         String errorPage = "<html><head><title>Webpage not available</title></head>"
                 + "<body>The webpage at <strong>https://sbxh1.com/webtoon/17801</strong> could not be loaded"
                 + "<p>net::ERR_CONNECTION_RESET</p></body></html>";
+        String challengePage = "<html><head><title>Just a moment...</title></head>"
+                + "<body><script src=\"https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1\"></script></body></html>";
 
         assertFalse(CustomHttpClient.isCacheablePageBodyForTest(errorPage));
+        assertFalse(CustomHttpClient.isCacheablePageBodyForTest(challengePage));
         assertTrue(CustomHttpClient.isCacheablePageBodyForTest("<html><body><a href=\"/webtoon/17801/1\">1화</a></body></html>"));
     }
 
