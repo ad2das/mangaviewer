@@ -236,6 +236,23 @@ public class Utils {
     public static void openViewerPrepared(Context context, Manga manga, int code, boolean returnToEpisodes,
                                           boolean online, boolean recent, Title title, boolean includeTitleEpisodes,
                                           boolean exactEpisode) {
+        openViewerPrepared(context, manga, code, returnToEpisodes, online, recent, title, includeTitleEpisodes, exactEpisode, false);
+    }
+
+    public static void openContinueViewer(Context context, Manga manga, int code) {
+        openContinueViewer(context, manga, code, false);
+    }
+
+    public static void openContinueViewer(Context context, Manga manga, int code, boolean returnToEpisodes) {
+        openViewerPrepared(context, manga, code, returnToEpisodes, true, false,
+                manga == null ? null : manga.getTitle(),
+                manga == null || !manga.isOnline() || isMinimalOnlineViewerManga(manga),
+                false, true);
+    }
+
+    private static void openViewerPrepared(Context context, Manga manga, int code, boolean returnToEpisodes,
+                                           boolean online, boolean recent, Title title, boolean includeTitleEpisodes,
+                                           boolean exactEpisode, boolean waitForFirstFrame) {
         if(context == null || manga == null)
             return;
         int launchToken = nextViewerLaunchToken(context);
@@ -260,9 +277,30 @@ public class Utils {
         if(exactEpisode) {
             if(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunch(launchTitle))
                 ViewerWarmupManager.warmup(context, manga, launchTitle, 0);
+        } else if(waitForFirstFrame) {
+            launchWhenFirstFrameReady(context, manga, code, returnToEpisodes, online, recent,
+                    launchTitle, includeTitleEpisodes, launchToken);
+            return;
         } else
             ViewerWarmupManager.warmupContinueImmediate(context, manga, launchTitle);
         launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken, exactEpisode);
+    }
+
+    private static void launchWhenFirstFrameReady(Context context, Manga manga, int code, boolean returnToEpisodes,
+                                                  boolean online, boolean recent, Title title, boolean includeTitleEpisodes,
+                                                  int launchToken) {
+        Context appContext = context.getApplicationContext();
+        AppDispatchers.submitNavigation(() -> {
+            Manga prepared = ViewerWarmupManager.usePreparedFirstFrame(appContext, manga, title, false, p.getReverse());
+            if(prepared == null)
+                prepared = ViewerWarmupManager.prepareClickFirstFrame(appContext, manga, title, false, p.getReverse());
+            if(prepared == null)
+                prepared = ViewerWarmupManager.usePreparedFirstFrame(appContext, manga, title, false, p.getReverse());
+            Manga launchManga = prepared != null ? prepared : manga;
+            Title launchTitle = title != null ? title : launchManga.getTitle();
+            AppDispatchers.runOnMain(() -> launchPreparedViewer(context, launchManga, code, returnToEpisodes,
+                    online, recent, launchTitle, includeTitleEpisodes, launchToken, false));
+        });
     }
 
     private static void switchToTitleSourceSite(Title title) {

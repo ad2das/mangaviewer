@@ -176,6 +176,8 @@ public class MainSearch extends Fragment {
                     listLongPressHandled = false;
                     listMovedBeyondTapSlop = false;
                     listDownOnResume = isTouchOnResumeButton(event.getX(), event.getY());
+                    if(listDownOnResume)
+                        warmupResumeAtTouch(event.getX(), event.getY());
                     scheduleTitleListLongPress();
                     return false;
                 }
@@ -780,7 +782,7 @@ public class MainSearch extends Fragment {
         Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
         manga.setTitle(title);
         manga.setTitleId(title.getId());
-        openViewer(getContext(), manga, -1);
+        Utils.openContinueViewer(getContext(), manga, -1);
     }
 
     private void openOfflineResume(Title title, int bookmark) {
@@ -817,7 +819,7 @@ public class MainSearch extends Fragment {
         Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
         manga.setTitle(onlineTitle);
         manga.setTitleId(onlineTitle.getId());
-        openViewer(getContext(), manga, -1);
+        Utils.openContinueViewer(getContext(), manga, -1);
     }
 
     private boolean isOfflineTitle(Title title) {
@@ -916,6 +918,17 @@ public class MainSearch extends Fragment {
         if(resumeTap)
             return searchAdapter.performResumeClick(position);
         return searchAdapter.performItemClick(position);
+    }
+
+    private void warmupResumeAtTouch(float x, float y) {
+        if(searchResult == null || searchAdapter == null)
+            return;
+        View item = findTitleListItemAt(x, y);
+        if(item == null)
+            return;
+        int position = positionForTitleListItem(item);
+        if(position != RecyclerView.NO_POSITION)
+            searchAdapter.warmupResumeClick(position);
     }
 
     private boolean handleTitleListLongPress(float x, float y) {

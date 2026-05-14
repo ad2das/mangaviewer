@@ -1536,7 +1536,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 if(!markContinueOpen(item))
                     return;
                 ViewerWarmupManager.warmupContinueImmediate(context, manga, item);
-                listener.clickedManga(manga);
+                Utils.openContinueViewer(context, manga, -1);
             } else {
                 listener.clickedTitle(item);
             }

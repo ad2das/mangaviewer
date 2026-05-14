@@ -209,6 +209,10 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         warmupResumeRange(first, last, save ? 2 : 4);
     }
 
+    public void warmupResumeClick(int position) {
+        warmupResumeAt(position);
+    }
+
     private void warmupResumeRange(int first, int last, int limit) {
         int warmed = 0;
         int end = Math.min(last, getItemCount() - 1);
