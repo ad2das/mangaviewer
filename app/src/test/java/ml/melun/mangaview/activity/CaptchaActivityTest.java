@@ -13,4 +13,11 @@ public class CaptchaActivityTest {
         assertTrue(CaptchaActivity.shouldSuppressNtkLoadErrorPopupForTest(false, "https://example.com", "https://ntk01.com/manhwa"));
         assertFalse(CaptchaActivity.shouldSuppressNtkLoadErrorPopupForTest(false, "https://wfwf123.com", "https://wfwf123.com"));
     }
+
+    @Test
+    public void stableNtkNormalPageCanFinishWithoutNewClearanceCookie() {
+        assertFalse(CaptchaActivity.shouldFinishNormalNtkPageForTest(1, 2000L));
+        assertFalse(CaptchaActivity.shouldFinishNormalNtkPageForTest(2, 1200L));
+        assertTrue(CaptchaActivity.shouldFinishNormalNtkPageForTest(2, 1201L));
+    }
 }

@@ -377,9 +377,14 @@ public class CaptchaActivity extends AppCompatActivity {
                     isFirstAttempt = false;
                     normalNtkPageCount++;
                     android.util.Log.d("CaptchaActivity", "NTK normal page detected without Turnstile: " + normalNtkPageCount);
-                    if(normalNtkPageCount >= 1
-                            && System.currentTimeMillis() - pageFinishedTime > 400L)
-                        readCookiesAndFinish(CookieManager.getInstance(), p.getUrl(), webView == null ? null : webView.getUrl());
+                    long elapsed = System.currentTimeMillis() - pageFinishedTime;
+                    boolean finished = false;
+                    if(normalNtkPageCount >= 1 && elapsed > 400L)
+                        finished = readCookiesAndFinish(CookieManager.getInstance(), p.getUrl(), webView == null ? null : webView.getUrl());
+                    if(!finished && shouldFinishNormalNtkPageForTest(normalNtkPageCount, elapsed)) {
+                        android.util.Log.d("CaptchaActivity", "NTK normal page stable; finishing captcha without Turnstile");
+                        finishWithNtkAccessVerified();
+                    }
                 } else {
                     normalNtkPageCount = 0;
                 }
@@ -694,6 +699,10 @@ public class CaptchaActivity extends AppCompatActivity {
 
     static boolean shouldSuppressNtkLoadErrorPopupForTest(boolean ntkSite, String requestUrl, String captchaUrl) {
         return ntkSite || isNtkLikeUrlForCaptcha(requestUrl) || isNtkLikeUrlForCaptcha(captchaUrl);
+    }
+
+    static boolean shouldFinishNormalNtkPageForTest(int normalPageCount, long elapsedMs) {
+        return normalPageCount >= 2 && elapsedMs > 1200L;
     }
 
     private static boolean isNtkLikeUrlForCaptcha(String url) {
