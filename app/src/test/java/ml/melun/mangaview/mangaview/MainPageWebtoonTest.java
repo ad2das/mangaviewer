@@ -208,6 +208,20 @@ public class MainPageWebtoonTest {
     }
 
     @Test
+    public void parseWolfTitlesCanPreserveNtkSourceForFallbackSections() {
+        ArrayList<Title> titles = MainPageWebtoon.parseWolfTitles(
+                Jsoup.parse("<a class=\"card\" href=\"/manhwa/11117\">"
+                        + "<div class=\"thumb\"><img src=\"/data/toon_category/11117.webp\" alt=\"ntk title\"></div>"
+                        + "<div class=\"info\"><p class=\"subject\">ntk title</p><p class=\"genre\">fantasy</p><p class=\"ep\">102</p></div>"
+                        + "</a>"),
+                base_comic, 0, "ntk");
+
+        assertEquals(1, titles.size());
+        assertEquals(11117, titles.get(0).getId());
+        assertEquals("ntk", titles.get(0).getSourceSite());
+    }
+
+    @Test
     public void ntkSearchPathsMatchSiteKindFilters() {
         assertEquals("/search?q=%EC%9B%90%ED%94%BC",
                 Search.ntkSearchPathForTest("원피", MTitle.base_auto, 1));

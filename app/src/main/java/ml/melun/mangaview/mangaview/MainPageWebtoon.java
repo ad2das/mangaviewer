@@ -187,7 +187,8 @@ public class MainPageWebtoon {
                 }
                 CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
                 Document d = Jsoup.parse(page.body);
-                for(Title webtoon : parseWolfTitles(d, baseMode, MAIN_SECTION_LIMIT))
+                String sourceSite = client != null && client.isNtk() ? "ntk" : "";
+                for(Title webtoon : parseWolfTitles(d, baseMode, MAIN_SECTION_LIMIT, sourceSite))
                     ranking.add(webtoon);
                 if(ranking.size() == 0 && attempt == 0 && client.resolveWfwfDomainNow())
                     continue;
@@ -555,6 +556,10 @@ public class MainPageWebtoon {
     }
 
     public static ArrayList<Title> parseWolfTitles(Document d, int baseMode, int limit){
+        return parseWolfTitles(d, baseMode, limit, "");
+    }
+
+    static ArrayList<Title> parseWolfTitles(Document d, int baseMode, int limit, String sourceSite){
         ArrayList<Title> titles = new ArrayList<>();
         java.util.HashSet<String> seenTitleKeys = new java.util.HashSet<>();
         for(Element e : d.select("div.webtoon-list li, article.searchItem, li:has(a[href*=/webtoon/]), li:has(a[href*=/manhwa/]), article:has(a[href*=/webtoon/]), article:has(a[href*=/manhwa/]), div:has(> a[href*=/webtoon/]), div:has(> a[href*=/manhwa/]), a[href*=toon=], a[href*=/webtoon/], a[href*=/manhwa/]")){
@@ -619,8 +624,11 @@ public class MainPageWebtoon {
                 if(release.length() == 0)
                     release = cleanText(context.selectFirst("p.ep, .ep, .episode-count, .latest-episode"));
 
-                titles.add(new Title(name, thumb, "", tags, release, id, baseMode));
-                applyInferredSearchTags(titles.get(titles.size() - 1));
+                Title parsed = new Title(name, thumb, "", tags, release, id, baseMode);
+                if(sourceSite != null && sourceSite.trim().length() > 0)
+                    parsed.setSourceSite(sourceSite.trim());
+                titles.add(parsed);
+                applyInferredSearchTags(parsed);
                 if(limit > 0 && titles.size() >= limit) break;
             }catch (Exception ignored){
             }
