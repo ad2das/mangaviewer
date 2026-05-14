@@ -2053,12 +2053,15 @@ public class ViewerActivity extends AppCompatActivity {
                 && nextPrefetchEpisodeId == target.getId()
                 && nextPrefetchBaseMode == target.getBaseMode())
             return;
-        if(hasLoadedImages(target)) {
+        boolean loadedImages = hasLoadedImages(target);
+        if(loadedImages) {
             preloadFirstPages(target);
             if(stripAdapter != null && manager != null && manager.findLastVisibleItemPosition() >= manager.getItemCount() - NEXT_EPISODE_ATTACH_THRESHOLD)
                 attachNextEpisode(false);
             return;
         }
+        if(shouldSkipBackgroundNextEpisodeFetch(title == null ? null : title.getSourceSite(), p.isNtkSite(), getHttpClient().isNtk(), loadedImages))
+            return;
         if(nextPrefetcher != null)
             nextPrefetcher.cancel();
         nextPrefetchEpisodeId = target.getId();
@@ -2090,6 +2093,16 @@ public class ViewerActivity extends AppCompatActivity {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    static boolean shouldSkipBackgroundNextEpisodeFetchForTest(String sourceSite, boolean ntkPreference, boolean ntkClient, boolean hasLoadedImages) {
+        return shouldSkipBackgroundNextEpisodeFetch(sourceSite, ntkPreference, ntkClient, hasLoadedImages);
+    }
+
+    private static boolean shouldSkipBackgroundNextEpisodeFetch(String sourceSite, boolean ntkPreference, boolean ntkClient, boolean hasLoadedImages) {
+        if(hasLoadedImages)
+            return false;
+        return ntkPreference || ntkClient || "ntk".equalsIgnoreCase(sourceSite == null ? "" : sourceSite.trim());
     }
 
     private boolean needsFullEpisodeList(Title currentTitle, Manga target) {

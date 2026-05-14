@@ -1037,7 +1037,11 @@ public class ViewerWarmupManager {
     }
 
     private static boolean shouldSkipNtkWarmup() {
-        return getHttpClient().isNtk() && !getHttpClient().hasCloudflareClearance();
+        return shouldSkipNtkWarmupForTest(getHttpClient().isNtk());
+    }
+
+    static boolean shouldSkipNtkWarmupForTest(boolean ntkClient) {
+        return ntkClient;
     }
 
     private static void trimActive() {

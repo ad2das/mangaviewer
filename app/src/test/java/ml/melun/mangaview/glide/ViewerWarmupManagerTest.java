@@ -89,4 +89,10 @@ public class ViewerWarmupManagerTest {
         assertTrue(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunchForTest("wfwf", false));
         assertFalse(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunchForTest("ntk", false));
     }
+
+    @Test
+    public void ntkBackgroundWarmupSkipsEvenWithClearance() {
+        assertTrue(ViewerWarmupManager.shouldSkipNtkWarmupForTest(true));
+        assertFalse(ViewerWarmupManager.shouldSkipNtkWarmupForTest(false));
+    }
 }

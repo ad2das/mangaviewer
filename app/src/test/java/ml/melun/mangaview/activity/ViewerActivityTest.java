@@ -25,4 +25,17 @@ public class ViewerActivityTest {
     public void validEpisodePickerPositionAcceptsExistingRow() {
         assertTrue(ViewerActivity.isValidEpisodePickerPositionForTest(Arrays.asList("a", "b"), 1));
     }
+
+    @Test
+    public void ntkBackgroundNextEpisodeFetchSkipsWhenImagesAreMissing() {
+        assertTrue(ViewerActivity.shouldSkipBackgroundNextEpisodeFetchForTest("ntk", true, true, false));
+        assertTrue(ViewerActivity.shouldSkipBackgroundNextEpisodeFetchForTest(null, true, false, false));
+        assertTrue(ViewerActivity.shouldSkipBackgroundNextEpisodeFetchForTest("ntk", false, false, false));
+    }
+
+    @Test
+    public void backgroundNextEpisodeFetchKeepsLoadedOrLegacyEpisodes() {
+        assertFalse(ViewerActivity.shouldSkipBackgroundNextEpisodeFetchForTest("ntk", true, true, true));
+        assertFalse(ViewerActivity.shouldSkipBackgroundNextEpisodeFetchForTest("wfwf", false, false, false));
+    }
 }
