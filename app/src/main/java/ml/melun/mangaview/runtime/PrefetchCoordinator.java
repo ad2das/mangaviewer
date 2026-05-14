@@ -86,7 +86,9 @@ public final class PrefetchCoordinator {
             addTarget(targets, episodes, current - 2, limit);
             return targets;
         }
-        for(int i = episodes.size() - 1; i >= 0 && targets.size() < limit; i--)
+        addTarget(targets, episodes, 0, limit);
+        addTarget(targets, episodes, episodes.size() - 1, limit);
+        for(int i = 1; i < episodes.size() && targets.size() < limit; i++)
             addTarget(targets, episodes, i, limit);
         return targets;
     }
@@ -113,11 +115,6 @@ public final class PrefetchCoordinator {
     }
 
     public static boolean shouldSkipNtkPrefetchForTest(String sourceSite, boolean ntkPreference, boolean ntkClient) {
-        if(!ntkPreference && !ntkClient)
-            return false;
-        if(sourceSite == null)
-            return true;
-        String normalized = sourceSite.trim();
-        return normalized.length() == 0 || "ntk".equalsIgnoreCase(normalized);
+        return (ntkPreference || ntkClient) && (sourceSite == null || sourceSite.trim().length() == 0);
     }
 }

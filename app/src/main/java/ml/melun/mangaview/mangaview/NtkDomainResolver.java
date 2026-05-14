@@ -91,12 +91,15 @@ public class NtkDomainResolver {
     }
 
     private static boolean looksLikeCurrentAddressMessage(String text) {
-        return text.contains("현재주소")
-                || text.contains("현재 주소")
-                || text.contains("접속 주소")
-                || text.contains("실시간 주소")
-                || text.contains("최신주소")
-                || text.contains("최신 주소");
+        if(text == null)
+            return false;
+        String compact = text.replaceAll("\\s+", "");
+        return compact.contains("\uD604\uC7AC\uC8FC\uC18C")
+                || compact.contains("\uC811\uC18D\uC8FC\uC18C")
+                || compact.contains("\uC2E4\uC2DC\uAC04\uC811\uC18D\uC8FC\uC18C")
+                || compact.contains("\uCD5C\uC2E0\uC8FC\uC18C")
+                || compact.contains("\uC0C8\uC8FC\uC18C")
+                || compact.contains("\uACF5\uC2DD\uC8FC\uC18C");
     }
 
     private static boolean isCandidate(String root, String label) {
@@ -114,8 +117,11 @@ public class NtkDomainResolver {
                     || host.endsWith(".telesco.pe")
                     || host.endsWith(".telegram-cdn.org"))
                 return false;
-            String lowerLabel = label == null ? "" : label.toLowerCase(Locale.ROOT);
-            if(host.contains("xn--") || root.contains("주소") || lowerLabel.contains("주소 안내") || lowerLabel.contains("안내페이지"))
+            String compactLabel = (label == null ? "" : label.toLowerCase(Locale.ROOT)).replaceAll("\\s+", "");
+            if(host.contains("xn--")
+                    || root.contains("\uC8FC\uC18C")
+                    || compactLabel.contains("\uC8FC\uC18C\uC548\uB0B4")
+                    || compactLabel.contains("\uC548\uB0B4\uD398\uC774\uC9C0"))
                 return false;
             return host.indexOf('.') > 0;
         } catch (Exception e) {

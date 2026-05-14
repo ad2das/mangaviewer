@@ -1168,7 +1168,7 @@ public class ViewerActivity extends AppCompatActivity {
                             target = resolvedEpisode(target);
                     }
                     if(target != null && target.isOnline() && result == LOAD_OK)
-                        result = ViewerWarmupManager.prepareFirstFrame(context, target, title, initialPageIndex(target, ViewerLoadPolicy.EXACT_FIRST_PAGE), width, autoCut, p.getReverse(), cancellation);
+                        result = ViewerWarmupManager.prepareFirstFrameDirectOnly(context, target, title, initialPageIndex(target, ViewerLoadPolicy.EXACT_FIRST_PAGE), width, autoCut, p.getReverse(), cancellation);
                 } catch (Exception e) {
                     if(!cancelled && !isFinishing())
                         ml.melun.mangaview.report.CrashReporter.record(e);

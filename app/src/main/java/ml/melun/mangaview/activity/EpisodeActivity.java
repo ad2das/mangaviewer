@@ -392,13 +392,30 @@ public class EpisodeActivity extends AppCompatActivity {
         if(!shouldDirectWarmupNtkViewerPageForTest(p.isNtkSite(), getHttpClient().isNtk(), target == null ? null : target.getNtkEpisodePath()))
             return;
         String path = target.getNtkEpisodePath();
-        AppDispatchers.submitImageWarmup(() -> getHttpClient().warmupCachedPageDirect(path, VIEWER_PAGE_CACHE_TTL_MS));
+        Context appContext = context.getApplicationContext();
+        Title currentTitle = title;
+        int width = Math.max(1, getResources().getDisplayMetrics().widthPixels);
+        AppDispatchers.submitImageWarmup(() -> {
+            boolean warmed = getHttpClient().warmupCachedPageDirect(path, VIEWER_PAGE_CACHE_TTL_MS);
+            if(!shouldPreloadNtkFirstFrameAfterDirectWarmupForTest(warmed))
+                return;
+            try {
+                ViewerWarmupManager.prepareFirstFrameDirectOnly(appContext, target, currentTitle, 0, width,
+                        false, p.getReverse(), MangaRepository.cancellation());
+            } catch (Exception e) {
+                ml.melun.mangaview.report.CrashReporter.record(e);
+            }
+        });
     }
 
     static boolean shouldDirectWarmupNtkViewerPageForTest(boolean ntkPreference, boolean ntkClient, String episodePath) {
         return (ntkPreference || ntkClient)
                 && episodePath != null
                 && episodePath.trim().length() > 0;
+    }
+
+    static boolean shouldPreloadNtkFirstFrameAfterDirectWarmupForTest(boolean directWarmupSucceeded) {
+        return directWarmupSucceeded;
     }
 
     private void confirmDeleteOfflineEpisode(int position, Manga manga) {
@@ -541,7 +558,10 @@ public class EpisodeActivity extends AppCompatActivity {
             if(json == null || json.length() == 0)
                 return;
             CachedEpisodes cached = new Gson().fromJson(json, new TypeToken<CachedEpisodes>(){}.getType());
-            if(cached == null || !CachePolicy.isFresh(cached.savedAt, CachePolicy.EPISODE_TTL_MS) || cached.episodes == null || cached.episodes.size() == 0)
+            if(cached == null || cached.episodes == null || cached.episodes.size() == 0)
+                return;
+            if(!CachePolicy.isFresh(cached.savedAt, CachePolicy.EPISODE_TTL_MS)
+                    && !CachePolicy.isReusableForColdStart(cached.savedAt))
                 return;
             episodes = cached.episodes;
             episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);

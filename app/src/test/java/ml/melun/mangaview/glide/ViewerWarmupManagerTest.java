@@ -49,6 +49,16 @@ public class ViewerWarmupManagerTest {
     }
 
     @Test
+    public void staleDiskSnapshotsAreUsableForColdStart() {
+        long now = 24L * 60L * 60L * 1000L;
+
+        assertFalse(ViewerWarmupManager.isDiskSnapshotFreshForTest(now - 21L * 60L * 1000L, now));
+        assertTrue(ViewerWarmupManager.isDiskSnapshotUsableForColdStartForTest(now - 21L * 60L * 1000L, now));
+        assertFalse(ViewerWarmupManager.isDiskSnapshotUsableForColdStartForTest(now - 8L * 24L * 60L * 60L * 1000L, now));
+        assertFalse(ViewerWarmupManager.isDiskSnapshotUsableForColdStartForTest(now + 1, now));
+    }
+
+    @Test
     public void metricLoggingStaysOffWhenDebugTagsAreNotLoggable() {
         assertFalse(ViewerWarmupManager.shouldLogMetricForTest(false, false));
     }
@@ -78,10 +88,10 @@ public class ViewerWarmupManagerTest {
     }
 
     @Test
-    public void exactEpisodeLaunchSkipsNtkWarmupOnNtkSite() {
-        assertFalse(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunchForTest("ntk", true));
-        assertFalse(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunchForTest("", true));
-        assertFalse(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunchForTest(null, true));
+    public void exactEpisodeLaunchAllowsNtkDirectWarmupOnNtkSite() {
+        assertTrue(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunchForTest("ntk", true));
+        assertTrue(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunchForTest("", true));
+        assertTrue(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunchForTest(null, true));
     }
 
     @Test
@@ -91,8 +101,19 @@ public class ViewerWarmupManagerTest {
     }
 
     @Test
-    public void ntkBackgroundWarmupSkipsEvenWithClearance() {
-        assertTrue(ViewerWarmupManager.shouldSkipNtkWarmupForTest(true));
+    public void ntkBackgroundWarmupUsesDirectOnlyInsteadOfSkipping() {
+        assertFalse(ViewerWarmupManager.shouldSkipNtkWarmupForTest(true));
         assertFalse(ViewerWarmupManager.shouldSkipNtkWarmupForTest(false));
+    }
+
+    @Test
+    public void coldNetworkViewerOpenDoesNotBlockOnFirstDecode() {
+        assertFalse(ViewerWarmupManager.shouldDecodeFirstPagesBlockingForTest(false, false));
+    }
+
+    @Test
+    public void cachedViewerOpenCanUseBlockingDecodeForInstantFirstFrame() {
+        assertTrue(ViewerWarmupManager.shouldDecodeFirstPagesBlockingForTest(true, false));
+        assertFalse(ViewerWarmupManager.shouldDecodeFirstPagesBlockingForTest(false, true));
     }
 }

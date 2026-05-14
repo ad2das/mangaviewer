@@ -10,9 +10,14 @@ public class EpisodeActivityTest {
     public void ntkDirectWarmupRequiresNtkModeAndEpisodePath() {
         assertTrue(EpisodeActivity.shouldDirectWarmupNtkViewerPageForTest(true, false, "/manhwa/1/episode"));
         assertTrue(EpisodeActivity.shouldDirectWarmupNtkViewerPageForTest(false, true, "/webtoon/1/episode"));
-
         assertFalse(EpisodeActivity.shouldDirectWarmupNtkViewerPageForTest(false, false, "/manhwa/1/episode"));
         assertFalse(EpisodeActivity.shouldDirectWarmupNtkViewerPageForTest(true, false, ""));
         assertFalse(EpisodeActivity.shouldDirectWarmupNtkViewerPageForTest(true, false, null));
+    }
+
+    @Test
+    public void ntkFirstFramePreloadRunsOnlyAfterDirectPageWarmup() {
+        assertTrue(EpisodeActivity.shouldPreloadNtkFirstFrameAfterDirectWarmupForTest(true));
+        assertFalse(EpisodeActivity.shouldPreloadNtkFirstFrameAfterDirectWarmupForTest(false));
     }
 }

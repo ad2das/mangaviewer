@@ -103,6 +103,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     boolean initialRowsShown = false;
     private final Set<String> preloadedThumbs = new LinkedHashSet<>();
     private final Set<String> visibleContinueWarmupKeys = new LinkedHashSet<>();
+    private final Set<String> visibleEpisodePrefetchKeys = new LinkedHashSet<>();
     private static final int PRELOADED_THUMB_LIMIT = 160;
     private static final int PRELOAD_THUMB_MAX_PER_FETCH = 24;
     private static final int SECTION_BATCH_SIZE = 4;
@@ -1252,6 +1253,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             badge.setText("추천");
             bindTitleThumb(thumb, hero, 240, 140);
             bindHeroDots(row);
+            prefetchEpisodeSnapshot(hero);
         }
 
         private void bindHeroDots(HeroRow row) {
@@ -1328,6 +1330,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 list.post(() -> warmupVisibleContinueItems(section.titles));
             } else {
                 list.setOnTouchListener(null);
+                list.post(() -> prefetchEpisodeSnapshots(section.titles, section.style == STYLE_RANKING ? 2 : 1));
             }
         }
 
@@ -1743,6 +1746,60 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             iterator.next();
             iterator.remove();
         }
+    }
+
+    private void prefetchEpisodeSnapshots(List<Title> titles, int limit) {
+        if(titles == null || titles.size() == 0 || limit <= 0)
+            return;
+        int submitted = 0;
+        for(Title item : titles) {
+            if(prefetchEpisodeSnapshot(item)) {
+                submitted++;
+                if(submitted >= limit)
+                    return;
+            }
+        }
+    }
+
+    private boolean prefetchEpisodeSnapshot(Title item) {
+        if(context == null || item == null || item.getId() <= 0)
+            return false;
+        if(p != null)
+            p.ensureSourceSiteForTitle(item);
+        String key = item.getSourceSite() + ":" + item.getBaseMode() + ":" + item.getId();
+        synchronized (visibleEpisodePrefetchKeys) {
+            if(visibleEpisodePrefetchKeys.contains(key))
+                return false;
+            visibleEpisodePrefetchKeys.add(key);
+            trimVisibleEpisodePrefetches();
+        }
+        Context appContext = context.getApplicationContext();
+        Title target = new Title(item);
+        AppDispatchers.submitIo(() -> {
+            try {
+                int result = MangaRepository.fetchEpisodes(target);
+                List<Manga> episodes = Utils.snapshotEpisodes(target);
+                if(result == Title.LOAD_OK && episodes != null && episodes.size() > 0)
+                    CacheFileStore.write(appContext, episodeSnapshotKey(target), new Gson().toJson(new EpisodeSnapshot(episodes)));
+            } catch (Exception e) {
+                ml.melun.mangaview.report.CrashReporter.record(e);
+            }
+        });
+        return true;
+    }
+
+    private void trimVisibleEpisodePrefetches() {
+        while(visibleEpisodePrefetchKeys.size() > 128) {
+            Iterator<String> iterator = visibleEpisodePrefetchKeys.iterator();
+            if(!iterator.hasNext())
+                return;
+            iterator.next();
+            iterator.remove();
+        }
+    }
+
+    private String episodeSnapshotKey(Title title) {
+        return "episodeSnapshotV1_" + (title == null ? 0 : title.getBaseMode()) + "_" + (title == null ? 0 : title.getId());
     }
 
     private Title firstContinueTitle() {
@@ -2389,6 +2446,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         ScrollAnchor(String key, int offset) {
             this.key = key;
             this.offset = offset;
+        }
+    }
+
+    private static class EpisodeSnapshot {
+        long savedAt;
+        ArrayList<Manga> episodes;
+
+        EpisodeSnapshot(List<Manga> episodes) {
+            this.savedAt = System.currentTimeMillis();
+            this.episodes = new ArrayList<>(episodes);
         }
     }
 

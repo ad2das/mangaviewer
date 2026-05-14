@@ -40,8 +40,20 @@ public class PrefetchCoordinatorTest {
     }
 
     @Test
+    public void viewerTargetsWarmVisibleFirstEpisodeWithoutBookmark() throws Exception {
+        List<Manga> episodes = episodes(60, 50, 40, 30, 20, 10);
+        Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class);
+        method.setAccessible(true);
+
+        @SuppressWarnings("unchecked")
+        List<Integer> targets = (List<Integer>) method.invoke(null, episodes, -1, 3);
+
+        assertEquals(asList(0, 5, 1), targets);
+    }
+
+    @Test
     public void ntkPrefetchSkipsUnverifiedNtkTitles() {
-        assertTrue(PrefetchCoordinator.shouldSkipNtkPrefetchForTest("ntk", true, true));
+        assertFalse(PrefetchCoordinator.shouldSkipNtkPrefetchForTest("ntk", true, true));
         assertTrue(PrefetchCoordinator.shouldSkipNtkPrefetchForTest("", true, true));
         assertTrue(PrefetchCoordinator.shouldSkipNtkPrefetchForTest(null, true, true));
         assertFalse(PrefetchCoordinator.shouldSkipNtkPrefetchForTest("wfwf", true, true));

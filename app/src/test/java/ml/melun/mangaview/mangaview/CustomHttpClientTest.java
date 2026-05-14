@@ -41,12 +41,50 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkWebViewFallbackRequiresSharedWebViewMode() {
+        assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1",
+                CustomHttpClient.FetchMode.DIRECT_ONLY));
+        assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1",
+                CustomHttpClient.FetchMode.CACHE_ONLY));
+    }
+
+    @Test
     public void ntkWebViewFallbackScriptUsesAsyncRequestBridge() {
         String script = CustomHttpClient.buildNtkWebViewFetchScriptForTest("/manhwa/1", "text/html");
 
         assertTrue(script.contains("window.NtkBridge.onResult"));
         assertTrue(script.contains("x.open('GET',\"/manhwa/1\",true)"));
         assertFalse(script.contains("x.open('GET',\"/manhwa/1\",false)"));
+    }
+
+    @Test
+    public void ntkWebViewFallbackScriptCanCarrySingleFlightToken() {
+        String script = CustomHttpClient.buildNtkWebViewFetchScript("/manhwa/1", null, "42");
+
+        assertTrue(script.contains("window.NtkBridge.onFetchResult(\"42\""));
+    }
+
+    @Test
+    public void ntkPageDiskCacheAllowsColdStartStaleEntries() {
+        long now = 7L * 24L * 60L * 60L * 1000L;
+
+        assertFalse(CustomHttpClient.isPageCacheFreshForTest(now - 30L * 60L * 1000L, now, 10L * 60L * 1000L));
+        assertTrue(CustomHttpClient.isPageCacheUsableForColdStartForTest(now - 30L * 60L * 1000L, now));
+        assertFalse(CustomHttpClient.isPageCacheUsableForColdStartForTest(now - 8L * 24L * 60L * 60L * 1000L, now));
+    }
+
+    @Test
+    public void ntkColdStartStalePageCacheServesImmediately() {
+        assertTrue(CustomHttpClient.shouldServeColdStartCachedPageImmediatelyForTest(true,
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, true, false));
+        assertTrue(CustomHttpClient.shouldServeColdStartCachedPageImmediatelyForTest(true,
+                CustomHttpClient.FetchMode.DIRECT_ONLY, true, false));
+        assertFalse(CustomHttpClient.shouldServeColdStartCachedPageImmediatelyForTest(false,
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, true, false));
+        assertFalse(CustomHttpClient.shouldServeColdStartCachedPageImmediatelyForTest(true,
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, true, true));
     }
 
     @Test

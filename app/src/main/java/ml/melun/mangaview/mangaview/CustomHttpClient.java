@@ -3,14 +3,10 @@ package ml.melun.mangaview.mangaview;
 
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.os.Handler;
-import android.os.Looper;
 import android.webkit.CookieManager;
-import android.webkit.JavascriptInterface;
 import android.webkit.WebSettings;
-import android.webkit.WebView;
-import android.webkit.WebViewClient;
 
+import com.google.gson.Gson;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -45,6 +41,9 @@ import okhttp3.RequestBody;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
 
+import ml.melun.mangaview.glide.ViewerWarmupManager;
+import ml.melun.mangaview.repository.CacheFileStore;
+
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.CODE_SCOPED_STORAGE;
 
@@ -59,9 +58,12 @@ public class CustomHttpClient {
     private static final long WFWF_DOMAIN_FORCE_RETRY_INTERVAL_MS = 60 * 1000L;
     private static final long WFWF_DOMAIN_WAIT_TIMEOUT_MS = 6 * 1000L;
     private static final long COOKIE_SYNC_INTERVAL_MS = 30 * 1000L;
+    private static final long PAGE_CACHE_COLD_START_TTL_MS = 7 * 24 * 60 * 60 * 1000L;
     private static final int PAGE_CACHE_MAX_ENTRIES = 200;
     private static final int MAX_HTTP_REQUESTS = 8;
     private static final int MAX_HTTP_REQUESTS_PER_HOST = 4;
+    private static final String PAGE_CACHE_PREFIX = "httpPageCacheV1_";
+    private static final Gson GSON = new Gson();
     public OkHttpClient client;
     private OkHttpClient unsafeFallbackClient;
     Map<String, String> cookies;
@@ -72,7 +74,7 @@ public class CustomHttpClient {
     private volatile long lastCloudflareChallengeAt = 0L;
     private volatile boolean cloudflareCaptchaActive = false;
     private final ThreadLocal<RequestGroup> currentRequestGroup = requestGroupLocal();
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final ThreadLocal<FetchMode> currentFetchMode = new ThreadLocal<>();
 
     private ThreadLocal<RequestGroup> requestGroupLocal() {
         return new
@@ -84,6 +86,12 @@ public class CustomHttpClient {
     private long wfwfDomainLastForcedRetry = 0;
     private Context context;
     public String agent = "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36";
+
+    public enum FetchMode {
+        CACHE_ONLY,
+        DIRECT_ONLY,
+        ALLOW_SHARED_WEBVIEW
+    }
 
     public CustomHttpClient(Context context){
         this.context = context.getApplicationContext();
@@ -308,6 +316,8 @@ public class CustomHttpClient {
     }
 
     public void syncCookiesFromWebView(String url, boolean force){
+        long startedAt = System.currentTimeMillis();
+        boolean ntkUrl = isNtkUrl(url);
         try {
             if(url == null || url.length() == 0)
                 return;
@@ -356,6 +366,9 @@ public class CustomHttpClient {
             }
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
+        } finally {
+            if(ntkUrl)
+                ViewerWarmupManager.logMetric("ntk_cookie_sync_ms", System.currentTimeMillis() - startedAt);
         }
     }
 
@@ -467,6 +480,31 @@ public class CustomHttpClient {
             else
                 currentRequestGroup.set(previous);
         }
+    }
+
+    public <T> T runWithFetchMode(FetchMode fetchMode, RequestWork<T> work) throws Exception {
+        FetchMode previous = currentFetchMode.get();
+        currentFetchMode.set(fetchMode == null ? FetchMode.ALLOW_SHARED_WEBVIEW : fetchMode);
+        try {
+            return work.run();
+        } finally {
+            if(previous == null)
+                currentFetchMode.remove();
+            else
+                currentFetchMode.set(previous);
+        }
+    }
+
+    public boolean isDirectOnlyFetchMode() {
+        FetchMode mode = effectiveFetchMode(FetchMode.ALLOW_SHARED_WEBVIEW);
+        return mode == FetchMode.DIRECT_ONLY || mode == FetchMode.CACHE_ONLY;
+    }
+
+    private FetchMode effectiveFetchMode(FetchMode defaultMode) {
+        FetchMode mode = currentFetchMode.get();
+        if(mode != null)
+            return mode;
+        return defaultMode == null ? FetchMode.ALLOW_SHARED_WEBVIEW : defaultMode;
     }
 
     public RequestGroup currentRequestGroup() {
@@ -711,15 +749,36 @@ public class CustomHttpClient {
         String normalized = normalizePath(url);
         String cacheKey = getBaseUrl(normalized) + normalized;
         long now = System.currentTimeMillis();
+        FetchMode fetchMode = effectiveFetchMode(FetchMode.ALLOW_SHARED_WEBVIEW);
         if(isNtk())
             ttlMillis = Math.max(ttlMillis * 5, 10 * 60 * 1000L);
         PageLoadState activeLoad = null;
         CachedPage staleCached = null;
         synchronized (this) {
             CachedPage cached = pageCache.get(cacheKey);
-            if(cached != null && isPageCacheFresh(cached.time, now, ttlMillis))
-                return new PageResponse(cached.code, cached.body, true);
-            staleCached = cached;
+            if(cached != null) {
+                boolean fresh = isPageCacheFresh(cached.time, now, ttlMillis);
+                if(fresh || shouldServeColdStartCachedPageImmediately(isNtk(), fetchMode, true, fresh))
+                    return new PageResponse(cached.code, cached.body, true);
+                staleCached = cached;
+            }
+        }
+        CachedPage diskCached = readDiskCachedPage(cacheKey, now, ttlMillis, isNtk());
+        if(diskCached != null) {
+            synchronized (this) {
+                pageCache.put(cacheKey, diskCached);
+            }
+            boolean fresh = isPageCacheFresh(diskCached.time, now, ttlMillis);
+            if(fresh || shouldServeColdStartCachedPageImmediately(isNtk(), fetchMode, true, fresh))
+                return new PageResponse(diskCached.code, diskCached.body, true);
+            staleCached = diskCached;
+        }
+        if(fetchMode == FetchMode.CACHE_ONLY) {
+            if(staleCached != null)
+                return new PageResponse(staleCached.code, staleCached.body, true);
+            throw new Exception("Cache miss: " + cacheKey);
+        }
+        synchronized (this) {
             activeLoad = pageLoads.get(cacheKey);
             if(activeLoad == null)
                 pageLoads.put(cacheKey, new PageLoadState());
@@ -760,7 +819,7 @@ public class CustomHttpClient {
                 if(cached != null && isPageCacheFresh(cached.time, now, ttlMillis))
                     return true;
             }
-            Response response = mget(normalized, true, null, false);
+            Response response = mget(normalized, true, null, FetchMode.DIRECT_ONLY);
             if(response == null)
                 return false;
             int code = response.code();
@@ -769,6 +828,7 @@ public class CustomHttpClient {
                 synchronized (this) {
                     pageCache.put(cacheKey, new CachedPage(code, body, now));
                 }
+                writeDiskCachedPage(cacheKey, new CachedPage(code, body, now));
                 return true;
             }
         } catch (Exception ignored) {
@@ -821,9 +881,11 @@ public class CustomHttpClient {
             return new PageResponse(staleCached.code, staleCached.body, true);
         if(code >= 200 && code < 400 && body.length() > 0 && looksCacheable(body)) {
             String cacheKey = getBaseUrl(normalized) + normalized;
+            CachedPage cachedPage = new CachedPage(code, body, now);
             synchronized (this) {
-                pageCache.put(cacheKey, new CachedPage(code, body, now));
+                pageCache.put(cacheKey, cachedPage);
             }
+            writeDiskCachedPage(cacheKey, cachedPage);
         }
         return new PageResponse(code, body, false);
     }
@@ -868,6 +930,55 @@ public class CustomHttpClient {
 
     private static boolean isPageCacheFresh(long cachedAt, long now, long ttlMillis) {
         return cachedAt <= now && now - cachedAt < ttlMillis;
+    }
+
+    static boolean isPageCacheUsableForColdStartForTest(long cachedAt, long now) {
+        return isPageCacheUsableForColdStart(cachedAt, now);
+    }
+
+    private static boolean isPageCacheUsableForColdStart(long cachedAt, long now) {
+        return cachedAt <= now && now - cachedAt <= PAGE_CACHE_COLD_START_TTL_MS;
+    }
+
+    static boolean shouldServeColdStartCachedPageImmediatelyForTest(boolean ntk, FetchMode fetchMode, boolean hasCachedPage, boolean fresh) {
+        return shouldServeColdStartCachedPageImmediately(ntk, fetchMode, hasCachedPage, fresh);
+    }
+
+    private static boolean shouldServeColdStartCachedPageImmediately(boolean ntk, FetchMode fetchMode, boolean hasCachedPage, boolean fresh) {
+        return ntk && hasCachedPage && !fresh && fetchMode != FetchMode.CACHE_ONLY;
+    }
+
+    private CachedPage readDiskCachedPage(String cacheKey, long now, long ttlMillis, boolean allowColdStartStale) {
+        if(cacheKey == null)
+            return null;
+        try {
+            String json = CacheFileStore.read(context, PAGE_CACHE_PREFIX + cacheKey);
+            if(json == null || json.length() == 0)
+                return null;
+            PersistedPage page = GSON.fromJson(json, PersistedPage.class);
+            if(page == null || page.body == null || page.body.length() == 0)
+                return null;
+            boolean usable = isPageCacheFresh(page.time, now, ttlMillis)
+                    || (allowColdStartStale && isPageCacheUsableForColdStart(page.time, now));
+            if(!usable) {
+                CacheFileStore.delete(context, PAGE_CACHE_PREFIX + cacheKey);
+                return null;
+            }
+            return new CachedPage(page.code, page.body, page.time);
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return null;
+        }
+    }
+
+    private void writeDiskCachedPage(String cacheKey, CachedPage page) {
+        if(!isNtk() || cacheKey == null || page == null || page.body == null || page.body.length() == 0)
+            return;
+        try {
+            CacheFileStore.write(context, PAGE_CACHE_PREFIX + cacheKey, GSON.toJson(new PersistedPage(page)));
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
     }
 
     public synchronized void clearPageCache() {
@@ -968,10 +1079,16 @@ public class CustomHttpClient {
 
 
     public Response mget(String url, Boolean useDefaultCookies, Map<String, String> customCookie){
-        return mget(url, useDefaultCookies, customCookie, true);
+        return mget(url, useDefaultCookies, customCookie, FetchMode.ALLOW_SHARED_WEBVIEW);
     }
 
-    private Response mget(String url, Boolean useDefaultCookies, Map<String, String> customCookie, boolean allowWebViewFallback){
+    private Response mget(String url, Boolean useDefaultCookies, Map<String, String> customCookie, FetchMode requestedFetchMode){
+        FetchMode requested = requestedFetchMode == null ? FetchMode.ALLOW_SHARED_WEBVIEW : requestedFetchMode;
+        FetchMode fetchMode = requested == FetchMode.ALLOW_SHARED_WEBVIEW
+                ? effectiveFetchMode(requested)
+                : requested;
+        if(fetchMode == FetchMode.CACHE_ONLY)
+            return null;
         ensureNumberedDomain(false);
         if(customCookie==null)
             customCookie = new HashMap<>();
@@ -981,7 +1098,7 @@ public class CustomHttpClient {
         applyNtkApiHeaders(headers, baseUrl, url);
 
         Response response = get(baseUrl + url, headers);
-        if(allowWebViewFallback && shouldUseNtkWebViewFallbackForTest(isNtkUrl(baseUrl), response == null, url))
+        if(shouldUseNtkWebViewFallback(isNtkUrl(baseUrl), response == null, url, fetchMode))
             response = getWithNtkWebViewFallback(baseUrl, url, headers);
         if(shouldRetryWithResolvedDomain(response)) {
             if(response != null)
@@ -991,78 +1108,30 @@ public class CustomHttpClient {
             headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
             applyNtkApiHeaders(headers, baseUrl, url);
             response = get(baseUrl + url, headers);
-            if(allowWebViewFallback && shouldUseNtkWebViewFallbackForTest(isNtkUrl(baseUrl), response == null, url))
+            if(shouldUseNtkWebViewFallback(isNtkUrl(baseUrl), response == null, url, fetchMode))
                 response = getWithNtkWebViewFallback(baseUrl, url, headers);
         }
         return response;
     }
 
     private Response getWithNtkWebViewFallback(String baseUrl, String path, Map<String, String> headers) {
-        if(Looper.myLooper() == Looper.getMainLooper())
-            return null;
-        java.util.concurrent.atomic.AtomicReference<Response> result = new java.util.concurrent.atomic.AtomicReference<>();
-        java.util.concurrent.atomic.AtomicReference<WebView> webViewRef = new java.util.concurrent.atomic.AtomicReference<>();
-        java.util.concurrent.atomic.AtomicBoolean completed = new java.util.concurrent.atomic.AtomicBoolean(false);
-        java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-        Runnable finish = () -> {
-            WebView webView = webViewRef.getAndSet(null);
-            if(webView != null)
-                webView.destroy();
-            done.countDown();
-        };
-        Runnable timeout = () -> {
-            if(completed.compareAndSet(false, true))
-                finish.run();
-        };
-        mainHandler.post(() -> {
-            WebView webView = null;
-            try {
-                webView = new WebView(context);
-                webViewRef.set(webView);
-                WebSettings settings = webView.getSettings();
-                settings.setJavaScriptEnabled(true);
-                settings.setDomStorageEnabled(true);
-                settings.setUserAgentString(agent);
-                CookieManager.getInstance().setAcceptCookie(true);
-                webView.addJavascriptInterface(new NtkWebViewBridge(baseUrl, path, result, completed, done, mainHandler, webViewRef), "NtkBridge");
-                webView.setWebViewClient(new WebViewClient() {
-                    boolean requested = false;
-
-                    @Override
-                    public void onPageFinished(WebView view, String url) {
-                        if(requested)
-                            return;
-                        requested = true;
-                        String js = buildNtkWebViewFetchScript(path, headers);
-                        view.evaluateJavascript(js, null);
-                    }
-                });
-                webView.loadDataWithBaseURL(baseUrl, "<!doctype html><html><body></body></html>", "text/html", "UTF-8", null);
-                mainHandler.postDelayed(timeout, 10000);
-            } catch (Exception e) {
-                if(webView != null) {
-                    webViewRef.compareAndSet(webView, null);
-                    webView.destroy();
-                }
-                ml.melun.mangaview.report.CrashReporter.record(e);
-                done.countDown();
-            }
-        });
-        try {
-            done.await(15, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-        return result.get();
+        return NtkWebViewFallbackManager.get(context).fetch(agent, baseUrl, path, headers);
     }
 
-    private static String buildNtkWebViewFetchScript(String path, Map<String, String> headers) {
+    static String buildNtkWebViewFetchScript(String path, Map<String, String> headers) {
+        return buildNtkWebViewFetchScript(path, headers, null);
+    }
+
+    static String buildNtkWebViewFetchScript(String path, Map<String, String> headers, String token) {
         String accept = headers == null ? null : headers.get("Accept");
         StringBuilder js = new StringBuilder();
         js.append("(function(){");
         js.append("try{");
         js.append("var done=false;");
-        js.append("function finish(v){if(done)return;done=true;window.NtkBridge.onResult(JSON.stringify(v));}");
+        if(token == null)
+            js.append("function finish(v){if(done)return;done=true;window.NtkBridge.onResult(JSON.stringify(v));}");
+        else
+            js.append("function finish(v){if(done)return;done=true;window.NtkBridge.onFetchResult(").append(jsQuote(token)).append(",JSON.stringify(v));}");
         js.append("var x=new XMLHttpRequest();");
         js.append("x.open('GET',").append(jsQuote(path)).append(",true);");
         js.append("x.withCredentials=true;");
@@ -1117,7 +1186,7 @@ public class CustomHttpClient {
         return builder.toString();
     }
 
-    private static Response responseFromWebViewFetch(String baseUrl, String path, String value) throws Exception {
+    static Response responseFromWebViewFetch(String baseUrl, String path, String value) throws Exception {
         if(value == null || value.length() == 0 || "null".equals(value))
             return null;
         String clean = value;
@@ -1139,53 +1208,17 @@ public class CustomHttpClient {
     }
 
     static boolean shouldUseNtkWebViewFallbackForTest(boolean ntkUrl, boolean missingResponse, String path) {
-        if(!ntkUrl || !missingResponse || path == null)
-            return false;
-        return path.startsWith("/api/") || path.startsWith("/webtoon/") || path.startsWith("/manhwa/");
+        return shouldUseNtkWebViewFallbackForTest(ntkUrl, missingResponse, path, FetchMode.ALLOW_SHARED_WEBVIEW);
     }
 
-    private static class NtkWebViewBridge {
-        private final String baseUrl;
-        private final String path;
-        private final java.util.concurrent.atomic.AtomicReference<Response> result;
-        private final java.util.concurrent.atomic.AtomicBoolean completed;
-        private final java.util.concurrent.CountDownLatch done;
-        private final Handler mainHandler;
-        private final java.util.concurrent.atomic.AtomicReference<WebView> webViewRef;
+    static boolean shouldUseNtkWebViewFallbackForTest(boolean ntkUrl, boolean missingResponse, String path, FetchMode fetchMode) {
+        return shouldUseNtkWebViewFallback(ntkUrl, missingResponse, path, fetchMode);
+    }
 
-        NtkWebViewBridge(String baseUrl, String path,
-                         java.util.concurrent.atomic.AtomicReference<Response> result,
-                         java.util.concurrent.atomic.AtomicBoolean completed,
-                         java.util.concurrent.CountDownLatch done,
-                         Handler mainHandler,
-                         java.util.concurrent.atomic.AtomicReference<WebView> webViewRef) {
-            this.baseUrl = baseUrl;
-            this.path = path;
-            this.result = result;
-            this.completed = completed;
-            this.done = done;
-            this.mainHandler = mainHandler;
-            this.webViewRef = webViewRef;
-        }
-
-        @JavascriptInterface
-        public void onResult(String value) {
-            if(!completed.compareAndSet(false, true))
-                return;
-            try {
-                Response response = responseFromWebViewFetch(baseUrl, path, value);
-                result.set(response);
-            } catch (Exception e) {
-                ml.melun.mangaview.report.CrashReporter.record(e);
-            } finally {
-                mainHandler.post(() -> {
-                    WebView webView = webViewRef.getAndSet(null);
-                    if(webView != null)
-                        webView.destroy();
-                    done.countDown();
-                });
-            }
-        }
+    private static boolean shouldUseNtkWebViewFallback(boolean ntkUrl, boolean missingResponse, String path, FetchMode fetchMode) {
+        if(fetchMode != FetchMode.ALLOW_SHARED_WEBVIEW || !ntkUrl || !missingResponse || path == null)
+            return false;
+        return path.startsWith("/api/") || path.startsWith("/webtoon/") || path.startsWith("/manhwa/");
     }
 
     private Map<String, String> buildHeaders(String baseUrl, Boolean useDefaultCookies, Map<String, String> customCookie) {
@@ -1229,7 +1262,12 @@ public class CustomHttpClient {
     }
 
     private boolean shouldSkipWebViewCookieSync(String baseUrl) {
-        return isNtkUrl(baseUrl) && hasFreshCloudflareClearance();
+        if(!isNtkUrl(baseUrl))
+            return false;
+        if(hasFreshCloudflareClearance())
+            return true;
+        FetchMode mode = effectiveFetchMode(FetchMode.ALLOW_SHARED_WEBVIEW);
+        return mode == FetchMode.DIRECT_ONLY || mode == FetchMode.CACHE_ONLY;
     }
 
     private void applyNtkApiHeaders(Map<String, String> headers, String baseUrl, String path) {
@@ -1345,6 +1383,21 @@ public class CustomHttpClient {
             this.code = code;
             this.body = body;
             this.time = time;
+        }
+    }
+
+    private static class PersistedPage {
+        int code;
+        String body;
+        long time;
+
+        PersistedPage() {
+        }
+
+        PersistedPage(CachedPage page) {
+            this.code = page.code;
+            this.body = page.body;
+            this.time = page.time;
         }
     }
 
