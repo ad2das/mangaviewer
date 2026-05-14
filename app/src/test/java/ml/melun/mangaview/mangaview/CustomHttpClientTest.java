@@ -76,6 +76,16 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkPageCacheRejectsWebViewErrorPages() {
+        String errorPage = "<html><head><title>Webpage not available</title></head>"
+                + "<body>The webpage at <strong>https://sbxh1.com/webtoon/17801</strong> could not be loaded"
+                + "<p>net::ERR_CONNECTION_RESET</p></body></html>";
+
+        assertFalse(CustomHttpClient.isCacheablePageBodyForTest(errorPage));
+        assertTrue(CustomHttpClient.isCacheablePageBodyForTest("<html><body><a href=\"/webtoon/17801/1\">1화</a></body></html>"));
+    }
+
+    @Test
     public void ntkColdStartStalePageCacheServesImmediately() {
         assertTrue(CustomHttpClient.shouldServeColdStartCachedPageImmediatelyForTest(true,
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, true, false));

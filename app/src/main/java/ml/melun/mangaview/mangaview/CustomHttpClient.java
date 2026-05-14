@@ -757,10 +757,14 @@ public class CustomHttpClient {
         synchronized (this) {
             CachedPage cached = pageCache.get(cacheKey);
             if(cached != null) {
-                boolean fresh = isPageCacheFresh(cached.time, now, ttlMillis);
-                if(fresh || shouldServeColdStartCachedPageImmediately(isNtk(), fetchMode, true, fresh))
-                    return new PageResponse(cached.code, cached.body, true);
-                staleCached = cached;
+                if(!isUsableCachedPage(cached)) {
+                    pageCache.remove(cacheKey);
+                } else {
+                    boolean fresh = isPageCacheFresh(cached.time, now, ttlMillis);
+                    if(fresh || shouldServeColdStartCachedPageImmediately(isNtk(), fetchMode, true, fresh))
+                        return new PageResponse(cached.code, cached.body, true);
+                    staleCached = cached;
+                }
             }
         }
         CachedPage diskCached = readDiskCachedPage(cacheKey, now, ttlMillis, isNtk());
@@ -816,8 +820,10 @@ public class CustomHttpClient {
                 ttlMillis = Math.max(ttlMillis * 5, 10 * 60 * 1000L);
             synchronized (this) {
                 CachedPage cached = pageCache.get(cacheKey);
-                if(cached != null && isPageCacheFresh(cached.time, now, ttlMillis))
+                if(cached != null && isUsableCachedPage(cached) && isPageCacheFresh(cached.time, now, ttlMillis))
                     return true;
+                if(cached != null && !isUsableCachedPage(cached))
+                    pageCache.remove(cacheKey);
             }
             Response response = mget(normalized, true, null, FetchMode.DIRECT_ONLY);
             if(response == null)
@@ -902,13 +908,17 @@ public class CustomHttpClient {
         long now = System.currentTimeMillis();
         synchronized (this) {
             CachedPage cached = pageCache.get(cacheKey);
-            if(cached != null && isPageCacheFresh(cached.time, now, ttlMillis))
+            if(cached != null && isUsableCachedPage(cached) && isPageCacheFresh(cached.time, now, ttlMillis))
                 return new PageResponse(cached.code, cached.body, true);
+            if(cached != null && !isUsableCachedPage(cached))
+                pageCache.remove(cacheKey);
             String currentCacheKey = getBaseUrl(normalized) + normalized;
             if(!currentCacheKey.equals(cacheKey)) {
                 cached = pageCache.get(currentCacheKey);
-                if(cached != null && isPageCacheFresh(cached.time, now, ttlMillis))
+                if(cached != null && isUsableCachedPage(cached) && isPageCacheFresh(cached.time, now, ttlMillis))
                     return new PageResponse(cached.code, cached.body, true);
+                if(cached != null && !isUsableCachedPage(cached))
+                    pageCache.remove(currentCacheKey);
             }
         }
         if(staleCached != null)
@@ -958,6 +968,10 @@ public class CustomHttpClient {
             PersistedPage page = GSON.fromJson(json, PersistedPage.class);
             if(page == null || page.body == null || page.body.length() == 0)
                 return null;
+            if(!isCacheablePageBody(page.body)) {
+                CacheFileStore.delete(context, PAGE_CACHE_PREFIX + cacheKey);
+                return null;
+            }
             boolean usable = isPageCacheFresh(page.time, now, ttlMillis)
                     || (allowColdStartStale && isPageCacheUsableForColdStart(page.time, now));
             if(!usable) {
@@ -972,7 +986,8 @@ public class CustomHttpClient {
     }
 
     private void writeDiskCachedPage(String cacheKey, CachedPage page) {
-        if(!isNtk() || cacheKey == null || page == null || page.body == null || page.body.length() == 0)
+        if(!isNtk() || cacheKey == null || page == null || page.body == null || page.body.length() == 0
+                || !isCacheablePageBody(page.body))
             return;
         try {
             CacheFileStore.write(context, PAGE_CACHE_PREFIX + cacheKey, GSON.toJson(new PersistedPage(page)));
@@ -1318,6 +1333,8 @@ public class CustomHttpClient {
     }
 
     private boolean looksCacheable(String body) {
+        if(!isCacheablePageBody(body))
+            return false;
         String lower = body.toLowerCase(Locale.ROOT);
         return lower.contains("webtoon-list")
                 || lower.contains("searchitem")
@@ -1328,6 +1345,26 @@ public class CustomHttpClient {
                 || lower.contains("webtoon-body")
                 || lower.contains("miso-post-gallery")
                 || lower.contains("post-row");
+    }
+
+    static boolean isCacheablePageBodyForTest(String body) {
+        return isCacheablePageBody(body);
+    }
+
+    private static boolean isUsableCachedPage(CachedPage page) {
+        return page != null && page.body != null && page.body.length() > 0 && isCacheablePageBody(page.body);
+    }
+
+    private static boolean isCacheablePageBody(String body) {
+        if(body == null || body.length() == 0)
+            return false;
+        String lower = body.toLowerCase(Locale.ROOT);
+        return !lower.contains("<title>webpage not available</title>")
+                && !lower.contains("webpage not available")
+                && !lower.contains("net::err_")
+                && !lower.contains("err_connection_reset")
+                && !lower.contains("err_name_not_resolved")
+                && !lower.contains("err_timed_out");
     }
 
     private boolean isCloudflareChallenge(int code, String body) {
