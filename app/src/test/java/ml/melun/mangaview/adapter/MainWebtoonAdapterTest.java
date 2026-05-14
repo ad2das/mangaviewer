@@ -46,4 +46,12 @@ public class MainWebtoonAdapterTest {
         assertFalse(HomeSectionFetchFailurePolicy.shouldAbortForTest(new RuntimeException("section failed"), false));
         assertTrue(HomeSectionFetchFailurePolicy.shouldAbortForTest(new RuntimeException("cancelled"), true));
     }
+
+    @Test
+    public void emptyNtkFetchOpensCaptchaEvenWhenPlaceholderIsVisible() {
+        assertTrue(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(true, true));
+        assertTrue(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(true, false));
+        assertTrue(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(false, false));
+        assertFalse(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(false, true));
+    }
 }

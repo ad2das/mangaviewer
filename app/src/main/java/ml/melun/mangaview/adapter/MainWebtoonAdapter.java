@@ -2572,7 +2572,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 fetcher = null;
             if(!hasAnyResult) {
                 notifyFetchFinished(false);
-                if(!hasDisplayContent() && listener != null)
+                if(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(siteNtkSnapshot, hasDisplayContent()) && listener != null)
                     listener.captchaCallback();
                 return;
             }
