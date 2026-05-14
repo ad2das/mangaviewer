@@ -489,6 +489,46 @@ public class MainPageWebtoon {
         return group + "|" + label + "|" + path;
     }
 
+    public static String resolveCurrentSiteFilterPath(String label, int baseMode, boolean ntkSite) {
+        if(label == null || label.length() == 0)
+            return "";
+        String[][] groups;
+        if(ntkSite)
+            groups = baseMode == base_comic ? NTK_COMIC_FILTER_GROUPS : NTK_WEBTOON_FILTER_GROUPS;
+        else
+            groups = baseMode == base_comic ? COMIC_FILTER_GROUPS : WEBTOON_FILTER_GROUPS;
+        for(String[] group : groups) {
+            for(String item : group) {
+                SectionInfo info = parseSectionInfo(item);
+                if(label.equals(info.label))
+                    return info.path;
+            }
+        }
+        return "";
+    }
+
+    public static boolean isFilterPathForSite(String path, boolean ntkSite) {
+        if(path == null || path.length() == 0)
+            return false;
+        boolean wfwfFilter = path.startsWith("/cm?")
+                || path.startsWith("/cl?")
+                || path.startsWith("/ing?type1=")
+                || path.startsWith("/end?type1=");
+        boolean ntkFilter = path.startsWith("/ntk-genre?")
+                || path.equals("/ing")
+                || path.equals("/end")
+                || path.equals("/manhwa")
+                || path.equals("/manhwa-end")
+                || path.startsWith("/ing?sort=")
+                || path.startsWith("/end?sort=")
+                || path.startsWith("/ing?tag=")
+                || path.startsWith("/end?tag=")
+                || path.startsWith("/ing?cat=")
+                || path.startsWith("/manhwa?")
+                || path.startsWith("/manhwa-end?");
+        return ntkSite ? ntkFilter && !wfwfFilter : wfwfFilter && !ntkFilter;
+    }
+
     private static String webtoonOrderPath(String status, String order) {
         if("end".equals(status))
             return "/end?type1=genre&type2=&o=" + order;

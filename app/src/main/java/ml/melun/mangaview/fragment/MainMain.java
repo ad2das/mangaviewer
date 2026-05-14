@@ -9,6 +9,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.PopupMenu;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -29,6 +30,7 @@ import ml.melun.mangaview.adapter.MainAdapter;
 import ml.melun.mangaview.adapter.MainWebtoonAdapter;
 import ml.melun.mangaview.interfaces.UrlUpdateCallback;
 import ml.melun.mangaview.mangaview.Manga;
+import ml.melun.mangaview.mangaview.MainPageWebtoon;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
@@ -241,8 +243,17 @@ public class MainMain extends Fragment{
 
             @Override
             public void clickedCategoryPath(String title, String path) {
+                boolean ntkSite = getHttpClient().isNtk();
+                String currentSitePath = MainPageWebtoon.resolveCurrentSiteFilterPath(title, p.getBaseMode(), ntkSite);
+                String launchPath = currentSitePath.length() > 0 ? currentSitePath : path;
+                if(!MainPageWebtoon.isFilterPathForSite(launchPath, ntkSite)) {
+                    Toast.makeText(getContext(), "사이트 전환 중입니다. 다시 눌러주세요.", Toast.LENGTH_SHORT).show();
+                    if(callback != null)
+                        callback.callback(true);
+                    return;
+                }
                 Intent i = new Intent(getContext(), TagSearchActivity.class);
-                i.putExtra("query", path);
+                i.putExtra("query", launchPath);
                 i.putExtra("title", title);
                 i.putExtra("mode", 8);
                 i.putExtra("baseMode", p.getBaseMode());

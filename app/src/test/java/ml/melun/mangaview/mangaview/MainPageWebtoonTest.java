@@ -372,6 +372,26 @@ public class MainPageWebtoonTest {
     }
 
     @Test
+    public void resolvesStaleFilterClickToCurrentSitePath() {
+        String label = filterLabel(MainPageWebtoon.NTK_COMIC_FILTER_GROUPS[1][0]);
+
+        String ntkPath = MainPageWebtoon.resolveCurrentSiteFilterPath(label, base_comic, true);
+        String wfwfPath = MainPageWebtoon.resolveCurrentSiteFilterPath(label, base_comic, false);
+
+        assertTrue(ntkPath.startsWith("/ntk-genre?"));
+        assertTrue(MainPageWebtoon.isFilterPathForSite(ntkPath, true));
+        assertFalse(MainPageWebtoon.isFilterPathForSite(wfwfPath, true));
+    }
+
+    @Test
+    public void rejectsStaleCrossSiteFilterPaths() {
+        assertFalse(MainPageWebtoon.isFilterPathForSite("/cm?type1=genre&type2=%BC%BA%C0%CE&o=n", true));
+        assertFalse(MainPageWebtoon.isFilterPathForSite("/ntk-genre?kind=comic&label=BL", false));
+        assertTrue(MainPageWebtoon.isFilterPathForSite("/ing?type1=genre&o=n", false));
+        assertTrue(MainPageWebtoon.isFilterPathForSite("/manhwa?sort=hot", true));
+    }
+
+    @Test
     public void normalizeNtkPathPreservesNtkSortAndFilterParams() {
         assertEquals("/ing?sort=hot", MainPageWebtoon.normalizeNtkPathForTest("/ing?sort=hot"));
         assertEquals("/end?sort=hot", MainPageWebtoon.normalizeNtkPathForTest("/end?sort=hot"));
@@ -456,6 +476,11 @@ public class MainPageWebtoonTest {
             if(filter.endsWith(expected))
                 return true;
         return false;
+    }
+
+    private String filterLabel(String filter) {
+        String[] parts = filter.split("\\|", 3);
+        return parts.length > 1 ? parts[1] : "";
     }
 
     private boolean containsLabel(String[] filters, String label) {
