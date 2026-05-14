@@ -60,7 +60,12 @@ final class NtkWebViewFallbackManager {
             if(task == null) {
                 task = new FetchTask(String.valueOf(nextToken++), key, userAgent, baseUrl, path, headers);
                 inFlight.put(key, task);
-                queue.add(task);
+                if(task.highPriority) {
+                    queue.addFirst(task);
+                    preemptActiveBackgroundTaskLocked();
+                } else {
+                    queue.add(task);
+                }
                 startNextLocked();
             } else {
                 task.waiters++;
@@ -87,6 +92,18 @@ final class NtkWebViewFallbackManager {
             if(reused)
                 ViewerWarmupManager.logMetric("ntk_webview_reused", 1);
         }
+    }
+
+    private void preemptActiveBackgroundTaskLocked() {
+        FetchTask running = activeTask;
+        if(running == null || running.completed || running.highPriority)
+            return;
+        mainHandler.post(() -> {
+            if(running.completed)
+                return;
+            ViewerWarmupManager.logMetric("ntk_webview_preempted", 1);
+            finishOnMain(running, 0, "", false);
+        });
     }
 
     private void startNextLocked() {
@@ -356,6 +373,7 @@ final class NtkWebViewFallbackManager {
         final String baseUrl;
         final String path;
         final Map<String, String> headers;
+        final boolean highPriority;
         final long enqueuedAt = SystemClock.elapsedRealtime();
         volatile boolean requested = false;
         volatile boolean completed = false;
@@ -372,6 +390,7 @@ final class NtkWebViewFallbackManager {
             this.baseUrl = baseUrl;
             this.path = path;
             this.headers = headers == null ? new HashMap<>() : new HashMap<>(headers);
+            this.highPriority = shouldNavigateDocument(path);
         }
     }
 }

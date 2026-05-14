@@ -720,12 +720,13 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         List<String> tags;
         String release;
         String path;
+        String sourceSite;
         int baseMode;
 
         CachedTitle() {
         }
 
-        CachedTitle(MTitle source, int baseMode) {
+        CachedTitle(MTitle source, int baseMode, boolean ntk) {
             this.name = source.getName();
             this.id = source.getId();
             this.thumb = MainPageWebtoon.resolveCoverThumb(name, id, source.getThumb(), baseMode);
@@ -733,12 +734,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             this.tags = source.getTags();
             this.release = source.getRelease();
             this.path = source.getPath();
+            this.sourceSite = source.getSourceSite();
+            if((this.sourceSite == null || this.sourceSite.length() == 0) && ntk)
+                this.sourceSite = "ntk";
             this.baseMode = baseMode;
         }
 
         Title toTitle() {
             MTitle title = new MTitle(name, id, MainPageWebtoon.resolveCoverThumb(name, id, thumb, baseMode), author, tags, release, baseMode);
             title.setPath(path);
+            title.setSourceSite(sourceSite);
             return new Title(title);
         }
     }
@@ -873,7 +878,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     if(title.getId() <= 0)
                         continue;
                     title.setBaseMode(baseMode);
-                    cachedSection.titles.add(new CachedTitle(title, baseMode));
+                    cachedSection.titles.add(new CachedTitle(title, baseMode, siteNtkSnapshot));
                     if(cachedSection.titles.size() >= HOME_CACHE_MAX_TITLES_PER_SECTION)
                         break;
                 }

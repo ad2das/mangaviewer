@@ -587,7 +587,10 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     private String episodeCacheKey() {
-        return "episodeSnapshotV1_" + (title == null ? 0 : title.getBaseMode()) + "_" + (title == null ? 0 : title.getId());
+        String source = title == null ? "" : title.getSourceSite();
+        if((source == null || source.length() == 0) && p != null)
+            source = p.isNtkSite() ? "ntk" : "wfwf";
+        return "episodeSnapshotV2_" + (source == null ? "" : source) + "_" + (title == null ? 0 : title.getBaseMode()) + "_" + (title == null ? 0 : title.getId());
     }
 
     private void markFirstContent() {

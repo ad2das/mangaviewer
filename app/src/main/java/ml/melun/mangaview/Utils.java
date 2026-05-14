@@ -67,6 +67,7 @@ import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.IntegerCallback;
 import ml.melun.mangaview.interfaces.StringCallback;
 import ml.melun.mangaview.repository.DownloadRepository;
+import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MTitle;
@@ -275,6 +276,11 @@ public class Utils {
             return;
         }
         if(exactEpisode) {
+            if(shouldWaitForNtkExactFirstFrame(launchTitle)) {
+                launchExactWhenFirstFrameReady(context, manga, code, returnToEpisodes, online, recent,
+                        launchTitle, includeTitleEpisodes, launchToken);
+                return;
+            }
             if(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunch(launchTitle))
                 ViewerWarmupManager.warmup(context, manga, launchTitle, 0);
         } else if(waitForFirstFrame) {
@@ -284,6 +290,38 @@ public class Utils {
         } else
             ViewerWarmupManager.warmupContinueImmediate(context, manga, launchTitle);
         launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken, exactEpisode);
+    }
+
+    private static boolean shouldWaitForNtkExactFirstFrame(Title title) {
+        if(title != null && "ntk".equals(title.getSourceSite()))
+            return ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunch(title);
+        return p != null && p.isNtkSite() && ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunch(title);
+    }
+
+    private static void launchExactWhenFirstFrameReady(Context context, Manga manga, int code, boolean returnToEpisodes,
+                                                       boolean online, boolean recent, Title title, boolean includeTitleEpisodes,
+                                                       int launchToken) {
+        Context appContext = context.getApplicationContext();
+        int width = context instanceof Activity
+                ? getScreenWidth(((Activity) context).getWindowManager().getDefaultDisplay())
+                : context.getResources().getDisplayMetrics().widthPixels;
+        AppDispatchers.submitNavigation(() -> {
+            Manga prepared = ViewerWarmupManager.usePreparedFirstFrame(appContext, manga, title, false, p.getReverse(), 0);
+            if(prepared == null) {
+                try {
+                    int result = ViewerWarmupManager.prepareFirstFrameDirectOnly(appContext, manga, title, 0, width,
+                            false, p.getReverse(), MangaRepository.cancellation());
+                    if(result == Title.LOAD_OK)
+                        prepared = ViewerWarmupManager.usePreparedFirstFrame(appContext, manga, title, false, p.getReverse(), 0);
+                } catch(Exception e) {
+                    ml.melun.mangaview.report.CrashReporter.record(e);
+                }
+            }
+            Manga launchManga = prepared != null ? prepared : manga;
+            Title launchTitle = title != null ? title : launchManga.getTitle();
+            AppDispatchers.runOnMain(() -> launchPreparedViewer(context, launchManga, code, returnToEpisodes,
+                    online, recent, launchTitle, includeTitleEpisodes, launchToken, true));
+        });
     }
 
     private static void launchWhenFirstFrameReady(Context context, Manga manga, int code, boolean returnToEpisodes,
