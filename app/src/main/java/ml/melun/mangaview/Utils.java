@@ -814,7 +814,7 @@ public class Utils {
         if(openRecentNtkCloudflareChallenge(context, code, fragment))
             return true;
         if(getHttpClient().hasNtkAccessProof() || getHttpClient().hasRecentNtkAccessVerification())
-            return true;
+            return verifyNtkAccessAndOpenCaptchaIfNeeded(context, code, fragment, preference);
         if(shouldOpenCloudflareCaptchaAutomatically()) {
             startCaptchaActivity(context, code, fragment, null);
             captchaCount++;
@@ -918,13 +918,11 @@ public class Utils {
         try {
             response = getHttpClient().mget(path, true);
             if(response == null)
-                return false;
+                return NtkCaptchaPolicy.isAccessProbeChallenged(false, 0, null, false);
             int code = response.code();
             String body = CustomHttpClient.readBody(response);
             response = null;
-            if(getHttpClient().isCloudflareChallengeResponse(code, body))
-                return true;
-            return code == 403 && body != null && body.length() > 0;
+            return NtkCaptchaPolicy.isAccessProbeChallenged(true, code, body, getHttpClient().isCloudflareChallengeResponse(code, body));
         } catch (Exception e) {
             String message = e.getMessage();
             return message != null && message.toLowerCase(Locale.ROOT).contains("cloudflare");

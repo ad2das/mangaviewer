@@ -9,6 +9,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class UtilsTest {
     @Test
@@ -107,5 +109,13 @@ public class UtilsTest {
             tenth.delete();
             root.delete();
         }
+    }
+
+    @Test
+    public void ntkAccessProbeTreatsMissingResponseAsChallenge() {
+        assertTrue(NtkCaptchaPolicy.isAccessProbeChallenged(false, 0, null, false));
+        assertTrue(NtkCaptchaPolicy.isAccessProbeChallenged(true, 403, "blocked", false));
+        assertTrue(NtkCaptchaPolicy.isAccessProbeChallenged(true, 200, "", true));
+        assertFalse(NtkCaptchaPolicy.isAccessProbeChallenged(true, 200, "{}", false));
     }
 }
