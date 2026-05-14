@@ -29,6 +29,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -88,6 +89,8 @@ public class ViewerWarmupManager {
         } else {
             title = manga.getTitle();
         }
+        if(!sourceMatchesCurrentSite(title))
+            return;
         int width = viewerWidth(context);
         if(pageIndex < 0)
             pageIndex = 0;
@@ -144,6 +147,8 @@ public class ViewerWarmupManager {
             if(bookmark <= 0)
                 continue;
             title.setBookmark(bookmark);
+            if(!sourceMatchesCurrentSite(title))
+                continue;
             Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
             manga.setTitle(title);
             manga.setTitleId(title.getId());
@@ -172,6 +177,8 @@ public class ViewerWarmupManager {
         } else {
             title = manga.getTitle();
         }
+        if(!sourceMatchesCurrentSite(title))
+            return;
         Title warmupTitle = title;
         Context appContext = context.getApplicationContext();
         int width = viewerWidth(context);
@@ -231,6 +238,8 @@ public class ViewerWarmupManager {
         } else {
             title = manga.getTitle();
         }
+        if(!sourceMatchesCurrentSite(title))
+            return manga;
         Context appContext = context.getApplicationContext();
         int width = viewerWidth(context);
         int firstPage = manga.useBookmark() ? p.getViewerBookmark(manga) : 0;
@@ -746,6 +755,10 @@ public class ViewerWarmupManager {
         return isDiskSnapshotFresh(createdAt, now);
     }
 
+    static boolean sourceMatchesCurrentSiteForTest(String sourceSite, boolean ntkSite) {
+        return sourceMatchesCurrentSite(sourceSite, ntkSite);
+    }
+
     private static boolean isUsablePageImage(String image) {
         return image != null && image.trim().length() > 0;
     }
@@ -771,6 +784,25 @@ public class ViewerWarmupManager {
 
     private static boolean isDiskSnapshotFresh(long createdAt, long now) {
         return createdAt <= now && now - createdAt <= DISK_SNAPSHOT_TTL_MS;
+    }
+
+    private static boolean sourceMatchesCurrentSite(MTitle title) {
+        return sourceMatchesCurrentSite(title == null ? null : title.getSourceSite(), isCurrentNtkSite());
+    }
+
+    private static boolean sourceMatchesCurrentSite(String sourceSite, boolean ntkSite) {
+        if(sourceSite == null)
+            return true;
+        String normalized = sourceSite.trim().toLowerCase(Locale.ROOT);
+        if(normalized.length() == 0)
+            return true;
+        if(ntkSite)
+            return "ntk".equals(normalized);
+        return !"ntk".equals(normalized);
+    }
+
+    private static boolean isCurrentNtkSite() {
+        return getHttpClient().isNtk() || (p != null && p.isNtkSite());
     }
 
     private static Priority priorityForTier(int tier) {

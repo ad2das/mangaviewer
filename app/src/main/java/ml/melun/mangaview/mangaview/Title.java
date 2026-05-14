@@ -75,7 +75,7 @@ public class Title extends MTitle {
     }
 
     public int fetchEps(CustomHttpClient client) {
-        if(client.isNtk())
+        if(shouldFetchNtkEpisodes(client))
             return fetchNtkEps(client);
         if(isComicWolfSource())
             return fetchWolfEps(client, "/cl?toon=", "/cv?toon=");
@@ -621,6 +621,16 @@ public class Title extends MTitle {
 
     private boolean isComicWolfSource() {
         return baseMode == base_comic;
+    }
+
+    private boolean shouldFetchNtkEpisodes(CustomHttpClient client) {
+        if(client != null && client.isNtk())
+            return true;
+        return isNtkSource() && p != null && p.isNtkSite();
+    }
+
+    private boolean isNtkSource() {
+        return "ntk".equalsIgnoreCase(getSourceSite());
     }
 
 }

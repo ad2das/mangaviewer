@@ -58,4 +58,22 @@ public class ViewerWarmupManagerTest {
         assertTrue(ViewerWarmupManager.shouldLogMetricForTest(true, false));
         assertTrue(ViewerWarmupManager.shouldLogMetricForTest(false, true));
     }
+
+    @Test
+    public void sourceMatchAllowsOnlyNtkTitlesOnNtkSite() {
+        assertTrue(ViewerWarmupManager.sourceMatchesCurrentSiteForTest("ntk", true));
+        assertFalse(ViewerWarmupManager.sourceMatchesCurrentSiteForTest("wfwf", true));
+    }
+
+    @Test
+    public void sourceMatchSkipsNtkTitlesOffNtkSite() {
+        assertTrue(ViewerWarmupManager.sourceMatchesCurrentSiteForTest("wfwf", false));
+        assertFalse(ViewerWarmupManager.sourceMatchesCurrentSiteForTest("ntk", false));
+    }
+
+    @Test
+    public void sourceMatchKeepsLegacyBlankSourcesCompatible() {
+        assertTrue(ViewerWarmupManager.sourceMatchesCurrentSiteForTest("", true));
+        assertTrue(ViewerWarmupManager.sourceMatchesCurrentSiteForTest(null, false));
+    }
 }
