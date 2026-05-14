@@ -811,10 +811,14 @@ public class Utils {
         syncNtkCloudflareCookies(preference);
         if(isNtkEpisodeUrl(url))
             return false;
+        if(getHttpClient().hasNtkAccessProof()) {
+            getHttpClient().markNtkAccessVerified();
+            return true;
+        }
+        if(getHttpClient().hasRecentNtkAccessVerification())
+            return verifyNtkAccessAndOpenCaptchaIfNeeded(context, code, fragment, preference);
         if(openRecentNtkCloudflareChallenge(context, code, fragment))
             return true;
-        if(getHttpClient().hasNtkAccessProof() || getHttpClient().hasRecentNtkAccessVerification())
-            return verifyNtkAccessAndOpenCaptchaIfNeeded(context, code, fragment, preference);
         if(shouldOpenCloudflareCaptchaAutomatically()) {
             startCaptchaActivity(context, code, fragment, null);
             captchaCount++;
@@ -830,10 +834,14 @@ public class Utils {
         if(!canUseContextForUi(context) || !getHttpClient().isNtk())
             return false;
         syncNtkCloudflareCookies(preference);
+        if(getHttpClient().hasNtkAccessProof()) {
+            getHttpClient().markNtkAccessVerified();
+            return false;
+        }
+        if(getHttpClient().hasRecentNtkAccessVerification())
+            return false;
         if(openRecentNtkCloudflareChallenge(context, code, fragment))
             return true;
-        if(getHttpClient().hasNtkAccessProof() || getHttpClient().hasRecentNtkAccessVerification())
-            return false;
         String challengedUrl = getHttpClient().getLastCloudflareChallengeUrl();
         if(challengedUrl == null || challengedUrl.length() == 0 || !getHttpClient().isNtkUrl(challengedUrl))
             return false;
@@ -848,8 +856,10 @@ public class Utils {
         if(!canUseContextForUi(context) || !getHttpClient().isNtk())
             return false;
         syncNtkCloudflareCookies(preference);
-        if(openRecentNtkCloudflareChallenge(context, code, fragment))
+        if(getHttpClient().hasNtkAccessProof()) {
+            getHttpClient().markNtkAccessVerified();
             return true;
+        }
         AppDispatchers.runUserAction(() -> {
             boolean challenged = isNtkAccessChallengeActive();
             AppDispatchers.runOnMain(() -> {
@@ -953,6 +963,8 @@ public class Utils {
     static void startCaptchaActivity(Context context, int code, Fragment fragment, String url){
         if(!canUseContextForUi(context))
             return;
+        if(shouldSkipNtkCaptchaLaunch())
+            return;
         long now = System.currentTimeMillis();
         if(now - lastCaptchaActivityStartedAt < 3000L)
             return;
@@ -973,6 +985,8 @@ public class Utils {
     static void startCaptchaActivity(Context context, int code, Fragment fragment){
         if(!canUseContextForUi(context))
             return;
+        if(shouldSkipNtkCaptchaLaunch())
+            return;
         long now = System.currentTimeMillis();
         if(now - lastCaptchaActivityStartedAt < 3000L)
             return;
@@ -987,6 +1001,10 @@ public class Utils {
         } catch (RuntimeException e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
+    }
+
+    private static boolean shouldSkipNtkCaptchaLaunch() {
+        return getHttpClient().isNtk() && getHttpClient().hasNtkAccessProof();
     }
 
     private static String captchaUrl(String url) {

@@ -3,9 +3,14 @@ package ml.melun.mangaview.mangaview;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Handler;
+import android.os.Looper;
 import android.webkit.CookieManager;
 import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.InterruptedIOException;
@@ -31,10 +36,13 @@ import okhttp3.CipherSuite;
 import okhttp3.Call;
 import okhttp3.ConnectionSpec;
 import okhttp3.Dispatcher;
+import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
+import okhttp3.Protocol;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
+import okhttp3.ResponseBody;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.CODE_SCOPED_STORAGE;
@@ -63,6 +71,7 @@ public class CustomHttpClient {
     private volatile long lastCloudflareChallengeAt = 0L;
     private volatile boolean cloudflareCaptchaActive = false;
     private final ThreadLocal<RequestGroup> currentRequestGroup = requestGroupLocal();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private ThreadLocal<RequestGroup> requestGroupLocal() {
         return new
@@ -90,7 +99,9 @@ public class CustomHttpClient {
         loadSavedCookies();
         loadSavedUserAgent();
         this.client = baseClient(new OkHttpClient.Builder()).build();
-        this.unsafeFallbackClient = baseClient(getUnsafeOkHttpClient()).build();
+        this.unsafeFallbackClient = baseClient(getUnsafeOkHttpClient())
+                .protocols(ntkTlsFallbackProtocolsForTest())
+                .build();
 
         //this.cfc = new HashMap<>();
         //this.client = new OkHttpClient.Builder().build();
@@ -493,7 +504,7 @@ public class CustomHttpClient {
             }
             storeResponseCookies(response);
         } catch (Exception e){
-            if(!isInterruptedRequest(e) && (requestGroup == null || !requestGroup.isCancelled()))
+            if(shouldRecordRequestFailure(url, e, requestGroup))
                 ml.melun.mangaview.report.CrashReporter.record(e);
             return null;
         } finally {
@@ -501,6 +512,12 @@ public class CustomHttpClient {
                 requestGroup.remove(call);
         }
         return response;
+    }
+
+    private boolean shouldRecordRequestFailure(String url, Exception e, RequestGroup requestGroup) {
+        if(isInterruptedRequest(e) || (requestGroup != null && requestGroup.isCancelled()))
+            return false;
+        return !(e instanceof SSLException && (isNtkUrl(url) || isNtk()));
     }
 
     private boolean allowUnsafeFallback(String url) {
@@ -867,6 +884,10 @@ public class CustomHttpClient {
     }
 
     public boolean isNtkUrl(String url) {
+        return isNtkUrlForTest(url);
+    }
+
+    static boolean isNtkUrlForTest(String url) {
         if(url == null)
             return false;
         String lower = url.toLowerCase(Locale.ROOT);
@@ -875,7 +896,8 @@ public class CustomHttpClient {
                 || lower.contains("://" + NTK_HOST)
                 || lower.contains("://www." + NTK_HOST)
                 || lower.contains("://sbxh")
-                || lower.contains("://www.sbxh");
+                || lower.contains("://www.sbxh")
+                || lower.contains(".sbxh");
     }
 
     private boolean isWebtoonPath(String path){
@@ -925,6 +947,8 @@ public class CustomHttpClient {
         applyNtkApiHeaders(headers, baseUrl, url);
 
         Response response = get(baseUrl + url, headers);
+        if(shouldUseNtkWebViewFallbackForTest(isNtkUrl(baseUrl), response == null, url))
+            response = getWithNtkWebViewFallback(baseUrl, url, headers);
         if(shouldRetryWithResolvedDomain(response)) {
             if(response != null)
                 response.close();
@@ -933,8 +957,107 @@ public class CustomHttpClient {
             headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
             applyNtkApiHeaders(headers, baseUrl, url);
             response = get(baseUrl + url, headers);
+            if(shouldUseNtkWebViewFallbackForTest(isNtkUrl(baseUrl), response == null, url))
+                response = getWithNtkWebViewFallback(baseUrl, url, headers);
         }
         return response;
+    }
+
+    private Response getWithNtkWebViewFallback(String baseUrl, String path, Map<String, String> headers) {
+        if(Looper.myLooper() == Looper.getMainLooper())
+            return null;
+        java.util.concurrent.atomic.AtomicReference<Response> result = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+        mainHandler.post(() -> {
+            WebView webView = null;
+            try {
+                webView = new WebView(context);
+                WebSettings settings = webView.getSettings();
+                settings.setJavaScriptEnabled(true);
+                settings.setDomStorageEnabled(true);
+                settings.setUserAgentString(agent);
+                CookieManager.getInstance().setAcceptCookie(true);
+                WebView finalWebView = webView;
+                webView.setWebViewClient(new WebViewClient() {
+                    boolean requested = false;
+
+                    @Override
+                    public void onPageFinished(WebView view, String url) {
+                        if(requested)
+                            return;
+                        requested = true;
+                        String js = buildNtkWebViewFetchScript(path, headers);
+                        view.evaluateJavascript(js, value -> {
+                            try {
+                                Response response = responseFromWebViewFetch(baseUrl, path, value);
+                                result.set(response);
+                            } catch (Exception e) {
+                                ml.melun.mangaview.report.CrashReporter.record(e);
+                            } finally {
+                                finalWebView.destroy();
+                                done.countDown();
+                            }
+                        });
+                    }
+                });
+                webView.loadDataWithBaseURL(baseUrl, "<!doctype html><html><body></body></html>", "text/html", "UTF-8", null);
+            } catch (Exception e) {
+                if(webView != null)
+                    webView.destroy();
+                ml.melun.mangaview.report.CrashReporter.record(e);
+                done.countDown();
+            }
+        });
+        try {
+            done.await(15, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return result.get();
+    }
+
+    private String buildNtkWebViewFetchScript(String path, Map<String, String> headers) {
+        String accept = headers == null ? null : headers.get("Accept");
+        StringBuilder js = new StringBuilder();
+        js.append("(function(){");
+        js.append("try{");
+        js.append("var x=new XMLHttpRequest();");
+        js.append("x.open('GET',").append(JSONObject.quote(path)).append(",false);");
+        js.append("x.withCredentials=true;");
+        if(accept != null && accept.length() > 0)
+            js.append("x.setRequestHeader('Accept'," + JSONObject.quote(accept) + ");");
+        js.append("x.send(null);");
+        js.append("return JSON.stringify({code:x.status,body:x.responseText});");
+        js.append("}catch(e){return JSON.stringify({code:0,error:String(e)});}");
+        js.append("})()");
+        return js.toString();
+    }
+
+    private Response responseFromWebViewFetch(String baseUrl, String path, String value) throws Exception {
+        if(value == null || value.length() == 0 || "null".equals(value))
+            return null;
+        String clean = value;
+        if(clean.startsWith("\"") && clean.endsWith("\""))
+            clean = new JSONArray("[" + value + "]").getString(0);
+        JSONObject json = new JSONObject(clean);
+        int code = json.optInt("code", 0);
+        if(code <= 0)
+            return null;
+        String body = json.optString("body", "");
+        Request request = new Request.Builder().url(baseUrl + path).build();
+        return new Response.Builder()
+                .request(request)
+                .protocol(Protocol.HTTP_1_1)
+                .code(code)
+                .message("WebView")
+                .body(ResponseBody.create(body, MediaType.parse("text/plain; charset=utf-8")))
+                .build();
+    }
+
+    static boolean shouldUseNtkWebViewFallbackForTest(boolean ntkUrl, boolean missingResponse, String path) {
+        if(!ntkUrl || !missingResponse || path == null)
+            return false;
+        return path.startsWith("/api/") || path.startsWith("/webtoon/") || path.startsWith("/manhwa/");
     }
 
     private Map<String, String> buildHeaders(String baseUrl, Boolean useDefaultCookies, Map<String, String> customCookie) {
@@ -1277,6 +1400,10 @@ public class CustomHttpClient {
             configured.connectionSpecs(Arrays.asList(legacyTls, ConnectionSpec.CLEARTEXT));
         }
         return configured;
+    }
+
+    static List<Protocol> ntkTlsFallbackProtocolsForTest() {
+        return java.util.Collections.singletonList(Protocol.HTTP_1_1);
     }
 
 }
