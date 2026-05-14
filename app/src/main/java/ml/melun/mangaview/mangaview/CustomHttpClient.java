@@ -747,6 +747,35 @@ public class CustomHttpClient {
         }
     }
 
+    public boolean warmupCachedPageDirect(String url, long ttlMillis) {
+        try {
+            ensureNumberedDomain(false);
+            String normalized = normalizePath(url);
+            String cacheKey = getBaseUrl(normalized) + normalized;
+            long now = System.currentTimeMillis();
+            if(isNtk())
+                ttlMillis = Math.max(ttlMillis * 5, 10 * 60 * 1000L);
+            synchronized (this) {
+                CachedPage cached = pageCache.get(cacheKey);
+                if(cached != null && isPageCacheFresh(cached.time, now, ttlMillis))
+                    return true;
+            }
+            Response response = mget(normalized, true, null, false);
+            if(response == null)
+                return false;
+            int code = response.code();
+            String body = readBody(response);
+            if(code >= 200 && code < 400 && body.length() > 0 && looksCacheable(body)) {
+                synchronized (this) {
+                    pageCache.put(cacheKey, new CachedPage(code, body, now));
+                }
+                return true;
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
     private PageResponse loadPageFromNetworkWithDomainRetry(String normalized, long now, CachedPage staleCached) throws Exception {
         Exception lastError = null;
         for(int attempt = 0; attempt < 3; attempt++) {
@@ -939,6 +968,10 @@ public class CustomHttpClient {
 
 
     public Response mget(String url, Boolean useDefaultCookies, Map<String, String> customCookie){
+        return mget(url, useDefaultCookies, customCookie, true);
+    }
+
+    private Response mget(String url, Boolean useDefaultCookies, Map<String, String> customCookie, boolean allowWebViewFallback){
         ensureNumberedDomain(false);
         if(customCookie==null)
             customCookie = new HashMap<>();
@@ -948,7 +981,7 @@ public class CustomHttpClient {
         applyNtkApiHeaders(headers, baseUrl, url);
 
         Response response = get(baseUrl + url, headers);
-        if(shouldUseNtkWebViewFallbackForTest(isNtkUrl(baseUrl), response == null, url))
+        if(allowWebViewFallback && shouldUseNtkWebViewFallbackForTest(isNtkUrl(baseUrl), response == null, url))
             response = getWithNtkWebViewFallback(baseUrl, url, headers);
         if(shouldRetryWithResolvedDomain(response)) {
             if(response != null)
@@ -958,7 +991,7 @@ public class CustomHttpClient {
             headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
             applyNtkApiHeaders(headers, baseUrl, url);
             response = get(baseUrl + url, headers);
-            if(shouldUseNtkWebViewFallbackForTest(isNtkUrl(baseUrl), response == null, url))
+            if(allowWebViewFallback && shouldUseNtkWebViewFallbackForTest(isNtkUrl(baseUrl), response == null, url))
                 response = getWithNtkWebViewFallback(baseUrl, url, headers);
         }
         return response;

@@ -44,6 +44,7 @@ import ml.melun.mangaview.repository.CacheFileStore;
 import ml.melun.mangaview.repository.CachePolicy;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.repository.OfflineStore;
+import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.PerfTrace;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.PrefetchCoordinator;
@@ -52,6 +53,7 @@ import ml.melun.mangaview.viewmodel.EpisodeViewModel;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 
 import static ml.melun.mangaview.MainApplication.p;
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.Utils.openViewerPrepared;
 import static ml.melun.mangaview.Utils.queueOfflineDownload;
 import static ml.melun.mangaview.Utils.safeGet;
@@ -63,6 +65,7 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
 
 
 public class EpisodeActivity extends AppCompatActivity {
+    private static final long VIEWER_PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     //global variables
     Title title;
     EpisodeAdapter episodeAdapter;
@@ -381,6 +384,21 @@ public class EpisodeActivity extends AppCompatActivity {
         if(!online || episodes == null || episodes.size() == 0)
             return;
         PrefetchCoordinator.prefetchEpisodeList(context, title, episodes, bookmarkIndex, mode);
+        warmupLikelyNtkViewerPage();
+    }
+
+    private void warmupLikelyNtkViewerPage() {
+        Manga target = quickReadEpisode();
+        if(!shouldDirectWarmupNtkViewerPageForTest(p.isNtkSite(), getHttpClient().isNtk(), target == null ? null : target.getNtkEpisodePath()))
+            return;
+        String path = target.getNtkEpisodePath();
+        AppDispatchers.submitImageWarmup(() -> getHttpClient().warmupCachedPageDirect(path, VIEWER_PAGE_CACHE_TTL_MS));
+    }
+
+    static boolean shouldDirectWarmupNtkViewerPageForTest(boolean ntkPreference, boolean ntkClient, String episodePath) {
+        return (ntkPreference || ntkClient)
+                && episodePath != null
+                && episodePath.trim().length() > 0;
     }
 
     private void confirmDeleteOfflineEpisode(int position, Manga manga) {
