@@ -252,6 +252,11 @@ public class CaptchaActivity extends AppCompatActivity {
                 //super.onReceivedError(view, request, error);
                 if(request != null && !request.isForMainFrame())
                     return;
+                String failingUrl = request != null && request.getUrl() != null ? request.getUrl().toString() : (view == null ? null : view.getUrl());
+                if(shouldSuppressNtkLoadErrorPopupForTest(p != null && p.isNtkSite(), failingUrl, purl)) {
+                    android.util.Log.d("CaptchaActivity", "Suppressing NTK captcha WebView load error popup: " + failingUrl);
+                    return;
+                }
                 showPopup(context, "오류", "연결에 실패했습니다. URL을 확인해 주세요");
             }
 
@@ -685,6 +690,17 @@ public class CaptchaActivity extends AppCompatActivity {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    static boolean shouldSuppressNtkLoadErrorPopupForTest(boolean ntkSite, String requestUrl, String captchaUrl) {
+        return ntkSite || isNtkLikeUrlForCaptcha(requestUrl) || isNtkLikeUrlForCaptcha(captchaUrl);
+    }
+
+    private static boolean isNtkLikeUrlForCaptcha(String url) {
+        if(url == null)
+            return false;
+        String lower = url.toLowerCase(java.util.Locale.ROOT);
+        return lower.contains("://ntk") || lower.contains("://sbxh") || lower.contains("://toonflix");
     }
 
     private Set<String> readClearanceValues(CookieManager cookiem, String... urls) {
