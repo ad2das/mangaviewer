@@ -1755,6 +1755,7 @@ public class CustomHttpClient {
 
         boolean ntkBaseUrl = isNtkUrl(baseUrl);
         boolean fastNtkPageDirect = shouldUseFastNtkPageDirect(ntkBaseUrl, url, fetchMode);
+        boolean wolfWebViewFallbackAllowed = allowsWolfWebViewFallback();
         Response response = get(baseUrl + url, headers, fastNtkPageDirect);
         if(ntkBaseUrl && shouldRetryWithResolvedDomain(response)) {
             if(response != null)
@@ -1790,7 +1791,16 @@ public class CustomHttpClient {
                 response = getWithNtkWebViewFallback(baseUrl, url, headers);
             }
         }
-        if(shouldUseWolfWebViewFallback(ntkBaseUrl, response == null, url, fetchMode, allowsWolfWebViewFallback())) {
+        if(shouldUseWolfWebViewFallback(ntkBaseUrl, response == null, url, fetchMode, wolfWebViewFallbackAllowed)
+                && ensureNumberedDomain(true)) {
+            baseUrl = getBaseUrl(url);
+            ntkBaseUrl = isNtkUrl(baseUrl);
+            headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
+            applyNtkApiHeaders(headers, baseUrl, url);
+            fastNtkPageDirect = shouldUseFastNtkPageDirect(ntkBaseUrl, url, fetchMode);
+            response = get(baseUrl + url, headers, fastNtkPageDirect);
+        }
+        if(shouldUseWolfWebViewFallback(ntkBaseUrl, response == null, url, fetchMode, wolfWebViewFallbackAllowed)) {
             response = getWithNtkWebViewFallback(baseUrl, url, headers);
         }
         return response;

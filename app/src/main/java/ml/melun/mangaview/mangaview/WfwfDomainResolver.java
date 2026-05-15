@@ -18,10 +18,12 @@ import okhttp3.Response;
 public class WfwfDomainResolver {
     private static final Pattern WFWF_PATTERN = Pattern.compile("^https?://wfwf(\\d+)\\.com(?:/cm)?/?$");
     private static final Pattern NUMBERED_DOMAIN_PATTERN = Pattern.compile("^https?://(wfwf|ntk)(\\d+)\\.com(?:/(?:cm|manhwa))?/?$");
+    private static final Pattern NUMBERED_ROOT_PATTERN = Pattern.compile("https?://(?:www\\.)?(wfwf|ntk)(\\d+)\\.com", Pattern.CASE_INSENSITIVE);
     private static final int DEFAULT_NUMBER = 450;
     private static final int DEFAULT_NTK_NUMBER = 1;
     private static final int FORWARD_SCAN_LIMIT = 300;
-    private static final int BACKWARD_SCAN_LIMIT = 5;
+    private static final int BACKWARD_SCAN_LIMIT = 30;
+    private static final int NEARBY_SCAN_LIMIT = 30;
     private static final long RESOLVE_TIMEOUT_MS = 15_000L;
 
     public static String resolve(OkHttpClient client, String currentUrl, Map<String, String> headers) {
@@ -40,8 +42,9 @@ public class WfwfDomainResolver {
                 .build();
 
         String currentRoot = domain.root();
-        if(isAlive(probeClient, currentRoot, headers, requestGroup))
-            return currentRoot;
+        String resolved = resolveCandidate(probeClient, currentRoot, headers, requestGroup);
+        if(resolved != null)
+            return resolved;
 
         return findAliveCandidate(probeClient, candidates(domain), headers, requestGroup, System.currentTimeMillis() + RESOLVE_TIMEOUT_MS);
     }
@@ -81,12 +84,19 @@ public class WfwfDomainResolver {
     private static List<String> candidates(Domain domain) {
         ArrayList<String> roots = new ArrayList<>();
         Set<Integer> seen = new HashSet<>();
-        for(int i = 1; i <= FORWARD_SCAN_LIMIT; i++)
+        for(int i = 1; i <= NEARBY_SCAN_LIMIT; i++) {
             add(roots, seen, domain, domain.number + i);
-        add(roots, seen, domain, defaultNumber(domain.prefix));
-        for(int i = 1; i <= FORWARD_SCAN_LIMIT; i++)
-            add(roots, seen, domain, defaultNumber(domain.prefix) + i);
-        for(int i = 1; i <= BACKWARD_SCAN_LIMIT; i++)
+            add(roots, seen, domain, domain.number - i);
+        }
+        int defaultNumber = defaultNumber(domain.prefix);
+        add(roots, seen, domain, defaultNumber);
+        for(int i = 1; i <= NEARBY_SCAN_LIMIT; i++) {
+            add(roots, seen, domain, defaultNumber + i);
+            add(roots, seen, domain, defaultNumber - i);
+        }
+        for(int i = NEARBY_SCAN_LIMIT + 1; i <= FORWARD_SCAN_LIMIT; i++)
+            add(roots, seen, domain, domain.number + i);
+        for(int i = NEARBY_SCAN_LIMIT + 1; i <= BACKWARD_SCAN_LIMIT; i++)
             add(roots, seen, domain, domain.number - i);
         return roots;
     }
@@ -97,8 +107,9 @@ public class WfwfDomainResolver {
                 return null;
             if(deadlineMs - System.currentTimeMillis() <= 0)
                 return null;
-            if(isAlive(client, root, headers, requestGroup))
-                return root;
+            String resolved = resolveCandidate(client, root, headers, requestGroup);
+            if(resolved != null)
+                return resolved;
         }
         return null;
     }
@@ -112,13 +123,23 @@ public class WfwfDomainResolver {
         return "ntk".equals(prefix) ? DEFAULT_NTK_NUMBER : DEFAULT_NUMBER;
     }
 
-    private static boolean isAlive(OkHttpClient client, String root, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup) {
+    private static String resolveCandidate(OkHttpClient client, String root, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup) {
         boolean ntk = root != null && (root.contains("://ntk") || root.contains("://newtoki") || root.contains("://sbxh") || root.contains("://www.sbxh"));
         String comicPath = ntk ? "/manhwa" : "/cm";
-        return probe(client, root + "/ing", headers, requestGroup) || probe(client, root + comicPath, headers, requestGroup);
+        ProbeResult ing = probe(client, root + "/ing", headers, requestGroup);
+        if(ing.updatedRoot != null)
+            return ing.updatedRoot;
+        if(ing.alive)
+            return root;
+        ProbeResult comic = probe(client, root + comicPath, headers, requestGroup);
+        if(comic.updatedRoot != null)
+            return comic.updatedRoot;
+        if(comic.alive)
+            return root;
+        return null;
     }
 
-    private static boolean probe(OkHttpClient client, String url, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup) {
+    private static ProbeResult probe(OkHttpClient client, String url, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup) {
         Response response = null;
         Call call = null;
         try {
@@ -132,9 +153,14 @@ public class WfwfDomainResolver {
             response = call.execute();
             int code = response.code();
             String body = response.body() == null ? "" : response.body().string();
-            return code >= 200 && code < 500 && looksLikeWfwf(body);
+            if(code < 200 || code >= 500)
+                return ProbeResult.empty();
+            String updatedRoot = extractUpdatedRoot(body);
+            if(updatedRoot != null)
+                return new ProbeResult(false, updatedRoot);
+            return new ProbeResult(looksLikeWfwf(body), null);
         } catch (Exception e) {
-            return false;
+            return ProbeResult.empty();
         } finally {
             if(requestGroup != null && call != null)
                 requestGroup.remove(call);
@@ -143,12 +169,34 @@ public class WfwfDomainResolver {
         }
     }
 
+    static String extractUpdatedRootForTest(String body) {
+        return extractUpdatedRoot(body);
+    }
+
+    static List<String> candidatesForTest(String currentUrl) {
+        Domain domain = parseDomain(currentUrl);
+        return domain == null ? new ArrayList<>() : candidates(domain);
+    }
+
+    private static String extractUpdatedRoot(String body) {
+        if(body == null)
+            return null;
+        String lower = body.toLowerCase(Locale.ROOT);
+        if(!lower.contains("주소") && !lower.contains("address") && !lower.contains("새로운") && !lower.contains("updated"))
+            return null;
+        Matcher matcher = NUMBERED_ROOT_PATTERN.matcher(body);
+        if(!matcher.find())
+            return null;
+        String prefix = matcher.group(1).toLowerCase(Locale.ROOT);
+        String digits = matcher.group(2);
+        return "https://" + prefix + digits + ".com";
+    }
+
     private static boolean looksLikeWfwf(String body) {
         if(body == null)
             return false;
         String lower = body.toLowerCase(Locale.ROOT);
         return lower.contains("webtoon-list")
-                || lower.contains("toon=")
                 || lower.contains("/webtoon/")
                 || lower.contains("/manhwa/")
                 || lower.contains("/view?toon=")
@@ -196,6 +244,20 @@ public class WfwfDomainResolver {
         String root(int value) {
             String digits = width > 1 ? String.format(Locale.ROOT, "%0" + width + "d", value) : String.valueOf(value);
             return "https://" + prefix + digits + ".com";
+        }
+    }
+
+    private static class ProbeResult {
+        final boolean alive;
+        final String updatedRoot;
+
+        ProbeResult(boolean alive, String updatedRoot) {
+            this.alive = alive;
+            this.updatedRoot = updatedRoot;
+        }
+
+        static ProbeResult empty() {
+            return new ProbeResult(false, null);
         }
     }
 }
