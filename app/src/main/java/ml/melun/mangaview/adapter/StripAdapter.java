@@ -77,7 +77,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     List<Object> items;
     private final Set<String> preloadedImages = new LinkedHashSet<>();
     private final Set<String> displayedImages = new LinkedHashSet<>();
-    private final LruCache<String, Bitmap> decodedBitmapCache;
+    private final LruCache<String, CachedBitmap> decodedBitmapCache;
     private final Map<String, Decoder> decoders = new HashMap<>();
     private final Map<String, CustomTarget<Bitmap>> decodedPreloadTargets = new HashMap<>();
     private final Map<String, Integer> pageHeights = new HashMap<>();
@@ -394,10 +394,10 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         reverse = p.getReverse();
         this.width = width;
         this.title = title;
-        this.decodedBitmapCache = new LruCache<String, Bitmap>(decodedCacheSizeKb()) {
+        this.decodedBitmapCache = new LruCache<String, CachedBitmap>(decodedCacheSizeKb()) {
             @Override
-            protected int sizeOf(@NonNull String key, @NonNull Bitmap value) {
-                return Math.max(1, value.getByteCount() / 1024);
+            protected int sizeOf(@NonNull String key, @NonNull CachedBitmap value) {
+                return value.sizeKb;
             }
         };
         setHasStableIds(true);
@@ -545,24 +545,24 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         holder.bindStartedAtMs = android.os.SystemClock.elapsedRealtime();
         applyKnownHeight(holder, pageKey);
         String cacheKey = decodedCacheKey(item);
-        Bitmap cached = decodedBitmapCache.get(cacheKey);
-        if(cached != null && !cached.isRecycled() && isHolderStillBound(holder, item, pageKey)) {
+        CachedBitmap cached = decodedBitmapCache.get(cacheKey);
+        if(cached != null && cached.isUsable() && isHolderStillBound(holder, item, pageKey)) {
             if(item.index > 0)
                 ViewerWarmupManager.logMetric("viewer_next_page_cache_hit", 1);
-            bindBitmap(holder, pageKey, cached);
+            bindBitmap(holder, pageKey, cached.bitmap);
             holder.refresh.setVisibility(View.GONE);
             markDisplayedAndPreload(holder, item, pageKey);
             return;
         }
-        if(cached != null && cached.isRecycled())
+        if(cached != null)
             decodedBitmapCache.remove(cacheKey);
-        cached = ViewerWarmupManager.getDecodedBitmap(item, autoCut, reverse, width);
-        if(cached != null && !cached.isRecycled() && isHolderStillBound(holder, item, pageKey)) {
+        Bitmap warmupCached = ViewerWarmupManager.getDecodedBitmap(item, autoCut, reverse, width);
+        if(warmupCached != null && !warmupCached.isRecycled() && isHolderStillBound(holder, item, pageKey)) {
             if(item.index > 0)
                 ViewerWarmupManager.logMetric("viewer_next_page_cache_hit", 1);
-            bindBitmap(holder, pageKey, cached);
+            bindBitmap(holder, pageKey, warmupCached);
             holder.refresh.setVisibility(View.GONE);
-            decodedBitmapCache.put(cacheKey, cached);
+            putDecodedBitmap(cacheKey, warmupCached);
             markDisplayedAndPreload(holder, item, pageKey);
             return;
         }
@@ -661,7 +661,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     private void cacheDisplayedBitmap(String cacheKey, Bitmap bitmap) {
         if(shouldCacheDisplayedBitmap(cacheKey, bitmap != null && !bitmap.isRecycled()))
-            decodedBitmapCache.put(cacheKey, bitmap);
+            putDecodedBitmap(cacheKey, bitmap);
     }
 
     static boolean shouldCacheDisplayedBitmapForTest(String cacheKey, boolean holderActive, boolean bitmapUsable) {
@@ -1025,8 +1025,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         String key = decodedCacheKey(page);
         if(key == null || key.length() == 0)
             return;
-        Bitmap cached = decodedBitmapCache.get(key);
-        if(cached != null && !cached.isRecycled())
+        CachedBitmap cached = decodedBitmapCache.get(key);
+        if(cached != null && cached.isUsable())
             return;
         if(cached != null)
             decodedBitmapCache.remove(key);
@@ -1044,7 +1044,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 }
                 if(resource == null || resource.isRecycled() || isContextDestroyed())
                     return;
-                decodedBitmapCache.put(key, resource);
+                putDecodedBitmap(key, resource);
                 rememberPageHeight(key, resource);
             }
 
@@ -1140,6 +1140,32 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         int minKb = p.getDataSave() ? 4 * 1024 : 8 * 1024;
         int maxKb = p.getDataSave() ? 12 * 1024 : 32 * 1024;
         return Math.max(minKb, Math.min(targetKb, maxKb));
+    }
+
+    private void putDecodedBitmap(String key, Bitmap bitmap) {
+        if(key == null || key.length() == 0 || bitmap == null || bitmap.isRecycled())
+            return;
+        decodedBitmapCache.put(key, new CachedBitmap(bitmap, bitmapSizeKb(bitmap)));
+    }
+
+    private static int bitmapSizeKb(Bitmap bitmap) {
+        if(bitmap == null)
+            return 1;
+        return Math.max(1, bitmap.getByteCount() / 1024);
+    }
+
+    private static class CachedBitmap {
+        final Bitmap bitmap;
+        final int sizeKb;
+
+        CachedBitmap(Bitmap bitmap, int sizeKb) {
+            this.bitmap = bitmap;
+            this.sizeKb = Math.max(1, sizeKb);
+        }
+
+        boolean isUsable() {
+            return bitmap != null && !bitmap.isRecycled();
+        }
     }
 
     private void trimPreloadTracker() {
