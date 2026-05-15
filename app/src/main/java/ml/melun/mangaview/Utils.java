@@ -888,11 +888,7 @@ public class Utils {
         syncNtkCloudflareCookies(preference);
         if(isNtkEpisodeUrl(url))
             return false;
-        if(getHttpClient().hasNtkAccessProof()) {
-            getHttpClient().markNtkAccessVerified();
-            return true;
-        }
-        if(getHttpClient().hasRecentNtkAccessVerification())
+        if(getHttpClient().hasNtkAccessProof() || getHttpClient().hasRecentNtkAccessVerification())
             return verifyNtkAccessAndOpenCaptchaIfNeeded(context, code, fragment, preference);
         if(openRecentNtkCloudflareChallenge(context, code, fragment))
             return true;
@@ -911,12 +907,10 @@ public class Utils {
         if(!canUseContextForUi(context) || !getHttpClient().isNtk())
             return false;
         syncNtkCloudflareCookies(preference);
-        if(getHttpClient().hasNtkAccessProof()) {
-            getHttpClient().markNtkAccessVerified();
+        if(getHttpClient().hasNtkAccessProof() || getHttpClient().hasRecentNtkAccessVerification()) {
+            verifyNtkAccessAndOpenCaptchaIfNeeded(context, code, fragment, preference);
             return false;
         }
-        if(getHttpClient().hasRecentNtkAccessVerification())
-            return false;
         if(openRecentNtkCloudflareChallenge(context, code, fragment))
             return true;
         String challengedUrl = getHttpClient().getLastCloudflareChallengeUrl();
@@ -933,10 +927,6 @@ public class Utils {
         if(!canUseContextForUi(context) || !getHttpClient().isNtk())
             return false;
         syncNtkCloudflareCookies(preference);
-        if(getHttpClient().hasNtkAccessProof()) {
-            getHttpClient().markNtkAccessVerified();
-            return true;
-        }
         AppDispatchers.runUserAction(() -> {
             boolean challenged = isNtkAccessChallengeActive();
             AppDispatchers.runOnMain(() -> {

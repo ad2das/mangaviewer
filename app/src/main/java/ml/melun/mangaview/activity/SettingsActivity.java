@@ -41,6 +41,7 @@ import java.io.File;
 
 import ml.melun.mangaview.Preference;
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.interfaces.StringCallback;
 import ml.melun.mangaview.runtime.AppDispatchers;
 
@@ -306,6 +307,7 @@ public class SettingsActivity extends AppCompatActivity {
                 switchSite(DEFAULT_COMIC_URL, WEBTOON_URL, "WFWF");
             } else {
                 switchSite(NTK_COMIC_URL, NTK_WEBTOON_URL, "NTK");
+                verifyNtkAfterSiteSwitch("NTK");
             }
         });
         this.findViewById(R.id.setting_ntk_diagnostics).setOnClickListener(v -> runNtkNetworkDiagnostics());
@@ -471,6 +473,13 @@ public class SettingsActivity extends AppCompatActivity {
         getHttpClient().clearPageCache();
         updateSiteToggleText();
         Toast.makeText(context, label + " 사이트로 변경되었습니다.", Toast.LENGTH_SHORT).show();
+    }
+
+    private void verifyNtkAfterSiteSwitch(String label) {
+        if(!"NTK".equals(label))
+            return;
+        findViewById(android.R.id.content).post(() ->
+                Utils.verifyNtkAccessAndOpenCaptchaIfNeeded(this, CaptchaActivity.RESULT_CAPTCHA, null, p));
     }
 
     private void runNtkNetworkDiagnostics() {
