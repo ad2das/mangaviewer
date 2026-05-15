@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "updated": "2026-05-13",
-  "sourceRoot": "https://wfwf451.com",
+  "updated": "2026-05-15",
+  "sourceRoot": "https://wfwf452.com",
   "sources": [
     "source-comic-genre"
   ],
@@ -6678,7 +6678,7 @@
       "thumb": "https://i2.imgcloud18.com/10714/0c5cf315.jpg",
       "release": "",
       "inferredTags": [
-        "드라마"
+        "개그"
       ]
     },
     "10715": {
@@ -9246,7 +9246,7 @@
       "inferredTags": [
         "액션",
         "스릴러",
-        "순정"
+        "애니화"
       ]
     },
     "10994": {
@@ -13264,13 +13264,13 @@
     },
     "11439": {
       "name": "벗겨줘! 류가사키 양",
-      "thumb": "https://i0.imgcloud18.com/11439/7db7cb9f.jpg?v=1",
+      "thumb": "https://i0.imgcloud18.com/11439/c0ddfbcb.jpg?v=1",
       "release": "",
       "sourceTags": [
-        "학원",
-        "판타지",
         "러브코미디",
-        "개그"
+        "개그",
+        "판타지",
+        "학원"
       ]
     },
     "11440": {
@@ -21878,7 +21878,7 @@
       "thumb": "https://i6.imgcloud18.com/12398/d9b43a1b.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12399": {
@@ -21903,7 +21903,7 @@
       "thumb": "https://i6.imgcloud18.com/12401/65bb94c1.jpg",
       "release": "",
       "inferredTags": [
-        "액션"
+        "백합"
       ]
     },
     "12402": {
@@ -21919,7 +21919,7 @@
       "thumb": "https://i6.imgcloud18.com/12403/e597f9f0.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12404": {
@@ -22145,7 +22145,7 @@
       "thumb": "https://i6.imgcloud18.com/12430/aee4b074.jpg",
       "release": "",
       "inferredTags": [
-        "학원"
+        "개그"
       ]
     },
     "12431": {
@@ -22464,7 +22464,7 @@
       "thumb": "https://i6.imgcloud18.com/12466/63393722.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12467": {
@@ -22510,7 +22510,7 @@
       "thumb": "https://i6.imgcloud18.com/12471/8133da97.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12472": {
@@ -78160,6 +78160,128 @@
         "추리",
         "드라마",
         "공포"
+      ]
+    },
+    "18650": {
+      "name": "전략 삼국지",
+      "thumb": "https://c11cm.net/18650/gszmupiwmbsjagsogqb4vuhcngtmcl1g91.jpg",
+      "release": "",
+      "sourceTags": [
+        "시대",
+        "드라마"
+      ]
+    },
+    "18651": {
+      "name": "하늘을 연모하다",
+      "thumb": "https://c11cm.net/18651/ow9ihzowzzebznpnwcqs8wmst37bplvr7t.jpg",
+      "release": "",
+      "sourceTags": [
+        "순정"
+      ]
+    },
+    "18653": {
+      "name": "고양이와 나의 금요일",
+      "thumb": "https://c11cm.net/18653/yxms5bmwwvcf3qppdewghcc1vftddg7nmw.jpg",
+      "release": "",
+      "sourceTags": [
+        "순정"
+      ]
+    },
+    "18654": {
+      "name": "러프",
+      "thumb": "https://c11cm.net/18654/zn10hfissijis3762a71dcfymqwr19gjma.jpg",
+      "release": "",
+      "sourceTags": [
+        "스포츠"
+      ]
+    },
+    "18656": {
+      "name": "몽키 피크",
+      "thumb": "https://c11cm.net/18656/67svt34zpmwp3zphexzhxayhb8bhj6w6ot.jpg",
+      "release": "",
+      "sourceTags": [
+        "드라마"
+      ]
+    },
+    "18657": {
+      "name": "여왕의 꽃",
+      "thumb": "https://c11cm.net/18657/fwolx6ancqxoqpnwnzsnrrpdryeytymiwe.jpg",
+      "release": "",
+      "sourceTags": [
+        "순정"
+      ]
+    },
+    "18663": {
+      "name": "러브리스 (LOVELESS)",
+      "thumb": "https://c11cm.net/18663/e2eslyse28unvnt7sikuupoucq23aujrhe.jpg",
+      "release": "",
+      "sourceTags": [
+        "드라마"
+      ]
+    },
+    "18666": {
+      "name": "오타쿠도 사랑하는 육식신사",
+      "thumb": "https://c11cm.net/18666/rlkwi6jqb3wjemrwymsqxspnempmxgl5z9.jpg",
+      "release": "",
+      "sourceTags": [
+        "순정"
+      ]
+    },
+    "18667": {
+      "name": "은여우",
+      "thumb": "https://c11cm.net/18667/grp0svhx6y4wnuecurltzljmdam9gvpo5a.jpg",
+      "release": "",
+      "inferredTags": [
+        "개그"
+      ]
+    },
+    "18668": {
+      "name": "매일매일 싸내커플",
+      "thumb": "https://c11cm.net/18668/rzmupskst0buuuzaiyxvnvqe7e9o9hds2j.jpg",
+      "release": "",
+      "sourceTags": [
+        "성인"
+      ]
+    },
+    "18670": {
+      "name": "Hero - 아카기의 유지를",
+      "thumb": "https://c11cm.net/18670/s9jcm3wmu1ruyips0nx9wj2mm5xrfvxou5.jpg",
+      "release": "",
+      "sourceTags": [
+        "도박"
+      ]
+    },
+    "18671": {
+      "name": "꿈꾸는 태양",
+      "thumb": "https://c11cm.net/18671/mua7dnvjqrktzzb1lmcco8j4eg7gkyr7rk.jpg",
+      "release": "",
+      "sourceTags": [
+        "순정"
+      ]
+    },
+    "18672": {
+      "name": "전설의 중고차 딜러",
+      "thumb": "https://c11cm.net/18672/dslkqawj7phcwikjrimu2ovbtwonuwhaop.jpg",
+      "release": "",
+      "sourceTags": [
+        "액션",
+        "드라마"
+      ]
+    },
+    "18673": {
+      "name": "저주받은 공작님을 구했습니다",
+      "thumb": "https://c11cm.net/18673/gvb3t6vtynnfaphlpqlcljeobovdrbi74g.jpg",
+      "release": "",
+      "sourceTags": [
+        "순정"
+      ]
+    },
+    "18674": {
+      "name": "시마 회장",
+      "thumb": "https://c11cm.net/18674/x1mgpvsbt0r9njeh5nqv0balxsnxjq9jnw.jpg",
+      "release": "",
+      "sourceTags": [
+        "드라마"
       ]
     }
   }
