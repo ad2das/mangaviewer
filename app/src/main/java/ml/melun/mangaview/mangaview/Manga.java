@@ -52,6 +52,8 @@ public class Manga {
             "(?i)(?:https?:)?//(?:(?:[a-z0-9.-]+\\.)?toonflix\\.app|img\\.[a-z0-9.-]+)/[^\\s\"'<>\\\\]+?\\.(?:jpg|jpeg|png|webp|gif)(?:\\?[^\\s\"'<>\\\\]*)?");
     private static final Pattern NTK_ENCODED_TEXT_IMAGE_PATTERN = Pattern.compile(
             "(?i)https%3A%2F%2F(?:(?:[a-z0-9.-]+\\.)?toonflix\\.app|img\\.[a-z0-9.-]+)%2F[^\\s\"'<>\\\\]+?\\.(?:jpg|jpeg|png|webp|gif)(?:%3F[^\\s\"'<>\\\\]*)?");
+    private static final Pattern NTK_NUMBERED_PAGE_IMAGE_PATTERN = Pattern.compile(
+            "(?i)(?:(?:https?:)?//(?:(?:[a-z0-9.-]+\\.)?toonflix\\.app|img\\.[a-z0-9.-]+))?/(?:manhwa|webtoon|comic)/\\d+/[^/?#]+/p\\d{2,4}\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$");
 
     int baseMode = base_comic;
     int titleId = -1;
@@ -348,8 +350,6 @@ public class Manga {
             url = normalizeNtkEmbeddedImageText(url);
             if(isNtkPageImage(null, url))
                 addImageIfValid(client, seenImages, url);
-            else if(isNtkFallbackBoardPageImage(null, url))
-                fallbackBoardImages.add(url);
         }
     }
 
@@ -689,7 +689,14 @@ public class Manga {
         return lower.contains("/webtoon_uploads/")
                 || lower.contains("/manhwa_uploads/")
                 || lower.contains("/comic_uploads/")
-                || lower.contains("/blacktoon/episodes/");
+                || lower.contains("/blacktoon/episodes/")
+                || isNtkNumberedPageImage(lower);
+    }
+
+    private static boolean isNtkNumberedPageImage(String src) {
+        if(src == null || src.length() == 0)
+            return false;
+        return NTK_NUMBERED_PAGE_IMAGE_PATTERN.matcher(src).matches();
     }
 
     private static boolean isNtkFallbackBoardPageImage(Element img, String src) {

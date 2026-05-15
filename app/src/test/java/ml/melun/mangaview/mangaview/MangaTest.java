@@ -91,6 +91,10 @@ public class MangaTest {
                 "<img src=\"https://i.toonflix.app/webtoon_uploads/page001.jpg\">"));
         assertTrue(Manga.isNtkPageImageForTest(
                 "<img src=\"https://i.toonflix.app/blacktoon/episodes/1/12712/p001.jpg\">"));
+        assertTrue(Manga.isNtkPageImageForTest(
+                "<img src=\"https://i.toonflix.app/manhwa/25089/296849/p001.jpg\">"));
+        assertTrue(Manga.isNtkPageImageForTest(
+                "<img src=\"/manhwa/25089/296849/p025.webp?token=1\">"));
 
         org.junit.Assert.assertFalse(Manga.isNtkPageImageForTest(
                 "<img src=\"https://i.toonflix.app/board_uploads/2026/05/15/ad.png\">"));
@@ -130,6 +134,15 @@ public class MangaTest {
     }
 
     @Test
+    public void ntkEmbeddedNumberedPageImagesAreParsed() {
+        List<String> images = Manga.ntkEmbeddedPageImagesForTest(
+                "<script>{\"images\":[\"https:\\/\\/i.toonflix.app\\/manhwa\\/25089\\/296849\\/p001.jpg\"]}</script>");
+
+        assertEquals(1, images.size());
+        assertEquals("https://i.toonflix.app/manhwa/25089/296849/p001.jpg", images.get(0));
+    }
+
+    @Test
     public void ntkPercentEncodedScriptImagesAreParsed() {
         List<String> images = Manga.ntkEmbeddedPageImagesForTest(
                 "<script>url=https%3A%2F%2Fi.toonflix.app%2Fwebtoon_uploads%2Fpage002.webp</script>");
@@ -139,11 +152,18 @@ public class MangaTest {
     }
 
     @Test
-    public void ntkEmbeddedBoardUploadsAreFallbackOnly() {
+    public void ntkEmbeddedBoardUploadsAreIgnored() {
         List<String> images = Manga.ntkEmbeddedPageImagesForTest(
                 "<script>{\"images\":[\"https:\\/\\/i.toonflix.app\\/board_uploads\\/2026\\/05\\/15\\/page001.jpg\"]}</script>");
 
-        assertEquals(1, images.size());
-        assertEquals("https://i.toonflix.app/board_uploads/2026/05/15/page001.jpg", images.get(0));
+        assertEquals(0, images.size());
+    }
+
+    @Test
+    public void ntkEmbeddedBannerArraysAreIgnoredWhenNoPageImagesExist() {
+        List<String> images = Manga.ntkEmbeddedPageImagesForTest(
+                "<script>{\"headerBanners\":[{\"imageUrl\":\"https:\\/\\/i.toonflix.app\\/board_uploads\\/2026\\/05\\/15\\/ad.png\",\"linkUrl\":\"https:\\/\\/ad.example\"}]}</script>");
+
+        assertEquals(0, images.size());
     }
 }

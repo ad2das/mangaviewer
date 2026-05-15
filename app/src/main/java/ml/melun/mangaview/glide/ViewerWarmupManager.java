@@ -812,7 +812,16 @@ public class ViewerWarmupManager {
     }
 
     private static boolean isUsablePageImage(String image) {
-        return image != null && image.trim().length() > 0;
+        return image != null && image.trim().length() > 0 && !isNtkBoardUploadImage(image);
+    }
+
+    private static boolean isNtkBoardUploadImage(String image) {
+        if(image == null)
+            return false;
+        String lower = image.trim().toLowerCase(Locale.ROOT);
+        return lower.contains("toonflix.app/board_uploads/")
+                || lower.contains("img.toonflix.app/board_uploads/")
+                || lower.contains("/board_uploads/");
     }
 
     private static boolean hasUsableImages(List<String> images) {
@@ -1060,7 +1069,12 @@ public class ViewerWarmupManager {
                 CacheFileStore.delete(context.getApplicationContext(), prefix + key);
                 return null;
             }
-            return new WarmupSnapshot(persisted);
+            WarmupSnapshot snapshot = new WarmupSnapshot(persisted);
+            if(snapshot.images.size() == 0) {
+                CacheFileStore.delete(context.getApplicationContext(), prefix + key);
+                return null;
+            }
+            return snapshot;
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
             return null;
