@@ -31,6 +31,7 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
 import static ml.melun.mangaview.mangaview.Title.LOAD_OK;
 
 import android.content.Context;
+import android.util.Log;
 
 import androidx.documentfile.provider.DocumentFile;
 
@@ -46,6 +47,11 @@ import androidx.documentfile.provider.DocumentFile;
 public class Manga {
     private static final long PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final int MAX_TIMEOUT_RETRIES = 2;
+    private static final String TAG = "ViewerPerf";
+    private static final Pattern NTK_TEXT_IMAGE_PATTERN = Pattern.compile(
+            "(?i)(?:https?:)?//(?:(?:[a-z0-9.-]+\\.)?toonflix\\.app|img\\.[a-z0-9.-]+)/[^\\s\"'<>\\\\]+?\\.(?:jpg|jpeg|png|webp|gif)(?:\\?[^\\s\"'<>\\\\]*)?");
+    private static final Pattern NTK_ENCODED_TEXT_IMAGE_PATTERN = Pattern.compile(
+            "(?i)https%3A%2F%2F(?:(?:[a-z0-9.-]+\\.)?toonflix\\.app|img\\.[a-z0-9.-]+)%2F[^\\s\"'<>\\\\]+?\\.(?:jpg|jpeg|png|webp|gif)(?:%3F[^\\s\"'<>\\\\]*)?");
 
     int baseMode = base_comic;
     int titleId = -1;
@@ -272,15 +278,18 @@ public class Manga {
             if(path.length() == 0)
                 path = "/" + segment + "/" + tid + "/" + id;
             CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
-            if(client.isCloudflareChallengeResponse(page.code, page.body) || looksLikeNtkBlockedPage(page.body))
+            if(client.isCloudflareChallengeResponse(page.code, page.body) || looksLikeNtkBlockedPage(page.body)) {
+                logNtkViewerParse("blocked", page, path, 0, 0);
                 return LOAD_CAPTCHA;
+            }
             Document d = Jsoup.parse(page.body);
 
             Element h1 = d.selectFirst("h1");
             if(h1 != null)
                 name = h1.text().trim();
 
-            for(Element img : d.select("img")) {
+            Elements pageImages = d.select("img");
+            for(Element img : pageImages) {
                 for(String attr : new String[]{"data-original", "data-src", "data-lazy-src", "src"}) {
                     String src = img.attr(attr);
                     if(isNtkPageImage(img, src))
@@ -289,10 +298,13 @@ public class Manga {
                         fallbackBoardImages.add(src);
                 }
             }
+            addNtkTextImageCandidates(client, page.body, seenImages, fallbackBoardImages);
             if(imgs.size() == 0) {
                 for(String src : fallbackBoardImages)
                     addImageIfValid(client, seenImages, src);
             }
+            if(imgs.size() == 0)
+                logNtkViewerParse("empty", page, path, pageImages.size(), fallbackBoardImages.size());
 
             List<Manga> titleEpisodes = title == null ? null : safeEpisodeCopy(title.getEps());
             if(titleEpisodes != null && titleEpisodes.size() > 0) {
@@ -311,6 +323,62 @@ public class Manga {
         restoreBetterEpisodeList(previousEpisodes);
         attachEpisodeSeriesMetadata();
         return LOAD_OK;
+    }
+
+    private void addNtkTextImageCandidates(CustomHttpClient client, String body, Set<String> seenImages,
+                                           Set<String> fallbackBoardImages) {
+        if(body == null || body.length() == 0)
+            return;
+        String normalized = normalizeNtkEmbeddedImageText(body);
+        addNtkTextImageMatches(client, normalized, NTK_TEXT_IMAGE_PATTERN, false, seenImages, fallbackBoardImages);
+        addNtkTextImageMatches(client, body, NTK_ENCODED_TEXT_IMAGE_PATTERN, true, seenImages, fallbackBoardImages);
+    }
+
+    private void addNtkTextImageMatches(CustomHttpClient client, String source, Pattern pattern, boolean percentEncoded,
+                                        Set<String> seenImages, Set<String> fallbackBoardImages) {
+        Matcher matcher = pattern.matcher(source);
+        while(matcher.find()) {
+            String url = matcher.group();
+            if(percentEncoded) {
+                try {
+                    url = URLDecoder.decode(url, "UTF-8");
+                } catch (Exception ignored) {
+                }
+            }
+            url = normalizeNtkEmbeddedImageText(url);
+            if(isNtkPageImage(null, url))
+                addImageIfValid(client, seenImages, url);
+            else if(isNtkFallbackBoardPageImage(null, url))
+                fallbackBoardImages.add(url);
+        }
+    }
+
+    private static String normalizeNtkEmbeddedImageText(String source) {
+        if(source == null)
+            return "";
+        return source.replace("\\/", "/")
+                .replace("\\u002F", "/")
+                .replace("\\u002f", "/")
+                .replace("&#x2F;", "/")
+                .replace("&#x2f;", "/")
+                .replace("&amp;", "&")
+                .replace("&quot;", "\"");
+    }
+
+    private void logNtkViewerParse(String reason, CustomHttpClient.PageResponse page, String path, int imgTagCount, int fallbackCount) {
+        String sample = page == null || page.body == null ? "" : page.body.replace('\n', ' ').replace('\r', ' ');
+        if(sample.length() > 220)
+            sample = sample.substring(0, 220);
+        Log.d(TAG, "ntk_viewer_parse reason=" + reason
+                + ",id=" + id
+                + ",titleId=" + getTitleId()
+                + ",path=" + path
+                + ",code=" + (page == null ? 0 : page.code)
+                + ",fromCache=" + (page != null && page.fromCache)
+                + ",bodyLen=" + (page == null || page.body == null ? 0 : page.body.length())
+                + ",imgTags=" + imgTagCount
+                + ",fallbackImages=" + fallbackCount
+                + ",sample=" + sample);
     }
 
     private static boolean looksLikeNtkBlockedPage(String body) {
@@ -692,6 +760,19 @@ public class Manga {
         return looksLikeNtkBlockedPage(body);
     }
 
+    static List<String> ntkEmbeddedPageImagesForTest(String body) {
+        Manga manga = new Manga(1, "test", "", MTitle.base_webtoon);
+        manga.imgs = new ArrayList<>();
+        Set<String> seenImages = new LinkedHashSet<>();
+        Set<String> fallbackImages = new LinkedHashSet<>();
+        manga.addNtkTextImageCandidates(null, body, seenImages, fallbackImages);
+        if(manga.imgs.size() == 0) {
+            for(String src : fallbackImages)
+                manga.addImageIfValid(null, seenImages, src);
+        }
+        return manga.imgs;
+    }
+
     private boolean hasWolfBlockedAncestor(Element img) {
         if(img == null)
             return false;
@@ -745,8 +826,17 @@ public class Manga {
             return false;
         if(img.startsWith("//"))
             img = "https:" + img;
-        else if(img.startsWith("/"))
-            img = client.getUrl(baseMode) + img;
+        else if(img.startsWith("/")) {
+            if(client == null)
+                return false;
+            String baseUrl = client.isNtk() ? client.getUrl(img) : client.getUrl(baseMode);
+            img = baseUrl + img;
+        } else if(client != null && client.isNtk()
+                && !img.toLowerCase(Locale.ROOT).startsWith("http://")
+                && !img.toLowerCase(Locale.ROOT).startsWith("https://")) {
+            String path = "/" + img;
+            img = client.getUrl(path) + path;
+        }
         if(!seenImages.add(img))
             return false;
         imgs.add(img);

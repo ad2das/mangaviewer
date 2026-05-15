@@ -119,4 +119,31 @@ public class MangaTest {
         org.junit.Assert.assertFalse(Manga.looksLikeNtkBlockedPageForTest(
                 "<html><body><main><img src=\"https://i.toonflix.app/webtoon_uploads/page001.jpg\"></main></body></html>"));
     }
+
+    @Test
+    public void ntkEmbeddedScriptImagesAreParsed() {
+        List<String> images = Manga.ntkEmbeddedPageImagesForTest(
+                "<script>{\"images\":[\"https:\\/\\/i.toonflix.app\\/webtoon_uploads\\/page001.jpg\"]}</script>");
+
+        assertEquals(1, images.size());
+        assertEquals("https://i.toonflix.app/webtoon_uploads/page001.jpg", images.get(0));
+    }
+
+    @Test
+    public void ntkPercentEncodedScriptImagesAreParsed() {
+        List<String> images = Manga.ntkEmbeddedPageImagesForTest(
+                "<script>url=https%3A%2F%2Fi.toonflix.app%2Fwebtoon_uploads%2Fpage002.webp</script>");
+
+        assertEquals(1, images.size());
+        assertEquals("https://i.toonflix.app/webtoon_uploads/page002.webp", images.get(0));
+    }
+
+    @Test
+    public void ntkEmbeddedBoardUploadsAreFallbackOnly() {
+        List<String> images = Manga.ntkEmbeddedPageImagesForTest(
+                "<script>{\"images\":[\"https:\\/\\/i.toonflix.app\\/board_uploads\\/2026\\/05\\/15\\/page001.jpg\"]}</script>");
+
+        assertEquals(1, images.size());
+        assertEquals("https://i.toonflix.app/board_uploads/2026/05/15/page001.jpg", images.get(0));
+    }
 }
