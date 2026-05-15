@@ -45,6 +45,7 @@ import java.util.concurrent.Executors;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
+import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import okhttp3.Response;
 
@@ -831,7 +832,6 @@ public class CaptchaActivity extends AppCompatActivity {
     }
 
     private static class LocalWebViewProxy {
-        private static final String NTK_EDGE_IP = "104.16.219.55";
         private final ServerSocket serverSocket;
         private final ExecutorService executor = Executors.newCachedThreadPool();
         private volatile boolean closed = false;
@@ -891,7 +891,7 @@ public class CaptchaActivity extends AppCompatActivity {
                     port = Integer.parseInt(target.substring(colon + 1));
                 }
                 Socket upstream = new Socket();
-                String connectHost = ("sbxh1.com".equalsIgnoreCase(host) || "www.sbxh1.com".equalsIgnoreCase(host)) ? NTK_EDGE_IP : host;
+                String connectHost = CustomHttpClient.resolveDirectHostForNtkProxy(host);
                 upstream.connect(new InetSocketAddress(InetAddress.getByName(connectHost), port), 10000);
                 output.write("HTTP/1.1 200 Connection Established\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
                 output.flush();

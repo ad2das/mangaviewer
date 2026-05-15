@@ -2,6 +2,10 @@ package ml.melun.mangaview.mangaview;
 
 import org.junit.Test;
 
+import java.net.InetAddress;
+import java.util.Arrays;
+import java.util.List;
+
 import okhttp3.Protocol;
 
 import static org.junit.Assert.assertEquals;
@@ -47,6 +51,22 @@ public class CustomHttpClientTest {
         assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1",
                 CustomHttpClient.FetchMode.DIRECT_ONLY));
         assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1",
+                CustomHttpClient.FetchMode.CACHE_ONLY));
+    }
+
+    @Test
+    public void ntkPageDirectUsesFastTimeoutOnlyForEpisodePages() {
+        assertTrue(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/manhwa/1/1",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertTrue(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/webtoon/1/1",
+                CustomHttpClient.FetchMode.DIRECT_ONLY));
+        assertFalse(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/api/manhwa-list",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertFalse(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/_next/static/app.js",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertFalse(CustomHttpClient.shouldUseFastNtkPageDirectForTest(false, "/manhwa/1/1",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertFalse(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/manhwa/1/1",
                 CustomHttpClient.FetchMode.CACHE_ONLY));
     }
 
@@ -109,5 +129,36 @@ public class CustomHttpClientTest {
         assertTrue(CustomHttpClient.isNtkUrlForTest("https://sbxh1.com/manhwa"));
         assertTrue(CustomHttpClient.isNtkUrlForTest("https://img.sbxh1.com/manhwa/1"));
         assertFalse(CustomHttpClient.isNtkUrlForTest("https://example.com/manhwa"));
+    }
+
+    @Test
+    public void ntkDnsProtectionCoversRootAndImageSubdomains() {
+        assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("sbxh1.com"));
+        assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("www.sbxh1.com"));
+        assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("img.sbxh1.com"));
+        assertFalse(CustomHttpClient.isNtkDnsProtectedHostForTest("example.com"));
+    }
+
+    @Test
+    public void ntkDnsFallbackReturnsDirectEdgeWhenSystemDnsFails() {
+        assertEquals("104.16.219.55",
+                CustomHttpClient.ntkFallbackAddressesForTest("sbxh1.com").get(0).getHostAddress());
+        assertEquals("104.16.219.55",
+                CustomHttpClient.ntkFallbackAddressesForTest("img.sbxh1.com").get(0).getHostAddress());
+        assertTrue(CustomHttpClient.ntkFallbackAddressesForTest("example.com").isEmpty());
+    }
+
+    @Test
+    public void ntkDnsMergeKeepsPreferredIpv4FirstThenFallback() throws Exception {
+        InetAddress preferred = InetAddress.getByAddress("sbxh1.com",
+                new byte[] {(byte)104, (byte)16, (byte)220, (byte)55});
+        InetAddress fallback = InetAddress.getByAddress("sbxh1.com",
+                new byte[] {(byte)104, (byte)16, (byte)219, (byte)55});
+
+        List<InetAddress> merged = CustomHttpClient.mergeIpv4FirstForTest("sbxh1.com",
+                Arrays.asList(preferred), null, Arrays.asList(fallback));
+
+        assertEquals("104.16.220.55", merged.get(0).getHostAddress());
+        assertEquals("104.16.219.55", merged.get(1).getHostAddress());
     }
 }

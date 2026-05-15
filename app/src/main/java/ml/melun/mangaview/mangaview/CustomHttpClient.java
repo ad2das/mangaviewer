@@ -13,10 +13,12 @@ import org.json.JSONObject;
 import java.io.InterruptedIOException;
 import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.net.URI;
 import java.net.UnknownHostException;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -24,6 +26,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import javax.net.ssl.SSLContext;
@@ -37,6 +41,7 @@ import okhttp3.Call;
 import okhttp3.ConnectionSpec;
 import okhttp3.Dispatcher;
 import okhttp3.Dns;
+import okhttp3.HttpUrl;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Protocol;
@@ -63,30 +68,62 @@ public class CustomHttpClient {
     private static final long WFWF_DOMAIN_FORCE_RETRY_INTERVAL_MS = 60 * 1000L;
     private static final long WFWF_DOMAIN_WAIT_TIMEOUT_MS = 6 * 1000L;
     private static final long NTK_DOMAIN_CHECK_INTERVAL_MS = 15 * 60 * 1000L;
+    private static final long NTK_PAGE_DIRECT_TIMEOUT_MS = 3_500L;
+    private static final long NTK_DOH_TIMEOUT_MS = 1_500L;
+    private static final long NTK_DNS_CACHE_DEFAULT_TTL_MS = 5 * 60 * 1000L;
+    private static final long NTK_DNS_CACHE_MAX_TTL_MS = 30 * 60 * 1000L;
     private static final long COOKIE_SYNC_INTERVAL_MS = 30 * 1000L;
     private static final long PAGE_CACHE_COLD_START_TTL_MS = 7 * 24 * 60 * 60 * 1000L;
     private static final int PAGE_CACHE_MAX_ENTRIES = 200;
     private static final int MAX_HTTP_REQUESTS = 8;
     private static final int MAX_HTTP_REQUESTS_PER_HOST = 4;
     private static final String PAGE_CACHE_PREFIX = "httpPageCacheV1_";
+    private static final String CLOUDFLARE_DOH_HOST = "cloudflare-dns.com";
+    private static final String NTK_EDGE_IP = "104.16.219.55";
     private static final Gson GSON = new Gson();
-    private static final Dns IPV4_FIRST_DNS = hostname -> {
-        List<InetAddress> addresses = Arrays.asList(InetAddress.getAllByName(hostname));
-        ArrayList<InetAddress> sorted = new ArrayList<>(addresses.size() + 1);
-        if("sbxh1.com".equalsIgnoreCase(hostname) || "www.sbxh1.com".equalsIgnoreCase(hostname))
-            addAddressIfMissing(sorted, InetAddress.getByName("104.16.219.55"));
-        for(InetAddress address : addresses)
-            if(address instanceof Inet4Address)
-                addAddressIfMissing(sorted, address);
-        if(!sorted.isEmpty())
-            return sorted;
-        for(InetAddress address : addresses)
-            if(!(address instanceof Inet4Address))
-                addAddressIfMissing(sorted, address);
-        if(sorted.isEmpty())
-            throw new UnknownHostException(hostname);
-        return sorted;
+    private static final Object NTK_DNS_CACHE_LOCK = new Object();
+    private static final Map<String, CachedDns> NTK_DNS_CACHE = new HashMap<>();
+    private static final Set<String> NTK_DNS_WARMING = new java.util.HashSet<>();
+    private static final ExecutorService NTK_DNS_EXECUTOR = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "ntk-doh-warm");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private static final Dns DOH_BOOTSTRAP_DNS = hostname -> {
+        if(CLOUDFLARE_DOH_HOST.equalsIgnoreCase(hostname)) {
+            return Arrays.asList(
+                    address(hostname, 1, 1, 1, 1),
+                    address(hostname, 1, 0, 0, 1));
+        }
+        return Dns.SYSTEM.lookup(hostname);
     };
+    private static final OkHttpClient DOH_CLIENT = new OkHttpClient.Builder()
+            .dns(DOH_BOOTSTRAP_DNS)
+            .connectTimeout(NTK_DOH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .readTimeout(NTK_DOH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .callTimeout(NTK_DOH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .build();
+    private static final Dns NETWORK_RESILIENT_DNS = CustomHttpClient::lookupNetworkResilientDns;
+
+    private static class CachedDns {
+        final List<InetAddress> addresses;
+        final long expiresAt;
+
+        CachedDns(List<InetAddress> addresses, long expiresAt) {
+            this.addresses = addresses;
+            this.expiresAt = expiresAt;
+        }
+    }
+
+    private static class DnsAnswer {
+        final List<InetAddress> addresses;
+        final long ttlMs;
+
+        DnsAnswer(List<InetAddress> addresses, long ttlMs) {
+            this.addresses = addresses;
+            this.ttlMs = ttlMs;
+        }
+    }
 
     private static void addAddressIfMissing(List<InetAddress> addresses, InetAddress candidate) {
         if(candidate == null || addresses.contains(candidate))
@@ -94,8 +131,419 @@ public class CustomHttpClient {
         addresses.add(candidate);
     }
 
+    private static List<InetAddress> lookupNetworkResilientDns(String hostname) throws UnknownHostException {
+        if(isNtkDnsProtectedHost(hostname)) {
+            List<InetAddress> protectedAddresses = lookupCachedOrFallbackNtkDns(hostname);
+            if(!protectedAddresses.isEmpty())
+                return protectedAddresses;
+            List<InetAddress> systemAddresses = lookupSystemDns(hostname, false);
+            if(!systemAddresses.isEmpty())
+                return mergeIpv4First(hostname, systemAddresses, null, null);
+            throw new UnknownHostException(hostname);
+        }
+        return mergeIpv4First(hostname, lookupSystemDns(hostname, true), null, null);
+    }
+
+    private static List<InetAddress> lookupCachedOrFallbackNtkDns(String hostname) {
+        List<InetAddress> cached = readCachedNtkDns(hostname);
+        if(cached != null && !cached.isEmpty())
+            return cached;
+        warmNtkDohAsync(hostname);
+        List<InetAddress> fallback = ntkFallbackAddresses(hostname);
+        if(!fallback.isEmpty())
+            ViewerWarmupManager.logMetric("ntk_dns_fallback_count", fallback.size());
+        return fallback;
+    }
+
+    private static void warmNtkDohAsync(String hostname) {
+        String key = normalizeDnsHost(hostname);
+        synchronized (NTK_DNS_CACHE_LOCK) {
+            CachedDns cached = NTK_DNS_CACHE.get(key);
+            if(cached != null && cached.expiresAt > System.currentTimeMillis())
+                return;
+            if(NTK_DNS_WARMING.contains(key))
+                return;
+            NTK_DNS_WARMING.add(key);
+        }
+        NTK_DNS_EXECUTOR.execute(() -> {
+            try {
+                lookupNtkDoh(hostname);
+            } finally {
+                synchronized (NTK_DNS_CACHE_LOCK) {
+                    NTK_DNS_WARMING.remove(key);
+                }
+            }
+        });
+    }
+
+    private static List<InetAddress> lookupSystemDns(String hostname, boolean throwOnFailure) throws UnknownHostException {
+        long startedAt = System.currentTimeMillis();
+        try {
+            List<InetAddress> addresses = Dns.SYSTEM.lookup(hostname);
+            if(isNtkDnsProtectedHost(hostname))
+                ViewerWarmupManager.logMetric("ntk_dns_system_ms", System.currentTimeMillis() - startedAt);
+            return addresses;
+        } catch (UnknownHostException e) {
+            if(isNtkDnsProtectedHost(hostname))
+                ViewerWarmupManager.logMetric("ntk_dns_system_ms", System.currentTimeMillis() - startedAt);
+            if(throwOnFailure)
+                throw e;
+            return new ArrayList<>();
+        }
+    }
+
+    private static List<InetAddress> lookupNtkDoh(String hostname) {
+        List<InetAddress> cached = readCachedNtkDns(hostname);
+        if(cached != null)
+            return cached;
+        long startedAt = System.currentTimeMillis();
+        Response response = null;
+        try {
+            HttpUrl url = HttpUrl.get("https://" + CLOUDFLARE_DOH_HOST + "/dns-query")
+                    .newBuilder()
+                    .addQueryParameter("name", hostname)
+                    .addQueryParameter("type", "A")
+                    .build();
+            Request request = new Request.Builder()
+                    .url(url)
+                    .header("Accept", "application/dns-json")
+                    .get()
+                    .build();
+            response = DOH_CLIENT.newCall(request).execute();
+            if(response.code() < 200 || response.code() >= 400 || response.body() == null)
+                return new ArrayList<>();
+            DnsAnswer answer = parseDohAnswer(hostname, response.body().string());
+            if(!answer.addresses.isEmpty())
+                writeCachedNtkDns(hostname, answer.addresses, answer.ttlMs);
+            return answer.addresses;
+        } catch (Exception e) {
+            return new ArrayList<>();
+        } finally {
+            if(response != null)
+                response.close();
+            ViewerWarmupManager.logMetric("ntk_dns_doh_ms", System.currentTimeMillis() - startedAt);
+        }
+    }
+
+    private static DnsAnswer parseDohAnswer(String hostname, String body) throws Exception {
+        ArrayList<InetAddress> addresses = new ArrayList<>();
+        long minTtlMs = NTK_DNS_CACHE_DEFAULT_TTL_MS;
+        JSONObject json = new JSONObject(body);
+        JSONArray answers = json.optJSONArray("Answer");
+        if(answers == null)
+            return new DnsAnswer(addresses, minTtlMs);
+        for(int i = 0; i < answers.length(); i++) {
+            JSONObject answer = answers.optJSONObject(i);
+            if(answer == null || answer.optInt("type") != 1)
+                continue;
+            String data = answer.optString("data", "");
+            InetAddress address = parseIpv4Address(hostname, data);
+            if(address == null)
+                continue;
+            addAddressIfMissing(addresses, address);
+            long ttlMs = Math.max(30_000L, answer.optLong("TTL", 300L) * 1000L);
+            minTtlMs = Math.min(minTtlMs, ttlMs);
+        }
+        return new DnsAnswer(addresses, Math.min(minTtlMs, NTK_DNS_CACHE_MAX_TTL_MS));
+    }
+
+    private static InetAddress parseIpv4Address(String hostname, String data) {
+        try {
+            if(data == null || !data.matches("\\d+\\.\\d+\\.\\d+\\.\\d+"))
+                return null;
+            String[] parts = data.split("\\.");
+            int a = Integer.parseInt(parts[0]);
+            int b = Integer.parseInt(parts[1]);
+            int c = Integer.parseInt(parts[2]);
+            int d = Integer.parseInt(parts[3]);
+            if(a < 0 || a > 255 || b < 0 || b > 255 || c < 0 || c > 255 || d < 0 || d > 255)
+                return null;
+            return address(hostname, a, b, c, d);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static List<InetAddress> readCachedNtkDns(String hostname) {
+        long now = System.currentTimeMillis();
+        synchronized (NTK_DNS_CACHE_LOCK) {
+            CachedDns cached = NTK_DNS_CACHE.get(normalizeDnsHost(hostname));
+            if(cached == null || cached.expiresAt <= now)
+                return null;
+            return new ArrayList<>(cached.addresses);
+        }
+    }
+
+    private static void writeCachedNtkDns(String hostname, List<InetAddress> addresses, long ttlMs) {
+        if(addresses == null || addresses.isEmpty())
+            return;
+        synchronized (NTK_DNS_CACHE_LOCK) {
+            NTK_DNS_CACHE.put(normalizeDnsHost(hostname),
+                    new CachedDns(new ArrayList<>(addresses), System.currentTimeMillis() + ttlMs));
+        }
+    }
+
+    private static List<InetAddress> ntkFallbackAddresses(String hostname) {
+        ArrayList<InetAddress> addresses = new ArrayList<>();
+        if(!isNtkDnsProtectedHost(hostname))
+            return addresses;
+        try {
+            addAddressIfMissing(addresses, parseIpv4Address(hostname, NTK_EDGE_IP));
+        } catch (Exception ignored) {
+        }
+        return addresses;
+    }
+
+    private static List<InetAddress> mergeIpv4First(String hostname, List<InetAddress> preferred,
+                                                    List<InetAddress> secondary,
+                                                    List<InetAddress> fallback) {
+        ArrayList<InetAddress> sorted = new ArrayList<>();
+        addIpv4ThenOthers(sorted, preferred);
+        addIpv4ThenOthers(sorted, secondary);
+        addIpv4ThenOthers(sorted, fallback);
+        if(isNtkDnsProtectedHost(hostname) && (preferred == null || preferred.isEmpty())
+                && (secondary == null || secondary.isEmpty()) && fallback != null && !fallback.isEmpty())
+            ViewerWarmupManager.logMetric("ntk_dns_fallback_count", fallback.size());
+        return sorted;
+    }
+
+    private static void addIpv4ThenOthers(List<InetAddress> target, List<InetAddress> source) {
+        if(source == null)
+            return;
+        for(InetAddress address : source)
+            if(address instanceof Inet4Address)
+                addAddressIfMissing(target, address);
+        for(InetAddress address : source)
+            if(!(address instanceof Inet4Address))
+                addAddressIfMissing(target, address);
+    }
+
+    public static String resolveDirectHostForNtkProxy(String hostname) {
+        if(!isNtkDnsProtectedHost(hostname))
+            return hostname;
+        List<InetAddress> addresses = lookupCachedOrFallbackNtkDns(hostname);
+        if(addresses.isEmpty())
+            return hostname;
+        return addresses.get(0).getHostAddress();
+    }
+
+    static boolean isNtkDnsProtectedHostForTest(String hostname) {
+        return isNtkDnsProtectedHost(hostname);
+    }
+
+    static List<InetAddress> ntkFallbackAddressesForTest(String hostname) {
+        return ntkFallbackAddresses(hostname);
+    }
+
+    static List<InetAddress> mergeIpv4FirstForTest(String hostname, List<InetAddress> preferred,
+                                                   List<InetAddress> secondary,
+                                                   List<InetAddress> fallback) {
+        return mergeIpv4First(hostname, preferred, secondary, fallback);
+    }
+
+    private static boolean isNtkDnsProtectedHost(String hostname) {
+        String normalized = normalizeDnsHost(hostname);
+        return normalized.equals(NTK_HOST)
+                || normalized.endsWith("." + NTK_HOST)
+                || normalized.equals(LEGACY_NTK_HOST)
+                || normalized.endsWith("." + LEGACY_NTK_HOST);
+    }
+
+    private static String normalizeDnsHost(String hostname) {
+        if(hostname == null)
+            return "";
+        String normalized = hostname.trim().toLowerCase(Locale.ROOT);
+        if(normalized.startsWith("www."))
+            normalized = normalized.substring(4);
+        return normalized;
+    }
+
+    private static InetAddress address(String hostname, int a, int b, int c, int d) throws UnknownHostException {
+        return InetAddress.getByAddress(hostname, new byte[] {(byte)a, (byte)b, (byte)c, (byte)d});
+    }
+
+    private void appendSystemDnsDiagnostic(StringBuilder report, String hostname) {
+        long startedAt = System.currentTimeMillis();
+        try {
+            List<InetAddress> addresses = lookupSystemDns(hostname, true);
+            appendDiagnosticLine(report, "system_dns_" + hostname,
+                    "ok " + (System.currentTimeMillis() - startedAt) + "ms " + formatAddresses(addresses));
+        } catch (Exception e) {
+            appendDiagnosticLine(report, "system_dns_" + hostname,
+                    "fail " + (System.currentTimeMillis() - startedAt) + "ms " + exceptionSummary(e));
+        }
+    }
+
+    private void appendAppDnsDiagnostic(StringBuilder report, String hostname) {
+        long startedAt = System.currentTimeMillis();
+        try {
+            List<InetAddress> addresses = lookupNetworkResilientDns(hostname);
+            appendDiagnosticLine(report, "app_dns_" + hostname,
+                    "ok " + (System.currentTimeMillis() - startedAt) + "ms " + formatAddresses(addresses));
+        } catch (Exception e) {
+            appendDiagnosticLine(report, "app_dns_" + hostname,
+                    "fail " + (System.currentTimeMillis() - startedAt) + "ms " + exceptionSummary(e));
+        }
+    }
+
+    private void appendDohDiagnostic(StringBuilder report, String hostname) {
+        long startedAt = System.currentTimeMillis();
+        try {
+            List<InetAddress> addresses = lookupNtkDohFreshForDiagnostic(hostname);
+            appendDiagnosticLine(report, "cloudflare_doh_" + hostname,
+                    (addresses.isEmpty() ? "fail " : "ok ")
+                            + (System.currentTimeMillis() - startedAt) + "ms " + formatAddresses(addresses));
+        } catch (Exception e) {
+            appendDiagnosticLine(report, "cloudflare_doh_" + hostname,
+                    "fail " + (System.currentTimeMillis() - startedAt) + "ms " + exceptionSummary(e));
+        }
+    }
+
+    private void appendProxyDiagnostic(StringBuilder report, String hostname) {
+        long startedAt = System.currentTimeMillis();
+        try {
+            appendDiagnosticLine(report, "webview_proxy_target_" + hostname,
+                    resolveDirectHostForNtkProxy(hostname) + " " + (System.currentTimeMillis() - startedAt) + "ms");
+        } catch (Exception e) {
+            appendDiagnosticLine(report, "webview_proxy_target_" + hostname, "fail " + exceptionSummary(e));
+        }
+    }
+
+    private void appendNtkApiDiagnostic(StringBuilder report, String root) {
+        String path = "/api/manhwa-list?page=1&pageSize=1&withTotal=1";
+        long startedAt = System.currentTimeMillis();
+        Response response = null;
+        try {
+            OkHttpClient probeClient = client.newBuilder()
+                    .connectTimeout(4, TimeUnit.SECONDS)
+                    .readTimeout(6, TimeUnit.SECONDS)
+                    .callTimeout(8, TimeUnit.SECONDS)
+                    .dns(NETWORK_RESILIENT_DNS)
+                    .followRedirects(false)
+                    .followSslRedirects(false)
+                    .build();
+            Map<String, String> headers = buildHeaders(root, true, null);
+            applyNtkApiHeaders(headers, root, path);
+            Request.Builder builder = new Request.Builder()
+                    .url(trimTrailingSlash(root) + path)
+                    .get();
+            for(String key : headers.keySet())
+                builder.addHeader(key, headers.get(key));
+            response = probeClient.newCall(builder.build()).execute();
+            int code = response.code();
+            String body = response.body() == null ? "" : response.body().string();
+            boolean challenge = isCloudflareChallenge(code, body);
+            String result = "code=" + code
+                    + ",ms=" + (System.currentTimeMillis() - startedAt)
+                    + ",body_len=" + body.length()
+                    + ",challenge=" + challenge
+                    + ",type=" + response.header("content-type", "");
+            appendDiagnosticLine(report, "ntk_api_direct", result);
+            if(body.length() > 0)
+                appendDiagnosticLine(report, "ntk_api_body_head", abbreviate(body.replace('\n', ' '), 180));
+        } catch (Exception e) {
+            appendDiagnosticLine(report, "ntk_api_direct",
+                    "fail " + (System.currentTimeMillis() - startedAt) + "ms " + exceptionSummary(e));
+        } finally {
+            if(response != null)
+                response.close();
+        }
+    }
+
+    private static List<InetAddress> lookupNtkDohFreshForDiagnostic(String hostname) {
+        long startedAt = System.currentTimeMillis();
+        Response response = null;
+        try {
+            HttpUrl url = HttpUrl.get("https://" + CLOUDFLARE_DOH_HOST + "/dns-query")
+                    .newBuilder()
+                    .addQueryParameter("name", hostname)
+                    .addQueryParameter("type", "A")
+                    .build();
+            Request request = new Request.Builder()
+                    .url(url)
+                    .header("Accept", "application/dns-json")
+                    .get()
+                    .build();
+            response = DOH_CLIENT.newCall(request).execute();
+            if(response.code() < 200 || response.code() >= 400 || response.body() == null)
+                return new ArrayList<>();
+            DnsAnswer answer = parseDohAnswer(hostname, response.body().string());
+            if(!answer.addresses.isEmpty())
+                writeCachedNtkDns(hostname, answer.addresses, answer.ttlMs);
+            return answer.addresses;
+        } catch (Exception e) {
+            return new ArrayList<>();
+        } finally {
+            if(response != null)
+                response.close();
+            ViewerWarmupManager.logMetric("ntk_dns_doh_diagnostic_ms", System.currentTimeMillis() - startedAt);
+        }
+    }
+
+    private static void appendDiagnosticLine(StringBuilder builder, String key, String value) {
+        builder.append(key).append(": ").append(value == null ? "" : value).append('\n');
+    }
+
+    private static String formatAddresses(List<InetAddress> addresses) {
+        if(addresses == null || addresses.isEmpty())
+            return "-";
+        StringBuilder builder = new StringBuilder();
+        for(InetAddress address : addresses) {
+            if(builder.length() > 0)
+                builder.append(',');
+            builder.append(address.getHostAddress());
+        }
+        return builder.toString();
+    }
+
+    private static String hostOf(String url) {
+        try {
+            URI uri = URI.create(url);
+            String host = uri.getHost();
+            return host == null || host.length() == 0 ? normalizeDnsHost(url) : host;
+        } catch (Exception e) {
+            return normalizeDnsHost(url);
+        }
+    }
+
+    private static String emptyToUnknown(String value) {
+        return value == null || value.trim().length() == 0 ? "unknown" : value.trim();
+    }
+
+    private static String exceptionSummary(Exception e) {
+        if(e == null)
+            return "unknown";
+        String message = e.getMessage();
+        return e.getClass().getSimpleName() + (message == null || message.length() == 0 ? "" : "(" + abbreviate(message, 120) + ")");
+    }
+
+    private static String abbreviate(String value, int maxLength) {
+        if(value == null)
+            return "";
+        String trimmed = value.trim();
+        if(trimmed.length() <= maxLength)
+            return trimmed;
+        return trimmed.substring(0, Math.max(0, maxLength - 3)) + "...";
+    }
+
+    private static String diagnosticInterpretation(String report) {
+        String lower = report == null ? "" : report.toLowerCase(Locale.ROOT);
+        if(lower.contains("ntk_api_direct: code=2"))
+            return "OK: app route can reach NTK.";
+        if(lower.contains("ntk_api_direct: code=403") || lower.contains("challenge=true"))
+            return "Cloudflare challenge/cookie issue. Open NTK captcha once.";
+        if(lower.contains("system_dns_") && lower.contains("system_dns_sbxh1.com: fail")
+                && lower.contains("app_dns_sbxh1.com: ok"))
+            return "Carrier DNS appears blocked, app DNS bypass is working.";
+        if(lower.contains("ntk_api_direct: fail") && lower.contains("app_dns_sbxh1.com: ok"))
+            return "DNS bypass works, but route/TLS/SNI may still be blocked by the mobile network.";
+        return "Check DNS/API lines above.";
+    }
+
     public OkHttpClient client;
     private OkHttpClient unsafeFallbackClient;
+    private OkHttpClient ntkPageFastClient;
+    private OkHttpClient unsafeNtkPageFastClient;
     Map<String, String> cookies;
     Map<String, Long> cookieSyncAt;
     Map<String, CachedPage> pageCache;
@@ -140,6 +588,10 @@ public class CustomHttpClient {
         loadSavedUserAgent();
         this.client = baseClient(new OkHttpClient.Builder()).build();
         this.unsafeFallbackClient = baseClient(getUnsafeOkHttpClient())
+                .protocols(ntkTlsFallbackProtocolsForTest())
+                .build();
+        this.ntkPageFastClient = fastNtkPageClient(new OkHttpClient.Builder()).build();
+        this.unsafeNtkPageFastClient = fastNtkPageClient(getUnsafeOkHttpClient())
                 .protocols(ntkTlsFallbackProtocolsForTest())
                 .build();
 
@@ -531,6 +983,43 @@ public class CustomHttpClient {
         return mode == FetchMode.DIRECT_ONLY || mode == FetchMode.CACHE_ONLY;
     }
 
+    public String buildNtkNetworkDiagnosticReport(String networkSummary) {
+        StringBuilder report = new StringBuilder();
+        long startedAt = System.currentTimeMillis();
+        try {
+            String root = getRootUrl(getWebtoonUrl());
+            String rootHost = hostOf(root);
+            appendDiagnosticLine(report, "time", new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date()));
+            appendDiagnosticLine(report, "network", emptyToUnknown(networkSummary));
+            appendDiagnosticLine(report, "active_site", p != null && p.isNtkSite() ? "NTK" : "WFWF");
+            appendDiagnosticLine(report, "webtoon_url", getWebtoonUrl());
+            appendDiagnosticLine(report, "comic_url", getComicUrl());
+            appendDiagnosticLine(report, "root", root);
+            appendDiagnosticLine(report, "has_cf_clearance", String.valueOf(hasCloudflareClearance()));
+            appendDiagnosticLine(report, "recent_ntk_verified", String.valueOf(hasRecentNtkAccessVerification()));
+            report.append('\n');
+
+            appendSystemDnsDiagnostic(report, rootHost);
+            appendAppDnsDiagnostic(report, rootHost);
+            appendDohDiagnostic(report, rootHost);
+            if(!"sbxh1.com".equalsIgnoreCase(rootHost)) {
+                appendAppDnsDiagnostic(report, "sbxh1.com");
+                appendDohDiagnostic(report, "sbxh1.com");
+            }
+            appendProxyDiagnostic(report, rootHost);
+            appendProxyDiagnostic(report, "img.sbxh1.com");
+            report.append('\n');
+
+            appendNtkApiDiagnostic(report, root);
+            report.append('\n');
+            appendDiagnosticLine(report, "elapsed_ms", String.valueOf(System.currentTimeMillis() - startedAt));
+            appendDiagnosticLine(report, "interpretation", diagnosticInterpretation(report.toString()));
+        } catch (Exception e) {
+            appendDiagnosticLine(report, "fatal", exceptionSummary(e));
+        }
+        return report.toString();
+    }
+
     private FetchMode effectiveFetchMode(FetchMode defaultMode) {
         FetchMode mode = currentFetchMode.get();
         if(mode != null)
@@ -543,10 +1032,16 @@ public class CustomHttpClient {
     }
 
     public Response get(String url, Map<String, String> headers){
+        return get(url, headers, false);
+    }
+
+    private Response get(String url, Map<String, String> headers, boolean fastNtkPageDirect){
         applyJitterIfNeeded(url);
         Response response;
         Call call = null;
         RequestGroup requestGroup = currentRequestGroup.get();
+        OkHttpClient primaryClient = fastNtkPageDirect ? ntkPageFastClient : this.client;
+        OkHttpClient fallbackClient = fastNtkPageDirect ? unsafeNtkPageFastClient : this.unsafeFallbackClient;
         try {
             Request.Builder builder = new Request.Builder()
                     .url(url)
@@ -557,7 +1052,7 @@ public class CustomHttpClient {
                 }
 
             Request request = builder.build();
-            call = this.client.newCall(request);
+            call = primaryClient.newCall(request);
             if(requestGroup != null)
                 requestGroup.add(call);
             try {
@@ -567,14 +1062,14 @@ public class CustomHttpClient {
                     throw sslException;
                 if(requestGroup != null)
                     requestGroup.remove(call);
-                call = this.unsafeFallbackClient.newCall(request);
+                call = fallbackClient.newCall(request);
                 if(requestGroup != null)
                     requestGroup.add(call);
                 response = call.execute();
             }
             storeResponseCookies(response);
         } catch (Exception e){
-            if(shouldRecordRequestFailure(url, e, requestGroup))
+            if(shouldRecordRequestFailure(url, e, requestGroup, fastNtkPageDirect))
                 ml.melun.mangaview.report.CrashReporter.record(e);
             return null;
         } finally {
@@ -584,8 +1079,10 @@ public class CustomHttpClient {
         return response;
     }
 
-    private boolean shouldRecordRequestFailure(String url, Exception e, RequestGroup requestGroup) {
+    private boolean shouldRecordRequestFailure(String url, Exception e, RequestGroup requestGroup, boolean fastNtkPageDirect) {
         if(isInterruptedRequest(e) || (requestGroup != null && requestGroup.isCancelled()))
+            return false;
+        if(fastNtkPageDirect && isNtkUrl(url) && e instanceof InterruptedIOException)
             return false;
         return !(e instanceof SSLException && (isNtkUrl(url) || isNtk()));
     }
@@ -1216,7 +1713,8 @@ public class CustomHttpClient {
         Map<String, String> headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
         applyNtkApiHeaders(headers, baseUrl, url);
 
-        Response response = get(baseUrl + url, headers);
+        boolean fastNtkPageDirect = shouldUseFastNtkPageDirect(isNtkUrl(baseUrl), url, fetchMode);
+        Response response = get(baseUrl + url, headers, fastNtkPageDirect);
         if(isNtkUrl(baseUrl) && shouldRetryWithResolvedDomain(response)) {
             if(response != null)
                 response.close();
@@ -1224,7 +1722,8 @@ public class CustomHttpClient {
             baseUrl = getBaseUrl(url);
             headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
             applyNtkApiHeaders(headers, baseUrl, url);
-            response = get(baseUrl + url, headers);
+            fastNtkPageDirect = shouldUseFastNtkPageDirect(isNtkUrl(baseUrl), url, fetchMode);
+            response = get(baseUrl + url, headers, fastNtkPageDirect);
         }
         if(shouldUseNtkWebViewFallback(isNtkUrl(baseUrl),
                 response == null || isNtkWebViewFallbackCandidate(response, url), url, fetchMode)) {
@@ -1239,7 +1738,8 @@ public class CustomHttpClient {
             baseUrl = getBaseUrl(url);
             headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
             applyNtkApiHeaders(headers, baseUrl, url);
-            response = get(baseUrl + url, headers);
+            fastNtkPageDirect = shouldUseFastNtkPageDirect(isNtkUrl(baseUrl), url, fetchMode);
+            response = get(baseUrl + url, headers, fastNtkPageDirect);
             if(shouldUseNtkWebViewFallback(isNtkUrl(baseUrl),
                     response == null || isNtkWebViewFallbackCandidate(response, url), url, fetchMode)) {
                 if(response != null)
@@ -1363,6 +1863,16 @@ public class CustomHttpClient {
 
     private static boolean shouldUseNtkWebViewFallback(boolean ntkUrl, boolean missingResponse, String path, FetchMode fetchMode) {
         if(fetchMode != FetchMode.ALLOW_SHARED_WEBVIEW || !ntkUrl || !missingResponse || path == null)
+            return false;
+        return path.startsWith("/webtoon/") || path.startsWith("/manhwa/");
+    }
+
+    static boolean shouldUseFastNtkPageDirectForTest(boolean ntkUrl, String path, FetchMode fetchMode) {
+        return shouldUseFastNtkPageDirect(ntkUrl, path, fetchMode);
+    }
+
+    private static boolean shouldUseFastNtkPageDirect(boolean ntkUrl, String path, FetchMode fetchMode) {
+        if(!ntkUrl || path == null || fetchMode == FetchMode.CACHE_ONLY)
             return false;
         return path.startsWith("/webtoon/") || path.startsWith("/manhwa/");
     }
@@ -1754,7 +2264,7 @@ public class CustomHttpClient {
                 .followSslRedirects(false)
                 .connectTimeout(20, TimeUnit.SECONDS)
                 .readTimeout(20, TimeUnit.SECONDS)
-                .dns(IPV4_FIRST_DNS);
+                .dns(NETWORK_RESILIENT_DNS);
         if(android.os.Build.VERSION.SDK_INT < CODE_SCOPED_STORAGE) {
             List<CipherSuite> cipherSuites = new ArrayList<>(ConnectionSpec.MODERN_TLS.cipherSuites());
             cipherSuites.add(CipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA);
@@ -1766,6 +2276,13 @@ public class CustomHttpClient {
             configured.connectionSpecs(Arrays.asList(legacyTls, ConnectionSpec.CLEARTEXT));
         }
         return configured;
+    }
+
+    private static OkHttpClient.Builder fastNtkPageClient(OkHttpClient.Builder builder) {
+        return baseClient(builder)
+                .connectTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                .readTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                .callTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     }
 
     static List<Protocol> ntkTlsFallbackProtocolsForTest() {

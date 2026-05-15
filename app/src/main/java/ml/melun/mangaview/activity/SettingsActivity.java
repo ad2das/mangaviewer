@@ -1,10 +1,16 @@
 package ml.melun.mangaview.activity;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.res.ColorStateList;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.graphics.Typeface;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.Uri;
 
 import androidx.annotation.Nullable;
@@ -25,6 +31,7 @@ import android.widget.Button;
 import android.widget.CompoundButton;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
@@ -301,6 +308,7 @@ public class SettingsActivity extends AppCompatActivity {
                 switchSite(NTK_COMIC_URL, NTK_WEBTOON_URL, "NTK");
             }
         });
+        this.findViewById(R.id.setting_ntk_diagnostics).setOnClickListener(v -> runNtkNetworkDiagnostics());
 
         s_stretch = this.findViewById(R.id.setting_stretch);
         s_stretch_switch = this.findViewById(R.id.setting_stretch_switch);
@@ -364,6 +372,7 @@ public class SettingsActivity extends AppCompatActivity {
         int[] rowIds = {
                 R.id.setting_url,
                 R.id.setting_site_toggle,
+                R.id.setting_ntk_diagnostics,
                 R.id.setting_dir,
                 R.id.setting_startTab,
                 R.id.setting_dark,
@@ -462,6 +471,91 @@ public class SettingsActivity extends AppCompatActivity {
         getHttpClient().clearPageCache();
         updateSiteToggleText();
         Toast.makeText(context, label + " 사이트로 변경되었습니다.", Toast.LENGTH_SHORT).show();
+    }
+
+    private void runNtkNetworkDiagnostics() {
+        AlertDialog.Builder builder = dark ? new AlertDialog.Builder(context, R.style.darkDialog) : new AlertDialog.Builder(context);
+        AlertDialog progress = builder
+                .setTitle("NTK network diagnostics")
+                .setMessage("Running DNS and API checks...")
+                .setCancelable(false)
+                .create();
+        progress.show();
+        String network = currentNetworkSummary();
+        AppDispatchers.runIo(() -> {
+            String report = getHttpClient().buildNtkNetworkDiagnosticReport(network);
+            AppDispatchers.runOnMain(() -> {
+                if(isFinishing() || isDestroyed())
+                    return;
+                if(progress.isShowing())
+                    progress.dismiss();
+                showNtkDiagnosticResult(report);
+            });
+        });
+    }
+
+    private void showNtkDiagnosticResult(String report) {
+        ScrollView scrollView = new ScrollView(context);
+        int padding = dp(16);
+        scrollView.setPadding(padding, padding, padding, padding);
+        TextView output = new TextView(context);
+        output.setText(report);
+        output.setTextIsSelectable(true);
+        output.setTypeface(Typeface.MONOSPACE);
+        output.setTextSize(12);
+        output.setTextColor(ContextCompat.getColor(this, dark ? R.color.colorDarkText : R.color.appText));
+        scrollView.addView(output, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT,
+                ScrollView.LayoutParams.WRAP_CONTENT));
+
+        AlertDialog.Builder builder = dark ? new AlertDialog.Builder(context, R.style.darkDialog) : new AlertDialog.Builder(context);
+        builder.setTitle("NTK network diagnostics")
+                .setView(scrollView)
+                .setPositiveButton("Copy", (dialog, which) -> copyDiagnosticReport(report))
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    private void copyDiagnosticReport(String report) {
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if(clipboard != null) {
+            clipboard.setPrimaryClip(ClipData.newPlainText("NTK network diagnostics", report));
+            Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private String currentNetworkSummary() {
+        try {
+            ConnectivityManager manager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            if(manager == null)
+                return "unknown";
+            Network network = manager.getActiveNetwork();
+            if(network == null)
+                return "none";
+            NetworkCapabilities capabilities = manager.getNetworkCapabilities(network);
+            if(capabilities == null)
+                return "unknown";
+            StringBuilder builder = new StringBuilder();
+            appendTransport(builder, capabilities, NetworkCapabilities.TRANSPORT_WIFI, "wifi");
+            appendTransport(builder, capabilities, NetworkCapabilities.TRANSPORT_CELLULAR, "cellular");
+            appendTransport(builder, capabilities, NetworkCapabilities.TRANSPORT_VPN, "vpn");
+            appendTransport(builder, capabilities, NetworkCapabilities.TRANSPORT_ETHERNET, "ethernet");
+            if(builder.length() == 0)
+                builder.append("other");
+            builder.append(",validated=").append(capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
+            builder.append(",internet=").append(capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET));
+            return builder.toString();
+        } catch (Exception e) {
+            return "unknown";
+        }
+    }
+
+    private void appendTransport(StringBuilder builder, NetworkCapabilities capabilities, int transport, String label) {
+        if(!capabilities.hasTransport(transport))
+            return;
+        if(builder.length() > 0)
+            builder.append('+');
+        builder.append(label);
     }
 
     public static void urlSettingPopup(Context context, Preference p){
