@@ -99,4 +99,24 @@ public class MangaTest {
         org.junit.Assert.assertFalse(Manga.isNtkPageImageForTest(
                 "<div class=\"banner\"><img src=\"https://i.toonflix.app/webtoon_uploads/page001.jpg\"></div>"));
     }
+
+    @Test
+    public void ntkBoardUploadsAreOnlyFallbackPageImages() {
+        assertTrue(Manga.isNtkFallbackBoardPageImageForTest(
+                "<article class=\"viewer-content\"><img src=\"https://i.toonflix.app/board_uploads/2026/05/15/page001.jpg\"></article>"));
+
+        org.junit.Assert.assertFalse(Manga.isNtkFallbackBoardPageImageForTest(
+                "<div class=\"episodeThumbCard\"><img src=\"https://i.toonflix.app/board_uploads/2026/05/15/thumb.jpg\"></div>"));
+        org.junit.Assert.assertFalse(Manga.isNtkFallbackBoardPageImageForTest(
+                "<div class=\"banner\"><img src=\"https://i.toonflix.app/board_uploads/2026/05/15/ad.png\"></div>"));
+    }
+
+    @Test
+    public void ntkBlockedPageDetectedBeforeImageParsing() {
+        assertTrue(Manga.looksLikeNtkBlockedPageForTest(
+                "<html><head><title>Just a moment...</title></head><body>challenges.cloudflare.com</body></html>"));
+
+        org.junit.Assert.assertFalse(Manga.looksLikeNtkBlockedPageForTest(
+                "<html><body><main><img src=\"https://i.toonflix.app/webtoon_uploads/page001.jpg\"></main></body></html>"));
+    }
 }

@@ -259,6 +259,7 @@ public class Manga {
         List<Manga> previousEpisodes = safeEpisodeCopy(eps);
         imgs = new ArrayList<>();
         Set<String> seenImages = new LinkedHashSet<>();
+        Set<String> fallbackBoardImages = new LinkedHashSet<>();
         eps = new ArrayList<>();
         try {
             int tid = titleId;
@@ -271,6 +272,8 @@ public class Manga {
             if(path.length() == 0)
                 path = "/" + segment + "/" + tid + "/" + id;
             CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+            if(client.isCloudflareChallengeResponse(page.code, page.body) || looksLikeNtkBlockedPage(page.body))
+                return LOAD_CAPTCHA;
             Document d = Jsoup.parse(page.body);
 
             Element h1 = d.selectFirst("h1");
@@ -282,7 +285,13 @@ public class Manga {
                     String src = img.attr(attr);
                     if(isNtkPageImage(img, src))
                         addImageIfValid(client, seenImages, src);
+                    else if(isNtkFallbackBoardPageImage(img, src))
+                        fallbackBoardImages.add(src);
                 }
+            }
+            if(imgs.size() == 0) {
+                for(String src : fallbackBoardImages)
+                    addImageIfValid(client, seenImages, src);
             }
 
             List<Manga> titleEpisodes = title == null ? null : safeEpisodeCopy(title.getEps());
@@ -302,6 +311,23 @@ public class Manga {
         restoreBetterEpisodeList(previousEpisodes);
         attachEpisodeSeriesMetadata();
         return LOAD_OK;
+    }
+
+    private static boolean looksLikeNtkBlockedPage(String body) {
+        if(body == null || body.length() == 0)
+            return true;
+        String lower = body.toLowerCase(Locale.ROOT);
+        return lower.contains("webpage not available")
+                || lower.contains("net::err_")
+                || lower.contains("err_connection_reset")
+                || lower.contains("err_name_not_resolved")
+                || lower.contains("err_timed_out")
+                || lower.contains("just a moment")
+                || lower.contains("challenges.cloudflare.com")
+                || lower.contains("cf-challenge")
+                || lower.contains("cf_chl")
+                || lower.contains("cf-mitigated")
+                || lower.contains("turnstile");
     }
 
     private static boolean isCloudflareChallenge(Exception e) {
@@ -598,6 +624,37 @@ public class Manga {
                 || lower.contains("/blacktoon/episodes/");
     }
 
+    private static boolean isNtkFallbackBoardPageImage(Element img, String src) {
+        if(!isImageSourceCandidate(src))
+            return false;
+        String lower = src.trim().toLowerCase(Locale.ROOT);
+        if(!lower.contains("/board_uploads/"))
+            return false;
+        if(!lower.matches(".*\\.(jpg|jpeg|png|webp|gif)(\\?.*)?$"))
+            return false;
+        String context = ntkImageContext(img);
+        return !hasNtkBlockedImageContext(context);
+    }
+
+    private static boolean hasNtkBlockedImageContext(String context) {
+        if(context == null)
+            return false;
+        return context.contains("banner")
+                || context.contains("advert")
+                || context.contains("sponsor")
+                || context.contains("popup")
+                || context.contains("thumb")
+                || context.contains("cover")
+                || context.contains("logo")
+                || context.contains("avatar")
+                || context.contains("profile")
+                || context.contains("recommend")
+                || context.contains("related")
+                || context.contains("episode-list")
+                || context.contains("list-item")
+                || context.contains("card");
+    }
+
     private static String ntkImageContext(Element img) {
         if(img == null)
             return "";
@@ -621,6 +678,18 @@ public class Manga {
             return false;
         String src = img.hasAttr("data-original") ? img.attr("data-original") : img.attr("src");
         return isNtkPageImage(img, src);
+    }
+
+    static boolean isNtkFallbackBoardPageImageForTest(String html) {
+        Element img = Jsoup.parseBodyFragment(html == null ? "" : html).selectFirst("img");
+        if(img == null)
+            return false;
+        String src = img.hasAttr("data-original") ? img.attr("data-original") : img.attr("src");
+        return isNtkFallbackBoardPageImage(img, src);
+    }
+
+    static boolean looksLikeNtkBlockedPageForTest(String body) {
+        return looksLikeNtkBlockedPage(body);
     }
 
     private boolean hasWolfBlockedAncestor(Element img) {
