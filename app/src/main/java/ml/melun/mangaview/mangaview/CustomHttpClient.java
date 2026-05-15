@@ -12,6 +12,7 @@ import org.json.JSONObject;
 
 import java.io.InterruptedIOException;
 import java.net.Inet4Address;
+import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
@@ -141,7 +142,7 @@ public class CustomHttpClient {
                 return ipv4OnlyOrThrow(hostname, mergeIpv4First(hostname, systemAddresses, null, null));
             throw new UnknownHostException(hostname);
         }
-        return ipv4OnlyOrThrow(hostname, lookupSystemDns(hostname, true));
+        return selectNetworkResilientAddresses(hostname, lookupSystemDns(hostname, true));
     }
 
     private static List<InetAddress> lookupCachedOrFallbackNtkDns(String hostname) {
@@ -362,6 +363,49 @@ public class CustomHttpClient {
         return ipv4OnlyOrThrow(hostname, addresses);
     }
 
+    static List<InetAddress> selectNetworkResilientAddressesForTest(String hostname, List<InetAddress> addresses) throws UnknownHostException {
+        return selectNetworkResilientAddresses(hostname, addresses);
+    }
+
+    static boolean prefersIpv6ForWfwfHostForTest(String hostname) {
+        return prefersIpv6ForWfwfHost(hostname);
+    }
+
+    private static List<InetAddress> selectNetworkResilientAddresses(String hostname, List<InetAddress> addresses) throws UnknownHostException {
+        if(prefersIpv6ForWfwfHost(hostname))
+            return ipv6FirstThenIpv4(hostname, addresses);
+        return ipv4OnlyOrThrow(hostname, addresses);
+    }
+
+    private static List<InetAddress> ipv6FirstThenIpv4(String hostname, List<InetAddress> addresses) throws UnknownHostException {
+        ArrayList<InetAddress> sorted = new ArrayList<>();
+        if(addresses != null) {
+            for(InetAddress address : addresses)
+                if(address instanceof Inet6Address)
+                    addAddressIfMissing(sorted, address);
+            for(InetAddress address : addresses)
+                if(address instanceof Inet4Address)
+                    addAddressIfMissing(sorted, address);
+            for(InetAddress address : addresses)
+                if(!(address instanceof Inet6Address) && !(address instanceof Inet4Address))
+                    addAddressIfMissing(sorted, address);
+        }
+        if(!sorted.isEmpty())
+            return sorted;
+        throw new UnknownHostException(hostname == null ? "" : hostname);
+    }
+
+    private static boolean prefersIpv6ForWfwfHost(String hostname) {
+        String normalized = normalizeDnsHost(hostname);
+        return normalized.matches("wfwf\\d+\\.com")
+                || normalized.contains("wolf")
+                || normalized.contains("imgcloud")
+                || normalized.matches("w\\d+cloud\\.com")
+                || normalized.contains("vcloud")
+                || normalized.contains("ao9cloud")
+                || normalized.endsWith("v12st.com");
+    }
+
     private static boolean isNtkDnsProtectedHost(String hostname) {
         String normalized = normalizeDnsHost(hostname);
         return normalized.equals(NTK_HOST)
@@ -475,6 +519,49 @@ public class CustomHttpClient {
         }
     }
 
+    private void appendWfwfHttpDiagnostic(StringBuilder report, String root) {
+        appendWfwfPageDiagnostic(report, "wfwf_cm_direct", root, "/cm");
+        appendWfwfPageDiagnostic(report, "wfwf_episode_direct", root, "/cl?toon=10007");
+    }
+
+    private void appendWfwfPageDiagnostic(StringBuilder report, String key, String root, String path) {
+        long startedAt = System.currentTimeMillis();
+        Response response = null;
+        try {
+            OkHttpClient probeClient = client.newBuilder()
+                    .connectTimeout(4, TimeUnit.SECONDS)
+                    .readTimeout(6, TimeUnit.SECONDS)
+                    .callTimeout(8, TimeUnit.SECONDS)
+                    .dns(NETWORK_RESILIENT_DNS)
+                    .followRedirects(false)
+                    .followSslRedirects(false)
+                    .build();
+            Map<String, String> headers = buildHeaders(root, true, null);
+            Request.Builder builder = new Request.Builder()
+                    .url(trimTrailingSlash(root) + path)
+                    .get();
+            for(String headerKey : headers.keySet())
+                builder.addHeader(headerKey, headers.get(headerKey));
+            response = probeClient.newCall(builder.build()).execute();
+            int code = response.code();
+            String body = response.body() == null ? "" : response.body().string();
+            String result = "code=" + code
+                    + ",ms=" + (System.currentTimeMillis() - startedAt)
+                    + ",body_len=" + body.length()
+                    + ",cacheable=" + looksCacheable(body)
+                    + ",type=" + response.header("content-type", "");
+            appendDiagnosticLine(report, key, result);
+            if(body.length() > 0)
+                appendDiagnosticLine(report, key + "_body_head", abbreviate(body.replace('\n', ' '), 180));
+        } catch (Exception e) {
+            appendDiagnosticLine(report, key,
+                    "fail " + (System.currentTimeMillis() - startedAt) + "ms " + exceptionSummary(e));
+        } finally {
+            if(response != null)
+                response.close();
+        }
+    }
+
     private static List<InetAddress> lookupNtkDohFreshForDiagnostic(String hostname) {
         long startedAt = System.currentTimeMillis();
         Response response = null;
@@ -553,6 +640,16 @@ public class CustomHttpClient {
 
     private static String diagnosticInterpretation(String report) {
         String lower = report == null ? "" : report.toLowerCase(Locale.ROOT);
+        if(lower.contains("active_site: wfwf")) {
+            if(lower.contains("wfwf_cm_direct: code=2") || lower.contains("wfwf_episode_direct: code=2"))
+                return "OK: app route can reach WFWF.";
+            if(lower.contains("app_dns_") && lower.contains(": ok ")
+                    && (lower.contains("wfwf_cm_direct: fail") || lower.contains("wfwf_episode_direct: fail")))
+                return "DNS resolved, but mobile route/TLS is still blocked before WFWF responds.";
+            if(lower.contains("system_dns_") && lower.contains(": fail") && lower.contains("app_dns_") && lower.contains(": ok "))
+                return "Carrier DNS appears blocked, app DNS bypass is working.";
+            return "Check WFWF DNS/direct lines above.";
+        }
         if(lower.contains("ntk_api_direct: code=2"))
             return "OK: app route can reach NTK.";
         if(lower.contains("ntk_api_direct: code=403") || lower.contains("challenge=true"))
@@ -1022,28 +1119,39 @@ public class CustomHttpClient {
         try {
             String root = getRootUrl(getWebtoonUrl());
             String rootHost = hostOf(root);
+            boolean ntkSite = p != null && p.isNtkSite();
             appendDiagnosticLine(report, "time", new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date()));
             appendDiagnosticLine(report, "network", emptyToUnknown(networkSummary));
-            appendDiagnosticLine(report, "active_site", p != null && p.isNtkSite() ? "NTK" : "WFWF");
+            appendDiagnosticLine(report, "active_site", ntkSite ? "NTK" : "WFWF");
             appendDiagnosticLine(report, "webtoon_url", getWebtoonUrl());
             appendDiagnosticLine(report, "comic_url", getComicUrl());
             appendDiagnosticLine(report, "root", root);
-            appendDiagnosticLine(report, "has_cf_clearance", String.valueOf(hasCloudflareClearance()));
-            appendDiagnosticLine(report, "recent_ntk_verified", String.valueOf(hasRecentNtkAccessVerification()));
+            if(ntkSite) {
+                appendDiagnosticLine(report, "has_cf_clearance", String.valueOf(hasCloudflareClearance()));
+                appendDiagnosticLine(report, "recent_ntk_verified", String.valueOf(hasRecentNtkAccessVerification()));
+            }
             report.append('\n');
 
             appendSystemDnsDiagnostic(report, rootHost);
             appendAppDnsDiagnostic(report, rootHost);
             appendDohDiagnostic(report, rootHost);
-            if(!"sbxh1.com".equalsIgnoreCase(rootHost)) {
+            if(ntkSite && !"sbxh1.com".equalsIgnoreCase(rootHost)) {
                 appendAppDnsDiagnostic(report, "sbxh1.com");
                 appendDohDiagnostic(report, "sbxh1.com");
             }
-            appendProxyDiagnostic(report, rootHost);
-            appendProxyDiagnostic(report, "img.sbxh1.com");
+            if(ntkSite) {
+                appendProxyDiagnostic(report, rootHost);
+                appendProxyDiagnostic(report, "img.sbxh1.com");
+            } else {
+                appendAppDnsDiagnostic(report, "i1.imgcloud18.com");
+                appendDohDiagnostic(report, "i1.imgcloud18.com");
+            }
             report.append('\n');
 
-            appendNtkApiDiagnostic(report, root);
+            if(ntkSite)
+                appendNtkApiDiagnostic(report, root);
+            else
+                appendWfwfHttpDiagnostic(report, root);
             report.append('\n');
             appendDiagnosticLine(report, "elapsed_ms", String.valueOf(System.currentTimeMillis() - startedAt));
             appendDiagnosticLine(report, "interpretation", diagnosticInterpretation(report.toString()));

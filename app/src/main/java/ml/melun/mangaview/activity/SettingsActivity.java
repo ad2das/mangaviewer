@@ -485,8 +485,8 @@ public class SettingsActivity extends AppCompatActivity {
     private void runNtkNetworkDiagnostics() {
         AlertDialog.Builder builder = dark ? new AlertDialog.Builder(context, R.style.darkDialog) : new AlertDialog.Builder(context);
         AlertDialog progress = builder
-                .setTitle("NTK network diagnostics")
-                .setMessage("Running DNS and API checks...")
+                .setTitle("Site network diagnostics")
+                .setMessage("Running DNS and route checks...")
                 .setCancelable(false)
                 .create();
         progress.show();
@@ -518,12 +518,13 @@ public class SettingsActivity extends AppCompatActivity {
                 ScrollView.LayoutParams.WRAP_CONTENT));
 
         AlertDialog.Builder builder = dark ? new AlertDialog.Builder(context, R.style.darkDialog) : new AlertDialog.Builder(context);
-        builder.setTitle("NTK network diagnostics")
+        builder.setTitle("Site network diagnostics")
                 .setView(scrollView)
                 .setPositiveButton("Copy", (dialog, which) -> copyDiagnosticReport(report))
-                .setNeutralButton("Open captcha", (dialog, which) -> openNtkCaptchaFromSettings())
-                .setNegativeButton("Close", null)
-                .show();
+                .setNegativeButton("Close", null);
+        if(p != null && p.isNtkSite())
+            builder.setNeutralButton("Open captcha", (dialog, which) -> openNtkCaptchaFromSettings());
+        builder.show();
     }
 
     private void openNtkCaptchaFromSettings() {
@@ -538,7 +539,7 @@ public class SettingsActivity extends AppCompatActivity {
     private void copyDiagnosticReport(String report) {
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         if(clipboard != null) {
-            clipboard.setPrimaryClip(ClipData.newPlainText("NTK network diagnostics", report));
+            clipboard.setPrimaryClip(ClipData.newPlainText("Site network diagnostics", report));
             Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show();
         }
     }

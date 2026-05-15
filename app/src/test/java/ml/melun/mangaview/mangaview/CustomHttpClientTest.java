@@ -229,6 +229,31 @@ public class CustomHttpClientTest {
         assertEquals("104.26.10.250", filtered.get(0).getHostAddress());
     }
 
+    @Test
+    public void wfwfDnsPrefersIpv6AndKeepsIpv4Fallback() throws Exception {
+        InetAddress ipv4 = InetAddress.getByAddress("wfwf451.com",
+                new byte[] {(byte)104, (byte)26, (byte)14, (byte)114});
+        InetAddress ipv6 = InetAddress.getByAddress("wfwf451.com",
+                new byte[] {
+                        (byte)0x26, (byte)0x06, (byte)0x47, (byte)0x00,
+                        (byte)0x00, (byte)0x20, (byte)0x00, (byte)0x00,
+                        (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00,
+                        (byte)0x68, (byte)0x1a, (byte)0x0e, (byte)0x72});
+
+        List<InetAddress> selected = CustomHttpClient.selectNetworkResilientAddressesForTest("wfwf451.com",
+                Arrays.asList(ipv4, ipv6));
+
+        assertEquals("2606:4700:20:0:0:0:681a:e72", selected.get(0).getHostAddress());
+        assertEquals("104.26.14.114", selected.get(1).getHostAddress());
+    }
+
+    @Test
+    public void wfwfImageCdnAlsoUsesIpv6CapableDns() throws Exception {
+        assertTrue(CustomHttpClient.prefersIpv6ForWfwfHostForTest("i1.imgcloud18.com"));
+        assertTrue(CustomHttpClient.prefersIpv6ForWfwfHostForTest("v12st.com"));
+        assertFalse(CustomHttpClient.prefersIpv6ForWfwfHostForTest("sbxh1.com"));
+    }
+
     @Test(expected = java.net.UnknownHostException.class)
     public void appDnsRejectsIpv6OnlyAnswers() throws Exception {
         InetAddress ipv6 = InetAddress.getByAddress("sbxh1.com",
