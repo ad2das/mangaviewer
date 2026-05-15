@@ -161,4 +161,29 @@ public class CustomHttpClientTest {
         assertEquals("104.16.220.55", merged.get(0).getHostAddress());
         assertEquals("104.16.219.55", merged.get(1).getHostAddress());
     }
+
+    @Test
+    public void wfwfNumberedDnsDropsIpv6WhenIpv4Exists() throws Exception {
+        InetAddress ipv4 = InetAddress.getByAddress("wfwf450.com",
+                new byte[] {(byte)104, (byte)26, (byte)10, (byte)250});
+        InetAddress ipv6 = InetAddress.getByAddress("wfwf450.com",
+                new byte[] {
+                        (byte)0x26, (byte)0x06, (byte)0x47, (byte)0x00,
+                        (byte)0x00, (byte)0x20, (byte)0x00, (byte)0x00,
+                        (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00,
+                        (byte)0x68, (byte)0x1a, (byte)0x0b, (byte)0xfa});
+
+        List<InetAddress> filtered = CustomHttpClient.wfwfIpv4OnlyOrOriginalForTest(Arrays.asList(ipv6, ipv4));
+
+        assertEquals(1, filtered.size());
+        assertEquals("104.26.10.250", filtered.get(0).getHostAddress());
+    }
+
+    @Test
+    public void wfwfIpv4OnlyHostOnlyMatchesNumberedWfwfDomains() {
+        assertTrue(CustomHttpClient.isWfwfDnsIpv4OnlyHostForTest("wfwf450.com"));
+        assertTrue(CustomHttpClient.isWfwfDnsIpv4OnlyHostForTest("www.wfwf450.com"));
+        assertFalse(CustomHttpClient.isWfwfDnsIpv4OnlyHostForTest("sbxh1.com"));
+        assertFalse(CustomHttpClient.isWfwfDnsIpv4OnlyHostForTest("example.com"));
+    }
 }

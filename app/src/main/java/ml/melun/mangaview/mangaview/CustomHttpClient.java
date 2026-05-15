@@ -141,7 +141,10 @@ public class CustomHttpClient {
                 return mergeIpv4First(hostname, systemAddresses, null, null);
             throw new UnknownHostException(hostname);
         }
-        return mergeIpv4First(hostname, lookupSystemDns(hostname, true), null, null);
+        List<InetAddress> systemAddresses = lookupSystemDns(hostname, true);
+        if(isWfwfDnsIpv4OnlyHost(hostname))
+            return wfwfIpv4OnlyOrOriginal(systemAddresses);
+        return mergeIpv4First(hostname, systemAddresses, null, null);
     }
 
     private static List<InetAddress> lookupCachedOrFallbackNtkDns(String hostname) {
@@ -318,6 +321,23 @@ public class CustomHttpClient {
                 addAddressIfMissing(target, address);
     }
 
+    private static boolean isWfwfDnsIpv4OnlyHost(String hostname) {
+        String normalized = normalizeDnsHost(hostname);
+        return normalized.matches("wfwf\\d+\\.com");
+    }
+
+    private static List<InetAddress> wfwfIpv4OnlyOrOriginal(List<InetAddress> addresses) {
+        ArrayList<InetAddress> ipv4 = new ArrayList<>();
+        if(addresses != null) {
+            for(InetAddress address : addresses)
+                if(address instanceof Inet4Address)
+                    addAddressIfMissing(ipv4, address);
+        }
+        if(!ipv4.isEmpty())
+            return ipv4;
+        return mergeIpv4First("", addresses, null, null);
+    }
+
     public static String resolveDirectHostForNtkProxy(String hostname) {
         if(!isNtkDnsProtectedHost(hostname))
             return hostname;
@@ -339,6 +359,14 @@ public class CustomHttpClient {
                                                    List<InetAddress> secondary,
                                                    List<InetAddress> fallback) {
         return mergeIpv4First(hostname, preferred, secondary, fallback);
+    }
+
+    static boolean isWfwfDnsIpv4OnlyHostForTest(String hostname) {
+        return isWfwfDnsIpv4OnlyHost(hostname);
+    }
+
+    static List<InetAddress> wfwfIpv4OnlyOrOriginalForTest(List<InetAddress> addresses) {
+        return wfwfIpv4OnlyOrOriginal(addresses);
     }
 
     private static boolean isNtkDnsProtectedHost(String hostname) {
