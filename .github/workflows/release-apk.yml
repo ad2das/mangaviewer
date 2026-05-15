@@ -22,10 +22,6 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: release-apk-${{ github.ref_name }}
-  cancel-in-progress: true
-
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -42,24 +38,40 @@ jobs:
           ref: ${{ github.ref_name }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Check latest branch head
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest_sha="$(git ls-remote origin "refs/heads/${GITHUB_REF_NAME}" | awk '{print $1}')"
+          if [ -n "${latest_sha}" ] && [ "${latest_sha}" != "${GITHUB_SHA}" ]; then
+            echo "STALE_RELEASE_RUN=true" >> "${GITHUB_ENV}"
+            echo "Skipping stale release run for ${GITHUB_SHA}; latest is ${latest_sha}."
+          else
+            echo "STALE_RELEASE_RUN=false" >> "${GITHUB_ENV}"
+          fi
+
       - name: Set up JDK 17
+        if: env.STALE_RELEASE_RUN != 'true'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Set up Gradle cache
+        if: env.STALE_RELEASE_RUN != 'true'
         uses: gradle/actions/setup-gradle@v4
         with:
           cache-read-only: false
           cache-cleanup: never
 
       - name: Configure Git
+        if: env.STALE_RELEASE_RUN != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Restore Firebase resources
+        if: env.STALE_RELEASE_RUN != 'true'
         shell: bash
         env:
           GOOGLE_SERVICES_XML: ${{ secrets.GOOGLE_SERVICES_XML }}
@@ -70,6 +82,7 @@ jobs:
           fi
 
       - name: Release latest signed APK
+        if: env.STALE_RELEASE_RUN != 'true'
         shell: pwsh
         run: |
           $patchMatch = Select-String -Path app/build.gradle -Pattern 'def\s+defaultReleasePatch\s*=\s*(\d+)'
@@ -86,6 +99,7 @@ jobs:
             -DeleteOldReleaseApks
 
       - name: Upload APK artifact
+        if: env.STALE_RELEASE_RUN != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: mangaviewer-release-apk
