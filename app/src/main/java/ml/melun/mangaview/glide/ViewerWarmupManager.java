@@ -66,10 +66,10 @@ public class ViewerWarmupManager {
     private static final LinkedHashMap<String, WarmupSnapshot> continueSnapshots = new LinkedHashMap<>(SNAPSHOT_LIMIT, 0.75f, true);
     private static final LinkedHashMap<String, Long> recentContinueWarmups = new LinkedHashMap<>(SNAPSHOT_LIMIT, 0.75f, true);
     private static final Map<String, CustomTarget<Bitmap>> decodedTargets = new HashMap<>();
-    private static final LruCache<String, Bitmap> decodedBitmapCache = new LruCache<String, Bitmap>(decodedCacheSizeKb()) {
+    private static final LruCache<String, CachedBitmap> decodedBitmapCache = new LruCache<String, CachedBitmap>(decodedCacheSizeKb()) {
         @Override
-        protected int sizeOf(String key, Bitmap value) {
-            return value == null ? 1 : Math.max(1, value.getByteCount() / 1024);
+        protected int sizeOf(String key, CachedBitmap value) {
+            return value == null ? 1 : value.sizeKb;
         }
     };
 
@@ -501,9 +501,9 @@ public class ViewerWarmupManager {
         if(key.length() == 0)
             return null;
         synchronized (ViewerWarmupManager.class) {
-            Bitmap cached = decodedBitmapCache.get(key);
-            if(cached != null && !cached.isRecycled())
-                return cached;
+            CachedBitmap cached = decodedBitmapCache.get(key);
+            if(cached != null && cached.isUsable())
+                return cached.bitmap;
             if(cached != null)
                 decodedBitmapCache.remove(key);
         }
@@ -626,9 +626,11 @@ public class ViewerWarmupManager {
         if(key.length() == 0)
             return;
         synchronized (ViewerWarmupManager.class) {
-            Bitmap cached = decodedBitmapCache.get(key);
-            if(cached != null && !cached.isRecycled())
+            CachedBitmap cached = decodedBitmapCache.get(key);
+            if(cached != null && cached.isUsable())
                 return;
+            if(cached != null)
+                decodedBitmapCache.remove(key);
             if(decodedTargets.containsKey(key))
                 return;
             if(decodedTargets.size() >= DECODED_TARGET_ACTIVE_SOFT_LIMIT)
@@ -641,7 +643,7 @@ public class ViewerWarmupManager {
                 synchronized (ViewerWarmupManager.class) {
                     decodedTargets.remove(key);
                     if(resource != null && !resource.isRecycled())
-                        decodedBitmapCache.put(key, resource);
+                        putDecodedBitmap(key, resource);
                 }
                 if(page.index == 0)
                     logMetric("viewer_first_decode_ms", SystemClock.elapsedRealtime() - decodeStart);
@@ -708,8 +710,8 @@ public class ViewerWarmupManager {
         if(key.length() == 0)
             return false;
         synchronized (ViewerWarmupManager.class) {
-            Bitmap cached = decodedBitmapCache.get(key);
-            if(cached != null && !cached.isRecycled())
+            CachedBitmap cached = decodedBitmapCache.get(key);
+            if(cached != null && cached.isUsable())
                 return true;
             if(cached != null)
                 decodedBitmapCache.remove(key);
@@ -731,7 +733,7 @@ public class ViewerWarmupManager {
             Bitmap bitmap = target.get(timeoutMs, TimeUnit.MILLISECONDS);
             if(bitmap != null && !bitmap.isRecycled()) {
                 synchronized (ViewerWarmupManager.class) {
-                    decodedBitmapCache.put(key, bitmap);
+                    putDecodedBitmap(key, bitmap);
                 }
                 cachedResult = true;
                 if(firstPage)
@@ -1150,6 +1152,32 @@ public class ViewerWarmupManager {
         int minKb = dataSave ? 12 * 1024 : 32 * 1024;
         int maxKb = dataSave ? 32 * 1024 : 96 * 1024;
         return Math.max(minKb, Math.min(targetKb, maxKb));
+    }
+
+    private static void putDecodedBitmap(String key, Bitmap bitmap) {
+        if(key == null || key.length() == 0 || bitmap == null || bitmap.isRecycled())
+            return;
+        decodedBitmapCache.put(key, new CachedBitmap(bitmap, bitmapSizeKb(bitmap)));
+    }
+
+    private static int bitmapSizeKb(Bitmap bitmap) {
+        if(bitmap == null)
+            return 1;
+        return Math.max(1, bitmap.getByteCount() / 1024);
+    }
+
+    private static class CachedBitmap {
+        final Bitmap bitmap;
+        final int sizeKb;
+
+        CachedBitmap(Bitmap bitmap, int sizeKb) {
+            this.bitmap = bitmap;
+            this.sizeKb = Math.max(1, sizeKb);
+        }
+
+        boolean isUsable() {
+            return bitmap != null && !bitmap.isRecycled();
+        }
     }
 
     private static class WarmupState {
