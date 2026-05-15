@@ -133,18 +133,15 @@ public class CustomHttpClient {
 
     private static List<InetAddress> lookupNetworkResilientDns(String hostname) throws UnknownHostException {
         if(isNtkDnsProtectedHost(hostname)) {
-            List<InetAddress> protectedAddresses = lookupCachedOrFallbackNtkDns(hostname);
+            List<InetAddress> protectedAddresses = ipv4OnlyOrEmpty(lookupCachedOrFallbackNtkDns(hostname));
             if(!protectedAddresses.isEmpty())
                 return protectedAddresses;
             List<InetAddress> systemAddresses = lookupSystemDns(hostname, false);
             if(!systemAddresses.isEmpty())
-                return mergeIpv4First(hostname, systemAddresses, null, null);
+                return ipv4OnlyOrThrow(hostname, mergeIpv4First(hostname, systemAddresses, null, null));
             throw new UnknownHostException(hostname);
         }
-        List<InetAddress> systemAddresses = lookupSystemDns(hostname, true);
-        if(isWfwfDnsIpv4OnlyHost(hostname))
-            return wfwfIpv4OnlyOrOriginal(systemAddresses);
-        return mergeIpv4First(hostname, systemAddresses, null, null);
+        return ipv4OnlyOrThrow(hostname, lookupSystemDns(hostname, true));
     }
 
     private static List<InetAddress> lookupCachedOrFallbackNtkDns(String hostname) {
@@ -321,21 +318,21 @@ public class CustomHttpClient {
                 addAddressIfMissing(target, address);
     }
 
-    private static boolean isWfwfDnsIpv4OnlyHost(String hostname) {
-        String normalized = normalizeDnsHost(hostname);
-        return normalized.matches("wfwf\\d+\\.com");
-    }
-
-    private static List<InetAddress> wfwfIpv4OnlyOrOriginal(List<InetAddress> addresses) {
+    private static List<InetAddress> ipv4OnlyOrEmpty(List<InetAddress> addresses) {
         ArrayList<InetAddress> ipv4 = new ArrayList<>();
         if(addresses != null) {
             for(InetAddress address : addresses)
                 if(address instanceof Inet4Address)
                     addAddressIfMissing(ipv4, address);
         }
+        return ipv4;
+    }
+
+    private static List<InetAddress> ipv4OnlyOrThrow(String hostname, List<InetAddress> addresses) throws UnknownHostException {
+        List<InetAddress> ipv4 = ipv4OnlyOrEmpty(addresses);
         if(!ipv4.isEmpty())
             return ipv4;
-        return mergeIpv4First("", addresses, null, null);
+        throw new UnknownHostException((hostname == null ? "" : hostname) + " has no IPv4 DNS answers");
     }
 
     public static String resolveDirectHostForNtkProxy(String hostname) {
@@ -361,12 +358,8 @@ public class CustomHttpClient {
         return mergeIpv4First(hostname, preferred, secondary, fallback);
     }
 
-    static boolean isWfwfDnsIpv4OnlyHostForTest(String hostname) {
-        return isWfwfDnsIpv4OnlyHost(hostname);
-    }
-
-    static List<InetAddress> wfwfIpv4OnlyOrOriginalForTest(List<InetAddress> addresses) {
-        return wfwfIpv4OnlyOrOriginal(addresses);
+    static List<InetAddress> ipv4OnlyOrThrowForTest(String hostname, List<InetAddress> addresses) throws UnknownHostException {
+        return ipv4OnlyOrThrow(hostname, addresses);
     }
 
     private static boolean isNtkDnsProtectedHost(String hostname) {
