@@ -433,6 +433,10 @@ public class CustomHttpClient {
             int code = response.code();
             String body = response.body() == null ? "" : response.body().string();
             boolean challenge = isCloudflareChallenge(code, body);
+            if(challenge) {
+                markCloudflareChallenge(trimTrailingSlash(root) + path);
+                appendDiagnosticLine(report, "ntk_clearance_invalidated", "true");
+            }
             String result = "code=" + code
                     + ",ms=" + (System.currentTimeMillis() - startedAt)
                     + ",body_len=" + body.length()
@@ -658,6 +662,14 @@ public class CustomHttpClient {
     public void clearLastCloudflareChallenge() {
         lastCloudflareChallengeUrl = null;
         lastCloudflareChallengeAt = 0L;
+    }
+
+    public void markCloudflareChallenge(String url) {
+        if(url == null || url.length() == 0)
+            url = getWebtoonUrl();
+        lastCloudflareChallengeUrl = url;
+        lastCloudflareChallengeAt = System.currentTimeMillis();
+        clearCloudflareCookies();
     }
 
     public void setCloudflareCaptchaActive(boolean active) {

@@ -512,8 +512,18 @@ public class SettingsActivity extends AppCompatActivity {
         builder.setTitle("NTK network diagnostics")
                 .setView(scrollView)
                 .setPositiveButton("Copy", (dialog, which) -> copyDiagnosticReport(report))
+                .setNeutralButton("Open captcha", (dialog, which) -> openNtkCaptchaFromSettings())
                 .setNegativeButton("Close", null)
                 .show();
+    }
+
+    private void openNtkCaptchaFromSettings() {
+        getHttpClient().clearCloudflareWebViewCookies(p.getWebtoonUrl(), p.getUrl(), getHttpClient().getLastCloudflareChallengeUrl());
+        Intent intent = new Intent(context, CaptchaActivity.class);
+        String challengeUrl = getHttpClient().getLastCloudflareChallengeUrl();
+        if(challengeUrl != null && challengeUrl.length() > 0)
+            intent.putExtra("url", challengeUrl);
+        startActivityForResult(intent, CaptchaActivity.RESULT_CAPTCHA);
     }
 
     private void copyDiagnosticReport(String report) {
