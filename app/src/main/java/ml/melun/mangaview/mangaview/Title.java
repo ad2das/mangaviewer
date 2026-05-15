@@ -33,6 +33,7 @@ public class Title extends MTitle {
     public static final int BATTERY_FULL = 4;
     public static final int LOAD_OK = 0;
     public static final int LOAD_CAPTCHA = 1;
+    public static final int LOAD_ERROR = 2;
     private static final long PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final int MAX_TIMEOUT_RETRIES = 2;
 
@@ -554,10 +555,13 @@ public class Title extends MTitle {
             }
             if(eps.size() == 0 && client.resolveWfwfDomainNow())
                 return fetchWolfEps(client, listPath, viewPath);
+            if(eps.size() == 0)
+                return LOAD_ERROR;
         }catch(Exception e) {
             if(isCloudflareChallenge(e))
                 return LOAD_CAPTCHA;
             ml.melun.mangaview.report.CrashReporter.record(e);
+            return LOAD_ERROR;
         }
         return LOAD_OK;
     }

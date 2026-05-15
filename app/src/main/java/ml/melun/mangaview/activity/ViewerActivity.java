@@ -593,8 +593,8 @@ public class ViewerActivity extends AppCompatActivity {
             return;
         AppDispatchers.submitIo(() -> {
             try {
-                int result = MangaRepository.fetchEpisodes(currentTitle);
-                if(result == LOAD_CAPTCHA || isFinishing())
+                int result = MangaRepository.fetchEpisodesForeground(currentTitle);
+                if(result != LOAD_OK || isFinishing())
                     return;
                 List<Manga> loaded = Utils.snapshotEpisodes(currentTitle);
                 if(loaded == null || loaded.size() == 0)
@@ -1228,8 +1228,8 @@ public class ViewerActivity extends AppCompatActivity {
             return LOAD_OK;
         restoreTitleEpisodes(currentTitle, target);
         if(needsFullEpisodeList(currentTitle, target)) {
-            int result = MangaRepository.fetchEpisodes(currentTitle);
-            if(result == LOAD_CAPTCHA)
+            int result = MangaRepository.fetchEpisodesForeground(currentTitle);
+            if(result != LOAD_OK)
                 return result;
         }
         currentTitle.ensureProgressEpisodes(target);
@@ -1394,8 +1394,8 @@ public class ViewerActivity extends AppCompatActivity {
         mainHandler.postDelayed(() -> {
             AppDispatchers.submitIo(() -> {
                 try {
-                    int result = MangaRepository.fetchEpisodes(currentTitle);
-                    if(result == LOAD_CAPTCHA || isFinishing())
+                    int result = MangaRepository.fetchEpisodesForeground(currentTitle);
+                    if(result != LOAD_OK || isFinishing())
                         return;
                     attachEpisodeList(currentTitle, target);
                     p.addRecent(currentTitle);

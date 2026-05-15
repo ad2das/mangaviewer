@@ -200,12 +200,21 @@ final class NtkWebViewFallbackManager {
             @Override
             public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 super.onReceivedError(view, request, error);
-                if(Log.isLoggable(TAG, Log.DEBUG) && request != null && request.isForMainFrame()) {
+                boolean mainFrame = request != null && request.isForMainFrame();
+                if(Log.isLoggable(TAG, Log.DEBUG) && mainFrame) {
                     CharSequence description = error == null ? "" : error.getDescription();
                     Log.d(TAG, "ntk_webview_error url=" + request.getUrl()
                             + ",code=" + (error == null ? 0 : error.getErrorCode())
                             + ",description=" + description);
                 }
+                if(!mainFrame)
+                    return;
+                FetchTask task;
+                synchronized (lock) {
+                    task = activeTask;
+                }
+                if(task != null && CustomHttpClient.isWolfEpisodeDocumentPath(task.path))
+                    finishOnMain(task, 0, "", true);
             }
         });
     }
@@ -320,7 +329,9 @@ final class NtkWebViewFallbackManager {
     }
 
     private static boolean shouldNavigateDocument(String path) {
-        return path != null && (path.startsWith("/webtoon/") || path.startsWith("/manhwa/"));
+        return path != null && (path.startsWith("/webtoon/")
+                || path.startsWith("/manhwa/")
+                || CustomHttpClient.isWolfEpisodeDocumentPath(path));
     }
 
     private static boolean isFinishedDocumentUrl(String url, String baseUrl, String path) {

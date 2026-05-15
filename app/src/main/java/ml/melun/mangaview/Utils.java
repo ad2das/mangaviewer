@@ -189,6 +189,8 @@ public class Utils {
 //        return httpsGet(urlin, "");
 //    }
     public static Intent episodeIntent(Context context,Title title){
+        if(p != null)
+            p.ensureSourceSiteForTitle(title);
         Intent episodeView = new Intent(context, EpisodeActivity.class);
         episodeView.putExtra("title", new Gson().toJson(title));
         return episodeView;

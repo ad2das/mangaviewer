@@ -58,10 +58,12 @@ import static ml.melun.mangaview.Utils.openViewerPrepared;
 import static ml.melun.mangaview.Utils.queueOfflineDownload;
 import static ml.melun.mangaview.Utils.safeGet;
 import static ml.melun.mangaview.Utils.showCaptchaPopup;
+import static ml.melun.mangaview.Utils.showErrorPopup;
 import static ml.melun.mangaview.Utils.toViewerMangaJson;
 import static ml.melun.mangaview.Utils.toViewerTitleJson;
 import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
+import static ml.melun.mangaview.mangaview.Title.LOAD_ERROR;
 
 
 public class EpisodeActivity extends AppCompatActivity {
@@ -542,6 +544,12 @@ public class EpisodeActivity extends AppCompatActivity {
                 openNtkCaptchaDirect();
             else
                 showCaptchaPopup(title.getUrl(), context, RESULT_CAPTCHA, p);
+            return;
+        }
+        if(result.getResultCode() == LOAD_ERROR){
+            ntkLoadTimeoutHandled = true;
+            hideProgress();
+            showErrorPopup(context, "정보를 불러오는데 실패하였습니다.", null, false);
             return;
         }
         episodes = result.getEpisodes();

@@ -99,7 +99,23 @@ public final class MangaRepository {
     }
 
     public static int fetchEpisodes(Title title) {
-        return title.fetchEps(getHttpClient());
+        return fetchEpisodes(title, false);
+    }
+
+    public static int fetchEpisodesForeground(Title title) {
+        return fetchEpisodes(title, true);
+    }
+
+    private static int fetchEpisodes(Title title, boolean allowWolfWebViewFallback) {
+        CustomHttpClient.RequestGroup requestGroup = new CustomHttpClient.RequestGroup();
+        if(allowWolfWebViewFallback)
+            requestGroup.allowWolfWebViewFallback();
+        try {
+            return getHttpClient().runWithRequestGroup(requestGroup, () -> title.fetchEps(getHttpClient()));
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return Title.LOAD_ERROR;
+        }
     }
 
     public static int fetchManga(Manga manga) {
@@ -113,6 +129,7 @@ public final class MangaRepository {
     public static int fetchViewerInitial(Manga manga, CustomHttpClient.RequestGroup requestGroup) throws Exception {
         if(requestGroup == null)
             return manga.fetchForViewerInitial(getHttpClient());
+        requestGroup.allowWolfWebViewFallback();
         return getHttpClient().runWithRequestGroup(requestGroup, () -> manga.fetchForViewerInitial(getHttpClient()));
     }
 

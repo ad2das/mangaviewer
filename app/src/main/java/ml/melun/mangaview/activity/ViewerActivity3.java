@@ -493,7 +493,7 @@ public class ViewerActivity3 extends AppCompatActivity {
         if(currentTitle == null)
             return 0;
         if(Utils.snapshotEpisodes(currentTitle).size() <= 1) {
-            int result = MangaRepository.fetchEpisodes(currentTitle);
+            int result = MangaRepository.fetchEpisodesForeground(currentTitle);
             if(result == LOAD_CAPTCHA)
                 return result;
         }

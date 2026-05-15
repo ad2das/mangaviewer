@@ -1064,6 +1064,11 @@ public class CustomHttpClient {
         return currentRequestGroup.get();
     }
 
+    private boolean allowsWolfWebViewFallback() {
+        RequestGroup requestGroup = currentRequestGroup.get();
+        return requestGroup != null && requestGroup.allowsWolfWebViewFallback();
+    }
+
     public Response get(String url, Map<String, String> headers){
         return get(url, headers, false);
     }
@@ -1477,14 +1482,16 @@ public class CustomHttpClient {
 
     private PageResponse loadPageFromNetworkWithDomainRetry(String normalized, long now, CachedPage staleCached) throws Exception {
         Exception lastError = null;
-        for(int attempt = 0; attempt < 3; attempt++) {
+        boolean wolfWebViewCandidate = allowsWolfWebViewFallback() && isWolfEpisodeDocumentPath(normalized);
+        int attempts = wolfWebViewCandidate ? 1 : 3;
+        for(int attempt = 0; attempt < attempts; attempt++) {
             try {
                 return loadPageFromNetwork(normalized, now, staleCached);
             } catch (Exception error) {
                 lastError = error;
                 if(isNtk())
                     throw error;
-                if(attempt == 0)
+                if(attempt == 0 && !wolfWebViewCandidate)
                     ensureWfwfDomainForRetry();
                 client.connectionPool().evictAll();
                 unsafeFallbackClient.connectionPool().evictAll();
@@ -1746,19 +1753,21 @@ public class CustomHttpClient {
         Map<String, String> headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
         applyNtkApiHeaders(headers, baseUrl, url);
 
-        boolean fastNtkPageDirect = shouldUseFastNtkPageDirect(isNtkUrl(baseUrl), url, fetchMode);
+        boolean ntkBaseUrl = isNtkUrl(baseUrl);
+        boolean fastNtkPageDirect = shouldUseFastNtkPageDirect(ntkBaseUrl, url, fetchMode);
         Response response = get(baseUrl + url, headers, fastNtkPageDirect);
-        if(isNtkUrl(baseUrl) && shouldRetryWithResolvedDomain(response)) {
+        if(ntkBaseUrl && shouldRetryWithResolvedDomain(response)) {
             if(response != null)
                 response.close();
             ensureWfwfDomainForRetry();
             baseUrl = getBaseUrl(url);
+            ntkBaseUrl = isNtkUrl(baseUrl);
             headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
             applyNtkApiHeaders(headers, baseUrl, url);
-            fastNtkPageDirect = shouldUseFastNtkPageDirect(isNtkUrl(baseUrl), url, fetchMode);
+            fastNtkPageDirect = shouldUseFastNtkPageDirect(ntkBaseUrl, url, fetchMode);
             response = get(baseUrl + url, headers, fastNtkPageDirect);
         }
-        if(shouldUseNtkWebViewFallback(isNtkUrl(baseUrl),
+        if(shouldUseNtkWebViewFallback(ntkBaseUrl,
                 response == null || isNtkWebViewFallbackCandidate(response, url), url, fetchMode)) {
             if(response != null)
                 response.close();
@@ -1769,16 +1778,20 @@ public class CustomHttpClient {
                 response.close();
             ensureWfwfDomainForRetry();
             baseUrl = getBaseUrl(url);
+            ntkBaseUrl = isNtkUrl(baseUrl);
             headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
             applyNtkApiHeaders(headers, baseUrl, url);
-            fastNtkPageDirect = shouldUseFastNtkPageDirect(isNtkUrl(baseUrl), url, fetchMode);
+            fastNtkPageDirect = shouldUseFastNtkPageDirect(ntkBaseUrl, url, fetchMode);
             response = get(baseUrl + url, headers, fastNtkPageDirect);
-            if(shouldUseNtkWebViewFallback(isNtkUrl(baseUrl),
+            if(shouldUseNtkWebViewFallback(ntkBaseUrl,
                     response == null || isNtkWebViewFallbackCandidate(response, url), url, fetchMode)) {
                 if(response != null)
                     response.close();
                 response = getWithNtkWebViewFallback(baseUrl, url, headers);
             }
+        }
+        if(shouldUseWolfWebViewFallback(ntkBaseUrl, response == null, url, fetchMode, allowsWolfWebViewFallback())) {
+            response = getWithNtkWebViewFallback(baseUrl, url, headers);
         }
         return response;
     }
@@ -1898,6 +1911,48 @@ public class CustomHttpClient {
         if(fetchMode != FetchMode.ALLOW_SHARED_WEBVIEW || !ntkUrl || !missingResponse || path == null)
             return false;
         return path.startsWith("/webtoon/") || path.startsWith("/manhwa/");
+    }
+
+    static boolean shouldUseSharedWebViewFallbackForTest(boolean ntkUrl, boolean missingResponse, String path, FetchMode fetchMode) {
+        return shouldUseSharedWebViewFallback(ntkUrl, missingResponse, path, fetchMode);
+    }
+
+    private static boolean shouldUseSharedWebViewFallback(boolean ntkUrl, boolean missingResponse, String path, FetchMode fetchMode) {
+        return shouldUseSharedWebViewFallback(ntkUrl, missingResponse, path, fetchMode, true);
+    }
+
+    static boolean shouldUseSharedWebViewFallbackForTest(boolean ntkUrl, boolean missingResponse, String path,
+                                                        FetchMode fetchMode, boolean allowWolfWebViewFallback) {
+        return shouldUseSharedWebViewFallback(ntkUrl, missingResponse, path, fetchMode, allowWolfWebViewFallback);
+    }
+
+    private static boolean shouldUseSharedWebViewFallback(boolean ntkUrl, boolean missingResponse, String path,
+                                                         FetchMode fetchMode, boolean allowWolfWebViewFallback) {
+        if(fetchMode != FetchMode.ALLOW_SHARED_WEBVIEW || !missingResponse || path == null)
+            return false;
+        if(ntkUrl)
+            return shouldUseNtkWebViewFallback(true, true, path, fetchMode);
+        return shouldUseWolfWebViewFallback(false, true, path, fetchMode, allowWolfWebViewFallback);
+    }
+
+    private static boolean shouldUseWolfWebViewFallback(boolean ntkUrl, boolean missingResponse, String path,
+                                                       FetchMode fetchMode, boolean allowWolfWebViewFallback) {
+        return fetchMode == FetchMode.ALLOW_SHARED_WEBVIEW
+                && allowWolfWebViewFallback
+                && !ntkUrl
+                && missingResponse
+                && isWolfEpisodeDocumentPath(path);
+    }
+
+    static boolean isWolfEpisodeDocumentPathForTest(String path) {
+        return isWolfEpisodeDocumentPath(path);
+    }
+
+    static boolean isWolfEpisodeDocumentPath(String path) {
+        return path != null && (path.startsWith("/cl?toon=")
+                || path.startsWith("/list?toon=")
+                || path.startsWith("/cv?toon=")
+                || path.startsWith("/view?toon="));
     }
 
     static boolean shouldUseFastNtkPageDirectForTest(boolean ntkUrl, String path, FetchMode fetchMode) {
@@ -2204,6 +2259,16 @@ public class CustomHttpClient {
     public static class RequestGroup {
         private final Set<Call> calls = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
         private volatile boolean cancelled = false;
+        private volatile boolean wolfWebViewFallback = false;
+
+        public RequestGroup allowWolfWebViewFallback() {
+            wolfWebViewFallback = true;
+            return this;
+        }
+
+        public boolean allowsWolfWebViewFallback() {
+            return wolfWebViewFallback;
+        }
 
         void add(Call call) {
             synchronized (calls) {

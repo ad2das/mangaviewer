@@ -19,7 +19,7 @@ public final class ViewerRepository {
     }
 
     public static int ensureEpisodesLoaded(Title title) {
-        return MangaRepository.fetchEpisodes(title);
+        return MangaRepository.fetchEpisodesForeground(title);
     }
 
     public static List<String> images(Manga manga, Context context) {

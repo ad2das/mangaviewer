@@ -8,7 +8,7 @@ import ml.melun.mangaview.repository.MangaRepository
 class EpisodeViewModel : BaseStateViewModel<EpisodeLoadResult>() {
     fun loadEpisodes(title: Title) {
         load {
-            val code = MangaRepository.fetchEpisodes(title)
+            val code = MangaRepository.fetchEpisodesForeground(title)
             EpisodeLoadResult(code, title.eps ?: emptyList<Manga>())
         }
     }

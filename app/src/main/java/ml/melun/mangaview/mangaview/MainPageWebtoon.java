@@ -1133,7 +1133,7 @@ public class MainPageWebtoon {
         int start = Math.max(0, offset);
         for(int i = start; i < titles.size(); i++) {
             DbTitle dbTitle = titles.get(i);
-            result.add(new Title(dbTitle.name, dbTitle.thumb, "", dbTitle.tags, dbTitle.release, dbTitle.id, base_webtoon));
+            result.add(classificationTitle(dbTitle, base_webtoon));
             if(limit > 0 && result.size() >= limit)
                 break;
         }
@@ -1144,7 +1144,7 @@ public class MainPageWebtoon {
         ArrayList<Title> result = new ArrayList<>();
         loadClassificationDb();
         for(DbTitle dbTitle : classificationTitleDb.values()) {
-            result.add(new Title(dbTitle.name, dbTitle.thumb, "", dbTitle.tags, dbTitle.release, dbTitle.id, base_webtoon));
+            result.add(classificationTitle(dbTitle, base_webtoon));
             if(limit > 0 && result.size() >= limit)
                 break;
         }
@@ -1156,7 +1156,7 @@ public class MainPageWebtoon {
         if(!classificationDbLoaded)
             return result;
         for(DbTitle dbTitle : classificationTitleDb.values()) {
-            result.add(new Title(dbTitle.name, dbTitle.thumb, "", dbTitle.tags, dbTitle.release, dbTitle.id, base_webtoon));
+            result.add(classificationTitle(dbTitle, base_webtoon));
             if(limit > 0 && result.size() >= limit)
                 break;
         }
@@ -1171,7 +1171,7 @@ public class MainPageWebtoon {
         if(titles == null)
             return result;
         for(DbTitle dbTitle : titles) {
-            result.add(new Title(dbTitle.name, dbTitle.thumb, "", dbTitle.tags, dbTitle.release, dbTitle.id, base_webtoon));
+            result.add(classificationTitle(dbTitle, base_webtoon));
             if(limit > 0 && result.size() >= limit)
                 break;
         }
@@ -1201,11 +1201,17 @@ public class MainPageWebtoon {
         int start = Math.max(0, offset);
         for(int i = start; i < titles.size(); i++) {
             DbTitle dbTitle = titles.get(i);
-            result.add(new Title(dbTitle.name, dbTitle.thumb, "", dbTitle.tags, dbTitle.release, dbTitle.id, base_comic));
+            result.add(classificationTitle(dbTitle, base_comic));
             if(limit > 0 && result.size() >= limit)
                 break;
         }
         return result;
+    }
+
+    private static Title classificationTitle(DbTitle dbTitle, int baseMode) {
+        Title title = new Title(dbTitle.name, dbTitle.thumb, "", dbTitle.tags, dbTitle.release, dbTitle.id, baseMode);
+        title.setSourceSite("wfwf");
+        return title;
     }
 
     public static synchronized int getComicClassificationDbGenreCount(String genre) {

@@ -55,6 +55,33 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void sharedWebViewFallbackCoversForegroundWolfEpisodePagesOnly() {
+        assertTrue(CustomHttpClient.shouldUseSharedWebViewFallbackForTest(false, true, "/cl?toon=10007",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertTrue(CustomHttpClient.shouldUseSharedWebViewFallbackForTest(false, true, "/list?toon=10007",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertTrue(CustomHttpClient.shouldUseSharedWebViewFallbackForTest(false, true, "/cv?toon=10007&num=1",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertTrue(CustomHttpClient.shouldUseSharedWebViewFallbackForTest(false, true, "/view?toon=10007&num=1",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertFalse(CustomHttpClient.shouldUseSharedWebViewFallbackForTest(false, true, "/cm?type1=genre",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertFalse(CustomHttpClient.shouldUseSharedWebViewFallbackForTest(false, true, "/cl?toon=10007",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, false));
+        assertFalse(CustomHttpClient.shouldUseSharedWebViewFallbackForTest(false, true, "/cl?toon=10007",
+                CustomHttpClient.FetchMode.DIRECT_ONLY));
+        assertFalse(CustomHttpClient.shouldUseSharedWebViewFallbackForTest(false, false, "/cl?toon=10007",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+    }
+
+    @Test
+    public void sharedWebViewNavigatesWolfEpisodeDocuments() {
+        assertTrue(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/cl?toon=10007"));
+        assertTrue(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/cv?toon=10007&num=1"));
+        assertFalse(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/cm?type1=genre"));
+    }
+
+    @Test
     public void ntkPageDirectUsesFastTimeoutOnlyForEpisodePages() {
         assertTrue(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/manhwa/1/1",
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));

@@ -423,8 +423,10 @@ public class MainPageWebtoonTest {
             assertEquals(2, first.size());
             assertEquals(1, first.get(0).getId());
             assertEquals(2, first.get(1).getId());
+            assertEquals("wfwf", first.get(0).getSourceSite());
             assertEquals(1, second.size());
             assertEquals(3, second.get(0).getId());
+            assertEquals("wfwf", second.get(0).getSourceSite());
 
             MainPageWebtoon.putClassificationDbTitleForTest(11, "D", true, "anime");
 
@@ -432,6 +434,7 @@ public class MainPageWebtoonTest {
             assertEquals(1, comics.size());
             assertEquals(11, comics.get(0).getId());
             assertEquals(base_comic, comics.get(0).getBaseMode());
+            assertEquals("wfwf", comics.get(0).getSourceSite());
         } finally {
             MainPageWebtoon.clearClassificationDbForTest();
         }
