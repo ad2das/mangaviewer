@@ -507,7 +507,9 @@ public class Preference {
     }
 
     private static boolean needsWfwfSitePreset(String defUrl, String url, String webtoonUrl) {
-        return !(isWfwfLikeUrl(defUrl) && isWfwfLikeUrl(url) && isWfwfLikeUrl(webtoonUrl));
+        boolean allWfwf = isWfwfLikeUrl(defUrl) && isWfwfLikeUrl(url) && isWfwfLikeUrl(webtoonUrl);
+        boolean allNtk = isNtkLikeUrl(defUrl) && isNtkLikeUrl(url) && isNtkLikeUrl(webtoonUrl);
+        return !allWfwf && !allNtk;
     }
 
     private static boolean isWfwfLikeUrl(String sourceUrl) {
@@ -528,6 +530,7 @@ public class Preference {
             if(host.startsWith("www."))
                 host = host.substring(4);
             return host.startsWith("ntk")
+                    || host.startsWith("newto")
                     || host.startsWith("sbxh")
                     || host.contains("newtoki")
                     || "sbxh1.com".equals(host)
@@ -657,8 +660,6 @@ public class Preference {
             if(root.length() == 0)
                 root = ntkRoot(comicUrl);
             String defaultRoot = ntkRoot(NTK_WEBTOON_URL);
-            if(root.equals(defaultRoot))
-                root = preferredNtkRootForDefaultPreset(defaultRoot);
             setNtkSitePreset(root);
             return;
         }
@@ -686,8 +687,6 @@ public class Preference {
         String defaultRoot = ntkRoot(NTK_WEBTOON_URL);
         if(isLegacyNtkRedirectRoot(root))
             root = defaultRoot;
-        if(root.equals(defaultRoot))
-            root = preferredNtkRootForDefaultPreset(defaultRoot);
         ntkResolvedRoot = root;
         defUrl = root + "/manhwa";
         url = defUrl;
@@ -700,15 +699,6 @@ public class Preference {
                 .putBoolean("autoUrl", false)
                 .apply();
         notifySync("settings");
-    }
-
-    private String preferredNtkRootForDefaultPreset(String defaultRoot) {
-        String remembered = normalizeNtkRoot(ntkResolvedRoot);
-        if(isLegacyNtkRedirectRoot(remembered))
-            return defaultRoot;
-        if(!remembered.equals(defaultRoot))
-            return remembered;
-        return defaultRoot;
     }
 
     private static boolean isLegacyNtkRedirectRoot(String root) {

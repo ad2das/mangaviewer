@@ -2,7 +2,10 @@ package ml.melun.mangaview.mangaview;
 
 import org.junit.Test;
 
+import java.util.List;
+
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 public class NtkDomainResolverTest {
     @Test
@@ -40,5 +43,60 @@ public class NtkDomainResolverTest {
                 + "</div>";
 
         assertEquals("https://sbxh1.com", NtkDomainResolver.parseLatestRoot(html));
+    }
+
+    @Test
+    public void normalizesCommaInTelegramAddress() {
+        String html = "<div class=\"tgme_widget_message_text\">"
+                + "\uB274\uD1A0\uB07C \uD604\uC7AC\uC8FC\uC18C "
+                + "<a href=\"https://sbxh1,com/\">https://sbxh1,com</a>"
+                + "</div>";
+
+        assertEquals("https://sbxh1.com", NtkDomainResolver.parseLatestRoot(html));
+    }
+
+    @Test
+    public void acceptsAlternateNewtokiChannelFormat() {
+        String html = "<div class=\"tgme_widget_message_text\">"
+                + "\uB274\uD1A0\uB07C \uD604\uC7AC\uC8FC\uC18C <a href=\"https://Newtoki552.com/\">Newtoki552.com</a>"
+                + "</div>";
+
+        assertEquals("https://newtoki552.com", NtkDomainResolver.parseLatestRoot(html));
+    }
+
+    @Test
+    public void keepsNewestNewtoCandidateFirst() {
+        String html = "<div class=\"tgme_widget_message_text\">\uB274\uD1A0\uB07C \uD604\uC7AC\uC8FC\uC18C "
+                + "<a href=\"https://sbxh1.com\">old</a></div>"
+                + "<div class=\"tgme_widget_message_text\">\uB274\uD1A0\uB07C \uD604\uC7AC \uC8FC\uC18C "
+                + "<a href=\"https://newto03.com/\">new</a></div>";
+
+        assertEquals("https://newto03.com", NtkDomainResolver.parseLatestRoot(html));
+        assertTrue(NtkDomainResolver.parseLatestRoots(html).contains("https://sbxh1.com"));
+    }
+
+    @Test
+    public void findsAddressGuideLinksFromTelegramMessage() {
+        String html = "<div class=\"tgme_widget_message_text\">"
+                + "\uB274\uD1A0\uB07C \uD604\uC7AC\uC8FC\uC18C <a href=\"https://sbxh1.com\">sbxh1.com</a><br>"
+                + "\uB274\uD1A0\uB07C \uC8FC\uC18C \uC548\uB0B4\uD398\uC774\uC9C0 "
+                + "<a href=\"https://xn--h10b90bi5zuhh79k.net/\">\uB274\uD1A0\uB07C\uC8FC\uC18C.net</a>"
+                + "</div>";
+
+        List<String> guides = NtkDomainResolver.parseAddressGuideUrls(html);
+
+        assertEquals("https://xn--h10b90bi5zuhh79k.net/", guides.get(0));
+    }
+
+    @Test
+    public void parsesCurrentAddressFromAddressGuidePage() {
+        String html = "<a href=\"https://ntk01.com\">\uB274\uD1A0\uB07C \uBC14\uB85C\uAC00\uAE30</a>"
+                + "<p>\uCD5C\uADFC `ntk01.com` \uD604\uC7AC \uC8FC\uC18C</p>"
+                + "<p>1\uC8FC \uC804 `newtoki469.com` \uCC28\uB2E8</p>";
+
+        List<String> roots = NtkDomainResolver.parseAddressGuideRoots(html);
+
+        assertEquals("https://ntk01.com", roots.get(0));
+        assertTrue(roots.contains("https://newtoki469.com"));
     }
 }

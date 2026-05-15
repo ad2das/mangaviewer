@@ -83,8 +83,12 @@ public class CustomHttpClientTest {
         String challengePage = "<html><head><title>Just a moment...</title></head>"
                 + "<body><script src=\"https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1\"></script></body></html>";
 
+        String cloudflare522Page = "<html><head><title>newtoki469.com | 522: Connection timed out</title></head>"
+                + "<body>Connection timed out Error code 522 Cloudflare Host Error</body></html>";
+
         assertFalse(CustomHttpClient.isCacheablePageBodyForTest(errorPage));
         assertFalse(CustomHttpClient.isCacheablePageBodyForTest(challengePage));
+        assertFalse(CustomHttpClient.isCacheablePageBodyForTest(cloudflare522Page));
         assertTrue(CustomHttpClient.isCacheablePageBodyForTest("<html><body><a href=\"/webtoon/17801/1\">1화</a></body></html>"));
     }
 

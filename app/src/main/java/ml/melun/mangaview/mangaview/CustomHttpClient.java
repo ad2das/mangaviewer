@@ -11,6 +11,9 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.InterruptedIOException;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -33,6 +36,7 @@ import okhttp3.CipherSuite;
 import okhttp3.Call;
 import okhttp3.ConnectionSpec;
 import okhttp3.Dispatcher;
+import okhttp3.Dns;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Protocol;
@@ -58,6 +62,7 @@ public class CustomHttpClient {
     private static final long WFWF_DOMAIN_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L;
     private static final long WFWF_DOMAIN_FORCE_RETRY_INTERVAL_MS = 60 * 1000L;
     private static final long WFWF_DOMAIN_WAIT_TIMEOUT_MS = 6 * 1000L;
+    private static final long NTK_DOMAIN_CHECK_INTERVAL_MS = 15 * 60 * 1000L;
     private static final long COOKIE_SYNC_INTERVAL_MS = 30 * 1000L;
     private static final long PAGE_CACHE_COLD_START_TTL_MS = 7 * 24 * 60 * 60 * 1000L;
     private static final int PAGE_CACHE_MAX_ENTRIES = 200;
@@ -65,6 +70,30 @@ public class CustomHttpClient {
     private static final int MAX_HTTP_REQUESTS_PER_HOST = 4;
     private static final String PAGE_CACHE_PREFIX = "httpPageCacheV1_";
     private static final Gson GSON = new Gson();
+    private static final Dns IPV4_FIRST_DNS = hostname -> {
+        List<InetAddress> addresses = Arrays.asList(InetAddress.getAllByName(hostname));
+        ArrayList<InetAddress> sorted = new ArrayList<>(addresses.size() + 1);
+        if("sbxh1.com".equalsIgnoreCase(hostname) || "www.sbxh1.com".equalsIgnoreCase(hostname))
+            addAddressIfMissing(sorted, InetAddress.getByName("104.16.219.55"));
+        for(InetAddress address : addresses)
+            if(address instanceof Inet4Address)
+                addAddressIfMissing(sorted, address);
+        if(!sorted.isEmpty())
+            return sorted;
+        for(InetAddress address : addresses)
+            if(!(address instanceof Inet4Address))
+                addAddressIfMissing(sorted, address);
+        if(sorted.isEmpty())
+            throw new UnknownHostException(hostname);
+        return sorted;
+    };
+
+    private static void addAddressIfMissing(List<InetAddress> addresses, InetAddress candidate) {
+        if(candidate == null || addresses.contains(candidate))
+            return;
+        addresses.add(candidate);
+    }
+
     public OkHttpClient client;
     private OkHttpClient unsafeFallbackClient;
     Map<String, String> cookies;
@@ -85,6 +114,7 @@ public class CustomHttpClient {
     private DomainResolveState wfwfDomainResolveState;
     private DomainResolveState ntkDomainResolveState;
     private long wfwfDomainLastForcedRetry = 0;
+    private long ntkDomainLastCheck = 0;
     private Context context;
     public String agent = "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36";
 
@@ -632,7 +662,7 @@ public class CustomHttpClient {
 
     private boolean ensureNumberedDomain(boolean force) {
         if(isNtk())
-            return force && ensureNtkDomain();
+            return ensureNtkDomainIfNeeded(force);
         try {
             String webtoonUrl = getWebtoonUrl();
             String root = WfwfDomainResolver.toRoot(webtoonUrl);
@@ -688,6 +718,16 @@ public class CustomHttpClient {
         }
     }
 
+    private boolean ensureNtkDomainIfNeeded(boolean force) {
+        long now = System.currentTimeMillis();
+        synchronized (wfwfDomainLock) {
+            if(!force && ntkDomainLastCheck > 0 && now - ntkDomainLastCheck < NTK_DOMAIN_CHECK_INTERVAL_MS)
+                return false;
+            ntkDomainLastCheck = now;
+        }
+        return ensureNtkDomain();
+    }
+
     private boolean ensureNtkDomain() {
         try {
             String currentRoot = WfwfDomainResolver.toRoot(getWebtoonUrl());
@@ -712,8 +752,8 @@ public class CustomHttpClient {
                 Map<String, String> headers = new HashMap<>();
                 headers.put("User-Agent", agent);
                 headers.put("Referer", NtkDomainResolver.CHANNEL_URL);
-                String resolved = NtkDomainResolver.resolve(client, headers, currentRequestGroup.get());
-                String reachable = reachableNtkRoot(currentRoot, resolved, headers);
+                List<String> resolvedRoots = NtkDomainResolver.resolveCandidates(client, headers, currentRequestGroup.get());
+                String reachable = reachableNtkRoot(currentRoot, resolvedRoots, headers);
                 if(reachable != null && isNtkUrl(reachable) && !reachable.equals(currentRoot)) {
                     p.setNtkSitePreset(reachable);
                     resetCookie();
@@ -735,16 +775,18 @@ public class CustomHttpClient {
         }
     }
 
-    private String reachableNtkRoot(String currentRoot, String resolvedRoot, Map<String, String> headers) {
+    private String reachableNtkRoot(String currentRoot, List<String> resolvedRoots, Map<String, String> headers) {
         ArrayList<String> candidates = new ArrayList<>();
-        addNtkRootCandidate(candidates, resolvedRoot);
+        if(resolvedRoots != null)
+            for(String root : resolvedRoots)
+                addNtkRootCandidate(candidates, root);
         addNtkRootCandidate(candidates, currentRoot);
         addNtkRootCandidate(candidates, "https://" + LEGACY_NTK_HOST);
         addNtkRootCandidate(candidates, NTK_WEBTOON_URL);
         for(String candidate : candidates)
             if(canReachNtkRoot(candidate, headers))
                 return candidate;
-        return NtkDomainResolver.normalizeRoot(resolvedRoot);
+        return resolvedRoots == null || resolvedRoots.isEmpty() ? null : NtkDomainResolver.normalizeRoot(resolvedRoots.get(0));
     }
 
     private void addNtkRootCandidate(List<String> candidates, String root) {
@@ -1109,6 +1151,7 @@ public class CustomHttpClient {
             return false;
         String lower = url.toLowerCase(Locale.ROOT);
         return lower.contains("://ntk")
+                || lower.contains("://newto")
                 || lower.contains("://newtoki")
                 || lower.contains("://" + NTK_HOST)
                 || lower.contains("://www." + NTK_HOST)
@@ -1174,6 +1217,15 @@ public class CustomHttpClient {
         applyNtkApiHeaders(headers, baseUrl, url);
 
         Response response = get(baseUrl + url, headers);
+        if(isNtkUrl(baseUrl) && shouldRetryWithResolvedDomain(response)) {
+            if(response != null)
+                response.close();
+            ensureWfwfDomainForRetry();
+            baseUrl = getBaseUrl(url);
+            headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
+            applyNtkApiHeaders(headers, baseUrl, url);
+            response = get(baseUrl + url, headers);
+        }
         if(shouldUseNtkWebViewFallback(isNtkUrl(baseUrl),
                 response == null || isNtkWebViewFallbackCandidate(response, url), url, fetchMode)) {
             if(response != null)
@@ -1444,6 +1496,8 @@ public class CustomHttpClient {
                 && !lower.contains("err_connection_reset")
                 && !lower.contains("err_name_not_resolved")
                 && !lower.contains("err_timed_out")
+                && !lower.contains("error code 522")
+                && !lower.contains("connection timed out")
                 && !lower.contains("just a moment")
                 && !lower.contains("challenges.cloudflare.com")
                 && !lower.contains("cf-challenge")
@@ -1453,7 +1507,15 @@ public class CustomHttpClient {
     }
 
     private boolean isCloudflareChallenge(int code, String body) {
-        if(code != 403 || body == null)
+        if(body == null)
+            return false;
+        if(code >= 500) {
+            String lower = body.toLowerCase(Locale.ROOT);
+            return lower.contains("cloudflare")
+                    || lower.contains("error code 522")
+                    || lower.contains("connection timed out");
+        }
+        if(code != 403)
             return false;
         String lower = body.toLowerCase(Locale.ROOT);
         if(looksLikeNtkNormalPage(lower))
@@ -1691,7 +1753,8 @@ public class CustomHttpClient {
                 .followRedirects(false)
                 .followSslRedirects(false)
                 .connectTimeout(20, TimeUnit.SECONDS)
-                .readTimeout(20, TimeUnit.SECONDS);
+                .readTimeout(20, TimeUnit.SECONDS)
+                .dns(IPV4_FIRST_DNS);
         if(android.os.Build.VERSION.SDK_INT < CODE_SCOPED_STORAGE) {
             List<CipherSuite> cipherSuites = new ArrayList<>(ConnectionSpec.MODERN_TLS.cipherSuites());
             cipherSuites.add(CipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA);

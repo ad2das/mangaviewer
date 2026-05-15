@@ -89,6 +89,7 @@ public class EpisodeActivity extends AppCompatActivity {
     long firstContentStartedAt;
     boolean firstContentLogged = false;
     boolean ntkLoadTimeoutHandled = false;
+    boolean ntkCaptchaLaunchInFlight = false;
 
 
     public boolean onOptionsItemSelected(MenuItem item){
@@ -576,16 +577,26 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     private void openNtkCaptchaDirect() {
-        if(isFinishing())
+        if(isFinishing() || ntkCaptchaLaunchInFlight)
             return;
-        Intent captchaIntent = new Intent(context, CaptchaActivity.class);
-        String url = title == null ? null : title.getUrl();
-        if(url != null && url.startsWith("/"))
-            url = getHttpClient().getUrl(url) + url;
-        if(url == null || url.length() == 0)
-            url = p == null ? CustomHttpClient.NTK_WEBTOON_URL : p.getWebtoonUrl();
-        captchaIntent.putExtra("url", url);
-        startActivityForResult(captchaIntent, RESULT_CAPTCHA);
+        ntkCaptchaLaunchInFlight = true;
+        AppDispatchers.runUserAction(() -> {
+            if(p != null && p.isNtkSite())
+                getHttpClient().resolveNtkDomainNow();
+            AppDispatchers.runOnMain(() -> {
+                ntkCaptchaLaunchInFlight = false;
+                if(isFinishing())
+                    return;
+                Intent captchaIntent = new Intent(context, CaptchaActivity.class);
+                String url = title == null ? null : title.getUrl();
+                if(url != null && url.startsWith("/"))
+                    url = getHttpClient().getUrl(url) + url;
+                if(url == null || url.length() == 0)
+                    url = p == null ? CustomHttpClient.NTK_WEBTOON_URL : p.getWebtoonUrl();
+                captchaIntent.putExtra("url", url);
+                startActivityForResult(captchaIntent, RESULT_CAPTCHA);
+            });
+        });
     }
 
     private void showCachedEpisodes() {

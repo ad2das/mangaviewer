@@ -32,12 +32,15 @@ public class PreferenceTest {
         assertEquals("https://sbxh2.com/manhwa", Preference.normalizeComicUrlForTest("https://sbxh2.com"));
         assertEquals("https://sbxh2.com/manhwa", Preference.normalizeComicUrlForTest("https://sbxh2.com/cm"));
         assertEquals("https://sbxh2.com", Preference.normalizeWebtoonUrlForTest("https://sbxh2.com/manhwa"));
+        assertEquals("https://newto03.com/manhwa", Preference.normalizeComicUrlForTest("https://newto03.com"));
+        assertEquals("https://newto03.com", Preference.normalizeWebtoonUrlForTest("https://newto03.com/manhwa"));
     }
 
     @Test
     public void wfwfPresetForceIsExplicitlyDetectable() {
         assertFalse(Preference.needsWfwfSitePresetForTest(DEFAULT_COMIC_URL, DEFAULT_COMIC_URL, WEBTOON_URL));
-        assertTrue(Preference.needsWfwfSitePresetForTest(NTK_COMIC_URL, NTK_COMIC_URL, NTK_WEBTOON_URL));
+        assertFalse(Preference.needsWfwfSitePresetForTest(NTK_COMIC_URL, NTK_COMIC_URL, NTK_WEBTOON_URL));
+        assertTrue(Preference.needsWfwfSitePresetForTest(DEFAULT_COMIC_URL, NTK_COMIC_URL, WEBTOON_URL));
     }
 
     @Test

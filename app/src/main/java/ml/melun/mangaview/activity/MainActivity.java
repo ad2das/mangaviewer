@@ -62,6 +62,7 @@ import ml.melun.mangaview.fragment.MainSearch;
 import ml.melun.mangaview.interfaces.MainActivityCallback;
 import ml.melun.mangaview.interfaces.UrlUpdateCallback;
 import ml.melun.mangaview.model.UrlUpdateResult;
+import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.state.UiState;
 import ml.melun.mangaview.viewmodel.StartupViewModel;
@@ -385,6 +386,7 @@ public class MainActivity extends AppCompatActivity
             return;
         MainApplication.initDeferredServices();
         setupAccountHeader();
+        refreshNtkDomainIfNeeded();
         startDeferredUrlUpdate();
         requestStartupPermissions();
     }
@@ -408,6 +410,16 @@ public class MainActivity extends AppCompatActivity
         if(isFinishing() || isDestroyed())
             return false;
         return Utils.startNtkTurnstileCaptchaIfNeeded(this, 3, null, p);
+    }
+
+    private void refreshNtkDomainIfNeeded() {
+        if(p == null || !p.isNtkSite())
+            return;
+        AppDispatchers.runUserAction(() -> {
+            boolean changed = getHttpClient().resolveNtkDomainNow();
+            if(changed)
+                AppDispatchers.runOnMain(this::invalidateOptionsMenu);
+        });
     }
 
     private void startDeferredUrlUpdate() {

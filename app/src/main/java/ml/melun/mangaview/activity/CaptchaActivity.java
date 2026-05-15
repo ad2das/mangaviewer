@@ -6,6 +6,9 @@ import android.content.Intent;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.constraintlayout.widget.ConstraintLayout;
+import androidx.webkit.ProxyConfig;
+import androidx.webkit.ProxyController;
+import androidx.webkit.WebViewFeature;
 
 import android.os.Bundle;
 import android.os.Handler;
@@ -24,11 +27,21 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.TextView;
 
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.MalformedURLException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
@@ -151,6 +164,7 @@ public class CaptchaActivity extends AppCompatActivity {
     private String lastVerificationClearanceValue = null;
     private long lastClearanceVerificationAt = 0;
     private long lastInvalidClearanceReloadAt = 0;
+    private LocalWebViewProxy localWebViewProxy;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -306,11 +320,32 @@ public class CaptchaActivity extends AppCompatActivity {
 //        webView.setOnTouchListener((view, motionEvent) -> true);
 
         android.util.Log.d("CaptchaActivity", "Loading captcha URL: " + url);
-        webView.loadUrl(url);
-        webView.evaluateJavascript(SHADOW_HOOK_JS, null);
+        loadCaptchaUrl(url);
 
         infoText.setVisibility(View.GONE);
 
+    }
+
+    private void loadCaptchaUrl(String url) {
+        if(WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE) && p != null && p.isNtkSite()) {
+            try {
+                localWebViewProxy = LocalWebViewProxy.start();
+                ProxyConfig proxyConfig = new ProxyConfig.Builder()
+                        .addProxyRule("127.0.0.1:" + localWebViewProxy.port())
+                        .build();
+                Executor direct = Runnable::run;
+                ProxyController.getInstance().setProxyOverride(proxyConfig, direct, () -> {
+                    android.util.Log.d("CaptchaActivity", "NTK WebView proxy enabled on port " + localWebViewProxy.port());
+                    webView.loadUrl(url);
+                    webView.evaluateJavascript(SHADOW_HOOK_JS, null);
+                });
+                return;
+            } catch (Exception e) {
+                android.util.Log.d("CaptchaActivity", "Failed to enable NTK WebView proxy", e);
+            }
+        }
+        webView.loadUrl(url);
+        webView.evaluateJavascript(SHADOW_HOOK_JS, null);
     }
 
     private void startTurnstileAutoClick() {
@@ -386,6 +421,7 @@ public class CaptchaActivity extends AppCompatActivity {
                         finishWithNtkAccessVerified();
                     }
                 } else {
+                    isFirstAttempt = false;
                     normalNtkPageCount = 0;
                 }
             } catch(Exception e) {
@@ -761,6 +797,7 @@ public class CaptchaActivity extends AppCompatActivity {
         isFinishing = true;
         handler.removeCallbacksAndMessages(null);
         getHttpClient().setCloudflareCaptchaActive(false);
+        clearWebViewProxy();
         super.onDestroy();
         //destroy webview
         ((ConstraintLayout) findViewById(R.id.captchaContainer)).removeAllViews();
@@ -775,7 +812,147 @@ public class CaptchaActivity extends AppCompatActivity {
     public void finish() {
         isFinishing = true;
         handler.removeCallbacksAndMessages(null);
+        clearWebViewProxy();
         super.finish();
         this.overridePendingTransition(R.anim.fade_in, R.anim.fade_out);
+    }
+
+    private void clearWebViewProxy() {
+        if(WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+            try {
+                ProxyController.getInstance().clearProxyOverride(Runnable::run, () -> {});
+            } catch (Exception ignored) {
+            }
+        }
+        if(localWebViewProxy != null) {
+            localWebViewProxy.close();
+            localWebViewProxy = null;
+        }
+    }
+
+    private static class LocalWebViewProxy {
+        private static final String NTK_EDGE_IP = "104.16.219.55";
+        private final ServerSocket serverSocket;
+        private final ExecutorService executor = Executors.newCachedThreadPool();
+        private volatile boolean closed = false;
+
+        static LocalWebViewProxy start() throws Exception {
+            ServerSocket socket = new ServerSocket();
+            socket.bind(new InetSocketAddress("127.0.0.1", 0));
+            LocalWebViewProxy proxy = new LocalWebViewProxy(socket);
+            proxy.acceptLoop();
+            return proxy;
+        }
+
+        private LocalWebViewProxy(ServerSocket serverSocket) {
+            this.serverSocket = serverSocket;
+        }
+
+        int port() {
+            return serverSocket.getLocalPort();
+        }
+
+        private void acceptLoop() {
+            executor.execute(() -> {
+                while(!closed) {
+                    try {
+                        Socket client = serverSocket.accept();
+                        executor.execute(() -> handle(client));
+                    } catch (Exception e) {
+                        if(!closed)
+                            android.util.Log.d("CaptchaActivity", "NTK WebView proxy accept failed", e);
+                    }
+                }
+            });
+        }
+
+        private void handle(Socket client) {
+            try {
+                client.setSoTimeout(15000);
+                InputStream input = client.getInputStream();
+                OutputStream output = client.getOutputStream();
+                String requestLine = readLine(input);
+                if(requestLine == null || !requestLine.startsWith("CONNECT ")) {
+                    output.write("HTTP/1.1 501 Not Implemented\r\nConnection: close\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
+                    closeQuietly(client);
+                    return;
+                }
+                String target = requestLine.substring("CONNECT ".length()).split(" ", 2)[0];
+                while(true) {
+                    String header = readLine(input);
+                    if(header == null || header.length() == 0)
+                        break;
+                }
+                String host = target;
+                int port = 443;
+                int colon = target.lastIndexOf(':');
+                if(colon > 0) {
+                    host = target.substring(0, colon);
+                    port = Integer.parseInt(target.substring(colon + 1));
+                }
+                Socket upstream = new Socket();
+                String connectHost = ("sbxh1.com".equalsIgnoreCase(host) || "www.sbxh1.com".equalsIgnoreCase(host)) ? NTK_EDGE_IP : host;
+                upstream.connect(new InetSocketAddress(InetAddress.getByName(connectHost), port), 10000);
+                output.write("HTTP/1.1 200 Connection Established\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
+                output.flush();
+                pipeBoth(client, upstream);
+            } catch (Exception e) {
+                android.util.Log.d("CaptchaActivity", "NTK WebView proxy connection failed", e);
+                closeQuietly(client);
+            }
+        }
+
+        private void pipeBoth(Socket a, Socket b) {
+            executor.execute(() -> pipe(a, b));
+            executor.execute(() -> pipe(b, a));
+        }
+
+        private void pipe(Socket from, Socket to) {
+            byte[] buffer = new byte[8192];
+            try {
+                InputStream input = from.getInputStream();
+                OutputStream output = to.getOutputStream();
+                int read;
+                while((read = input.read(buffer)) >= 0) {
+                    output.write(buffer, 0, read);
+                    output.flush();
+                }
+            } catch (Exception ignored) {
+            } finally {
+                closeQuietly(from);
+                closeQuietly(to);
+            }
+        }
+
+        private String readLine(InputStream input) throws Exception {
+            StringBuilder builder = new StringBuilder();
+            int previous = -1;
+            int current;
+            while((current = input.read()) != -1) {
+                if(previous == '\r' && current == '\n') {
+                    builder.setLength(Math.max(0, builder.length() - 1));
+                    return builder.toString();
+                }
+                builder.append((char) current);
+                previous = current;
+                if(builder.length() > 8192)
+                    throw new Exception("Proxy header too long");
+            }
+            return builder.length() == 0 ? null : builder.toString();
+        }
+
+        void close() {
+            closed = true;
+            closeQuietly(serverSocket);
+            executor.shutdownNow();
+        }
+
+        private static void closeQuietly(java.io.Closeable closeable) {
+            try {
+                if(closeable != null)
+                    closeable.close();
+            } catch (Exception ignored) {
+            }
+        }
     }
 }
