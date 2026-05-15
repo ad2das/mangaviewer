@@ -84,3 +84,13 @@ jobs:
             -SkipTests `
             -NoCommit `
             -DeleteOldReleaseApks
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mangaviewer-release-apk
+          path: |
+            app/build/outputs/apk/debug/*-debug.apk
+            version.json
+          if-no-files-found: error
+          retention-days: 14
