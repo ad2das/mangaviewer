@@ -84,4 +84,19 @@ public class MangaTest {
         assertEquals(1, Decoder.gridCellSizeForTest(3, 5));
         assertEquals(20, Decoder.gridCellSizeForTest(100, 5));
     }
+
+    @Test
+    public void ntkPageImagesSkipBoardUploadAds() {
+        assertTrue(Manga.isNtkPageImageForTest(
+                "<img src=\"https://i.toonflix.app/webtoon_uploads/page001.jpg\">"));
+        assertTrue(Manga.isNtkPageImageForTest(
+                "<img src=\"https://i.toonflix.app/blacktoon/episodes/1/12712/p001.jpg\">"));
+
+        org.junit.Assert.assertFalse(Manga.isNtkPageImageForTest(
+                "<img src=\"https://i.toonflix.app/board_uploads/2026/05/15/ad.png\">"));
+        org.junit.Assert.assertFalse(Manga.isNtkPageImageForTest(
+                "<img src=\"https://i.toonflix.app/blacktoon/thumbs/15741.png?v2\">"));
+        org.junit.Assert.assertFalse(Manga.isNtkPageImageForTest(
+                "<div class=\"banner\"><img src=\"https://i.toonflix.app/webtoon_uploads/page001.jpg\"></div>"));
+    }
 }

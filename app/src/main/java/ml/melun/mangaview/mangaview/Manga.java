@@ -278,10 +278,11 @@ public class Manga {
                 name = h1.text().trim();
 
             for(Element img : d.select("img")) {
-                String src = img.hasAttr("data-original") ? img.attr("data-original") : img.attr("src");
-                String alt = img.attr("alt").toLowerCase(Locale.ROOT);
-                if(src.length() > 0 && (alt.contains("page") || src.matches(".*\\.(jpg|jpeg|png|webp)(\\?.*)?$")))
-                    addImageIfValid(client, seenImages, src);
+                for(String attr : new String[]{"data-original", "data-src", "data-lazy-src", "src"}) {
+                    String src = img.attr(attr);
+                    if(isNtkPageImage(img, src))
+                        addImageIfValid(client, seenImages, src);
+                }
             }
 
             List<Manga> titleEpisodes = title == null ? null : safeEpisodeCopy(title.getEps());
@@ -572,6 +573,56 @@ public class Manga {
                 || lower.contains("/comic/");
     }
 
+    private static boolean isNtkPageImage(Element img, String src) {
+        if(!isImageSourceCandidate(src))
+            return false;
+        String lower = src.trim().toLowerCase(Locale.ROOT);
+        if(lower.contains("/board_uploads/")
+                || lower.contains("/thumbs/")
+                || lower.contains("banner")
+                || lower.contains("advert")
+                || lower.contains("sponsor")
+                || lower.contains("popup")
+                || lower.contains("/ad/")
+                || lower.contains("/ads/"))
+            return false;
+        String context = ntkImageContext(img);
+        if(context.contains("banner")
+                || context.contains("advert")
+                || context.contains("sponsor")
+                || context.contains("popup"))
+            return false;
+        return lower.contains("/webtoon_uploads/")
+                || lower.contains("/manhwa_uploads/")
+                || lower.contains("/comic_uploads/")
+                || lower.contains("/blacktoon/episodes/");
+    }
+
+    private static String ntkImageContext(Element img) {
+        if(img == null)
+            return "";
+        StringBuilder context = new StringBuilder();
+        context.append(img.id()).append(' ')
+                .append(img.className()).append(' ')
+                .append(img.attr("alt"));
+        for(Element parent = img.parent(); parent != null; parent = parent.parent()) {
+            context.append(' ')
+                    .append(parent.id()).append(' ')
+                    .append(parent.className());
+            if("body".equals(parent.tagName()))
+                break;
+        }
+        return context.toString().toLowerCase(Locale.ROOT);
+    }
+
+    static boolean isNtkPageImageForTest(String html) {
+        Element img = Jsoup.parseBodyFragment(html == null ? "" : html).selectFirst("img");
+        if(img == null)
+            return false;
+        String src = img.hasAttr("data-original") ? img.attr("data-original") : img.attr("src");
+        return isNtkPageImage(img, src);
+    }
+
     private boolean hasWolfBlockedAncestor(Element img) {
         if(img == null)
             return false;
@@ -633,7 +684,7 @@ public class Manga {
         return true;
     }
 
-    private boolean isImageSourceCandidate(String img) {
+    private static boolean isImageSourceCandidate(String img) {
         if(img == null)
             return false;
         String lower = img.toLowerCase(Locale.ROOT);

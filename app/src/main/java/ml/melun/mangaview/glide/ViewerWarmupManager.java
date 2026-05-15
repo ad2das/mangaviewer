@@ -962,14 +962,14 @@ public class ViewerWarmupManager {
         if(snapshot.images.size() == 0)
             return;
         snapshots.put(key, snapshot);
-        writeDiskSnapshot(context, "viewerSnapshotV1_", key, snapshot);
+        writeDiskSnapshot(context, "viewerSnapshotV2_", key, snapshot);
         trimSnapshots();
     }
 
     private static synchronized void invalidateSnapshot(Context context, String key) {
         snapshots.remove(key);
         if(context != null)
-            CacheFileStore.delete(context.getApplicationContext(), "viewerSnapshotV1_" + key);
+            CacheFileStore.delete(context.getApplicationContext(), "viewerSnapshotV2_" + key);
     }
 
     private static synchronized void cacheContinueSnapshot(Context context, String key, Manga manga) {
@@ -977,14 +977,14 @@ public class ViewerWarmupManager {
         if(snapshot.images.size() == 0)
             return;
         continueSnapshots.put(key, snapshot);
-        writeDiskSnapshot(context, "viewerContinueSnapshotV1_", key, snapshot);
+        writeDiskSnapshot(context, "viewerContinueSnapshotV2_", key, snapshot);
         trimContinueSnapshots();
     }
 
     private static synchronized Manga continueSnapshotManga(Context context, String key, Manga fallback) {
         WarmupSnapshot snapshot = continueSnapshots.get(key);
         if(snapshot == null) {
-            snapshot = readDiskSnapshot(context, "viewerContinueSnapshotV1_", key, true);
+            snapshot = readDiskSnapshot(context, "viewerContinueSnapshotV2_", key, true);
             if(snapshot != null)
                 continueSnapshots.put(key, snapshot);
         }
@@ -992,7 +992,7 @@ public class ViewerWarmupManager {
             return null;
         if(!isDiskSnapshotUsableForColdStart(snapshot.createdAt, System.currentTimeMillis())) {
             continueSnapshots.remove(key);
-            snapshot = readDiskSnapshot(context, "viewerContinueSnapshotV1_", key, true);
+            snapshot = readDiskSnapshot(context, "viewerContinueSnapshotV2_", key, true);
             if(snapshot == null)
                 return null;
             continueSnapshots.put(key, snapshot);
@@ -1014,7 +1014,7 @@ public class ViewerWarmupManager {
     private static synchronized boolean applySnapshot(Context context, String key, Manga target) {
         WarmupSnapshot snapshot = snapshots.get(key);
         if(snapshot == null) {
-            snapshot = readDiskSnapshot(context, "viewerSnapshotV1_", key, true);
+            snapshot = readDiskSnapshot(context, "viewerSnapshotV2_", key, true);
             if(snapshot != null)
                 snapshots.put(key, snapshot);
         }
@@ -1022,7 +1022,7 @@ public class ViewerWarmupManager {
             return false;
         if(!isDiskSnapshotFresh(snapshot.createdAt, System.currentTimeMillis())) {
             snapshots.remove(key);
-            snapshot = readDiskSnapshot(context, "viewerSnapshotV1_", key, true);
+            snapshot = readDiskSnapshot(context, "viewerSnapshotV2_", key, true);
             if(snapshot == null)
                 return false;
             snapshots.put(key, snapshot);
