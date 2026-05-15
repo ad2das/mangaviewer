@@ -3,6 +3,7 @@ package ml.melun.mangaview.mangaview;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class WfwfDomainResolverTest {
@@ -28,6 +29,13 @@ public class WfwfDomainResolverTest {
     public void extractsUpdatedWolfAddressFromGuidePage() {
         String body = "<html><body>늑대닷컴 접속 주소 안내 <a href=\"https://wfwf451.com\">새로운 주소로 이동</a></body></html>";
         assertEquals("https://wfwf451.com", WfwfDomainResolver.extractUpdatedRootForTest(body));
+    }
+
+    @Test
+    public void guideAddressMustPointToDifferentSupportedRootBeforeVerification() {
+        assertTrue(WfwfDomainResolver.shouldAcceptUpdatedRootForTest("https://wfwf450.com", "https://wfwf451.com"));
+        assertFalse(WfwfDomainResolver.shouldAcceptUpdatedRootForTest("https://wfwf451.com", "https://wfwf451.com"));
+        assertFalse(WfwfDomainResolver.shouldAcceptUpdatedRootForTest("https://wfwf451.com", "https://example.com"));
     }
 
     @Test

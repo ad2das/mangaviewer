@@ -1388,6 +1388,7 @@ public class CustomHttpClient {
         String cacheKey = getBaseUrl(normalized) + normalized;
         long now = System.currentTimeMillis();
         FetchMode fetchMode = effectiveFetchMode(FetchMode.ALLOW_SHARED_WEBVIEW);
+        boolean allowColdStartStale = allowsColdStartStalePageCache(cacheKey);
         if(isNtk())
             ttlMillis = Math.max(ttlMillis * 5, 10 * 60 * 1000L);
         PageLoadState activeLoad = null;
@@ -1399,19 +1400,19 @@ public class CustomHttpClient {
                     pageCache.remove(cacheKey);
                 } else {
                     boolean fresh = isPageCacheFresh(cached.time, now, ttlMillis);
-                    if(fresh || shouldServeColdStartCachedPageImmediately(isNtk(), fetchMode, true, fresh))
+                    if(fresh || shouldServeColdStartCachedPageImmediately(allowColdStartStale, fetchMode, true, fresh))
                         return new PageResponse(cached.code, cached.body, true);
                     staleCached = cached;
                 }
             }
         }
-        CachedPage diskCached = readDiskCachedPage(cacheKey, now, ttlMillis, isNtk());
+        CachedPage diskCached = readDiskCachedPage(cacheKey, now, ttlMillis, allowColdStartStale);
         if(diskCached != null) {
             synchronized (this) {
                 pageCache.put(cacheKey, diskCached);
             }
             boolean fresh = isPageCacheFresh(diskCached.time, now, ttlMillis);
-            if(fresh || shouldServeColdStartCachedPageImmediately(isNtk(), fetchMode, true, fresh))
+            if(fresh || shouldServeColdStartCachedPageImmediately(allowColdStartStale, fetchMode, true, fresh))
                 return new PageResponse(diskCached.code, diskCached.body, true);
             staleCached = diskCached;
         }
@@ -1590,12 +1591,12 @@ public class CustomHttpClient {
         return cachedAt <= now && now - cachedAt <= PAGE_CACHE_COLD_START_TTL_MS;
     }
 
-    static boolean shouldServeColdStartCachedPageImmediatelyForTest(boolean ntk, FetchMode fetchMode, boolean hasCachedPage, boolean fresh) {
-        return shouldServeColdStartCachedPageImmediately(ntk, fetchMode, hasCachedPage, fresh);
+    static boolean shouldServeColdStartCachedPageImmediatelyForTest(boolean allowColdStartStale, FetchMode fetchMode, boolean hasCachedPage, boolean fresh) {
+        return shouldServeColdStartCachedPageImmediately(allowColdStartStale, fetchMode, hasCachedPage, fresh);
     }
 
-    private static boolean shouldServeColdStartCachedPageImmediately(boolean ntk, FetchMode fetchMode, boolean hasCachedPage, boolean fresh) {
-        return ntk && hasCachedPage && !fresh && fetchMode != FetchMode.CACHE_ONLY;
+    private static boolean shouldServeColdStartCachedPageImmediately(boolean allowColdStartStale, FetchMode fetchMode, boolean hasCachedPage, boolean fresh) {
+        return allowColdStartStale && hasCachedPage && !fresh && fetchMode != FetchMode.CACHE_ONLY;
     }
 
     private CachedPage readDiskCachedPage(String cacheKey, long now, long ttlMillis, boolean allowColdStartStale) {
@@ -1626,14 +1627,41 @@ public class CustomHttpClient {
     }
 
     private void writeDiskCachedPage(String cacheKey, CachedPage page) {
-        if(!isNtk() || cacheKey == null || page == null || page.body == null || page.body.length() == 0
-                || !isCacheablePageBody(page.body))
+        if(!shouldPersistDiskCachedPage(cacheKey, page))
             return;
         try {
             CacheFileStore.write(context, PAGE_CACHE_PREFIX + cacheKey, GSON.toJson(new PersistedPage(page)));
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
+    }
+
+    private boolean allowsColdStartStalePageCache(String cacheKey) {
+        return isNtk() || isWfwfCacheKey(cacheKey);
+    }
+
+    static boolean shouldPersistDiskCachedPageForTest(boolean ntk, String cacheKey, String body) {
+        return shouldPersistDiskCachedPage(ntk, cacheKey, new CachedPage(200, body, 1L));
+    }
+
+    private boolean shouldPersistDiskCachedPage(String cacheKey, CachedPage page) {
+        return shouldPersistDiskCachedPage(isNtk(), cacheKey, page);
+    }
+
+    private static boolean shouldPersistDiskCachedPage(boolean ntk, String cacheKey, CachedPage page) {
+        return (ntk || isWfwfCacheKey(cacheKey))
+                && cacheKey != null
+                && page != null
+                && page.body != null
+                && page.body.length() > 0
+                && isCacheablePageBody(page.body);
+    }
+
+    private static boolean isWfwfCacheKey(String cacheKey) {
+        if(cacheKey == null)
+            return false;
+        String lower = cacheKey.toLowerCase(Locale.ROOT);
+        return lower.contains("://wfwf") || lower.contains("://wolf");
     }
 
     public synchronized void clearPageCache() {
@@ -1745,10 +1773,12 @@ public class CustomHttpClient {
                 : requested;
         if(fetchMode == FetchMode.CACHE_ONLY)
             return null;
-        ensureNumberedDomain(false);
         if(customCookie==null)
             customCookie = new HashMap<>();
         url = normalizePath(url);
+        boolean wolfEpisodeDocumentPath = isWolfEpisodeDocumentPath(url);
+        if(isNtk() || !wolfEpisodeDocumentPath)
+            ensureNumberedDomain(false);
         String baseUrl = getBaseUrl(url);
         Map<String, String> headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
         applyNtkApiHeaders(headers, baseUrl, url);
@@ -1774,7 +1804,8 @@ public class CustomHttpClient {
                 response.close();
             response = getWithNtkWebViewFallback(baseUrl, url, headers);
         }
-        if(shouldRetryWithResolvedDomain(response)) {
+        boolean deferWolfResolveForMissingDocument = shouldDeferWfwfDomainResolveForMissingDocument(ntkBaseUrl, response == null, url);
+        if(shouldRetryWithResolvedDomain(response) && !deferWolfResolveForMissingDocument) {
             if(response != null)
                 response.close();
             ensureWfwfDomainForRetry();
@@ -1792,6 +1823,7 @@ public class CustomHttpClient {
             }
         }
         if(shouldUseWolfWebViewFallback(ntkBaseUrl, response == null, url, fetchMode, wolfWebViewFallbackAllowed)
+                && !deferWolfResolveForMissingDocument
                 && ensureNumberedDomain(true)) {
             baseUrl = getBaseUrl(url);
             ntkBaseUrl = isNtkUrl(baseUrl);
@@ -1954,6 +1986,14 @@ public class CustomHttpClient {
                 && isWolfEpisodeDocumentPath(path);
     }
 
+    static boolean shouldDeferWfwfDomainResolveForMissingDocumentForTest(boolean ntkUrl, boolean missingResponse, String path) {
+        return shouldDeferWfwfDomainResolveForMissingDocument(ntkUrl, missingResponse, path);
+    }
+
+    private static boolean shouldDeferWfwfDomainResolveForMissingDocument(boolean ntkUrl, boolean missingResponse, String path) {
+        return !ntkUrl && missingResponse && isWolfEpisodeDocumentPath(path);
+    }
+
     static boolean isWolfEpisodeDocumentPathForTest(String path) {
         return isWolfEpisodeDocumentPath(path);
     }
@@ -2106,6 +2146,12 @@ public class CustomHttpClient {
                 && !lower.contains("err_timed_out")
                 && !lower.contains("error code 522")
                 && !lower.contains("connection timed out")
+                && !lower.contains("warninge.kcopa.or.kr")
+                && !lower.contains("domain parking")
+                && !lower.contains("sedo domain parking")
+                && !lower.contains("godaddy")
+                && !lower.contains("window.location.href=\"/lander")
+                && !lower.contains("window.location.href='/lander")
                 && !lower.contains("just a moment")
                 && !lower.contains("challenges.cloudflare.com")
                 && !lower.contains("cf-challenge")

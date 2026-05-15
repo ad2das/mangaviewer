@@ -547,6 +547,10 @@ public class EpisodeActivity extends AppCompatActivity {
             return;
         }
         if(result.getResultCode() == LOAD_ERROR){
+            if(hasRenderedEpisodes()) {
+                hideProgress();
+                return;
+            }
             ntkLoadTimeoutHandled = true;
             hideProgress();
             showErrorPopup(context, "정보를 불러오는데 실패하였습니다.", null, false);
@@ -621,11 +625,20 @@ public class EpisodeActivity extends AppCompatActivity {
             episodes = cached.episodes;
             episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
             afterLoad();
+            ntkLoadTimeoutHandled = true;
             loaded = true;
             hideProgress();
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
+    }
+
+    private boolean hasRenderedEpisodes() {
+        return loaded
+                && episodes != null
+                && episodes.size() > 0
+                && episodeAdapter != null
+                && episodeAdapter.getItemCount() > 0;
     }
 
     private void hideProgress() {

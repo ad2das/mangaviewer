@@ -75,6 +75,15 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void wolfEpisodeMissDefersSlowDomainScanBeforeFallback() {
+        assertTrue(CustomHttpClient.shouldDeferWfwfDomainResolveForMissingDocumentForTest(false, true, "/cl?toon=10007"));
+        assertTrue(CustomHttpClient.shouldDeferWfwfDomainResolveForMissingDocumentForTest(false, true, "/cv?toon=10007&num=1"));
+        assertFalse(CustomHttpClient.shouldDeferWfwfDomainResolveForMissingDocumentForTest(false, true, "/cm?type1=genre"));
+        assertFalse(CustomHttpClient.shouldDeferWfwfDomainResolveForMissingDocumentForTest(true, true, "/manhwa/1"));
+        assertFalse(CustomHttpClient.shouldDeferWfwfDomainResolveForMissingDocumentForTest(false, false, "/cl?toon=10007"));
+    }
+
+    @Test
     public void sharedWebViewNavigatesWolfEpisodeDocuments() {
         assertTrue(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/cl?toon=10007"));
         assertTrue(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/cv?toon=10007&num=1"));
@@ -140,7 +149,7 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void ntkColdStartStalePageCacheServesImmediately() {
+    public void coldStartStalePageCacheServesImmediatelyWhenAllowed() {
         assertTrue(CustomHttpClient.shouldServeColdStartCachedPageImmediatelyForTest(true,
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, true, false));
         assertTrue(CustomHttpClient.shouldServeColdStartCachedPageImmediatelyForTest(true,
@@ -149,6 +158,20 @@ public class CustomHttpClientTest {
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, true, false));
         assertFalse(CustomHttpClient.shouldServeColdStartCachedPageImmediatelyForTest(true,
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, true, true));
+    }
+
+    @Test
+    public void wfwfPageDiskCachePersistsOnlyUsableEpisodePages() {
+        String episodePage = "<html><body><a href=\"/cv?toon=10007&num=1\">episode</a></body></html>";
+
+        assertTrue(CustomHttpClient.shouldPersistDiskCachedPageForTest(false,
+                "https://wfwf451.com/cl?toon=10007", episodePage));
+        assertFalse(CustomHttpClient.shouldPersistDiskCachedPageForTest(false,
+                "https://example.com/cl?toon=10007", episodePage));
+        assertFalse(CustomHttpClient.shouldPersistDiskCachedPageForTest(false,
+                "https://wfwf451.com/cl?toon=10007", "<html>warninge.kcopa.or.kr</html>"));
+        assertFalse(CustomHttpClient.shouldPersistDiskCachedPageForTest(false,
+                "https://wfwf451.com/cl?toon=10007", "<script>window.location.href=\"/lander?toon=10007\"</script>"));
     }
 
     @Test

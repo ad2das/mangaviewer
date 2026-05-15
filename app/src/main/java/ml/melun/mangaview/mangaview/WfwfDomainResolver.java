@@ -24,7 +24,7 @@ public class WfwfDomainResolver {
     private static final int FORWARD_SCAN_LIMIT = 300;
     private static final int BACKWARD_SCAN_LIMIT = 30;
     private static final int NEARBY_SCAN_LIMIT = 30;
-    private static final long RESOLVE_TIMEOUT_MS = 15_000L;
+    private static final long RESOLVE_TIMEOUT_MS = 6_000L;
 
     public static String resolve(OkHttpClient client, String currentUrl, Map<String, String> headers) {
         return resolve(client, currentUrl, headers, null);
@@ -36,9 +36,9 @@ public class WfwfDomainResolver {
             domain = new Domain("wfwf", DEFAULT_NUMBER, 0);
 
         OkHttpClient probeClient = client.newBuilder()
-                .connectTimeout(2, TimeUnit.SECONDS)
-                .readTimeout(3, TimeUnit.SECONDS)
-                .callTimeout(4, TimeUnit.SECONDS)
+                .connectTimeout(1, TimeUnit.SECONDS)
+                .readTimeout(2, TimeUnit.SECONDS)
+                .callTimeout(2500, TimeUnit.MILLISECONDS)
                 .build();
 
         String currentRoot = domain.root();
@@ -127,16 +127,50 @@ public class WfwfDomainResolver {
         boolean ntk = root != null && (root.contains("://ntk") || root.contains("://newtoki") || root.contains("://sbxh") || root.contains("://www.sbxh"));
         String comicPath = ntk ? "/manhwa" : "/cm";
         ProbeResult ing = probe(client, root + "/ing", headers, requestGroup);
-        if(ing.updatedRoot != null)
-            return ing.updatedRoot;
+        String verified = verifyUpdatedRoot(client, root, ing.updatedRoot, headers, requestGroup, new HashSet<>(), 0);
+        if(verified != null)
+            return verified;
         if(ing.alive)
             return root;
         ProbeResult comic = probe(client, root + comicPath, headers, requestGroup);
-        if(comic.updatedRoot != null)
-            return comic.updatedRoot;
+        verified = verifyUpdatedRoot(client, root, comic.updatedRoot, headers, requestGroup, new HashSet<>(), 0);
+        if(verified != null)
+            return verified;
         if(comic.alive)
             return root;
         return null;
+    }
+
+    private static String verifyUpdatedRoot(OkHttpClient client, String currentRoot, String updatedRoot,
+                                            Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup,
+                                            Set<String> visited, int depth) {
+        String root = normalizeVerifiedRoot(updatedRoot);
+        if(root == null || root.equals(currentRoot) || depth > 3 || !visited.add(root))
+            return null;
+        boolean ntk = root.contains("://ntk") || root.contains("://newtoki") || root.contains("://sbxh") || root.contains("://www.sbxh");
+        String comicPath = ntk ? "/manhwa" : "/cm";
+        ProbeResult ing = probe(client, root + "/ing", headers, requestGroup);
+        if(ing.alive)
+            return root;
+        String nested = verifyUpdatedRoot(client, root, ing.updatedRoot, headers, requestGroup, visited, depth + 1);
+        if(nested != null)
+            return nested;
+        ProbeResult comic = probe(client, root + comicPath, headers, requestGroup);
+        if(comic.alive)
+            return root;
+        return verifyUpdatedRoot(client, root, comic.updatedRoot, headers, requestGroup, visited, depth + 1);
+    }
+
+    static boolean shouldAcceptUpdatedRootForTest(String currentRoot, String updatedRoot) {
+        String root = normalizeVerifiedRoot(updatedRoot);
+        return root != null && !root.equals(currentRoot);
+    }
+
+    private static String normalizeVerifiedRoot(String updatedRoot) {
+        if(updatedRoot == null)
+            return null;
+        String root = toRoot(updatedRoot);
+        return root.length() == 0 || !isSupportedNumberedUrl(root) ? null : root;
     }
 
     private static ProbeResult probe(OkHttpClient client, String url, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup) {
