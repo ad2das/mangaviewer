@@ -23,7 +23,7 @@ public class PrefetchCoordinatorTest {
         @SuppressWarnings("unchecked")
         List<Integer> targets = (List<Integer>) method.invoke(null, episodes, 3, 4);
 
-        assertEquals(asList(2, 1, 0), targets);
+        assertEquals(asList(2, 1, 3, 5), targets);
     }
 
     @Test
@@ -36,7 +36,7 @@ public class PrefetchCoordinatorTest {
         @SuppressWarnings("unchecked")
         List<Integer> targets = (List<Integer>) method.invoke(null, episodes, 3, 4);
 
-        assertEquals(asList(2, 0), targets);
+        assertEquals(asList(2, 3, 5, 0), targets);
     }
 
     @Test
@@ -48,7 +48,40 @@ public class PrefetchCoordinatorTest {
         @SuppressWarnings("unchecked")
         List<Integer> targets = (List<Integer>) method.invoke(null, episodes, -1, 3);
 
-        assertEquals(asList(0, 5, 1), targets);
+        assertEquals(asList(5, 0, 4), targets);
+    }
+
+    @Test
+    public void viewerTargetsIncludeVisibleRowsEvenWithDeepBookmark() throws Exception {
+        List<Manga> episodes = episodes(90, 80, 70, 60, 50, 40, 30, 20, 10);
+        Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class);
+        method.setAccessible(true);
+
+        @SuppressWarnings("unchecked")
+        List<Integer> targets = (List<Integer>) method.invoke(null, episodes, 7, 4);
+
+        assertEquals(asList(6, 5, 7, 8), targets);
+    }
+
+    @Test
+    public void viewerTargetsIncludeOlderAdjacentRowsNearTopBookmark() throws Exception {
+        List<Manga> episodes = episodes(122, 121, 120, 119, 118);
+        Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class);
+        method.setAccessible(true);
+
+        @SuppressWarnings("unchecked")
+        List<Integer> targets = (List<Integer>) method.invoke(null, episodes, 2, 4);
+
+        assertEquals(asList(1, 0, 2, 4), targets);
+    }
+
+    @Test
+    public void visibleEpisodeTargetsIncludeVisibleRowsAndAhead() {
+        List<Manga> episodes = episodes(122, 121, 120, 119, 118, 117);
+
+        List<Integer> targets = PrefetchCoordinator.visibleEpisodeTargets(episodes, 1, 4, 2, 5);
+
+        assertEquals(asList(0, 1, 2, 3, 4), targets);
     }
 
     @Test
@@ -58,6 +91,15 @@ public class PrefetchCoordinatorTest {
         assertTrue(PrefetchCoordinator.shouldSkipNtkPrefetchForTest(null, true, true));
         assertFalse(PrefetchCoordinator.shouldSkipNtkPrefetchForTest("wfwf", true, true));
         assertFalse(PrefetchCoordinator.shouldSkipNtkPrefetchForTest("ntk", false, false));
+    }
+
+    @Test
+    public void wolfBackgroundPrefetchAllowsExplicitWfwfSources() {
+        assertFalse(PrefetchCoordinator.shouldSkipWolfBackgroundPrefetchForTest("wfwf", false, false));
+        assertTrue(PrefetchCoordinator.shouldSkipWolfBackgroundPrefetchForTest("", false, false));
+        assertTrue(PrefetchCoordinator.shouldSkipWolfBackgroundPrefetchForTest(null, false, false));
+        assertFalse(PrefetchCoordinator.shouldSkipWolfBackgroundPrefetchForTest("ntk", true, true));
+        assertFalse(PrefetchCoordinator.shouldSkipWolfBackgroundPrefetchForTest("ntk", false, false));
     }
 
     private static List<Manga> episodes(int... ids) {

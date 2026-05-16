@@ -54,4 +54,13 @@ public class MainWebtoonAdapterTest {
         assertTrue(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(false, false));
         assertFalse(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(false, true));
     }
+
+    @Test
+    public void visibleEpisodeSnapshotPrefetchMatchesCurrentSite() {
+        assertTrue(HomeEpisodePrefetchPolicy.shouldPrefetchVisibleEpisodeSnapshot("wfwf", false));
+        assertTrue(HomeEpisodePrefetchPolicy.shouldPrefetchVisibleEpisodeSnapshot("ntk", true));
+        assertFalse(HomeEpisodePrefetchPolicy.shouldPrefetchVisibleEpisodeSnapshot("wfwf", true));
+        assertFalse(HomeEpisodePrefetchPolicy.shouldPrefetchVisibleEpisodeSnapshot("ntk", false));
+        assertTrue(HomeEpisodePrefetchPolicy.shouldPrefetchVisibleEpisodeSnapshot("", false));
+    }
 }

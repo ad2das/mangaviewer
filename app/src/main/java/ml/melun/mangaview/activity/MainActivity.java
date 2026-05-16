@@ -403,6 +403,8 @@ public class MainActivity extends AppCompatActivity
     @Override
     protected void onPause() {
         PerformanceMonitor.pause();
+        if(fragments[0] instanceof MainMain)
+            ((MainMain) fragments[0]).cancelHomeFetches();
         super.onPause();
     }
 

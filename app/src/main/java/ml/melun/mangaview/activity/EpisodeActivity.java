@@ -16,6 +16,7 @@ import android.os.Bundle;
 import androidx.appcompat.widget.LinearLayoutCompat;
 import androidx.appcompat.widget.Toolbar;
 import androidx.lifecycle.ViewModelProvider;
+import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.recyclerview.widget.SimpleItemAnimator;
 
@@ -30,7 +31,9 @@ import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.R;
@@ -68,6 +71,7 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_ERROR;
 
 public class EpisodeActivity extends AppCompatActivity {
     private static final long VIEWER_PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
+    private static final int VISIBLE_EPISODE_WARMUP_AHEAD = 2;
     //global variables
     Title title;
     EpisodeAdapter episodeAdapter;
@@ -92,6 +96,12 @@ public class EpisodeActivity extends AppCompatActivity {
     boolean firstContentLogged = false;
     boolean ntkLoadTimeoutHandled = false;
     boolean ntkCaptchaLaunchInFlight = false;
+    boolean visibleEpisodeWarmupScheduled = false;
+    final Set<Integer> requestedVisibleWarmups = new HashSet<>();
+    final Runnable visibleEpisodeWarmupRunnable = () -> {
+        visibleEpisodeWarmupScheduled = false;
+        warmupVisibleEpisodeRows();
+    };
 
 
     public boolean onOptionsItemSelected(MenuItem item){
@@ -219,11 +229,20 @@ public class EpisodeActivity extends AppCompatActivity {
         episodeList.setOverScrollMode(View.OVER_SCROLL_NEVER);
         episodeList.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
+            public void onScrolled(@NonNull RecyclerView recyclerView, int dx, int dy) {
+                super.onScrolled(recyclerView, dx, dy);
+                if(dy != 0)
+                    scheduleVisibleEpisodeWarmup(120L);
+            }
+
+            @Override
             public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
                 super.onScrollStateChanged(recyclerView, newState);
                 PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
-                if(newState == RecyclerView.SCROLL_STATE_IDLE)
+                if(newState == RecyclerView.SCROLL_STATE_IDLE) {
                     PerformanceMonitor.reportNow("episode_scroll_idle");
+                    scheduleVisibleEpisodeWarmup(0L);
+                }
             }
         });
         homeDir = p.getHomeDir();
@@ -249,11 +268,13 @@ public class EpisodeActivity extends AppCompatActivity {
         if(online) {
             mode = 0;
             fab_container.setVisibility(View.GONE);
-            showCachedEpisodes();
+            boolean renderedCachedEpisodes = showCachedEpisodes();
             episodeViewModel = new ViewModelProvider(this).get(EpisodeViewModel.class);
             episodeViewModel.state().observe(this, this::renderEpisodeState);
-            episodeViewModel.loadEpisodes(title);
-            scheduleNtkEpisodeLoadWatchdog();
+            if(shouldRefreshEpisodesAfterCache(renderedCachedEpisodes)) {
+                episodeViewModel.loadEpisodes(title, !renderedCachedEpisodes);
+                scheduleNtkEpisodeLoadWatchdog();
+            }
         }else{
             OfflineStore.OfflineEpisodes offlineEpisodes = OfflineStore.loadEpisodes(context, title);
             episodes = offlineEpisodes.episodes;
@@ -275,6 +296,7 @@ public class EpisodeActivity extends AppCompatActivity {
 //    }
 
     public void afterLoad(){
+        requestedVisibleWarmups.clear();
         if(fab_container != null)
             fab_container.setVisibility(View.GONE);
         //find bookmark
@@ -390,6 +412,44 @@ public class EpisodeActivity extends AppCompatActivity {
             return;
         PrefetchCoordinator.prefetchEpisodeList(context, title, episodes, bookmarkIndex, mode);
         warmupLikelyNtkViewerPage();
+        scheduleVisibleEpisodeWarmup(80L);
+    }
+
+    private void scheduleVisibleEpisodeWarmup(long delayMs) {
+        if(!online || episodeList == null || episodes == null || episodes.size() == 0)
+            return;
+        episodeList.removeCallbacks(visibleEpisodeWarmupRunnable);
+        visibleEpisodeWarmupScheduled = true;
+        episodeList.postDelayed(visibleEpisodeWarmupRunnable, Math.max(0L, delayMs));
+    }
+
+    private void warmupVisibleEpisodeRows() {
+        if(!online || episodeList == null || episodes == null || episodes.size() == 0 || title == null)
+            return;
+        RecyclerView.LayoutManager manager = episodeList.getLayoutManager();
+        if(!(manager instanceof LinearLayoutManager))
+            return;
+        LinearLayoutManager layoutManager = (LinearLayoutManager) manager;
+        int first = layoutManager.findFirstVisibleItemPosition();
+        int last = layoutManager.findLastVisibleItemPosition();
+        int limit = p.getDataSave() ? 3 : 5;
+        List<Integer> targets = PrefetchCoordinator.visibleEpisodeTargets(episodes, first, last,
+                VISIBLE_EPISODE_WARMUP_AHEAD, limit);
+        if(targets.size() == 0)
+            return;
+        ArrayList<Integer> fresh = new ArrayList<>();
+        for(Integer index : targets) {
+            Manga episode = index == null ? null : safeGet(episodes, index);
+            if(episode == null)
+                continue;
+            int key = episode.getId() >= 0 ? episode.getId() : (String.valueOf(episode.getName()) + ":" + index).hashCode();
+            if(requestedVisibleWarmups.add(key))
+                fresh.add(index);
+        }
+        if(fresh.size() == 0)
+            return;
+        ViewerWarmupManager.logMetric("episode_visible_warmup_count", fresh.size());
+        PrefetchCoordinator.prefetchEpisodeIndexes(context, title, episodes, fresh, mode);
     }
 
     private void warmupLikelyNtkViewerPage() {
@@ -521,7 +581,13 @@ public class EpisodeActivity extends AppCompatActivity {
                 }
             }
         }
-        return episodes.get(episodes.size() - 1);
+        int firstEpisodeIndex = firstReadableEpisodeIndexForTest(episodes);
+        Manga episode = safeGet(episodes, firstEpisodeIndex);
+        return episode != null ? episode : safeGet(episodes, 0);
+    }
+
+    static int firstReadableEpisodeIndexForTest(List<Manga> episodes) {
+        return PrefetchCoordinator.firstEpisodeIndex(episodes);
     }
 
     @SuppressWarnings("unchecked")
@@ -611,25 +677,27 @@ public class EpisodeActivity extends AppCompatActivity {
         });
     }
 
-    private void showCachedEpisodes() {
+    private boolean showCachedEpisodes() {
         try {
             String json = CacheFileStore.read(context, episodeCacheKey());
             if(json == null || json.length() == 0)
-                return;
+                return false;
             CachedEpisodes cached = new Gson().fromJson(json, new TypeToken<CachedEpisodes>(){}.getType());
             if(cached == null || cached.episodes == null || cached.episodes.size() == 0)
-                return;
+                return false;
             if(!CachePolicy.isFresh(cached.savedAt, CachePolicy.EPISODE_TTL_MS)
                     && !CachePolicy.isReusableForColdStart(cached.savedAt))
-                return;
+                return false;
             episodes = cached.episodes;
             episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
             afterLoad();
             ntkLoadTimeoutHandled = true;
             loaded = true;
             hideProgress();
+            return true;
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
+            return false;
         }
     }
 
@@ -681,9 +749,13 @@ public class EpisodeActivity extends AppCompatActivity {
         manga.setMode(mode);
         manga.setTitle(title);
         manga.setTitleId(title == null ? manga.getTitleId() : title.getId());
-        if(!exactEpisode)
+        if(!exactEpisode && getHttpClient().isNtk())
             ViewerWarmupManager.warmup(context, manga, title);
         openViewerPrepared(context, manga, code, false, online, true, title, !manga.isOnline(), exactEpisode);
+    }
+
+    private boolean shouldRefreshEpisodesAfterCache(boolean renderedCachedEpisodes) {
+        return !renderedCachedEpisodes || p.isNtkSite() || getHttpClient().isNtk();
     }
 
     @Override

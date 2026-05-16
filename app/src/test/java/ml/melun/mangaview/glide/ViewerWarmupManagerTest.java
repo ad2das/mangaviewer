@@ -109,7 +109,9 @@ public class ViewerWarmupManagerTest {
 
     @Test
     public void exactEpisodeLaunchKeepsLegacyWarmupOffNtkSite() {
-        assertTrue(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunchForTest("wfwf", false));
+        assertFalse(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunchForTest("wfwf", false));
+        assertFalse(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunchForTest("", false));
+        assertFalse(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunchForTest(null, false));
         assertFalse(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunchForTest("ntk", false));
     }
 

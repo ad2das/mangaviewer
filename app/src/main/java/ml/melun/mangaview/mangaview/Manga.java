@@ -4,7 +4,6 @@ import java.io.File;
 import java.net.URLDecoder;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -28,6 +27,7 @@ import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.mangaview.MTitle.baseModeStr;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
+import static ml.melun.mangaview.mangaview.Title.LOAD_ERROR;
 import static ml.melun.mangaview.mangaview.Title.LOAD_OK;
 
 import android.content.Context;
@@ -139,7 +139,7 @@ public class Manga {
     }
 
     public synchronized int fetch(CustomHttpClient client, boolean doLogin, Map<String, String> cookies) {
-        if(client.isNtk())
+        if(shouldFetchNtk(client))
             return fetchNtk(client);
         if(isComicWolfSource())
             return fetchWolf(client, "/cv?toon=", "/cv?toon=");
@@ -492,6 +492,7 @@ public class Manga {
         imgs = new ArrayList<>();
         Set<String> seenImages = new LinkedHashSet<>();
         eps = new ArrayList<>();
+        boolean attemptedPage = false;
 
         for(int attempt = 0; attempt < 2; attempt++) {
             try {
@@ -501,6 +502,7 @@ public class Manga {
             if(titleId <= 0)
                 return LOAD_OK;
 
+            attemptedPage = true;
             CustomHttpClient.PageResponse page = client.mgetCachedPage(viewPath + titleId + "&num=" + id, PAGE_CACHE_TTL_MS);
             Document d = Jsoup.parse(page.body);
 
@@ -555,28 +557,13 @@ public class Manga {
         }
         restoreBetterEpisodeList(previousEpisodes);
         attachEpisodeSeriesMetadata();
+        if(attemptedPage && imgs.size() == 0)
+            return LOAD_ERROR;
         return LOAD_OK;
     }
 
     private boolean hasReachableWolfPageImage(CustomHttpClient client) {
-        if(client == null || imgs == null || imgs.size() == 0)
-            return false;
-        int checked = 0;
-        for(String img : imgs) {
-            if(img == null || img.length() == 0)
-                continue;
-            Integer code = probeWolfImage(client, img);
-            if(code == null)
-                return true;
-            if(code >= 200 && code < 400)
-                return true;
-            if(code == 403 || code == 429)
-                return true;
-            checked++;
-            if(checked >= 2)
-                break;
-        }
-        return false;
+        return hasUsableWolfPageImages();
     }
 
     public synchronized boolean ensureReachablePageImages(CustomHttpClient client) {
@@ -584,31 +571,22 @@ public class Manga {
             return true;
         if(!(isComicWolfSource() || isWebtoonWolfSource()))
             return true;
-        if(imgs == null || imgs.size() == 0)
-            return false;
-        if(hasReachableWolfPageImage(client))
-            return true;
-        imgs.clear();
-        client.clearPageCache();
-        return false;
+        return hasUsableWolfPageImages();
     }
 
-    private Integer probeWolfImage(CustomHttpClient client, String url) {
-        Response response = null;
-        try {
-            Map<String, String> headers = new HashMap<>();
-            headers.put("User-Agent", client.agent);
-            headers.put("Referer", client.getUrl(baseMode));
-            headers.put("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8");
-            headers.put("Range", "bytes=0-0");
-            response = client.get(url, headers);
-            return response == null ? null : response.code();
-        } catch (Exception e) {
-            return null;
-        } finally {
-            if(response != null)
-                response.close();
-        }
+    static boolean hasUsableWolfPageImagesForTest(List<String> images) {
+        Manga manga = new Manga(1, "test", "", MTitle.base_comic);
+        manga.imgs = images == null ? null : new ArrayList<>(images);
+        return manga.hasUsableWolfPageImages();
+    }
+
+    private boolean hasUsableWolfPageImages() {
+        if(imgs == null || imgs.size() == 0)
+            return false;
+        for(String img : imgs)
+            if(img != null && img.trim().length() > 0)
+                return true;
+        return false;
     }
 
     private void addWolfImageCandidates(CustomHttpClient client, Document document, Set<String> seenImages) {
@@ -1032,7 +1010,7 @@ public class Manga {
         String ntkPath = getNtkEpisodePath();
         if(ntkPath.length() > 0)
             return ntkPath;
-        if(titleId > 0 && p != null && p.isNtkSite()) {
+        if(titleId > 0 && shouldUseNtkUrl()) {
             String segment = baseMode == MTitle.base_webtoon ? "webtoon" : "manhwa";
             return "/" + segment + "/" + titleId + "/" + id;
         }
@@ -1069,6 +1047,34 @@ public class Manga {
 
     private boolean isComicWolfSource() {
         return baseMode == base_comic;
+    }
+
+    private boolean shouldFetchNtk(CustomHttpClient client) {
+        if(hasExplicitWolfSource())
+            return false;
+        if(hasExplicitNtkSource())
+            return true;
+        return client != null && client.isNtk();
+    }
+
+    private boolean shouldUseNtkUrl() {
+        if(hasExplicitWolfSource())
+            return false;
+        if(hasExplicitNtkSource())
+            return true;
+        return p != null && p.isNtkSite();
+    }
+
+    private boolean hasExplicitNtkSource() {
+        return "ntk".equals(sourceSite());
+    }
+
+    private boolean hasExplicitWolfSource() {
+        return "wfwf".equals(sourceSite());
+    }
+
+    private String sourceSite() {
+        return title == null ? "" : title.getSourceSite();
     }
 
     public boolean useBookmark() {

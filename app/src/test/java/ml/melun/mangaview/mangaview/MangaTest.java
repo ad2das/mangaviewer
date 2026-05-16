@@ -4,6 +4,8 @@ import org.junit.Test;
 
 import java.io.File;
 import java.nio.file.Files;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 import static org.junit.Assert.assertTrue;
@@ -165,5 +167,33 @@ public class MangaTest {
                 "<script>{\"headerBanners\":[{\"imageUrl\":\"https:\\/\\/i.toonflix.app\\/board_uploads\\/2026\\/05\\/15\\/ad.png\",\"linkUrl\":\"https:\\/\\/ad.example\"}]}</script>");
 
         assertEquals(0, images.size());
+    }
+
+    @Test
+    public void wfwfImageReachabilityUsesParsedUrlsWithoutBlockingProbe() {
+        assertTrue(Manga.hasUsableWolfPageImagesForTest(Arrays.asList("", "https://i1.imgcloud18.com/page001.jpg")));
+        org.junit.Assert.assertFalse(Manga.hasUsableWolfPageImagesForTest(Arrays.asList("", " ")));
+    }
+
+    @Test
+    public void explicitWfwfTitleKeepsWolfEpisodePath() {
+        Title title = new Title("title", "", "", Collections.emptyList(), "", 12683, MTitle.base_comic);
+        title.setSourceSite("wfwf");
+        Manga manga = new Manga(122, "122화", "", MTitle.base_comic);
+        manga.setTitle(title);
+
+        assertEquals("/cl?toon=12683", title.getUrl());
+        assertEquals("/cv?toon=12683&num=122", manga.getUrl());
+    }
+
+    @Test
+    public void explicitNtkTitleUsesNtkEpisodePath() {
+        Title title = new Title("title", "", "", Collections.emptyList(), "", 25089, MTitle.base_comic);
+        title.setSourceSite("ntk");
+        Manga manga = new Manga(1, "1화", "", MTitle.base_comic);
+        manga.setTitle(title);
+
+        assertEquals("/manhwa/25089", title.getUrl());
+        assertEquals("/manhwa/25089/1", manga.getUrl());
     }
 }

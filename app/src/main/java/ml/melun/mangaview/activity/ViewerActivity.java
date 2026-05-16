@@ -2102,7 +2102,11 @@ public class ViewerActivity extends AppCompatActivity {
     private static boolean shouldSkipBackgroundNextEpisodeFetch(String sourceSite, boolean ntkPreference, boolean ntkClient, boolean hasLoadedImages) {
         if(hasLoadedImages)
             return false;
-        return ntkPreference || ntkClient || "ntk".equalsIgnoreCase(sourceSite == null ? "" : sourceSite.trim());
+        String source = sourceSite == null ? "" : sourceSite.trim();
+        return ntkPreference
+                || ntkClient
+                || "ntk".equalsIgnoreCase(source)
+                || "wfwf".equalsIgnoreCase(source);
     }
 
     private boolean needsFullEpisodeList(Title currentTitle, Manga target) {

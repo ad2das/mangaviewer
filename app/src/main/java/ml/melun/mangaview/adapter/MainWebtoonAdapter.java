@@ -57,6 +57,7 @@ import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.PerfTrace;
+import ml.melun.mangaview.runtime.PrefetchCoordinator;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
@@ -1771,6 +1772,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return false;
         if(p != null)
             p.ensureSourceSiteForTitle(item);
+        if(!HomeEpisodePrefetchPolicy.shouldPrefetchVisibleEpisodeSnapshot(item.getSourceSite(), isNtkSite()))
+            return false;
         String key = item.getSourceSite() + ":" + item.getBaseMode() + ":" + item.getId();
         synchronized (visibleEpisodePrefetchKeys) {
             if(visibleEpisodePrefetchKeys.contains(key))
@@ -1784,8 +1787,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             try {
                 int result = MangaRepository.fetchEpisodes(target);
                 List<Manga> episodes = Utils.snapshotEpisodes(target);
-                if(result == Title.LOAD_OK && episodes != null && episodes.size() > 0)
+                if(result == Title.LOAD_OK && episodes != null && episodes.size() > 0) {
                     CacheFileStore.write(appContext, episodeSnapshotKey(target), new Gson().toJson(new EpisodeSnapshot(episodes)));
+                    PrefetchCoordinator.prefetchEpisodeList(appContext, target, episodes, -1, 0);
+                }
             } catch (Exception e) {
                 ml.melun.mangaview.report.CrashReporter.record(e);
             }
@@ -2506,6 +2511,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
         private Boolean fetchSections() {
             cancellation = MangaRepository.cancellation();
+            if(cancelled)
+                return false;
             boolean ntk = siteNtkSnapshot;
             String[][] sections = MainPageWebtoon.getSections(baseMode, ntk);
             CompletionService<SectionResult> completion = AppDispatchers.ioCompletionService();
@@ -2518,7 +2525,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             boolean firstScreenPublished = false;
 
             try {
-                for(int i = 0; i < sections.length; i++) {
+                for(int i = 0; i < sections.length && !cancelled; i++) {
                     final int index = i;
                     final String[] section = sections[i];
                     if(!shouldFetchHomeSection(section, ntk))
@@ -2579,10 +2586,24 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         private boolean shouldFetchHomeSection(String[] section, boolean ntk) {
-            if(!ntk || baseMode != base_webtoon || section == null || section.length < 2)
+            if(section == null || section.length < 2 || section[1] == null)
+                return false;
+            if(!ntk)
+                return shouldFetchWolfHomeSection(section[1]);
+            if(baseMode != base_webtoon)
                 return true;
             String path = section[1];
             return path.startsWith("/ing") || path.startsWith("/end");
+        }
+
+        private boolean shouldFetchWolfHomeSection(String path) {
+            if(path == null)
+                return false;
+            if(baseMode == base_comic)
+                return path.contains("type1=complete&type2=recent&o=f")
+                        || path.contains("type1=complete&type2=recent&o=n");
+            return path.contains("o=f")
+                    || path.contains("type2=new&o=n");
         }
 
         private void postProgress(SectionBatch batch) {

@@ -127,10 +127,13 @@ public final class MangaRepository {
     }
 
     public static int fetchViewerInitial(Manga manga, CustomHttpClient.RequestGroup requestGroup) throws Exception {
+        CustomHttpClient client = getHttpClient();
         if(requestGroup == null)
-            return manga.fetchForViewerInitial(getHttpClient());
-        requestGroup.allowWolfWebViewFallback();
-        return getHttpClient().runWithRequestGroup(requestGroup, () -> manga.fetchForViewerInitial(getHttpClient()));
+            return manga.fetchForViewerInitial(client);
+        if(!client.isNtk())
+            return client.runWithFetchMode(CustomHttpClient.FetchMode.DIRECT_ONLY,
+                    () -> client.runWithRequestGroup(requestGroup, () -> manga.fetchForViewerInitial(client)));
+        return client.runWithRequestGroup(requestGroup, () -> manga.fetchForViewerInitial(client));
     }
 
     public static Ranking<Title> loadWebtoonSection(MainPageWebtoon parser, String title, String path, int baseMode,

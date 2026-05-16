@@ -118,4 +118,12 @@ public class UtilsTest {
         assertTrue(NtkCaptchaPolicy.isAccessProbeChallenged(true, 200, "", true));
         assertFalse(NtkCaptchaPolicy.isAccessProbeChallenged(true, 200, "{}", false));
     }
+
+    @Test
+    public void exactViewerLaunchWaitsForPreparedFirstFrame() {
+        assertTrue(Utils.shouldWaitForExactFirstFrameForTest("wfwf", false));
+        assertTrue(Utils.shouldWaitForExactFirstFrameForTest("ntk", true));
+        assertFalse(Utils.shouldWaitForExactFirstFrameForTest("ntk", false));
+        assertTrue(Utils.shouldWaitForExactFirstFrameForTest("", false));
+    }
 }

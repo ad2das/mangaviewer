@@ -36,6 +36,11 @@ public class ViewerActivityTest {
     @Test
     public void backgroundNextEpisodeFetchKeepsLoadedOrLegacyEpisodes() {
         assertFalse(ViewerActivity.shouldSkipBackgroundNextEpisodeFetchForTest("ntk", true, true, true));
-        assertFalse(ViewerActivity.shouldSkipBackgroundNextEpisodeFetchForTest("wfwf", false, false, false));
+        assertFalse(ViewerActivity.shouldSkipBackgroundNextEpisodeFetchForTest("", false, false, false));
+    }
+
+    @Test
+    public void wfwfBackgroundNextEpisodeFetchSkipsWhenImagesAreMissing() {
+        assertTrue(ViewerActivity.shouldSkipBackgroundNextEpisodeFetchForTest("wfwf", false, false, false));
     }
 }

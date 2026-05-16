@@ -32,6 +32,12 @@ public class WfwfDomainResolverTest {
     }
 
     @Test
+    public void extractsUpdatedWolfAddressFromMinimalButtonGuidePage() {
+        String body = "<html><body>https://wfwf451.com <a href=\"https://wfwf451.com\" class=\"main-btn\">go</a></body></html>";
+        assertEquals("https://wfwf451.com", WfwfDomainResolver.extractUpdatedRootForTest(body));
+    }
+
+    @Test
     public void guideAddressMustPointToDifferentSupportedRootBeforeVerification() {
         assertTrue(WfwfDomainResolver.shouldAcceptUpdatedRootForTest("https://wfwf450.com", "https://wfwf451.com"));
         assertFalse(WfwfDomainResolver.shouldAcceptUpdatedRootForTest("https://wfwf451.com", "https://wfwf451.com"));

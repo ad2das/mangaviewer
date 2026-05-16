@@ -718,7 +718,7 @@ public class ViewerWarmupManager {
         }
         FutureTarget<Bitmap> target = null;
         boolean cachedResult = false;
-        long timeoutMs = firstPage ? 1800L : 300L;
+        long timeoutMs = firstPage ? 5_500L : 450L;
         long decodeStart = SystemClock.elapsedRealtime();
         RequestManager requestManager = glideRequestManager(context);
         if(requestManager == null)
@@ -781,6 +781,15 @@ public class ViewerWarmupManager {
         }
         logMetric("viewer_first_frame_wait_ms", SystemClock.elapsedRealtime() - startedAt);
         return ready;
+    }
+
+    public static boolean waitForFirstDecodedFrame(Context context, Manga manga, int pageIndex, int width,
+                                                   boolean autoCut, boolean reverse, long waitMs) {
+        if(context == null || manga == null || !manga.isOnline())
+            return false;
+        int normalizedPage = normalizePageIndex(manga, context, pageIndex);
+        preloadLoadedImages(context, manga, normalizedPage, width, autoCut, reverse, 4, Priority.IMMEDIATE, 1);
+        return waitForDecodedFrameReady(context, manga, normalizedPage, width, autoCut, reverse, waitMs);
     }
 
     static boolean isUsablePageImageForTest(String image) {
@@ -867,7 +876,12 @@ public class ViewerWarmupManager {
     }
 
     private static boolean shouldWarmupExactEpisodeOnLaunch(String sourceSite, boolean ntkSite) {
-        return sourceMatchesCurrentSite(sourceSite, ntkSite);
+        if(!ntkSite)
+            return false;
+        if(sourceSite == null)
+            return true;
+        String normalized = sourceSite.trim().toLowerCase(Locale.ROOT);
+        return normalized.length() == 0 || "ntk".equals(normalized);
     }
 
     private static boolean isCurrentNtkSite() {

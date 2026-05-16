@@ -75,12 +75,11 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void wolfEpisodeMissDefersSlowDomainScanBeforeFallback() {
-        assertTrue(CustomHttpClient.shouldDeferWfwfDomainResolveForMissingDocumentForTest(false, true, "/cl?toon=10007"));
-        assertTrue(CustomHttpClient.shouldDeferWfwfDomainResolveForMissingDocumentForTest(false, true, "/cv?toon=10007&num=1"));
-        assertFalse(CustomHttpClient.shouldDeferWfwfDomainResolveForMissingDocumentForTest(false, true, "/cm?type1=genre"));
-        assertFalse(CustomHttpClient.shouldDeferWfwfDomainResolveForMissingDocumentForTest(true, true, "/manhwa/1"));
-        assertFalse(CustomHttpClient.shouldDeferWfwfDomainResolveForMissingDocumentForTest(false, false, "/cl?toon=10007"));
+    public void wfwfEpisodeMissResolvesDomainBeforeWebViewFallback() {
+        assertTrue(CustomHttpClient.shouldUseSharedWebViewFallbackForTest(false, true, "/cl?toon=10007",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertTrue(CustomHttpClient.shouldUseSharedWebViewFallbackForTest(false, true, "/cv?toon=10007&num=1",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
     }
 
     @Test
@@ -104,6 +103,14 @@ public class CustomHttpClientTest {
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
         assertFalse(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/manhwa/1/1",
                 CustomHttpClient.FetchMode.CACHE_ONLY));
+    }
+
+    @Test
+    public void wolfEpisodeDocumentsUseFastClientOnlyForViewerPages() {
+        assertTrue(CustomHttpClient.shouldUseFastWolfPageDirectUrlForTest("https://wfwf451.com/cv?toon=1&num=2"));
+        assertTrue(CustomHttpClient.shouldUseFastWolfPageDirectUrlForTest("https://wolf.example/cl?toon=1"));
+        assertFalse(CustomHttpClient.shouldUseFastWolfPageDirectUrlForTest("https://wfwf451.com/cm?type1=genre"));
+        assertFalse(CustomHttpClient.shouldUseFastWolfPageDirectUrlForTest("https://i1.imgcloud18.com/1/a.jpg"));
     }
 
     @Test
@@ -175,6 +182,16 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void wfwfLanderPagesAreRejectedForRetry() {
+        String lander = "<html><head><script>window.location.href=\"/lander?toon=10007\"</script></head></html>";
+        String episode = "<html><body><a href=\"/cv?toon=10007&num=1\">episode</a></body></html>";
+
+        assertTrue(CustomHttpClient.shouldRejectWfwfPageBodyForTest("/cl?toon=10007", 200, lander));
+        assertFalse(CustomHttpClient.shouldRejectWfwfPageBodyForTest("/cl?toon=10007", 200, episode));
+        assertFalse(CustomHttpClient.shouldRejectWfwfPageBodyForTest("/api/manhwa-list", 200, lander));
+    }
+
+    @Test
     public void ntkUrlDetectionHandlesResolvedHosts() {
         assertTrue(CustomHttpClient.isNtkUrlForTest("https://sbxh1.com/manhwa"));
         assertTrue(CustomHttpClient.isNtkUrlForTest("https://img.sbxh1.com/manhwa/1"));
@@ -230,7 +247,7 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void wfwfDnsPrefersIpv6AndKeepsIpv4Fallback() throws Exception {
+    public void wfwfDnsDropsIpv6AndKeepsIpv4() throws Exception {
         InetAddress ipv4 = InetAddress.getByAddress("wfwf451.com",
                 new byte[] {(byte)104, (byte)26, (byte)14, (byte)114});
         InetAddress ipv6 = InetAddress.getByAddress("wfwf451.com",
@@ -243,14 +260,14 @@ public class CustomHttpClientTest {
         List<InetAddress> selected = CustomHttpClient.selectNetworkResilientAddressesForTest("wfwf451.com",
                 Arrays.asList(ipv4, ipv6));
 
-        assertEquals("2606:4700:20:0:0:0:681a:e72", selected.get(0).getHostAddress());
-        assertEquals("104.26.14.114", selected.get(1).getHostAddress());
+        assertEquals(1, selected.size());
+        assertEquals("104.26.14.114", selected.get(0).getHostAddress());
     }
 
     @Test
-    public void wfwfImageCdnAlsoUsesIpv6CapableDns() throws Exception {
-        assertTrue(CustomHttpClient.prefersIpv6ForWfwfHostForTest("i1.imgcloud18.com"));
-        assertTrue(CustomHttpClient.prefersIpv6ForWfwfHostForTest("v12st.com"));
+    public void wfwfImageCdnAlsoStaysIpv4Only() throws Exception {
+        assertFalse(CustomHttpClient.prefersIpv6ForWfwfHostForTest("i1.imgcloud18.com"));
+        assertFalse(CustomHttpClient.prefersIpv6ForWfwfHostForTest("v12st.com"));
         assertFalse(CustomHttpClient.prefersIpv6ForWfwfHostForTest("sbxh1.com"));
     }
 

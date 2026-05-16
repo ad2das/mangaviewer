@@ -181,6 +181,7 @@ public class MainMain extends Fragment{
 
             @Override
             public void clickedTitle(Title t) {
+                cancelHomeFetches();
                 startActivity(episodeIntent(getContext(), t));
             }
 
@@ -189,11 +190,13 @@ public class MainMain extends Fragment{
                 //mget title from manga m and start intent for manga m
                 //getTitleFromManga intentStarter = new getTitleFromManga();
                 //intentStarter.execute(m);
+                cancelHomeFetches();
                 openViewer(getContext(), m,-1);
             }
 
             @Override
             public void clickedGenre(String t) {
+                cancelHomeFetches();
                 Intent i = new Intent(getContext(), TagSearchActivity.class);
                 i.putExtra("query",t);
                 i.putExtra("mode",2);
@@ -203,6 +206,7 @@ public class MainMain extends Fragment{
 
             @Override
             public void clickedName(String t) {
+                cancelHomeFetches();
                 Intent i = new Intent(getContext(), TagSearchActivity.class);
                 i.putExtra("query",t);
                 i.putExtra("mode",3);
@@ -212,6 +216,7 @@ public class MainMain extends Fragment{
 
             @Override
             public void clickedRelease(String t) {
+                cancelHomeFetches();
                 Intent i = new Intent(getContext(), TagSearchActivity.class);
                 i.putExtra("query",t);
                 i.putExtra("mode",4);
@@ -221,6 +226,7 @@ public class MainMain extends Fragment{
 
             @Override
             public void clickedMoreUpdated() {
+                cancelHomeFetches();
                 Intent i = new Intent(getContext(), TagSearchActivity.class);
                 i.putExtra("mode",5);
                 startActivity(i);
@@ -257,6 +263,7 @@ public class MainMain extends Fragment{
                 i.putExtra("title", title);
                 i.putExtra("mode", 8);
                 i.putExtra("baseMode", p.getBaseMode());
+                cancelHomeFetches();
                 startActivity(i);
             }
 
@@ -592,6 +599,8 @@ public class MainMain extends Fragment{
     }
 
     private void scheduleInactivePrefetch() {
+        if(!getHttpClient().isNtk())
+            return;
         RecyclerView targetRecycler = mainRecycler != null ? mainRecycler : getSelectedRecycler();
         if(targetRecycler == null || wait)
             return;
@@ -717,15 +726,13 @@ public class MainMain extends Fragment{
     public void onStop() {
         super.onStop();
         fragmentActive = false;
+        cancelHomeFetches();
     }
 
     @Override
     public void onDestroyView() {
         super.onDestroyView();
-        if(mainComicAdapter != null)
-            mainComicAdapter.cancelFetch();
-        if(mainWebtoonAdapter != null)
-            mainWebtoonAdapter.cancelFetch();
+        cancelHomeFetches();
         if(localChangeListener != null) {
             p.removeLocalChangeListener(localChangeListener);
             localChangeListener = null;
@@ -738,6 +745,13 @@ public class MainMain extends Fragment{
         homeClickListener = null;
         comicFetchState = HOME_FETCH_IDLE;
         webtoonFetchState = HOME_FETCH_IDLE;
+    }
+
+    public void cancelHomeFetches() {
+        if(mainComicAdapter != null)
+            mainComicAdapter.cancelFetch();
+        if(mainWebtoonAdapter != null)
+            mainWebtoonAdapter.cancelFetch();
     }
 
     @Override

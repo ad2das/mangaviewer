@@ -278,7 +278,7 @@ public class Utils {
             return;
         }
         if(exactEpisode) {
-            if(shouldWaitForNtkExactFirstFrame(launchTitle)) {
+            if(shouldWaitForExactFirstFrame(launchTitle)) {
                 launchExactWhenFirstFrameReady(context, manga, code, returnToEpisodes, online, recent,
                         launchTitle, includeTitleEpisodes, launchToken);
                 return;
@@ -294,10 +294,23 @@ public class Utils {
         launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken, exactEpisode);
     }
 
-    private static boolean shouldWaitForNtkExactFirstFrame(Title title) {
-        if(title != null && "ntk".equals(title.getSourceSite()))
+    private static boolean shouldWaitForExactFirstFrame(Title title) {
+        String source = title == null ? "" : title.getSourceSite();
+        if("wfwf".equals(source))
+            return true;
+        if("ntk".equals(source))
             return ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunch(title);
+        if(p != null && !p.isNtkSite())
+            return true;
         return p != null && p.isNtkSite() && ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunch(title);
+    }
+
+    static boolean shouldWaitForExactFirstFrameForTest(String sourceSite, boolean ntkSite) {
+        if("wfwf".equals(sourceSite))
+            return true;
+        if("ntk".equals(sourceSite))
+            return ntkSite;
+        return true;
     }
 
     private static void launchExactWhenFirstFrameReady(Context context, Manga manga, int code, boolean returnToEpisodes,
@@ -313,8 +326,11 @@ public class Utils {
                 try {
                     int result = ViewerWarmupManager.prepareFirstFrameDirectOnly(appContext, manga, title, 0, width,
                             false, p.getReverse(), MangaRepository.cancellation());
-                    if(result == Title.LOAD_OK)
+                    if(result == Title.LOAD_OK) {
+                        ViewerWarmupManager.waitForFirstDecodedFrame(appContext, manga, 0, width,
+                                false, p.getReverse(), exactFirstFrameWaitMs(title));
                         prepared = ViewerWarmupManager.usePreparedFirstFrame(appContext, manga, title, false, p.getReverse(), 0);
+                    }
                 } catch(Exception e) {
                     ml.melun.mangaview.report.CrashReporter.record(e);
                 }
@@ -324,6 +340,14 @@ public class Utils {
             AppDispatchers.runOnMain(() -> launchPreparedViewer(context, launchManga, code, returnToEpisodes,
                     online, recent, launchTitle, includeTitleEpisodes, launchToken, true));
         });
+    }
+
+    private static long exactFirstFrameWaitMs(Title title) {
+        if(title != null && "wfwf".equals(title.getSourceSite()))
+            return 5_500L;
+        if(p != null && !p.isNtkSite())
+            return 5_500L;
+        return 350L;
     }
 
     private static void launchWhenFirstFrameReady(Context context, Manga manga, int code, boolean returnToEpisodes,

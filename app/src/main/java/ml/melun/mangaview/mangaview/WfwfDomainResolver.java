@@ -49,6 +49,20 @@ public class WfwfDomainResolver {
         return findAliveCandidate(probeClient, candidates(domain), headers, requestGroup, System.currentTimeMillis() + RESOLVE_TIMEOUT_MS);
     }
 
+    public static String resolveReplacement(OkHttpClient client, String currentUrl, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup) {
+        Domain domain = parseDomain(currentUrl);
+        if(domain == null)
+            domain = new Domain("wfwf", DEFAULT_NUMBER, 0);
+
+        OkHttpClient probeClient = client.newBuilder()
+                .connectTimeout(1, TimeUnit.SECONDS)
+                .readTimeout(2, TimeUnit.SECONDS)
+                .callTimeout(2500, TimeUnit.MILLISECONDS)
+                .build();
+
+        return findAliveCandidate(probeClient, candidates(domain), headers, requestGroup, System.currentTimeMillis() + RESOLVE_TIMEOUT_MS);
+    }
+
     public static boolean isWfwfUrl(String url) {
         return getNumber(url) > 0;
     }
@@ -187,13 +201,16 @@ public class WfwfDomainResolver {
             response = call.execute();
             int code = response.code();
             String body = response.body() == null ? "" : response.body().string();
-            if(code < 200 || code >= 500)
+            if(code < 200 || code >= 500) {
+                logProbe(url, code, body.length(), false, null);
                 return ProbeResult.empty();
+            }
             String updatedRoot = extractUpdatedRoot(body);
-            if(updatedRoot != null)
-                return new ProbeResult(false, updatedRoot);
-            return new ProbeResult(looksLikeWfwf(body), null);
+            if(updatedRoot != null && !updatedRoot.equals(rootFromUrl(url)))
+                return logProbe(url, code, body.length(), false, updatedRoot);
+            return logProbe(url, code, body.length(), looksLikeWfwf(body), null);
         } catch (Exception e) {
+            android.util.Log.d("PerfTrace", "wfwf_probe_error url=" + url + ",error=" + e.getClass().getSimpleName());
             return ProbeResult.empty();
         } finally {
             if(requestGroup != null && call != null)
@@ -201,6 +218,24 @@ public class WfwfDomainResolver {
             if(response != null)
                 response.close();
         }
+    }
+
+    private static ProbeResult logProbe(String url, int code, int bodyLen, boolean alive, String updatedRoot) {
+        android.util.Log.d("PerfTrace", "wfwf_probe url=" + url
+                + ",code=" + code
+                + ",len=" + bodyLen
+                + ",alive=" + alive
+                + ",updated=" + (updatedRoot == null ? "" : updatedRoot));
+        return new ProbeResult(alive, updatedRoot);
+    }
+
+    private static String rootFromUrl(String url) {
+        if(url == null)
+            return "";
+        Matcher matcher = NUMBERED_ROOT_PATTERN.matcher(url);
+        if(!matcher.find())
+            return toRoot(url);
+        return "https://" + matcher.group(1).toLowerCase(Locale.ROOT) + matcher.group(2) + ".com";
     }
 
     static String extractUpdatedRootForTest(String body) {
@@ -216,6 +251,12 @@ public class WfwfDomainResolver {
         if(body == null)
             return null;
         String lower = body.toLowerCase(Locale.ROOT);
+        if(lower.contains("main-btn") || lower.contains("window.location.href")) {
+            Matcher directMatcher = NUMBERED_ROOT_PATTERN.matcher(body);
+            if(directMatcher.find())
+                return "https://" + directMatcher.group(1).toLowerCase(Locale.ROOT)
+                        + directMatcher.group(2) + ".com";
+        }
         if(!lower.contains("주소") && !lower.contains("address") && !lower.contains("새로운") && !lower.contains("updated"))
             return null;
         Matcher matcher = NUMBERED_ROOT_PATTERN.matcher(body);

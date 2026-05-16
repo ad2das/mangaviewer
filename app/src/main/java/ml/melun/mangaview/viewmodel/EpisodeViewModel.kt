@@ -7,8 +7,16 @@ import ml.melun.mangaview.repository.MangaRepository
 
 class EpisodeViewModel : BaseStateViewModel<EpisodeLoadResult>() {
     fun loadEpisodes(title: Title) {
+        loadEpisodes(title, true)
+    }
+
+    fun loadEpisodes(title: Title, allowSlowFallback: Boolean) {
         load {
-            val code = MangaRepository.fetchEpisodesForeground(title)
+            val code = if (allowSlowFallback) {
+                MangaRepository.fetchEpisodesForeground(title)
+            } else {
+                MangaRepository.fetchEpisodes(title)
+            }
             EpisodeLoadResult(code, title.eps ?: emptyList<Manga>())
         }
     }

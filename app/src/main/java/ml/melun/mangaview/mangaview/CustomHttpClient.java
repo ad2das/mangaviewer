@@ -66,10 +66,13 @@ public class CustomHttpClient {
     private static final String NTK_HOST = "sbxh1.com";
     private static final String LEGACY_NTK_HOST = "ntk01.com";
     private static final long WFWF_DOMAIN_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L;
-    private static final long WFWF_DOMAIN_FORCE_RETRY_INTERVAL_MS = 60 * 1000L;
+    private static final long WFWF_DOMAIN_FORCE_RETRY_INTERVAL_MS = 5 * 1000L;
     private static final long WFWF_DOMAIN_WAIT_TIMEOUT_MS = 6 * 1000L;
     private static final long NTK_DOMAIN_CHECK_INTERVAL_MS = 15 * 60 * 1000L;
     private static final long NTK_PAGE_DIRECT_TIMEOUT_MS = 3_500L;
+    private static final long WFWF_PAGE_CONNECT_TIMEOUT_MS = 2_500L;
+    private static final long WFWF_PAGE_READ_TIMEOUT_MS = 7_000L;
+    private static final long WFWF_PAGE_CALL_TIMEOUT_MS = 8_000L;
     private static final long NTK_DOH_TIMEOUT_MS = 1_500L;
     private static final long NTK_DNS_CACHE_DEFAULT_TTL_MS = 5 * 60 * 1000L;
     private static final long NTK_DNS_CACHE_MAX_TTL_MS = 30 * 60 * 1000L;
@@ -372,8 +375,6 @@ public class CustomHttpClient {
     }
 
     private static List<InetAddress> selectNetworkResilientAddresses(String hostname, List<InetAddress> addresses) throws UnknownHostException {
-        if(prefersIpv6ForWfwfHost(hostname))
-            return ipv6FirstThenIpv4(hostname, addresses);
         return ipv4OnlyOrThrow(hostname, addresses);
     }
 
@@ -396,14 +397,7 @@ public class CustomHttpClient {
     }
 
     private static boolean prefersIpv6ForWfwfHost(String hostname) {
-        String normalized = normalizeDnsHost(hostname);
-        return normalized.matches("wfwf\\d+\\.com")
-                || normalized.contains("wolf")
-                || normalized.contains("imgcloud")
-                || normalized.matches("w\\d+cloud\\.com")
-                || normalized.contains("vcloud")
-                || normalized.contains("ao9cloud")
-                || normalized.endsWith("v12st.com");
+        return false;
     }
 
     private static boolean isNtkDnsProtectedHost(String hostname) {
@@ -666,6 +660,8 @@ public class CustomHttpClient {
     private OkHttpClient unsafeFallbackClient;
     private OkHttpClient ntkPageFastClient;
     private OkHttpClient unsafeNtkPageFastClient;
+    private OkHttpClient wolfPageFastClient;
+    private OkHttpClient unsafeWolfPageFastClient;
     Map<String, String> cookies;
     Map<String, Long> cookieSyncAt;
     Map<String, CachedPage> pageCache;
@@ -714,6 +710,10 @@ public class CustomHttpClient {
                 .build();
         this.ntkPageFastClient = fastNtkPageClient(new OkHttpClient.Builder()).build();
         this.unsafeNtkPageFastClient = fastNtkPageClient(getUnsafeOkHttpClient())
+                .protocols(ntkTlsFallbackProtocolsForTest())
+                .build();
+        this.wolfPageFastClient = fastWolfPageClient(new OkHttpClient.Builder()).build();
+        this.unsafeWolfPageFastClient = fastWolfPageClient(getUnsafeOkHttpClient())
                 .protocols(ntkTlsFallbackProtocolsForTest())
                 .build();
 
@@ -1186,8 +1186,11 @@ public class CustomHttpClient {
         Response response;
         Call call = null;
         RequestGroup requestGroup = currentRequestGroup.get();
-        OkHttpClient primaryClient = fastNtkPageDirect ? ntkPageFastClient : this.client;
-        OkHttpClient fallbackClient = fastNtkPageDirect ? unsafeNtkPageFastClient : this.unsafeFallbackClient;
+        boolean fastWolfPageDirect = shouldUseFastWolfPageDirectUrl(url);
+        OkHttpClient primaryClient = fastNtkPageDirect ? ntkPageFastClient
+                : fastWolfPageDirect ? wolfPageFastClient : this.client;
+        OkHttpClient fallbackClient = fastNtkPageDirect ? unsafeNtkPageFastClient
+                : fastWolfPageDirect ? unsafeWolfPageFastClient : this.unsafeFallbackClient;
         try {
             Request.Builder builder = new Request.Builder()
                     .url(url)
@@ -1230,7 +1233,24 @@ public class CustomHttpClient {
             return false;
         if(fastNtkPageDirect && isNtkUrl(url) && e instanceof InterruptedIOException)
             return false;
+        if(shouldUseFastWolfPageDirectUrl(url) && e instanceof java.io.IOException)
+            return false;
         return !(e instanceof SSLException && (isNtkUrl(url) || isNtk()));
+    }
+
+    static boolean shouldUseFastWolfPageDirectUrlForTest(String url) {
+        return shouldUseFastWolfPageDirectUrl(url);
+    }
+
+    private static boolean shouldUseFastWolfPageDirectUrl(String url) {
+        if(url == null)
+            return false;
+        String lower = url.toLowerCase(Locale.ROOT);
+        return (lower.contains("://wfwf") || lower.contains("://wolf"))
+                && (lower.contains("/cl?toon=")
+                || lower.contains("/list?toon=")
+                || lower.contains("/cv?toon=")
+                || lower.contains("/view?toon="));
     }
 
     private boolean allowUnsafeFallback(String url) {
@@ -1294,13 +1314,23 @@ public class CustomHttpClient {
     private boolean ensureWfwfDomainForRetry() {
         if(isNtk())
             return ensureNumberedDomain(true);
+        RequestGroup requestGroup = currentRequestGroup.get();
+        if(requestGroup != null && requestGroup.isCancelled()) {
+            android.util.Log.d("PerfTrace", "wfwf_domain_resolve_skipped=canceled");
+            return false;
+        }
         long now = System.currentTimeMillis();
         synchronized (wfwfDomainLock) {
             if(now - wfwfDomainLastForcedRetry < WFWF_DOMAIN_FORCE_RETRY_INTERVAL_MS)
                 return false;
+        }
+        boolean changed = ensureNumberedDomain(true);
+        if(requestGroup != null && requestGroup.isCancelled())
+            return false;
+        synchronized (wfwfDomainLock) {
             wfwfDomainLastForcedRetry = now;
         }
-        return ensureNumberedDomain(true);
+        return changed;
     }
 
     private boolean ensureNumberedDomain(boolean force) {
@@ -1336,7 +1366,10 @@ public class CustomHttpClient {
                 Map<String, String> headers = new HashMap<>();
                 headers.put("User-Agent", agent);
                 headers.put("Referer", root);
-                String resolved = WfwfDomainResolver.resolve(client, root, headers, currentRequestGroup.get());
+                long started = System.currentTimeMillis();
+                String resolved = force
+                        ? WfwfDomainResolver.resolveReplacement(client, root, headers, currentRequestGroup.get())
+                        : WfwfDomainResolver.resolve(client, root, headers, currentRequestGroup.get());
                 if(resolved != null && !resolved.equals(root)) {
                     p.setWebtoonUrl(resolved);
                     String comicPath = isNtkUrl(resolved) ? "/manhwa" : "/cm";
@@ -1346,6 +1379,11 @@ public class CustomHttpClient {
                     clearPageCache();
                     changed = true;
                 }
+                android.util.Log.d("PerfTrace", "wfwf_domain_resolve_ms=" + (System.currentTimeMillis() - started)
+                        + ",force=" + force
+                        + ",root=" + root
+                        + ",resolved=" + (resolved == null ? "" : resolved)
+                        + ",changed=" + changed);
                 return changed;
             } finally {
                 synchronized (wfwfDomainLock) {
@@ -1491,8 +1529,9 @@ public class CustomHttpClient {
     }
 
     public PageResponse mgetCachedPage(String url, long ttlMillis) throws Exception {
-        ensureNumberedDomain(false);
         String normalized = normalizePath(url);
+        if(isNtk() || !isWolfEpisodeDocumentPath(normalized))
+            ensureNumberedDomain(false);
         String cacheKey = getBaseUrl(normalized) + normalized;
         long now = System.currentTimeMillis();
         FetchMode fetchMode = effectiveFetchMode(FetchMode.ALLOW_SHARED_WEBVIEW);
@@ -1559,8 +1598,9 @@ public class CustomHttpClient {
 
     public boolean warmupCachedPageDirect(String url, long ttlMillis) {
         try {
-            ensureNumberedDomain(false);
             String normalized = normalizePath(url);
+            if(isNtk() || !isWolfEpisodeDocumentPath(normalized))
+                ensureNumberedDomain(false);
             String cacheKey = getBaseUrl(normalized) + normalized;
             long now = System.currentTimeMillis();
             if(isNtk())
@@ -1591,17 +1631,22 @@ public class CustomHttpClient {
 
     private PageResponse loadPageFromNetworkWithDomainRetry(String normalized, long now, CachedPage staleCached) throws Exception {
         Exception lastError = null;
-        boolean wolfWebViewCandidate = allowsWolfWebViewFallback() && isWolfEpisodeDocumentPath(normalized);
-        int attempts = wolfWebViewCandidate ? 1 : 3;
+        boolean wolfDocument = !isNtk() && isWolfEpisodeDocumentPath(normalized);
+        int attempts = wolfDocument ? 2 : 3;
         for(int attempt = 0; attempt < attempts; attempt++) {
             try {
                 return loadPageFromNetwork(normalized, now, staleCached);
             } catch (Exception error) {
                 lastError = error;
+                if(isInterruptedRequest(error))
+                    throw error;
                 if(isNtk())
                     throw error;
-                if(attempt == 0 && !wolfWebViewCandidate)
-                    ensureWfwfDomainForRetry();
+                if(attempt == 0) {
+                    boolean changed = ensureWfwfDomainForRetry();
+                    if(wolfDocument && !changed)
+                        break;
+                }
                 client.connectionPool().evictAll();
                 unsafeFallbackClient.connectionPool().evictAll();
                 sleepBeforeWfwfRetry(attempt);
@@ -1619,11 +1664,15 @@ public class CustomHttpClient {
     }
 
     private PageResponse loadPageFromNetwork(String normalized, long now, CachedPage staleCached) throws Exception {
+        boolean wolfDocument = !isNtk() && isWolfEpisodeDocumentPath(normalized);
+        long startedAt = System.currentTimeMillis();
         Response response = mget(normalized, true, null);
         if(response == null)
             throw new Exception("Request failed: " + normalized);
         int code = response.code();
         String body = readBody(response);
+        if(wolfDocument)
+            ViewerWarmupManager.logMetric("wfwf_page_network_ms", System.currentTimeMillis() - startedAt);
         if(isCloudflareChallenge(code, body)) {
             lastCloudflareChallengeUrl = getBaseUrl(normalized) + normalized;
             lastCloudflareChallengeAt = System.currentTimeMillis();
@@ -1634,6 +1683,11 @@ public class CustomHttpClient {
             clearLastCloudflareChallenge();
         if(code >= 500 && staleCached != null)
             return new PageResponse(staleCached.code, staleCached.body, true);
+        if(shouldRejectWfwfPageBody(normalized, code, body)) {
+            if(staleCached != null)
+                return new PageResponse(staleCached.code, staleCached.body, true);
+            throw new Exception("Unusable WFWF page: " + normalized);
+        }
         if(code >= 200 && code < 400 && body.length() > 0 && looksCacheable(body)) {
             String cacheKey = getBaseUrl(normalized) + normalized;
             CachedPage cachedPage = new CachedPage(code, body, now);
@@ -1643,6 +1697,18 @@ public class CustomHttpClient {
             writeDiskCachedPage(cacheKey, cachedPage);
         }
         return new PageResponse(code, body, false);
+    }
+
+    static boolean shouldRejectWfwfPageBodyForTest(String path, int code, String body) {
+        return shouldRejectWfwfPageBody(path, code, body);
+    }
+
+    private static boolean shouldRejectWfwfPageBody(String path, int code, String body) {
+        if(path == null || code < 200 || code >= 400 || body == null || body.length() == 0)
+            return false;
+        if(!isWfwfDocumentPath(path))
+            return false;
+        return !looksCacheable(body);
     }
 
     private PageResponse waitForCachedPage(String normalized, String cacheKey, PageLoadState loadState, long ttlMillis, CachedPage staleCached) throws Exception {
@@ -1912,8 +1978,7 @@ public class CustomHttpClient {
                 response.close();
             response = getWithNtkWebViewFallback(baseUrl, url, headers);
         }
-        boolean deferWolfResolveForMissingDocument = shouldDeferWfwfDomainResolveForMissingDocument(ntkBaseUrl, response == null, url);
-        if(shouldRetryWithResolvedDomain(response) && !deferWolfResolveForMissingDocument) {
+        if(shouldRetryWithResolvedDomain(response)) {
             if(response != null)
                 response.close();
             ensureWfwfDomainForRetry();
@@ -1931,7 +1996,6 @@ public class CustomHttpClient {
             }
         }
         if(shouldUseWolfWebViewFallback(ntkBaseUrl, response == null, url, fetchMode, wolfWebViewFallbackAllowed)
-                && !deferWolfResolveForMissingDocument
                 && ensureNumberedDomain(true)) {
             baseUrl = getBaseUrl(url);
             ntkBaseUrl = isNtkUrl(baseUrl);
@@ -2094,14 +2158,6 @@ public class CustomHttpClient {
                 && isWolfEpisodeDocumentPath(path);
     }
 
-    static boolean shouldDeferWfwfDomainResolveForMissingDocumentForTest(boolean ntkUrl, boolean missingResponse, String path) {
-        return shouldDeferWfwfDomainResolveForMissingDocument(ntkUrl, missingResponse, path);
-    }
-
-    private static boolean shouldDeferWfwfDomainResolveForMissingDocument(boolean ntkUrl, boolean missingResponse, String path) {
-        return !ntkUrl && missingResponse && isWolfEpisodeDocumentPath(path);
-    }
-
     static boolean isWolfEpisodeDocumentPathForTest(String path) {
         return isWolfEpisodeDocumentPath(path);
     }
@@ -2219,7 +2275,7 @@ public class CustomHttpClient {
         return url.startsWith("/") ? url : "/" + url;
     }
 
-    private boolean looksCacheable(String body) {
+    private static boolean looksCacheable(String body) {
         if(!isCacheablePageBody(body))
             return false;
         String lower = body.toLowerCase(Locale.ROOT);
@@ -2232,6 +2288,18 @@ public class CustomHttpClient {
                 || lower.contains("webtoon-body")
                 || lower.contains("miso-post-gallery")
                 || lower.contains("post-row");
+    }
+
+    private static boolean isWfwfDocumentPath(String path) {
+        if(path == null)
+            return false;
+        return isWolfEpisodeDocumentPath(path)
+                || path.startsWith("/cm")
+                || path.startsWith("/ing")
+                || path.startsWith("/end")
+                || path.startsWith("/webtoon")
+                || path.startsWith("/comic")
+                || path.startsWith("/search.html");
     }
 
     static boolean isCacheablePageBodyForTest(String body) {
@@ -2545,6 +2613,13 @@ public class CustomHttpClient {
                 .connectTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 .readTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 .callTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
+
+    private static OkHttpClient.Builder fastWolfPageClient(OkHttpClient.Builder builder) {
+        return baseClient(builder)
+                .connectTimeout(WFWF_PAGE_CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                .readTimeout(WFWF_PAGE_READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                .callTimeout(WFWF_PAGE_CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     }
 
     static List<Protocol> ntkTlsFallbackProtocolsForTest() {

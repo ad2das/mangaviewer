@@ -43,7 +43,7 @@ public class Title extends MTitle {
     }
 
     public String getUrl(){
-        if(p != null && p.isNtkSite())
+        if(shouldUseNtkUrl())
             return "/" + ntkSegment() + "/" + id;
         if(isComicWolfSource())
             return "/cl?toon=" + id;
@@ -689,13 +689,27 @@ public class Title extends MTitle {
     }
 
     private boolean shouldFetchNtkEpisodes(CustomHttpClient client) {
-        if(client != null && client.isNtk())
+        if(isWolfSource())
+            return false;
+        if(isNtkSource())
             return true;
-        return isNtkSource() && p != null && p.isNtkSite();
+        return client != null && client.isNtk();
     }
 
     private boolean isNtkSource() {
         return "ntk".equalsIgnoreCase(getSourceSite());
+    }
+
+    private boolean isWolfSource() {
+        return "wfwf".equalsIgnoreCase(getSourceSite());
+    }
+
+    private boolean shouldUseNtkUrl() {
+        if(isWolfSource())
+            return false;
+        if(isNtkSource())
+            return true;
+        return p != null && p.isNtkSite();
     }
 
 }
