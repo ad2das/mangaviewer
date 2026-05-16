@@ -44,12 +44,14 @@ public class Search {
     private static final int NTK_KEYWORD_PAGE_SIZE = 30;
     private static final long NTK_RESULT_CACHE_TTL_MS = 10 * 60 * 1000L;
     private static final int NTK_RESULT_CACHE_MAX_ENTRIES = 80;
+    private static final int NTK_KEYWORD_API_CACHE_MAX_ENTRIES = 80;
     private static final Pattern WFWF_FAST_LINK_PATTERN = Pattern.compile("(?is)<a\\b[^>]*href\\s*=\\s*(['\"])(.*?)\\1[^>]*>(.*?)</a>");
     private static final Pattern WFWF_FAST_HEADING_PATTERN = Pattern.compile("(?is)<h[1-6]\\b[^>]*>(.*?)</h[1-6]>");
     private static final Pattern WFWF_FAST_IMG_PATTERN = Pattern.compile("(?is)<img\\b([^>]*)>");
     private static final Pattern WFWF_FAST_STYLE_PATTERN = Pattern.compile("(?is)style\\s*=\\s*(['\"])(.*?)\\1");
     private static final Pattern WFWF_FAST_TAG_PATTERN = Pattern.compile("(?is)<[^>]+>");
     private static final Map<String, CachedPageTitles> NTK_RESULT_CACHE = new HashMap<>();
+    private static final Map<String, CachedNtkApiPathResult> NTK_KEYWORD_API_RESULT_CACHE = new HashMap<>();
 
     int baseMode;
     private final String query;
@@ -248,7 +250,7 @@ public class Search {
                 PageTitles apiResults = fetchNtkKeywordApiResults(client, base_auto, 120, 1);
                 appendUnique(combined, apiResults.titles);
                 if(shouldFallbackToNtkHtmlKeywordSearch(combined.size(), apiResults.hasMoreKnown))
-                    appendUnique(combined, fetchNtkHtmlSearchResultsPage(client, ntkSearchPath(query, base_auto, 1), base_auto, 0, 1).titles);
+                    appendUnique(combined, fetchNtkSearchResults(client, ntkSearchPath(query, base_auto, 1), base_auto, 0, 1).titles);
             } else {
                 appendUnique(combined, fetchWfwfCombinedKeywordSearchResults(client).titles);
             }
@@ -915,8 +917,22 @@ public class Search {
         }
     }
 
+    private static class CachedNtkApiPathResult {
+        final NtkApiPathResult result;
+        final long loadedAt;
+
+        CachedNtkApiPathResult(NtkApiPathResult result, long loadedAt) {
+            this.result = result;
+            this.loadedAt = loadedAt;
+        }
+    }
+
     private interface PageTitleLoader {
         PageTitles load() throws Exception;
+    }
+
+    private interface NtkApiPathLoader {
+        NtkApiPathResult load();
     }
 
     private PageTitles cachedNtkPageTitles(CustomHttpClient client, String kind, String path, int targetBaseMode,
@@ -1623,6 +1639,12 @@ public class Search {
 
     private NtkApiPathResult fetchNtkKeywordApiPathResult(CustomHttpClient client, String path, int targetBaseMode,
                                                           int limit, int currentPage, long totalStartedAt) {
+        return cachedNtkKeywordApiPathResult(client, path, targetBaseMode, limit, currentPage,
+                () -> fetchNtkKeywordApiPathResultUncached(client, path, targetBaseMode, limit, currentPage, totalStartedAt));
+    }
+
+    private NtkApiPathResult fetchNtkKeywordApiPathResultUncached(CustomHttpClient client, String path, int targetBaseMode,
+                                                                  int limit, int currentPage, long totalStartedAt) {
         try {
             long fetchStartedAt = PerfTrace.start("ntk_search_api_fetch_ms");
             CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
@@ -1651,6 +1673,42 @@ public class Search {
             ml.melun.mangaview.report.CrashReporter.record(e);
             return new NtkApiPathResult(path, new PageTitles(new ArrayList<>(), null), false, 0);
         }
+    }
+
+    private NtkApiPathResult cachedNtkKeywordApiPathResult(CustomHttpClient client, String path, int targetBaseMode,
+                                                           int limit, int currentPage, NtkApiPathLoader loader) {
+        if(client == null || !client.isNtk())
+            return loader.load();
+        String key = targetBaseMode + ":" + limit + ":" + currentPage + ":" + path;
+        long now = System.currentTimeMillis();
+        synchronized (NTK_KEYWORD_API_RESULT_CACHE) {
+            CachedNtkApiPathResult cached = NTK_KEYWORD_API_RESULT_CACHE.get(key);
+            if(cached != null && isNtkResultCacheFresh(cached.loadedAt, now, NTK_RESULT_CACHE_TTL_MS)) {
+                long cacheStartedAt = PerfTrace.start("ntk_search_api_cache_ms");
+                traceSearchMetric("ntk_search_api_cache_ms", cacheStartedAt,
+                        ",path=" + ntkMetricPath(path)
+                                + ",parsedCandidates=" + cached.result.parsedCount
+                                + ",count=" + cached.result.pageTitles.titles.size()
+                                + ",total=" + cached.result.pageTitles.totalCount);
+                return copyNtkApiPathResult(cached.result);
+            }
+        }
+        NtkApiPathResult loaded = loader.load();
+        if(loaded != null && loaded.success) {
+            synchronized (NTK_KEYWORD_API_RESULT_CACHE) {
+                if(NTK_KEYWORD_API_RESULT_CACHE.size() >= NTK_KEYWORD_API_CACHE_MAX_ENTRIES)
+                    NTK_KEYWORD_API_RESULT_CACHE.clear();
+                NTK_KEYWORD_API_RESULT_CACHE.put(key,
+                        new CachedNtkApiPathResult(copyNtkApiPathResult(loaded), System.currentTimeMillis()));
+            }
+        }
+        return loaded;
+    }
+
+    private static NtkApiPathResult copyNtkApiPathResult(NtkApiPathResult source) {
+        if(source == null)
+            return null;
+        return new NtkApiPathResult(source.path, copyPageTitles(source.pageTitles), source.success, source.parsedCount);
     }
 
     private static class NtkApiPathResult {
