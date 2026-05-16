@@ -665,15 +665,13 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private boolean scheduleImageRetry(ImgViewHolder holder, PageItem item, String pageKey, int bindGeneration) {
-        if(released || pageKey == null || pageKey.length() == 0)
-            return false;
         int attempts = failedImageRetries.containsKey(pageKey) ? failedImageRetries.get(pageKey) : 0;
-        if(attempts >= IMAGE_LOAD_RETRY_LIMIT)
+        if(!shouldRetryImageLoad(released, pageKey, attempts))
             return false;
         int nextAttempt = attempts + 1;
         failedImageRetries.put(pageKey, nextAttempt);
         ViewerWarmupManager.logMetric("viewer_image_retry", nextAttempt);
-        long delayMs = nextAttempt == 1 ? 350L : 900L;
+        long delayMs = imageRetryDelayMs(nextAttempt);
         mainHandler.postDelayed(() -> {
             if(released || !isHolderStillBound(holder, item, pageKey) || holder.bindGeneration != bindGeneration)
                 return;
@@ -682,6 +680,17 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 notifyItemChanged(position);
         }, delayMs);
         return true;
+    }
+
+    private static boolean shouldRetryImageLoad(boolean released, String pageKey, int attempts) {
+        return !released
+                && pageKey != null
+                && pageKey.length() > 0
+                && attempts < IMAGE_LOAD_RETRY_LIMIT;
+    }
+
+    private static long imageRetryDelayMs(int nextAttempt) {
+        return nextAttempt <= 1 ? 350L : 900L;
     }
 
     private void bindBitmap(ImgViewHolder holder, String pageKey, Bitmap bitmap) {
@@ -698,6 +707,14 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     static boolean shouldCacheDisplayedBitmapForTest(String cacheKey, boolean holderActive, boolean bitmapUsable) {
         return holderActive && shouldCacheDisplayedBitmap(cacheKey, bitmapUsable);
+    }
+
+    static boolean shouldRetryImageLoadForTest(boolean released, String pageKey, int attempts) {
+        return shouldRetryImageLoad(released, pageKey, attempts);
+    }
+
+    static long imageRetryDelayMsForTest(int nextAttempt) {
+        return imageRetryDelayMs(nextAttempt);
     }
 
     private static boolean shouldCacheDisplayedBitmap(String cacheKey, boolean bitmapUsable) {

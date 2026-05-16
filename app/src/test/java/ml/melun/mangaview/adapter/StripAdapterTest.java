@@ -44,4 +44,15 @@ public class StripAdapterTest {
         assertFalse(StripAdapter.shouldCacheDisplayedBitmapForTest("page", true, false));
         assertTrue(StripAdapter.shouldCacheDisplayedBitmapForTest("page", true, true));
     }
+
+    @Test
+    public void transientImageFailuresRetryTwiceOnlyForActivePages() {
+        assertTrue(StripAdapter.shouldRetryImageLoadForTest(false, "page", 0));
+        assertTrue(StripAdapter.shouldRetryImageLoadForTest(false, "page", 1));
+        assertFalse(StripAdapter.shouldRetryImageLoadForTest(false, "page", 2));
+        assertFalse(StripAdapter.shouldRetryImageLoadForTest(true, "page", 0));
+        assertFalse(StripAdapter.shouldRetryImageLoadForTest(false, "", 0));
+        assertEquals(350L, StripAdapter.imageRetryDelayMsForTest(1));
+        assertEquals(900L, StripAdapter.imageRetryDelayMsForTest(2));
+    }
 }
