@@ -151,6 +151,7 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void openSearchTab() {
+        ensureMainFragment(1);
         changeFragment(1);
         ((MainSearch) fragments[1]).enterSearchMode();
     }
@@ -178,8 +179,6 @@ public class MainActivity extends AppCompatActivity
         if(savedInstanceState == null)
             forceWfwfOnStartup();
         fragments[0] = MainMain.newInstance();
-        fragments[1] = MainSearch.newSearchTab();
-        fragments[2] = MainSearch.newLibraryTab();
         dark = p.getDarkTheme();
         if (dark) setTheme(R.style.AppThemeDarkNoTitle);
         else setTheme(R.style.AppTheme_NoActionBar);
@@ -705,11 +704,26 @@ public class MainActivity extends AppCompatActivity
         }
     }
 
+    private Fragment ensureMainFragment(int index) {
+        if(index < 0 || index >= fragments.length)
+            return null;
+        if(fragments[index] != null)
+            return fragments[index];
+        if(index == 0)
+            fragments[index] = MainMain.newInstance();
+        else if(index == 1)
+            fragments[index] = MainSearch.newSearchTab();
+        else if(index == 2)
+            fragments[index] = MainSearch.newLibraryTab();
+        return fragments[index];
+    }
+
     private String fragmentTag(int index) {
         return FRAGMENT_TAG_PREFIX + index;
     }
 
     private void showFragment(int index) {
+        ensureMainFragment(index);
         FragmentTransaction transaction = getSupportFragmentManager().beginTransaction();
         for(int i = 0; i < fragments.length; i++) {
             Fragment fragment = fragments[i];
@@ -879,6 +893,7 @@ public class MainActivity extends AppCompatActivity
     boolean changeFragment(int index){
         if(index < 0)
             return false;
+        ensureMainFragment(index);
         boolean res = false;
         if(index>-1 && index != currentTab){
             if(index == 1 && fragments[1] instanceof MainSearch)
