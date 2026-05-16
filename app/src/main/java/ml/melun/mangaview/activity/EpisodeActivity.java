@@ -441,7 +441,8 @@ public class EpisodeActivity extends AppCompatActivity {
         LinearLayoutManager layoutManager = (LinearLayoutManager) manager;
         int first = layoutManager.findFirstVisibleItemPosition();
         int last = layoutManager.findLastVisibleItemPosition();
-        int limit = visibleEpisodeWarmupLimitForTest(p.getDataSave(), PrefetchCoordinator.aggressiveAllowed(context));
+        int limit = visibleEpisodeWarmupLimitForTest(p.getDataSave(), PrefetchCoordinator.aggressiveAllowed(context),
+                p.isNtkSite() || getHttpClient().isNtk());
         List<Integer> targets = PrefetchCoordinator.visibleEpisodeTargets(episodes, first, last,
                 VISIBLE_EPISODE_WARMUP_AHEAD, limit);
         if(targets.size() == 0)
@@ -462,6 +463,12 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     static int visibleEpisodeWarmupLimitForTest(boolean dataSave, boolean aggressiveAllowed) {
+        return visibleEpisodeWarmupLimitForTest(dataSave, aggressiveAllowed, false);
+    }
+
+    static int visibleEpisodeWarmupLimitForTest(boolean dataSave, boolean aggressiveAllowed, boolean ntkSite) {
+        if(ntkSite)
+            return 1;
         if(dataSave)
             return 1;
         return aggressiveAllowed ? 3 : 1;
@@ -637,14 +644,24 @@ public class EpisodeActivity extends AppCompatActivity {
             showErrorPopup(context, "정보를 불러오는데 실패하였습니다.", null, false);
             return;
         }
-        episodes = result.getEpisodes();
-        if(episodes == null || episodes.size()==0){
+        List<Manga> loadedEpisodes = result.getEpisodes();
+        if(loadedEpisodes == null || loadedEpisodes.size()==0){
             if(this.episodes == null || this.episodes.size() == 0) {
                 ntkLoadTimeoutHandled = true;
                 showCaptchaPopup(title.getUrl(), context, p);
             }
             return;
         }
+        if(sameEpisodeIdentityList(episodes, loadedEpisodes) && hasRenderedEpisodes()) {
+            ntkLoadTimeoutHandled = true;
+            attachLoadedEpisodesToTitle(episodes);
+            saveEpisodeCache(loadedEpisodes);
+            hideProgress();
+            loaded = true;
+            invalidateOptionsMenu();
+            return;
+        }
+        episodes = loadedEpisodes;
         ntkLoadTimeoutHandled = true;
         attachLoadedEpisodesToTitle(episodes);
         saveEpisodeCache(episodes);
@@ -763,6 +780,28 @@ public class EpisodeActivity extends AppCompatActivity {
             return;
         firstContentLogged = true;
         PerfTrace.end("episode_first_content_ms", firstContentStartedAt);
+    }
+
+    static boolean sameEpisodeIdentityList(List<Manga> current, List<Manga> fresh) {
+        if(current == null || fresh == null || current.size() != fresh.size())
+            return false;
+        for(int i = 0; i < current.size(); i++) {
+            Manga left = current.get(i);
+            Manga right = fresh.get(i);
+            if(left == null || right == null) {
+                if(left != right)
+                    return false;
+                continue;
+            }
+            if(left.getId() != right.getId() || left.getBaseMode() != right.getBaseMode())
+                return false;
+            String leftPath = left.getNtkEpisodePath();
+            String rightPath = right.getNtkEpisodePath();
+            if(leftPath != null && leftPath.length() > 0 && rightPath != null && rightPath.length() > 0
+                    && !leftPath.equals(rightPath))
+                return false;
+        }
+        return true;
     }
 
     private static class CachedEpisodes {

@@ -36,7 +36,8 @@ public final class PrefetchCoordinator {
         if(shouldSkipWolfBackgroundPrefetchForTest(title == null ? null : title.getSourceSite(), p != null && p.isNtkSite(), getHttpClient().isNtk()))
             return;
         Context appContext = context.getApplicationContext();
-        int limit = episodePrefetchLimitForTest(p.getDataSave(), aggressiveAllowed(appContext));
+        int limit = episodePrefetchLimitForTest(p.getDataSave(), aggressiveAllowed(appContext),
+                isNtkPrefetchContext(title == null ? null : title.getSourceSite()));
         List<Integer> targets = viewerTargets(episodes, bookmarkIndex, limit);
         int resumeIndex = bookmarkIndex > 0 && bookmarkIndex <= episodes.size() ? bookmarkIndex - 1 : -1;
         warmTargets(appContext, title, episodes, targets, mode, resumeIndex);
@@ -49,10 +50,15 @@ public final class PrefetchCoordinator {
             return;
         if(shouldSkipWolfBackgroundPrefetchForTest(title == null ? null : title.getSourceSite(), p != null && p.isNtkSite(), getHttpClient().isNtk()))
             return;
-        warmTargets(context.getApplicationContext(), title, episodes, indexes, mode, -1);
+        warmTargets(context.getApplicationContext(), title, episodes, indexes, mode, -1, true);
     }
 
     private static void warmTargets(Context appContext, Title title, List<Manga> episodes, List<Integer> targets, int mode, int resumeIndex) {
+        warmTargets(appContext, title, episodes, targets, mode, resumeIndex, false);
+    }
+
+    private static void warmTargets(Context appContext, Title title, List<Manga> episodes, List<Integer> targets, int mode,
+                                    int resumeIndex, boolean lightOnly) {
         if(appContext == null || title == null || episodes == null || targets == null)
             return;
         for(Integer index : targets) {
@@ -66,6 +72,8 @@ public final class PrefetchCoordinator {
             manga.setTitleId(title.getId());
             if(index == resumeIndex)
                 ViewerWarmupManager.warmup(appContext, manga, title);
+            else if(lightOnly)
+                ViewerWarmupManager.warmupLight(appContext, manga, title, 0);
             else
                 ViewerWarmupManager.warmup(appContext, manga, title, 0);
         }
@@ -128,6 +136,12 @@ public final class PrefetchCoordinator {
     }
 
     static int episodePrefetchLimitForTest(boolean dataSave, boolean aggressiveAllowed) {
+        return episodePrefetchLimitForTest(dataSave, aggressiveAllowed, false);
+    }
+
+    static int episodePrefetchLimitForTest(boolean dataSave, boolean aggressiveAllowed, boolean ntkSite) {
+        if(ntkSite)
+            return dataSave ? 1 : 2;
         if(dataSave)
             return 2;
         return aggressiveAllowed ? 4 : 3;
@@ -169,6 +183,14 @@ public final class PrefetchCoordinator {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    private static boolean isNtkPrefetchContext(String sourceSite) {
+        if(p != null && p.isNtkSite())
+            return true;
+        if(getHttpClient() != null && getHttpClient().isNtk())
+            return true;
+        return sourceSite != null && "ntk".equals(sourceSite.trim().toLowerCase(java.util.Locale.ROOT));
     }
 
     public static boolean shouldSkipNtkPrefetchForTest(String sourceSite, boolean ntkPreference, boolean ntkClient) {

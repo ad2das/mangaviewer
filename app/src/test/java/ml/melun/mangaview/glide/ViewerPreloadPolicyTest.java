@@ -30,6 +30,28 @@ public class ViewerPreloadPolicyTest {
     }
 
     @Test
+    public void episodeListWarmupWindowAvoidsBackgroundDecodeSlots() {
+        ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.episodeListWarmupWindow(false);
+
+        assertEquals(0, window.decodedLimit);
+        assertEquals(1, window.immediateLimit);
+        assertEquals(3, window.highLimit);
+        assertEquals(3, window.totalLimit);
+        assertEquals(ViewerPreloadPolicy.TIER_IMMEDIATE, ViewerPreloadPolicy.tierForOffset(window, 0));
+        assertEquals(ViewerPreloadPolicy.TIER_HIGH, ViewerPreloadPolicy.tierForOffset(window, 1));
+    }
+
+    @Test
+    public void episodeListWarmupWindowKeepsDataSaverTiny() {
+        ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.episodeListWarmupWindow(true);
+
+        assertEquals(0, window.decodedLimit);
+        assertEquals(1, window.immediateLimit);
+        assertEquals(2, window.highLimit);
+        assertEquals(2, window.totalLimit);
+    }
+
+    @Test
     public void scrollAheadWindow_decodesNearPagesOnly() {
         ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.scrollAheadWindow(false);
 

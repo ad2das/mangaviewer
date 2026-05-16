@@ -81,8 +81,19 @@ public class ViewerWarmupManager {
     }
 
     public static void warmup(Context context, Manga manga, Title title, int pageIndex) {
+        warmup(context, manga, title, pageIndex, ViewerPreloadPolicy.firstFrameWindow(p.getDataSave()));
+    }
+
+    public static void warmupLight(Context context, Manga manga, Title title, int pageIndex) {
+        warmup(context, manga, title, pageIndex, ViewerPreloadPolicy.episodeListWarmupWindow(p.getDataSave()));
+    }
+
+    private static void warmup(Context context, Manga manga, Title title, int pageIndex, ViewerPreloadPolicy.Window window) {
         if(context == null || manga == null || !manga.isOnline())
             return;
+        final ViewerPreloadPolicy.Window warmupWindow = window == null
+                ? ViewerPreloadPolicy.firstFrameWindow(p.getDataSave())
+                : window;
         if(title != null) {
             manga.setTitle(title);
             manga.setTitleId(title.getId());
@@ -111,7 +122,7 @@ public class ViewerWarmupManager {
                     if(fetchResult == LOAD_OK)
                         cacheSnapshot(appContext, key, manga);
                     if(fetchResult == LOAD_OK && hasImages(manga, appContext))
-                        preloadWindow(appContext, manga, startPage, width, false, p.getReverse(), ViewerPreloadPolicy.firstFrameWindow(p.getDataSave()));
+                        preloadWindow(appContext, manga, startPage, width, false, p.getReverse(), warmupWindow);
                     return fetchResult;
                 });
             } catch (Exception e) {

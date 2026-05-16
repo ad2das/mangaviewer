@@ -43,5 +43,24 @@ public class EpisodeActivityTest {
         assertEquals(1, EpisodeActivity.visibleEpisodeWarmupLimitForTest(true, false));
         assertEquals(1, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, false));
         assertEquals(3, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, true));
+        assertEquals(1, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, true, true));
+    }
+
+    @Test
+    public void sameEpisodeIdentityListAllowsSkippingDuplicateRefreshRender() {
+        List<Manga> cached = new ArrayList<>();
+        Manga cachedFirst = new Manga(1, "1", "", base_webtoon);
+        cachedFirst.setNtkEpisodePath("/manhwa/10/1");
+        cached.add(cachedFirst);
+
+        List<Manga> fresh = new ArrayList<>();
+        Manga freshFirst = new Manga(1, "updated", "", base_webtoon);
+        freshFirst.setNtkEpisodePath("/manhwa/10/1");
+        fresh.add(freshFirst);
+
+        assertTrue(EpisodeActivity.sameEpisodeIdentityList(cached, fresh));
+
+        freshFirst.setNtkEpisodePath("/manhwa/10/2");
+        assertFalse(EpisodeActivity.sameEpisodeIdentityList(cached, fresh));
     }
 }
