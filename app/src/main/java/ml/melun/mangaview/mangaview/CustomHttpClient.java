@@ -1753,7 +1753,7 @@ public class CustomHttpClient {
                 return false;
             int code = response.code();
             String body = readBody(response);
-            if(code >= 200 && code < 400 && body.length() > 0 && looksCacheable(body)) {
+            if(code >= 200 && code < 400 && body.length() > 0 && shouldStoreNetworkPageBody(normalized, body)) {
                 synchronized (pageCacheLock) {
                     pageCache.put(cacheKey, new CachedPage(code, body, now));
                 }
@@ -1824,7 +1824,7 @@ public class CustomHttpClient {
                 return new PageResponse(staleCached.code, staleCached.body, true);
             throw new Exception("Unusable WFWF page: " + normalized);
         }
-        if(code >= 200 && code < 400 && body.length() > 0 && looksCacheable(body)) {
+        if(code >= 200 && code < 400 && body.length() > 0 && shouldStoreNetworkPageBody(normalized, body)) {
             String cacheKey = getBaseUrl(normalized) + normalized;
             CachedPage cachedPage = new CachedPage(code, body, now);
             synchronized (pageCacheLock) {
@@ -1847,6 +1847,16 @@ public class CustomHttpClient {
         if(isWfwfSearchPath(path))
             return !isCacheablePageBody(body);
         return !looksCacheable(body);
+    }
+
+    static boolean shouldStoreNetworkPageBodyForTest(String path, String body) {
+        return shouldStoreNetworkPageBody(path, body);
+    }
+
+    private static boolean shouldStoreNetworkPageBody(String path, String body) {
+        if(path != null && isWfwfSearchPath(path))
+            return isCacheablePageBody(body);
+        return looksCacheable(body);
     }
 
     private PageResponse waitForCachedPage(String normalized, String cacheKey, PageLoadState loadState, long ttlMillis, CachedPage staleCached) throws Exception {

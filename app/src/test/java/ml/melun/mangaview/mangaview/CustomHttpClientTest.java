@@ -264,6 +264,8 @@ public class CustomHttpClientTest {
 
         assertFalse(CustomHttpClient.shouldRejectWfwfPageBodyForTest("/search.html?q=missing", 200, emptySearch));
         assertTrue(CustomHttpClient.shouldRejectWfwfPageBodyForTest("/search.html?q=missing", 200, errorPage));
+        assertTrue(CustomHttpClient.shouldStoreNetworkPageBodyForTest("/search.html?q=missing", emptySearch));
+        assertFalse(CustomHttpClient.shouldStoreNetworkPageBodyForTest("/search.html?q=missing", errorPage));
     }
 
     @Test
