@@ -479,7 +479,7 @@ public class EpisodeActivity extends AppCompatActivity {
             return 1;
         if(ntkSite)
             return 1;
-        return aggressiveAllowed ? 4 : 3;
+        return aggressiveAllowed ? 2 : 1;
     }
 
     static long visibleEpisodeWarmupIdleDelayMsForTest() {

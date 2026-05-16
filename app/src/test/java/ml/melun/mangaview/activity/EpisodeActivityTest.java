@@ -41,8 +41,8 @@ public class EpisodeActivityTest {
     @Test
     public void visibleEpisodeWarmupLimitWarmsTapTargetsWhenDataSaverIsOff() {
         assertEquals(1, EpisodeActivity.visibleEpisodeWarmupLimitForTest(true, false));
-        assertEquals(3, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, false));
-        assertEquals(4, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, true));
+        assertEquals(1, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, false));
+        assertEquals(2, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, true));
         assertEquals(1, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, true, true));
     }
 
