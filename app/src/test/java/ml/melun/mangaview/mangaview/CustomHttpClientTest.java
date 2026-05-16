@@ -41,6 +41,20 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void wolfDocumentDomainResolveRunsOnlyBeforeNetworkMiss() {
+        assertTrue(CustomHttpClient.shouldResolveWolfDocumentBeforeNetworkForTest(true, false,
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertTrue(CustomHttpClient.shouldResolveWolfDocumentBeforeNetworkForTest(true, false,
+                CustomHttpClient.FetchMode.DIRECT_ONLY));
+        assertFalse(CustomHttpClient.shouldResolveWolfDocumentBeforeNetworkForTest(true, true,
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertFalse(CustomHttpClient.shouldResolveWolfDocumentBeforeNetworkForTest(true, false,
+                CustomHttpClient.FetchMode.CACHE_ONLY));
+        assertFalse(CustomHttpClient.shouldResolveWolfDocumentBeforeNetworkForTest(false, false,
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+    }
+
+    @Test
     public void ntkWebViewFallbackOnlyHandlesPageMisses() {
         assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/api/manhwa-list"));
         assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1"));

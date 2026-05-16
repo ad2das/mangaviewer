@@ -1660,7 +1660,8 @@ public class CustomHttpClient {
 
     public PageResponse mgetCachedPage(String url, long ttlMillis) throws Exception {
         String normalized = normalizePath(url);
-        if(isNtk() || !isWolfEpisodeDocumentPath(normalized))
+        boolean wolfDocument = !isNtk() && isWolfEpisodeDocumentPath(normalized);
+        if(isNtk() || !wolfDocument)
             ensureNumberedDomain(false);
         String cacheKey = getBaseUrl(normalized) + normalized;
         long now = System.currentTimeMillis();
@@ -1698,6 +1699,8 @@ public class CustomHttpClient {
                 return new PageResponse(staleCached.code, staleCached.body, true);
             throw new Exception("Cache miss: " + cacheKey);
         }
+        if(shouldResolveWolfDocumentBeforeNetwork(wolfDocument, staleCached != null, fetchMode))
+            ensureNumberedDomain(false);
         synchronized (pageLoadsLock) {
             activeLoad = pageLoads.get(cacheKey);
             if(activeLoad == null)
@@ -1869,6 +1872,14 @@ public class CustomHttpClient {
         if(staleCached != null)
             return new PageResponse(staleCached.code, staleCached.body, true);
         throw new Exception("Request failed: " + cacheKey);
+    }
+
+    static boolean shouldResolveWolfDocumentBeforeNetworkForTest(boolean wolfDocument, boolean hasStaleCache, FetchMode fetchMode) {
+        return shouldResolveWolfDocumentBeforeNetwork(wolfDocument, hasStaleCache, fetchMode);
+    }
+
+    private static boolean shouldResolveWolfDocumentBeforeNetwork(boolean wolfDocument, boolean hasStaleCache, FetchMode fetchMode) {
+        return wolfDocument && !hasStaleCache && fetchMode != FetchMode.CACHE_ONLY;
     }
 
     static boolean shouldWaitForActivePageLoadForTest(boolean hasStaleCache) {
