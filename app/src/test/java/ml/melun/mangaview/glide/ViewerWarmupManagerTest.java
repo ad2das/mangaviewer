@@ -122,6 +122,12 @@ public class ViewerWarmupManagerTest {
     }
 
     @Test
+    public void backgroundWarmupUsesDirectOnlyForWolfAndNtk() {
+        assertTrue(ViewerWarmupManager.shouldUseDirectOnlyBackgroundWarmupForTest("wfwf"));
+        assertTrue(ViewerWarmupManager.shouldUseDirectOnlyBackgroundWarmupForTest("ntk"));
+    }
+
+    @Test
     public void coldNetworkViewerOpenDoesNotBlockOnFirstDecode() {
         assertFalse(ViewerWarmupManager.shouldDecodeFirstPagesBlockingForTest(false, false));
     }

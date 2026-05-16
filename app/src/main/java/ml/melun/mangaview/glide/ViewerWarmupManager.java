@@ -99,11 +99,12 @@ public class ViewerWarmupManager {
         if(state == null)
             return;
         Context appContext = context.getApplicationContext();
+        String warmupSource = title == null ? null : title.getSourceSite();
         int startPage = pageIndex;
         AppDispatchers.submitImageWarmup(() -> {
             int result = LOAD_OK;
             try {
-                result = runDirectOnlyIfNtk(() -> {
+                result = runDirectOnlyWarmup(warmupSource, () -> {
                     int fetchResult = LOAD_OK;
                     if(manga.getImgs(appContext) == null || manga.getImgs(appContext).size() == 0)
                         fetchResult = manga.fetchForViewerInitial(getHttpClient());
@@ -195,9 +196,10 @@ public class ViewerWarmupManager {
             return;
         if(visibleResume)
             logMetric("viewer_resume_visible_warmup_scheduled", manga.getId());
+        String warmupSource = title == null ? null : title.getSourceSite();
         AppDispatchers.submitImageWarmup(() -> {
             try {
-                runDirectOnlyIfNtk(() -> {
+                runDirectOnlyWarmup(warmupSource, () -> {
                     Manga target = manga;
                     Title currentTitle = warmupTitle != null ? warmupTitle : target.getTitle();
                     if(currentTitle != null && Utils.snapshotEpisodes(currentTitle).size() <= 1) {
@@ -440,7 +442,7 @@ public class ViewerWarmupManager {
 
     public static int prepareFirstFrameDirectOnly(Context context, Manga manga, Title title, int pageIndex, int width,
                                                   boolean autoCut, boolean reverse, MangaRepository.Cancellation cancellation) throws Exception {
-        return runDirectOnlyIfNtk(() -> prepareFirstFrame(context, manga, title, pageIndex, width, autoCut, reverse, cancellation));
+        return runDirectOnly(() -> prepareFirstFrame(context, manga, title, pageIndex, width, autoCut, reverse, cancellation));
     }
 
     private static void validateReachabilityAsync(Context context, String key, Manga manga) {
@@ -820,6 +822,10 @@ public class ViewerWarmupManager {
         return shouldWarmupExactEpisodeOnLaunch(sourceSite, ntkSite);
     }
 
+    static boolean shouldUseDirectOnlyBackgroundWarmupForTest(String sourceSite) {
+        return shouldUseDirectOnlyBackgroundWarmup(sourceSite);
+    }
+
     private static boolean isUsablePageImage(String image) {
         return image != null && image.trim().length() > 0 && !isNtkBoardUploadImage(image);
     }
@@ -884,6 +890,10 @@ public class ViewerWarmupManager {
         return normalized.length() == 0 || "ntk".equals(normalized);
     }
 
+    private static boolean shouldUseDirectOnlyBackgroundWarmup(String sourceSite) {
+        return true;
+    }
+
     private static boolean isCurrentNtkSite() {
         return getHttpClient().isNtk() || (p != null && p.isNtkSite());
     }
@@ -917,6 +927,19 @@ public class ViewerWarmupManager {
     private static <T> T runDirectOnlyIfNtk(CustomHttpClient.RequestWork<T> work) throws Exception {
         CustomHttpClient client = getHttpClient();
         if(client != null && client.isNtk())
+            return client.runWithFetchMode(CustomHttpClient.FetchMode.DIRECT_ONLY, work);
+        return work.run();
+    }
+
+    private static <T> T runDirectOnlyWarmup(String sourceSite, CustomHttpClient.RequestWork<T> work) throws Exception {
+        if(shouldUseDirectOnlyBackgroundWarmup(sourceSite))
+            return runDirectOnly(work);
+        return work.run();
+    }
+
+    private static <T> T runDirectOnly(CustomHttpClient.RequestWork<T> work) throws Exception {
+        CustomHttpClient client = getHttpClient();
+        if(client != null)
             return client.runWithFetchMode(CustomHttpClient.FetchMode.DIRECT_ONLY, work);
         return work.run();
     }

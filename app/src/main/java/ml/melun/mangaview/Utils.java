@@ -330,6 +330,8 @@ public class Utils {
                         ViewerWarmupManager.waitForFirstDecodedFrame(appContext, manga, 0, width,
                                 false, p.getReverse(), exactFirstFrameWaitMs(title));
                         prepared = ViewerWarmupManager.usePreparedFirstFrame(appContext, manga, title, false, p.getReverse(), 0);
+                    } else if(shouldAllowExactForegroundFallback(title)) {
+                        prepared = ViewerWarmupManager.prepareClickFirstFrame(appContext, manga, title, false, p.getReverse());
                     }
                 } catch(Exception e) {
                     ml.melun.mangaview.report.CrashReporter.record(e);
@@ -343,11 +345,41 @@ public class Utils {
     }
 
     private static long exactFirstFrameWaitMs(Title title) {
-        if(title != null && "wfwf".equals(title.getSourceSite()))
-            return 5_500L;
-        if(p != null && !p.isNtkSite())
-            return 5_500L;
+        String source = title == null ? "" : title.getSourceSite();
+        return exactFirstFrameWaitMs(source, p != null && p.isNtkSite());
+    }
+
+    static long exactFirstFrameWaitMsForTest(String sourceSite, boolean ntkSite) {
+        return exactFirstFrameWaitMs(sourceSite, ntkSite);
+    }
+
+    static boolean shouldAllowExactForegroundFallbackForTest(String sourceSite, boolean ntkSite) {
+        return shouldAllowExactForegroundFallback(sourceSite, ntkSite);
+    }
+
+    private static boolean shouldAllowExactForegroundFallback(Title title) {
+        String source = title == null ? "" : title.getSourceSite();
+        return shouldAllowExactForegroundFallback(source, p != null && p.isNtkSite());
+    }
+
+    private static long exactFirstFrameWaitMs(String sourceSite, boolean ntkSite) {
+        String source = sourceSite == null ? "" : sourceSite.trim().toLowerCase(Locale.ROOT);
+        if("wfwf".equals(source))
+            return 1_800L;
+        if("ntk".equals(source))
+            return 350L;
+        if(!ntkSite)
+            return 1_800L;
         return 350L;
+    }
+
+    private static boolean shouldAllowExactForegroundFallback(String sourceSite, boolean ntkSite) {
+        String source = sourceSite == null ? "" : sourceSite.trim().toLowerCase(Locale.ROOT);
+        if("ntk".equals(source))
+            return false;
+        if("wfwf".equals(source))
+            return true;
+        return !ntkSite;
     }
 
     private static void launchWhenFirstFrameReady(Context context, Manga manga, int code, boolean returnToEpisodes,

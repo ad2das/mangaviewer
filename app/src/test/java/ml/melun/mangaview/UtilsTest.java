@@ -126,4 +126,19 @@ public class UtilsTest {
         assertFalse(Utils.shouldWaitForExactFirstFrameForTest("ntk", false));
         assertTrue(Utils.shouldWaitForExactFirstFrameForTest("", false));
     }
+
+    @Test
+    public void exactViewerLaunchUsesBoundedFirstFrameWaits() {
+        assertEquals(1800L, Utils.exactFirstFrameWaitMsForTest("wfwf", false));
+        assertEquals(1800L, Utils.exactFirstFrameWaitMsForTest("", false));
+        assertEquals(350L, Utils.exactFirstFrameWaitMsForTest("ntk", true));
+    }
+
+    @Test
+    public void exactViewerLaunchAllowsForegroundFallbackOnlyForWolf() {
+        assertTrue(Utils.shouldAllowExactForegroundFallbackForTest("wfwf", false));
+        assertTrue(Utils.shouldAllowExactForegroundFallbackForTest("", false));
+        assertFalse(Utils.shouldAllowExactForegroundFallbackForTest("ntk", true));
+        assertFalse(Utils.shouldAllowExactForegroundFallbackForTest("", true));
+    }
 }
