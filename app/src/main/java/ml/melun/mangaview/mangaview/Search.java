@@ -242,7 +242,9 @@ public class Search {
         ArrayList<Title> combined = new ArrayList<>();
         try {
             if(client != null && client.isNtk()) {
-                appendUnique(combined, fetchNtkHtmlSearchResultsPage(client, ntkSearchPath(query, base_auto, 1), base_auto, 0, 1).titles);
+                appendUnique(combined, fetchNtkKeywordApiResults(client, base_auto, 120, 1).titles);
+                if(combined.size() == 0)
+                    appendUnique(combined, fetchNtkHtmlSearchResultsPage(client, ntkSearchPath(query, base_auto, 1), base_auto, 0, 1).titles);
             } else {
                 appendUnique(combined, fetchWfwfCombinedKeywordSearchResults(client).titles);
             }
@@ -1349,10 +1351,31 @@ public class Search {
 
     private boolean appendSearchResults(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {
         if(client != null && client.isNtk()) {
+            if(shouldUseNtkKeywordApi(client.isNtk(), mode))
+                return appendNextNtkKeywordApiPage(client, target, targetBaseMode, limit);
             return appendNextNtkSearchPage(client, target, targetBaseMode, limit);
         }
         appendWebtoonResults(client, target, wfwfKeywordSearchPath(query), limit);
         return true;
+    }
+
+    private boolean appendNextNtkKeywordApiPage(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {
+        int currentPage = page;
+        PageTitles pageTitles = fetchNtkKeywordApiResults(client, targetBaseMode, limit, currentPage);
+        int added = appendUniquePageTitles(target, pageTitles.titles);
+        page++;
+        if(added > 0)
+            return pageTitles.hasMoreKnown ? !pageTitles.hasMore : true;
+        page = currentPage;
+        return appendNextNtkSearchPage(client, target, targetBaseMode, limit);
+    }
+
+    private static boolean shouldUseNtkKeywordApi(boolean ntkClient, int mode) {
+        return ntkClient && mode == 0;
+    }
+
+    static boolean shouldUseNtkKeywordApiForTest(boolean ntkClient, int mode) {
+        return shouldUseNtkKeywordApi(ntkClient, mode);
     }
 
     private boolean appendNextNtkSearchPage(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {

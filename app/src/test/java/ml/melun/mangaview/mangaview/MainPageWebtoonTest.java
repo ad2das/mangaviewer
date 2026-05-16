@@ -76,6 +76,25 @@ public class MainPageWebtoonTest {
     }
 
     @Test
+    public void parseWolfSearchHtmlFastSkipsNtkPlatformThumbFallback() {
+        MainPageWebtoon.clearClassificationDbForTest();
+        try {
+            ArrayList<Title> titles = MainPageWebtoon.parseWolfSearchHtmlFast(
+                    "<a class='card' href='/manhwa/302'>"
+                            + "<img src='/platforms/toonflix.png'>"
+                            + "<h6>NTK Fast Comic</h6>"
+                            + "</a>",
+                    base_comic, 0, "ntk");
+
+            assertEquals(1, titles.size());
+            assertEquals("", titles.get(0).getThumb());
+            assertFalse(MainPageWebtoon.isClassificationDbLoadedForTest(true));
+        } finally {
+            MainPageWebtoon.clearClassificationDbForTest();
+        }
+    }
+
+    @Test
     public void parseWolfTitles_readsNtkLazyThumbnailAttributes() {
         ArrayList<Title> dataSrcset = MainPageWebtoon.parseWolfTitles(
                 Jsoup.parse("<li><a href=\"/webtoon/501\"><img src=\"data:image/gif;base64,AA\" data-srcset=\"/data/webtoon/thumb-320.jpg 320w, /data/webtoon/thumb-640.jpg 640w\"><p class=\"subject\">NTK 웹툰</p></a></li>"),

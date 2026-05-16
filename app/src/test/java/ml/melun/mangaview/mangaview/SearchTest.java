@@ -57,6 +57,13 @@ public class SearchTest {
     }
 
     @Test
+    public void ntkKeywordSearchUsesApiOnlyForKeywordMode() {
+        assertTrue(Search.shouldUseNtkKeywordApiForTest(true, 0));
+        assertEquals(false, Search.shouldUseNtkKeywordApiForTest(true, 2));
+        assertEquals(false, Search.shouldUseNtkKeywordApiForTest(false, 0));
+    }
+
+    @Test
     public void ntkApiParserKeepsSlugSourceWorkIdsOpenable() throws Exception {
         ArrayList<Title> titles = Search.parseNtkApiTitlesForTest(
                 "{\"works\":[{\"sourceWorkId\":\"u-moo205z1-yvf4\",\"title\":\"Slug Title\",\"thumbnailUrl\":\"/cover.jpg\"}]}",

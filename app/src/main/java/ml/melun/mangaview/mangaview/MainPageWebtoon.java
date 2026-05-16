@@ -660,7 +660,7 @@ public class MainPageWebtoon {
                 if(name.length() == 0)
                     name = cleanNtkListText(decodeHtml(stripTags(inner)));
                 String thumb = firstFastThumb(inner);
-                thumb = resolveCoverThumbIfLoaded(name, id, thumb, baseMode);
+                thumb = resolveFastSearchThumb(name, id, thumb, baseMode, sourceSite);
                 Title parsed = new Title(name, thumb, "", new ArrayList<>(), "", id, baseMode);
                 if(sourceSite != null && sourceSite.trim().length() > 0)
                     parsed.setSourceSite(sourceSite.trim());
@@ -1038,6 +1038,14 @@ public class MainPageWebtoon {
         if(dbTitle != null && !isPlatformLogoThumb(dbTitle.thumb) && dbTitle.thumb != null && dbTitle.thumb.length() > 0)
             return dbTitle.thumb;
         return "";
+    }
+
+    private static String resolveFastSearchThumb(String name, int id, String thumb, int baseMode, String sourceSite) {
+        if(!isPlatformLogoThumb(thumb))
+            return thumb == null ? "" : thumb;
+        if("ntk".equalsIgnoreCase(sourceSite == null ? "" : sourceSite.trim()))
+            return "";
+        return resolveCoverThumbIfLoaded(name, id, thumb, baseMode);
     }
 
     public static boolean isPlatformLogoThumb(String thumb) {
