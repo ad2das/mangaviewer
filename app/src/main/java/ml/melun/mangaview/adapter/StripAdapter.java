@@ -96,6 +96,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private boolean pendingHeightCorrectionScheduled = false;
     private boolean scrollBusy = false;
     private boolean released = false;
+    private boolean firstVisibleLogged = false;
 
     public List<Object> getItems(){
         return items;
@@ -854,11 +855,21 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         trimDisplayedTracker();
         if(mainContext instanceof ViewerActivity)
             ((ViewerActivity) mainContext).onViewerPageDisplayed(item);
-        if(item.index == 0)
+        if(shouldLogFirstVisible(firstVisibleLogged)) {
+            firstVisibleLogged = true;
             ViewerWarmupManager.logMetric("viewer_first_visible_ms", android.os.SystemClock.elapsedRealtime() - holder.bindStartedAtMs);
+        }
         int layoutPos = holder.getAdapterPosition();
         if(layoutPos != RecyclerView.NO_POSITION)
             schedulePreloadAroundScrollPosition(layoutPos);
+    }
+
+    static boolean shouldLogFirstVisibleForTest(boolean alreadyLogged) {
+        return shouldLogFirstVisible(alreadyLogged);
+    }
+
+    private static boolean shouldLogFirstVisible(boolean alreadyLogged) {
+        return !alreadyLogged;
     }
 
     private RequestOptions viewerImageOptions(PageItem item) {

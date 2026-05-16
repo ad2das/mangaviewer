@@ -78,4 +78,10 @@ public class StripAdapterTest {
         assertFalse(StripAdapter.shouldRetainTrackedPreloadForLoadedPageForTest("episode:page2", loaded));
         assertFalse(StripAdapter.shouldRetainTrackedPreloadForLoadedPageForTest("decoded:episode:page2", loaded));
     }
+
+    @Test
+    public void firstVisibleMetricLogsOncePerAdapter() {
+        assertTrue(StripAdapter.shouldLogFirstVisibleForTest(false));
+        assertFalse(StripAdapter.shouldLogFirstVisibleForTest(true));
+    }
 }
