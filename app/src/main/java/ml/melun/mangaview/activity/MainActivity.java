@@ -65,6 +65,7 @@ import ml.melun.mangaview.interfaces.UrlUpdateCallback;
 import ml.melun.mangaview.model.UrlUpdateResult;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
+import ml.melun.mangaview.runtime.PerfTrace;
 import ml.melun.mangaview.state.UiState;
 import ml.melun.mangaview.viewmodel.StartupViewModel;
 
@@ -162,9 +163,7 @@ public class MainActivity extends AppCompatActivity
     private boolean forceWfwfOnStartup() {
         if(!p.forceWfwfSitePresetIfNeeded())
             return false;
-        MainApplication.getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
-        MainApplication.getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
-        MainApplication.getHttpClient().clearPageCache();
+        syncForcedWfwfCookiesAsync();
         if(toolbar != null)
             invalidateOptionsMenu();
         if(fragments[0] instanceof MainMain) {
@@ -173,6 +172,18 @@ public class MainActivity extends AppCompatActivity
                 callback.callback(true);
         }
         return true;
+    }
+
+    private void syncForcedWfwfCookiesAsync() {
+        final String webtoonUrl = p.getWebtoonUrl();
+        final String comicUrl = p.getUrl();
+        AppDispatchers.runUserAction(() -> {
+            long startedAt = PerfTrace.start("startup_force_wfwf_cookie_sync_ms");
+            getHttpClient().syncCookiesFromWebView(webtoonUrl, true);
+            getHttpClient().syncCookiesFromWebView(comicUrl, true);
+            getHttpClient().clearPageCache();
+            PerfTrace.end("startup_force_wfwf_cookie_sync_ms", startedAt);
+        });
     }
 
 
