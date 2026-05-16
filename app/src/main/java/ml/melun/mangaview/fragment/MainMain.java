@@ -320,7 +320,7 @@ public class MainMain extends Fragment{
                     if(isAdded() && initialBaseMode == selectedBaseMode)
                         showInitialHomeRows(inactiveBaseMode);
                 }, HomeStartupPolicy.inactiveInitialRowsDelayMs(getHttpClient().isNtk()));
-            }, 80);
+            }, HomeStartupPolicy.activeFetchDelayMs(getHttpClient().isNtk()));
         }
         return rootView;
     }
