@@ -4,7 +4,6 @@ package ml.melun.mangaview.mangaview;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.webkit.CookieManager;
-import android.webkit.WebSettings;
 
 import com.google.gson.Gson;
 import org.json.JSONArray;
@@ -829,9 +828,8 @@ public class CustomHttpClient {
                 return size() > PAGE_CACHE_MAX_ENTRIES;
             }
         };
-        loadDefaultUserAgent();
-        loadSavedCookies();
         loadSavedUserAgent();
+        loadSavedCookies();
         this.client = baseClient(new OkHttpClient.Builder()).build();
         this.unsafeFallbackClient = baseClient(getUnsafeOkHttpClient())
                 .protocols(ntkTlsFallbackProtocolsForTest())
@@ -1140,16 +1138,6 @@ public class CustomHttpClient {
             String saved = pref.getString("httpUserAgent", null);
             if(saved != null && saved.trim().length() > 0)
                 agent = saved.trim();
-        } catch (Exception e) {
-            ml.melun.mangaview.report.CrashReporter.record(e);
-        }
-    }
-
-    private synchronized void loadDefaultUserAgent(){
-        try {
-            String defaultAgent = WebSettings.getDefaultUserAgent(context);
-            if(defaultAgent != null && defaultAgent.trim().length() > 0)
-                agent = defaultAgent.trim();
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
