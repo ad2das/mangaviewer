@@ -165,7 +165,6 @@ public class ViewerActivity extends AppCompatActivity {
         toolbarTitle = this.findViewById(R.id.toolbar_title);
         appbarBottom = this.findViewById(R.id.viewerAppbarBottom);
         cut = this.findViewById(R.id.viewerBtn2);
-        cut.setText("자동 분할");
         updateAutoCutButtonState();
         pageBtn = this.findViewById(R.id.viewerBtn1);
         pageBtn.setText("-/-");
@@ -934,7 +933,11 @@ public class ViewerActivity extends AppCompatActivity {
     private void updateAutoCutButtonState() {
         if(cut == null)
             return;
+        cut.setSelected(autoCut);
+        cut.setText(autoCut ? "분할 켜짐" : "분할 꺼짐");
+        cut.setContentDescription(autoCut ? "자동분할 켜짐" : "자동분할 꺼짐");
         cut.setBackgroundResource(autoCut ? R.drawable.app_selected_button_bg : R.drawable.app_outline_button_bg);
+        cut.setTextColor(ContextCompat.getColor(this, autoCut ? R.color.appAccent : R.color.appTextSecondary));
     }
 
 
