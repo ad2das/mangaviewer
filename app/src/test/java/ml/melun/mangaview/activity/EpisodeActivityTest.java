@@ -53,6 +53,12 @@ public class EpisodeActivityTest {
     }
 
     @Test
+    public void diskEpisodeCacheLoadsOnlyAfterMemoryMiss() {
+        assertFalse(EpisodeActivity.shouldLoadDiskEpisodeCacheAsyncForTest(true));
+        assertTrue(EpisodeActivity.shouldLoadDiskEpisodeCacheAsyncForTest(false));
+    }
+
+    @Test
     public void sameEpisodeIdentityListAllowsSkippingDuplicateRefreshRender() {
         List<Manga> cached = new ArrayList<>();
         Manga cachedFirst = new Manga(1, "1", "", base_webtoon);

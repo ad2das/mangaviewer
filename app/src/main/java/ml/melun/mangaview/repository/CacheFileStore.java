@@ -29,7 +29,7 @@ public final class CacheFileStore {
     public static String read(Context context, String key) {
         if(context == null || key == null)
             return "";
-        String cached = readMemory(key);
+        String cached = readMemoryInternal(key);
         if(cached != null)
             return cached;
         File file = file(context, key);
@@ -73,6 +73,11 @@ public final class CacheFileStore {
         }
     }
 
+    public static String readMemory(String key) {
+        String cached = readMemoryInternal(key);
+        return cached == null ? "" : cached;
+    }
+
     private static File file(Context context, String key) {
         return new File(new File(context.getCacheDir(), DIR_NAME), fileNameForKey(key));
     }
@@ -100,7 +105,7 @@ public final class CacheFileStore {
     }
 
     static String readMemoryForTest(String key) {
-        return readMemory(key);
+        return readMemoryInternal(key);
     }
 
     private static void rememberMemory(String key, String value) {
@@ -111,7 +116,7 @@ public final class CacheFileStore {
         }
     }
 
-    private static String readMemory(String key) {
+    private static String readMemoryInternal(String key) {
         if(key == null)
             return null;
         synchronized (MEMORY_CACHE) {

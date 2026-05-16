@@ -271,7 +271,9 @@ public class EpisodeActivity extends AppCompatActivity {
         if(online) {
             mode = 0;
             fab_container.setVisibility(View.GONE);
-            boolean renderedCachedEpisodes = showCachedEpisodes();
+            boolean renderedCachedEpisodes = showCachedEpisodesFromMemory();
+            if(shouldLoadDiskEpisodeCacheAsyncForTest(renderedCachedEpisodes))
+                loadCachedEpisodesAsync();
             episodeViewModel = new ViewModelProvider(this).get(EpisodeViewModel.class);
             episodeViewModel.state().observe(this, this::renderEpisodeState);
             if(shouldRefreshEpisodesAfterCache(renderedCachedEpisodes)) {
@@ -719,29 +721,70 @@ public class EpisodeActivity extends AppCompatActivity {
         });
     }
 
-    private boolean showCachedEpisodes() {
+    private boolean showCachedEpisodesFromMemory() {
         try {
-            String json = CacheFileStore.read(context, episodeCacheKey());
-            if(json == null || json.length() == 0)
-                return false;
-            CachedEpisodes cached = new Gson().fromJson(json, new TypeToken<CachedEpisodes>(){}.getType());
-            if(cached == null || cached.episodes == null || cached.episodes.size() == 0)
-                return false;
-            if(!CachePolicy.isFresh(cached.savedAt, CachePolicy.EPISODE_TTL_MS)
-                    && !CachePolicy.isReusableForColdStart(cached.savedAt))
-                return false;
-            episodes = cached.episodes;
-            attachLoadedEpisodesToTitle(episodes);
-            episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
-            afterLoad();
-            ntkLoadTimeoutHandled = true;
-            loaded = true;
-            hideProgress();
-            return true;
+            return showCachedEpisodesJson(CacheFileStore.readMemory(episodeCacheKey()));
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
             return false;
         }
+    }
+
+    private void loadCachedEpisodesAsync() {
+        Context appContext = getApplicationContext();
+        String cacheKey = episodeCacheKey();
+        AppDispatchers.submitIo(() -> {
+            long startedAt = PerfTrace.start("episode_cache_async_load_ms");
+            CachedEpisodes cached = readCachedEpisodes(appContext, cacheKey);
+            PerfTrace.end("episode_cache_async_load_ms", startedAt);
+            if(cached == null)
+                return;
+            AppDispatchers.runOnMain(() -> showCachedEpisodes(cached));
+        });
+    }
+
+    private CachedEpisodes readCachedEpisodes(Context cacheContext, String cacheKey) {
+        try {
+            String json = CacheFileStore.read(cacheContext, cacheKey);
+            if(json == null || json.length() == 0)
+                return null;
+            CachedEpisodes cached = new Gson().fromJson(json, new TypeToken<CachedEpisodes>(){}.getType());
+            if(cached == null || cached.episodes == null || cached.episodes.size() == 0)
+                return null;
+            if(!CachePolicy.isFresh(cached.savedAt, CachePolicy.EPISODE_TTL_MS)
+                    && !CachePolicy.isReusableForColdStart(cached.savedAt))
+                return null;
+            return cached;
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return null;
+        }
+    }
+
+    private boolean showCachedEpisodesJson(String json) {
+        if(json == null || json.length() == 0)
+            return false;
+        CachedEpisodes cached = new Gson().fromJson(json, new TypeToken<CachedEpisodes>(){}.getType());
+        return showCachedEpisodes(cached);
+    }
+
+    private boolean showCachedEpisodes(CachedEpisodes cached) {
+        if(cached == null || cached.episodes == null || cached.episodes.size() == 0)
+            return false;
+        if(!CachePolicy.isFresh(cached.savedAt, CachePolicy.EPISODE_TTL_MS)
+                && !CachePolicy.isReusableForColdStart(cached.savedAt))
+            return false;
+        if(hasRenderedEpisodes())
+            return false;
+        episodes = cached.episodes;
+        attachLoadedEpisodesToTitle(episodes);
+        episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
+        afterLoad();
+        ntkLoadTimeoutHandled = true;
+        loaded = true;
+        hideProgress();
+        invalidateOptionsMenu();
+        return true;
     }
 
     private boolean hasRenderedEpisodes() {
@@ -833,6 +876,10 @@ public class EpisodeActivity extends AppCompatActivity {
 
     private boolean shouldRefreshEpisodesAfterCache(boolean renderedCachedEpisodes) {
         return !renderedCachedEpisodes || p.isNtkSite() || getHttpClient().isNtk();
+    }
+
+    static boolean shouldLoadDiskEpisodeCacheAsyncForTest(boolean renderedMemoryCache) {
+        return !renderedMemoryCache;
     }
 
     @Override
