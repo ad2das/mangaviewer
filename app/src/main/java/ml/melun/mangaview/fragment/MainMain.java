@@ -293,8 +293,7 @@ public class MainMain extends Fragment{
         };
 
         selectedBaseMode = p.getBaseMode() == base_comic ? base_comic : base_webtoon;
-        ensureHomeAdapter(base_webtoon);
-        ensureHomeAdapter(base_comic);
+        ensureHomeAdapter(selectedBaseMode);
         updateFirstContentMetricTargets();
         showInitialHomeRows(selectedBaseMode);
         modeWebtoon.setOnClickListener(v -> {
