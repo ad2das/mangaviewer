@@ -2729,7 +2729,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 if(anchorRecycler == null || anchorRecycler.getScrollState() == RecyclerView.SCROLL_STATE_SETTLING)
                     return;
                 preloadThumbnails(sections);
-            }, 120);
+            }, HomeContinueWarmupPolicy.visibleHomeWarmupDelayMs(save));
         else
             preloadThumbnails(sections);
     }
