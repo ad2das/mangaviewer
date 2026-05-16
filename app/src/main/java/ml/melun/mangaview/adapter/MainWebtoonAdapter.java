@@ -1333,10 +1333,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 list.setAdapter(new HomeTitleAdapter(section.titles, section.style));
             if(section.style == STYLE_CONTINUE) {
                 list.setOnTouchListener((v, event) -> handleContinueSectionTouch(event));
-                list.post(() -> warmupVisibleContinueItems(section.titles));
+                list.postDelayed(() -> warmupVisibleContinueItems(section.titles),
+                        HomeContinueWarmupPolicy.visibleHomeWarmupDelayMs(save));
             } else {
                 list.setOnTouchListener(null);
-                list.post(() -> prefetchEpisodeSnapshots(section.titles, section.style == STYLE_RANKING ? 2 : 1));
+                list.postDelayed(() -> prefetchEpisodeSnapshots(section.titles, section.style == STYLE_RANKING ? 2 : 1),
+                        HomeContinueWarmupPolicy.visibleHomeWarmupDelayMs(save));
             }
         }
 
