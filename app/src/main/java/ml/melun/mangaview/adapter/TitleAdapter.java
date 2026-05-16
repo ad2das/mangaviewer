@@ -158,12 +158,14 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         for(Object d:t){
             if(d instanceof Title){
                 Title title = (Title)d;
-                applyStoredBookmark(title);
+                if(!deferThumbnails)
+                    applyStoredBookmark(title);
                 mData.add(title);
                 inserted++;
             } else if(d instanceof MTitle){
                 Title d2 = new Title((MTitle)d);
-                applyStoredBookmark(d2);
+                if(!deferThumbnails)
+                    applyStoredBookmark(d2);
                 mData.add(d2);
                 inserted++;
             }
@@ -343,7 +345,8 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                 title = new Title((MTitle)d);
             if(title == null)
                 continue;
-            applyStoredBookmark(title);
+            if(!deferThumbnails)
+                applyStoredBookmark(title);
             titles.add(title);
         }
         return titles;
@@ -453,9 +456,6 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         Title data = mDataFiltered.get(position);
         BindMeta bindMeta = bindMeta(data);
         String title = data.getName();
-        String thumb = data.getThumb();
-        if(thumb == null)
-            thumb = "";
         String author = data.getAuthor();
         int bookmark = bindMeta.bookmark;
         holder.baseModeStr.setText(data.getBaseModeStr());
@@ -503,6 +503,54 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         }
 
         holder.thumb.setVisibility(View.VISIBLE);
+        bindThumbnail(holder, data);
+        if(bookmark>0 && resume) {
+            holder.resume.setVisibility(View.VISIBLE);
+            holder.resumeSiteIcon.setVisibility(View.VISIBLE);
+            bindResumeSiteIcon(holder.resumeSiteIcon, bindMeta.sourceSite);
+        }
+        else {
+            holder.resume.setVisibility(View.GONE);
+            holder.resumeSiteIcon.setVisibility(View.GONE);
+        }
+
+    }
+
+    public void releaseDeferredThumbnails(RecyclerView recyclerView) {
+        if(!deferThumbnails)
+            return;
+        deferThumbnails = false;
+        bindVisibleThumbnails(recyclerView);
+    }
+
+    private void bindVisibleThumbnails(RecyclerView recyclerView) {
+        if(recyclerView == null) {
+            notifyDataSetChanged();
+            return;
+        }
+        int childCount = recyclerView.getChildCount();
+        if(childCount <= 0) {
+            notifyDataSetChanged();
+            return;
+        }
+        for(int i = 0; i < childCount; i++) {
+            View child = recyclerView.getChildAt(i);
+            RecyclerView.ViewHolder baseHolder = recyclerView.getChildViewHolder(child);
+            if(!(baseHolder instanceof ViewHolder))
+                continue;
+            int position = baseHolder.getAdapterPosition();
+            if(!isValidPosition(position))
+                position = recyclerView.getChildAdapterPosition(child);
+            if(!isValidPosition(position))
+                continue;
+            bindThumbnail((ViewHolder) baseHolder, mDataFiltered.get(position));
+        }
+    }
+
+    private void bindThumbnail(ViewHolder holder, Title data) {
+        String thumb = data == null ? "" : data.getThumb();
+        if(thumb == null)
+            thumb = "";
         if(!deferThumbnails && thumb.length()>1 && (!save || forceThumbnail)) {
             Object source = isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, data.getBaseMode());
             String thumbKey = String.valueOf(source);
@@ -531,21 +579,13 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                 holder.thumb.setImageResource(R.drawable.app_cover_placeholder);
             }
         }
-        if(bookmark>0 && resume) {
-            holder.resume.setVisibility(View.VISIBLE);
-            holder.resumeSiteIcon.setVisibility(View.VISIBLE);
-            bindResumeSiteIcon(holder.resumeSiteIcon, bindMeta.sourceSite);
-        }
-        else {
-            holder.resume.setVisibility(View.GONE);
-            holder.resumeSiteIcon.setVisibility(View.GONE);
-        }
-
     }
 
     private BindMeta bindMeta(Title title) {
         if(title == null)
             return BindMeta.EMPTY;
+        if(deferThumbnails)
+            return fastInitialBindMeta(title);
         String key = titleContentKey(title) + "|" + title.getBookmark() + "|" + p.getLocalDataVersion();
         BindMeta cached = bindMetaCache.get(key);
         if(cached != null)
@@ -557,6 +597,14 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             bindMetaCache.clear();
         bindMetaCache.put(key, meta);
         return meta;
+    }
+
+    private BindMeta fastInitialBindMeta(Title title) {
+        int progressPercent = readingProgressPercent(title);
+        String source = title.getSourceSite();
+        if(source == null || source.length() == 0)
+            source = "wfwf";
+        return new BindMeta(title.getBookmark(), displayTags(title), progressLabel(title), progressPercent, source, title.getNtkStatusLabel());
     }
 
     private void bindResumeSiteIcon(ImageView view, String sourceSite) {

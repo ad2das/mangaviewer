@@ -1216,7 +1216,7 @@ public class MainSearch extends Fragment {
             return;
         searchResult.post(() -> {
             if(getContext() != null && searchAdapter != null)
-                searchAdapter.setDeferThumbnails(false);
+                searchAdapter.releaseDeferredThumbnails(searchResult);
         });
     }
 

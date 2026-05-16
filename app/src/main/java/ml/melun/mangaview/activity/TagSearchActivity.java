@@ -584,6 +584,7 @@ public class TagSearchActivity extends AppCompatActivity {
         }
 
         private void finish(Integer res){
+            long finishStartedAt = PerfTrace.start("tag_search_finish_main_ms");
             if(cancelled)
                 return;
             if(!prepareLoadResult(this))
@@ -593,6 +594,7 @@ public class TagSearchActivity extends AppCompatActivity {
             if(res != 0){
                 showCaptchaPopup(context, p);
             }
+            long adapterStartedAt = PerfTrace.start("tag_search_adapter_main_ms");
             if(adapter.getItemCount()==0) {
                 adapter.addData(search.getResult());
                 searchResult.setAdapter(adapter);
@@ -628,9 +630,11 @@ public class TagSearchActivity extends AppCompatActivity {
             }else{
                 adapter.addData(search.getResult());
             }
+            PerfTrace.end("tag_search_adapter_main_ms", adapterStartedAt);
             if(statusFilter.length() > 0)
                 adapter.setNtkStatusFilter(statusFilter);
 
+            long chromeStartedAt = PerfTrace.start("tag_search_chrome_main_ms");
             if(adapter.getItemCount()>0) {
                 noresult.setVisibility(View.GONE);
                 finishInitialSearchTraceIfNeeded();
@@ -643,6 +647,8 @@ public class TagSearchActivity extends AppCompatActivity {
             updateResultMeta();
             scheduleThumbnailPreload();
             swipe.setRefreshing(false);
+            PerfTrace.end("tag_search_chrome_main_ms", chromeStartedAt);
+            PerfTrace.end("tag_search_finish_main_ms", finishStartedAt);
         }
 
         public void cancel() {
@@ -827,7 +833,7 @@ public class TagSearchActivity extends AppCompatActivity {
             return;
         searchResult.post(() -> {
             if(!destroyed && !isFinishing() && adapter != null)
-                adapter.setDeferThumbnails(false);
+                adapter.releaseDeferredThumbnails(searchResult);
         });
     }
 
