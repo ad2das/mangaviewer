@@ -9,10 +9,19 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.security.MessageDigest;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 public final class CacheFileStore {
     private static final String DIR_NAME = "structured_cache";
     private static final char[] HEX = "0123456789abcdef".toCharArray();
+    private static final int MEMORY_CACHE_MAX_ENTRIES = 64;
+    private static final Map<String, String> MEMORY_CACHE = new LinkedHashMap<String, String>(MEMORY_CACHE_MAX_ENTRIES, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
+            return size() > MEMORY_CACHE_MAX_ENTRIES;
+        }
+    };
 
     private CacheFileStore() {
     }
@@ -20,11 +29,16 @@ public final class CacheFileStore {
     public static String read(Context context, String key) {
         if(context == null || key == null)
             return "";
+        String cached = readMemory(key);
+        if(cached != null)
+            return cached;
         File file = file(context, key);
         if(!file.exists())
             return "";
         try (FileInputStream stream = new FileInputStream(file)) {
-            return readUtf8Text(stream);
+            String value = readUtf8Text(stream);
+            rememberMemory(key, value);
+            return value;
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
             return "";
@@ -40,6 +54,7 @@ public final class CacheFileStore {
             return;
         try {
             writeUtf8Text(file, value);
+            rememberMemory(key, value);
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
@@ -52,6 +67,7 @@ public final class CacheFileStore {
             File file = file(context, key);
             if(file.exists())
                 file.delete();
+            forgetMemory(key);
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
@@ -71,6 +87,44 @@ public final class CacheFileStore {
 
     static void writeUtf8TextForTest(File file, String value) throws Exception {
         writeUtf8Text(file, value);
+    }
+
+    static void clearMemoryForTest() {
+        synchronized (MEMORY_CACHE) {
+            MEMORY_CACHE.clear();
+        }
+    }
+
+    static void rememberMemoryForTest(String key, String value) {
+        rememberMemory(key, value);
+    }
+
+    static String readMemoryForTest(String key) {
+        return readMemory(key);
+    }
+
+    private static void rememberMemory(String key, String value) {
+        if(key == null || value == null)
+            return;
+        synchronized (MEMORY_CACHE) {
+            MEMORY_CACHE.put(key, value);
+        }
+    }
+
+    private static String readMemory(String key) {
+        if(key == null)
+            return null;
+        synchronized (MEMORY_CACHE) {
+            return MEMORY_CACHE.get(key);
+        }
+    }
+
+    private static void forgetMemory(String key) {
+        if(key == null)
+            return;
+        synchronized (MEMORY_CACHE) {
+            MEMORY_CACHE.remove(key);
+        }
     }
 
     private static String readUtf8Text(InputStream input) throws Exception {

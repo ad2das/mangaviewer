@@ -8,6 +8,7 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 
 public class CacheFileStoreTest {
     @Test
@@ -37,6 +38,24 @@ public class CacheFileStoreTest {
         } finally {
             file.delete();
         }
+    }
+
+    @Test
+    public void memoryCacheStoresRecentStructuredCacheText() {
+        CacheFileStore.clearMemoryForTest();
+        CacheFileStore.rememberMemoryForTest("episodeSnapshot", "{\"ok\":true}");
+
+        assertEquals("{\"ok\":true}", CacheFileStore.readMemoryForTest("episodeSnapshot"));
+    }
+
+    @Test
+    public void memoryCacheEvictsOldStructuredCacheText() {
+        CacheFileStore.clearMemoryForTest();
+        for(int i = 0; i < 65; i++)
+            CacheFileStore.rememberMemoryForTest("key" + i, "value" + i);
+
+        assertNull(CacheFileStore.readMemoryForTest("key0"));
+        assertEquals("value64", CacheFileStore.readMemoryForTest("key64"));
     }
 
     private static final class OneByteInputStream extends InputStream {
