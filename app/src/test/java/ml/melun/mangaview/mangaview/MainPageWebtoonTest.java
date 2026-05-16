@@ -325,6 +325,22 @@ public class MainPageWebtoonTest {
     }
 
     @Test
+    public void resolveCoverThumbIfLoadedUsesTitleNameIndex() {
+        MainPageWebtoon.clearClassificationDbForTest();
+        try {
+            MainPageWebtoon.putClassificationDbTitleWithThumbForTest(
+                    701, "Indexed Title", true, "https://img.example/indexed.jpg", "action");
+
+            String thumb = MainPageWebtoon.resolveCoverThumbIfLoaded(
+                    "Indexed Title", 999, "/platforms/toonflix.png", base_comic);
+
+            assertEquals("https://img.example/indexed.jpg", thumb);
+        } finally {
+            MainPageWebtoon.clearClassificationDbForTest();
+        }
+    }
+
+    @Test
     public void genreFromCategoryPath_decodesGenreFilters() {
         assertEquals("학원", Search.genreFromCategoryPath(
                 "/cm?type1=genre&type2=%C7%D0%BF%F8&o=n", base_comic));

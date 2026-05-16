@@ -80,6 +80,7 @@ public class MainPageWebtoon {
     private static final Map<Integer, List<String>> classificationDb = new LinkedHashMap<>();
     private static final Map<String, List<String>> classificationNameDb = new LinkedHashMap<>();
     private static final Map<Integer, DbTitle> classificationTitleDb = new LinkedHashMap<>();
+    private static final Map<String, DbTitle> classificationTitleNameDb = new LinkedHashMap<>();
     private static final Map<String, List<DbTitle>> classificationGenreDb = new LinkedHashMap<>();
     private static boolean classificationDbLoaded = false;
     private static long classificationDbLoadedAt = 0;
@@ -87,6 +88,7 @@ public class MainPageWebtoon {
     private static final Map<Integer, List<String>> comicClassificationDb = new LinkedHashMap<>();
     private static final Map<String, List<String>> comicClassificationNameDb = new LinkedHashMap<>();
     private static final Map<Integer, DbTitle> comicClassificationTitleDb = new LinkedHashMap<>();
+    private static final Map<String, DbTitle> comicClassificationTitleNameDb = new LinkedHashMap<>();
     private static final Map<String, List<DbTitle>> comicClassificationGenreDb = new LinkedHashMap<>();
     private static boolean comicClassificationDbLoaded = false;
     private static long comicClassificationDbLoadedAt = 0;
@@ -1064,7 +1066,7 @@ public class MainPageWebtoon {
                 DbTitle byId = comicClassificationTitleDb.get(id);
                 if(byId != null)
                     return byId;
-                return findClassificationDbTitleByName(comicClassificationTitleDb, name);
+                return findClassificationDbTitleByName(comicClassificationTitleNameDb, name);
             }
         }
         loadClassificationDb();
@@ -1072,7 +1074,7 @@ public class MainPageWebtoon {
             DbTitle byId = classificationTitleDb.get(id);
             if(byId != null)
                 return byId;
-            return findClassificationDbTitleByName(classificationTitleDb, name);
+            return findClassificationDbTitleByName(classificationTitleNameDb, name);
         }
     }
 
@@ -1084,7 +1086,7 @@ public class MainPageWebtoon {
                 DbTitle byId = comicClassificationTitleDb.get(id);
                 if(byId != null)
                     return byId;
-                return findClassificationDbTitleByName(comicClassificationTitleDb, name);
+                return findClassificationDbTitleByName(comicClassificationTitleNameDb, name);
             }
         }
         return findWebtoonClassificationDbTitleIfLoaded(name, id);
@@ -1097,19 +1099,15 @@ public class MainPageWebtoon {
             DbTitle byId = classificationTitleDb.get(id);
             if(byId != null)
                 return byId;
-            return findClassificationDbTitleByName(classificationTitleDb, name);
+            return findClassificationDbTitleByName(classificationTitleNameDb, name);
         }
     }
 
-    private static DbTitle findClassificationDbTitleByName(Map<Integer, DbTitle> titleDb, String name) {
+    private static DbTitle findClassificationDbTitleByName(Map<String, DbTitle> titleNameDb, String name) {
         String nameKey = normalizeClassificationName(name);
         if(nameKey.length() == 0)
             return null;
-        for(DbTitle title : titleDb.values()) {
-            if(title != null && nameKey.equals(normalizeClassificationName(title.name)))
-                return title;
-        }
-        return null;
+        return titleNameDb.get(nameKey);
     }
 
     public static void applyInferredWebtoonTags(Title title) {
@@ -1641,6 +1639,7 @@ public class MainPageWebtoon {
         Map<String, List<String>> nameDb = new LinkedHashMap<>();
         Map<Integer, DbTitle> titleDb = new LinkedHashMap<>();
         Map<String, List<DbTitle>> genreDb = new LinkedHashMap<>();
+        Map<String, DbTitle> titleNameDb;
         try {
             parseClassificationDb(readCachedClassificationDb("webtoon-classification.json"), idDb, nameDb, titleDb, genreDb);
             if(idDb.size() == 0)
@@ -1652,14 +1651,17 @@ public class MainPageWebtoon {
             genreDb.clear();
             parseClassificationDb(readBundledClassificationDb(), idDb, nameDb, titleDb, genreDb);
         }
+        titleNameDb = buildClassificationTitleNameDb(titleDb);
         synchronized (classificationDbLock) {
             classificationDb.clear();
             classificationNameDb.clear();
             classificationTitleDb.clear();
+            classificationTitleNameDb.clear();
             classificationGenreDb.clear();
             classificationDb.putAll(idDb);
             classificationNameDb.putAll(nameDb);
             classificationTitleDb.putAll(titleDb);
+            classificationTitleNameDb.putAll(titleNameDb);
             classificationGenreDb.putAll(genreDb);
             classificationDbLoaded = true;
             classificationDbLoadedAt = now;
@@ -1676,6 +1678,7 @@ public class MainPageWebtoon {
         Map<String, List<String>> nameDb = new LinkedHashMap<>();
         Map<Integer, DbTitle> titleDb = new LinkedHashMap<>();
         Map<String, List<DbTitle>> genreDb = new LinkedHashMap<>();
+        Map<String, DbTitle> titleNameDb;
         try {
             parseClassificationDb(readCachedClassificationDb("comic-classification.json"), idDb, nameDb, titleDb, genreDb);
             if(idDb.size() == 0)
@@ -1687,14 +1690,17 @@ public class MainPageWebtoon {
             genreDb.clear();
             parseClassificationDb(readBundledComicClassificationDb(), idDb, nameDb, titleDb, genreDb);
         }
+        titleNameDb = buildClassificationTitleNameDb(titleDb);
         synchronized (comicClassificationDbLock) {
             comicClassificationDb.clear();
             comicClassificationNameDb.clear();
             comicClassificationTitleDb.clear();
+            comicClassificationTitleNameDb.clear();
             comicClassificationGenreDb.clear();
             comicClassificationDb.putAll(idDb);
             comicClassificationNameDb.putAll(nameDb);
             comicClassificationTitleDb.putAll(titleDb);
+            comicClassificationTitleNameDb.putAll(titleNameDb);
             comicClassificationGenreDb.putAll(genreDb);
             comicClassificationDbLoaded = true;
             comicClassificationDbLoadedAt = now;
@@ -1723,6 +1729,7 @@ public class MainPageWebtoon {
                 comicClassificationNameDb.put(normalizeClassificationName(name), tagList);
                 DbTitle dbTitle = new DbTitle(id, name, "", "", tagList);
                 comicClassificationTitleDb.put(id, dbTitle);
+                putClassificationTitleName(comicClassificationTitleNameDb, dbTitle);
                 indexClassificationTitle(comicClassificationGenreDb, dbTitle);
             }
         } else {
@@ -1733,6 +1740,37 @@ public class MainPageWebtoon {
                 classificationNameDb.put(normalizeClassificationName(name), tagList);
                 DbTitle dbTitle = new DbTitle(id, name, "", "", tagList);
                 classificationTitleDb.put(id, dbTitle);
+                putClassificationTitleName(classificationTitleNameDb, dbTitle);
+                indexClassificationTitle(classificationGenreDb, dbTitle);
+            }
+        }
+    }
+
+    static void putClassificationDbTitleWithThumbForTest(int id, String name, boolean comic, String thumb, String... tags) {
+        ArrayList<String> tagList = new ArrayList<>();
+        if(tags != null)
+            for(String tag : tags)
+                if(tag != null && tag.length() > 0)
+                    tagList.add(tag);
+        DbTitle dbTitle = new DbTitle(id, name, thumb, "", tagList);
+        if(comic) {
+            synchronized (comicClassificationDbLock) {
+                comicClassificationDbLoaded = true;
+                comicClassificationDbLoadedAt = System.currentTimeMillis();
+                comicClassificationDb.put(id, tagList);
+                comicClassificationNameDb.put(normalizeClassificationName(name), tagList);
+                comicClassificationTitleDb.put(id, dbTitle);
+                putClassificationTitleName(comicClassificationTitleNameDb, dbTitle);
+                indexClassificationTitle(comicClassificationGenreDb, dbTitle);
+            }
+        } else {
+            synchronized (classificationDbLock) {
+                classificationDbLoaded = true;
+                classificationDbLoadedAt = System.currentTimeMillis();
+                classificationDb.put(id, tagList);
+                classificationNameDb.put(normalizeClassificationName(name), tagList);
+                classificationTitleDb.put(id, dbTitle);
+                putClassificationTitleName(classificationTitleNameDb, dbTitle);
                 indexClassificationTitle(classificationGenreDb, dbTitle);
             }
         }
@@ -1743,6 +1781,7 @@ public class MainPageWebtoon {
             classificationDb.clear();
             classificationNameDb.clear();
             classificationTitleDb.clear();
+            classificationTitleNameDb.clear();
             classificationGenreDb.clear();
             classificationDbLoaded = false;
             classificationDbLoadedAt = 0;
@@ -1751,6 +1790,7 @@ public class MainPageWebtoon {
             comicClassificationDb.clear();
             comicClassificationNameDb.clear();
             comicClassificationTitleDb.clear();
+            comicClassificationTitleNameDb.clear();
             comicClassificationGenreDb.clear();
             comicClassificationDbLoaded = false;
             comicClassificationDbLoadedAt = 0;
@@ -1807,6 +1847,23 @@ public class MainPageWebtoon {
             titleDb.clear();
             genreDb.clear();
         }
+    }
+
+    private static Map<String, DbTitle> buildClassificationTitleNameDb(Map<Integer, DbTitle> titleDb) {
+        Map<String, DbTitle> titleNameDb = new LinkedHashMap<>();
+        if(titleDb == null)
+            return titleNameDb;
+        for(DbTitle dbTitle : titleDb.values())
+            putClassificationTitleName(titleNameDb, dbTitle);
+        return titleNameDb;
+    }
+
+    private static void putClassificationTitleName(Map<String, DbTitle> titleNameDb, DbTitle dbTitle) {
+        if(titleNameDb == null || dbTitle == null)
+            return;
+        String nameKey = normalizeClassificationName(dbTitle.name);
+        if(nameKey.length() > 0)
+            titleNameDb.put(nameKey, dbTitle);
     }
 
     private static void indexClassificationTitle(Map<String, List<DbTitle>> genreDb, DbTitle dbTitle) {
