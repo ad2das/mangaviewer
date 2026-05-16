@@ -67,6 +67,26 @@ public class ViewerPreloadPolicyTest {
     }
 
     @Test
+    public void immediateDisplayWindowStartsDecodeBeforeAdapterBind() {
+        ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.immediateDisplayWindow(false);
+
+        assertEquals(2, window.decodedLimit);
+        assertEquals(4, window.immediateLimit);
+        assertEquals(8, window.highLimit);
+        assertEquals(8, window.totalLimit);
+    }
+
+    @Test
+    public void immediateDisplayWindowKeepsDataSaverSmall() {
+        ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.immediateDisplayWindow(true);
+
+        assertEquals(1, window.decodedLimit);
+        assertEquals(1, window.immediateLimit);
+        assertEquals(2, window.highLimit);
+        assertEquals(2, window.totalLimit);
+    }
+
+    @Test
     public void scrollAheadWindow_decodesNearPagesOnly() {
         ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.scrollAheadWindow(false);
 

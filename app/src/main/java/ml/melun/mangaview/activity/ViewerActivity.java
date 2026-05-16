@@ -1200,9 +1200,18 @@ public class ViewerActivity extends AppCompatActivity {
             if(title == null)
                 title = m.getTitle();
             resetOnBackPressed();
+            preloadImmediateDisplayImages(m, policy);
             ViewerWarmupManager.logMetric("viewer_open_to_set_manga_ms", SystemClock.elapsedRealtime() - startedAtMs);
             callback.post(m);
             hydrateEpisodeListAfterFirstFrame(m);
+        }
+
+        private void preloadImmediateDisplayImages(Manga target, ViewerLoadPolicy policy) {
+            if(target == null || !target.isOnline())
+                return;
+            int firstPage = initialPageIndex(target, policy);
+            ViewerWarmupManager.preloadWindow(context, target, firstPage, width, autoCut,
+                    p.getReverse(), ViewerPreloadPolicy.immediateDisplayWindow(p.getDataSave()));
         }
 
         void finish(Integer res) {
