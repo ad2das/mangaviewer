@@ -82,6 +82,7 @@ public class MainPageWebtoon {
     private static final Map<String, List<DbTitle>> comicClassificationGenreDb = new LinkedHashMap<>();
     private static boolean comicClassificationDbLoaded = false;
     private static long comicClassificationDbLoadedAt = 0;
+    private static final Object comicClassificationDbLock = new Object();
 
     public static final String[][] WEBTOON_FILTER_GROUPS = buildWebtoonFilterGroups();
     public static final String[][] COMIC_FILTER_GROUPS = buildComicFilterGroups();
@@ -881,10 +882,12 @@ public class MainPageWebtoon {
     private static DbTitle findClassificationDbTitle(String name, int id, int baseMode) {
         if(baseMode == base_comic) {
             loadComicClassificationDb();
-            DbTitle byId = comicClassificationTitleDb.get(id);
-            if(byId != null)
-                return byId;
-            return findClassificationDbTitleByName(comicClassificationTitleDb, name);
+            synchronized (comicClassificationDbLock) {
+                DbTitle byId = comicClassificationTitleDb.get(id);
+                if(byId != null)
+                    return byId;
+                return findClassificationDbTitleByName(comicClassificationTitleDb, name);
+            }
         }
         loadClassificationDb();
         DbTitle byId = classificationTitleDb.get(id);
@@ -1190,20 +1193,22 @@ public class MainPageWebtoon {
         return getComicClassificationDbTitlesByGenre(genre, 0, limit);
     }
 
-    public static synchronized ArrayList<Title> getComicClassificationDbTitlesByGenre(String genre, int offset, int limit) {
+    public static ArrayList<Title> getComicClassificationDbTitlesByGenre(String genre, int offset, int limit) {
         ArrayList<Title> result = new ArrayList<>();
         if(genre == null)
             return result;
         loadComicClassificationDb();
-        List<DbTitle> titles = comicClassificationGenreDb.get(normalizeClassificationTag(genre));
-        if(titles == null)
-            return result;
-        int start = Math.max(0, offset);
-        for(int i = start; i < titles.size(); i++) {
-            DbTitle dbTitle = titles.get(i);
-            result.add(classificationTitle(dbTitle, base_comic));
-            if(limit > 0 && result.size() >= limit)
-                break;
+        synchronized (comicClassificationDbLock) {
+            List<DbTitle> titles = comicClassificationGenreDb.get(normalizeClassificationTag(genre));
+            if(titles == null)
+                return result;
+            int start = Math.max(0, offset);
+            for(int i = start; i < titles.size(); i++) {
+                DbTitle dbTitle = titles.get(i);
+                result.add(classificationTitle(dbTitle, base_comic));
+                if(limit > 0 && result.size() >= limit)
+                    break;
+            }
         }
         return result;
     }
@@ -1214,12 +1219,14 @@ public class MainPageWebtoon {
         return title;
     }
 
-    public static synchronized int getComicClassificationDbGenreCount(String genre) {
+    public static int getComicClassificationDbGenreCount(String genre) {
         if(genre == null)
             return 0;
         loadComicClassificationDb();
-        List<DbTitle> titles = comicClassificationGenreDb.get(normalizeClassificationTag(genre));
-        return titles == null ? 0 : titles.size();
+        synchronized (comicClassificationDbLock) {
+            List<DbTitle> titles = comicClassificationGenreDb.get(normalizeClassificationTag(genre));
+            return titles == null ? 0 : titles.size();
+        }
     }
 
     private static List<String> inferWebtoonTags(Title title) {
@@ -1296,19 +1303,23 @@ public class MainPageWebtoon {
         return tags == null ? null : new ArrayList<>(tags);
     }
 
-    private static synchronized List<String> getComicClassificationDbTags(int titleId) {
+    private static List<String> getComicClassificationDbTags(int titleId) {
         loadComicClassificationDb();
-        List<String> tags = comicClassificationDb.get(titleId);
-        return tags == null ? null : new ArrayList<>(tags);
+        synchronized (comicClassificationDbLock) {
+            List<String> tags = comicClassificationDb.get(titleId);
+            return tags == null ? null : new ArrayList<>(tags);
+        }
     }
 
-    private static synchronized List<String> getComicClassificationDbTags(String titleName) {
+    private static List<String> getComicClassificationDbTags(String titleName) {
         loadComicClassificationDb();
         String key = normalizeClassificationName(titleName);
         if(key.length() == 0)
             return null;
-        List<String> tags = comicClassificationNameDb.get(key);
-        return tags == null ? null : new ArrayList<>(tags);
+        synchronized (comicClassificationDbLock) {
+            List<String> tags = comicClassificationNameDb.get(key);
+            return tags == null ? null : new ArrayList<>(tags);
+        }
     }
 
     private static String normalizeClassificationName(String value) {
@@ -1342,22 +1353,38 @@ public class MainPageWebtoon {
         }
     }
 
-    private static synchronized void loadComicClassificationDb() {
+    private static void loadComicClassificationDb() {
         long now = System.currentTimeMillis();
-        if(comicClassificationDbLoaded && now - comicClassificationDbLoadedAt <= CLASSIFICATION_DB_TTL_MS)
-            return;
-        comicClassificationDbLoaded = true;
-        comicClassificationDbLoadedAt = now;
+        synchronized (comicClassificationDbLock) {
+            if(comicClassificationDbLoaded && now - comicClassificationDbLoadedAt <= CLASSIFICATION_DB_TTL_MS)
+                return;
+        }
+        Map<Integer, List<String>> idDb = new LinkedHashMap<>();
+        Map<String, List<String>> nameDb = new LinkedHashMap<>();
+        Map<Integer, DbTitle> titleDb = new LinkedHashMap<>();
+        Map<String, List<DbTitle>> genreDb = new LinkedHashMap<>();
         try {
-            parseComicClassificationDb(readCachedClassificationDb("comic-classification.json"));
-            if(comicClassificationDb.size() == 0)
-                parseComicClassificationDb(readBundledComicClassificationDb());
+            parseClassificationDb(readCachedClassificationDb("comic-classification.json"), idDb, nameDb, titleDb, genreDb);
+            if(idDb.size() == 0)
+                parseClassificationDb(readBundledComicClassificationDb(), idDb, nameDb, titleDb, genreDb);
         } catch (Exception e) {
+            idDb.clear();
+            nameDb.clear();
+            titleDb.clear();
+            genreDb.clear();
+            parseClassificationDb(readBundledComicClassificationDb(), idDb, nameDb, titleDb, genreDb);
+        }
+        synchronized (comicClassificationDbLock) {
             comicClassificationDb.clear();
             comicClassificationNameDb.clear();
             comicClassificationTitleDb.clear();
             comicClassificationGenreDb.clear();
-            parseComicClassificationDb(readBundledComicClassificationDb());
+            comicClassificationDb.putAll(idDb);
+            comicClassificationNameDb.putAll(nameDb);
+            comicClassificationTitleDb.putAll(titleDb);
+            comicClassificationGenreDb.putAll(genreDb);
+            comicClassificationDbLoaded = true;
+            comicClassificationDbLoadedAt = now;
         }
     }
 
