@@ -55,4 +55,11 @@ public class StripAdapterTest {
         assertEquals(350L, StripAdapter.imageRetryDelayMsForTest(1));
         assertEquals(900L, StripAdapter.imageRetryDelayMsForTest(2));
     }
+
+    @Test
+    public void autoCutSecondPageDoesNotReserveFullHeightBeforeDecode() {
+        assertEquals(1, StripAdapter.estimatedPageHeightForTest(true, PageItem.SECOND, 1000, 3000L, 2));
+        assertEquals(1500, StripAdapter.estimatedPageHeightForTest(true, PageItem.FIRST, 1000, 3000L, 2));
+        assertEquals(1500, StripAdapter.estimatedPageHeightForTest(false, PageItem.SECOND, 1000, 3000L, 2));
+    }
 }

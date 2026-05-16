@@ -525,9 +525,10 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(payloads != null && payloads.contains(PAYLOAD_HEIGHT) && holder instanceof ImgViewHolder
                 && items != null && pos >= 0 && pos < items.size() && items.get(pos) instanceof PageItem) {
             ImgViewHolder imageHolder = (ImgViewHolder) holder;
-            String pageKey = pageBindKey((PageItem) items.get(pos));
+            PageItem page = (PageItem) items.get(pos);
+            String pageKey = pageBindKey(page);
             if(pageKey.equals(imageHolder.boundPageKey)) {
-                applyKnownHeight(imageHolder, pageKey);
+                applyKnownHeight(imageHolder, page, pageKey);
                 return;
             }
         }
@@ -545,7 +546,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         int bindGeneration = ++holder.bindGeneration;
         holder.boundPageKey = pageKey;
         holder.bindStartedAtMs = android.os.SystemClock.elapsedRealtime();
-        applyKnownHeight(holder, pageKey);
+        applyKnownHeight(holder, item, pageKey);
         String cacheKey = decodedCacheKey(item);
         CachedBitmap cached = decodedBitmapCache.get(cacheKey);
         if(cached != null && cached.isUsable() && isHolderStillBound(holder, item, pageKey)) {
@@ -592,7 +593,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 public void onLoadCleared(@Nullable Drawable placeholder) {
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
-                    applyKnownHeight(holder, pageKey);
+                    applyKnownHeight(holder, item, pageKey);
                     holder.frame.setImageDrawable(null);
                     holder.refresh.setVisibility(View.GONE);
                 }
@@ -632,7 +633,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 public void onLoadCleared(@Nullable Drawable placeholder) {
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
-                    applyKnownHeight(holder, pageKey);
+                    applyKnownHeight(holder, item, pageKey);
                     holder.frame.setImageDrawable(null);
                     holder.refresh.setVisibility(View.GONE);
                 }
@@ -655,7 +656,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private void handleImageLoadFailed(ImgViewHolder holder, PageItem item, String pageKey, int bindGeneration) {
-        applyKnownHeight(holder, pageKey);
+        applyKnownHeight(holder, item, pageKey);
         holder.frame.setImageDrawable(null);
         if(scheduleImageRetry(holder, item, pageKey, bindGeneration)) {
             holder.refresh.setVisibility(View.GONE);
@@ -696,7 +697,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private void bindBitmap(ImgViewHolder holder, String pageKey, Bitmap bitmap) {
         boolean hadKnownHeight = hasKnownPageHeight(pageKey);
         rememberPageHeight(pageKey, bitmap);
-        applyPageHeight(holder, pageKey, !scrollBusy || hadKnownHeight);
+        applyPageHeight(holder, null, pageKey, !scrollBusy || hadKnownHeight);
         holder.frame.setImageBitmap(bitmap);
     }
 
@@ -740,11 +741,11 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             pendingHeightCorrections.add(pageKey);
     }
 
-    private void applyKnownHeight(ImgViewHolder holder, String pageKey) {
-        applyPageHeight(holder, pageKey, true);
+    private void applyKnownHeight(ImgViewHolder holder, PageItem item, String pageKey) {
+        applyPageHeight(holder, item, pageKey, true);
     }
 
-    private void applyPageHeight(ImgViewHolder holder, String pageKey, boolean allowKnownCorrection) {
+    private void applyPageHeight(ImgViewHolder holder, PageItem item, String pageKey, boolean allowKnownCorrection) {
         if(holder == null || holder.frame == null)
             return;
         Integer knownHeight = pageKey == null ? null : pageHeights.get(pageKey);
@@ -753,7 +754,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             pendingHeightCorrections.add(pageKey);
         int targetHeight = pageKey == null
                 ? ViewGroup.LayoutParams.WRAP_CONTENT
-                : (hasKnownHeight && allowKnownCorrection ? knownHeight : estimatedPageHeight());
+                : (hasKnownHeight && allowKnownCorrection ? knownHeight : estimatedPageHeight(item));
         applyHeight(holder.itemView, targetHeight, false);
         applyHeight(holder.frame, targetHeight == ViewGroup.LayoutParams.WRAP_CONTENT
                 ? ViewGroup.LayoutParams.WRAP_CONTENT
@@ -782,10 +783,20 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         return pageKey != null && pageHeights.containsKey(pageKey);
     }
 
-    private int estimatedPageHeight() {
+    private int estimatedPageHeight(PageItem item) {
+        return estimatedPageHeight(autoCut, item == null ? PageItem.FIRST : item.side, width, pageHeightTotal, pageHeightSampleCount);
+    }
+
+    private static int estimatedPageHeight(boolean autoCut, int side, int width, long pageHeightTotal, int pageHeightSampleCount) {
+        if(autoCut && side == PageItem.SECOND)
+            return 1;
         if(pageHeightSampleCount > 0)
             return Math.max(width, Math.round((float) pageHeightTotal / pageHeightSampleCount));
         return Math.max(width, Math.round(width * 1.45f));
+    }
+
+    static int estimatedPageHeightForTest(boolean autoCut, int side, int width, long pageHeightTotal, int pageHeightSampleCount) {
+        return estimatedPageHeight(autoCut, side, width, pageHeightTotal, pageHeightSampleCount);
     }
 
     private void schedulePendingHeightCorrections() {
@@ -1290,7 +1301,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             ImgViewHolder imageHolder = (ImgViewHolder) holder;
             clearImageTarget(imageHolder);
             imageHolder.boundPageKey = null;
-            applyKnownHeight(imageHolder, null);
+            applyKnownHeight(imageHolder, null, null);
             imageHolder.frame.setImageDrawable(null);
             imageHolder.refresh.setVisibility(View.GONE);
         }
