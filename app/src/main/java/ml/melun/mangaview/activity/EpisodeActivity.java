@@ -72,6 +72,7 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_ERROR;
 public class EpisodeActivity extends AppCompatActivity {
     private static final long VIEWER_PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final long VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS = 450L;
+    private static final long INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 1200L;
     private static final int VISIBLE_EPISODE_WARMUP_AHEAD = 2;
     //global variables
     Title title;
@@ -415,7 +416,7 @@ public class EpisodeActivity extends AppCompatActivity {
             return;
         PrefetchCoordinator.prefetchEpisodeList(context, title, episodes, bookmarkIndex, mode);
         warmupLikelyNtkViewerPage();
-        scheduleVisibleEpisodeWarmup(80L);
+        scheduleVisibleEpisodeWarmup(INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS);
     }
 
     private void scheduleVisibleEpisodeWarmup(long delayMs) {
