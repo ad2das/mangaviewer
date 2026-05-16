@@ -681,12 +681,20 @@ public class ViewerWarmupManager {
 
     private static RequestOptions viewerOptions(PageItem page, boolean autoCut, boolean reverse, int width) {
         RequestOptions options = new RequestOptions()
-                .diskCacheStrategy(DiskCacheStrategy.DATA)
+                .diskCacheStrategy(viewerDiskCacheStrategy())
                 .downsample(DownsampleStrategy.AT_MOST)
                 .override(Math.max(width, 1), Target.SIZE_ORIGINAL);
         if(page != null)
             options = options.transform(new ViewerPageTransformation(page, autoCut, reverse, width));
         return options;
+    }
+
+    static DiskCacheStrategy viewerDiskCacheStrategyForTest() {
+        return viewerDiskCacheStrategy();
+    }
+
+    private static DiskCacheStrategy viewerDiskCacheStrategy() {
+        return DiskCacheStrategy.ALL;
     }
 
     private static void preloadDecoded(Context context, PageItem page, RequestOptions options, Priority priority, boolean autoCut, boolean reverse, int width) {

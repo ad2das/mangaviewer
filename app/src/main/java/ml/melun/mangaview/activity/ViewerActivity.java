@@ -1159,7 +1159,7 @@ public class ViewerActivity extends AppCompatActivity {
                                 m = prepared.manga;
                         } else if(result == LOAD_OK && displayedEarly && hasLoadedImages(m)) {
                             ViewerWarmupManager.preloadLoadedImages(context, m, firstPage, width, autoCut,
-                                    p.getReverse(), p.getDataSave() ? 3 : 6, Priority.HIGH, 0);
+                                    p.getReverse(), p.getDataSave() ? 3 : 6, Priority.IMMEDIATE, 1);
                         } else if(result == LOAD_OK) {
                             result = ViewerWarmupManager.prepareFirstFrame(context, m, title, firstPage, width, autoCut, p.getReverse(), cancellation);
                         }
@@ -1211,7 +1211,7 @@ public class ViewerActivity extends AppCompatActivity {
                 return;
             int firstPage = initialPageIndex(target, policy);
             ViewerWarmupManager.preloadLoadedImages(context, target, firstPage, width, autoCut,
-                    p.getReverse(), p.getDataSave() ? 2 : 4, Priority.HIGH, 0);
+                    p.getReverse(), p.getDataSave() ? 2 : 4, Priority.IMMEDIATE, 1);
         }
 
         void finish(Integer res) {

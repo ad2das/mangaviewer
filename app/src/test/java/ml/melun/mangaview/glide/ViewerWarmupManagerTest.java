@@ -2,6 +2,8 @@ package ml.melun.mangaview.glide;
 
 import org.junit.Test;
 
+import com.bumptech.glide.load.engine.DiskCacheStrategy;
+
 import java.util.Arrays;
 import java.util.Collections;
 
@@ -10,6 +12,7 @@ import ml.melun.mangaview.mangaview.Manga;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertSame;
 
 public class ViewerWarmupManagerTest {
     @Test
@@ -145,6 +148,11 @@ public class ViewerWarmupManagerTest {
     public void blockingDecodeTimeoutOnlyChecksForFastCacheHits() {
         assertEquals(650L, ViewerWarmupManager.blockingDecodeTimeoutMsForTest(true));
         assertEquals(250L, ViewerWarmupManager.blockingDecodeTimeoutMsForTest(false));
+    }
+
+    @Test
+    public void viewerRequestsCacheTransformedResourcesForColdReentry() {
+        assertSame(DiskCacheStrategy.ALL, ViewerWarmupManager.viewerDiskCacheStrategyForTest());
     }
 
     @Test

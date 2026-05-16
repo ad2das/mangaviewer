@@ -874,7 +874,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     private RequestOptions viewerImageOptions(PageItem item) {
         RequestOptions options = new RequestOptions()
-                .diskCacheStrategy(DiskCacheStrategy.DATA)
+                .diskCacheStrategy(DiskCacheStrategy.ALL)
                 .downsample(DownsampleStrategy.AT_MOST)
                 .override(Math.max(width, 1), Target.SIZE_ORIGINAL);
         if(item != null)
