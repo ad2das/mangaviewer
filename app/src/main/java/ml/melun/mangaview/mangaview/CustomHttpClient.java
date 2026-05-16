@@ -76,6 +76,7 @@ public class CustomHttpClient {
     private static final long NTK_DOH_TIMEOUT_MS = 1_500L;
     private static final long NTK_DNS_CACHE_DEFAULT_TTL_MS = 5 * 60 * 1000L;
     private static final long NTK_DNS_CACHE_MAX_TTL_MS = 30 * 60 * 1000L;
+    private static final long NTK_DNS_FALLBACK_MEMORY_TTL_MS = 30 * 1000L;
     private static final long NTK_DNS_DISK_STALE_TTL_MS = 7 * 24 * 60 * 60 * 1000L;
     private static final long COOKIE_SYNC_INTERVAL_MS = 30 * 1000L;
     private static final long PAGE_CACHE_COLD_START_TTL_MS = 7 * 24 * 60 * 60 * 1000L;
@@ -181,8 +182,10 @@ public class CustomHttpClient {
         }
         warmNtkDohAsync(hostname);
         List<InetAddress> fallback = ntkFallbackAddresses(hostname);
-        if(!fallback.isEmpty())
+        if(!fallback.isEmpty()) {
+            writeMemoryCachedNtkDns(hostname, fallback, System.currentTimeMillis() + NTK_DNS_FALLBACK_MEMORY_TTL_MS);
             ViewerWarmupManager.logMetric("ntk_dns_fallback_count", fallback.size());
+        }
         return fallback;
     }
 
@@ -879,10 +882,6 @@ public class CustomHttpClient {
         persistCookies();
     }
     public synchronized boolean hasCloudflareClearance() {
-        if(isClearanceExpired()) {
-            clearCloudflareCookies();
-            return false;
-        }
         for(String key : cookies.keySet()) {
             if(!"cf_clearance".equalsIgnoreCase(key))
                 continue;
@@ -2363,6 +2362,8 @@ public class CustomHttpClient {
     private boolean shouldSkipWebViewCookieSync(String baseUrl) {
         if(!isNtkUrl(baseUrl))
             return false;
+        if(hasCloudflareClearance() || hasRecentNtkAccessVerification())
+            return true;
         if(hasFreshCloudflareClearance())
             return true;
         FetchMode mode = effectiveFetchMode(FetchMode.ALLOW_SHARED_WEBVIEW);
