@@ -71,8 +71,8 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_ERROR;
 
 public class EpisodeActivity extends AppCompatActivity {
     private static final long VIEWER_PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
-    private static final long VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS = 450L;
-    private static final long INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 1200L;
+    private static final long VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS = 220L;
+    private static final long INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 260L;
     private static final int VISIBLE_EPISODE_WARMUP_AHEAD = 2;
     //global variables
     Title title;
@@ -473,6 +473,14 @@ public class EpisodeActivity extends AppCompatActivity {
         if(ntkSite)
             return aggressiveAllowed ? 2 : 1;
         return aggressiveAllowed ? 4 : 3;
+    }
+
+    static long visibleEpisodeWarmupIdleDelayMsForTest() {
+        return VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS;
+    }
+
+    static long initialVisibleEpisodeWarmupDelayMsForTest() {
+        return INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS;
     }
 
     private void warmupLikelyNtkViewerPage() {

@@ -47,6 +47,12 @@ public class EpisodeActivityTest {
     }
 
     @Test
+    public void visibleEpisodeWarmupStartsSoonAfterContent() {
+        assertTrue(EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest() <= 300L);
+        assertTrue(EpisodeActivity.visibleEpisodeWarmupIdleDelayMsForTest() <= 250L);
+    }
+
+    @Test
     public void sameEpisodeIdentityListAllowsSkippingDuplicateRefreshRender() {
         List<Manga> cached = new ArrayList<>();
         Manga cachedFirst = new Manga(1, "1", "", base_webtoon);
