@@ -566,7 +566,9 @@ public class TagSearchActivity extends AppCompatActivity {
         private volatile boolean cancelled;
 
         public void start(){
-            handle = AppDispatchers.submitUserAction(() -> {
+            long queuedAt = PerfTrace.start("tag_search_task_queue_ms");
+            handle = AppDispatchers.submitSearch(() -> {
+                PerfTrace.end("tag_search_task_queue_ms", queuedAt);
                 Integer result = load();
                 AppDispatchers.runOnMain(() -> finish(result));
             });

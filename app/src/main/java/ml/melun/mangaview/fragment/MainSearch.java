@@ -1325,7 +1325,9 @@ public class MainSearch extends Fragment {
         }
 
         void start() {
-            handle = AppDispatchers.submitUserAction(() -> {
+            long queuedAt = PerfTrace.start("search_task_queue_ms");
+            handle = AppDispatchers.submitSearch(() -> {
+                PerfTrace.end("search_task_queue_ms", queuedAt);
                 Integer result = load();
                 AppDispatchers.runOnMain(() -> finish(result));
             });
