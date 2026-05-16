@@ -314,7 +314,11 @@ public class MainMain extends Fragment{
                     return;
                 if(!wait)
                     fetchSelected();
-                showInitialHomeRows(initialBaseMode == base_comic ? base_webtoon : base_comic);
+                int inactiveBaseMode = initialBaseMode == base_comic ? base_webtoon : base_comic;
+                selectedRecycler.postDelayed(() -> {
+                    if(isAdded() && initialBaseMode == selectedBaseMode)
+                        showInitialHomeRows(inactiveBaseMode);
+                }, HomeStartupPolicy.inactiveInitialRowsDelayMs(getHttpClient().isNtk()));
             }, 80);
         }
         return rootView;
