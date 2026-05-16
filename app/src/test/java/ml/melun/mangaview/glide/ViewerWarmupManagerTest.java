@@ -8,6 +8,7 @@ import java.util.Arrays;
 import java.util.Collections;
 
 import ml.melun.mangaview.mangaview.Manga;
+import ml.melun.mangaview.mangaview.Title;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -131,6 +132,15 @@ public class ViewerWarmupManagerTest {
     public void backgroundWarmupUsesDirectOnlyForWolfAndNtk() {
         assertTrue(ViewerWarmupManager.shouldUseDirectOnlyBackgroundWarmupForTest("wfwf"));
         assertTrue(ViewerWarmupManager.shouldUseDirectOnlyBackgroundWarmupForTest("ntk"));
+    }
+
+    @Test
+    public void initialViewerFetchRetriesOnlyRecoverableEmptyErrors() {
+        assertTrue(ViewerWarmupManager.shouldRetryInitialViewerFetchForTest(Title.LOAD_ERROR, false, false));
+        assertFalse(ViewerWarmupManager.shouldRetryInitialViewerFetchForTest(Title.LOAD_ERROR, true, false));
+        assertFalse(ViewerWarmupManager.shouldRetryInitialViewerFetchForTest(Title.LOAD_ERROR, false, true));
+        assertFalse(ViewerWarmupManager.shouldRetryInitialViewerFetchForTest(Title.LOAD_CAPTCHA, false, false));
+        assertFalse(ViewerWarmupManager.shouldRetryInitialViewerFetchForTest(Title.LOAD_OK, false, false));
     }
 
     @Test

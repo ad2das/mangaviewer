@@ -464,6 +464,13 @@ public class ViewerWarmupManager {
             result = MangaRepository.fetchViewerInitial(manga, cancellation);
             if(result == LOAD_OK)
                 cacheSnapshot(context, key, manga);
+            else if(shouldRetryInitialViewerFetch(result, hasImages(manga, context),
+                    cancellation != null && cancellation.isCancelled())) {
+                logMetric("viewer_initial_fetch_fallback", result);
+                result = MangaRepository.fetchManga(manga);
+                if(result == LOAD_OK)
+                    cacheSnapshot(context, key, manga);
+            }
         }
         if(result == LOAD_OK && !hasImages(manga, context)) {
             result = MangaRepository.fetchManga(manga);
@@ -503,6 +510,17 @@ public class ViewerWarmupManager {
     public static int prepareFirstFrameDirectOnly(Context context, Manga manga, Title title, int pageIndex, int width,
                                                   boolean autoCut, boolean reverse, MangaRepository.Cancellation cancellation) throws Exception {
         return runDirectOnly(() -> prepareFirstFrame(context, manga, title, pageIndex, width, autoCut, reverse, cancellation));
+    }
+
+    static boolean shouldRetryInitialViewerFetchForTest(int result, boolean hasImages, boolean cancelled) {
+        return shouldRetryInitialViewerFetch(result, hasImages, cancelled);
+    }
+
+    private static boolean shouldRetryInitialViewerFetch(int result, boolean hasImages, boolean cancelled) {
+        return !cancelled
+                && !hasImages
+                && result != LOAD_OK
+                && result != Title.LOAD_CAPTCHA;
     }
 
     public static int prepareFirstFrameBackgroundDirectOnly(Context context, Manga manga, Title title, int pageIndex, int width,
