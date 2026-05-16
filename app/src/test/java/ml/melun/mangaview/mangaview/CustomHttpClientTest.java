@@ -74,6 +74,16 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkHeaderBuildNeverSyncsWebViewCookies() {
+        assertTrue(CustomHttpClient.shouldSkipWebViewCookieSyncForTest(true, false, false, false,
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertTrue(CustomHttpClient.shouldSkipWebViewCookieSyncForTest(true, true, false, true,
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertFalse(CustomHttpClient.shouldSkipWebViewCookieSyncForTest(false, false, false, false,
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+    }
+
+    @Test
     public void sharedWebViewFallbackCoversForegroundWolfEpisodePagesOnly() {
         assertTrue(CustomHttpClient.shouldUseSharedWebViewFallbackForTest(false, true, "/cl?toon=10007",
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));

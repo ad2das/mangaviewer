@@ -93,6 +93,8 @@ public class Utils {
     private static int captchaCount = 1;
     private static long lastAutoCloudflareCaptchaAt = 0L;
     private static long lastCaptchaActivityStartedAt = 0L;
+    private static long lastNtkWebViewCookieSyncAt = 0L;
+    private static final long NTK_WEBVIEW_COOKIE_SYNC_INTERVAL_MS = 60_000L;
     private static final int GLIDE_URL_CACHE_MAX = 512;
     private static final Map<String, GlideUrl> glideUrlCache = new LinkedHashMap<String, GlideUrl>(GLIDE_URL_CACHE_MAX, 0.75f, true) {
         @Override
@@ -980,7 +982,7 @@ public class Utils {
     public static boolean showNtkTurnstileCaptchaIfNeeded(String url, Context context, int code, Fragment fragment, Preference preference) {
         if(!canUseContextForUi(context) || !getHttpClient().isNtk())
             return false;
-        syncNtkCloudflareCookies(preference);
+        syncNtkCloudflareCookies(preference, false);
         if(isNtkEpisodeUrl(url))
             return false;
         if(getHttpClient().hasNtkAccessProof() || getHttpClient().hasRecentNtkAccessVerification())
@@ -1001,7 +1003,7 @@ public class Utils {
     public static boolean startNtkTurnstileCaptchaIfNeeded(Context context, int code, Fragment fragment, Preference preference) {
         if(!canUseContextForUi(context) || !getHttpClient().isNtk())
             return false;
-        syncNtkCloudflareCookies(preference);
+        syncNtkCloudflareCookies(preference, false);
         if(getHttpClient().hasNtkAccessProof() || getHttpClient().hasRecentNtkAccessVerification()) {
             verifyNtkAccessAndOpenCaptchaIfNeeded(context, code, fragment, preference);
             return false;
@@ -1021,7 +1023,7 @@ public class Utils {
     public static boolean verifyNtkAccessAndOpenCaptchaIfNeeded(Context context, int code, Fragment fragment, Preference preference) {
         if(!canUseContextForUi(context) || !getHttpClient().isNtk())
             return false;
-        syncNtkCloudflareCookies(preference);
+        syncNtkCloudflareCookies(preference, false);
         AppDispatchers.runUserAction(() -> {
             boolean challenged = isNtkAccessChallengeActive();
             AppDispatchers.runOnMain(() -> {
@@ -1057,7 +1059,7 @@ public class Utils {
     public static boolean startNtkTurnstileCaptcha(Context context, int code, Fragment fragment, Preference preference) {
         if(!canUseContextForUi(context) || !getHttpClient().isNtk())
             return false;
-        syncNtkCloudflareCookies(preference);
+        syncNtkCloudflareCookies(preference, true);
         if(!getHttpClient().hasNtkAccessProof() && !getHttpClient().hasRecentNtkAccessVerification()) {
             startCaptchaActivity(context, code, fragment, null);
             captchaCount++;
@@ -1112,14 +1114,22 @@ public class Utils {
     }
 
     private static void syncNtkCloudflareCookies(Preference preference) {
+        syncNtkCloudflareCookies(preference, false);
+    }
+
+    private static void syncNtkCloudflareCookies(Preference preference, boolean allowWebViewSync) {
         Preference source = preference != null ? preference : p;
         if(source == null)
             return;
         getHttpClient().restoreClearanceFromDisk();
-        if(!getHttpClient().hasFreshCloudflareClearance()) {
-            getHttpClient().syncCookiesFromWebView(source.getWebtoonUrl(), true);
-            getHttpClient().syncCookiesFromWebView(source.getUrl(), true);
-        }
+        if(getHttpClient().hasFreshCloudflareClearance() || !allowWebViewSync)
+            return;
+        long now = System.currentTimeMillis();
+        if(now - lastNtkWebViewCookieSyncAt < NTK_WEBVIEW_COOKIE_SYNC_INTERVAL_MS)
+            return;
+        lastNtkWebViewCookieSyncAt = now;
+        getHttpClient().syncCookiesFromWebView(source.getWebtoonUrl(), true);
+        getHttpClient().syncCookiesFromWebView(source.getUrl(), true);
     }
 
     static void startCaptchaActivity(Context context, int code, Fragment fragment, String url){

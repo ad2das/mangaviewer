@@ -905,8 +905,6 @@ public class MainActivity extends AppCompatActivity
 
     private void switchSitePreset(String comicUrl, String webtoonUrl, String label) {
         p.setSitePreset(comicUrl, webtoonUrl);
-        MainApplication.getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
-        MainApplication.getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
         MainApplication.getHttpClient().clearPageCache();
         invalidateOptionsMenu();
         UrlUpdateCallback callback = fragments[0] instanceof MainMain ? ((MainMain) fragments[0]).getCallback() : null;

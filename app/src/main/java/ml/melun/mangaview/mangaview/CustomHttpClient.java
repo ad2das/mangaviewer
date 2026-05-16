@@ -2360,14 +2360,25 @@ public class CustomHttpClient {
     }
 
     private boolean shouldSkipWebViewCookieSync(String baseUrl) {
-        if(!isNtkUrl(baseUrl))
+        return shouldSkipWebViewCookieSyncForState(isNtkUrl(baseUrl),
+                hasCloudflareClearance(),
+                hasRecentNtkAccessVerification(),
+                hasFreshCloudflareClearance(),
+                effectiveFetchMode(FetchMode.ALLOW_SHARED_WEBVIEW));
+    }
+
+    static boolean shouldSkipWebViewCookieSyncForTest(boolean ntkUrl, boolean hasClearance,
+                                                      boolean hasRecentVerification, boolean hasFreshClearance,
+                                                      FetchMode fetchMode) {
+        return shouldSkipWebViewCookieSyncForState(ntkUrl, hasClearance, hasRecentVerification, hasFreshClearance, fetchMode);
+    }
+
+    private static boolean shouldSkipWebViewCookieSyncForState(boolean ntkUrl, boolean hasClearance,
+                                                               boolean hasRecentVerification, boolean hasFreshClearance,
+                                                               FetchMode fetchMode) {
+        if(!ntkUrl)
             return false;
-        if(hasCloudflareClearance() || hasRecentNtkAccessVerification())
-            return true;
-        if(hasFreshCloudflareClearance())
-            return true;
-        FetchMode mode = effectiveFetchMode(FetchMode.ALLOW_SHARED_WEBVIEW);
-        return mode == FetchMode.DIRECT_ONLY || mode == FetchMode.CACHE_ONLY;
+        return true;
     }
 
     private void applyNtkApiHeaders(Map<String, String> headers, String baseUrl, String path) {
