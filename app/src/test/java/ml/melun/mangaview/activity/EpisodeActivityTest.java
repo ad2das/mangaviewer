@@ -53,6 +53,12 @@ public class EpisodeActivityTest {
     }
 
     @Test
+    public void ntkVisibleEpisodeWarmupWaitsForFirstFrameWarmup() {
+        assertEquals(260L, EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(false));
+        assertTrue(EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(true) >= 650L);
+    }
+
+    @Test
     public void diskEpisodeCacheLoadsOnlyAfterMemoryMiss() {
         assertFalse(EpisodeActivity.shouldLoadDiskEpisodeCacheAsyncForTest(true));
         assertTrue(EpisodeActivity.shouldLoadDiskEpisodeCacheAsyncForTest(false));

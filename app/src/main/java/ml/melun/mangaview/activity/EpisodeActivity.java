@@ -73,6 +73,7 @@ public class EpisodeActivity extends AppCompatActivity {
     private static final long VIEWER_PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final long VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS = 220L;
     private static final long INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 260L;
+    private static final long NTK_INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 700L;
     private static final int VISIBLE_EPISODE_WARMUP_AHEAD = 2;
     //global variables
     Title title;
@@ -418,7 +419,11 @@ public class EpisodeActivity extends AppCompatActivity {
             return;
         PrefetchCoordinator.prefetchEpisodeList(context, title, episodes, bookmarkIndex, mode);
         warmupLikelyNtkViewerPage();
-        scheduleVisibleEpisodeWarmup(INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS);
+        scheduleVisibleEpisodeWarmup(initialVisibleEpisodeWarmupDelayMs());
+    }
+
+    private long initialVisibleEpisodeWarmupDelayMs() {
+        return initialVisibleEpisodeWarmupDelayMsForTest(p.isNtkSite() || getHttpClient().isNtk());
     }
 
     private void scheduleVisibleEpisodeWarmup(long delayMs) {
@@ -483,6 +488,10 @@ public class EpisodeActivity extends AppCompatActivity {
 
     static long initialVisibleEpisodeWarmupDelayMsForTest() {
         return INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS;
+    }
+
+    static long initialVisibleEpisodeWarmupDelayMsForTest(boolean ntkSite) {
+        return ntkSite ? NTK_INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS : INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS;
     }
 
     private void warmupLikelyNtkViewerPage() {
