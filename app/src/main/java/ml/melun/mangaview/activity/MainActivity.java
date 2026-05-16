@@ -190,14 +190,19 @@ public class MainActivity extends AppCompatActivity
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        long onCreateStartedAt = PerfTrace.start("main_on_create_ms");
+        long beforeSuperStartedAt = PerfTrace.start("main_before_super_ms");
         if(savedInstanceState == null)
             forceWfwfOnStartup();
         fragments[0] = MainMain.newInstance();
         dark = p.getDarkTheme();
         if (dark) setTheme(R.style.AppThemeDarkNoTitle);
         else setTheme(R.style.AppTheme_NoActionBar);
+        PerfTrace.end("main_before_super_ms", beforeSuperStartedAt);
+        long superStartedAt = PerfTrace.start("main_super_on_create_ms");
         super.onCreate(savedInstanceState);
-        PerformanceMonitor.attach(this);
+        PerfTrace.end("main_super_on_create_ms", superStartedAt);
+        schedulePerformanceMonitorAttach();
         context = this;
         Intent intent = getIntent();
         String action = intent.getAction();
@@ -300,13 +305,22 @@ public class MainActivity extends AppCompatActivity
         }else if(action != null && action.equals(MIGRATE_RESULT)){
             migratorEndPopup(savedInstanceState, 0, intent.getStringExtra("msg"));
         }else{
+            long activityInitStartedAt = PerfTrace.start("main_activity_init_call_ms");
             activityInit(savedInstanceState);
+            PerfTrace.end("main_activity_init_call_ms", activityInitStartedAt);
        }
+        PerfTrace.end("main_on_create_ms", onCreateStartedAt);
     }
 
     private void activityInit(Bundle savedInstanceState){
+        long initStartedAt = PerfTrace.start("main_activity_init_ms");
+        long checkStartedAt = PerfTrace.start("main_check2_ms");
         p.check2();
+        PerfTrace.end("main_check2_ms", checkStartedAt);
+        long setContentStartedAt = PerfTrace.start("main_set_content_view_ms");
         setContentView(R.layout.activity_main);
+        PerfTrace.end("main_set_content_view_ms", setContentStartedAt);
+        long chromeStartedAt = PerfTrace.start("main_chrome_setup_ms");
         progressView = this.findViewById(R.id.progress_panel);
         applyMainWindowChrome();
 
@@ -340,9 +354,11 @@ public class MainActivity extends AppCompatActivity
                 }
             });
         }
+        PerfTrace.end("main_chrome_setup_ms", chromeStartedAt);
 
         homeDirStr = p.getHomeDir();
 
+        long fragmentStartedAt = PerfTrace.start("main_initial_fragment_ms");
         content = findViewById(R.id.contentHolder);
         restoreExistingFragments();
 
@@ -354,19 +370,41 @@ public class MainActivity extends AppCompatActivity
             changeFragment(t>-1 ? t : 0);
         }else
             changeFragment(0);
+        PerfTrace.end("main_initial_fragment_ms", fragmentStartedAt);
 
+        long postStartupStartedAt = PerfTrace.start("main_post_startup_ms");
         content.postDelayed(this::runDeferredStartupTasks, startupDeferredTasksDelayMsForTest());
         content.postDelayed(() -> {
             if(!isFinishing() && !isDestroyed())
                 AppUpdateManager.checkForUpdate(this);
         }, startupUpdateCheckDelayMsForTest());
         content.post(this::maybeOpenNtkCaptcha);
+        PerfTrace.end("main_post_startup_ms", postStartupStartedAt);
+        PerfTrace.end("main_activity_init_ms", initStartedAt);
 
         // savedInstanceState
 
 
         // First launch should go straight into the app without notice/update popups.
 
+    }
+
+    private void schedulePerformanceMonitorAttach() {
+        View decor = getWindow() == null ? null : getWindow().getDecorView();
+        if(decor == null) {
+            attachPerformanceMonitorNow();
+            return;
+        }
+        decor.postDelayed(this::attachPerformanceMonitorNow, 3200);
+    }
+
+    private void attachPerformanceMonitorNow() {
+        if(isFinishing() || isDestroyed())
+            return;
+        long monitorStartedAt = PerfTrace.start("main_perf_monitor_attach_ms");
+        PerformanceMonitor.attach(this);
+        PerformanceMonitor.resume();
+        PerfTrace.end("main_perf_monitor_attach_ms", monitorStartedAt);
     }
 
     private void runDeferredStartupTasks() {

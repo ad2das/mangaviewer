@@ -13,6 +13,7 @@ import ml.melun.mangaview.mangaview.MainPageWebtoon;
 import ml.melun.mangaview.report.CrashReporter;
 import ml.melun.mangaview.repository.room.MangaRoomStore;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.PerfTrace;
 
 
 
@@ -39,11 +40,21 @@ public class MainApplication extends MultiDexApplication {
 
     @Override
     public void onCreate() {
+        long appStartedAt = PerfTrace.start("app_on_create_ms");
         appContext = this;
+        long crashReporterStartedAt = PerfTrace.start("app_crash_reporter_install_ms");
         CrashReporter.install(this);
+        PerfTrace.end("app_crash_reporter_install_ms", crashReporterStartedAt);
+        long vectorStartedAt = PerfTrace.start("app_vector_delegate_ms");
         AppCompatDelegate.setCompatVectorFromResourcesEnabled(true);
+        PerfTrace.end("app_vector_delegate_ms", vectorStartedAt);
+        long preferenceStartedAt = PerfTrace.start("app_preference_init_ms");
         p = new Preference(this);
+        PerfTrace.end("app_preference_init_ms", preferenceStartedAt);
+        long superStartedAt = PerfTrace.start("app_super_on_create_ms");
         super.onCreate();
+        PerfTrace.end("app_super_on_create_ms", superStartedAt);
+        PerfTrace.end("app_on_create_ms", appStartedAt);
     }
 
     public static CustomHttpClient getHttpClient() {
