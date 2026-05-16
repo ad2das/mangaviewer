@@ -22,6 +22,7 @@ import androidx.lifecycle.ViewModelProvider;
 
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewStub;
 import com.google.android.material.bottomsheet.BottomSheetDialog;
 import com.google.android.material.bottomnavigation.BottomNavigationView;
 import com.google.android.material.navigation.NavigationView;
@@ -103,6 +104,8 @@ public class MainActivity extends AppCompatActivity
     private Context context;
     String homeDirStr;
     Boolean dark;
+    DrawerLayout drawerLayout;
+    ActionBarDrawerToggle drawerToggle;
     NavigationView navigationView;
     BottomNavigationView bottomNavigationView;
     Toolbar toolbar;
@@ -299,33 +302,8 @@ public class MainActivity extends AppCompatActivity
         toolbar = (Toolbar) findViewById(R.id.toolbar);
         setSupportActionBar(toolbar);
 
-        DrawerLayout drawer = (DrawerLayout) findViewById(R.id.drawer_layout);
-        ActionBarDrawerToggle toggle = new ActionBarDrawerToggle(
-                this, drawer, toolbar, R.string.navigation_drawer_open, R.string.navigation_drawer_close);
-        drawer.addDrawerListener(toggle);
-        toggle.syncState();
+        drawerLayout = (DrawerLayout) findViewById(R.id.drawer_layout);
         toolbar.setNavigationIcon(null);
-
-        //nav_drawer color scheme
-        navigationView = (NavigationView) findViewById(R.id.nav_view);
-        navigationView.setNavigationItemSelectedListener(this);
-        if(dark) {
-            int[][] states = new int[][]{
-                    new int[]{-android.R.attr.state_enabled}, // disabled
-                    new int[]{android.R.attr.state_enabled}, // enabled
-                    new int[]{-android.R.attr.state_checked}, // unchecked
-                    new int[]{android.R.attr.state_pressed}  // pressed
-            };
-
-            int[] colors = new int[]{
-                    Color.parseColor("#565656"),
-                    Color.parseColor("#a2a2a2"),
-                    Color.WHITE,
-                    Color.WHITE
-            };
-            ColorStateList colorStateList = new ColorStateList(states, colors);
-            navigationView.setItemTextColor(colorStateList);
-        }
         bottomNavigationView = findViewById(R.id.bottom_nav);
         if(bottomNavigationView != null) {
             bottomNavigationView.setOnItemSelectedListener(item -> {
@@ -384,10 +362,55 @@ public class MainActivity extends AppCompatActivity
         if(maybeOpenNtkCaptcha())
             return;
         MainApplication.initDeferredServices();
+        setupNavigationDrawer();
         setupAccountHeader();
         refreshNtkDomainIfNeeded();
         startDeferredUrlUpdate();
         requestStartupPermissions();
+    }
+
+    private void setupNavigationDrawer() {
+        if(drawerLayout == null)
+            drawerLayout = (DrawerLayout) findViewById(R.id.drawer_layout);
+        if(navigationView == null) {
+            View nav = findViewById(R.id.nav_view);
+            if(nav == null) {
+                ViewStub stub = findViewById(R.id.nav_view_stub);
+                if(stub != null)
+                    nav = stub.inflate();
+            }
+            if(nav instanceof NavigationView) {
+                navigationView = (NavigationView) nav;
+                navigationView.setNavigationItemSelectedListener(this);
+                applyNavigationDrawerColors();
+            }
+        }
+        if(drawerToggle == null && drawerLayout != null && toolbar != null) {
+            drawerToggle = new ActionBarDrawerToggle(
+                    this, drawerLayout, toolbar, R.string.navigation_drawer_open, R.string.navigation_drawer_close);
+            drawerLayout.addDrawerListener(drawerToggle);
+            drawerToggle.syncState();
+            toolbar.setNavigationIcon(null);
+        }
+        syncNavigationSelection();
+    }
+
+    private void applyNavigationDrawerColors() {
+        if(!dark || navigationView == null)
+            return;
+        int[][] states = new int[][]{
+                new int[]{-android.R.attr.state_enabled},
+                new int[]{android.R.attr.state_enabled},
+                new int[]{-android.R.attr.state_checked},
+                new int[]{android.R.attr.state_pressed}
+        };
+        int[] colors = new int[]{
+                Color.parseColor("#565656"),
+                Color.parseColor("#a2a2a2"),
+                Color.WHITE,
+                Color.WHITE
+        };
+        navigationView.setItemTextColor(new ColorStateList(states, colors));
     }
 
     static long startupDeferredTasksDelayMsForTest() {
@@ -472,6 +495,8 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void setupAccountHeader() {
+        if(navigationView == null)
+            setupNavigationDrawer();
         if(navigationView == null || navigationView.getHeaderCount() == 0)
             return;
         View header = navigationView.getHeaderView(0);
@@ -750,6 +775,8 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void syncNavigationSelection() {
+        if(navigationView == null)
+            return;
         Menu menu = navigationView.getMenu();
         for(int i = 0; i < menu.size(); i++)
             menu.getItem(i).setChecked(false);

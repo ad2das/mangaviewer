@@ -72,10 +72,6 @@
             android:textColor="@color/colorTextOnPrimary"
             android:textSize="25sp"
             android:textStyle="bold"
-            app:autoSizeMaxTextSize="25sp"
-            app:autoSizeMinTextSize="16sp"
-            app:autoSizeStepGranularity="1sp"
-            app:autoSizeTextType="uniform"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toBottomOf="@+id/hero_badge"
@@ -97,18 +93,21 @@
             app:layout_constraintTop_toBottomOf="@+id/hero_title"
             tools:text="Latest chapter is ready." />
 
-        <com.google.android.material.button.MaterialButton
+        <TextView
             android:id="@+id/hero_read_button"
             android:layout_width="128dp"
             android:layout_height="48dp"
             android:layout_marginStart="@dimen/app_space_lg"
             android:layout_marginBottom="@dimen/app_space_lg"
+            android:background="@drawable/app_accent_button_bg"
+            android:clickable="true"
+            android:focusable="true"
+            android:foreground="?attr/selectableItemBackground"
+            android:gravity="center"
             android:text="@string/hero_read_button"
             android:textColor="@color/colorTextOnPrimary"
             android:textSize="14sp"
             android:textStyle="bold"
-            app:backgroundTint="@color/appAccent"
-            app:cornerRadius="12dp"
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintStart_toStartOf="parent" />
 

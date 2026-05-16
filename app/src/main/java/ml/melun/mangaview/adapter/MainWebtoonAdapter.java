@@ -16,7 +16,6 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import com.google.android.material.button.MaterialButton;
 
 import androidx.annotation.NonNull;
 import androidx.core.content.ContextCompat;
@@ -120,6 +119,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private int rowDiffGeneration = 0;
     private long firstContentStartedAt = PerfTrace.start("home_first_content_ms");
     private boolean firstContentLogged = false;
+    private boolean firstContentMetricEnabled = true;
     private FetchStateListener fetchStateListener;
     private boolean siteNtkSnapshot;
     private boolean cacheLoadInFlight = false;
@@ -229,6 +229,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     public void setFetchStateListener(FetchStateListener listener) {
         this.fetchStateListener = listener;
+    }
+
+    public void setFirstContentMetricEnabled(boolean enabled) {
+        firstContentMetricEnabled = enabled;
     }
 
     public void cancelFetch() {
@@ -1129,7 +1133,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         TextView badge;
         TextView meta;
         LinearLayout dots;
-        MaterialButton readButton;
+        TextView readButton;
         float downX;
         float downY;
         boolean dragging;
@@ -2231,15 +2235,17 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 rows = nextRows;
                 notifyItemRangeInserted(0, nextRows.size());
                 restoreScrollAnchor(anchor);
-                if(!firstContentLogged && hasDisplayContent(rows)) {
+                if(firstContentMetricEnabled && !firstContentLogged && hasDisplayContent(rows)) {
                     firstContentLogged = true;
                     PerfTrace.end("home_first_content_ms", firstContentStartedAt);
                 }
             };
-            if(anchorRecycler != null)
+            if(Looper.myLooper() != Looper.getMainLooper())
+                MAIN.post(applyFirstContent);
+            else if(anchorRecycler != null && anchorRecycler.isComputingLayout())
                 anchorRecycler.post(applyFirstContent);
             else
-                MAIN.post(applyFirstContent);
+                applyFirstContent.run();
             return;
         }
         final int generation = ++rowDiffGeneration;
@@ -2276,7 +2282,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             rows = nextRows;
             diff.dispatchUpdatesTo(this);
             restoreScrollAnchor(anchor);
-            if(!firstContentLogged && hasDisplayContent(rows)) {
+            if(firstContentMetricEnabled && !firstContentLogged && hasDisplayContent(rows)) {
                 firstContentLogged = true;
                 PerfTrace.end("home_first_content_ms", firstContentStartedAt);
             }

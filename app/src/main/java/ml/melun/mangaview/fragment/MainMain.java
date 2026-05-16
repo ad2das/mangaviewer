@@ -295,6 +295,7 @@ public class MainMain extends Fragment{
         selectedBaseMode = p.getBaseMode() == base_comic ? base_comic : base_webtoon;
         ensureHomeAdapter(base_webtoon);
         ensureHomeAdapter(base_comic);
+        updateFirstContentMetricTargets();
         showInitialHomeRows(selectedBaseMode);
         modeWebtoon.setOnClickListener(v -> {
             switchBaseMode(base_webtoon);
@@ -382,12 +383,13 @@ public class MainMain extends Fragment{
                 mainComicAdapter = new MainWebtoonAdapter(context, base_comic);
                 mainComicAdapter.setListener(homeClickListener);
                 mainComicAdapter.setFetchStateListener(this::onHomeFetchFinished);
-                mainComicAdapter.setAnchorRecycler(comicRecycler);
-                if(comicRecycler != null)
-                    comicRecycler.setAdapter(mainComicAdapter);
-                registerRevealObserver(mainComicAdapter, comicRecycler, base_comic);
-            }
-            return mainComicAdapter;
+            mainComicAdapter.setAnchorRecycler(comicRecycler);
+            if(comicRecycler != null)
+                comicRecycler.setAdapter(mainComicAdapter);
+            registerRevealObserver(mainComicAdapter, comicRecycler, base_comic);
+        }
+        mainComicAdapter.setFirstContentMetricEnabled(selectedBaseMode == base_comic);
+        return mainComicAdapter;
         }
         if(mainWebtoonAdapter == null) {
             mainWebtoonAdapter = new MainWebtoonAdapter(context);
@@ -398,7 +400,15 @@ public class MainMain extends Fragment{
                 webtoonRecycler.setAdapter(mainWebtoonAdapter);
             registerRevealObserver(mainWebtoonAdapter, webtoonRecycler, base_webtoon);
         }
+        mainWebtoonAdapter.setFirstContentMetricEnabled(selectedBaseMode == base_webtoon);
         return mainWebtoonAdapter;
+    }
+
+    private void updateFirstContentMetricTargets() {
+        if(mainWebtoonAdapter != null)
+            mainWebtoonAdapter.setFirstContentMetricEnabled(selectedBaseMode == base_webtoon);
+        if(mainComicAdapter != null)
+            mainComicAdapter.setFirstContentMetricEnabled(selectedBaseMode == base_comic);
     }
 
     private MainWebtoonAdapter getSelectedAdapter() {
@@ -427,6 +437,7 @@ public class MainMain extends Fragment{
         p.setBaseMode(baseMode);
         PerformanceMonitor.updateSiteMode();
         ensureHomeAdapter(baseMode);
+        updateFirstContentMetricTargets();
         updateModeToggle();
         MainWebtoonAdapter selectedAdapter = getSelectedAdapter();
         if(selectedAdapter != null)
