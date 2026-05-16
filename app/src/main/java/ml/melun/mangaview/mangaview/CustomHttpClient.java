@@ -1369,7 +1369,13 @@ public class CustomHttpClient {
                 && (lower.contains("/cl?toon=")
                 || lower.contains("/list?toon=")
                 || lower.contains("/cv?toon=")
-                || lower.contains("/view?toon="));
+                || lower.contains("/view?toon=")
+                || lower.contains("/cm")
+                || lower.contains("/ing")
+                || lower.contains("/end")
+                || lower.contains("/webtoon")
+                || lower.contains("/comic")
+                || lower.contains("/search.html"));
     }
 
     private boolean allowUnsafeFallback(String url) {
@@ -1696,7 +1702,7 @@ public class CustomHttpClient {
                 return new PageResponse(staleCached.code, staleCached.body, true);
             throw new Exception("Cache miss: " + cacheKey);
         }
-        if(isNtk() || !wolfDocument || shouldResolveWolfDocumentBeforeNetwork(wolfDocument, staleCached != null, fetchMode))
+        if(isNtk() || shouldResolveWfwfBeforeCachedPage(normalized, staleCached != null, fetchMode))
             ensureNumberedDomain(false);
         synchronized (pageLoadsLock) {
             activeLoad = pageLoads.get(cacheKey);
@@ -1729,7 +1735,7 @@ public class CustomHttpClient {
     public boolean warmupCachedPageDirect(String url, long ttlMillis) {
         try {
             String normalized = normalizePath(url);
-            if(isNtk() || !isWolfEpisodeDocumentPath(normalized))
+            if(isNtk() || shouldResolveWfwfBeforeCachedPage(normalized, false, FetchMode.DIRECT_ONLY))
                 ensureNumberedDomain(false);
             String cacheKey = getBaseUrl(normalized) + normalized;
             long now = System.currentTimeMillis();
@@ -1762,7 +1768,7 @@ public class CustomHttpClient {
     private PageResponse loadPageFromNetworkWithDomainRetry(String normalized, long now, CachedPage staleCached) throws Exception {
         Exception lastError = null;
         boolean wolfDocument = !isNtk() && isWolfEpisodeDocumentPath(normalized);
-        int attempts = wolfDocument ? 2 : 3;
+        int attempts = pageNetworkAttempts(isNtk(), normalized);
         for(int attempt = 0; attempt < attempts; attempt++) {
             try {
                 return loadPageFromNetwork(normalized, now, staleCached);
@@ -1772,9 +1778,9 @@ public class CustomHttpClient {
                     throw error;
                 if(isNtk())
                     throw error;
-                if(attempt == 0) {
+                if(attempt == 0 && shouldForceResolveWfwfOnRetry(normalized, wolfDocument)) {
                     boolean changed = ensureWfwfDomainForRetry();
-                    if(wolfDocument && !changed)
+                    if(!changed)
                         break;
                 }
                 client.connectionPool().evictAll();
@@ -1871,12 +1877,48 @@ public class CustomHttpClient {
         throw new Exception("Request failed: " + cacheKey);
     }
 
+    static int pageNetworkAttemptsForTest(boolean ntk, String path) {
+        return pageNetworkAttempts(ntk, path);
+    }
+
+    private static int pageNetworkAttempts(boolean ntk, String path) {
+        if(ntk)
+            return 1;
+        if(isWolfEpisodeDocumentPath(path))
+            return 2;
+        if(isWfwfDocumentPath(path))
+            return 1;
+        return 3;
+    }
+
     static boolean shouldResolveWolfDocumentBeforeNetworkForTest(boolean wolfDocument, boolean hasStaleCache, FetchMode fetchMode) {
         return shouldResolveWolfDocumentBeforeNetwork(wolfDocument, hasStaleCache, fetchMode);
     }
 
     private static boolean shouldResolveWolfDocumentBeforeNetwork(boolean wolfDocument, boolean hasStaleCache, FetchMode fetchMode) {
         return wolfDocument && !hasStaleCache && fetchMode != FetchMode.CACHE_ONLY;
+    }
+
+    static boolean shouldResolveWfwfBeforeCachedPageForTest(String path, boolean hasStaleCache, FetchMode fetchMode) {
+        return shouldResolveWfwfBeforeCachedPage(path, hasStaleCache, fetchMode);
+    }
+
+    private static boolean shouldResolveWfwfBeforeCachedPage(String path, boolean hasStaleCache, FetchMode fetchMode) {
+        if(!isWfwfDocumentPath(path))
+            return true;
+        return shouldResolveWolfDocumentBeforeNetwork(isWolfEpisodeDocumentPath(path), hasStaleCache, fetchMode);
+    }
+
+    static boolean shouldForceResolveWfwfOnRetryForTest(String path) {
+        return shouldForceResolveWfwfOnRetry(path, isWolfEpisodeDocumentPath(path));
+    }
+
+    private static boolean shouldForceResolveWfwfOnRetry(String path, boolean wolfEpisodeDocumentPath) {
+        return wolfEpisodeDocumentPath && isWfwfDocumentPath(path);
+    }
+
+    private static boolean shouldResolveWfwfBeforeMget(String path) {
+        return !isWfwfDocumentPath(path);
     }
 
     static boolean shouldWaitForActivePageLoadForTest(boolean hasStaleCache) {
@@ -2091,7 +2133,8 @@ public class CustomHttpClient {
             customCookie = new HashMap<>();
         url = normalizePath(url);
         boolean wolfEpisodeDocumentPath = isWolfEpisodeDocumentPath(url);
-        if(isNtk() || !wolfEpisodeDocumentPath)
+        boolean allowWfwfDomainRetry = shouldForceResolveWfwfOnRetry(url, wolfEpisodeDocumentPath);
+        if(isNtk() || shouldResolveWfwfBeforeMget(url))
             ensureNumberedDomain(false);
         String baseUrl = getBaseUrl(url);
         Map<String, String> headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
@@ -2118,7 +2161,7 @@ public class CustomHttpClient {
                 response.close();
             response = getWithNtkWebViewFallback(baseUrl, url, headers);
         }
-        if(shouldRetryWithResolvedDomain(response)) {
+        if(!ntkBaseUrl && allowWfwfDomainRetry && shouldRetryWithResolvedDomain(response)) {
             if(response != null)
                 response.close();
             ensureWfwfDomainForRetry();
@@ -2135,7 +2178,8 @@ public class CustomHttpClient {
                 response = getWithNtkWebViewFallback(baseUrl, url, headers);
             }
         }
-        if(shouldUseWolfWebViewFallback(ntkBaseUrl, response == null, url, fetchMode, wolfWebViewFallbackAllowed)
+        if(allowWfwfDomainRetry
+                && shouldUseWolfWebViewFallback(ntkBaseUrl, response == null, url, fetchMode, wolfWebViewFallbackAllowed)
                 && ensureNumberedDomain(true)) {
             baseUrl = getBaseUrl(url);
             ntkBaseUrl = isNtkUrl(baseUrl);

@@ -55,6 +55,36 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void wfwfListAndSearchSkipBlockingDomainResolve() {
+        assertFalse(CustomHttpClient.shouldResolveWfwfBeforeCachedPageForTest("/search.html?q=onepunch", false,
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertFalse(CustomHttpClient.shouldResolveWfwfBeforeCachedPageForTest("/cm?type1=genre", false,
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertTrue(CustomHttpClient.shouldResolveWfwfBeforeCachedPageForTest("/cl?toon=10007", false,
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertFalse(CustomHttpClient.shouldResolveWfwfBeforeCachedPageForTest("/cl?toon=10007", true,
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertTrue(CustomHttpClient.shouldResolveWfwfBeforeCachedPageForTest("/api/unknown", false,
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+    }
+
+    @Test
+    public void wfwfForcedDomainRetryIsEpisodeOnly() {
+        assertTrue(CustomHttpClient.shouldForceResolveWfwfOnRetryForTest("/cl?toon=10007"));
+        assertTrue(CustomHttpClient.shouldForceResolveWfwfOnRetryForTest("/cv?toon=10007&num=1"));
+        assertFalse(CustomHttpClient.shouldForceResolveWfwfOnRetryForTest("/search.html?q=onepunch"));
+        assertFalse(CustomHttpClient.shouldForceResolveWfwfOnRetryForTest("/cm?type1=genre"));
+    }
+
+    @Test
+    public void wfwfListAndSearchUseSingleFastAttempt() {
+        assertEquals(1, CustomHttpClient.pageNetworkAttemptsForTest(false, "/search.html?q=onepunch"));
+        assertEquals(1, CustomHttpClient.pageNetworkAttemptsForTest(false, "/cm?type1=genre"));
+        assertEquals(2, CustomHttpClient.pageNetworkAttemptsForTest(false, "/cl?toon=10007"));
+        assertEquals(1, CustomHttpClient.pageNetworkAttemptsForTest(true, "/api/manhwa-list"));
+    }
+
+    @Test
     public void ntkWebViewFallbackOnlyHandlesPageMisses() {
         assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/api/manhwa-list"));
         assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1"));
@@ -141,10 +171,11 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void wolfEpisodeDocumentsUseFastClientOnlyForViewerPages() {
+    public void wolfDocumentsUseFastClientForViewerListAndSearchPages() {
         assertTrue(CustomHttpClient.shouldUseFastWolfPageDirectUrlForTest("https://wfwf451.com/cv?toon=1&num=2"));
         assertTrue(CustomHttpClient.shouldUseFastWolfPageDirectUrlForTest("https://wolf.example/cl?toon=1"));
-        assertFalse(CustomHttpClient.shouldUseFastWolfPageDirectUrlForTest("https://wfwf451.com/cm?type1=genre"));
+        assertTrue(CustomHttpClient.shouldUseFastWolfPageDirectUrlForTest("https://wfwf451.com/cm?type1=genre"));
+        assertTrue(CustomHttpClient.shouldUseFastWolfPageDirectUrlForTest("https://wfwf451.com/search.html?q=onepunch"));
         assertFalse(CustomHttpClient.shouldUseFastWolfPageDirectUrlForTest("https://i1.imgcloud18.com/1/a.jpg"));
     }
 

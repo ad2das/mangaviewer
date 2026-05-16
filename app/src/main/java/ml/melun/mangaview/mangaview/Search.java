@@ -42,6 +42,8 @@ public class Search {
     private static final int CLASSIFICATION_DB_PAGE_SIZE = 120;
     private static final int NTK_CATEGORY_PAGE_SIZE = 30;
     private static final int NTK_KEYWORD_PAGE_SIZE = 30;
+    private static final long WFWF_RESULT_CACHE_TTL_MS = 5 * 60 * 1000L;
+    private static final int WFWF_RESULT_CACHE_MAX_ENTRIES = 80;
     private static final long NTK_RESULT_CACHE_TTL_MS = 10 * 60 * 1000L;
     private static final int NTK_RESULT_CACHE_MAX_ENTRIES = 80;
     private static final int NTK_KEYWORD_API_CACHE_MAX_ENTRIES = 80;
@@ -50,6 +52,7 @@ public class Search {
     private static final Pattern WFWF_FAST_IMG_PATTERN = Pattern.compile("(?is)<img\\b([^>]*)>");
     private static final Pattern WFWF_FAST_STYLE_PATTERN = Pattern.compile("(?is)style\\s*=\\s*(['\"])(.*?)\\1");
     private static final Pattern WFWF_FAST_TAG_PATTERN = Pattern.compile("(?is)<[^>]+>");
+    private static final Map<String, CachedPageTitles> WFWF_RESULT_CACHE = new HashMap<>();
     private static final Map<String, CachedPageTitles> NTK_RESULT_CACHE = new HashMap<>();
     private static final Map<String, CachedNtkApiPathResult> NTK_KEYWORD_API_RESULT_CACHE = new HashMap<>();
 
@@ -302,9 +305,11 @@ public class Search {
 
     private PageTitles fetchWfwfCombinedKeywordSearchResults(CustomHttpClient client) throws Exception {
         String path = wfwfKeywordSearchPath(query);
-        PageTitles pageTitles = fetchWfwfCombinedKeywordSearchResultsUncached(client, path);
+        PageTitles pageTitles = cachedWfwfPageTitles(client, "keyword", path,
+                () -> fetchWfwfCombinedKeywordSearchResultsUncached(client, path));
         if(pageTitles.titles.size() == 0 && client != null && client.resolveWfwfDomainNow())
-            pageTitles = fetchWfwfCombinedKeywordSearchResultsUncached(client, path);
+            pageTitles = cachedWfwfPageTitles(client, "keyword", path,
+                    () -> fetchWfwfCombinedKeywordSearchResultsUncached(client, path));
         return pageTitles;
     }
 
@@ -1701,6 +1706,31 @@ public class Search {
                 NTK_KEYWORD_API_RESULT_CACHE.put(key,
                         new CachedNtkApiPathResult(copyNtkApiPathResult(loaded), System.currentTimeMillis()));
             }
+        }
+        return loaded;
+    }
+
+    private PageTitles cachedWfwfPageTitles(CustomHttpClient client, String kind, String path,
+                                            PageTitleLoader loader) throws Exception {
+        if(client == null || client.isNtk())
+            return loader.load();
+        String key = kind + ':' + client.getUrl(path) + ':' + path;
+        long now = System.currentTimeMillis();
+        synchronized (WFWF_RESULT_CACHE) {
+            CachedPageTitles cached = WFWF_RESULT_CACHE.get(key);
+            if(cached != null && isNtkResultCacheFresh(cached.loadedAt, now, WFWF_RESULT_CACHE_TTL_MS)) {
+                long cacheStartedAt = PerfTrace.start("wfwf_search_result_cache_ms");
+                traceSearchMetric("wfwf_search_result_cache_ms", cacheStartedAt,
+                        ",path=" + ntkMetricPath(path)
+                                + ",count=" + cached.pageTitles.titles.size());
+                return copyPageTitles(cached.pageTitles);
+            }
+        }
+        PageTitles loaded = loader.load();
+        synchronized (WFWF_RESULT_CACHE) {
+            if(WFWF_RESULT_CACHE.size() >= WFWF_RESULT_CACHE_MAX_ENTRIES)
+                WFWF_RESULT_CACHE.clear();
+            WFWF_RESULT_CACHE.put(key, new CachedPageTitles(copyPageTitles(loaded), System.currentTimeMillis()));
         }
         return loaded;
     }
