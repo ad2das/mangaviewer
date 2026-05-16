@@ -25,4 +25,18 @@ public class EpisodeAdapterTest {
     public void validEpisodePositionAcceptsExistingEpisodeRow() {
         assertTrue(EpisodeAdapter.isValidEpisodePositionForTest(Arrays.asList("a", "b"), 2));
     }
+
+    @Test
+    public void deferredThumbnailClearSkipsRowAndPlaceholderStates() {
+        assertFalse(EpisodeAdapter.shouldClearThumbnailBeforeDeferredBindForTest("loaded-key", false));
+        assertFalse(EpisodeAdapter.shouldClearThumbnailBeforeDeferredBindForTest("pending:loaded-key", true));
+        assertFalse(EpisodeAdapter.shouldClearThumbnailBeforeDeferredBindForTest("placeholder", true));
+        assertFalse(EpisodeAdapter.shouldClearThumbnailBeforeDeferredBindForTest("empty", true));
+        assertFalse(EpisodeAdapter.shouldClearThumbnailBeforeDeferredBindForTest(null, true));
+    }
+
+    @Test
+    public void deferredThumbnailClearKeepsHeaderReplacementClean() {
+        assertTrue(EpisodeAdapter.shouldClearThumbnailBeforeDeferredBindForTest("loaded-key", true));
+    }
 }
