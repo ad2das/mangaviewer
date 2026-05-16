@@ -37,8 +37,10 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletionService;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
@@ -113,6 +115,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private static final int HOME_CACHE_MAX_TITLES_PER_SECTION = 10;
     private static final Executor ROW_DIFF_EXECUTOR = AppDispatchers.uiDiff();
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    private static final Map<String, List<Ranking<?>>> HOME_SNAPSHOT_MEMORY_CACHE = new ConcurrentHashMap<>();
     private int preloadCount = 0;
     private int activeHomeTab = 0;
     private boolean continueProgressBackfillRunning = false;
@@ -777,10 +780,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private boolean showCachedHomeRows() {
-        List<Ranking<?>> cached = loadHomeSnapshot();
+        List<Ranking<?>> cached = HOME_SNAPSHOT_MEMORY_CACHE.get(homeCacheKey());
         if(cached == null || cached.size() == 0)
             return false;
-        dataSet = cached;
+        dataSet = new ArrayList<>(cached);
         List<Object> cachedRows = buildRows(dataSet, false);
         if(!hasDisplayContent(cachedRows))
             return false;
@@ -799,7 +802,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         final boolean ntk = siteNtkSnapshot;
         final String cacheKey = homeCacheKey();
         AppDispatchers.submitIo(() -> {
+            long startedAt = PerfTrace.start("home_snapshot_async_load_ms");
             List<Ranking<?>> cached = loadHomeSnapshot(cacheKey);
+            PerfTrace.end("home_snapshot_async_load_ms", startedAt);
             AppDispatchers.runOnMain(() -> {
                 cacheLoadInFlight = false;
                 if(cached != null && cached.size() > 0 && ntk == siteNtkSnapshot)
@@ -822,10 +827,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(hasHero(cachedRows))
             scrollHeroToTop();
         scheduleThumbnailPreload(dataSet);
-    }
-
-    private List<Ranking<?>> loadHomeSnapshot() {
-        return loadHomeSnapshot(homeCacheKey());
     }
 
     private List<Ranking<?>> loadHomeSnapshot(String cacheKey) {
@@ -854,7 +855,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 if(ranking.size() > 0)
                     restored.add(ranking);
             }
-            return canUseHomeSnapshot(restored) ? restored : null;
+            if(!canUseHomeSnapshot(restored))
+                return null;
+            HOME_SNAPSHOT_MEMORY_CACHE.put(cacheKey, restored);
+            return restored;
         } catch (Exception ignored) {
             return null;
         }
@@ -896,7 +900,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
             if(snapshot.sections.size() == 0)
                 return;
-            CacheFileStore.write(context, homeCacheKey(), new Gson().toJson(snapshot));
+            String cacheKey = homeCacheKey();
+            HOME_SNAPSHOT_MEMORY_CACHE.put(cacheKey, sections);
+            CacheFileStore.write(context, cacheKey, new Gson().toJson(snapshot));
         } catch (Exception ignored) {
         }
     }
