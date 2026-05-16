@@ -1259,7 +1259,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             badge.setText("추천");
             bindTitleThumb(thumb, hero, 240, 140);
             bindHeroDots(row);
-            prefetchEpisodeSnapshot(hero);
+            card.postDelayed(() -> prefetchEpisodeSnapshot(hero),
+                    HomeContinueWarmupPolicy.visibleHomeWarmupDelayMs(save));
         }
 
         private void bindHeroDots(HeroRow row) {
