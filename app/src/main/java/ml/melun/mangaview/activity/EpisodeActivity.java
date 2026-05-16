@@ -71,6 +71,7 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_ERROR;
 
 public class EpisodeActivity extends AppCompatActivity {
     private static final long VIEWER_PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
+    private static final long VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS = 450L;
     private static final int VISIBLE_EPISODE_WARMUP_AHEAD = 2;
     //global variables
     Title title;
@@ -232,7 +233,7 @@ public class EpisodeActivity extends AppCompatActivity {
             public void onScrolled(@NonNull RecyclerView recyclerView, int dx, int dy) {
                 super.onScrolled(recyclerView, dx, dy);
                 if(dy != 0)
-                    scheduleVisibleEpisodeWarmup(120L);
+                    cancelVisibleEpisodeWarmup();
             }
 
             @Override
@@ -241,8 +242,9 @@ public class EpisodeActivity extends AppCompatActivity {
                 PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
                 if(newState == RecyclerView.SCROLL_STATE_IDLE) {
                     PerformanceMonitor.reportNow("episode_scroll_idle");
-                    scheduleVisibleEpisodeWarmup(0L);
-                }
+                    scheduleVisibleEpisodeWarmup(VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS);
+                } else
+                    cancelVisibleEpisodeWarmup();
             }
         });
         homeDir = p.getHomeDir();
@@ -424,6 +426,12 @@ public class EpisodeActivity extends AppCompatActivity {
         episodeList.postDelayed(visibleEpisodeWarmupRunnable, Math.max(0L, delayMs));
     }
 
+    private void cancelVisibleEpisodeWarmup() {
+        if(episodeList != null)
+            episodeList.removeCallbacks(visibleEpisodeWarmupRunnable);
+        visibleEpisodeWarmupScheduled = false;
+    }
+
     private void warmupVisibleEpisodeRows() {
         if(!online || episodeList == null || episodes == null || episodes.size() == 0 || title == null)
             return;
@@ -433,7 +441,7 @@ public class EpisodeActivity extends AppCompatActivity {
         LinearLayoutManager layoutManager = (LinearLayoutManager) manager;
         int first = layoutManager.findFirstVisibleItemPosition();
         int last = layoutManager.findLastVisibleItemPosition();
-        int limit = p.getDataSave() ? 3 : 5;
+        int limit = visibleEpisodeWarmupLimitForTest(p.getDataSave(), PrefetchCoordinator.aggressiveAllowed(context));
         List<Integer> targets = PrefetchCoordinator.visibleEpisodeTargets(episodes, first, last,
                 VISIBLE_EPISODE_WARMUP_AHEAD, limit);
         if(targets.size() == 0)
@@ -453,6 +461,12 @@ public class EpisodeActivity extends AppCompatActivity {
         PrefetchCoordinator.prefetchEpisodeIndexes(context, title, episodes, fresh, mode);
     }
 
+    static int visibleEpisodeWarmupLimitForTest(boolean dataSave, boolean aggressiveAllowed) {
+        if(dataSave)
+            return 1;
+        return aggressiveAllowed ? 3 : 1;
+    }
+
     private void warmupLikelyNtkViewerPage() {
         Manga target = quickReadEpisode();
         if(!shouldDirectWarmupNtkViewerPageForTest(p.isNtkSite(), getHttpClient().isNtk(), target == null ? null : target.getNtkEpisodePath()))
@@ -466,7 +480,7 @@ public class EpisodeActivity extends AppCompatActivity {
             if(!shouldPreloadNtkFirstFrameAfterDirectWarmupForTest(warmed))
                 return;
             try {
-                ViewerWarmupManager.prepareFirstFrameDirectOnly(appContext, target, currentTitle, 0, width,
+                ViewerWarmupManager.prepareFirstFrameBackgroundDirectOnly(appContext, target, currentTitle, 0, width,
                         false, p.getReverse(), MangaRepository.cancellation());
             } catch (Exception e) {
                 ml.melun.mangaview.report.CrashReporter.record(e);

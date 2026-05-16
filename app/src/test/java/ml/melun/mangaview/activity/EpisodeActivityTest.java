@@ -37,4 +37,11 @@ public class EpisodeActivityTest {
 
         assertEquals(2, EpisodeActivity.firstReadableEpisodeIndexForTest(episodes));
     }
+
+    @Test
+    public void visibleEpisodeWarmupLimitAvoidsCellularContention() {
+        assertEquals(1, EpisodeActivity.visibleEpisodeWarmupLimitForTest(true, false));
+        assertEquals(1, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, false));
+        assertEquals(3, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, true));
+    }
 }

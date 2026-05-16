@@ -36,7 +36,7 @@ public final class PrefetchCoordinator {
         if(shouldSkipWolfBackgroundPrefetchForTest(title == null ? null : title.getSourceSite(), p != null && p.isNtkSite(), getHttpClient().isNtk()))
             return;
         Context appContext = context.getApplicationContext();
-        int limit = p.getDataSave() ? 3 : (aggressiveAllowed(appContext) ? 5 : 4);
+        int limit = episodePrefetchLimitForTest(p.getDataSave(), aggressiveAllowed(appContext));
         List<Integer> targets = viewerTargets(episodes, bookmarkIndex, limit);
         int resumeIndex = bookmarkIndex > 0 && bookmarkIndex <= episodes.size() ? bookmarkIndex - 1 : -1;
         warmTargets(appContext, title, episodes, targets, mode, resumeIndex);
@@ -125,6 +125,12 @@ public final class PrefetchCoordinator {
 
     public static int firstEpisodeIndex(List<Manga> episodes) {
         return episodes == null || episodes.size() == 0 ? -1 : episodes.size() - 1;
+    }
+
+    static int episodePrefetchLimitForTest(boolean dataSave, boolean aggressiveAllowed) {
+        if(dataSave)
+            return 2;
+        return aggressiveAllowed ? 4 : 3;
     }
 
     public static List<Integer> visibleEpisodeTargets(List<Manga> episodes, int firstAdapterPosition,

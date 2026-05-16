@@ -141,6 +141,11 @@ public class ViewerWarmupManagerTest {
     }
 
     @Test
+    public void backgroundWarmupDoesNotUseBlockingDecode() {
+        assertFalse(ViewerWarmupManager.shouldDecodeFirstPagesBlockingForTest(false, true, false));
+    }
+
+    @Test
     public void exactPreparedSnapshotRequiresSameEpisode() {
         Manga requested = new Manga(348, "274화", "", 1);
         requested.setTitleId(8605);

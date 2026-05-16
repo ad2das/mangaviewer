@@ -85,6 +85,13 @@ public class PrefetchCoordinatorTest {
     }
 
     @Test
+    public void episodePrefetchLimitStaysSmallOnCellular() {
+        assertEquals(2, PrefetchCoordinator.episodePrefetchLimitForTest(true, false));
+        assertEquals(3, PrefetchCoordinator.episodePrefetchLimitForTest(false, false));
+        assertEquals(4, PrefetchCoordinator.episodePrefetchLimitForTest(false, true));
+    }
+
+    @Test
     public void ntkPrefetchSkipsUnverifiedNtkTitles() {
         assertFalse(PrefetchCoordinator.shouldSkipNtkPrefetchForTest("ntk", true, true));
         assertTrue(PrefetchCoordinator.shouldSkipNtkPrefetchForTest("", true, true));
