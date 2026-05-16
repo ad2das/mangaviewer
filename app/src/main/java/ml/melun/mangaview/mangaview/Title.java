@@ -590,6 +590,8 @@ public class Title extends MTitle {
         int currentEpisodeId = current == null ? bookmark : current.getId();
         if(count <= 1 || currentEpisodeId <= 0 || currentEpisodeId > count)
             return false;
+        if("ntk".equals(getSourceSite()) && eps != null && eps.size() > 0)
+            return false;
         if(eps != null && eps.size() >= count)
             return false;
 

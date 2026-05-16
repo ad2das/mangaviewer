@@ -278,6 +278,7 @@ public class EpisodeActivity extends AppCompatActivity {
         }else{
             OfflineStore.OfflineEpisodes offlineEpisodes = OfflineStore.loadEpisodes(context, title);
             episodes = offlineEpisodes.episodes;
+            attachLoadedEpisodesToTitle(episodes);
             mode = offlineEpisodes.mode;
             episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
             afterLoad();
@@ -631,6 +632,7 @@ public class EpisodeActivity extends AppCompatActivity {
             return;
         }
         ntkLoadTimeoutHandled = true;
+        attachLoadedEpisodesToTitle(episodes);
         saveEpisodeCache(episodes);
         episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
         afterLoad();
@@ -689,6 +691,7 @@ public class EpisodeActivity extends AppCompatActivity {
                     && !CachePolicy.isReusableForColdStart(cached.savedAt))
                 return false;
             episodes = cached.episodes;
+            attachLoadedEpisodesToTitle(episodes);
             episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
             afterLoad();
             ntkLoadTimeoutHandled = true;
@@ -707,6 +710,18 @@ public class EpisodeActivity extends AppCompatActivity {
                 && episodes.size() > 0
                 && episodeAdapter != null
                 && episodeAdapter.getItemCount() > 0;
+    }
+
+    private void attachLoadedEpisodesToTitle(List<Manga> loadedEpisodes) {
+        if(title == null || loadedEpisodes == null || loadedEpisodes.size() == 0)
+            return;
+        for(Manga episode : loadedEpisodes) {
+            if(episode == null)
+                continue;
+            episode.setTitle(title);
+            episode.setTitleId(title.getId());
+        }
+        title.setEps(loadedEpisodes);
     }
 
     private void hideProgress() {

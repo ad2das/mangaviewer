@@ -128,6 +128,27 @@ public class MangaEpisodeNavigationTest {
     }
 
     @Test
+    public void ntkProgressEpisodesDoNotReplaceLoadedEpisodeList() {
+        Title title = new Title("one punch", "", "", new ArrayList<>(), "349", 8605, MTitle.base_comic);
+        title.setSourceSite("ntk");
+        title.setReadingProgress(273, 77, 349);
+        Manga current = new Manga(273, "273", "", MTitle.base_comic);
+        current.setTitle(title);
+        List<Manga> parsed = new ArrayList<>();
+        parsed.add(new Manga(275, "275", "", MTitle.base_comic));
+        parsed.add(new Manga(274, "274", "", MTitle.base_comic));
+        parsed.add(current);
+        parsed.add(new Manga(272, "272", "", MTitle.base_comic));
+        title.setEps(parsed);
+
+        title.ensureProgressEpisodes(current);
+
+        assertEquals(4, title.getEpsCount());
+        assertEquals(274, current.nextEp().getId());
+        assertEquals(272, current.prevEp().getId());
+    }
+
+    @Test
     public void parseEpisodeId_acceptsSluggedViewerPaths() {
         assertEquals(123, Manga.parseEpisodeId("/webtoon/123", "webtoon/"));
         assertEquals(123, Manga.parseEpisodeId("/webtoon/123/title-slug", "webtoon/"));

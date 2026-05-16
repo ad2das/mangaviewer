@@ -5,6 +5,8 @@ import org.junit.Test;
 import java.util.Arrays;
 import java.util.Collections;
 
+import ml.melun.mangaview.glide.ViewerWarmupManager;
+
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -49,5 +51,12 @@ public class ViewerActivityTest {
         assertTrue(ViewerActivity.shouldSuppressBoundaryLoadErrorForTest(false, true));
         assertFalse(ViewerActivity.shouldSuppressBoundaryLoadErrorForTest(true, true));
         assertFalse(ViewerActivity.shouldSuppressBoundaryLoadErrorForTest(false, false));
+    }
+
+    @Test
+    public void emptyLoadResultIsRecoveredWhenImagesArrivedBeforeFinish() {
+        assertTrue(ViewerActivity.shouldRecoverEmptyLoadResultForTest(ViewerWarmupManager.LOAD_EMPTY_IMAGES, true));
+        assertFalse(ViewerActivity.shouldRecoverEmptyLoadResultForTest(ViewerWarmupManager.LOAD_EMPTY_IMAGES, false));
+        assertFalse(ViewerActivity.shouldRecoverEmptyLoadResultForTest(0, true));
     }
 }

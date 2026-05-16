@@ -87,11 +87,30 @@ public class Manga {
     }
 
     public String getNtkEpisodePath() {
-        return ntkEpisodePath == null ? "" : ntkEpisodePath;
+        String path = ntkEpisodePath == null ? "" : ntkEpisodePath;
+        if(path.trim().length() > 0)
+            return path;
+        path = matchingNtkEpisodePath(eps);
+        if(path.length() > 0)
+            return path;
+        return title == null ? "" : matchingNtkEpisodePath(title.getEps());
     }
 
     public void setNtkEpisodePath(String ntkEpisodePath) {
         this.ntkEpisodePath = ntkEpisodePath == null ? "" : ntkEpisodePath.trim();
+    }
+
+    private String matchingNtkEpisodePath(List<Manga> episodes) {
+        if(episodes == null || episodes.size() == 0)
+            return "";
+        for(Manga episode : episodes) {
+            if(episode == null || episode == this || episode.getId() != id || !sameSeriesEpisode(episode))
+                continue;
+            String path = episode.ntkEpisodePath == null ? "" : episode.ntkEpisodePath.trim();
+            if(path.length() > 0)
+                return path;
+        }
+        return "";
     }
 
     public void setImgs(List<String> imgs) {
@@ -287,19 +306,12 @@ public class Manga {
             Document d = Jsoup.parse(page.body);
 
             Element h1 = d.selectFirst("h1");
-            if(h1 != null)
-                name = h1.text().trim();
+            String parsedName = h1 == null ? extractNtkViewerEpisodeName(d) : h1.text().trim();
+            if(parsedName.length() > 0)
+                name = parsedName;
 
             Elements pageImages = d.select("img");
-            for(Element img : pageImages) {
-                for(String attr : new String[]{"data-original", "data-src", "data-lazy-src", "src"}) {
-                    String src = img.attr(attr);
-                    if(isNtkPageImage(img, src))
-                        addImageIfValid(client, seenImages, src);
-                    else if(isNtkFallbackBoardPageImage(img, src))
-                        fallbackBoardImages.add(src);
-                }
-            }
+            addNtkDocumentImageCandidates(client, d, seenImages, fallbackBoardImages);
             addNtkTextImageCandidates(client, page.body, seenImages, fallbackBoardImages);
             if(imgs.size() == 0) {
                 for(String src : fallbackBoardImages)
@@ -307,6 +319,8 @@ public class Manga {
             }
             if(imgs.size() == 0)
                 logNtkViewerParse("empty", page, path, pageImages.size(), fallbackBoardImages.size());
+            else
+                logNtkViewerParse("ok", page, path, pageImages.size(), fallbackBoardImages.size());
 
             List<Manga> titleEpisodes = title == null ? null : safeEpisodeCopy(title.getEps());
             if(titleEpisodes != null && titleEpisodes.size() > 0) {
@@ -325,6 +339,29 @@ public class Manga {
         restoreBetterEpisodeList(previousEpisodes);
         attachEpisodeSeriesMetadata();
         return LOAD_OK;
+    }
+
+    private void addNtkDocumentImageCandidates(CustomHttpClient client, Document d, Set<String> seenImages,
+                                               Set<String> fallbackBoardImages) {
+        if(d == null)
+            return;
+        Elements pageImages = d.select("img");
+        for(Element img : pageImages) {
+            for(String attr : new String[]{"data-original", "data-src", "data-lazy-src", "src"}) {
+                String src = img.attr(attr);
+                if(isNtkPageImage(img, src))
+                    addImageIfValid(client, seenImages, src);
+                else if(isNtkFallbackBoardPageImage(img, src))
+                    fallbackBoardImages.add(src);
+            }
+        }
+        for(Element preload : d.select("link[rel=preload][as=image][href]")) {
+            String src = preload.attr("href");
+            if(isNtkPageImage(null, src))
+                addImageIfValid(client, seenImages, src);
+            else if(isNtkBoardUploadImage(src))
+                fallbackBoardImages.add(src);
+        }
     }
 
     private void addNtkTextImageCandidates(CustomHttpClient client, String body, Set<String> seenImages,
@@ -378,7 +415,16 @@ public class Manga {
                 + ",bodyLen=" + (page == null || page.body == null ? 0 : page.body.length())
                 + ",imgTags=" + imgTagCount
                 + ",fallbackImages=" + fallbackCount
+                + ",images=" + (imgs == null ? 0 : imgs.size())
+                + ",firstImage=" + firstImageSample()
                 + ",sample=" + sample);
+    }
+
+    private String firstImageSample() {
+        if(imgs == null || imgs.size() == 0 || imgs.get(0) == null)
+            return "";
+        String sample = imgs.get(0);
+        return sample.length() > 160 ? sample.substring(0, 160) : sample;
     }
 
     private static boolean looksLikeNtkBlockedPage(String body) {
@@ -396,6 +442,28 @@ public class Manga {
                 || lower.contains("cf_chl")
                 || lower.contains("cf-mitigated")
                 || lower.contains("turnstile");
+    }
+
+    private static String extractNtkViewerEpisodeName(Document d) {
+        if(d == null)
+            return "";
+        Element episodeNo = d.selectFirst(".vw-ep strong");
+        if(episodeNo != null) {
+            String no = episodeNo.text().trim();
+            if(no.matches("[0-9]+(?:\\.[0-9]+)?"))
+                return no + "화";
+            if(no.length() > 0)
+                return no;
+        }
+        Element titleMeta = d.selectFirst("meta[property=og:title]");
+        String rawTitle = titleMeta == null ? d.title() : titleMeta.attr("content");
+        if(rawTitle == null)
+            return "";
+        rawTitle = rawTitle.replace("| 뉴토끼", "").trim();
+        Matcher matcher = Pattern.compile("([0-9]+(?:\\.[0-9]+)?\\s*화)").matcher(rawTitle);
+        if(matcher.find())
+            return matcher.group(1).replace(" ", "");
+        return "";
     }
 
     private static boolean isCloudflareChallenge(Exception e) {
@@ -681,12 +749,18 @@ public class Manga {
         if(!isImageSourceCandidate(src))
             return false;
         String lower = src.trim().toLowerCase(Locale.ROOT);
-        if(!lower.contains("/board_uploads/"))
-            return false;
-        if(!lower.matches(".*\\.(jpg|jpeg|png|webp|gif)(\\?.*)?$"))
+        if(!isNtkBoardUploadImage(lower))
             return false;
         String context = ntkImageContext(img);
         return !hasNtkBlockedImageContext(context);
+    }
+
+    private static boolean isNtkBoardUploadImage(String src) {
+        if(src == null)
+            return false;
+        String lower = src.trim().toLowerCase(Locale.ROOT);
+        return lower.contains("/board_uploads/")
+                && lower.matches(".*\\.(jpg|jpeg|png|webp|gif)(\\?.*)?$");
     }
 
     private static boolean hasNtkBlockedImageContext(String context) {
@@ -745,12 +819,30 @@ public class Manga {
         return looksLikeNtkBlockedPage(body);
     }
 
+    static String ntkViewerEpisodeNameForTest(String body) {
+        return extractNtkViewerEpisodeName(Jsoup.parse(body == null ? "" : body));
+    }
+
     static List<String> ntkEmbeddedPageImagesForTest(String body) {
         Manga manga = new Manga(1, "test", "", MTitle.base_webtoon);
         manga.imgs = new ArrayList<>();
         Set<String> seenImages = new LinkedHashSet<>();
         Set<String> fallbackImages = new LinkedHashSet<>();
         manga.addNtkTextImageCandidates(null, body, seenImages, fallbackImages);
+        if(manga.imgs.size() == 0) {
+            for(String src : fallbackImages)
+                manga.addImageIfValid(null, seenImages, src);
+        }
+        return manga.imgs;
+    }
+
+    static List<String> ntkDocumentPageImagesForTest(String body) {
+        Manga manga = new Manga(1, "test", "", MTitle.base_webtoon);
+        manga.imgs = new ArrayList<>();
+        Set<String> seenImages = new LinkedHashSet<>();
+        Set<String> fallbackImages = new LinkedHashSet<>();
+        Document d = Jsoup.parse(body == null ? "" : body);
+        manga.addNtkDocumentImageCandidates(null, d, seenImages, fallbackImages);
         if(manga.imgs.size() == 0) {
             for(String src : fallbackImages)
                 manga.addImageIfValid(null, seenImages, src);

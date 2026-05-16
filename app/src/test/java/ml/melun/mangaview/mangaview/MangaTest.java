@@ -4,6 +4,7 @@ import org.junit.Test;
 
 import java.io.File;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -114,6 +115,8 @@ public class MangaTest {
     public void ntkBoardUploadsAreOnlyFallbackPageImages() {
         assertTrue(Manga.isNtkFallbackBoardPageImageForTest(
                 "<article class=\"viewer-content\"><img src=\"https://i.toonflix.app/board_uploads/2026/05/15/page001.jpg\"></article>"));
+        assertTrue(Manga.isNtkFallbackBoardPageImageForTest(
+                "<div class=\"vw-imgs vw-imgs--single\"><img src=\"https://i.toonflix.app/board_uploads/2026/05/06/155957_947d54918760.jpg\"></div>"));
 
         org.junit.Assert.assertFalse(Manga.isNtkFallbackBoardPageImageForTest(
                 "<div class=\"episodeThumbCard\"><img src=\"https://i.toonflix.app/board_uploads/2026/05/15/thumb.jpg\"></div>"));
@@ -155,6 +158,57 @@ public class MangaTest {
 
         assertEquals(1, images.size());
         assertEquals("https://i.toonflix.app/manhwa/25089/296849/001.jpg", images.get(0));
+    }
+
+    @Test
+    public void ntkDocumentPreloadBoardUploadsCanBootstrapViewerPages() {
+        List<String> images = Manga.ntkDocumentPageImagesForTest(
+                "<html><head>"
+                        + "<link rel=\"preload\" as=\"image\" href=\"https://i.toonflix.app/board_uploads/2026/05/06/155957_947d54918760.jpg\" fetchPriority=\"high\">"
+                        + "<link rel=\"preload\" as=\"image\" href=\"https://i.toonflix.app/board_uploads/2026/05/06/155958_a87a651f9bea.jpg\" fetchPriority=\"auto\">"
+                        + "</head><body><main class=\"vw-main\"></main></body></html>");
+
+        assertEquals(2, images.size());
+        assertEquals("https://i.toonflix.app/board_uploads/2026/05/06/155957_947d54918760.jpg", images.get(0));
+        assertEquals("https://i.toonflix.app/board_uploads/2026/05/06/155958_a87a651f9bea.jpg", images.get(1));
+    }
+
+    @Test
+    public void ntkDocumentViewerBoardUploadsArePageImagesWhenNoPrimaryHostExists() {
+        List<String> images = Manga.ntkDocumentPageImagesForTest(
+                "<main class=\"vw-main\"><div class=\"vw-imgs vw-imgs--single\">"
+                        + "<img src=\"https://i.toonflix.app/board_uploads/2026/05/06/155957_947d54918760.jpg\" alt=\"page 1\">"
+                        + "<img src=\"https://i.toonflix.app/board_uploads/2026/05/06/155958_a87a651f9bea.jpg\" alt=\"page 2\">"
+                        + "</div></main>");
+
+        assertEquals(2, images.size());
+        assertEquals("https://i.toonflix.app/board_uploads/2026/05/06/155957_947d54918760.jpg", images.get(0));
+        assertEquals("https://i.toonflix.app/board_uploads/2026/05/06/155958_a87a651f9bea.jpg", images.get(1));
+    }
+
+    @Test
+    public void ntkViewerEpisodeNameUsesVisibleEpisodeNumber() {
+        assertEquals("275화", Manga.ntkViewerEpisodeNameForTest(
+                "<div class=\"vw-ep\"><strong>275</strong><span> - 원펀맨 리메이크 275화</span></div>"));
+        assertEquals("274화", Manga.ntkViewerEpisodeNameForTest(
+                "<meta property=\"og:title\" content=\"원펀맨 리메이크 274화 | 뉴토끼\">"));
+    }
+
+    @Test
+    public void ntkEpisodePathFallsBackToCanonicalEpisodeListEntry() {
+        Title title = new Title("one punch", "", "", null, "349", 8605, MTitle.base_comic);
+        title.setSourceSite("ntk");
+        Manga canonical = new Manga(349, "275", "", MTitle.base_comic);
+        canonical.setTitle(title);
+        canonical.setNtkEpisodePath("/manhwa/8605/u-mou88jul-3akm");
+        ArrayList<Manga> episodes = new ArrayList<>();
+        episodes.add(canonical);
+        title.setEps(episodes);
+        Manga candidate = new Manga(349, "275", "", MTitle.base_comic);
+        candidate.setTitle(title);
+
+        assertEquals("/manhwa/8605/u-mou88jul-3akm", candidate.getNtkEpisodePath());
+        assertEquals("/manhwa/8605/u-mou88jul-3akm", candidate.getUrl());
     }
 
     @Test

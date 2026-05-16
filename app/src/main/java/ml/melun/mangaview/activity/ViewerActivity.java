@@ -8,6 +8,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.text.TextUtils;
+import android.util.Log;
 import android.util.TypedValue;
 
 import com.google.android.material.appbar.AppBarLayout;
@@ -73,6 +74,7 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_CAPTCHA;
 import static ml.melun.mangaview.mangaview.Title.LOAD_OK;
 
 public class ViewerActivity extends AppCompatActivity {
+    private static final String TAG = "ViewerPerf";
     public static final String EXTRA_EXACT_EPISODE = "ml.melun.mangaview.EXTRA_EXACT_EPISODE";
     public static final String EXTRA_START_AT_FIRST_PAGE = "ml.melun.mangaview.EXTRA_START_AT_FIRST_PAGE";
 
@@ -1107,7 +1109,13 @@ public class ViewerActivity extends AppCompatActivity {
                     showViewerCaptchaRequired(m);
                 return;
             }
-            if(res == LOAD_CAPTCHA){
+            int result = res == null ? LOAD_OK : res;
+            boolean loadedImages = hasLoadedImages(m);
+            if(shouldRecoverEmptyLoadResult(result, loadedImages)) {
+                ViewerWarmupManager.logMetric("viewer_empty_recovered", m == null ? -1 : m.getId());
+                result = LOAD_OK;
+            }
+            if(result == LOAD_CAPTCHA){
                 if(shouldSuppressBoundaryLoadError(lockui, hasViewerContent())) {
                     ViewerWarmupManager.logMetric("viewer_boundary_captcha_suppressed", m == null ? -1 : m.getId());
                     if(callback != null)
@@ -1120,7 +1128,7 @@ public class ViewerActivity extends AppCompatActivity {
                 showViewerCaptchaRequired(m);
                 return;
             }
-            if(res == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !hasLoadedImages(m)) {
+            if(result == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !loadedImages) {
                 if(shouldSuppressBoundaryLoadError(lockui, hasViewerContent())) {
                     ViewerWarmupManager.logMetric("viewer_boundary_empty_suppressed", m == null ? -1 : m.getId());
                     if(callback != null)
@@ -2119,6 +2127,14 @@ public class ViewerActivity extends AppCompatActivity {
         return !lockui && hasViewerContent;
     }
 
+    static boolean shouldRecoverEmptyLoadResultForTest(int result, boolean hasLoadedImages) {
+        return shouldRecoverEmptyLoadResult(result, hasLoadedImages);
+    }
+
+    private static boolean shouldRecoverEmptyLoadResult(int result, boolean hasLoadedImages) {
+        return result == ViewerWarmupManager.LOAD_EMPTY_IMAGES && hasLoadedImages;
+    }
+
     static boolean shouldSkipBackgroundNextEpisodeFetchForTest(String sourceSite, boolean ntkPreference, boolean ntkClient, boolean hasLoadedImages) {
         return shouldSkipBackgroundNextEpisodeFetch(sourceSite, ntkPreference, ntkClient, hasLoadedImages);
     }
@@ -2417,6 +2433,14 @@ public class ViewerActivity extends AppCompatActivity {
 
     private void showViewerImagesUnavailable(Manga target) {
         ViewerWarmupManager.logMetric("viewer_empty_images", target == null ? -1 : target.getId());
+        Log.d(TAG, "viewer_empty_detail id=" + (target == null ? -1 : target.getId())
+                + ",name=" + safeMangaName(target)
+                + ",titleId=" + (target == null ? -1 : target.getTitleId())
+                + ",baseMode=" + (target == null ? -1 : target.getBaseMode())
+                + ",source=" + safeSourceSite(target)
+                + ",url=" + Manga.safeUrl(target)
+                + ",ntkPath=" + (target == null ? "" : target.getNtkEpisodePath())
+                + ",images=" + safeImageCount(target));
         showPopup(context, "오류", "회차 이미지를 불러오지 못했습니다.", (dialog, which) -> {
             if(!openEpisodeListIfRequested())
                 ViewerActivity.this.finish();
@@ -2424,6 +2448,27 @@ public class ViewerActivity extends AppCompatActivity {
             if(!openEpisodeListIfRequested())
                 ViewerActivity.this.finish();
         });
+    }
+
+    private String safeMangaName(Manga target) {
+        if(target == null || target.getName() == null)
+            return "";
+        return target.getName();
+    }
+
+    private String safeSourceSite(Manga target) {
+        if(target == null || target.getTitle() == null || target.getTitle().getSourceSite() == null)
+            return "";
+        return target.getTitle().getSourceSite();
+    }
+
+    private int safeImageCount(Manga target) {
+        try {
+            List<String> images = target == null ? null : target.getImgs(context);
+            return images == null ? 0 : images.size();
+        } catch (Exception ignored) {
+            return -1;
+        }
     }
 
     private boolean isNtkEpisode(Manga target) {
