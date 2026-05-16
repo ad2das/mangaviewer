@@ -69,4 +69,9 @@ public class ViewerActivityTest {
         assertEquals(-1, ViewerActivity.displayedPageIndexForTest("0/22"));
         assertEquals(-1, ViewerActivity.displayedPageIndexForTest(null));
     }
+
+    @Test
+    public void initialViewerPreloadStartsOnNextFrame() {
+        assertTrue(ViewerActivity.initialViewerPreloadDelayMsForTest() <= 40L);
+    }
 }

@@ -1790,7 +1790,15 @@ public class ViewerActivity extends AppCompatActivity {
         strip.postDelayed(() -> {
             if(!isFinishing() && manga != null && manga.getId() == target.getId())
                 preloadInitialViewerPages(target, policy);
-        }, 140);
+        }, initialViewerPreloadDelayMs());
+    }
+
+    private static long initialViewerPreloadDelayMs() {
+        return 24L;
+    }
+
+    static long initialViewerPreloadDelayMsForTest() {
+        return initialViewerPreloadDelayMs();
     }
 
     private void scheduleFocusedPagePreload() {
