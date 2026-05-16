@@ -77,6 +77,7 @@ public class CustomHttpClient {
     private static final long NTK_DNS_CACHE_DEFAULT_TTL_MS = 5 * 60 * 1000L;
     private static final long NTK_DNS_CACHE_MAX_TTL_MS = 30 * 60 * 1000L;
     private static final long NTK_DNS_FALLBACK_MEMORY_TTL_MS = 30 * 1000L;
+    private static final long NTK_DOH_FAILURE_BACKOFF_MS = 10 * 60 * 1000L;
     private static final long NTK_DNS_DISK_STALE_TTL_MS = 7 * 24 * 60 * 60 * 1000L;
     private static final long COOKIE_SYNC_INTERVAL_MS = 30 * 1000L;
     private static final long PAGE_CACHE_COLD_START_TTL_MS = 7 * 24 * 60 * 60 * 1000L;
@@ -93,6 +94,7 @@ public class CustomHttpClient {
     private static final Object NTK_DNS_CACHE_LOCK = new Object();
     private static final Map<String, CachedDns> NTK_DNS_CACHE = new HashMap<>();
     private static final Set<String> NTK_DNS_WARMING = new java.util.HashSet<>();
+    private static final Map<String, Long> NTK_DOH_RETRY_AFTER = new HashMap<>();
     private static final ExecutorService NTK_DNS_EXECUTOR = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "ntk-doh-warm");
         thread.setDaemon(true);
@@ -191,23 +193,52 @@ public class CustomHttpClient {
 
     private static void warmNtkDohAsync(String hostname) {
         String key = normalizeDnsHost(hostname);
+        long now = System.currentTimeMillis();
         synchronized (NTK_DNS_CACHE_LOCK) {
             CachedDns cached = NTK_DNS_CACHE.get(key);
-            if(cached != null && cached.expiresAt > System.currentTimeMillis())
+            if(cached != null && cached.expiresAt > now)
+                return;
+            if(!shouldStartNtkDohWarm(NTK_DOH_RETRY_AFTER.get(key), now))
                 return;
             if(NTK_DNS_WARMING.contains(key))
                 return;
             NTK_DNS_WARMING.add(key);
         }
         NTK_DNS_EXECUTOR.execute(() -> {
+            boolean success = false;
             try {
-                lookupNtkDoh(hostname);
+                success = !lookupNtkDoh(hostname).isEmpty();
             } finally {
                 synchronized (NTK_DNS_CACHE_LOCK) {
                     NTK_DNS_WARMING.remove(key);
+                    updateNtkDohRetryAfterLocked(key, success, System.currentTimeMillis());
                 }
             }
         });
+    }
+
+    static boolean shouldStartNtkDohWarmForTest(long retryAfterMs, long nowMs) {
+        return shouldStartNtkDohWarm(retryAfterMs <= 0 ? null : retryAfterMs, nowMs);
+    }
+
+    static long nextNtkDohRetryAfterForTest(boolean success, long nowMs) {
+        return nextNtkDohRetryAfter(success, nowMs);
+    }
+
+    private static boolean shouldStartNtkDohWarm(Long retryAfterMs, long nowMs) {
+        return retryAfterMs == null || retryAfterMs <= nowMs;
+    }
+
+    private static void updateNtkDohRetryAfterLocked(String key, boolean success, long nowMs) {
+        long retryAfter = nextNtkDohRetryAfter(success, nowMs);
+        if(retryAfter <= 0)
+            NTK_DOH_RETRY_AFTER.remove(key);
+        else
+            NTK_DOH_RETRY_AFTER.put(key, retryAfter);
+    }
+
+    private static long nextNtkDohRetryAfter(boolean success, long nowMs) {
+        return success ? 0L : nowMs + NTK_DOH_FAILURE_BACKOFF_MS;
     }
 
     private static List<InetAddress> lookupSystemDns(String hostname, boolean throwOnFailure) throws UnknownHostException {

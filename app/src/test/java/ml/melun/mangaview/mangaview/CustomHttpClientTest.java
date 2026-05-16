@@ -307,6 +307,17 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkDohWarmBacksOffAfterFailure() {
+        long now = 1_000L;
+        long retryAfter = CustomHttpClient.nextNtkDohRetryAfterForTest(false, now);
+
+        assertTrue(retryAfter > now);
+        assertFalse(CustomHttpClient.shouldStartNtkDohWarmForTest(retryAfter, retryAfter - 1L));
+        assertTrue(CustomHttpClient.shouldStartNtkDohWarmForTest(retryAfter, retryAfter));
+        assertEquals(0L, CustomHttpClient.nextNtkDohRetryAfterForTest(true, now));
+    }
+
+    @Test
     public void ntkDnsMergeKeepsPreferredIpv4FirstThenFallback() throws Exception {
         InetAddress preferred = InetAddress.getByAddress("sbxh1.com",
                 new byte[] {(byte)104, (byte)16, (byte)220, (byte)55});
