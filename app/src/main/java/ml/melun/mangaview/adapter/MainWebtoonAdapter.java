@@ -1085,9 +1085,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     private void bindGlideThumb(ImageView thumbView, Object source, int widthDp, int heightDp, int placeholderRes) {
         String key = String.valueOf(source);
-        if(key.equals(thumbView.getTag()))
+        Object previousTag = thumbView.getTag();
+        if(key.equals(previousTag))
             return;
-        Glide.with(thumbView).clear(thumbView);
+        if(previousTag != null)
+            Glide.with(thumbView).clear(thumbView);
         thumbView.setTag(key);
         Glide.with(thumbView)
                 .load(source)
@@ -1111,9 +1113,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private void bindStaticThumb(ImageView thumbView, String key, int resId) {
-        if(key.equals(thumbView.getTag()))
+        Object previousTag = thumbView.getTag();
+        if(key.equals(previousTag))
             return;
-        Glide.with(thumbView).clear(thumbView);
+        if(previousTag != null)
+            Glide.with(thumbView).clear(thumbView);
         thumbView.setTag(key);
         thumbView.setImageResource(resId);
     }
