@@ -1132,6 +1132,7 @@ public class MainSearch extends Fragment {
                 return;
             if(searchAdapter == null)
                 searchAdapter = new TitleAdapter(getContext());
+            searchAdapter.setDeferThumbnails(true);
             bindOnlineAdapter();
             if(noresult != null)
                 noresult.setVisibility(View.GONE);
@@ -1207,6 +1208,15 @@ public class MainSearch extends Fragment {
                 Intent episodeView = episodeIntent(getContext(), title);
                 startActivity(episodeView);
             }
+        });
+    }
+
+    private void releaseDeferredSearchThumbnails() {
+        if(searchResult == null || searchAdapter == null)
+            return;
+        searchResult.post(() -> {
+            if(getContext() != null && searchAdapter != null)
+                searchAdapter.setDeferThumbnails(false);
         });
     }
 
@@ -1360,8 +1370,11 @@ public class MainSearch extends Fragment {
 
             if(hasResults) {
                 noresult.setVisibility(View.GONE);
-                if(replaceResults && searchFirstStartedAt > 0)
+                if(replaceResults && searchFirstStartedAt > 0) {
                     PerfTrace.end("search_first_result_ms", searchFirstStartedAt);
+                    searchFirstStartedAt = 0L;
+                    releaseDeferredSearchThumbnails();
+                }
             }else{
                 noResultText.setText("\"" + targetSearch.getQuery() + "\" 검색 결과가 없습니다");
                 noresult.setVisibility(View.VISIBLE);

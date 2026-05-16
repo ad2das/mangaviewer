@@ -50,6 +50,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     boolean resume = true;
     boolean updated = false;
     boolean forceThumbnail = false;
+    boolean deferThumbnails = false;
     boolean longClickEnabled = true;
     String statusFilter = "";
     String path = "";
@@ -73,6 +74,14 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
 
     public void setForceThumbnail(boolean b){
         this.forceThumbnail = b;
+    }
+
+    public void setDeferThumbnails(boolean deferThumbnails) {
+        if(this.deferThumbnails == deferThumbnails)
+            return;
+        this.deferThumbnails = deferThumbnails;
+        if(!deferThumbnails)
+            notifyDataSetChanged();
     }
 
     void init(Context context){
@@ -168,7 +177,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     }
 
     public void preloadThumbnails(int startPosition, int count) {
-        if(mDataFiltered == null || count <= 0 || (save && !forceThumbnail))
+        if(mDataFiltered == null || count <= 0 || deferThumbnails || (save && !forceThumbnail))
             return;
         int start = Math.max(0, startPosition);
         int end = Math.min(mDataFiltered.size(), start + Math.min(count, save ? 8 : 20));
@@ -494,7 +503,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         }
 
         holder.thumb.setVisibility(View.VISIBLE);
-        if(thumb.length()>1 && (!save || forceThumbnail)) {
+        if(!deferThumbnails && thumb.length()>1 && (!save || forceThumbnail)) {
             Object source = isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, data.getBaseMode());
             String thumbKey = String.valueOf(source);
             if(!thumbKey.equals(holder.thumb.getTag())) {

@@ -17,6 +17,22 @@ public class SearchTest {
     }
 
     @Test
+    public void wfwfFastSearchParserReadsCompactSearchItems() {
+        ArrayList<Title> titles = Search.parseWfwfSearchHtmlFastForTest(
+                "<article class='searchItem'><a href='/cl?toon=12683' class='searchLink'>"
+                        + "<div class='searchPng' style='background-image:url(https://i.example/12683.jpg)'></div>"
+                        + "<div class='searchDetail'><h6 class='searchDetailTitle'>Jagan</h6></div>"
+                        + "</a></article>",
+                base_comic, 20);
+
+        assertEquals(1, titles.size());
+        assertEquals(12683, titles.get(0).getId());
+        assertEquals(base_comic, titles.get(0).getBaseMode());
+        assertEquals("Jagan", titles.get(0).getName());
+        assertEquals("https://i.example/12683.jpg", titles.get(0).getThumb());
+    }
+
+    @Test
     public void ntkAutoKeywordSearchUsesBothApiLists() {
         ArrayList<String> paths = Search.ntkKeywordApiPathsForTest("onepunch", base_auto, 1, 120);
 

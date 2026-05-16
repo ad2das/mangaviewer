@@ -1,5 +1,7 @@
 package ml.melun.mangaview.mangaview;
 
+import android.os.SystemClock;
+
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -19,8 +21,12 @@ import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import okhttp3.Response;
+
+import ml.melun.mangaview.runtime.PerfTrace;
 
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static ml.melun.mangaview.mangaview.MTitle.base_auto;
@@ -35,6 +41,11 @@ public class Search {
     private static final int NTK_KEYWORD_PAGE_SIZE = 30;
     private static final long NTK_RESULT_CACHE_TTL_MS = 10 * 60 * 1000L;
     private static final int NTK_RESULT_CACHE_MAX_ENTRIES = 80;
+    private static final Pattern WFWF_FAST_LINK_PATTERN = Pattern.compile("(?is)<a\\b[^>]*href\\s*=\\s*(['\"])(.*?)\\1[^>]*>(.*?)</a>");
+    private static final Pattern WFWF_FAST_HEADING_PATTERN = Pattern.compile("(?is)<h[1-6]\\b[^>]*>(.*?)</h[1-6]>");
+    private static final Pattern WFWF_FAST_IMG_PATTERN = Pattern.compile("(?is)<img\\b([^>]*)>");
+    private static final Pattern WFWF_FAST_STYLE_PATTERN = Pattern.compile("(?is)style\\s*=\\s*(['\"])(.*?)\\1");
+    private static final Pattern WFWF_FAST_TAG_PATTERN = Pattern.compile("(?is)<[^>]+>");
     private static final Map<String, CachedPageTitles> NTK_RESULT_CACHE = new HashMap<>();
 
     int baseMode;
@@ -226,6 +237,7 @@ public class Search {
     }
 
     private int fetchAllKeyword(CustomHttpClient client) {
+        long startedAt = PerfTrace.start("keyword_search_total_ms");
         int status = 0;
         ArrayList<Title> combined = new ArrayList<>();
         try {
@@ -244,7 +256,14 @@ public class Search {
         }
         result.addAll(combined);
         last = true;
-        return result.size() > 0 ? 0 : status;
+        int finalStatus = result.size() > 0 ? 0 : status;
+        traceSearchMetric("keyword_search_total_ms", startedAt,
+                ",site=" + (client != null && client.isNtk() ? "ntk" : "wfwf")
+                        + ",mode=" + mode
+                        + ",base=" + baseMode
+                        + ",count=" + result.size()
+                        + ",status=" + finalStatus);
+        return finalStatus;
     }
 
     private static class SearchResult {
@@ -286,14 +305,226 @@ public class Search {
     }
 
     private PageTitles fetchWfwfCombinedKeywordSearchResultsUncached(CustomHttpClient client, String path) throws Exception {
+        long fetchStartedAt = PerfTrace.start("wfwf_search_page_fetch_ms");
         CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+        traceSearchMetric("wfwf_search_page_fetch_ms", fetchStartedAt,
+                ",fromCache=" + page.fromCache
+                        + ",code=" + page.code
+                        + ",bodyLen=" + (page.body == null ? 0 : page.body.length()));
         if(page.code >= 400)
             throw new Exception("WFWF search failed: " + page.code);
-        Document document = Jsoup.parse(page.body);
+        long parseStartedAt = PerfTrace.start("wfwf_search_parse_ms");
         ArrayList<Title> parsed = new ArrayList<>();
-        appendUnique(parsed, MainPageWebtoon.parseWolfTitles(document, base_webtoon, 80));
-        appendUnique(parsed, MainPageWebtoon.parseWolfTitles(document, base_comic, 120));
+        appendUnique(parsed, parseWfwfSearchHtmlFast(page.body, base_webtoon, 80));
+        appendUnique(parsed, parseWfwfSearchHtmlFast(page.body, base_comic, 120));
+        traceSearchMetric("wfwf_search_parse_ms", parseStartedAt,
+                ",count=" + parsed.size()
+                        + ",bodyLen=" + (page.body == null ? 0 : page.body.length()));
         return new PageTitles(parsed, null);
+    }
+
+    private static ArrayList<Title> parseWfwfSearchHtmlFast(String body, int targetBaseMode, int limit) {
+        ArrayList<Title> titles = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        if(body == null || body.length() == 0)
+            return titles;
+        Matcher matcher = WFWF_FAST_LINK_PATTERN.matcher(body);
+        while(matcher.find()) {
+            try {
+                String href = decodeFastHtml(matcher.group(2));
+                int id = fastQueryInt(href, "toon");
+                if(id <= 0)
+                    id = fastPathId(href, "webtoon");
+                if(id <= 0)
+                    id = fastPathId(href, "manhwa");
+                if(id <= 0)
+                    continue;
+                int detectedBaseMode = fastDetectBaseMode(href);
+                if(detectedBaseMode != 0 && detectedBaseMode != targetBaseMode)
+                    continue;
+                String seenKey = targetBaseMode + ":" + id;
+                if(!seen.add(seenKey))
+                    continue;
+                String inner = matcher.group(3);
+                String name = fastHeadingText(inner);
+                if(name.length() == 0)
+                    name = fastCleanText(stripFastTags(inner));
+                String thumb = fastThumb(inner);
+                Title title = new Title(name, thumb, "", new ArrayList<>(), "", id, targetBaseMode);
+                title.setSourceSite("wfwf");
+                titles.add(title);
+                if(limit > 0 && titles.size() >= limit)
+                    break;
+            } catch (Exception ignored) {
+            }
+        }
+        return titles;
+    }
+
+    static ArrayList<Title> parseWfwfSearchHtmlFastForTest(String body, int targetBaseMode, int limit) {
+        return parseWfwfSearchHtmlFast(body, targetBaseMode, limit);
+    }
+
+    private static int fastQueryInt(String href, String key) {
+        try {
+            if(href == null || key == null)
+                return -1;
+            String marker = key + "=";
+            int start = href.indexOf(marker);
+            if(start < 0)
+                return -1;
+            start += marker.length();
+            int end = href.indexOf('&', start);
+            if(end < 0)
+                end = href.indexOf('#', start);
+            if(end < 0)
+                end = href.length();
+            return Integer.parseInt(href.substring(start, end));
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    private static int fastPathId(String href, String segment) {
+        try {
+            if(href == null)
+                return -1;
+            String marker = "/" + segment + "/";
+            int start = href.indexOf(marker);
+            if(start < 0)
+                return -1;
+            start += marker.length();
+            int end = href.indexOf('/', start);
+            if(end < 0)
+                end = href.indexOf('?', start);
+            if(end < 0)
+                end = href.indexOf('#', start);
+            if(end < 0)
+                end = href.length();
+            return Integer.parseInt(href.substring(start, end));
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    private static int fastDetectBaseMode(String href) {
+        if(href == null)
+            return 0;
+        String normalized = href.toLowerCase(Locale.ROOT);
+        if(normalized.contains("/cl?toon=")
+                || normalized.contains("/cv?toon=")
+                || normalized.contains("/cm?")
+                || normalized.contains("/manhwa"))
+            return base_comic;
+        if(normalized.contains("/list?toon=")
+                || normalized.contains("/view?toon=")
+                || normalized.contains("/webtoon")
+                || normalized.contains("/ing?")
+                || normalized.contains("/end?"))
+            return base_webtoon;
+        return 0;
+    }
+
+    private static String fastHeadingText(String html) {
+        if(html == null)
+            return "";
+        Matcher matcher = WFWF_FAST_HEADING_PATTERN.matcher(html);
+        if(!matcher.find())
+            return "";
+        return fastCleanText(stripFastTags(matcher.group(1)));
+    }
+
+    private static String fastThumb(String html) {
+        if(html == null)
+            return "";
+        Matcher imgMatcher = WFWF_FAST_IMG_PATTERN.matcher(html);
+        if(imgMatcher.find()) {
+            String attrs = imgMatcher.group(1);
+            String[] names = {"data-original", "data-src", "data-lazy-src", "data-url", "data-image",
+                    "data-img", "data-thumb", "data-thumbnail", "data-background-image", "src"};
+            for(String attr : names) {
+                String value = fastAttr(attrs, attr);
+                if(isFastImageValue(value))
+                    return decodeFastHtml(value).trim();
+            }
+        }
+        Matcher styleMatcher = WFWF_FAST_STYLE_PATTERN.matcher(html);
+        while(styleMatcher.find()) {
+            String value = fastBackgroundImage(styleMatcher.group(2));
+            if(isFastImageValue(value))
+                return decodeFastHtml(value).trim();
+        }
+        return "";
+    }
+
+    private static String fastAttr(String attrs, String attr) {
+        if(attrs == null || attr == null)
+            return "";
+        Matcher quoted = Pattern.compile("(?is)\\b" + Pattern.quote(attr) + "\\s*=\\s*(['\"])(.*?)\\1").matcher(attrs);
+        if(quoted.find())
+            return quoted.group(2);
+        Matcher unquoted = Pattern.compile("(?is)\\b" + Pattern.quote(attr) + "\\s*=\\s*([^\\s>]+)").matcher(attrs);
+        return unquoted.find() ? unquoted.group(1) : "";
+    }
+
+    private static String fastBackgroundImage(String style) {
+        if(style == null)
+            return "";
+        int start = style.indexOf("url(");
+        if(start < 0)
+            return "";
+        start += 4;
+        int end = style.indexOf(')', start);
+        if(end < 0)
+            return "";
+        return style.substring(start, end).replace("'", "").replace("\"", "").trim();
+    }
+
+    private static boolean isFastImageValue(String value) {
+        if(value == null)
+            return false;
+        String trimmed = value.trim();
+        return trimmed.length() > 0
+                && !trimmed.startsWith("data:")
+                && !"about:blank".equalsIgnoreCase(trimmed)
+                && !"#".equals(trimmed)
+                && !trimmed.contains("/platforms/");
+    }
+
+    private static String stripFastTags(String html) {
+        if(html == null)
+            return "";
+        return WFWF_FAST_TAG_PATTERN.matcher(html).replaceAll(" ");
+    }
+
+    private static String fastCleanText(String text) {
+        if(text == null)
+            return "";
+        return decodeFastHtml(text)
+                .replace("UP", "")
+                .replace("NEW", "")
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
+
+    private static String decodeFastHtml(String value) {
+        if(value == null)
+            return "";
+        return value.replace("&nbsp;", " ")
+                .replace("&amp;", "&")
+                .replace("&quot;", "\"")
+                .replace("&#34;", "\"")
+                .replace("&#39;", "'")
+                .replace("&apos;", "'")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">");
+    }
+
+    private static void traceSearchMetric(String name, long startedAtMs, String metadata) {
+        if(!PerfTrace.shouldLog())
+            return;
+        PerfTrace.mark(name, (SystemClock.elapsedRealtime() - startedAtMs)
+                + (metadata == null || metadata.length() == 0 ? "" : metadata));
     }
 
     private int fetchWebtoon(CustomHttpClient client) {
@@ -426,14 +657,19 @@ public class Search {
             throw new Exception("Webtoon search failed: " + page.code);
         if(client != null && client.isNtk() && isNtkApiListPath(path))
             return parseNtkApiPage(page.body, path, baseMode, limit, currentPage);
-        Document d = Jsoup.parse(page.body);
-        ArrayList<Title> parsed = MainPageWebtoon.parseWolfTitles(d, baseMode, limit);
+        boolean fastWfwfKeyword = client != null && !client.isNtk() && path != null && path.startsWith("/search.html");
+        Document d = fastWfwfKeyword ? null : Jsoup.parse(page.body);
+        ArrayList<Title> parsed = fastWfwfKeyword
+                ? parseWfwfSearchHtmlFast(page.body, baseMode, limit)
+                : MainPageWebtoon.parseWolfTitles(d, baseMode, limit);
         if(parsed.size() == 0 && client.resolveWfwfDomainNow()) {
             page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
             if(page.code >= 400)
                 throw new Exception("Webtoon search failed: " + page.code);
-            d = Jsoup.parse(page.body);
-            parsed = MainPageWebtoon.parseWolfTitles(d, baseMode, limit);
+            d = fastWfwfKeyword ? null : Jsoup.parse(page.body);
+            parsed = fastWfwfKeyword
+                    ? parseWfwfSearchHtmlFast(page.body, baseMode, limit)
+                    : MainPageWebtoon.parseWolfTitles(d, baseMode, limit);
         }
         String sourceSite = client != null && client.isNtk() ? "ntk" : "wfwf";
         for(Title title : parsed)

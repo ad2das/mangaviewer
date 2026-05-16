@@ -22,6 +22,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static ml.melun.mangaview.MainApplication.appContext;
 import static ml.melun.mangaview.MainApplication.p;
@@ -34,6 +36,11 @@ public class MainPageWebtoon {
 
     private static final int MAIN_SECTION_LIMIT = 10;
     private static final long PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
+    private static final Pattern FAST_TITLE_LINK_PATTERN = Pattern.compile("(?is)<a\\b[^>]*href\\s*=\\s*(['\"])(.*?)\\1[^>]*>(.*?)</a>");
+    private static final Pattern FAST_HEADING_PATTERN = Pattern.compile("(?is)<h[1-6]\\b[^>]*>(.*?)</h[1-6]>");
+    private static final Pattern FAST_IMG_PATTERN = Pattern.compile("(?is)<img\\b([^>]*)>");
+    private static final Pattern FAST_STYLE_PATTERN = Pattern.compile("(?is)style\\s*=\\s*(['\"])(.*?)\\1");
+    private static final Pattern FAST_TAG_PATTERN = Pattern.compile("(?is)<[^>]+>");
 
     private static final String[] WEBTOON_STATUS = {"ing", "end"};
     private static final String[] WEBTOON_STATUS_LABELS = {"연재웹툰", "완결웹툰"};
@@ -601,9 +608,72 @@ public class MainPageWebtoon {
     }
 
     static ArrayList<Title> parseWolfTitles(Document d, int baseMode, int limit, String sourceSite){
+        return parseWolfTitles(d, baseMode, limit, sourceSite, true);
+    }
+
+    static ArrayList<Title> parseWolfTitles(Document d, int baseMode, int limit, String sourceSite, boolean enrichClassification){
+        if(d == null)
+            return new ArrayList<>();
+        return parseWolfTitleElements(
+                d.select("div.webtoon-list li, article.searchItem, li:has(a[href*=/webtoon/]), li:has(a[href*=/manhwa/]), article:has(a[href*=/webtoon/]), article:has(a[href*=/manhwa/]), div:has(> a[href*=/webtoon/]), div:has(> a[href*=/manhwa/]), a[href*=toon=], a[href*=/webtoon/], a[href*=/manhwa/]"),
+                baseMode, limit, sourceSite, enrichClassification);
+    }
+
+    static ArrayList<Title> parseWolfTitleAnchorsFast(Document d, int baseMode, int limit, String sourceSite) {
+        if(d == null)
+            return new ArrayList<>();
+        return parseWolfTitleElements(
+                d.select("a[href*=toon=], a[href*=/webtoon/], a[href*=/manhwa/]"),
+                baseMode, limit, sourceSite, false);
+    }
+
+    static ArrayList<Title> parseWolfSearchHtmlFast(String body, int baseMode, int limit, String sourceSite) {
         ArrayList<Title> titles = new ArrayList<>();
         java.util.HashSet<String> seenTitleKeys = new java.util.HashSet<>();
-        for(Element e : d.select("div.webtoon-list li, article.searchItem, li:has(a[href*=/webtoon/]), li:has(a[href*=/manhwa/]), article:has(a[href*=/webtoon/]), article:has(a[href*=/manhwa/]), div:has(> a[href*=/webtoon/]), div:has(> a[href*=/manhwa/]), a[href*=toon=], a[href*=/webtoon/], a[href*=/manhwa/]")){
+        if(body == null || body.length() == 0)
+            return titles;
+        Matcher matcher = FAST_TITLE_LINK_PATTERN.matcher(body);
+        while(matcher.find()) {
+            try {
+                String href = decodeHtml(matcher.group(2));
+                int id = getQueryInt(href, "toon");
+                if(id <= 0)
+                    id = getPathId(href, "webtoon");
+                if(id <= 0)
+                    id = getPathId(href, "manhwa");
+                if(id <= 0)
+                    continue;
+                int detectedBaseMode = detectWolfBaseMode(href);
+                if(detectedBaseMode != 0 && detectedBaseMode != baseMode)
+                    continue;
+                String seenKey = baseMode + ":" + id;
+                if(!seenTitleKeys.add(seenKey))
+                    continue;
+
+                String inner = matcher.group(3);
+                String name = firstHeadingText(inner);
+                if(name.length() == 0)
+                    name = cleanNtkListText(decodeHtml(stripTags(inner)));
+                String thumb = firstFastThumb(inner);
+                thumb = resolveCoverThumbIfLoaded(name, id, thumb, baseMode);
+                Title parsed = new Title(name, thumb, "", new ArrayList<>(), "", id, baseMode);
+                if(sourceSite != null && sourceSite.trim().length() > 0)
+                    parsed.setSourceSite(sourceSite.trim());
+                applyInferredSearchTagsIfLoaded(parsed);
+                titles.add(parsed);
+                if(limit > 0 && titles.size() >= limit)
+                    break;
+            } catch (Exception ignored) {
+            }
+        }
+        return titles;
+    }
+
+    private static ArrayList<Title> parseWolfTitleElements(Elements candidates, int baseMode, int limit,
+                                                           String sourceSite, boolean enrichClassification) {
+        ArrayList<Title> titles = new ArrayList<>();
+        java.util.HashSet<String> seenTitleKeys = new java.util.HashSet<>();
+        for(Element e : candidates){
             try{
                 Element link = findTitleLink(e, baseMode);
                 if(link == null) continue;
@@ -645,7 +715,9 @@ public class MainPageWebtoon {
                     if(background != null)
                         thumb = extractBackgroundImage(background.attr("style"));
                 }
-                thumb = resolveCoverThumb(name, id, thumb, baseMode);
+                thumb = enrichClassification
+                        ? resolveCoverThumb(name, id, thumb, baseMode)
+                        : resolveCoverThumbIfLoaded(name, id, thumb, baseMode);
 
                 Elements infos = context.select("div.txt p");
                 List<String> tags = new ArrayList<>();
@@ -669,7 +741,10 @@ public class MainPageWebtoon {
                 if(sourceSite != null && sourceSite.trim().length() > 0)
                     parsed.setSourceSite(sourceSite.trim());
                 titles.add(parsed);
-                applyInferredSearchTags(parsed);
+                if(enrichClassification)
+                    applyInferredSearchTags(parsed);
+                else
+                    applyInferredSearchTagsIfLoaded(parsed);
                 if(limit > 0 && titles.size() >= limit) break;
             }catch (Exception ignored){
             }
@@ -806,6 +881,87 @@ public class MainPageWebtoon {
         return cleaned;
     }
 
+    private static String firstHeadingText(String html) {
+        if(html == null)
+            return "";
+        Matcher matcher = FAST_HEADING_PATTERN.matcher(html);
+        if(!matcher.find())
+            return "";
+        return cleanNtkListText(decodeHtml(stripTags(matcher.group(1))));
+    }
+
+    private static String firstFastThumb(String html) {
+        if(html == null)
+            return "";
+        Matcher imgMatcher = FAST_IMG_PATTERN.matcher(html);
+        if(imgMatcher.find()) {
+            String attrs = imgMatcher.group(1);
+            String[] names = {
+                    "data-original",
+                    "data-src",
+                    "data-lazy-src",
+                    "data-url",
+                    "data-image",
+                    "data-img",
+                    "data-thumb",
+                    "data-thumbnail",
+                    "data-background-image"
+            };
+            for(String attr : names) {
+                String value = attrValue(attrs, attr);
+                if(isUsableImageValue(value))
+                    return decodeHtml(value).trim();
+            }
+            String srcset = firstSrcsetImage(attrValue(attrs, "data-srcset"));
+            if(srcset.length() == 0)
+                srcset = firstSrcsetImage(attrValue(attrs, "srcset"));
+            if(srcset.length() > 0)
+                return decodeHtml(srcset).trim();
+            String styleImage = extractBackgroundImage(attrValue(attrs, "style"));
+            if(isUsableImageValue(styleImage))
+                return decodeHtml(styleImage).trim();
+            String src = attrValue(attrs, "src");
+            if(isUsableImageValue(src))
+                return decodeHtml(src).trim();
+        }
+        Matcher styleMatcher = FAST_STYLE_PATTERN.matcher(html);
+        while(styleMatcher.find()) {
+            String styleImage = extractBackgroundImage(styleMatcher.group(2));
+            if(isUsableImageValue(styleImage))
+                return decodeHtml(styleImage).trim();
+        }
+        return "";
+    }
+
+    private static String attrValue(String attrs, String attr) {
+        if(attrs == null || attr == null)
+            return "";
+        Matcher quoted = Pattern.compile("(?is)\\b" + Pattern.quote(attr) + "\\s*=\\s*(['\"])(.*?)\\1").matcher(attrs);
+        if(quoted.find())
+            return quoted.group(2);
+        Matcher unquoted = Pattern.compile("(?is)\\b" + Pattern.quote(attr) + "\\s*=\\s*([^\\s>]+)").matcher(attrs);
+        return unquoted.find() ? unquoted.group(1) : "";
+    }
+
+    private static String stripTags(String html) {
+        if(html == null)
+            return "";
+        return FAST_TAG_PATTERN.matcher(html).replaceAll(" ");
+    }
+
+    private static String decodeHtml(String value) {
+        if(value == null)
+            return "";
+        return value.replace("&nbsp;", " ")
+                .replace("&amp;", "&")
+                .replace("&quot;", "\"")
+                .replace("&#34;", "\"")
+                .replace("&#39;", "'")
+                .replace("&apos;", "'")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">");
+    }
+
     private static String firstImageAttr(Element img) {
         if(img == null)
             return "";
@@ -870,6 +1026,15 @@ public class MainPageWebtoon {
         return "";
     }
 
+    public static String resolveCoverThumbIfLoaded(String name, int id, String thumb, int baseMode) {
+        if(!isPlatformLogoThumb(thumb))
+            return thumb == null ? "" : thumb;
+        DbTitle dbTitle = findClassificationDbTitleIfLoaded(name, id, baseMode);
+        if(dbTitle != null && !isPlatformLogoThumb(dbTitle.thumb) && dbTitle.thumb != null && dbTitle.thumb.length() > 0)
+            return dbTitle.thumb;
+        return "";
+    }
+
     public static boolean isPlatformLogoThumb(String thumb) {
         if(thumb == null)
             return true;
@@ -890,6 +1055,29 @@ public class MainPageWebtoon {
             }
         }
         loadClassificationDb();
+        DbTitle byId = classificationTitleDb.get(id);
+        if(byId != null)
+            return byId;
+        return findClassificationDbTitleByName(classificationTitleDb, name);
+    }
+
+    private static DbTitle findClassificationDbTitleIfLoaded(String name, int id, int baseMode) {
+        if(baseMode == base_comic) {
+            synchronized (comicClassificationDbLock) {
+                if(!comicClassificationDbLoaded)
+                    return null;
+                DbTitle byId = comicClassificationTitleDb.get(id);
+                if(byId != null)
+                    return byId;
+                return findClassificationDbTitleByName(comicClassificationTitleDb, name);
+            }
+        }
+        return findWebtoonClassificationDbTitleIfLoaded(name, id);
+    }
+
+    private static synchronized DbTitle findWebtoonClassificationDbTitleIfLoaded(String name, int id) {
+        if(!classificationDbLoaded)
+            return null;
         DbTitle byId = classificationTitleDb.get(id);
         if(byId != null)
             return byId;
@@ -938,6 +1126,42 @@ public class MainPageWebtoon {
         List<String> dbTags = getComicClassificationDbTags(title.getId());
         if(dbTags == null)
             dbTags = getComicClassificationDbTags(title.getName());
+        if(dbTags != null) {
+            for(String dbTag : dbTags)
+                addUnique(tags, dbTag);
+            title.setTags(tags);
+            return;
+        }
+        for(String inferredTag : inferComicTags(title))
+            addUnique(tags, inferredTag);
+        title.setTags(tags);
+    }
+
+    public static void applyInferredSearchTagsIfLoaded(Title title) {
+        if(title == null)
+            return;
+        if(title.getBaseMode() == base_webtoon) {
+            List<String> tags = new ArrayList<>(title.getTags());
+            List<String> dbTags = getClassificationDbTagsIfLoaded(title.getId());
+            if(dbTags == null)
+                dbTags = getClassificationDbTagsIfLoaded(title.getName());
+            if(hasMeaningfulClassificationTags(dbTags)) {
+                for(String dbTag : dbTags)
+                    addUnique(tags, dbTag);
+                title.setTags(tags);
+                return;
+            }
+            for(String inferredTag : inferWebtoonTags(title))
+                addUnique(tags, inferredTag);
+            title.setTags(tags);
+            return;
+        }
+        if(title.getBaseMode() != base_comic)
+            return;
+        List<String> tags = new ArrayList<>(title.getTags());
+        List<String> dbTags = getComicClassificationDbTagsIfLoaded(title.getId());
+        if(dbTags == null)
+            dbTags = getComicClassificationDbTagsIfLoaded(title.getName());
         if(dbTags != null) {
             for(String dbTag : dbTags)
                 addUnique(tags, dbTag);
@@ -1294,8 +1518,25 @@ public class MainPageWebtoon {
         return tags == null ? null : new ArrayList<>(tags);
     }
 
+    private static synchronized List<String> getClassificationDbTagsIfLoaded(int titleId) {
+        if(!classificationDbLoaded)
+            return null;
+        List<String> tags = classificationDb.get(titleId);
+        return tags == null ? null : new ArrayList<>(tags);
+    }
+
     private static synchronized List<String> getClassificationDbTags(String titleName) {
         loadClassificationDb();
+        String key = normalizeClassificationName(titleName);
+        if(key.length() == 0)
+            return null;
+        List<String> tags = classificationNameDb.get(key);
+        return tags == null ? null : new ArrayList<>(tags);
+    }
+
+    private static synchronized List<String> getClassificationDbTagsIfLoaded(String titleName) {
+        if(!classificationDbLoaded)
+            return null;
         String key = normalizeClassificationName(titleName);
         if(key.length() == 0)
             return null;
@@ -1311,12 +1552,33 @@ public class MainPageWebtoon {
         }
     }
 
+    private static List<String> getComicClassificationDbTagsIfLoaded(int titleId) {
+        synchronized (comicClassificationDbLock) {
+            if(!comicClassificationDbLoaded)
+                return null;
+            List<String> tags = comicClassificationDb.get(titleId);
+            return tags == null ? null : new ArrayList<>(tags);
+        }
+    }
+
     private static List<String> getComicClassificationDbTags(String titleName) {
         loadComicClassificationDb();
         String key = normalizeClassificationName(titleName);
         if(key.length() == 0)
             return null;
         synchronized (comicClassificationDbLock) {
+            List<String> tags = comicClassificationNameDb.get(key);
+            return tags == null ? null : new ArrayList<>(tags);
+        }
+    }
+
+    private static List<String> getComicClassificationDbTagsIfLoaded(String titleName) {
+        String key = normalizeClassificationName(titleName);
+        if(key.length() == 0)
+            return null;
+        synchronized (comicClassificationDbLock) {
+            if(!comicClassificationDbLoaded)
+                return null;
             List<String> tags = comicClassificationNameDb.get(key);
             return tags == null ? null : new ArrayList<>(tags);
         }
@@ -1434,6 +1696,14 @@ public class MainPageWebtoon {
         comicClassificationGenreDb.clear();
         comicClassificationDbLoaded = false;
         comicClassificationDbLoadedAt = 0;
+    }
+
+    static synchronized boolean isClassificationDbLoadedForTest(boolean comic) {
+        if(!comic)
+            return classificationDbLoaded;
+        synchronized (comicClassificationDbLock) {
+            return comicClassificationDbLoaded;
+        }
     }
 
     private static void parseClassificationDb(String json, Map<Integer, List<String>> idDb,

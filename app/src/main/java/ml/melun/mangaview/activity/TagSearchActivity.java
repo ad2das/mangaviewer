@@ -238,6 +238,7 @@ public class TagSearchActivity extends AppCompatActivity {
 
         }else {
             adapter = new TitleAdapter(context);
+            adapter.setDeferThumbnails(true);
             search = MangaRepository.createSearch(query,mode,baseMode);
             searchFirstStartedAt = PerfTrace.start("tag_search_first_result_ms");
             startLoad(new searchManga());
@@ -524,12 +525,12 @@ public class TagSearchActivity extends AppCompatActivity {
 
             if(adapter.getItemCount()>0) {
                 noresult.setVisibility(View.GONE);
-                if(searchFirstStartedAt > 0) {
-                    PerfTrace.end("tag_search_first_result_ms", searchFirstStartedAt);
-                    searchFirstStartedAt = 0L;
-                }
+                finishInitialSearchTraceIfNeeded();
+                releaseDeferredSearchThumbnails();
             }else{
                 noresult.setVisibility(View.VISIBLE);
+                if(adapter != null)
+                    adapter.setDeferThumbnails(false);
             }
             updateResultMeta();
             scheduleThumbnailPreload();
@@ -632,8 +633,11 @@ public class TagSearchActivity extends AppCompatActivity {
 
             if(adapter.getItemCount()>0) {
                 noresult.setVisibility(View.GONE);
+                finishInitialSearchTraceIfNeeded();
+                releaseDeferredSearchThumbnails();
             }else{
                 noresult.setVisibility(View.VISIBLE);
+                adapter.setDeferThumbnails(false);
             }
             updateVirtualScrollbar();
             updateResultMeta();
@@ -809,6 +813,22 @@ public class TagSearchActivity extends AppCompatActivity {
         if(!(searchResult instanceof StableScrollbarRecyclerView) || search == null)
             return;
         ((StableScrollbarRecyclerView) searchResult).setVirtualItemCount(search.getVirtualResultCount());
+    }
+
+    private void finishInitialSearchTraceIfNeeded() {
+        if(searchFirstStartedAt <= 0)
+            return;
+        PerfTrace.end("tag_search_first_result_ms", searchFirstStartedAt);
+        searchFirstStartedAt = 0L;
+    }
+
+    private void releaseDeferredSearchThumbnails() {
+        if(searchResult == null || adapter == null)
+            return;
+        searchResult.post(() -> {
+            if(!destroyed && !isFinishing() && adapter != null)
+                adapter.setDeferThumbnails(false);
+        });
     }
 
     private void updateResultMeta() {

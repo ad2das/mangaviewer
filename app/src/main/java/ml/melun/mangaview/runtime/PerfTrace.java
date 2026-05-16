@@ -3,6 +3,8 @@ package ml.melun.mangaview.runtime;
 import android.os.SystemClock;
 import android.util.Log;
 
+import ml.melun.mangaview.MainApplication;
+
 public final class PerfTrace {
     private static final String TAG = "PerfTrace";
 
@@ -30,14 +32,27 @@ public final class PerfTrace {
     }
 
     public static boolean shouldLog() {
-        return shouldLog(Log.isLoggable(TAG, Log.DEBUG));
+        return shouldLog(isDebuggableApp(), Log.isLoggable(TAG, Log.DEBUG));
     }
 
     static boolean shouldLogForTest(boolean debugTagLoggable) {
-        return shouldLog(debugTagLoggable);
+        return shouldLog(false, debugTagLoggable);
     }
 
-    private static boolean shouldLog(boolean debugTagLoggable) {
-        return debugTagLoggable;
+    static boolean shouldLogForTest(boolean debugBuild, boolean debugTagLoggable) {
+        return shouldLog(debugBuild, debugTagLoggable);
+    }
+
+    private static boolean shouldLog(boolean debugBuild, boolean debugTagLoggable) {
+        return debugBuild || debugTagLoggable;
+    }
+
+    private static boolean isDebuggableApp() {
+        try {
+            return MainApplication.appContext != null
+                    && (MainApplication.appContext.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+        } catch (RuntimeException e) {
+            return false;
+        }
     }
 }
