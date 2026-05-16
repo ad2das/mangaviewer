@@ -39,6 +39,7 @@ public class SearchTest {
         assertEquals(2, paths.size());
         assertEquals("/api/works?keyword=onepunch&page=1&pageSize=30&withTotal=1", paths.get(0));
         assertEquals("/api/manhwa-list?keyword=onepunch&page=1&pageSize=30&withTotal=1", paths.get(1));
+        assertTrue(Search.shouldFetchNtkKeywordApiPathsInParallelForTest(paths));
     }
 
     @Test
