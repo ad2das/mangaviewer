@@ -65,6 +65,13 @@ public class SearchTest {
     }
 
     @Test
+    public void ntkKeywordSearchSkipsHtmlFallbackWhenApiCompletedEmpty() {
+        assertEquals(false, Search.shouldFallbackToNtkHtmlKeywordSearchForTest(0, true));
+        assertEquals(true, Search.shouldFallbackToNtkHtmlKeywordSearchForTest(0, false));
+        assertEquals(false, Search.shouldFallbackToNtkHtmlKeywordSearchForTest(1, false));
+    }
+
+    @Test
     public void ntkApiParserKeepsSlugSourceWorkIdsOpenable() throws Exception {
         ArrayList<Title> titles = Search.parseNtkApiTitlesForTest(
                 "{\"works\":[{\"sourceWorkId\":\"u-moo205z1-yvf4\",\"title\":\"Slug Title\",\"thumbnailUrl\":\"/cover.jpg\"}]}",
