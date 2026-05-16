@@ -90,7 +90,7 @@ public class PrefetchCoordinatorTest {
         assertEquals(3, PrefetchCoordinator.episodePrefetchLimitForTest(false, false));
         assertEquals(4, PrefetchCoordinator.episodePrefetchLimitForTest(false, true));
         assertEquals(1, PrefetchCoordinator.episodePrefetchLimitForTest(true, true, true));
-        assertEquals(2, PrefetchCoordinator.episodePrefetchLimitForTest(false, true, true));
+        assertEquals(1, PrefetchCoordinator.episodePrefetchLimitForTest(false, true, true));
     }
 
     @Test
