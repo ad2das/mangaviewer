@@ -120,6 +120,8 @@ public class ViewerActivity extends AppCompatActivity {
     boolean previousEpisodeBoundaryJumpPending = false;
     boolean nextEpisodeBoundaryJumpPending = false;
     long lastBoundaryCheckMs = 0L;
+    long suppressBoundaryLoadUntilMs = 0L;
+    boolean suppressBoundaryLoadUntilUserScroll = false;
     private static final int INITIAL_PRELOAD_AHEAD_COUNT = 10;
     private static final int NEXT_EPISODE_ATTACH_THRESHOLD = 22;
     private static final int DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD = 12;
@@ -346,6 +348,8 @@ public class ViewerActivity extends AppCompatActivity {
                         lastViewerScrollDirection = dy < 0 ? -1 : 1;
                     if(dy != 0)
                         clearInitialToolbarGuard();
+                    if(dy != 0 && recyclerView.getScrollState() != RecyclerView.SCROLL_STATE_IDLE)
+                        suppressBoundaryLoadUntilUserScroll = false;
                     dispatchScrollAnchorToAdapter(recyclerView.getScrollState() != RecyclerView.SCROLL_STATE_IDLE);
                     loadEpisodeAtBoundaryIfNeededThrottled();
                     scheduleScrollBookmarkSave();
@@ -915,15 +919,118 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     public void toggleAutoCut(){
-        PageItem page = getFocusedVisiblePage();
+        PageItem page = autoCutToggleAnchor();
         if(page == null || page.manga == null || stripAdapter == null)
             return;
+        int offset = autoCutToggleOffset(page, visibleOffset(page));
         autoCut = !autoCut;
         updateAutoCutButtonState();
+        suppressBoundaryLoadUntilMs = android.os.SystemClock.uptimeMillis() + 1200L;
+        suppressBoundaryLoadUntilUserScroll = true;
         releaseStripAdapter();
         stripAdapter = new StripAdapter(context, page.manga, autoCut, width,title, infiniteScrollCallback);
         refreshAdapter();
-        manager.scrollToPage(new PageItem(page.index, "", page.manga));
+        PageItem scrollPage = new PageItem(page.index, "", page.manga);
+        manager.scrollToPageWithOffset(scrollPage, offset);
+        manga = page.manga;
+        updateIntent(manga);
+        strip.post(() -> refreshToolbar(manga));
+    }
+
+    private PageItem autoCutToggleAnchor() {
+        PageItem focused = getFocusedVisiblePage();
+        PageItem displayed = displayedToolbarPage(focused);
+        return displayed != null ? displayed : focused;
+    }
+
+    private PageItem displayedToolbarPage(PageItem fallback) {
+        Manga displayedManga = displayedToolbarManga(fallback);
+        if(displayedManga == null || pageBtn == null)
+            return null;
+        int index = displayedPageIndex(pageBtn.getText());
+        if(index < 0)
+            return null;
+        List<String> images = MangaRepository.imageUrls(displayedManga, context);
+        if(images == null || images.size() == 0)
+            return null;
+        if(index >= images.size())
+            index = images.size() - 1;
+        int side = fallback != null && fallback.index == index && sameManga(fallback.manga, displayedManga)
+                ? fallback.side
+                : PageItem.FIRST;
+        return new PageItem(index, "", displayedManga, side);
+    }
+
+    private Manga displayedToolbarManga(PageItem fallback) {
+        CharSequence text = toolbarTitle == null ? null : toolbarTitle.getText();
+        String displayedName = text == null ? "" : text.toString();
+        if(fallback != null && fallback.manga != null && displayedName.equals(fallback.manga.getName()))
+            return fallback.manga;
+        if(manga != null && displayedName.equals(manga.getName()))
+            return manga;
+        Manga matched = findEpisodeByName(displayedName, eps);
+        if(matched != null)
+            return matched;
+        if(title != null) {
+            matched = findEpisodeByName(displayedName, Utils.snapshotEpisodes(title));
+            if(matched != null)
+                return matched;
+        }
+        if(fallback != null && fallback.manga != null) {
+            matched = findEpisodeByName(displayedName, Utils.snapshotEpisodes(fallback.manga));
+            if(matched != null)
+                return matched;
+        }
+        return manga;
+    }
+
+    private Manga findEpisodeByName(String name, List<Manga> episodes) {
+        if(name == null || name.length() == 0 || episodes == null)
+            return null;
+        for(Manga episode : episodes)
+            if(episode != null && name.equals(episode.getName()))
+                return episode;
+        return null;
+    }
+
+    private static int displayedPageIndex(CharSequence text) {
+        if(text == null)
+            return -1;
+        String value = text.toString().trim();
+        int slash = value.indexOf('/');
+        if(slash <= 0)
+            return -1;
+        try {
+            int page = Integer.parseInt(value.substring(0, slash).trim());
+            return page <= 0 ? -1 : page - 1;
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    static int displayedPageIndexForTest(CharSequence text) {
+        return displayedPageIndex(text);
+    }
+
+    private int visibleOffset(PageItem page) {
+        if(page == null || manager == null || stripAdapter == null)
+            return 0;
+        int position = stripAdapter.findPagePosition(page);
+        if(position == RecyclerView.NO_POSITION)
+            return 0;
+        View view = manager.findViewByPosition(position);
+        return view == null ? 0 : view.getTop();
+    }
+
+    private int autoCutToggleOffset(PageItem page, int offset) {
+        if(page == null || page.manga == null)
+            return 0;
+        List<String> images = MangaRepository.imageUrls(page.manga, context);
+        if(images == null || images.size() == 0)
+            return 0;
+        if(page.index >= images.size() - 1)
+            return 0;
+        return offset;
     }
 
     private void updateAutoCutButtonState() {
@@ -1695,6 +1802,10 @@ public class ViewerActivity extends AppCompatActivity {
 
     private void loadEpisodeAtBoundaryIfNeeded() {
         if(strip == null || manager == null || stripAdapter == null || manager.getItemCount() == 0)
+            return;
+        if(suppressBoundaryLoadUntilUserScroll)
+            return;
+        if(android.os.SystemClock.uptimeMillis() < suppressBoundaryLoadUntilMs)
             return;
         int first = manager.findFirstVisibleItemPosition();
         int last = manager.findLastVisibleItemPosition();

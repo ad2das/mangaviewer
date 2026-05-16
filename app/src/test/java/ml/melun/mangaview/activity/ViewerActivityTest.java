@@ -7,6 +7,7 @@ import java.util.Collections;
 
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -58,5 +59,14 @@ public class ViewerActivityTest {
         assertTrue(ViewerActivity.shouldRecoverEmptyLoadResultForTest(ViewerWarmupManager.LOAD_EMPTY_IMAGES, true));
         assertFalse(ViewerActivity.shouldRecoverEmptyLoadResultForTest(ViewerWarmupManager.LOAD_EMPTY_IMAGES, false));
         assertFalse(ViewerActivity.shouldRecoverEmptyLoadResultForTest(0, true));
+    }
+
+    @Test
+    public void displayedPageIndexParsesToolbarPageText() {
+        assertEquals(0, ViewerActivity.displayedPageIndexForTest("1/22"));
+        assertEquals(21, ViewerActivity.displayedPageIndexForTest(" 22 / 22 "));
+        assertEquals(-1, ViewerActivity.displayedPageIndexForTest("-/-"));
+        assertEquals(-1, ViewerActivity.displayedPageIndexForTest("0/22"));
+        assertEquals(-1, ViewerActivity.displayedPageIndexForTest(null));
     }
 }
