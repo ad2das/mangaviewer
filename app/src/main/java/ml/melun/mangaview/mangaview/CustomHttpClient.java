@@ -795,6 +795,7 @@ public class CustomHttpClient {
     Map<String, Long> cookieSyncAt;
     Map<String, CachedPage> pageCache;
     Map<String, PageLoadState> pageLoads;
+    private String cookieHeaderCache;
     private final Object pageCacheLock = new Object();
     private final Object pageLoadsLock = new Object();
     private volatile String lastCloudflareChallengeUrl = null;
@@ -859,10 +860,12 @@ public class CustomHttpClient {
             return;
         if(v == null) {
             cookies.remove(k);
+            invalidateCookieHeaderCache();
             persistCookies();
             return;
         }
         cookies.put(k, v);
+        invalidateCookieHeaderCache();
         persistCookies();
         if("cf_clearance".equalsIgnoreCase(k) && v.length() > 0)
             saveClearanceToDisk();
@@ -879,6 +882,7 @@ public class CustomHttpClient {
     }
     public synchronized void removeCookie(String k) {
         cookies.remove(k);
+        invalidateCookieHeaderCache();
         persistCookies();
     }
     public synchronized boolean hasCloudflareClearance() {
@@ -978,7 +982,7 @@ public class CustomHttpClient {
         }
     }
 
-    public void restoreClearanceFromDisk() {
+    public synchronized void restoreClearanceFromDisk() {
         try {
             SharedPreferences pref = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE);
             String value = pref.getString("cfClearanceValue", null);
@@ -986,6 +990,7 @@ public class CustomHttpClient {
             if(value == null || value.length() == 0 || expireAt <= System.currentTimeMillis())
                 return;
             cookies.put("cf_clearance", value);
+            invalidateCookieHeaderCache();
             persistCookies();
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
@@ -1012,8 +1017,10 @@ public class CustomHttpClient {
                 changed = true;
             }
         }
-        if(changed)
+        if(changed) {
+            invalidateCookieHeaderCache();
             persistCookies();
+        }
         context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
                 .edit()
                 .remove("cfClearanceValue")
@@ -1050,6 +1057,7 @@ public class CustomHttpClient {
     public synchronized void resetCookie(){
         this.cookies = new HashMap<>();
         this.cookieSyncAt = new HashMap<>();
+        invalidateCookieHeaderCache();
         persistCookies();
     }
 
@@ -1101,8 +1109,10 @@ public class CustomHttpClient {
                             clearanceChanged = true;
                     }
                 }
-                if(changed)
+                if(changed) {
+                    invalidateCookieHeaderCache();
                     persistCookies();
+                }
                 if(clearanceChanged)
                     saveClearanceToDisk();
             }
@@ -1130,6 +1140,7 @@ public class CustomHttpClient {
                 String k = it.next();
                 cookies.put(k, obj.getString(k));
             }
+            invalidateCookieHeaderCache();
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
@@ -1181,8 +1192,10 @@ public class CustomHttpClient {
                     clearanceChanged = true;
             }
         }
-        if(changed)
+        if(changed) {
+            invalidateCookieHeaderCache();
             persistCookies();
+        }
         if(clearanceChanged)
             saveClearanceToDisk();
     }
@@ -1192,13 +1205,20 @@ public class CustomHttpClient {
     }
 
     public synchronized String getCookieHeader() {
+        if(cookieHeaderCache != null)
+            return cookieHeaderCache;
         StringBuilder builder = new StringBuilder();
         for(String key : cookies.keySet()) {
             if(builder.length() > 0)
                 builder.append("; ");
             builder.append(key).append('=').append(cookies.get(key));
         }
-        return builder.toString();
+        cookieHeaderCache = builder.toString();
+        return cookieHeaderCache;
+    }
+
+    private void invalidateCookieHeaderCache() {
+        cookieHeaderCache = null;
     }
 
     public <T> T runWithRequestGroup(RequestGroup requestGroup, RequestWork<T> work) throws Exception {
