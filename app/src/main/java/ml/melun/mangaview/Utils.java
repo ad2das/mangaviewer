@@ -320,6 +320,9 @@ public class Utils {
         int width = context instanceof Activity
                 ? getScreenWidth(((Activity) context).getWindowManager().getDefaultDisplay())
                 : context.getResources().getDisplayMetrics().widthPixels;
+        AppDispatchers.main().postDelayed(() -> launchPreparedViewer(context, manga, code, returnToEpisodes,
+                        online, recent, title, includeTitleEpisodes, launchToken, true),
+                exactLaunchFallbackMs(title));
         AppDispatchers.submitNavigation(() -> {
             Manga prepared = ViewerWarmupManager.usePreparedExactFirstFrame(appContext, manga, title, false, p.getReverse(), 0);
             if(prepared == null) {
@@ -353,6 +356,10 @@ public class Utils {
         return exactFirstFrameWaitMs(sourceSite, ntkSite);
     }
 
+    static long exactLaunchFallbackMsForTest(String sourceSite, boolean ntkSite) {
+        return exactLaunchFallbackMs(sourceSite, ntkSite);
+    }
+
     static boolean shouldAllowExactForegroundFallbackForTest(String sourceSite, boolean ntkSite) {
         return shouldAllowExactForegroundFallback(sourceSite, ntkSite);
     }
@@ -365,12 +372,21 @@ public class Utils {
     private static long exactFirstFrameWaitMs(String sourceSite, boolean ntkSite) {
         String source = sourceSite == null ? "" : sourceSite.trim().toLowerCase(Locale.ROOT);
         if("wfwf".equals(source))
-            return 1_800L;
+            return 450L;
         if("ntk".equals(source))
             return 350L;
         if(!ntkSite)
-            return 1_800L;
+            return 450L;
         return 350L;
+    }
+
+    private static long exactLaunchFallbackMs(Title title) {
+        String source = title == null ? "" : title.getSourceSite();
+        return exactLaunchFallbackMs(source, p != null && p.isNtkSite());
+    }
+
+    private static long exactLaunchFallbackMs(String sourceSite, boolean ntkSite) {
+        return exactFirstFrameWaitMs(sourceSite, ntkSite);
     }
 
     private static boolean shouldAllowExactForegroundFallback(String sourceSite, boolean ntkSite) {
@@ -425,7 +441,7 @@ public class Utils {
                                              int launchToken, boolean exactEpisode) {
         if(context == null || manga == null)
             return;
-        if(!isLatestViewerLaunchToken(context, launchToken))
+        if(!consumeViewerLaunchToken(context, launchToken))
             return;
         if(context instanceof Activity && !canUseActivity((Activity) context))
             return;
@@ -468,9 +484,13 @@ public class Utils {
         viewerLaunchTokens.put(launchTokenKey(context), ++viewerLaunchSequence);
     }
 
-    private static synchronized boolean isLatestViewerLaunchToken(Context context, int token) {
-        Integer latest = viewerLaunchTokens.get(launchTokenKey(context));
-        return latest != null && latest == token;
+    private static synchronized boolean consumeViewerLaunchToken(Context context, int token) {
+        Context key = launchTokenKey(context);
+        Integer latest = viewerLaunchTokens.get(key);
+        if(latest == null || latest != token)
+            return false;
+        viewerLaunchTokens.put(key, ++viewerLaunchSequence);
+        return true;
     }
 
     private static Context launchTokenKey(Context context) {

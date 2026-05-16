@@ -129,9 +129,16 @@ public class UtilsTest {
 
     @Test
     public void exactViewerLaunchUsesBoundedFirstFrameWaits() {
-        assertEquals(1800L, Utils.exactFirstFrameWaitMsForTest("wfwf", false));
-        assertEquals(1800L, Utils.exactFirstFrameWaitMsForTest("", false));
+        assertEquals(450L, Utils.exactFirstFrameWaitMsForTest("wfwf", false));
+        assertEquals(450L, Utils.exactFirstFrameWaitMsForTest("", false));
         assertEquals(350L, Utils.exactFirstFrameWaitMsForTest("ntk", true));
+    }
+
+    @Test
+    public void exactViewerLaunchFallsBackQuicklyWhenPreparationIsSlow() {
+        assertEquals(450L, Utils.exactLaunchFallbackMsForTest("wfwf", false));
+        assertEquals(450L, Utils.exactLaunchFallbackMsForTest("", false));
+        assertEquals(350L, Utils.exactLaunchFallbackMsForTest("ntk", true));
     }
 
     @Test

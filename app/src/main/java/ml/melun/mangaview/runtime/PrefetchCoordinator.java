@@ -141,10 +141,10 @@ public final class PrefetchCoordinator {
 
     static int episodePrefetchLimitForTest(boolean dataSave, boolean aggressiveAllowed, boolean ntkSite) {
         if(ntkSite)
-            return dataSave ? 1 : 2;
+            return 1;
         if(dataSave)
-            return 2;
-        return aggressiveAllowed ? 4 : 3;
+            return 1;
+        return aggressiveAllowed ? 2 : 1;
     }
 
     public static List<Integer> visibleEpisodeTargets(List<Manga> episodes, int firstAdapterPosition,

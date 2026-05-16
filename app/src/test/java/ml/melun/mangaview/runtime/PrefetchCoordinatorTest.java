@@ -86,11 +86,11 @@ public class PrefetchCoordinatorTest {
 
     @Test
     public void episodePrefetchLimitStaysSmallOnCellular() {
-        assertEquals(2, PrefetchCoordinator.episodePrefetchLimitForTest(true, false));
-        assertEquals(3, PrefetchCoordinator.episodePrefetchLimitForTest(false, false));
-        assertEquals(4, PrefetchCoordinator.episodePrefetchLimitForTest(false, true));
+        assertEquals(1, PrefetchCoordinator.episodePrefetchLimitForTest(true, false));
+        assertEquals(1, PrefetchCoordinator.episodePrefetchLimitForTest(false, false));
+        assertEquals(2, PrefetchCoordinator.episodePrefetchLimitForTest(false, true));
         assertEquals(1, PrefetchCoordinator.episodePrefetchLimitForTest(true, true, true));
-        assertEquals(2, PrefetchCoordinator.episodePrefetchLimitForTest(false, true, true));
+        assertEquals(1, PrefetchCoordinator.episodePrefetchLimitForTest(false, true, true));
     }
 
     @Test
