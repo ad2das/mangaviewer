@@ -1039,7 +1039,26 @@ public class ViewerWarmupManager {
 
     private static String episodeKey(Manga manga, Title title) {
         int titleId = title == null ? manga.getTitleId() : title.getId();
-        return manga.getBaseMode() + ":" + titleId + ":" + manga.getId();
+        return sourceKey(manga, title)
+                + ":" + manga.getBaseMode()
+                + ":" + titleId
+                + ":" + manga.getId();
+    }
+
+    static String episodeKeyForTest(Manga manga, Title title) {
+        return episodeKey(manga, title);
+    }
+
+    private static String sourceKey(Manga manga, Title title) {
+        String source = title == null ? "" : safeKeyPart(title.getSourceSite());
+        String path = manga == null ? "" : safeKeyPart(manga.getNtkEpisodePath());
+        if(path.length() == 0 && title != null)
+            path = safeKeyPart(title.getPath());
+        return source + ":" + path;
+    }
+
+    private static String safeKeyPart(String value) {
+        return value == null ? "" : value.trim();
     }
 
     private static synchronized WarmupState markActive(String key) {
@@ -1204,7 +1223,15 @@ public class ViewerWarmupManager {
 
     private static String continueWarmupKey(Manga manga, Title title, int startPage) {
         int titleId = title == null ? manga.getTitleId() : title.getId();
-        return manga.getBaseMode() + ":" + titleId + ":" + manga.getId() + ":" + Math.max(0, startPage);
+        return sourceKey(manga, title)
+                + ":" + manga.getBaseMode()
+                + ":" + titleId
+                + ":" + manga.getId()
+                + ":" + Math.max(0, startPage);
+    }
+
+    static String continueWarmupKeyForTest(Manga manga, Title title, int startPage) {
+        return continueWarmupKey(manga, title, startPage);
     }
 
     private static boolean shouldSkipNtkWarmup() {

@@ -922,11 +922,7 @@ public class ViewerActivity extends AppCompatActivity {
         updateAutoCutButtonState();
         releaseStripAdapter();
         stripAdapter = new StripAdapter(context, page.manga, autoCut, width,title, infiniteScrollCallback);
-        strip.setAdapter(stripAdapter);
-        stripAdapter.setClickListener(() -> {
-            // show/hide toolbar
-            toggleToolbar();
-        });
+        refreshAdapter();
         manager.scrollToPage(new PageItem(page.index, "", page.manga));
     }
 
@@ -936,8 +932,10 @@ public class ViewerActivity extends AppCompatActivity {
         cut.setSelected(autoCut);
         cut.setText(autoCut ? "분할 켜짐" : "분할 꺼짐");
         cut.setContentDescription(autoCut ? "자동분할 켜짐" : "자동분할 꺼짐");
-        cut.setBackgroundResource(autoCut ? R.drawable.app_selected_button_bg : R.drawable.app_outline_button_bg);
-        cut.setTextColor(ContextCompat.getColor(this, autoCut ? R.color.appAccent : R.color.appTextSecondary));
+        cut.setBackgroundTintList(null);
+        ViewCompat.setBackground(cut, ContextCompat.getDrawable(this,
+                autoCut ? R.drawable.viewer_autocut_on_bg : R.drawable.viewer_autocut_off_bg));
+        cut.setTextColor(ContextCompat.getColor(this, autoCut ? android.R.color.white : R.color.appText));
     }
 
 
@@ -1651,8 +1649,10 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     public void refreshAdapter(){
+        strip.stopScroll();
+        strip.setAdapter(null);
+        strip.getRecycledViewPool().clear();
         strip.setAdapter(stripAdapter);
-        // show/hide toolbar
         stripAdapter.setClickListener(this::toggleToolbar);
     }
 

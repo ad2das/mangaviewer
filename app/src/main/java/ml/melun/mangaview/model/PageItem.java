@@ -5,6 +5,7 @@ import androidx.annotation.Nullable;
 import java.util.Objects;
 
 import ml.melun.mangaview.mangaview.Manga;
+import ml.melun.mangaview.mangaview.Title;
 
 public class PageItem{
     public static final int FIRST = 0;
@@ -58,8 +59,26 @@ public class PageItem{
 
     public static String episodeKey(Manga manga) {
         if(manga == null)
-            return "0:0:0";
-        return manga.getBaseMode() + ":" + manga.getTitleId() + ":" + manga.getId();
+            return ":0:0:0:";
+        return sourceKey(manga)
+                + ":" + manga.getBaseMode()
+                + ":" + manga.getTitleId()
+                + ":" + manga.getId();
+    }
+
+    private static String sourceKey(Manga manga) {
+        if(manga == null)
+            return "";
+        Title title = manga.getTitle();
+        String source = title == null ? "" : safe(title.getSourceSite());
+        String path = safe(manga.getNtkEpisodePath());
+        if(path.length() == 0 && title != null)
+            path = safe(title.getPath());
+        return source + ":" + path;
+    }
+
+    private static String safe(String value) {
+        return value == null ? "" : value.trim();
     }
 
     public String pageKey(boolean autoCut, boolean reverse, int width) {
