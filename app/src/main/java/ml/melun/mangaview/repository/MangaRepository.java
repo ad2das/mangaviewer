@@ -260,8 +260,34 @@ public final class MangaRepository {
     private static void cacheViewerFetch(String key, ViewerFetchResult result) {
         if(key == null || result == null || result.result != Title.LOAD_OK || imageUrls(result.manga, null).size() == 0)
             return;
-        VIEWER_FETCH_CACHE.put(key, new ViewerFetchCacheEntry(result, System.currentTimeMillis()));
+        ViewerFetchResult snapshot = snapshotViewerFetchResult(result);
+        if(snapshot == null || imageUrls(snapshot.manga, null).size() == 0)
+            return;
+        VIEWER_FETCH_CACHE.put(key, new ViewerFetchCacheEntry(snapshot, System.currentTimeMillis()));
         trimViewerFetchCache();
+    }
+
+    private static ViewerFetchResult snapshotViewerFetchResult(ViewerFetchResult result) {
+        if(result == null || result.manga == null)
+            return null;
+        Manga snapshot = snapshotViewerManga(result.manga);
+        return snapshot == null ? null : new ViewerFetchResult(result.result, snapshot);
+    }
+
+    private static Manga snapshotViewerManga(Manga source) {
+        if(source == null)
+            return null;
+        Manga snapshot = new Manga(source.getId(), source.getName(), source.getDate(), source.getBaseMode());
+        snapshot.setMode(source.getMode());
+        snapshot.setTitle(source.getTitle());
+        snapshot.setTitleId(source.getTitleId());
+        snapshot.setNtkEpisodePath(source.getNtkEpisodePath());
+        snapshot.copyViewerStateFrom(source);
+        return snapshot;
+    }
+
+    static Manga snapshotViewerMangaForTest(Manga source) {
+        return snapshotViewerManga(source);
     }
 
     private static void trimViewerFetchCache() {

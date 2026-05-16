@@ -31,6 +31,19 @@ public class MangaRepositoryTest {
     }
 
     @Test
+    public void viewerFetchSnapshotDoesNotShareImageList() {
+        Manga source = new Manga(12, "episode", "today", MTitle.base_comic);
+        source.setTitleId(99);
+        source.setImgs(new java.util.ArrayList<>(Arrays.asList("a.jpg", "b.jpg")));
+
+        Manga snapshot = MangaRepository.snapshotViewerMangaForTest(source);
+        source.getImgs(null).clear();
+
+        assertEquals(Arrays.asList("a.jpg", "b.jpg"), snapshot.getImgs(null));
+        assertEquals(0, MangaRepository.imageUrls(source, null).size());
+    }
+
+    @Test
     public void cacheFreshnessRejectsExpiredAndFutureEntries() {
         long now = 10_000L;
         long ttl = 1_000L;
