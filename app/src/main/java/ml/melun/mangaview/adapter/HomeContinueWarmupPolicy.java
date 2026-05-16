@@ -9,7 +9,7 @@ final class HomeContinueWarmupPolicy {
     }
 
     static long visibleHomeWarmupDelayMs(boolean dataSave) {
-        return dataSave ? 1500L : 1100L;
+        return dataSave ? 900L : 360L;
     }
 
     static int visibleContinueWarmupLimitForTest(boolean dataSave) {
