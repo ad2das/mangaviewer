@@ -307,9 +307,6 @@ public class Search {
         String path = wfwfKeywordSearchPath(query);
         PageTitles pageTitles = cachedWfwfPageTitles(client, "keyword", path,
                 () -> fetchWfwfCombinedKeywordSearchResultsUncached(client, path));
-        if(pageTitles.titles.size() == 0 && client != null && client.resolveWfwfDomainNow())
-            pageTitles = cachedWfwfPageTitles(client, "keyword", path,
-                    () -> fetchWfwfCombinedKeywordSearchResultsUncached(client, path));
         return pageTitles;
     }
 

@@ -258,6 +258,15 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void wfwfSearchAllowsEmptyResultPages() {
+        String emptySearch = "<html><head><title>Search</title></head><body>no result</body></html>";
+        String errorPage = "<html><head><title>Webpage not available</title></head><body>net::ERR_CONNECTION_RESET</body></html>";
+
+        assertFalse(CustomHttpClient.shouldRejectWfwfPageBodyForTest("/search.html?q=missing", 200, emptySearch));
+        assertTrue(CustomHttpClient.shouldRejectWfwfPageBodyForTest("/search.html?q=missing", 200, errorPage));
+    }
+
+    @Test
     public void ntkUrlDetectionHandlesResolvedHosts() {
         assertTrue(CustomHttpClient.isNtkUrlForTest("https://sbxh1.com/manhwa"));
         assertTrue(CustomHttpClient.isNtkUrlForTest("https://img.sbxh1.com/manhwa/1"));

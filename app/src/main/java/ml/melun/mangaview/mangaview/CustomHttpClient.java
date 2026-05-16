@@ -1844,6 +1844,8 @@ public class CustomHttpClient {
             return false;
         if(!isWfwfDocumentPath(path))
             return false;
+        if(isWfwfSearchPath(path))
+            return !isCacheablePageBody(body);
         return !looksCacheable(body);
     }
 
@@ -2499,6 +2501,10 @@ public class CustomHttpClient {
                 || path.startsWith("/webtoon")
                 || path.startsWith("/comic")
                 || path.startsWith("/search.html");
+    }
+
+    private static boolean isWfwfSearchPath(String path) {
+        return path != null && path.startsWith("/search.html");
     }
 
     static boolean isCacheablePageBodyForTest(String body) {
