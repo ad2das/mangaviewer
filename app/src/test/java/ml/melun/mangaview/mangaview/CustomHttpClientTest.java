@@ -36,6 +36,11 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void imageClientUsesWiderDispatcherThanPageClient() {
+        assertTrue(CustomHttpClient.imageDispatcherIsWiderForTest());
+    }
+
+    @Test
     public void ntkWebViewFallbackOnlyHandlesPageMisses() {
         assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/api/manhwa-list"));
         assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1"));

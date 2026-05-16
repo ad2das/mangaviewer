@@ -82,6 +82,8 @@ public class CustomHttpClient {
     private static final int PAGE_CACHE_MAX_ENTRIES = 200;
     private static final int MAX_HTTP_REQUESTS = 8;
     private static final int MAX_HTTP_REQUESTS_PER_HOST = 4;
+    private static final int MAX_IMAGE_HTTP_REQUESTS = 32;
+    private static final int MAX_IMAGE_HTTP_REQUESTS_PER_HOST = 12;
     private static final String PAGE_CACHE_PREFIX = "httpPageCacheV1_";
     private static final String NTK_DNS_CACHE_PREFIX = "ntkDnsCacheV1_";
     private static final String CLOUDFLARE_DOH_HOST = "cloudflare-dns.com";
@@ -780,6 +782,7 @@ public class CustomHttpClient {
     }
 
     public OkHttpClient client;
+    public OkHttpClient imageClient;
     private OkHttpClient unsafeFallbackClient;
     private OkHttpClient ntkPageFastClient;
     private OkHttpClient unsafeNtkPageFastClient;
@@ -831,6 +834,7 @@ public class CustomHttpClient {
         loadSavedUserAgent();
         loadSavedCookies();
         this.client = baseClient(new OkHttpClient.Builder()).build();
+        this.imageClient = imageClient(new OkHttpClient.Builder()).build();
         this.unsafeFallbackClient = baseClient(getUnsafeOkHttpClient())
                 .protocols(ntkTlsFallbackProtocolsForTest())
                 .build();
@@ -2710,9 +2714,13 @@ public class CustomHttpClient {
     }
 
     private static OkHttpClient.Builder configureDispatcher(OkHttpClient.Builder builder) {
+        return configureDispatcher(builder, MAX_HTTP_REQUESTS, MAX_HTTP_REQUESTS_PER_HOST);
+    }
+
+    private static OkHttpClient.Builder configureDispatcher(OkHttpClient.Builder builder, int maxRequests, int maxRequestsPerHost) {
         Dispatcher dispatcher = new Dispatcher();
-        dispatcher.setMaxRequests(MAX_HTTP_REQUESTS);
-        dispatcher.setMaxRequestsPerHost(MAX_HTTP_REQUESTS_PER_HOST);
+        dispatcher.setMaxRequests(maxRequests);
+        dispatcher.setMaxRequestsPerHost(maxRequestsPerHost);
         return builder.dispatcher(dispatcher);
     }
 
@@ -2736,6 +2744,10 @@ public class CustomHttpClient {
         return configured;
     }
 
+    private static OkHttpClient.Builder imageClient(OkHttpClient.Builder builder) {
+        return configureDispatcher(baseClient(builder), MAX_IMAGE_HTTP_REQUESTS, MAX_IMAGE_HTTP_REQUESTS_PER_HOST);
+    }
+
     private static OkHttpClient.Builder fastNtkPageClient(OkHttpClient.Builder builder) {
         return baseClient(builder)
                 .connectTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
@@ -2752,6 +2764,11 @@ public class CustomHttpClient {
 
     static List<Protocol> ntkTlsFallbackProtocolsForTest() {
         return java.util.Collections.singletonList(Protocol.HTTP_1_1);
+    }
+
+    static boolean imageDispatcherIsWiderForTest() {
+        return MAX_IMAGE_HTTP_REQUESTS > MAX_HTTP_REQUESTS
+                && MAX_IMAGE_HTTP_REQUESTS_PER_HOST > MAX_HTTP_REQUESTS_PER_HOST;
     }
 
 }
