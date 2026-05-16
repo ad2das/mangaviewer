@@ -5,6 +5,8 @@ import org.junit.Test;
 import java.util.Arrays;
 import java.util.Collections;
 
+import ml.melun.mangaview.mangaview.Manga;
+
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -136,5 +138,21 @@ public class ViewerWarmupManagerTest {
     public void cachedViewerOpenCanUseBlockingDecodeForInstantFirstFrame() {
         assertTrue(ViewerWarmupManager.shouldDecodeFirstPagesBlockingForTest(true, false));
         assertFalse(ViewerWarmupManager.shouldDecodeFirstPagesBlockingForTest(false, true));
+    }
+
+    @Test
+    public void exactPreparedSnapshotRequiresSameEpisode() {
+        Manga requested = new Manga(348, "274화", "", 1);
+        requested.setTitleId(8605);
+        Manga same = new Manga(348, "274화", "", 1);
+        same.setTitleId(8605);
+        Manga differentEpisode = new Manga(2, "2화", "", 1);
+        differentEpisode.setTitleId(8605);
+        Manga differentTitle = new Manga(348, "274화", "", 1);
+        differentTitle.setTitleId(1);
+
+        assertTrue(ViewerWarmupManager.samePreparedEpisodeForTest(same, requested));
+        assertFalse(ViewerWarmupManager.samePreparedEpisodeForTest(differentEpisode, requested));
+        assertFalse(ViewerWarmupManager.samePreparedEpisodeForTest(differentTitle, requested));
     }
 }

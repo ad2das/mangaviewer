@@ -270,7 +270,7 @@ public class Utils {
             return;
         }
         Manga immediate = exactEpisode
-                ? ViewerWarmupManager.usePreparedFirstFrame(context, manga, launchTitle, false, p.getReverse(), 0)
+                ? ViewerWarmupManager.usePreparedExactFirstFrame(context, manga, launchTitle, false, p.getReverse(), 0)
                 : ViewerWarmupManager.usePreparedFirstFrame(context, manga, launchTitle, false, p.getReverse());
         if(immediate != null) {
             launchPreparedViewer(context, immediate, code, returnToEpisodes, online, recent,
@@ -321,7 +321,7 @@ public class Utils {
                 ? getScreenWidth(((Activity) context).getWindowManager().getDefaultDisplay())
                 : context.getResources().getDisplayMetrics().widthPixels;
         AppDispatchers.submitNavigation(() -> {
-            Manga prepared = ViewerWarmupManager.usePreparedFirstFrame(appContext, manga, title, false, p.getReverse(), 0);
+            Manga prepared = ViewerWarmupManager.usePreparedExactFirstFrame(appContext, manga, title, false, p.getReverse(), 0);
             if(prepared == null) {
                 try {
                     int result = ViewerWarmupManager.prepareFirstFrameDirectOnly(appContext, manga, title, 0, width,
@@ -329,7 +329,7 @@ public class Utils {
                     if(result == Title.LOAD_OK) {
                         ViewerWarmupManager.waitForFirstDecodedFrame(appContext, manga, 0, width,
                                 false, p.getReverse(), exactFirstFrameWaitMs(title));
-                        prepared = ViewerWarmupManager.usePreparedFirstFrame(appContext, manga, title, false, p.getReverse(), 0);
+                        prepared = ViewerWarmupManager.usePreparedExactFirstFrame(appContext, manga, title, false, p.getReverse(), 0);
                     } else if(shouldAllowExactForegroundFallback(title)) {
                         prepared = ViewerWarmupManager.prepareClickFirstFrame(appContext, manga, title, false, p.getReverse());
                     }

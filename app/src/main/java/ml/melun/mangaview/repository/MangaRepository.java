@@ -33,8 +33,12 @@ public final class MangaRepository {
     private static final long SECTION_TTL_MS = 2 * 60_000L;
     private static final long NTK_HOME_TTL_MS = 10 * 60_000L;
     private static final long NTK_SECTION_TTL_MS = 10 * 60_000L;
+    private static final long VIEWER_FETCH_TTL_MS = 2 * 60_000L;
+    private static final int VIEWER_FETCH_CACHE_LIMIT = 96;
     private static final ConcurrentHashMap<String, CacheEntry> CACHE = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, FutureTask<Object>> IN_FLIGHT = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, FutureTask<ViewerFetchResult>> VIEWER_FETCH_IN_FLIGHT = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, ViewerFetchCacheEntry> VIEWER_FETCH_CACHE = new ConcurrentHashMap<>();
 
     private MangaRepository() {
     }
@@ -119,7 +123,12 @@ public final class MangaRepository {
     }
 
     public static int fetchManga(Manga manga) {
-        return manga.fetch(getHttpClient());
+        try {
+            return fetchViewerSingleFlight(manga, null, false);
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return Title.LOAD_ERROR;
+        }
     }
 
     public static int fetchViewerInitial(Manga manga, Cancellation cancellation) throws Exception {
@@ -127,13 +136,54 @@ public final class MangaRepository {
     }
 
     public static int fetchViewerInitial(Manga manga, CustomHttpClient.RequestGroup requestGroup) throws Exception {
+        return fetchViewerSingleFlight(manga, requestGroup, true);
+    }
+
+    private static int fetchViewerSingleFlight(Manga manga, CustomHttpClient.RequestGroup requestGroup,
+                                               boolean viewerInitial) throws Exception {
+        if(manga == null)
+            return Title.LOAD_ERROR;
+        if(requestGroup != null && requestGroup.isCancelled())
+            return Title.LOAD_ERROR;
         CustomHttpClient client = getHttpClient();
-        if(requestGroup == null)
-            return manga.fetchForViewerInitial(client);
-        if(!client.isNtk())
-            return client.runWithFetchMode(CustomHttpClient.FetchMode.DIRECT_ONLY,
-                    () -> client.runWithRequestGroup(requestGroup, () -> manga.fetchForViewerInitial(client)));
-        return client.runWithRequestGroup(requestGroup, () -> manga.fetchForViewerInitial(client));
+        String key = viewerFetchKey(client, manga, viewerInitial && !client.isNtk());
+        ViewerFetchResult cached = cachedViewerFetch(key);
+        if(cached != null) {
+            if(cached.manga != manga)
+                manga.copyViewerStateFrom(cached.manga);
+            return cached.result;
+        }
+        FutureTask<ViewerFetchResult> task = new FutureTask<>(() -> {
+            int result;
+            if(requestGroup == null) {
+                result = manga.fetchForViewerInitial(client);
+            } else if(!client.isNtk()) {
+                result = client.runWithFetchMode(CustomHttpClient.FetchMode.DIRECT_ONLY,
+                        () -> client.runWithRequestGroup(requestGroup, () -> manga.fetchForViewerInitial(client)));
+            } else {
+                result = client.runWithRequestGroup(requestGroup, () -> manga.fetchForViewerInitial(client));
+            }
+            return new ViewerFetchResult(result, manga);
+        });
+        FutureTask<ViewerFetchResult> running = VIEWER_FETCH_IN_FLIGHT.putIfAbsent(key, task);
+        if(running == null) {
+            running = task;
+            task.run();
+        }
+        try {
+            ViewerFetchResult fetched = running.get();
+            if(fetched != null && fetched.manga != manga)
+                manga.copyViewerStateFrom(fetched.manga);
+            cacheViewerFetch(key, fetched);
+            return fetched == null ? Title.LOAD_ERROR : fetched.result;
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if(cause instanceof Exception)
+                throw (Exception) cause;
+            throw new RuntimeException(cause);
+        } finally {
+            VIEWER_FETCH_IN_FLIGHT.remove(key, running);
+        }
     }
 
     public static Ranking<Title> loadWebtoonSection(MainPageWebtoon parser, String title, String path, int baseMode,
@@ -182,6 +232,55 @@ public final class MangaRepository {
 
     private static CustomHttpClient.RequestGroup group(Cancellation cancellation) {
         return cancellation == null ? null : cancellation.group;
+    }
+
+    private static String viewerFetchKey(CustomHttpClient client, Manga manga, boolean forceDirectMode) {
+        String site = client != null && client.isNtk() ? "ntk" : "wfwf";
+        String fetchMode = forceDirectMode || (client != null && client.isDirectOnlyFetchMode()) ? "direct" : "allow";
+        String url = "";
+        try {
+            url = Manga.safeUrl(manga);
+        } catch (Exception ignored) {
+        }
+        return "viewerFetch:" + site + ':' + fetchMode + ':' + manga.getBaseMode()
+                + ':' + manga.getTitleId() + ':' + manga.getId() + ':' + url;
+    }
+
+    private static ViewerFetchResult cachedViewerFetch(String key) {
+        ViewerFetchCacheEntry entry = VIEWER_FETCH_CACHE.get(key);
+        if(entry == null)
+            return null;
+        if(!isCacheFresh(entry.loadedAt, System.currentTimeMillis(), VIEWER_FETCH_TTL_MS)) {
+            VIEWER_FETCH_CACHE.remove(key, entry);
+            return null;
+        }
+        return entry.result;
+    }
+
+    private static void cacheViewerFetch(String key, ViewerFetchResult result) {
+        if(key == null || result == null || result.result != Title.LOAD_OK || imageUrls(result.manga, null).size() == 0)
+            return;
+        VIEWER_FETCH_CACHE.put(key, new ViewerFetchCacheEntry(result, System.currentTimeMillis()));
+        trimViewerFetchCache();
+    }
+
+    private static void trimViewerFetchCache() {
+        if(VIEWER_FETCH_CACHE.size() <= VIEWER_FETCH_CACHE_LIMIT)
+            return;
+        long now = System.currentTimeMillis();
+        for(Map.Entry<String, ViewerFetchCacheEntry> entry : VIEWER_FETCH_CACHE.entrySet()) {
+            ViewerFetchCacheEntry value = entry.getValue();
+            if(value == null || !isCacheFresh(value.loadedAt, now, VIEWER_FETCH_TTL_MS))
+                VIEWER_FETCH_CACHE.remove(entry.getKey(), value);
+        }
+        if(VIEWER_FETCH_CACHE.size() <= VIEWER_FETCH_CACHE_LIMIT)
+            return;
+        int remove = VIEWER_FETCH_CACHE.size() - VIEWER_FETCH_CACHE_LIMIT;
+        for(String entryKey : VIEWER_FETCH_CACHE.keySet()) {
+            VIEWER_FETCH_CACHE.remove(entryKey);
+            if(--remove <= 0)
+                break;
+        }
     }
 
     public static final class Cancellation {
@@ -295,6 +394,26 @@ public final class MangaRepository {
 
         CacheEntry(Object value, long loadedAt) {
             this.value = value;
+            this.loadedAt = loadedAt;
+        }
+    }
+
+    private static final class ViewerFetchResult {
+        final int result;
+        final Manga manga;
+
+        ViewerFetchResult(int result, Manga manga) {
+            this.result = result;
+            this.manga = manga;
+        }
+    }
+
+    private static final class ViewerFetchCacheEntry {
+        final ViewerFetchResult result;
+        final long loadedAt;
+
+        ViewerFetchCacheEntry(ViewerFetchResult result, long loadedAt) {
+            this.result = result;
             this.loadedAt = loadedAt;
         }
     }

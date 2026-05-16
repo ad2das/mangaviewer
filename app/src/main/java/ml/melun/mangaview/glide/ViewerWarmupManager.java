@@ -319,7 +319,16 @@ public class ViewerWarmupManager {
         return usePreparedFirstFrame(context, manga, title, autoCut, reverse, firstPage);
     }
 
+    public static Manga usePreparedExactFirstFrame(Context context, Manga manga, Title title, boolean autoCut, boolean reverse, int firstPage) {
+        return usePreparedFirstFrame(context, manga, title, autoCut, reverse, firstPage, true);
+    }
+
     public static Manga usePreparedFirstFrame(Context context, Manga manga, Title title, boolean autoCut, boolean reverse, int firstPage) {
+        return usePreparedFirstFrame(context, manga, title, autoCut, reverse, firstPage, false);
+    }
+
+    private static Manga usePreparedFirstFrame(Context context, Manga manga, Title title, boolean autoCut, boolean reverse,
+                                               int firstPage, boolean exactEpisode) {
         if(context == null || manga == null)
             return null;
         if(!manga.isOnline())
@@ -336,7 +345,12 @@ public class ViewerWarmupManager {
         int width = viewerWidth(context);
         if(firstPage < 0)
             firstPage = 0;
-        Manga warmed = continueSnapshotManga(context, continueWarmupKey(manga, title, firstPage), manga);
+        String continueKey = continueWarmupKey(manga, title, firstPage);
+        Manga warmed = continueSnapshotManga(context, continueKey, manga);
+        if(exactEpisode && warmed != null && !samePreparedEpisode(warmed, manga)) {
+            invalidateContinueSnapshot(context, continueKey);
+            warmed = null;
+        }
         if(warmed != null) {
             if(title != null)
                 attachTitle(title, warmed);
@@ -826,6 +840,10 @@ public class ViewerWarmupManager {
         return shouldUseDirectOnlyBackgroundWarmup(sourceSite);
     }
 
+    static boolean samePreparedEpisodeForTest(Manga prepared, Manga requested) {
+        return samePreparedEpisode(prepared, requested);
+    }
+
     private static boolean isUsablePageImage(String image) {
         return image != null && image.trim().length() > 0 && !isNtkBoardUploadImage(image);
     }
@@ -1018,6 +1036,22 @@ public class ViewerWarmupManager {
         snapshots.remove(key);
         if(context != null)
             CacheFileStore.delete(context.getApplicationContext(), "viewerSnapshotV2_" + key);
+    }
+
+    private static synchronized void invalidateContinueSnapshot(Context context, String key) {
+        continueSnapshots.remove(key);
+        if(context != null)
+            CacheFileStore.delete(context.getApplicationContext(), "viewerContinueSnapshotV2_" + key);
+    }
+
+    private static boolean samePreparedEpisode(Manga prepared, Manga requested) {
+        if(prepared == null || requested == null)
+            return false;
+        if(prepared.getId() != requested.getId() || prepared.getBaseMode() != requested.getBaseMode())
+            return false;
+        int preparedTitleId = prepared.getTitleId();
+        int requestedTitleId = requested.getTitleId();
+        return preparedTitleId <= 0 || requestedTitleId <= 0 || preparedTitleId == requestedTitleId;
     }
 
     private static synchronized void cacheContinueSnapshot(Context context, String key, Manga manga) {

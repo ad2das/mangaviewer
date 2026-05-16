@@ -67,6 +67,7 @@ public class CustomHttpClient {
     private static final String LEGACY_NTK_HOST = "ntk01.com";
     private static final long WFWF_DOMAIN_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L;
     private static final long WFWF_DOMAIN_FORCE_RETRY_INTERVAL_MS = 5 * 1000L;
+    private static final long WFWF_DOMAIN_CANCELED_LOG_INTERVAL_MS = 2 * 1000L;
     private static final long WFWF_DOMAIN_WAIT_TIMEOUT_MS = 6 * 1000L;
     private static final long NTK_DOMAIN_CHECK_INTERVAL_MS = 15 * 60 * 1000L;
     private static final long NTK_PAGE_DIRECT_TIMEOUT_MS = 3_500L;
@@ -803,6 +804,7 @@ public class CustomHttpClient {
     private DomainResolveState wfwfDomainResolveState;
     private DomainResolveState ntkDomainResolveState;
     private long wfwfDomainLastForcedRetry = 0;
+    private long wfwfDomainLastCanceledLog = 0;
     private long ntkDomainLastCheck = 0;
     private Context context;
     public String agent = "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36";
@@ -1440,7 +1442,7 @@ public class CustomHttpClient {
             return ensureNumberedDomain(true);
         RequestGroup requestGroup = currentRequestGroup.get();
         if(requestGroup != null && requestGroup.isCancelled()) {
-            android.util.Log.d("PerfTrace", "wfwf_domain_resolve_skipped=canceled");
+            logWfwfDomainCanceledOnce();
             return false;
         }
         long now = System.currentTimeMillis();
@@ -1455,6 +1457,16 @@ public class CustomHttpClient {
             wfwfDomainLastForcedRetry = now;
         }
         return changed;
+    }
+
+    private void logWfwfDomainCanceledOnce() {
+        long now = System.currentTimeMillis();
+        synchronized (wfwfDomainLock) {
+            if(now - wfwfDomainLastCanceledLog < WFWF_DOMAIN_CANCELED_LOG_INTERVAL_MS)
+                return;
+            wfwfDomainLastCanceledLog = now;
+        }
+        android.util.Log.d("PerfTrace", "wfwf_domain_resolve_skipped=canceled");
     }
 
     private boolean ensureNumberedDomain(boolean force) {
