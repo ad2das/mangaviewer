@@ -303,6 +303,8 @@ public class MainActivity extends AppCompatActivity
         setSupportActionBar(toolbar);
 
         drawerLayout = (DrawerLayout) findViewById(R.id.drawer_layout);
+        if(drawerLayout != null)
+            drawerLayout.setDrawerLockMode(DrawerLayout.LOCK_MODE_LOCKED_CLOSED);
         toolbar.setNavigationIcon(null);
         bottomNavigationView = findViewById(R.id.bottom_nav);
         if(bottomNavigationView != null) {
@@ -362,8 +364,6 @@ public class MainActivity extends AppCompatActivity
         if(maybeOpenNtkCaptcha())
             return;
         MainApplication.initDeferredServices();
-        setupNavigationDrawer();
-        setupAccountHeader();
         refreshNtkDomainIfNeeded();
         startDeferredUrlUpdate();
         requestStartupPermissions();
@@ -385,6 +385,8 @@ public class MainActivity extends AppCompatActivity
                 applyNavigationDrawerColors();
             }
         }
+        if(drawerLayout != null && navigationView != null)
+            drawerLayout.setDrawerLockMode(DrawerLayout.LOCK_MODE_UNLOCKED);
         if(drawerToggle == null && drawerLayout != null && toolbar != null) {
             drawerToggle = new ActionBarDrawerToggle(
                     this, drawerLayout, toolbar, R.string.navigation_drawer_open, R.string.navigation_drawer_close);
