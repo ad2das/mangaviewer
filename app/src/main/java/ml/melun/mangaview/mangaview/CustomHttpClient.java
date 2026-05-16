@@ -1661,8 +1661,6 @@ public class CustomHttpClient {
     public PageResponse mgetCachedPage(String url, long ttlMillis) throws Exception {
         String normalized = normalizePath(url);
         boolean wolfDocument = !isNtk() && isWolfEpisodeDocumentPath(normalized);
-        if(isNtk() || !wolfDocument)
-            ensureNumberedDomain(false);
         String cacheKey = getBaseUrl(normalized) + normalized;
         long now = System.currentTimeMillis();
         FetchMode fetchMode = effectiveFetchMode(FetchMode.ALLOW_SHARED_WEBVIEW);
@@ -1699,7 +1697,7 @@ public class CustomHttpClient {
                 return new PageResponse(staleCached.code, staleCached.body, true);
             throw new Exception("Cache miss: " + cacheKey);
         }
-        if(shouldResolveWolfDocumentBeforeNetwork(wolfDocument, staleCached != null, fetchMode))
+        if(isNtk() || !wolfDocument || shouldResolveWolfDocumentBeforeNetwork(wolfDocument, staleCached != null, fetchMode))
             ensureNumberedDomain(false);
         synchronized (pageLoadsLock) {
             activeLoad = pageLoads.get(cacheKey);
@@ -2319,7 +2317,7 @@ public class CustomHttpClient {
     private static boolean shouldUseFastNtkPageDirect(boolean ntkUrl, String path, FetchMode fetchMode) {
         if(!ntkUrl || path == null || fetchMode == FetchMode.CACHE_ONLY)
             return false;
-        return path.startsWith("/webtoon/") || path.startsWith("/manhwa/");
+        return path.startsWith("/webtoon/") || path.startsWith("/manhwa/") || path.startsWith("/api/");
     }
 
     private Map<String, String> buildHeaders(String baseUrl, Boolean useDefaultCookies, Map<String, String> customCookie) {
@@ -2430,7 +2428,9 @@ public class CustomHttpClient {
                 || lower.contains("image-view")
                 || lower.contains("webtoon-body")
                 || lower.contains("miso-post-gallery")
-                || lower.contains("post-row");
+                || lower.contains("post-row")
+                || (lower.contains("\"works\"")
+                && (lower.contains("\"sourceworkid\"") || lower.contains("\"thumbnailurl\"")));
     }
 
     private static boolean isWfwfDocumentPath(String path) {
@@ -2447,6 +2447,10 @@ public class CustomHttpClient {
 
     static boolean isCacheablePageBodyForTest(String body) {
         return isCacheablePageBody(body);
+    }
+
+    static boolean looksCacheableForTest(String body) {
+        return looksCacheable(body);
     }
 
     private static boolean isUsableCachedPage(CachedPage page) {

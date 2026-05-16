@@ -44,7 +44,7 @@ public class Title extends MTitle {
 
     public String getUrl(){
         if(shouldUseNtkUrl())
-            return "/" + ntkSegment() + "/" + id;
+            return ntkTitlePath(ntkSegment());
         if(isComicWolfSource())
             return "/cl?toon=" + id;
         if(isWebtoonWolfSource())
@@ -169,7 +169,9 @@ public class Title extends MTitle {
     private int fetchNtkEps(CustomHttpClient client) {
         try {
             String segment = ntkSegment();
-            CustomHttpClient.PageResponse page = client.mgetCachedPage("/" + segment + "/" + id, PAGE_CACHE_TTL_MS);
+            String titlePath = ntkTitlePath(segment);
+            String titleKey = ntkTitleKey(segment);
+            CustomHttpClient.PageResponse page = client.mgetCachedPage(titlePath, PAGE_CACHE_TTL_MS);
             if(client.isCloudflareChallengeResponse(page.code, page.body) || looksLikeNtkErrorPage(page.body)) {
                 logNtkEpisodeParse("challenge_or_error", page, segment, 0, 0);
                 return LOAD_CAPTCHA;
@@ -190,20 +192,22 @@ public class Title extends MTitle {
                     tags.add(text);
             }
 
-            Element img = d.selectFirst("img[src*=/" + id + "/], img[alt=\"" + name + "\"]");
+            Element img = firstNtkTitleImage(d, titleKey, name);
             if(img != null)
                 thumb = img.hasAttr("data-original") ? img.attr("data-original") : img.attr("src");
 
             eps = new ArrayList<>();
             Set<String> seenEpisodePaths = new HashSet<>();
-            Elements episodeLinks = d.select("a[href^=\"/" + segment + "/" + id + "/\"]");
+            Elements episodeLinks = d.select("a[href]");
+            int matchedEpisodeLinks = 0;
             for(Element link : episodeLinks) {
                 if(link.hasClass("cta"))
                     continue;
                 String href = link.attr("href");
-                String epPath = normalizeNtkEpisodePath(href, segment, id);
+                String epPath = normalizeNtkEpisodePath(href, segment, titleKey);
                 if(epPath.length() == 0)
                     continue;
+                matchedEpisodeLinks++;
                 int epId = ntkEpisodeSortId(link, epPath, segment);
                 if(epId <= 0)
                     continue;
@@ -222,7 +226,7 @@ public class Title extends MTitle {
             }
             eps.sort((left, right) -> Integer.compare(right.getId(), left.getId()));
             if(eps.size() == 0) {
-                logNtkEpisodeParse("empty", page, segment, episodeLinks.size(), d.select("a[href]").size());
+                logNtkEpisodeParse("empty", page, segment, matchedEpisodeLinks, episodeLinks.size());
                 return LOAD_CAPTCHA;
             }
         }catch(Exception e) {
@@ -250,6 +254,20 @@ public class Title extends MTitle {
                 || lower.contains("cf-challenge")
                 || lower.contains("cf_chl")
                 || lower.contains("turnstile");
+    }
+
+    private static Element firstNtkTitleImage(Document document, String titleKey, String titleName) {
+        if(document == null)
+            return null;
+        String keyNeedle = titleKey == null || titleKey.length() == 0 ? "" : "/" + titleKey + "/";
+        for(Element img : document.select("img")) {
+            String src = img.hasAttr("data-original") ? img.attr("data-original") : img.attr("src");
+            if(keyNeedle.length() > 0 && src != null && src.contains(keyNeedle))
+                return img;
+            if(titleName != null && titleName.length() > 0 && titleName.equals(img.attr("alt")))
+                return img;
+        }
+        return null;
     }
 
     private void logNtkEpisodeParse(String reason, CustomHttpClient.PageResponse page, String segment,
@@ -381,7 +399,11 @@ public class Title extends MTitle {
     }
 
     static String normalizeNtkEpisodePathForTest(String href, String segment, int titleId) {
-        return normalizeNtkEpisodePath(href, segment, titleId);
+        return normalizeNtkEpisodePath(href, segment, String.valueOf(titleId));
+    }
+
+    static String normalizeNtkEpisodePathForTest(String href, String segment, String titleKey) {
+        return normalizeNtkEpisodePath(href, segment, titleKey);
     }
 
     static int ntkEpisodeSortIdForTest(String html, String epPath, String segment) {
@@ -432,8 +454,10 @@ public class Title extends MTitle {
         return false;
     }
 
-    private static String normalizeNtkEpisodePath(String href, String segment, int titleId) {
+    private static String normalizeNtkEpisodePath(String href, String segment, String titleKey) {
         if(href == null)
+            return "";
+        if(titleKey == null || titleKey.length() == 0)
             return "";
         String path = href.trim();
         int schemeIndex = path.indexOf("://");
@@ -449,7 +473,7 @@ public class Title extends MTitle {
             path = path.substring(0, query);
         if(path.length() > 0 && path.charAt(0) != '/')
             path = "/" + path;
-        String prefix = "/" + segment + "/" + titleId + "/";
+        String prefix = "/" + segment + "/" + titleKey + "/";
         if(!path.startsWith(prefix))
             return "";
         String token = path.substring(prefix.length());
@@ -495,6 +519,39 @@ public class Title extends MTitle {
 
     private String ntkSegment() {
         return baseMode == MTitle.base_webtoon ? "webtoon" : "manhwa";
+    }
+
+    private String ntkTitlePath(String segment) {
+        if(path != null) {
+            String trimmed = path.trim();
+            String prefix = "/" + segment + "/";
+            if(trimmed.startsWith(prefix) && trimmed.length() > prefix.length()) {
+                int query = trimmed.indexOf('?');
+                if(query >= 0)
+                    trimmed = trimmed.substring(0, query);
+                int hash = trimmed.indexOf('#');
+                if(hash >= 0)
+                    trimmed = trimmed.substring(0, hash);
+                while(trimmed.endsWith("/") && trimmed.length() > prefix.length())
+                    trimmed = trimmed.substring(0, trimmed.length() - 1);
+                return trimmed;
+            }
+        }
+        return "/" + segment + "/" + id;
+    }
+
+    private String ntkTitleKey(String segment) {
+        String titlePath = ntkTitlePath(segment);
+        String prefix = "/" + segment + "/";
+        if(titlePath.startsWith(prefix)) {
+            String value = titlePath.substring(prefix.length());
+            int slash = value.indexOf('/');
+            if(slash >= 0)
+                value = value.substring(0, slash);
+            if(value.length() > 0)
+                return value;
+        }
+        return String.valueOf(id);
     }
 
     private int fetchWolfEps(CustomHttpClient client) {

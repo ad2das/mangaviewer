@@ -163,7 +163,7 @@ public class MainPageWebtoonTest {
                 apiBody,
                 base_comic);
 
-        assertEquals(1, titles.size());
+        assertEquals(2, titles.size());
         assertEquals(3587, titles.get(0).getId());
         assertEquals("데빌맨", titles.get(0).getName());
         assertEquals("/covers/3587.webp", titles.get(0).getThumb());
@@ -172,6 +172,9 @@ public class MainPageWebtoonTest {
         assertEquals("ntk", titles.get(0).getSourceSite());
         assertTrue(titles.get(0).getTags().contains("스릴러"));
         assertTrue(titles.get(0).getTags().contains("액션"));
+        assertEquals("/manhwa/3587", titles.get(0).getPath());
+        assertEquals("/manhwa/u-moszr294-sxhn", titles.get(1).getPath());
+        assertTrue(titles.get(1).getId() > 0);
         assertEquals(308, Search.parseNtkApiTotalForTest(apiBody, base_comic));
     }
 

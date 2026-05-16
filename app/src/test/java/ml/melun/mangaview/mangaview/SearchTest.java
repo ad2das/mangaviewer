@@ -55,4 +55,18 @@ public class SearchTest {
         assertTrue(comic.get(0).contains("page=3"));
         assertTrue(comic.get(0).contains("pageSize=12"));
     }
+
+    @Test
+    public void ntkApiParserKeepsSlugSourceWorkIdsOpenable() throws Exception {
+        ArrayList<Title> titles = Search.parseNtkApiTitlesForTest(
+                "{\"works\":[{\"sourceWorkId\":\"u-moo205z1-yvf4\",\"title\":\"Slug Title\",\"thumbnailUrl\":\"/cover.jpg\"}]}",
+                base_comic);
+
+        assertEquals(1, titles.size());
+        assertTrue(titles.get(0).getId() > 0);
+        assertEquals("/manhwa/u-moo205z1-yvf4", titles.get(0).getPath());
+        assertEquals("/manhwa/u-moo205z1-yvf4", titles.get(0).getUrl());
+        assertEquals("/manhwa/u-moo205z1-yvf4/u-episode",
+                Title.normalizeNtkEpisodePathForTest("/manhwa/u-moo205z1-yvf4/u-episode", "manhwa", "u-moo205z1-yvf4"));
+    }
 }

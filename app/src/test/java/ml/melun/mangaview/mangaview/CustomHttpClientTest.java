@@ -109,12 +109,12 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void ntkPageDirectUsesFastTimeoutOnlyForEpisodePages() {
+    public void ntkPageDirectUsesFastTimeoutForEpisodePagesAndApi() {
         assertTrue(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/manhwa/1/1",
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
         assertTrue(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/webtoon/1/1",
                 CustomHttpClient.FetchMode.DIRECT_ONLY));
-        assertFalse(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/api/manhwa-list",
+        assertTrue(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/api/manhwa-list",
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
         assertFalse(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/_next/static/app.js",
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
@@ -122,6 +122,12 @@ public class CustomHttpClientTest {
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
         assertFalse(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/manhwa/1/1",
                 CustomHttpClient.FetchMode.CACHE_ONLY));
+    }
+
+    @Test
+    public void ntkApiWorksJsonIsCacheable() {
+        assertTrue(CustomHttpClient.looksCacheableForTest(
+                "{\"works\":[{\"sourceWorkId\":\"u-moo205z1-yvf4\",\"thumbnailUrl\":\"/cover.jpg\"}]}"));
     }
 
     @Test

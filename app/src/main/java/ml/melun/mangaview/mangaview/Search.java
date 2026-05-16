@@ -242,11 +242,7 @@ public class Search {
         ArrayList<Title> combined = new ArrayList<>();
         try {
             if(client != null && client.isNtk()) {
-                PageTitles pageTitles = fetchNtkKeywordApiResults(client, base_auto, 0, 1);
-                if(pageTitles.titles.size() > 0)
-                    appendUnique(combined, pageTitles.titles);
-                else
-                    appendUnique(combined, fetchNtkHtmlSearchResultsPage(client, ntkSearchPath(query, base_auto, 1), base_auto, 0, 1).titles);
+                appendUnique(combined, fetchNtkHtmlSearchResultsPage(client, ntkSearchPath(query, base_auto, 1), base_auto, 0, 1).titles);
             } else {
                 appendUnique(combined, fetchWfwfCombinedKeywordSearchResults(client).titles);
             }
@@ -968,9 +964,10 @@ public class Search {
                 if(workElement == null || !workElement.isJsonObject())
                     continue;
                 JsonObject work = workElement.getAsJsonObject();
-                int id = parsePositiveInt(jsonString(work, "sourceWorkId"));
+                String sourceWorkId = firstNonEmpty(jsonString(work, "sourceWorkId"), jsonString(work, "id"));
+                int id = parsePositiveInt(sourceWorkId);
                 if(id <= 0)
-                    id = parsePositiveInt(jsonString(work, "id"));
+                    id = stableNtkSourceId(sourceWorkId);
                 if(id <= 0)
                     continue;
                 String name = jsonString(work, "title").trim();
@@ -985,6 +982,9 @@ public class Search {
                     release = jsonString(work, "ep");
                 Title title = new Title(name, thumb, "", tags, release, id, baseMode);
                 title.setSourceSite("ntk");
+                String titlePath = ntkApiTitlePath(baseMode, sourceWorkId);
+                if(titlePath.length() > 0)
+                    title.setPath(titlePath);
                 title.setNtkStatusLabel(ntkStatusLabelFromApiPath(path));
                 titles.add(title);
                 if(limit > 0 && titles.size() >= limit)
@@ -1065,6 +1065,58 @@ public class Search {
         } catch (Exception ignored) {
             return 0;
         }
+    }
+
+    private static String firstNonEmpty(String first, String second) {
+        if(first != null && first.trim().length() > 0)
+            return first.trim();
+        return second == null ? "" : second.trim();
+    }
+
+    private static int stableNtkSourceId(String value) {
+        if(value == null)
+            return 0;
+        String trimmed = value.trim();
+        if(trimmed.length() == 0)
+            return 0;
+        int hash = 0x811c9dc5;
+        for(int i = 0; i < trimmed.length(); i++)
+            hash = (hash ^ trimmed.charAt(i)) * 0x01000193;
+        hash &= 0x7fffffff;
+        return hash == 0 ? 1 : hash;
+    }
+
+    private static String ntkApiTitlePath(int baseMode, String sourceWorkId) {
+        if(sourceWorkId == null)
+            return "";
+        String value = sourceWorkId.trim();
+        if(value.length() == 0)
+            return "";
+        int scheme = value.indexOf("://");
+        if(scheme >= 0) {
+            int slash = value.indexOf('/', scheme + 3);
+            value = slash >= 0 ? value.substring(slash) : "";
+        }
+        int query = value.indexOf('?');
+        if(query >= 0)
+            value = value.substring(0, query);
+        int hash = value.indexOf('#');
+        if(hash >= 0)
+            value = value.substring(0, hash);
+        if(value.startsWith("/manhwa/") || value.startsWith("/webtoon/"))
+            return trimTrailingPathSlash(value);
+        while(value.startsWith("/"))
+            value = value.substring(1);
+        if(value.length() == 0)
+            return "";
+        String segment = baseMode == base_webtoon ? "webtoon" : "manhwa";
+        return "/" + segment + "/" + value;
+    }
+
+    private static String trimTrailingPathSlash(String value) {
+        while(value != null && value.endsWith("/") && value.length() > 1)
+            value = value.substring(0, value.length() - 1);
+        return value == null ? "" : value;
     }
 
     private static ArrayList<String> splitNtkGenre(String value) {
@@ -1320,26 +1372,49 @@ public class Search {
     }
 
     private PageTitles fetchNtkSearchResultsUncached(CustomHttpClient client, String path, int targetBaseMode, int limit, int currentPage) throws Exception {
-        PageTitles apiResults = fetchNtkKeywordApiResults(client, targetBaseMode, limit, currentPage);
-        if(apiResults.titles.size() > 0)
-            return apiResults;
         return fetchNtkHtmlSearchResultsPage(client, path, targetBaseMode, limit, currentPage);
     }
 
     private PageTitles fetchNtkHtmlSearchResultsPage(CustomHttpClient client, String path, int targetBaseMode, int limit, int currentPage) throws Exception {
+        long fetchStartedAt = PerfTrace.start("ntk_search_html_fetch_ms");
         CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+        traceSearchMetric("ntk_search_html_fetch_ms", fetchStartedAt,
+                ",path=" + ntkMetricPath(path)
+                        + ",fromCache=" + page.fromCache
+                        + ",code=" + page.code
+                        + ",bodyLen=" + (page.body == null ? 0 : page.body.length()));
         if(page.code >= 400)
             throw new Exception("NTK search failed: " + page.code);
-        Document d = Jsoup.parse(page.body);
+        long parseStartedAt = PerfTrace.start("ntk_search_html_parse_ms");
         ArrayList<Title> parsed = new ArrayList<>();
-        if(targetBaseMode == base_auto || targetBaseMode == base_webtoon)
-            appendUnique(parsed, MainPageWebtoon.parseWolfTitles(d, base_webtoon, limit));
-        if(targetBaseMode == base_auto || targetBaseMode == base_comic)
-            appendUnique(parsed, MainPageWebtoon.parseWolfTitles(d, base_comic, limit));
-        for(Title title : parsed)
-            if(title != null)
-                title.setSourceSite("ntk");
-        String nextPath = findNtkNextPagePath(d, path, currentPage + 1);
+        Document d = null;
+        boolean fastKeywordSearch = client != null && client.isNtk() && mode == 0 && path != null && path.startsWith("/search?");
+        if(fastKeywordSearch) {
+            if(targetBaseMode == base_auto || targetBaseMode == base_webtoon)
+                appendUnique(parsed, MainPageWebtoon.parseWolfSearchHtmlFast(page.body, base_webtoon, limit, "ntk"));
+            if(targetBaseMode == base_auto || targetBaseMode == base_comic)
+                appendUnique(parsed, MainPageWebtoon.parseWolfSearchHtmlFast(page.body, base_comic, limit, "ntk"));
+        }
+        if(parsed.size() == 0) {
+            d = Jsoup.parse(page.body);
+            if(targetBaseMode == base_auto || targetBaseMode == base_webtoon)
+                appendUnique(parsed, MainPageWebtoon.parseWolfTitles(d, base_webtoon, limit));
+            if(targetBaseMode == base_auto || targetBaseMode == base_comic)
+                appendUnique(parsed, MainPageWebtoon.parseWolfTitles(d, base_comic, limit));
+            for(Title title : parsed)
+                if(title != null)
+                    title.setSourceSite("ntk");
+        }
+        String nextPath = null;
+        if(!fastKeywordSearch) {
+            if(d == null)
+                d = Jsoup.parse(page.body);
+            nextPath = findNtkNextPagePath(d, path, currentPage + 1);
+        }
+        traceSearchMetric("ntk_search_html_parse_ms", parseStartedAt,
+                ",path=" + ntkMetricPath(path)
+                        + ",fast=" + fastKeywordSearch
+                        + ",count=" + parsed.size());
         return new PageTitles(parsed, nextPath);
     }
 
@@ -1448,30 +1523,59 @@ public class Search {
         ArrayList<String> paths = ntkKeywordApiPaths(query, targetBaseMode, currentPage, limit);
         if(client == null || paths.size() == 0)
             return new PageTitles(new ArrayList<>(), null);
+        long totalStartedAt = PerfTrace.start("ntk_search_api_total_ms");
         ArrayList<Title> titles = new ArrayList<>();
         boolean hasMore = false;
         int total = 0;
         String singleNextPath = null;
         for(String path : paths) {
             try {
+                long fetchStartedAt = PerfTrace.start("ntk_search_api_fetch_ms");
                 CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+                traceSearchMetric("ntk_search_api_fetch_ms", fetchStartedAt,
+                        ",path=" + ntkMetricPath(path)
+                                + ",fromCache=" + page.fromCache
+                                + ",code=" + page.code
+                                + ",bodyLen=" + (page.body == null ? 0 : page.body.length()));
                 if(page.code >= 400)
                     continue;
                 int parsedBaseMode = path.startsWith("/api/manhwa-list") ? base_comic : base_webtoon;
+                long parseStartedAt = PerfTrace.start("ntk_search_api_parse_ms");
                 PageTitles parsed = parseNtkApiPage(page.body, path, parsedBaseMode, 0, currentPage);
                 ArrayList<Title> filtered = filterNtkKeywordResults(parsed.titles, query, perNtkKeywordKindLimit(targetBaseMode, limit));
+                traceSearchMetric("ntk_search_api_parse_ms", parseStartedAt,
+                        ",path=" + ntkMetricPath(path)
+                                + ",parsed=" + parsed.titles.size()
+                                + ",filtered=" + filtered.size()
+                                + ",total=" + parsed.totalCount);
                 appendUnique(titles, filtered);
                 hasMore = hasMore || parsed.hasMore;
                 total += Math.max(0, parsed.totalCount);
                 if(paths.size() == 1)
                     singleNextPath = parsed.nextPath;
             } catch (Exception e) {
+                traceSearchMetric("ntk_search_api_error_ms", totalStartedAt,
+                        ",path=" + ntkMetricPath(path)
+                                + ",type=" + e.getClass().getSimpleName());
                 ml.melun.mangaview.report.CrashReporter.record(e);
             }
         }
+        traceSearchMetric("ntk_search_api_total_ms", totalStartedAt,
+                ",paths=" + paths.size()
+                        + ",count=" + titles.size()
+                        + ",total=" + total);
         if(titles.size() == 0)
             return new PageTitles(new ArrayList<>(), null);
         return new PageTitles(titles, singleNextPath, true, paths.size() == 1 && hasMore, total);
+    }
+
+    private static String ntkMetricPath(String path) {
+        if(path == null)
+            return "";
+        String value = path.replace(',', ';');
+        if(value.length() > 96)
+            return value.substring(0, 96);
+        return value;
     }
 
     static ArrayList<String> ntkKeywordApiPathsForTest(String query, int targetBaseMode, int page, int limit) {
