@@ -70,6 +70,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private static final int INITIAL_PRELOAD_AHEAD_COUNT = 10;
     private static final int PRELOAD_TRACK_LIMIT = 500;
     private static final int DECODED_PRELOAD_ACTIVE_LIMIT = 8;
+    private static final int IMAGE_LOAD_RETRY_LIMIT = 2;
     private static final String PAYLOAD_HEIGHT = "height";
     ViewerActivity.InfiniteScrollCallback callback;
     Title title;
@@ -81,6 +82,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private final Map<String, Decoder> decoders = new HashMap<>();
     private final Map<String, CustomTarget<Bitmap>> decodedPreloadTargets = new HashMap<>();
     private final Map<String, Integer> pageHeights = new HashMap<>();
+    private final Map<String, Integer> failedImageRetries = new HashMap<>();
     private final Set<String> pendingHeightCorrections = new LinkedHashSet<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private int lastPreloadAnchorPosition = RecyclerView.NO_POSITION;
@@ -549,6 +551,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(cached != null && cached.isUsable() && isHolderStillBound(holder, item, pageKey)) {
             if(item.index > 0)
                 ViewerWarmupManager.logMetric("viewer_next_page_cache_hit", 1);
+            failedImageRetries.remove(pageKey);
             bindBitmap(holder, pageKey, cached.bitmap);
             holder.refresh.setVisibility(View.GONE);
             markDisplayedAndPreload(holder, item, pageKey);
@@ -560,6 +563,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(warmupCached != null && !warmupCached.isRecycled() && isHolderStillBound(holder, item, pageKey)) {
             if(item.index > 0)
                 ViewerWarmupManager.logMetric("viewer_next_page_cache_hit", 1);
+            failedImageRetries.remove(pageKey);
             bindBitmap(holder, pageKey, warmupCached);
             holder.refresh.setVisibility(View.GONE);
             putDecodedBitmap(cacheKey, warmupCached);
@@ -575,6 +579,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 public void onResourceReady(@NonNull Bitmap bitmap, Transition<? super Bitmap> transition) {
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
+                    failedImageRetries.remove(pageKey);
                     bindBitmap(holder, pageKey, bitmap);
                     cacheDisplayedBitmap(cacheKey, bitmap);
                     holder.refresh.setVisibility(View.GONE);
@@ -596,9 +601,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 public void onLoadFailed(@Nullable Drawable errorDrawable) {
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
-                    applyKnownHeight(holder, pageKey);
-                    holder.frame.setImageDrawable(null);
-                    holder.refresh.setVisibility(View.VISIBLE);
+                    handleImageLoadFailed(holder, item, pageKey, bindGeneration);
                 }
             };
             holder.imageTarget = imageTarget;
@@ -616,6 +619,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 public void onResourceReady(@NonNull Bitmap resource, @Nullable Transition<? super Bitmap> transition) {
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
+                    failedImageRetries.remove(pageKey);
                     bindBitmap(holder, pageKey, resource);
                     cacheDisplayedBitmap(cacheKey, resource);
                     holder.refresh.setVisibility(View.GONE);
@@ -637,9 +641,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 public void onLoadFailed(@Nullable Drawable errorDrawable) {
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
-                    applyKnownHeight(holder, pageKey);
-                    holder.frame.setImageDrawable(null);
-                    holder.refresh.setVisibility(View.VISIBLE);
+                    handleImageLoadFailed(holder, item, pageKey, bindGeneration);
                 }
             };
             holder.imageTarget = imageTarget;
@@ -650,6 +652,36 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     .load(url)
                     .into(imageTarget);
         }
+    }
+
+    private void handleImageLoadFailed(ImgViewHolder holder, PageItem item, String pageKey, int bindGeneration) {
+        applyKnownHeight(holder, pageKey);
+        holder.frame.setImageDrawable(null);
+        if(scheduleImageRetry(holder, item, pageKey, bindGeneration)) {
+            holder.refresh.setVisibility(View.GONE);
+            return;
+        }
+        holder.refresh.setVisibility(View.VISIBLE);
+    }
+
+    private boolean scheduleImageRetry(ImgViewHolder holder, PageItem item, String pageKey, int bindGeneration) {
+        if(released || pageKey == null || pageKey.length() == 0)
+            return false;
+        int attempts = failedImageRetries.containsKey(pageKey) ? failedImageRetries.get(pageKey) : 0;
+        if(attempts >= IMAGE_LOAD_RETRY_LIMIT)
+            return false;
+        int nextAttempt = attempts + 1;
+        failedImageRetries.put(pageKey, nextAttempt);
+        ViewerWarmupManager.logMetric("viewer_image_retry", nextAttempt);
+        long delayMs = nextAttempt == 1 ? 350L : 900L;
+        mainHandler.postDelayed(() -> {
+            if(released || !isHolderStillBound(holder, item, pageKey) || holder.bindGeneration != bindGeneration)
+                return;
+            int position = holder.getAdapterPosition();
+            if(position != RecyclerView.NO_POSITION)
+                notifyItemChanged(position);
+        }, delayMs);
+        return true;
     }
 
     private void bindBitmap(ImgViewHolder holder, String pageKey, Bitmap bitmap) {
@@ -1113,6 +1145,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     private void clearDecodedPageState() {
         preloadedImages.clear();
+        failedImageRetries.clear();
         decodedBitmapCache.evictAll();
         clearPageHeightState();
         decoders.clear();
