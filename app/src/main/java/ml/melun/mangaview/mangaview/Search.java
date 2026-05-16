@@ -1384,8 +1384,16 @@ public class Search {
         return resultCount <= 0 && !apiComplete;
     }
 
+    private static boolean isNtkKeywordApiEmptyAuthoritative(int successfulPaths, int pathCount, int total, int parsedCandidates) {
+        return pathCount > 0 && successfulPaths == pathCount && total == 0 && parsedCandidates == 0;
+    }
+
     static boolean shouldFallbackToNtkHtmlKeywordSearchForTest(int resultCount, boolean apiComplete) {
         return shouldFallbackToNtkHtmlKeywordSearch(resultCount, apiComplete);
+    }
+
+    static boolean isNtkKeywordApiEmptyAuthoritativeForTest(int successfulPaths, int pathCount, int total, int parsedCandidates) {
+        return isNtkKeywordApiEmptyAuthoritative(successfulPaths, pathCount, total, parsedCandidates);
     }
 
     static boolean shouldUseNtkKeywordApiForTest(boolean ntkClient, int mode) {
@@ -1565,6 +1573,7 @@ public class Search {
         boolean hasMore = false;
         int total = 0;
         int successfulPaths = 0;
+        int parsedCandidates = 0;
         String singleNextPath = null;
         if(shouldFetchNtkKeywordApiPathsInParallel(paths)) {
             CompletionService<NtkApiPathResult> completion = AppDispatchers.ioCompletionService();
@@ -1579,6 +1588,7 @@ public class Search {
                         continue;
                     if(result.success)
                         successfulPaths++;
+                    parsedCandidates += Math.max(0, result.parsedCount);
                     appendUnique(titles, result.pageTitles.titles);
                     hasMore = hasMore || result.pageTitles.hasMore;
                     total += Math.max(0, result.pageTitles.totalCount);
@@ -1592,6 +1602,7 @@ public class Search {
             NtkApiPathResult result = fetchNtkKeywordApiPathResult(client, paths.get(0), targetBaseMode, limit, currentPage, totalStartedAt);
             if(result.success)
                 successfulPaths++;
+            parsedCandidates += Math.max(0, result.parsedCount);
             appendUnique(titles, result.pageTitles.titles);
             hasMore = result.pageTitles.hasMore;
             total = Math.max(0, result.pageTitles.totalCount);
@@ -1600,10 +1611,13 @@ public class Search {
         traceSearchMetric("ntk_search_api_total_ms", totalStartedAt,
                 ",paths=" + paths.size()
                         + ",success=" + successfulPaths
+                        + ",parsedCandidates=" + parsedCandidates
                         + ",count=" + titles.size()
                         + ",total=" + total);
         if(titles.size() == 0)
-            return new PageTitles(new ArrayList<>(), null, successfulPaths == paths.size(), false, total);
+            return new PageTitles(new ArrayList<>(), null,
+                    isNtkKeywordApiEmptyAuthoritative(successfulPaths, paths.size(), total, parsedCandidates),
+                    false, total);
         return new PageTitles(titles, singleNextPath, true, paths.size() == 1 && hasMore, total);
     }
 
@@ -1618,7 +1632,7 @@ public class Search {
                             + ",code=" + page.code
                             + ",bodyLen=" + (page.body == null ? 0 : page.body.length()));
             if(page.code >= 400)
-                return new NtkApiPathResult(path, new PageTitles(new ArrayList<>(), null), false);
+                return new NtkApiPathResult(path, new PageTitles(new ArrayList<>(), null), false, 0);
             int parsedBaseMode = path.startsWith("/api/manhwa-list") ? base_comic : base_webtoon;
             long parseStartedAt = PerfTrace.start("ntk_search_api_parse_ms");
             PageTitles parsed = parseNtkApiPage(page.body, path, parsedBaseMode, 0, currentPage);
@@ -1629,13 +1643,13 @@ public class Search {
                             + ",filtered=" + filtered.size()
                             + ",total=" + parsed.totalCount);
             return new NtkApiPathResult(path, new PageTitles(filtered, parsed.nextPath,
-                    parsed.hasMoreKnown, parsed.hasMore, parsed.totalCount), true);
+                    parsed.hasMoreKnown, parsed.hasMore, parsed.totalCount), true, parsed.titles.size());
         } catch (Exception e) {
             traceSearchMetric("ntk_search_api_error_ms", totalStartedAt,
                     ",path=" + ntkMetricPath(path)
                             + ",type=" + e.getClass().getSimpleName());
             ml.melun.mangaview.report.CrashReporter.record(e);
-            return new NtkApiPathResult(path, new PageTitles(new ArrayList<>(), null), false);
+            return new NtkApiPathResult(path, new PageTitles(new ArrayList<>(), null), false, 0);
         }
     }
 
@@ -1643,11 +1657,13 @@ public class Search {
         final String path;
         final PageTitles pageTitles;
         final boolean success;
+        final int parsedCount;
 
-        NtkApiPathResult(String path, PageTitles pageTitles, boolean success) {
+        NtkApiPathResult(String path, PageTitles pageTitles, boolean success, int parsedCount) {
             this.path = path;
             this.pageTitles = pageTitles == null ? new PageTitles(new ArrayList<>(), null) : pageTitles;
             this.success = success;
+            this.parsedCount = parsedCount;
         }
     }
 

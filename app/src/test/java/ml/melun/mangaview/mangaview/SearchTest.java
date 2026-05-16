@@ -72,6 +72,13 @@ public class SearchTest {
     }
 
     @Test
+    public void ntkKeywordApiEmptyIsNotAuthoritativeWhenApiReturnsGenericRows() {
+        assertEquals(true, Search.isNtkKeywordApiEmptyAuthoritativeForTest(2, 2, 0, 0));
+        assertEquals(false, Search.isNtkKeywordApiEmptyAuthoritativeForTest(2, 2, 15518, 60));
+        assertEquals(false, Search.isNtkKeywordApiEmptyAuthoritativeForTest(1, 2, 0, 0));
+    }
+
+    @Test
     public void ntkApiParserKeepsSlugSourceWorkIdsOpenable() throws Exception {
         ArrayList<Title> titles = Search.parseNtkApiTitlesForTest(
                 "{\"works\":[{\"sourceWorkId\":\"u-moo205z1-yvf4\",\"title\":\"Slug Title\",\"thumbnailUrl\":\"/cover.jpg\"}]}",
