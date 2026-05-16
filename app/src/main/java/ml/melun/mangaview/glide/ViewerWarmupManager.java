@@ -55,6 +55,8 @@ public class ViewerWarmupManager {
     private static final int ACTIVE_LIMIT = 36;
     private static final int DECODED_TARGET_LIMIT = 48;
     private static final int DECODED_TARGET_ACTIVE_SOFT_LIMIT = 8;
+    private static final long FIRST_PAGE_BLOCKING_DECODE_TIMEOUT_MS = 650L;
+    private static final long OTHER_PAGE_BLOCKING_DECODE_TIMEOUT_MS = 250L;
     private static final int SNAPSHOT_LIMIT = 64;
     private static final long SNAPSHOT_TTL_MS = 2 * 60 * 1000L;
     private static final long DISK_SNAPSHOT_TTL_MS = 20 * 60 * 1000L;
@@ -755,7 +757,7 @@ public class ViewerWarmupManager {
         }
         FutureTarget<Bitmap> target = null;
         boolean cachedResult = false;
-        long timeoutMs = firstPage ? 5_500L : 450L;
+        long timeoutMs = blockingDecodeTimeoutMs(firstPage);
         long decodeStart = SystemClock.elapsedRealtime();
         RequestManager requestManager = glideRequestManager(context);
         if(requestManager == null)
@@ -1210,8 +1212,16 @@ public class ViewerWarmupManager {
         return shouldDecodeFirstPagesBlocking(allowBlockingDecode, hadImagesAtStart, snapshotHit);
     }
 
+    static long blockingDecodeTimeoutMsForTest(boolean firstPage) {
+        return blockingDecodeTimeoutMs(firstPage);
+    }
+
     private static boolean shouldDecodeFirstPagesBlocking(boolean allowBlockingDecode, boolean hadImagesAtStart, boolean snapshotHit) {
         return allowBlockingDecode && hadImagesAtStart;
+    }
+
+    private static long blockingDecodeTimeoutMs(boolean firstPage) {
+        return firstPage ? FIRST_PAGE_BLOCKING_DECODE_TIMEOUT_MS : OTHER_PAGE_BLOCKING_DECODE_TIMEOUT_MS;
     }
 
     private static void trimActive() {

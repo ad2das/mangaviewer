@@ -9,6 +9,7 @@ import ml.melun.mangaview.mangaview.Manga;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertEquals;
 
 public class ViewerWarmupManagerTest {
     @Test
@@ -138,6 +139,12 @@ public class ViewerWarmupManagerTest {
     public void cachedViewerOpenCanUseBlockingDecodeForInstantFirstFrame() {
         assertTrue(ViewerWarmupManager.shouldDecodeFirstPagesBlockingForTest(true, false));
         assertFalse(ViewerWarmupManager.shouldDecodeFirstPagesBlockingForTest(false, true));
+    }
+
+    @Test
+    public void blockingDecodeTimeoutOnlyChecksForFastCacheHits() {
+        assertEquals(650L, ViewerWarmupManager.blockingDecodeTimeoutMsForTest(true));
+        assertEquals(250L, ViewerWarmupManager.blockingDecodeTimeoutMsForTest(false));
     }
 
     @Test
