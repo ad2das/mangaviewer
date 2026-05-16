@@ -53,7 +53,7 @@ public class Manga {
     private static final Pattern NTK_ENCODED_TEXT_IMAGE_PATTERN = Pattern.compile(
             "(?i)https%3A%2F%2F(?:(?:[a-z0-9.-]+\\.)?toonflix\\.app|img\\.[a-z0-9.-]+)%2F[^\\s\"'<>\\\\]+?\\.(?:jpg|jpeg|png|webp|gif)(?:%3F[^\\s\"'<>\\\\]*)?");
     private static final Pattern NTK_NUMBERED_PAGE_IMAGE_PATTERN = Pattern.compile(
-            "(?i)(?:(?:https?:)?//(?:(?:[a-z0-9.-]+\\.)?toonflix\\.app|img\\.[a-z0-9.-]+))?/(?:manhwa|webtoon|comic)/\\d+/[^/?#]+/p\\d{2,4}\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$");
+            "(?i)(?:(?:https?:)?//(?:(?:[a-z0-9.-]+\\.)?toonflix\\.app|img\\.[a-z0-9.-]+))?/(?:manhwa|webtoon|comic)/\\d+/[^/?#]+/(?:p)?\\d{1,4}\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$");
 
     int baseMode = base_comic;
     int titleId = -1;

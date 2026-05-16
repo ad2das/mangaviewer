@@ -216,6 +216,20 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkPersistedDnsAllowsColdStartBootstrapStaleOnlyWithinLimit() {
+        long now = 8L * 24L * 60L * 60L * 1000L;
+
+        assertTrue(CustomHttpClient.isPersistedNtkDnsUsableForTest(now - 60_000L, now + 60_000L, now, false));
+        assertTrue(CustomHttpClient.isPersistedNtkDnsUsableForTest(now - 2L * 24L * 60L * 60L * 1000L,
+                now - 60_000L, now, true));
+        assertTrue(CustomHttpClient.isPersistedNtkDnsStaleForTest(now - 2L * 24L * 60L * 60L * 1000L,
+                now - 60_000L, now));
+        assertFalse(CustomHttpClient.isPersistedNtkDnsUsableForTest(now - 8L * 24L * 60L * 60L * 1000L,
+                now - 60_000L, now, true));
+        assertFalse(CustomHttpClient.isPersistedNtkDnsUsableForTest(now + 1L, now - 60_000L, now, true));
+    }
+
+    @Test
     public void ntkDnsMergeKeepsPreferredIpv4FirstThenFallback() throws Exception {
         InetAddress preferred = InetAddress.getByAddress("sbxh1.com",
                 new byte[] {(byte)104, (byte)16, (byte)220, (byte)55});

@@ -1108,6 +1108,12 @@ public class ViewerActivity extends AppCompatActivity {
                 return;
             }
             if(res == LOAD_CAPTCHA){
+                if(shouldSuppressBoundaryLoadError(lockui, hasViewerContent())) {
+                    ViewerWarmupManager.logMetric("viewer_boundary_captcha_suppressed", m == null ? -1 : m.getId());
+                    if(callback != null)
+                        callback.post(null);
+                    return;
+                }
                 //캡차 처리 팝업
                 if(lockui) lockUi(false);
                 resetOnBackPressed();
@@ -1115,6 +1121,12 @@ public class ViewerActivity extends AppCompatActivity {
                 return;
             }
             if(res == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !hasLoadedImages(m)) {
+                if(shouldSuppressBoundaryLoadError(lockui, hasViewerContent())) {
+                    ViewerWarmupManager.logMetric("viewer_boundary_empty_suppressed", m == null ? -1 : m.getId());
+                    if(callback != null)
+                        callback.post(null);
+                    return;
+                }
                 if(lockui) lockUi(false);
                 resetOnBackPressed();
                 showViewerImagesUnavailable(m);
@@ -2093,6 +2105,18 @@ public class ViewerActivity extends AppCompatActivity {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    private boolean hasViewerContent() {
+        return stripAdapter != null && stripAdapter.getItemCount() > 0;
+    }
+
+    static boolean shouldSuppressBoundaryLoadErrorForTest(boolean lockui, boolean hasViewerContent) {
+        return shouldSuppressBoundaryLoadError(lockui, hasViewerContent);
+    }
+
+    private static boolean shouldSuppressBoundaryLoadError(boolean lockui, boolean hasViewerContent) {
+        return !lockui && hasViewerContent;
     }
 
     static boolean shouldSkipBackgroundNextEpisodeFetchForTest(String sourceSite, boolean ntkPreference, boolean ntkClient, boolean hasLoadedImages) {

@@ -76,12 +76,14 @@ public class CustomHttpClient {
     private static final long NTK_DOH_TIMEOUT_MS = 1_500L;
     private static final long NTK_DNS_CACHE_DEFAULT_TTL_MS = 5 * 60 * 1000L;
     private static final long NTK_DNS_CACHE_MAX_TTL_MS = 30 * 60 * 1000L;
+    private static final long NTK_DNS_DISK_STALE_TTL_MS = 7 * 24 * 60 * 60 * 1000L;
     private static final long COOKIE_SYNC_INTERVAL_MS = 30 * 1000L;
     private static final long PAGE_CACHE_COLD_START_TTL_MS = 7 * 24 * 60 * 60 * 1000L;
     private static final int PAGE_CACHE_MAX_ENTRIES = 200;
     private static final int MAX_HTTP_REQUESTS = 8;
     private static final int MAX_HTTP_REQUESTS_PER_HOST = 4;
     private static final String PAGE_CACHE_PREFIX = "httpPageCacheV1_";
+    private static final String NTK_DNS_CACHE_PREFIX = "ntkDnsCacheV1_";
     private static final String CLOUDFLARE_DOH_HOST = "cloudflare-dns.com";
     private static final String NTK_EDGE_IP = "104.16.219.55";
     private static final Gson GSON = new Gson();
@@ -108,6 +110,7 @@ public class CustomHttpClient {
             .callTimeout(NTK_DOH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             .build();
     private static final Dns NETWORK_RESILIENT_DNS = CustomHttpClient::lookupNetworkResilientDns;
+    private static volatile Context dnsCacheContext;
 
     private static class CachedDns {
         final List<InetAddress> addresses;
@@ -127,6 +130,22 @@ public class CustomHttpClient {
             this.addresses = addresses;
             this.ttlMs = ttlMs;
         }
+    }
+
+    private static class DnsCacheEntry {
+        final List<InetAddress> addresses;
+        final boolean stale;
+
+        DnsCacheEntry(List<InetAddress> addresses, boolean stale) {
+            this.addresses = addresses;
+            this.stale = stale;
+        }
+    }
+
+    private static class PersistedDns {
+        ArrayList<String> addresses;
+        long savedAt;
+        long expiresAt;
     }
 
     private static void addAddressIfMissing(List<InetAddress> addresses, InetAddress candidate) {
@@ -149,9 +168,15 @@ public class CustomHttpClient {
     }
 
     private static List<InetAddress> lookupCachedOrFallbackNtkDns(String hostname) {
-        List<InetAddress> cached = readCachedNtkDns(hostname);
-        if(cached != null && !cached.isEmpty())
-            return cached;
+        DnsCacheEntry cached = readFreshCachedNtkDns(hostname);
+        if(cached != null && cached.addresses != null && !cached.addresses.isEmpty())
+            return cached.addresses;
+        DnsCacheEntry stale = readDiskCachedNtkDns(hostname, true);
+        if(stale != null && stale.addresses != null && !stale.addresses.isEmpty()) {
+            warmNtkDohAsync(hostname);
+            ViewerWarmupManager.logMetric("ntk_dns_disk_stale_count", stale.addresses.size());
+            return stale.addresses;
+        }
         warmNtkDohAsync(hostname);
         List<InetAddress> fallback = ntkFallbackAddresses(hostname);
         if(!fallback.isEmpty())
@@ -269,22 +294,112 @@ public class CustomHttpClient {
     }
 
     private static List<InetAddress> readCachedNtkDns(String hostname) {
+        DnsCacheEntry cached = readFreshCachedNtkDns(hostname);
+        return cached == null ? null : cached.addresses;
+    }
+
+    private static DnsCacheEntry readFreshCachedNtkDns(String hostname) {
         long now = System.currentTimeMillis();
         synchronized (NTK_DNS_CACHE_LOCK) {
             CachedDns cached = NTK_DNS_CACHE.get(normalizeDnsHost(hostname));
-            if(cached == null || cached.expiresAt <= now)
-                return null;
-            return new ArrayList<>(cached.addresses);
+            if(cached != null && cached.expiresAt > now)
+                return new DnsCacheEntry(new ArrayList<>(cached.addresses), false);
         }
+        return readDiskCachedNtkDns(hostname, false);
     }
 
     private static void writeCachedNtkDns(String hostname, List<InetAddress> addresses, long ttlMs) {
         if(addresses == null || addresses.isEmpty())
             return;
+        long now = System.currentTimeMillis();
+        long expiresAt = now + Math.max(30_000L, ttlMs);
+        writeMemoryCachedNtkDns(hostname, addresses, expiresAt);
+        writeDiskCachedNtkDns(hostname, addresses, now, expiresAt);
+    }
+
+    private static void writeMemoryCachedNtkDns(String hostname, List<InetAddress> addresses, long expiresAt) {
+        if(addresses == null || addresses.isEmpty())
+            return;
         synchronized (NTK_DNS_CACHE_LOCK) {
             NTK_DNS_CACHE.put(normalizeDnsHost(hostname),
-                    new CachedDns(new ArrayList<>(addresses), System.currentTimeMillis() + ttlMs));
+                    new CachedDns(new ArrayList<>(addresses), expiresAt));
         }
+    }
+
+    private static DnsCacheEntry readDiskCachedNtkDns(String hostname, boolean allowStale) {
+        Context context = dnsCacheContext;
+        if(context == null)
+            return null;
+        String key = ntkDnsCacheKey(hostname);
+        try {
+            String json = CacheFileStore.read(context, key);
+            if(json == null || json.length() == 0)
+                return null;
+            PersistedDns persisted = GSON.fromJson(json, PersistedDns.class);
+            long now = System.currentTimeMillis();
+            if(persisted == null || !isPersistedNtkDnsUsable(persisted.savedAt, persisted.expiresAt, now, allowStale)) {
+                CacheFileStore.delete(context, key);
+                return null;
+            }
+            ArrayList<InetAddress> addresses = parsePersistedDnsAddresses(hostname, persisted.addresses);
+            if(addresses.isEmpty()) {
+                CacheFileStore.delete(context, key);
+                return null;
+            }
+            boolean stale = isPersistedNtkDnsStale(persisted.savedAt, persisted.expiresAt, now);
+            if(!stale)
+                writeMemoryCachedNtkDns(hostname, addresses, persisted.expiresAt);
+            return new DnsCacheEntry(addresses, stale);
+        } catch (Exception e) {
+            CacheFileStore.delete(context, key);
+            return null;
+        }
+    }
+
+    private static void writeDiskCachedNtkDns(String hostname, List<InetAddress> addresses, long savedAt, long expiresAt) {
+        Context context = dnsCacheContext;
+        if(context == null || addresses == null || addresses.isEmpty())
+            return;
+        PersistedDns persisted = new PersistedDns();
+        persisted.savedAt = savedAt;
+        persisted.expiresAt = expiresAt;
+        persisted.addresses = new ArrayList<>();
+        for(InetAddress address : addresses)
+            if(address instanceof Inet4Address)
+                persisted.addresses.add(address.getHostAddress());
+        if(persisted.addresses.isEmpty())
+            return;
+        CacheFileStore.write(context, ntkDnsCacheKey(hostname), GSON.toJson(persisted));
+    }
+
+    private static ArrayList<InetAddress> parsePersistedDnsAddresses(String hostname, List<String> persistedAddresses) {
+        ArrayList<InetAddress> addresses = new ArrayList<>();
+        if(persistedAddresses == null)
+            return addresses;
+        for(String value : persistedAddresses) {
+            InetAddress address = parseIpv4Address(hostname, value);
+            if(address != null)
+                addAddressIfMissing(addresses, address);
+        }
+        return addresses;
+    }
+
+    private static String ntkDnsCacheKey(String hostname) {
+        return NTK_DNS_CACHE_PREFIX + normalizeDnsHost(hostname);
+    }
+
+    private static boolean isPersistedNtkDnsUsable(long savedAt, long expiresAt, long now, boolean allowStale) {
+        return savedAt <= now
+                && (isPersistedNtkDnsFresh(expiresAt, now)
+                || (allowStale && isPersistedNtkDnsStale(savedAt, expiresAt, now)));
+    }
+
+    private static boolean isPersistedNtkDnsFresh(long expiresAt, long now) {
+        return expiresAt > now;
+    }
+
+    private static boolean isPersistedNtkDnsStale(long savedAt, long expiresAt, long now) {
+        return expiresAt <= now && savedAt <= now && now - savedAt <= NTK_DNS_DISK_STALE_TTL_MS;
     }
 
     private static List<InetAddress> ntkFallbackAddresses(String hostname) {
@@ -354,6 +469,14 @@ public class CustomHttpClient {
 
     static List<InetAddress> ntkFallbackAddressesForTest(String hostname) {
         return ntkFallbackAddresses(hostname);
+    }
+
+    static boolean isPersistedNtkDnsUsableForTest(long savedAt, long expiresAt, long now, boolean allowStale) {
+        return isPersistedNtkDnsUsable(savedAt, expiresAt, now, allowStale);
+    }
+
+    static boolean isPersistedNtkDnsStaleForTest(long savedAt, long expiresAt, long now) {
+        return isPersistedNtkDnsStale(savedAt, expiresAt, now);
     }
 
     static List<InetAddress> mergeIpv4FirstForTest(String hostname, List<InetAddress> preferred,
@@ -692,6 +815,7 @@ public class CustomHttpClient {
 
     public CustomHttpClient(Context context){
         this.context = context.getApplicationContext();
+        dnsCacheContext = this.context;
         this.cookies = new HashMap<>();
         this.cookieSyncAt = new HashMap<>();
         this.pageLoads = new HashMap<>();

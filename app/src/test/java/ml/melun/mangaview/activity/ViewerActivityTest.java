@@ -43,4 +43,11 @@ public class ViewerActivityTest {
     public void wfwfBackgroundNextEpisodeFetchSkipsWhenImagesAreMissing() {
         assertTrue(ViewerActivity.shouldSkipBackgroundNextEpisodeFetchForTest("wfwf", false, false, false));
     }
+
+    @Test
+    public void boundaryLoadErrorsDoNotCloseExistingViewerContent() {
+        assertTrue(ViewerActivity.shouldSuppressBoundaryLoadErrorForTest(false, true));
+        assertFalse(ViewerActivity.shouldSuppressBoundaryLoadErrorForTest(true, true));
+        assertFalse(ViewerActivity.shouldSuppressBoundaryLoadErrorForTest(false, false));
+    }
 }

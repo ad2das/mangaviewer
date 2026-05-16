@@ -96,6 +96,10 @@ public class MangaTest {
         assertTrue(Manga.isNtkPageImageForTest(
                 "<img src=\"https://i.toonflix.app/manhwa/25089/296849/p001.jpg\">"));
         assertTrue(Manga.isNtkPageImageForTest(
+                "<img src=\"https://i.toonflix.app/manhwa/25089/296849/001.jpg\">"));
+        assertTrue(Manga.isNtkPageImageForTest(
+                "<img src=\"https://i.toonflix.app/manhwa/25089/296849/0001.webp\">"));
+        assertTrue(Manga.isNtkPageImageForTest(
                 "<img src=\"/manhwa/25089/296849/p025.webp?token=1\">"));
 
         org.junit.Assert.assertFalse(Manga.isNtkPageImageForTest(
@@ -142,6 +146,15 @@ public class MangaTest {
 
         assertEquals(1, images.size());
         assertEquals("https://i.toonflix.app/manhwa/25089/296849/p001.jpg", images.get(0));
+    }
+
+    @Test
+    public void ntkEmbeddedNumberedPageImagesAllowPlainNumericNames() {
+        List<String> images = Manga.ntkEmbeddedPageImagesForTest(
+                "<script>{\"images\":[\"https:\\/\\/i.toonflix.app\\/manhwa\\/25089\\/296849\\/001.jpg\"]}</script>");
+
+        assertEquals(1, images.size());
+        assertEquals("https://i.toonflix.app/manhwa/25089/296849/001.jpg", images.get(0));
     }
 
     @Test
