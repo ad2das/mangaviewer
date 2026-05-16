@@ -158,6 +158,7 @@ public class ViewerActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         PerformanceMonitor.attach(this);
         PerformanceMonitor.screen("viewer");
+        ViewerWarmupManager.suppressVisibleContinueWarmups(3000L);
         setContentView(R.layout.activity_viewer);
 
         next = this.findViewById(R.id.toolbar_next);
@@ -839,7 +840,7 @@ public class ViewerActivity extends AppCompatActivity {
             scheduleFocusedPagePreload();
             refreshToolbar(m);
             updateIntent(m);
-            prefetchNextEpisode(m);
+            scheduleNextEpisodePrefetch(m);
 
         }catch (Exception e){
             Utils.showCaptchaPopup(Manga.safeUrl(m), context, e, p);
@@ -1148,7 +1149,7 @@ public class ViewerActivity extends AppCompatActivity {
                                 m = resolvedEpisode(m);
                         }
                         int firstPage = initialPageIndex(m, policy);
-                        if(allowsResumeFallback(policy) && result == LOAD_OK && shouldResolveResumeBeforeDirectFetch(m)) {
+                        if(!displayedEarly && allowsResumeFallback(policy) && result == LOAD_OK && shouldResolveResumeBeforeDirectFetch(m)) {
                             result = ensureEpisodeListLoaded(m);
                             PreparedManga prepared = result == LOAD_OK
                                     ? prepareFirstAvailableManga(m, firstPage, cancellation)
@@ -1158,7 +1159,7 @@ public class ViewerActivity extends AppCompatActivity {
                                 m = prepared.manga;
                         } else if(result == LOAD_OK && displayedEarly && hasLoadedImages(m)) {
                             ViewerWarmupManager.preloadLoadedImages(context, m, firstPage, width, autoCut,
-                                    p.getReverse(), p.getDataSave() ? 6 : 12, Priority.IMMEDIATE);
+                                    p.getReverse(), p.getDataSave() ? 3 : 6, Priority.HIGH, 0);
                         } else if(result == LOAD_OK) {
                             result = ViewerWarmupManager.prepareFirstFrame(context, m, title, firstPage, width, autoCut, p.getReverse(), cancellation);
                         }
@@ -1187,8 +1188,7 @@ public class ViewerActivity extends AppCompatActivity {
             return target != null
                     && target.isOnline()
                     && hasLoadedImages(target)
-                    && !needsResolvedNtkEpisodePath(target)
-                    && !(allowsResumeFallback(policy) && shouldResolveResumeBeforeDirectFetch(target));
+                    && !needsResolvedNtkEpisodePath(target);
         }
 
         private void displayLoadedImagesEarly() {
@@ -1210,8 +1210,8 @@ public class ViewerActivity extends AppCompatActivity {
             if(target == null || !target.isOnline())
                 return;
             int firstPage = initialPageIndex(target, policy);
-            ViewerWarmupManager.preloadWindow(context, target, firstPage, width, autoCut,
-                    p.getReverse(), ViewerPreloadPolicy.immediateDisplayWindow(p.getDataSave()));
+            ViewerWarmupManager.preloadLoadedImages(context, target, firstPage, width, autoCut,
+                    p.getReverse(), p.getDataSave() ? 2 : 4, Priority.HIGH, 0);
         }
 
         void finish(Integer res) {
@@ -2207,6 +2207,24 @@ public class ViewerActivity extends AppCompatActivity {
         nextPrefetchBaseMode = target.getBaseMode();
         nextPrefetcher = new PrefetchImagesJob(target);
         nextPrefetcher.start();
+    }
+
+    private void scheduleNextEpisodePrefetch(Manga target) {
+        if(strip == null || target == null)
+            return;
+        strip.postDelayed(() -> {
+            if(isFinishing() || manga == null || !sameManga(manga, target))
+                return;
+            prefetchNextEpisode(target);
+        }, initialNextEpisodePrefetchDelayMs());
+    }
+
+    private static long initialNextEpisodePrefetchDelayMs() {
+        return 1800L;
+    }
+
+    static long initialNextEpisodePrefetchDelayMsForTest() {
+        return initialNextEpisodePrefetchDelayMs();
     }
 
     private void cancelNextPrefetcher() {

@@ -167,4 +167,19 @@ public class ViewerWarmupManagerTest {
         assertFalse(ViewerWarmupManager.samePreparedEpisodeForTest(differentEpisode, requested));
         assertFalse(ViewerWarmupManager.samePreparedEpisodeForTest(differentTitle, requested));
     }
+
+    @Test
+    public void pagePreloadDedupeSuppressesImmediateDuplicates() {
+        ViewerWarmupManager.clearRecentPagePreloadsForTest();
+
+        assertTrue(ViewerWarmupManager.markPagePreloadForTest("page:1", 1000L));
+        assertFalse(ViewerWarmupManager.markPagePreloadForTest("page:1", 1200L));
+        assertTrue(ViewerWarmupManager.markPagePreloadForTest("page:1", 2601L));
+    }
+
+    @Test
+    public void visibleContinueWarmupCanBeSuppressedDuringViewerEntry() {
+        assertTrue(ViewerWarmupManager.shouldSuppressVisibleContinueWarmupForTest(1000L, 1500L));
+        assertFalse(ViewerWarmupManager.shouldSuppressVisibleContinueWarmupForTest(1500L, 1500L));
+    }
 }

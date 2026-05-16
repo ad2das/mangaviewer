@@ -62,12 +62,16 @@ public class ViewerWarmupManager {
     private static final long DISK_SNAPSHOT_TTL_MS = 20 * 60 * 1000L;
     private static final long DISK_SNAPSHOT_COLD_START_TTL_MS = 7 * 24 * 60 * 60 * 1000L;
     private static final long CONTINUE_WARMUP_DEBOUNCE_MS = 800L;
+    private static final long PAGE_PRELOAD_DEDUPE_MS = 1500L;
+    private static final int PAGE_PRELOAD_DEDUPE_LIMIT = 256;
     private static final Gson GSON = new Gson();
     private static final Map<String, WarmupState> activeWarmups = new HashMap<>();
     private static final LinkedHashMap<String, WarmupSnapshot> snapshots = new LinkedHashMap<>(SNAPSHOT_LIMIT, 0.75f, true);
     private static final LinkedHashMap<String, WarmupSnapshot> continueSnapshots = new LinkedHashMap<>(SNAPSHOT_LIMIT, 0.75f, true);
     private static final LinkedHashMap<String, Long> recentContinueWarmups = new LinkedHashMap<>(SNAPSHOT_LIMIT, 0.75f, true);
+    private static final LinkedHashMap<String, Long> recentPagePreloads = new LinkedHashMap<>(PAGE_PRELOAD_DEDUPE_LIMIT, 0.75f, true);
     private static final Map<String, CustomTarget<Bitmap>> decodedTargets = new HashMap<>();
+    private static volatile long suppressVisibleContinueWarmupsUntilMs = 0L;
     private static final LruCache<String, CachedBitmap> decodedBitmapCache = new LruCache<String, CachedBitmap>(decodedCacheSizeKb()) {
         @Override
         protected int sizeOf(String key, CachedBitmap value) {
@@ -158,6 +162,11 @@ public class ViewerWarmupManager {
         warmupContinue(context, manga, title, true, true);
     }
 
+    public static void suppressVisibleContinueWarmups(long durationMs) {
+        suppressVisibleContinueWarmupsUntilMs = Math.max(suppressVisibleContinueWarmupsUntilMs,
+                SystemClock.uptimeMillis() + Math.max(0L, durationMs));
+    }
+
     public static void warmupSavedContinues(Context context, int limit) {
         if(context == null || p == null)
             return;
@@ -207,6 +216,8 @@ public class ViewerWarmupManager {
         }
         if(!sourceMatchesCurrentSite(title))
             return;
+        if(visibleResume && shouldSuppressVisibleContinueWarmup(SystemClock.uptimeMillis(), suppressVisibleContinueWarmupsUntilMs))
+            return;
         Title warmupTitle = title;
         Context appContext = context.getApplicationContext();
         int width = viewerWidth(context);
@@ -222,6 +233,8 @@ public class ViewerWarmupManager {
         String warmupSource = title == null ? null : title.getSourceSite();
         AppDispatchers.submitImageWarmup(() -> {
             try {
+                if(visibleResume && shouldSuppressVisibleContinueWarmup(SystemClock.uptimeMillis(), suppressVisibleContinueWarmupsUntilMs))
+                    return;
                 runDirectOnlyWarmup(warmupSource, () -> {
                     Manga target = manga;
                     Title currentTitle = warmupTitle != null ? warmupTitle : target.getTitle();
@@ -281,7 +294,6 @@ public class ViewerWarmupManager {
             if(title != null)
                 attachTitle(title, warmed);
             if(hasDecodedFrame(appContext, warmed, firstPage, width, autoCut, reverse)) {
-                preloadLoadedImages(appContext, warmed, firstPage, width, autoCut, reverse, p.getDataSave() ? 6 : 12, Priority.IMMEDIATE, p.getDataSave() ? 1 : 2);
                 logMetric("viewer_click_continue_snapshot", warmed.getId());
                 return warmed;
             }
@@ -378,7 +390,6 @@ public class ViewerWarmupManager {
             if(title != null)
                 attachTitle(title, warmed);
             if(hasDecodedFrame(context, warmed, firstPage, width, autoCut, reverse)) {
-                preloadLoadedImages(context, warmed, firstPage, width, autoCut, reverse, p.getDataSave() ? 6 : 12, Priority.IMMEDIATE, p.getDataSave() ? 1 : 2);
                 logMetric("viewer_click_immediate_snapshot", warmed.getId());
                 return warmed;
             }
@@ -389,7 +400,6 @@ public class ViewerWarmupManager {
             }
         }
         if(hasImages(manga, context) && hasDecodedFrame(context, manga, firstPage, width, autoCut, reverse)) {
-            preloadLoadedImages(context, manga, firstPage, width, autoCut, reverse, p.getDataSave() ? 6 : 12, Priority.IMMEDIATE, p.getDataSave() ? 1 : 2);
             logMetric("viewer_click_immediate_decoded", manga.getId());
             return manga;
         }
@@ -470,12 +480,19 @@ public class ViewerWarmupManager {
         if(result == LOAD_OK && hasImages(manga, context)) {
             normalizedPage = normalizePageIndex(manga, context, normalizedPage);
             logMetric("viewer_first_url_ms", SystemClock.elapsedRealtime() - urlStart);
-            if(shouldDecodeFirstPagesBlocking(allowBlockingDecode, hadImagesAtStart, snapshotHit))
+            boolean decodedReady = hasDecodedFrame(context, manga, normalizedPage, width, autoCut, reverse);
+            if(shouldDecodeFirstPagesBlocking(allowBlockingDecode, hadImagesAtStart, snapshotHit) && !decodedReady) {
                 decodeFirstPagesBlocking(context, manga, normalizedPage, width, autoCut, reverse);
-            preloadWindow(context, manga, normalizedPage, width, autoCut, reverse, new ViewerPreloadPolicy.Window(1, 1, 1, 1));
-            if(allowBlockingDecode && !getHttpClient().isDirectOnlyFetchMode())
-                waitForDecodedFrameReady(context, manga, normalizedPage, width, autoCut, reverse, 220L);
-            preloadWindowDeferred(context, manga, normalizedPage, width, autoCut, reverse, ViewerPreloadPolicy.firstFrameWindow(p.getDataSave()));
+                decodedReady = hasDecodedFrame(context, manga, normalizedPage, width, autoCut, reverse);
+            }
+            if(decodedReady) {
+                preloadLoadedImages(context, manga, normalizedPage, width, autoCut, reverse, p.getDataSave() ? 2 : 4, Priority.HIGH, 0);
+            } else {
+                preloadWindow(context, manga, normalizedPage, width, autoCut, reverse, new ViewerPreloadPolicy.Window(1, 1, 1, 1));
+                if(allowBlockingDecode && !getHttpClient().isDirectOnlyFetchMode())
+                    waitForDecodedFrameReady(context, manga, normalizedPage, width, autoCut, reverse, 220L);
+                preloadWindowDeferred(context, manga, normalizedPage, width, autoCut, reverse, ViewerPreloadPolicy.firstFrameWindow(p.getDataSave()));
+            }
         } else if(result == LOAD_OK) {
             logMetric("viewer_empty_images", manga.getId());
             result = LOAD_EMPTY_IMAGES;
@@ -607,6 +624,8 @@ public class ViewerWarmupManager {
                 preloadDecoded(context, page, options, priority, autoCut, reverse, width);
                 continue;
             }
+            if(!markPagePreload(page, autoCut, reverse, width, SystemClock.elapsedRealtime()))
+                continue;
             requestManager
                     .asBitmap()
                     .priority(priority)
@@ -639,6 +658,10 @@ public class ViewerWarmupManager {
             if(tier == ViewerPreloadPolicy.TIER_DECODED && canStartDecodedTarget()) {
                 preloadDecoded(context, page, options, Priority.IMMEDIATE, autoCut, reverse, width);
             } else {
+                if(!markPagePreload(page, autoCut, reverse, width, SystemClock.elapsedRealtime())) {
+                    preloaded++;
+                    continue;
+                }
                 requestManager
                         .asBitmap()
                         .priority(priorityForTier(tier))
@@ -727,6 +750,49 @@ public class ViewerWarmupManager {
 
     private static synchronized boolean canStartDecodedTarget() {
         return decodedTargets.size() < DECODED_TARGET_ACTIVE_SOFT_LIMIT;
+    }
+
+    private static boolean markPagePreload(PageItem page, boolean autoCut, boolean reverse, int width, long now) {
+        String key = decodedPageKey(page, autoCut, reverse, width);
+        if(key.length() == 0)
+            return false;
+        return markPagePreload(key, now);
+    }
+
+    private static synchronized boolean markPagePreload(String key, long now) {
+        trimRecentPagePreloads(now);
+        Long previous = recentPagePreloads.get(key);
+        if(previous != null && now - previous < PAGE_PRELOAD_DEDUPE_MS)
+            return false;
+        recentPagePreloads.put(key, now);
+        return true;
+    }
+
+    private static void trimRecentPagePreloads(long now) {
+        Iterator<Map.Entry<String, Long>> iterator = recentPagePreloads.entrySet().iterator();
+        while(iterator.hasNext()) {
+            Map.Entry<String, Long> entry = iterator.next();
+            if(now - entry.getValue() > PAGE_PRELOAD_DEDUPE_MS || recentPagePreloads.size() > PAGE_PRELOAD_DEDUPE_LIMIT)
+                iterator.remove();
+            else if(recentPagePreloads.size() <= PAGE_PRELOAD_DEDUPE_LIMIT)
+                break;
+        }
+    }
+
+    static synchronized boolean markPagePreloadForTest(String key, long now) {
+        return markPagePreload(key, now);
+    }
+
+    static synchronized void clearRecentPagePreloadsForTest() {
+        recentPagePreloads.clear();
+    }
+
+    private static boolean shouldSuppressVisibleContinueWarmup(long now, long suppressUntil) {
+        return now < suppressUntil;
+    }
+
+    static boolean shouldSuppressVisibleContinueWarmupForTest(long now, long suppressUntil) {
+        return shouldSuppressVisibleContinueWarmup(now, suppressUntil);
     }
 
     private static boolean decodeFirstPagesBlocking(Context context, Manga manga, int pageIndex, int width, boolean autoCut, boolean reverse) {

@@ -74,4 +74,9 @@ public class ViewerActivityTest {
     public void initialViewerPreloadStartsOnNextFrame() {
         assertTrue(ViewerActivity.initialViewerPreloadDelayMsForTest() <= 40L);
     }
+
+    @Test
+    public void nextEpisodePrefetchWaitsUntilInitialFrameSettles() {
+        assertTrue(ViewerActivity.initialNextEpisodePrefetchDelayMsForTest() >= 1000L);
+    }
 }

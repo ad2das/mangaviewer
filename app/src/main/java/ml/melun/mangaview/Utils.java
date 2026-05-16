@@ -214,12 +214,29 @@ public class Utils {
                 viewer = new Intent(context, ViewerActivity2.class);
                 break;
         }
-        if(warmupContinue)
+        if(shouldScheduleViewerIntentWarmup(context, manga, warmupContinue))
             ViewerWarmupManager.warmupContinue(context, manga, manga == null ? null : manga.getTitle());
         Title title = manga == null ? null : manga.getTitle();
         viewer.putExtra("manga", toViewerMangaJson(manga, title));
         viewer.putExtra("title", toViewerTitleJson(title, true));
         return viewer;
+    }
+
+    private static boolean shouldScheduleViewerIntentWarmup(Context context, Manga manga, boolean warmupContinue) {
+        boolean hasLoadedImages = false;
+        if(manga != null) {
+            List<String> images = MangaRepository.imageUrls(manga, context);
+            hasLoadedImages = images != null && images.size() > 0;
+        }
+        return shouldScheduleViewerIntentWarmup(warmupContinue, manga != null && manga.isOnline(), hasLoadedImages);
+    }
+
+    private static boolean shouldScheduleViewerIntentWarmup(boolean warmupContinue, boolean online, boolean hasLoadedImages) {
+        return warmupContinue && online && !hasLoadedImages;
+    }
+
+    static boolean shouldScheduleViewerIntentWarmupForTest(boolean warmupContinue, boolean online, boolean hasLoadedImages) {
+        return shouldScheduleViewerIntentWarmup(warmupContinue, online, hasLoadedImages);
     }
 
     public static void openViewerPrepared(Context context, Manga manga, int code) {

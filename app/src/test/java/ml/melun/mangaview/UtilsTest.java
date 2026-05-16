@@ -148,4 +148,12 @@ public class UtilsTest {
         assertFalse(Utils.shouldAllowExactForegroundFallbackForTest("ntk", true));
         assertFalse(Utils.shouldAllowExactForegroundFallbackForTest("", true));
     }
+
+    @Test
+    public void viewerIntentWarmupSkipsWhenImagesAlreadyLoaded() {
+        assertTrue(Utils.shouldScheduleViewerIntentWarmupForTest(true, true, false));
+        assertFalse(Utils.shouldScheduleViewerIntentWarmupForTest(true, true, true));
+        assertFalse(Utils.shouldScheduleViewerIntentWarmupForTest(false, true, false));
+        assertFalse(Utils.shouldScheduleViewerIntentWarmupForTest(true, false, false));
+    }
 }
