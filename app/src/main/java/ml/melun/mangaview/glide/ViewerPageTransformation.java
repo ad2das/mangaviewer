@@ -16,7 +16,8 @@ import ml.melun.mangaview.mangaview.Decoder;
 import ml.melun.mangaview.model.PageItem;
 
 public class ViewerPageTransformation extends BitmapTransformation {
-    private static final String ID = "ml.melun.mangaview.glide.ViewerPageTransformation.1";
+    private static final String ID = "ml.melun.mangaview.glide.ViewerPageTransformation.2";
+    private static final float SPREAD_ASPECT_RATIO = 0.90f;
     private final int index;
     private final int side;
     private final int baseMode;
@@ -48,7 +49,7 @@ public class ViewerPageTransformation extends BitmapTransformation {
         int decodedWidth = decoded.getWidth();
         int decodedHeight = decoded.getHeight();
         Bitmap displayBitmap;
-        if(decodedWidth > decodedHeight) {
+        if(shouldAutoSplit(decodedWidth, decodedHeight)) {
             int cropWidth = Math.max(1, decodedWidth / 2);
             int cropX;
             if(side == PageItem.FIRST)
@@ -66,6 +67,16 @@ public class ViewerPageTransformation extends BitmapTransformation {
             new Canvas(displayBitmap).drawColor(android.graphics.Color.TRANSPARENT);
         }
         return displayBitmap;
+    }
+
+    private static boolean shouldAutoSplit(int width, int height) {
+        if(width <= 0 || height <= 0)
+            return false;
+        return (float) width / (float) height >= SPREAD_ASPECT_RATIO;
+    }
+
+    static boolean shouldAutoSplitForTest(int width, int height) {
+        return shouldAutoSplit(width, height);
     }
 
     @Override
