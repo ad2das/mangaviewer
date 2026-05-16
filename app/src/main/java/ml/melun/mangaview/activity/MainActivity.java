@@ -365,11 +365,11 @@ public class MainActivity extends AppCompatActivity
         }else
             changeFragment(0);
 
+        content.postDelayed(this::runDeferredStartupTasks, startupDeferredTasksDelayMsForTest());
         content.postDelayed(() -> {
             if(!isFinishing() && !isDestroyed())
                 AppUpdateManager.checkForUpdate(this);
-        }, 600);
-        content.postDelayed(this::runDeferredStartupTasks, 500);
+        }, startupUpdateCheckDelayMsForTest());
         content.post(this::maybeOpenNtkCaptcha);
 
         // savedInstanceState
@@ -389,6 +389,14 @@ public class MainActivity extends AppCompatActivity
         refreshNtkDomainIfNeeded();
         startDeferredUrlUpdate();
         requestStartupPermissions();
+    }
+
+    static long startupDeferredTasksDelayMsForTest() {
+        return 2200L;
+    }
+
+    static long startupUpdateCheckDelayMsForTest() {
+        return 7000L;
     }
 
     @Override

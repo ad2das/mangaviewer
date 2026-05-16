@@ -18,12 +18,16 @@ import ml.melun.mangaview.runtime.AppDispatchers;
 
 
 public class MainApplication extends MultiDexApplication {
-    public static CustomHttpClient httpClient;
+    public static volatile CustomHttpClient httpClient;
     public static Preference p;
     public static Context appContext;
-    public static FirebaseAccountManager firebaseAccountManager;
-    public static FirebaseSyncManager firebaseSyncManager;
-    private static boolean deferredServicesStarted = false;
+    public static volatile FirebaseAccountManager firebaseAccountManager;
+    public static volatile FirebaseSyncManager firebaseSyncManager;
+    private static volatile boolean deferredServicesStarted = false;
+    private static final Object httpClientLock = new Object();
+    private static final Object firebaseAccountLock = new Object();
+    private static final Object firebaseSyncLock = new Object();
+    private static final Object deferredServicesLock = new Object();
     @Override
     protected void attachBaseContext(Context base) {
         super.attachBaseContext(base);
@@ -38,30 +42,58 @@ public class MainApplication extends MultiDexApplication {
         super.onCreate();
     }
 
-    public static synchronized CustomHttpClient getHttpClient() {
-        if(httpClient == null)
-            httpClient = new CustomHttpClient(appContext);
-        return httpClient;
+    public static CustomHttpClient getHttpClient() {
+        CustomHttpClient local = httpClient;
+        if(local == null) {
+            synchronized (httpClientLock) {
+                local = httpClient;
+                if(local == null) {
+                    local = new CustomHttpClient(appContext);
+                    httpClient = local;
+                }
+            }
+        }
+        return local;
     }
 
-    public static synchronized FirebaseAccountManager getFirebaseAccountManager() {
-        if(firebaseAccountManager == null)
-            firebaseAccountManager = new FirebaseAccountManager(appContext);
-        return firebaseAccountManager;
+    public static FirebaseAccountManager getFirebaseAccountManager() {
+        FirebaseAccountManager local = firebaseAccountManager;
+        if(local == null) {
+            synchronized (firebaseAccountLock) {
+                local = firebaseAccountManager;
+                if(local == null) {
+                    local = new FirebaseAccountManager(appContext);
+                    firebaseAccountManager = local;
+                }
+            }
+        }
+        return local;
     }
 
-    public static synchronized FirebaseSyncManager getFirebaseSyncManager() {
-        if(firebaseSyncManager == null)
-            firebaseSyncManager = new FirebaseSyncManager(appContext, p);
-        return firebaseSyncManager;
+    public static FirebaseSyncManager getFirebaseSyncManager() {
+        FirebaseSyncManager local = firebaseSyncManager;
+        if(local == null) {
+            synchronized (firebaseSyncLock) {
+                local = firebaseSyncManager;
+                if(local == null) {
+                    local = new FirebaseSyncManager(appContext, p);
+                    firebaseSyncManager = local;
+                }
+            }
+        }
+        return local;
     }
 
-    public static synchronized void initDeferredServices() {
-        if(!deferredServicesStarted) {
-            deferredServicesStarted = true;
-            AppDispatchers.runIoDelayed(() -> MangaRoomStore.prime(appContext), 800);
-            AppDispatchers.runIoDelayed(MainPageWebtoon::preloadClassificationDbs, 2200);
-            AppDispatchers.runIoDelayed(() -> ClassificationDbUpdater.updateInBackground(appContext), 4200);
+    public static void initDeferredServices() {
+        if(deferredServicesStarted)
+            return;
+        synchronized (deferredServicesLock) {
+            if(!deferredServicesStarted) {
+                deferredServicesStarted = true;
+                AppDispatchers.runIoDelayed(() -> MangaRoomStore.prime(appContext), 1800);
+                AppDispatchers.runIoDelayed(MainPageWebtoon::preloadClassificationDbs, 3800);
+                AppDispatchers.runIoDelayed(() -> ClassificationDbUpdater.updateInBackground(appContext), 7000);
+            }
         }
     }
 }

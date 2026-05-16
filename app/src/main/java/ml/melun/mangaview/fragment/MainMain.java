@@ -75,6 +75,7 @@ public class MainMain extends Fragment{
     int webtoonFetchState = HOME_FETCH_IDLE;
     boolean viewStarted = false;
     int scrollRequestVersion = 0;
+    int inactivePrefetchRequestVersion = 0;
     Preference.LocalChangeListener localChangeListener;
 
     public void setWait(Boolean wait){
@@ -111,6 +112,7 @@ public class MainMain extends Fragment{
                 return;
             applySelectedHomeTab();
             scrollToSelectedTab();
+            inactivePrefetchRequestVersion++;
             if(fragmentActive)
                 fetchSelected();
         };
@@ -312,7 +314,6 @@ public class MainMain extends Fragment{
                     return;
                 if(!wait)
                     fetchSelected();
-                scheduleInactivePrefetch();
                 showInitialHomeRows(initialBaseMode == base_comic ? base_webtoon : base_comic);
             }, 80);
         }
@@ -456,7 +457,8 @@ public class MainMain extends Fragment{
                     if(isAdded() && requestBaseMode == selectedBaseMode)
                         fetchSelected();
                 }, 350);
-            scheduleInactivePrefetch();
+            else
+                scheduleInactivePrefetchIfReady();
         });
     }
 
@@ -598,15 +600,23 @@ public class MainMain extends Fragment{
             adapter.showInitialRows();
     }
 
-    private void scheduleInactivePrefetch() {
-        if(!getHttpClient().isNtk())
+    private int selectedFetchState() {
+        return selectedBaseMode == base_comic ? comicFetchState : webtoonFetchState;
+    }
+
+    private void scheduleInactivePrefetchIfReady() {
+        if(!HomeInactivePrefetchPolicy.shouldSchedule(getHttpClient().isNtk(), selectedFetchState(), wait))
             return;
         RecyclerView targetRecycler = mainRecycler != null ? mainRecycler : getSelectedRecycler();
-        if(targetRecycler == null || wait)
+        if(targetRecycler == null)
             return;
         final int visibleBaseMode = selectedBaseMode;
+        final int requestVersion = ++inactivePrefetchRequestVersion;
+        long delayMs = HomeInactivePrefetchPolicy.delayMs(selectedFetchState());
         targetRecycler.postDelayed(() -> {
             if(!isAdded() || wait)
+                return;
+            if(requestVersion != inactivePrefetchRequestVersion)
                 return;
             if(visibleBaseMode != selectedBaseMode)
                 return;
@@ -616,7 +626,7 @@ public class MainMain extends Fragment{
                 fetchWebtoon();
             else
                 fetchComic();
-        }, 400);
+        }, delayMs);
     }
 
     private void fetchComic() {
@@ -660,6 +670,8 @@ public class MainMain extends Fragment{
             comicFetchState = state;
         else if(baseMode == base_webtoon)
             webtoonFetchState = state;
+        if(baseMode == selectedBaseMode)
+            scheduleInactivePrefetchIfReady();
         if(success && state != HOME_FETCH_COMPLETE)
             scheduleIncompleteHomeRetry(baseMode);
     }

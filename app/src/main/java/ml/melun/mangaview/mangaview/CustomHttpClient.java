@@ -790,6 +790,8 @@ public class CustomHttpClient {
     Map<String, Long> cookieSyncAt;
     Map<String, CachedPage> pageCache;
     Map<String, PageLoadState> pageLoads;
+    private final Object pageCacheLock = new Object();
+    private final Object pageLoadsLock = new Object();
     private volatile String lastCloudflareChallengeUrl = null;
     private volatile long lastCloudflareChallengeAt = 0L;
     private volatile boolean cloudflareCaptchaActive = false;
@@ -1676,7 +1678,7 @@ public class CustomHttpClient {
             ttlMillis = Math.max(ttlMillis * 5, 10 * 60 * 1000L);
         PageLoadState activeLoad = null;
         CachedPage staleCached = null;
-        synchronized (this) {
+        synchronized (pageCacheLock) {
             CachedPage cached = pageCache.get(cacheKey);
             if(cached != null) {
                 if(!isUsableCachedPage(cached)) {
@@ -1691,7 +1693,7 @@ public class CustomHttpClient {
         }
         CachedPage diskCached = readDiskCachedPage(cacheKey, now, ttlMillis, allowColdStartStale);
         if(diskCached != null) {
-            synchronized (this) {
+            synchronized (pageCacheLock) {
                 pageCache.put(cacheKey, diskCached);
             }
             boolean fresh = isPageCacheFresh(diskCached.time, now, ttlMillis);
@@ -1704,7 +1706,7 @@ public class CustomHttpClient {
                 return new PageResponse(staleCached.code, staleCached.body, true);
             throw new Exception("Cache miss: " + cacheKey);
         }
-        synchronized (this) {
+        synchronized (pageLoadsLock) {
             activeLoad = pageLoads.get(cacheKey);
             if(activeLoad == null)
                 pageLoads.put(cacheKey, new PageLoadState());
@@ -1714,7 +1716,7 @@ public class CustomHttpClient {
         String loadKey = cacheKey;
 
         PageLoadState loadState;
-        synchronized (this) {
+        synchronized (pageLoadsLock) {
             loadState = pageLoads.get(loadKey);
         }
         try {
@@ -1724,7 +1726,7 @@ public class CustomHttpClient {
                 return new PageResponse(staleCached.code, staleCached.body, true);
             throw e;
         } finally {
-            synchronized (this) {
+            synchronized (pageLoadsLock) {
                 pageLoads.remove(loadKey);
             }
             if(loadState != null)
@@ -1741,7 +1743,7 @@ public class CustomHttpClient {
             long now = System.currentTimeMillis();
             if(isNtk())
                 ttlMillis = Math.max(ttlMillis * 5, 10 * 60 * 1000L);
-            synchronized (this) {
+            synchronized (pageCacheLock) {
                 CachedPage cached = pageCache.get(cacheKey);
                 if(cached != null && isUsableCachedPage(cached) && isPageCacheFresh(cached.time, now, ttlMillis))
                     return true;
@@ -1754,7 +1756,7 @@ public class CustomHttpClient {
             int code = response.code();
             String body = readBody(response);
             if(code >= 200 && code < 400 && body.length() > 0 && looksCacheable(body)) {
-                synchronized (this) {
+                synchronized (pageCacheLock) {
                     pageCache.put(cacheKey, new CachedPage(code, body, now));
                 }
                 writeDiskCachedPage(cacheKey, new CachedPage(code, body, now));
@@ -1827,7 +1829,7 @@ public class CustomHttpClient {
         if(code >= 200 && code < 400 && body.length() > 0 && looksCacheable(body)) {
             String cacheKey = getBaseUrl(normalized) + normalized;
             CachedPage cachedPage = new CachedPage(code, body, now);
-            synchronized (this) {
+            synchronized (pageCacheLock) {
                 pageCache.put(cacheKey, cachedPage);
             }
             writeDiskCachedPage(cacheKey, cachedPage);
@@ -1857,7 +1859,7 @@ public class CustomHttpClient {
             }
         }
         long now = System.currentTimeMillis();
-        synchronized (this) {
+        synchronized (pageCacheLock) {
             CachedPage cached = pageCache.get(cacheKey);
             if(cached != null && isUsableCachedPage(cached) && isPageCacheFresh(cached.time, now, ttlMillis))
                 return new PageResponse(cached.code, cached.body, true);
@@ -1974,8 +1976,10 @@ public class CustomHttpClient {
         return lower.contains("://wfwf") || lower.contains("://wolf");
     }
 
-    public synchronized void clearPageCache() {
-        pageCache.clear();
+    public void clearPageCache() {
+        synchronized (pageCacheLock) {
+            pageCache.clear();
+        }
     }
 
 
