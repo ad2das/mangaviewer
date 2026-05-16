@@ -22,7 +22,10 @@ public final class AppDispatchers {
     private static final ThreadPoolExecutor USER_ACTION = boundedPool("manga-action", 1, 4, 128);
     private static final ThreadPoolExecutor NAVIGATION = boundedPool("manga-nav", 1, 2, 32);
     private static final ThreadPoolExecutor UI_DIFF = boundedPool("manga-diff", 1, 2, 96);
-    private static final ThreadPoolExecutor IMAGE_WARMUP = boundedPool("manga-image", 2, 4, 96);
+    private static final ThreadPoolExecutor IMAGE_WARMUP = boundedPool("manga-image",
+            AppDispatcherPolicy.IMAGE_WARMUP_CORE_THREADS,
+            AppDispatcherPolicy.IMAGE_WARMUP_MAX_THREADS,
+            AppDispatcherPolicy.IMAGE_WARMUP_QUEUE_SIZE);
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     private AppDispatchers() {
