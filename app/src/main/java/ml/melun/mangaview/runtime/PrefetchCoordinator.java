@@ -152,11 +152,11 @@ public final class PrefetchCoordinator {
     }
 
     static int episodePrefetchLimitForTest(boolean dataSave, boolean aggressiveAllowed, boolean ntkSite) {
-        if(ntkSite)
-            return 1;
         if(dataSave)
             return 1;
-        return aggressiveAllowed ? 2 : 1;
+        if(ntkSite)
+            return aggressiveAllowed ? 2 : 1;
+        return aggressiveAllowed ? 4 : 3;
     }
 
     public static List<Integer> visibleEpisodeTargets(List<Manga> episodes, int firstAdapterPosition,
@@ -212,8 +212,6 @@ public final class PrefetchCoordinator {
     public static boolean shouldSkipWolfBackgroundPrefetchForTest(String sourceSite, boolean ntkPreference, boolean ntkClient) {
         if(ntkPreference || ntkClient)
             return false;
-        if(sourceSite == null || sourceSite.trim().length() == 0)
-            return true;
         return false;
     }
 }

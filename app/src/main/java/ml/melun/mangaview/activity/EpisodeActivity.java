@@ -468,7 +468,11 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     static int visibleEpisodeWarmupLimitForTest(boolean dataSave, boolean aggressiveAllowed, boolean ntkSite) {
-        return 1;
+        if(dataSave)
+            return 1;
+        if(ntkSite)
+            return aggressiveAllowed ? 2 : 1;
+        return aggressiveAllowed ? 4 : 3;
     }
 
     private void warmupLikelyNtkViewerPage() {

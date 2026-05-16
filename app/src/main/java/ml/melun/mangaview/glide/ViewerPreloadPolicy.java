@@ -18,13 +18,13 @@ public final class ViewerPreloadPolicy {
     public static Window episodeListWarmupWindow(boolean dataSave) {
         return dataSave
                 ? new Window(0, 1, 2, 2)
-                : new Window(0, 1, 3, 3);
+                : new Window(1, 2, 4, 4);
     }
 
     public static Window episodeEntryWarmupWindow(boolean dataSave) {
         return dataSave
                 ? new Window(1, 1, 2, 2)
-                : new Window(1, 1, 3, 3);
+                : new Window(2, 4, 8, 8);
     }
 
     public static Window initialScrollWindow(boolean dataSave) {

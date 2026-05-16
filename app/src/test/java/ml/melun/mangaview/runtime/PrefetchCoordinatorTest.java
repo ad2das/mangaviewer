@@ -85,12 +85,12 @@ public class PrefetchCoordinatorTest {
     }
 
     @Test
-    public void episodePrefetchLimitStaysSmallOnCellular() {
+    public void episodePrefetchLimitWarmsLikelyEntriesWhenDataSaverIsOff() {
         assertEquals(1, PrefetchCoordinator.episodePrefetchLimitForTest(true, false));
-        assertEquals(1, PrefetchCoordinator.episodePrefetchLimitForTest(false, false));
-        assertEquals(2, PrefetchCoordinator.episodePrefetchLimitForTest(false, true));
+        assertEquals(3, PrefetchCoordinator.episodePrefetchLimitForTest(false, false));
+        assertEquals(4, PrefetchCoordinator.episodePrefetchLimitForTest(false, true));
         assertEquals(1, PrefetchCoordinator.episodePrefetchLimitForTest(true, true, true));
-        assertEquals(1, PrefetchCoordinator.episodePrefetchLimitForTest(false, true, true));
+        assertEquals(2, PrefetchCoordinator.episodePrefetchLimitForTest(false, true, true));
     }
 
     @Test
@@ -105,8 +105,8 @@ public class PrefetchCoordinatorTest {
     @Test
     public void wolfBackgroundPrefetchAllowsExplicitWfwfSources() {
         assertFalse(PrefetchCoordinator.shouldSkipWolfBackgroundPrefetchForTest("wfwf", false, false));
-        assertTrue(PrefetchCoordinator.shouldSkipWolfBackgroundPrefetchForTest("", false, false));
-        assertTrue(PrefetchCoordinator.shouldSkipWolfBackgroundPrefetchForTest(null, false, false));
+        assertFalse(PrefetchCoordinator.shouldSkipWolfBackgroundPrefetchForTest("", false, false));
+        assertFalse(PrefetchCoordinator.shouldSkipWolfBackgroundPrefetchForTest(null, false, false));
         assertFalse(PrefetchCoordinator.shouldSkipWolfBackgroundPrefetchForTest("ntk", true, true));
         assertFalse(PrefetchCoordinator.shouldSkipWolfBackgroundPrefetchForTest("ntk", false, false));
     }

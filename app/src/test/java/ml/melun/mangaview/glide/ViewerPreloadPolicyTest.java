@@ -30,15 +30,16 @@ public class ViewerPreloadPolicyTest {
     }
 
     @Test
-    public void episodeListWarmupWindowAvoidsBackgroundDecodeSlots() {
+    public void episodeListWarmupWindowDecodesFirstVisiblePage() {
         ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.episodeListWarmupWindow(false);
 
-        assertEquals(0, window.decodedLimit);
-        assertEquals(1, window.immediateLimit);
-        assertEquals(3, window.highLimit);
-        assertEquals(3, window.totalLimit);
-        assertEquals(ViewerPreloadPolicy.TIER_IMMEDIATE, ViewerPreloadPolicy.tierForOffset(window, 0));
-        assertEquals(ViewerPreloadPolicy.TIER_HIGH, ViewerPreloadPolicy.tierForOffset(window, 1));
+        assertEquals(1, window.decodedLimit);
+        assertEquals(2, window.immediateLimit);
+        assertEquals(4, window.highLimit);
+        assertEquals(4, window.totalLimit);
+        assertEquals(ViewerPreloadPolicy.TIER_DECODED, ViewerPreloadPolicy.tierForOffset(window, 0));
+        assertEquals(ViewerPreloadPolicy.TIER_IMMEDIATE, ViewerPreloadPolicy.tierForOffset(window, 1));
+        assertEquals(ViewerPreloadPolicy.TIER_HIGH, ViewerPreloadPolicy.tierForOffset(window, 2));
     }
 
     @Test
@@ -52,15 +53,17 @@ public class ViewerPreloadPolicyTest {
     }
 
     @Test
-    public void episodeEntryWarmupWindowDecodesOnlyTheEntryPage() {
+    public void episodeEntryWarmupWindowDecodesFirstPages() {
         ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.episodeEntryWarmupWindow(false);
 
-        assertEquals(1, window.decodedLimit);
-        assertEquals(1, window.immediateLimit);
-        assertEquals(3, window.highLimit);
-        assertEquals(3, window.totalLimit);
+        assertEquals(2, window.decodedLimit);
+        assertEquals(4, window.immediateLimit);
+        assertEquals(8, window.highLimit);
+        assertEquals(8, window.totalLimit);
         assertEquals(ViewerPreloadPolicy.TIER_DECODED, ViewerPreloadPolicy.tierForOffset(window, 0));
-        assertEquals(ViewerPreloadPolicy.TIER_HIGH, ViewerPreloadPolicy.tierForOffset(window, 1));
+        assertEquals(ViewerPreloadPolicy.TIER_DECODED, ViewerPreloadPolicy.tierForOffset(window, 1));
+        assertEquals(ViewerPreloadPolicy.TIER_IMMEDIATE, ViewerPreloadPolicy.tierForOffset(window, 2));
+        assertEquals(ViewerPreloadPolicy.TIER_HIGH, ViewerPreloadPolicy.tierForOffset(window, 4));
     }
 
     @Test
