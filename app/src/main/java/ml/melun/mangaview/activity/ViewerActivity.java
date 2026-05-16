@@ -1145,7 +1145,6 @@ public class ViewerActivity extends AppCompatActivity {
             if (title == null)
                 title = m.getTitle();
             resetOnBackPressed();
-            preloadInitialRequestWindow(m, policy);
             callback.post(m);
             if(lockui)
                 hydrateEpisodeListAfterFirstFrame(m);
@@ -1672,18 +1671,6 @@ public class ViewerActivity extends AppCompatActivity {
             if(!isFinishing() && manga != null && manga.getId() == target.getId())
                 preloadInitialViewerPages(target, policy);
         }, 140);
-    }
-
-    private void preloadInitialRequestWindow(Manga target, ViewerLoadPolicy policy) {
-        if(target == null || !target.isOnline())
-            return;
-        List<String> images = MangaRepository.imageUrls(target, context);
-        if(images == null || images.size() == 0)
-            return;
-        int pageIndex = initialPageIndex(target, policy);
-        if(pageIndex < 0 || pageIndex >= images.size())
-            pageIndex = 0;
-        ViewerWarmupManager.preloadWindow(context, target, pageIndex, width, autoCut, p.getReverse(), ViewerPreloadPolicy.firstFrameWindow(p.getDataSave()));
     }
 
     private void scheduleFocusedPagePreload() {
