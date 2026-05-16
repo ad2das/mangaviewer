@@ -90,6 +90,17 @@ public class ViewerWarmupManager {
         warmup(context, manga, title, pageIndex, ViewerPreloadPolicy.episodeListWarmupWindow(p.getDataSave()));
     }
 
+    public static void warmupEntry(Context context, Manga manga, Title title) {
+        int pageIndex = context != null && manga != null && manga.isOnline() && manga.useBookmark()
+                ? p.getViewerBookmark(manga)
+                : 0;
+        warmupEntry(context, manga, title, pageIndex);
+    }
+
+    public static void warmupEntry(Context context, Manga manga, Title title, int pageIndex) {
+        warmup(context, manga, title, pageIndex, ViewerPreloadPolicy.episodeEntryWarmupWindow(p.getDataSave()));
+    }
+
     private static void warmup(Context context, Manga manga, Title title, int pageIndex, ViewerPreloadPolicy.Window window) {
         if(context == null || manga == null || !manga.isOnline())
             return;

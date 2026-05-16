@@ -21,6 +21,12 @@ public final class ViewerPreloadPolicy {
                 : new Window(0, 1, 3, 3);
     }
 
+    public static Window episodeEntryWarmupWindow(boolean dataSave) {
+        return dataSave
+                ? new Window(1, 1, 2, 2)
+                : new Window(1, 1, 3, 3);
+    }
+
     public static Window initialScrollWindow(boolean dataSave) {
         return firstFrameWindow(dataSave);
     }

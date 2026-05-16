@@ -61,6 +61,7 @@ public final class PrefetchCoordinator {
                                     int resumeIndex, boolean lightOnly) {
         if(appContext == null || title == null || episodes == null || targets == null)
             return;
+        int entryIndex = resumeIndex >= 0 ? resumeIndex : firstTarget(targets);
         for(Integer index : targets) {
             if(index == null || index < 0 || index >= episodes.size())
                 continue;
@@ -70,13 +71,24 @@ public final class PrefetchCoordinator {
             manga.setMode(mode);
             manga.setTitle(title);
             manga.setTitleId(title.getId());
-            if(index == resumeIndex)
-                ViewerWarmupManager.warmup(appContext, manga, title);
-            else if(lightOnly)
+            if(lightOnly)
                 ViewerWarmupManager.warmupLight(appContext, manga, title, 0);
+            else if(index == resumeIndex)
+                ViewerWarmupManager.warmupEntry(appContext, manga, title);
+            else if(index == entryIndex)
+                ViewerWarmupManager.warmupEntry(appContext, manga, title, 0);
             else
-                ViewerWarmupManager.warmup(appContext, manga, title, 0);
+                ViewerWarmupManager.warmupLight(appContext, manga, title, 0);
         }
+    }
+
+    private static int firstTarget(List<Integer> targets) {
+        if(targets == null)
+            return -1;
+        for(Integer target : targets)
+            if(target != null)
+                return target;
+        return -1;
     }
 
     public static void prefetchAdjacentEpisode(Context context, Manga current, Title title, int width, boolean autoCut, boolean reverse) {

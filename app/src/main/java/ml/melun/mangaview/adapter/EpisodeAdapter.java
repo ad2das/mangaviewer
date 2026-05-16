@@ -47,6 +47,9 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     TypedValue outValue;
     private int bookmark = -1;
     private static final Object PAYLOAD_SELECTION = "selection";
+    private static final long HEADER_THUMBNAIL_DELAY_MS = 180L;
+    private static final long ROW_THUMBNAIL_DELAY_MS = 300L;
+    private static final long TAG_BIND_DELAY_MS = 220L;
     //title is in index 0
     Title title;
     TagAdapter ta;
@@ -142,7 +145,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             h.h_bookmark.setVisibility(View.GONE);
             if(!save && thumb.length() > 0) {
                 Object source = isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, title.getBaseMode());
-                bindThumbnail(h.h_thumb, source, dp(144), dp(192), false);
+                bindThumbnailDeferred(h.h_thumb, source, dp(144), dp(192), false, HEADER_THUMBNAIL_DELAY_MS);
             }
             else bindEmptyThumbnail(h.h_thumb, false);
             if(mode == 0 || mode == 3)
@@ -186,12 +189,28 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             String thumb = title == null ? "" : title.getThumb();
             if(!save && thumb != null && thumb.length() > 0) {
                 Object source = isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, title.getBaseMode());
-                bindThumbnail(h.thumb, source, dp(52), dp(70), true);
+                bindThumbnailDeferred(h.thumb, source, dp(52), dp(70), true, ROW_THUMBNAIL_DELAY_MS);
             } else {
                 bindEmptyThumbnail(h.thumb, true);
             }
             bindSelection(h, position);
         }
+    }
+
+    private void bindThumbnailDeferred(ImageView view, Object source, int width, int height, boolean placeholderWhenEmpty, long delayMs) {
+        String key = String.valueOf(source);
+        if(key.equals(view.getTag()))
+            return;
+        String pendingKey = "pending:" + key;
+        if(pendingKey.equals(view.getTag()))
+            return;
+        safeGlideClear(view);
+        view.setTag(pendingKey);
+        view.setImageResource(R.drawable.app_cover_placeholder);
+        view.postDelayed(() -> {
+            if(pendingKey.equals(view.getTag()))
+                bindThumbnail(view, source, width, height, placeholderWhenEmpty);
+        }, Math.max(0L, delayMs));
     }
 
     private void bindThumbnail(ImageView view, Object source, int width, int height, boolean placeholderWhenEmpty) {
@@ -364,7 +383,12 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             h_info_tab.setOnClickListener(v -> selectTab(TAB_INFO));
             if(ta!=null) {
                 h_tags.setLayoutManager(lm);
-                h_tags.setAdapter(ta);
+                h_tags.setItemAnimator(null);
+                h_tags.setNestedScrollingEnabled(false);
+                h_tags.postDelayed(() -> {
+                    if(getAdapterPosition() == 0 && h_tags.getAdapter() == null)
+                        h_tags.setAdapter(ta);
+                }, TAG_BIND_DELAY_MS);
             }
         }
 
