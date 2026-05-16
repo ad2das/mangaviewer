@@ -302,6 +302,9 @@ public class ViewerActivity extends AppCompatActivity {
             manager.setOrientation(LinearLayoutManager.VERTICAL);
             strip.setItemViewCacheSize(p.getDataSave() ? 8 : 18);
             strip.setLayoutManager(manager);
+            strip.setItemAnimator(null);
+            strip.setOverScrollMode(View.OVER_SCROLL_NEVER);
+            strip.setNestedScrollingEnabled(false);
 
             if(intent.getBooleanExtra("recent",false)){
                 Intent resultIntent = new Intent();
@@ -313,8 +316,6 @@ public class ViewerActivity extends AppCompatActivity {
             }
             
             loadManga(manga, initialLoadPolicy);
-            strip.setItemAnimator(null);
-            strip.setOverScrollMode(View.OVER_SCROLL_NEVER);
             strip.setOnScrollListener(new RecyclerView.OnScrollListener() {
                 @Override
                 public void onScrollStateChanged(RecyclerView recyclerView, int newState) {
