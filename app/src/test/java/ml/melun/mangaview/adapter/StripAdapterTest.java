@@ -2,6 +2,9 @@ package ml.melun.mangaview.adapter;
 
 import org.junit.Test;
 
+import java.util.LinkedHashSet;
+import java.util.Set;
+
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.model.PageItem;
@@ -61,5 +64,16 @@ public class StripAdapterTest {
         assertEquals(1, StripAdapter.estimatedPageHeightForTest(true, PageItem.SECOND, 1000, 3000L, 2));
         assertEquals(1500, StripAdapter.estimatedPageHeightForTest(true, PageItem.FIRST, 1000, 3000L, 2));
         assertEquals(1500, StripAdapter.estimatedPageHeightForTest(false, PageItem.SECOND, 1000, 3000L, 2));
+    }
+
+    @Test
+    public void stackTrimKeepsPreloadKeysForStillLoadedPages() {
+        Set<String> loaded = new LinkedHashSet<>();
+        loaded.add("episode:page1");
+
+        assertTrue(StripAdapter.shouldRetainTrackedPreloadForLoadedPageForTest("episode:page1", loaded));
+        assertTrue(StripAdapter.shouldRetainTrackedPreloadForLoadedPageForTest("decoded:episode:page1", loaded));
+        assertFalse(StripAdapter.shouldRetainTrackedPreloadForLoadedPageForTest("episode:page2", loaded));
+        assertFalse(StripAdapter.shouldRetainTrackedPreloadForLoadedPageForTest("decoded:episode:page2", loaded));
     }
 }

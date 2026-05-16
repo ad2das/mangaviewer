@@ -327,7 +327,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             clearCurrentIfRemoving(0, size);
             items.subList(0, size).clear();
             count = loadedEpisodeCount();
-            clearDecodedPageState();
+            trimReusablePageStateToLoadedItems();
             notifyItemRangeRemoved(0,size);
         }
     }
@@ -347,7 +347,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             clearCurrentIfRemoving(removeStart, originalSize);
             items.subList(removeStart, originalSize).clear();
             count = loadedEpisodeCount();
-            clearDecodedPageState();
+            trimReusablePageStateToLoadedItems();
             notifyItemRangeRemoved(removeStart, removeCount);
         }
     }
@@ -1090,7 +1090,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             return;
         if(cached != null)
             decodedBitmapCache.remove(key);
-        String requestKey = "decoded:" + key;
+        String requestKey = decodedPreloadRequestKey(key);
         if(!preloadedImages.add(requestKey))
             return;
         trimPreloadTracker();
@@ -1178,6 +1178,95 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         clearPageHeightState();
         decoders.clear();
         clearDecodedPreloadTargets();
+    }
+
+    private void trimReusablePageStateToLoadedItems() {
+        if(items == null || items.size() == 0) {
+            clearDecodedPageState();
+            return;
+        }
+        Set<String> activePageKeys = activePageKeys();
+        if(activePageKeys.isEmpty()) {
+            clearDecodedPageState();
+            return;
+        }
+        Set<String> activePreloadKeys = activePreloadKeys(activePageKeys);
+        preloadedImages.retainAll(activePreloadKeys);
+        displayedImages.retainAll(activePageKeys);
+        failedImageRetries.keySet().retainAll(activePageKeys);
+        pageHeights.keySet().retainAll(activePageKeys);
+        pendingHeightCorrections.retainAll(activePageKeys);
+        recomputePageHeightAggregate();
+        decoders.clear();
+        trimDecodedPreloadTargets(activePreloadKeys);
+    }
+
+    private Set<String> activePageKeys() {
+        Set<String> active = new LinkedHashSet<>();
+        if(items == null)
+            return active;
+        for(Object item : items) {
+            if(item instanceof PageItem) {
+                String key = pageBindKey((PageItem) item);
+                if(key.length() > 0)
+                    active.add(key);
+            }
+        }
+        return active;
+    }
+
+    private static Set<String> activePreloadKeys(Set<String> pageKeys) {
+        Set<String> preloadKeys = new LinkedHashSet<>();
+        if(pageKeys == null)
+            return preloadKeys;
+        for(String pageKey : pageKeys) {
+            if(pageKey == null || pageKey.length() == 0)
+                continue;
+            preloadKeys.add(pageKey);
+            preloadKeys.add(decodedPreloadRequestKey(pageKey));
+        }
+        return preloadKeys;
+    }
+
+    private static String decodedPreloadRequestKey(String pageKey) {
+        return "decoded:" + pageKey;
+    }
+
+    static boolean shouldRetainTrackedPreloadForLoadedPageForTest(String trackedKey, Set<String> activePageKeys) {
+        return activePreloadKeys(activePageKeys).contains(trackedKey);
+    }
+
+    private void recomputePageHeightAggregate() {
+        pageHeightTotal = 0L;
+        pageHeightSampleCount = 0;
+        for(Integer height : pageHeights.values()) {
+            if(height != null && height > 0) {
+                pageHeightTotal += height;
+                pageHeightSampleCount++;
+            }
+        }
+    }
+
+    private void trimDecodedPreloadTargets(Set<String> activePreloadKeys) {
+        if(decodedPreloadTargets.size() == 0)
+            return;
+        List<CustomTarget<Bitmap>> staleTargets = new ArrayList<>();
+        Iterator<Map.Entry<String, CustomTarget<Bitmap>>> iterator = decodedPreloadTargets.entrySet().iterator();
+        while(iterator.hasNext()) {
+            Map.Entry<String, CustomTarget<Bitmap>> entry = iterator.next();
+            if(activePreloadKeys == null || !activePreloadKeys.contains(entry.getKey())) {
+                staleTargets.add(entry.getValue());
+                iterator.remove();
+            }
+        }
+        if(staleTargets.isEmpty() || isContextDestroyed())
+            return;
+        for(CustomTarget<Bitmap> target : staleTargets) {
+            try {
+                Glide.with(mainContext).clear(target);
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
     }
 
     private void clearDecodedPreloadTargets() {
