@@ -70,7 +70,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private static final int INITIAL_PRELOAD_AHEAD_COUNT = 10;
     private static final int PRELOAD_TRACK_LIMIT = 500;
     private static final int DECODED_PRELOAD_ACTIVE_LIMIT = 8;
-    private static final int IMAGE_LOAD_RETRY_LIMIT = 2;
+    private static final int IMAGE_LOAD_RETRY_LIMIT = 3;
     private static final String PAYLOAD_HEIGHT = "height";
     ViewerActivity.InfiniteScrollCallback callback;
     Title title;
@@ -691,7 +691,11 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private static long imageRetryDelayMs(int nextAttempt) {
-        return nextAttempt <= 1 ? 350L : 900L;
+        if(nextAttempt <= 1)
+            return 220L;
+        if(nextAttempt == 2)
+            return 650L;
+        return 1200L;
     }
 
     private void bindBitmap(ImgViewHolder holder, String pageKey, Bitmap bitmap) {
