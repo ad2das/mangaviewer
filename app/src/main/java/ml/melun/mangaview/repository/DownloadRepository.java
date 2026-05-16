@@ -6,7 +6,6 @@ import android.content.Intent;
 import androidx.work.Data;
 import androidx.work.ExistingWorkPolicy;
 import androidx.work.OneTimeWorkRequest;
-import androidx.work.WorkManager;
 
 import com.google.gson.Gson;
 
@@ -18,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
 import ml.melun.mangaview.Downloader;
+import ml.melun.mangaview.MainApplication;
 import ml.melun.mangaview.mangaview.DownloadTitle;
 import ml.melun.mangaview.mangaview.Title;
 
@@ -39,12 +39,12 @@ public final class DownloadRepository {
         OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(Downloader.class)
                 .setInputData(input)
                 .build();
-        WorkManager.getInstance(context).enqueueUniqueWork(Downloader.WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request);
+        MainApplication.getWorkManager(context).enqueueUniqueWork(Downloader.WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request);
         return queueId;
     }
 
     public static void cancelAll(Context context) {
-        WorkManager.getInstance(context).cancelUniqueWork(Downloader.WORK_NAME);
+        MainApplication.getWorkManager(context).cancelUniqueWork(Downloader.WORK_NAME);
         context.sendBroadcast(new Intent().setAction(Downloader.BROADCAST_STOP));
     }
 

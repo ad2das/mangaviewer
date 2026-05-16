@@ -14,7 +14,6 @@ import androidx.core.app.NotificationCompat;
 import androidx.work.ExistingWorkPolicy;
 import androidx.work.ForegroundInfo;
 import androidx.work.OneTimeWorkRequest;
-import androidx.work.WorkManager;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 
@@ -45,7 +44,7 @@ public class Migrator extends Worker {
     public static void start(Context context) {
         running = true;
         OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(Migrator.class).build();
-        WorkManager.getInstance(context).enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.REPLACE, request);
+        MainApplication.getWorkManager(context).enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.REPLACE, request);
     }
 
     public static void requestProgress(Context context) {

@@ -17,7 +17,6 @@ import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
 import androidx.documentfile.provider.DocumentFile;
 import androidx.work.ForegroundInfo;
-import androidx.work.WorkManager;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 
@@ -166,7 +165,7 @@ public class Downloader extends Worker {
         }
         Intent notificationIntent = new Intent(serviceContext, MainActivity.class);
         pendingIntent = PendingIntent.getActivity(serviceContext, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE);
-        stopIntent = WorkManager.getInstance(serviceContext).createCancelPendingIntent(getId());
+        stopIntent = MainApplication.getWorkManager(serviceContext).createCancelPendingIntent(getId());
         startNotification();
     }
 

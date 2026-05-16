@@ -4,6 +4,8 @@ import android.content.Context;
 
 import androidx.appcompat.app.AppCompatDelegate;
 import androidx.multidex.MultiDexApplication;
+import androidx.work.Configuration;
+import androidx.work.WorkManager;
 
 import ml.melun.mangaview.ClassificationDbUpdater;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
@@ -28,6 +30,8 @@ public class MainApplication extends MultiDexApplication {
     private static final Object firebaseAccountLock = new Object();
     private static final Object firebaseSyncLock = new Object();
     private static final Object deferredServicesLock = new Object();
+    private static final Object workManagerLock = new Object();
+    private static volatile boolean workManagerInitialized = false;
     @Override
     protected void attachBaseContext(Context base) {
         super.attachBaseContext(base);
@@ -82,6 +86,22 @@ public class MainApplication extends MultiDexApplication {
             }
         }
         return local;
+    }
+
+    public static WorkManager getWorkManager(Context context) {
+        Context app = appContext != null ? appContext : context.getApplicationContext();
+        if(!workManagerInitialized) {
+            synchronized (workManagerLock) {
+                if(!workManagerInitialized) {
+                    try {
+                        WorkManager.initialize(app, new Configuration.Builder().build());
+                    } catch (IllegalStateException ignored) {
+                    }
+                    workManagerInitialized = true;
+                }
+            }
+        }
+        return WorkManager.getInstance(app);
     }
 
     public static void initDeferredServices() {
