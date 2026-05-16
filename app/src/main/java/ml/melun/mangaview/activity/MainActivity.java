@@ -418,7 +418,7 @@ public class MainActivity extends AppCompatActivity
     }
 
     static long startupUpdateCheckDelayMsForTest() {
-        return 60000L;
+        return 5 * 60_000L;
     }
 
     @Override

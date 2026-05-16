@@ -45,4 +45,9 @@ public class AppUpdateManagerTest {
         assertTrue(AppUpdateManager.isStaleUpdateArtifactForTest("mangaViewer-update-123.apk.part"));
         assertFalse(AppUpdateManager.isStaleUpdateArtifactForTest("mangaViewer_123.apk"));
     }
+
+    @Test
+    public void automaticUpdateCheckDoesNotShowModalPrompt() {
+        assertFalse(AppUpdateManager.automaticUpdatePromptsEnabledForTest());
+    }
 }

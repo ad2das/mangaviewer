@@ -142,10 +142,9 @@ public final class AppUpdateManager {
         Context appContext = activity.getApplicationContext();
         AppDispatchers.runIo(() -> deleteStaleUpdateApks(appContext, pendingInstallApk));
         UpdateInfo cachedInfo = readCachedUpdateInfo(appContext);
-        if(isUpdateAvailable(appContext, cachedInfo, true) && !dialogShownThisSession) {
-            dialogShownThisSession = true;
+        if(isUpdateAvailable(appContext, cachedInfo, true)) {
             warmDownloadPlan(appContext, cachedInfo);
-            showUpdateDialog(activity, cachedInfo);
+            maybeShowAutomaticUpdateDialog(activity, cachedInfo);
         }
         if(checkStartedThisSession)
             return;
@@ -157,11 +156,25 @@ public final class AppUpdateManager {
             cacheUpdateInfo(appContext, info);
             if(isUpdateAvailable(appContext, info, true))
                 warmDownloadPlan(appContext, info);
-            if(!isUpdateAvailable(appContext, info, true) || dialogShownThisSession)
+            if(!isUpdateAvailable(appContext, info, true))
                 return;
-            dialogShownThisSession = true;
-            AppDispatchers.runOnMain(() -> showUpdateDialog(activity, info));
+            AppDispatchers.runOnMain(() -> maybeShowAutomaticUpdateDialog(activity, info));
         });
+    }
+
+    private static void maybeShowAutomaticUpdateDialog(Activity activity, UpdateInfo info) {
+        if(!automaticUpdatePromptsEnabled() || dialogShownThisSession)
+            return;
+        dialogShownThisSession = true;
+        showUpdateDialog(activity, info);
+    }
+
+    private static boolean automaticUpdatePromptsEnabled() {
+        return false;
+    }
+
+    static boolean automaticUpdatePromptsEnabledForTest() {
+        return automaticUpdatePromptsEnabled();
     }
 
     public static void checkForUpdateNow(Activity activity) {
