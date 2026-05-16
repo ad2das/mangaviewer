@@ -124,8 +124,8 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             Object source = getGlideUrl(thumb, m.getBaseMode());
             String key = String.valueOf(source);
             if(!key.equals(h.thumb.getTag())) {
-                safeGlideClear(h.thumb);
                 h.thumb.setTag(key);
+                h.thumb.setImageResource(R.drawable.app_cover_placeholder);
                 try {
                     Glide.with(h.thumb)
                             .load(source)
@@ -141,9 +141,9 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
                 }
             }
         } else {
-            if(!"empty".equals(h.thumb.getTag())) {
+            if(!ThumbnailBindPolicy.TAG_EMPTY.equals(h.thumb.getTag())) {
                 safeGlideClear(h.thumb);
-                h.thumb.setTag("empty");
+                h.thumb.setTag(ThumbnailBindPolicy.TAG_EMPTY);
                 h.thumb.setImageBitmap(null);
             }
         }
@@ -197,7 +197,7 @@ public class UpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         h.author.setText("");
         h.tags.setText("");
         safeGlideClear(h.thumb);
-        h.thumb.setTag("empty");
+        h.thumb.setTag(ThumbnailBindPolicy.TAG_EMPTY);
         h.thumb.setImageBitmap(null);
         h.thumb.setVisibility(save ? View.GONE : View.VISIBLE);
         h.seen.setVisibility(View.GONE);

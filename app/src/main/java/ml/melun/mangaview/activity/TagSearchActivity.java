@@ -46,6 +46,7 @@ import ml.melun.mangaview.mangaview.UpdatedManga;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.PerfTrace;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
@@ -82,6 +83,7 @@ public class TagSearchActivity extends AppCompatActivity {
     LoadOperation loadTask;
     boolean destroyed = false;
     Runnable thumbnailPreloadRunnable;
+    long searchFirstStartedAt = 0L;
     final Handler touchHandler = new Handler(Looper.getMainLooper());
     int touchSlop = 8;
     int listScrollState = RecyclerView.SCROLL_STATE_IDLE;
@@ -237,6 +239,7 @@ public class TagSearchActivity extends AppCompatActivity {
         }else {
             adapter = new TitleAdapter(context);
             search = MangaRepository.createSearch(query,mode,baseMode);
+            searchFirstStartedAt = PerfTrace.start("tag_search_first_result_ms");
             startLoad(new searchManga());
             swipe.setOnRefreshListener(direction -> {
                 if (!search.isLast()) {
@@ -521,6 +524,10 @@ public class TagSearchActivity extends AppCompatActivity {
 
             if(adapter.getItemCount()>0) {
                 noresult.setVisibility(View.GONE);
+                if(searchFirstStartedAt > 0) {
+                    PerfTrace.end("tag_search_first_result_ms", searchFirstStartedAt);
+                    searchFirstStartedAt = 0L;
+                }
             }else{
                 noresult.setVisibility(View.VISIBLE);
             }

@@ -498,8 +498,8 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             Object source = isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, data.getBaseMode());
             String thumbKey = String.valueOf(source);
             if(!thumbKey.equals(holder.thumb.getTag())) {
-                safeGlideClear(holder.thumb);
                 holder.thumb.setTag(thumbKey);
+                holder.thumb.setImageResource(R.drawable.app_cover_placeholder);
                 try {
                     Glide.with(holder.thumb)
                             .load(source)
@@ -507,6 +507,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                             .override(dp(126), dp(170))
                             .thumbnail(0.25f)
                             .dontAnimate()
+                            .placeholder(R.drawable.app_cover_placeholder)
                             .into(holder.thumb);
                 } catch (RuntimeException e) {
                     ml.melun.mangaview.report.CrashReporter.record(e);
@@ -515,9 +516,9 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             }
         }
         else {
-            if(!"placeholder".equals(holder.thumb.getTag())) {
+            if(!ThumbnailBindPolicy.TAG_PLACEHOLDER.equals(holder.thumb.getTag())) {
                 safeGlideClear(holder.thumb);
-                holder.thumb.setTag("placeholder");
+                holder.thumb.setTag(ThumbnailBindPolicy.TAG_PLACEHOLDER);
                 holder.thumb.setImageResource(R.drawable.app_cover_placeholder);
             }
         }

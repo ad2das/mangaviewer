@@ -1347,7 +1347,7 @@ public class MainSearch extends Fragment {
             }
 
             if(replaceResults) {
-                searchAdapter.setData(targetSearch.getResult());
+                searchAdapter.setDataImmediate(targetSearch.getResult());
                 bindOnlineAdapter();
             }else{
                 searchAdapter.addData(targetSearch.getResult());

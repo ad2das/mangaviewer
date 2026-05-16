@@ -204,12 +204,10 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     private void bindThumbnailDeferred(ImageView view, Object source, int width, int height, boolean placeholderWhenEmpty,
                                        long delayMs, boolean clearImmediately) {
         String key = String.valueOf(source);
-        if(key.equals(view.getTag()))
+        if(ThumbnailBindPolicy.shouldSkipDeferredBind(view.getTag(), key))
             return;
-        String pendingKey = "pending:" + key;
-        if(pendingKey.equals(view.getTag()))
-            return;
-        if(shouldClearThumbnailBeforeDeferredBind(view.getTag(), clearImmediately))
+        String pendingKey = ThumbnailBindPolicy.pendingKey(key);
+        if(ThumbnailBindPolicy.shouldClearBeforeDeferredBind(view.getTag(), clearImmediately))
             safeGlideClear(view);
         view.setTag(pendingKey);
         view.setImageResource(R.drawable.app_cover_placeholder);
@@ -223,7 +221,6 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         String key = String.valueOf(source);
         if(key.equals(view.getTag()))
             return;
-        safeGlideClear(view);
         view.setTag(key);
         try {
             Glide.with(view)
@@ -242,7 +239,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     }
 
     private void bindEmptyThumbnail(ImageView view, boolean placeholder) {
-        String key = placeholder ? "placeholder" : "empty";
+        String key = placeholder ? ThumbnailBindPolicy.TAG_PLACEHOLDER : ThumbnailBindPolicy.TAG_EMPTY;
         if(key.equals(view.getTag()))
             return;
         safeGlideClear(view);
@@ -253,15 +250,8 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             view.setImageBitmap(null);
     }
 
-    private static boolean shouldClearThumbnailBeforeDeferredBind(Object currentTag, boolean clearImmediately) {
-        if(!clearImmediately || currentTag == null)
-            return false;
-        String tag = String.valueOf(currentTag);
-        return tag.length() > 0 && !tag.startsWith("pending:") && !"placeholder".equals(tag) && !"empty".equals(tag);
-    }
-
     static boolean shouldClearThumbnailBeforeDeferredBindForTest(Object currentTag, boolean clearImmediately) {
-        return shouldClearThumbnailBeforeDeferredBind(currentTag, clearImmediately);
+        return ThumbnailBindPolicy.shouldClearBeforeDeferredBind(currentTag, clearImmediately);
     }
 
     private void bindSelection(ViewHolder holder, int position) {

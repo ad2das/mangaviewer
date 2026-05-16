@@ -190,6 +190,8 @@ public class Search {
     }
 
     private int fetchAll(CustomHttpClient client) {
+        if(mode == 0)
+            return fetchAllKeyword(client);
         int status = 0;
         ArrayList<Title> combined = new ArrayList<>();
         try {
@@ -214,6 +216,28 @@ public class Search {
                 appendUnique(combined, comicResult.titles);
             else if(status == 0)
                 status = comicResult.status;
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            status = 1;
+        }
+        result.addAll(combined);
+        last = true;
+        return result.size() > 0 ? 0 : status;
+    }
+
+    private int fetchAllKeyword(CustomHttpClient client) {
+        int status = 0;
+        ArrayList<Title> combined = new ArrayList<>();
+        try {
+            if(client != null && client.isNtk()) {
+                PageTitles pageTitles = fetchNtkKeywordApiResults(client, base_auto, 0, 1);
+                if(pageTitles.titles.size() > 0)
+                    appendUnique(combined, pageTitles.titles);
+                else
+                    appendUnique(combined, fetchNtkHtmlSearchResultsPage(client, ntkSearchPath(query, base_auto, 1), base_auto, 0, 1).titles);
+            } else {
+                appendUnique(combined, fetchWfwfCombinedKeywordSearchResults(client).titles);
+            }
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
             status = 1;
@@ -251,6 +275,25 @@ public class Search {
             if(!exists)
                 target.add(title);
         }
+    }
+
+    private PageTitles fetchWfwfCombinedKeywordSearchResults(CustomHttpClient client) throws Exception {
+        String path = wfwfKeywordSearchPath(query);
+        PageTitles pageTitles = fetchWfwfCombinedKeywordSearchResultsUncached(client, path);
+        if(pageTitles.titles.size() == 0 && client != null && client.resolveWfwfDomainNow())
+            pageTitles = fetchWfwfCombinedKeywordSearchResultsUncached(client, path);
+        return pageTitles;
+    }
+
+    private PageTitles fetchWfwfCombinedKeywordSearchResultsUncached(CustomHttpClient client, String path) throws Exception {
+        CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+        if(page.code >= 400)
+            throw new Exception("WFWF search failed: " + page.code);
+        Document document = Jsoup.parse(page.body);
+        ArrayList<Title> parsed = new ArrayList<>();
+        appendUnique(parsed, MainPageWebtoon.parseWolfTitles(document, base_webtoon, 80));
+        appendUnique(parsed, MainPageWebtoon.parseWolfTitles(document, base_comic, 120));
+        return new PageTitles(parsed, null);
     }
 
     private int fetchWebtoon(CustomHttpClient client) {
@@ -1020,7 +1063,7 @@ public class Search {
         if(client != null && client.isNtk()) {
             return appendNextNtkSearchPage(client, target, targetBaseMode, limit);
         }
-        appendWebtoonResults(client, target, "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR")), limit);
+        appendWebtoonResults(client, target, wfwfKeywordSearchPath(query), limit);
         return true;
     }
 
@@ -1041,6 +1084,13 @@ public class Search {
     }
 
     private PageTitles fetchNtkSearchResultsUncached(CustomHttpClient client, String path, int targetBaseMode, int limit, int currentPage) throws Exception {
+        PageTitles apiResults = fetchNtkKeywordApiResults(client, targetBaseMode, limit, currentPage);
+        if(apiResults.titles.size() > 0)
+            return apiResults;
+        return fetchNtkHtmlSearchResultsPage(client, path, targetBaseMode, limit, currentPage);
+    }
+
+    private PageTitles fetchNtkHtmlSearchResultsPage(CustomHttpClient client, String path, int targetBaseMode, int limit, int currentPage) throws Exception {
         CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
         if(page.code >= 400)
             throw new Exception("NTK search failed: " + page.code);
@@ -1072,6 +1122,14 @@ public class Search {
         if(page > 1)
             params.add("page=" + page);
         return "/search?" + String.join("&", params);
+    }
+
+    static String wfwfKeywordSearchPathForTest(String query) {
+        return wfwfKeywordSearchPath(query);
+    }
+
+    private static String wfwfKeywordSearchPath(String query) {
+        return "/search.html?q=" + percentEncode(query, Charset.forName("EUC-KR"));
     }
 
     private void appendNtkSiteSearchResults(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {
@@ -1148,6 +1206,63 @@ public class Search {
         });
         ArrayList<Title> filtered = filterNtkKeywordResults(parsed.titles, query, limit);
         appendUnique(target, filtered);
+    }
+
+    private PageTitles fetchNtkKeywordApiResults(CustomHttpClient client, int targetBaseMode, int limit, int currentPage) throws Exception {
+        ArrayList<String> paths = ntkKeywordApiPaths(query, targetBaseMode, currentPage, limit);
+        if(client == null || paths.size() == 0)
+            return new PageTitles(new ArrayList<>(), null);
+        ArrayList<Title> titles = new ArrayList<>();
+        boolean hasMore = false;
+        int total = 0;
+        String singleNextPath = null;
+        for(String path : paths) {
+            try {
+                CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+                if(page.code >= 400)
+                    continue;
+                int parsedBaseMode = path.startsWith("/api/manhwa-list") ? base_comic : base_webtoon;
+                PageTitles parsed = parseNtkApiPage(page.body, path, parsedBaseMode, 0, currentPage);
+                ArrayList<Title> filtered = filterNtkKeywordResults(parsed.titles, query, perNtkKeywordKindLimit(targetBaseMode, limit));
+                appendUnique(titles, filtered);
+                hasMore = hasMore || parsed.hasMore;
+                total += Math.max(0, parsed.totalCount);
+                if(paths.size() == 1)
+                    singleNextPath = parsed.nextPath;
+            } catch (Exception e) {
+                ml.melun.mangaview.report.CrashReporter.record(e);
+            }
+        }
+        if(titles.size() == 0)
+            return new PageTitles(new ArrayList<>(), null);
+        return new PageTitles(titles, singleNextPath, true, paths.size() == 1 && hasMore, total);
+    }
+
+    static ArrayList<String> ntkKeywordApiPathsForTest(String query, int targetBaseMode, int page, int limit) {
+        return ntkKeywordApiPaths(query, targetBaseMode, page, limit);
+    }
+
+    private static ArrayList<String> ntkKeywordApiPaths(String query, int targetBaseMode, int page, int limit) {
+        ArrayList<String> paths = new ArrayList<>();
+        if(page < 1)
+            page = 1;
+        int pageSize = ntkKeywordPageSize(limit);
+        String encoded = percentEncode(query, Charset.forName("UTF-8"));
+        if(targetBaseMode == base_auto || targetBaseMode == base_webtoon)
+            paths.add("/api/works?keyword=" + encoded + "&page=" + page + "&pageSize=" + pageSize + "&withTotal=1");
+        if(targetBaseMode == base_auto || targetBaseMode == base_comic)
+            paths.add("/api/manhwa-list?keyword=" + encoded + "&page=" + page + "&pageSize=" + pageSize + "&withTotal=1");
+        return paths;
+    }
+
+    private static int ntkKeywordPageSize(int limit) {
+        return limit > 0 ? Math.min(NTK_KEYWORD_PAGE_SIZE, Math.max(10, limit)) : NTK_KEYWORD_PAGE_SIZE;
+    }
+
+    private static int perNtkKeywordKindLimit(int targetBaseMode, int limit) {
+        if(limit <= 0 || targetBaseMode != base_auto)
+            return limit;
+        return Math.max(10, limit / 2);
     }
 
     static ArrayList<Title> filterNtkKeywordResultsForTest(ArrayList<Title> titles, String query, int limit) {

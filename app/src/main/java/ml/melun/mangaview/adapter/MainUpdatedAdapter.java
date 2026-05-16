@@ -124,8 +124,8 @@ public class MainUpdatedAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             Object source = getGlideUrl(thumb, manga.getBaseMode());
             String key = String.valueOf(source);
             if(!key.equals(h.thumb.getTag())) {
-                safeGlideClear(h.thumb);
                 h.thumb.setTag(key);
+                h.thumb.setImageResource(R.drawable.app_cover_placeholder);
                 try {
                     Glide.with(h.thumb)
                             .load(source)
