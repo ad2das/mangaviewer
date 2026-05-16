@@ -166,8 +166,8 @@ public class MainMain extends Fragment{
         // 최근 추가된 만화
         webtoonRecycler = rootView.findViewById(R.id.main_recycler);
         comicRecycler = rootView.findViewById(R.id.main_comic_recycler);
-        configureHomeRecycler(webtoonRecycler);
-        configureHomeRecycler(comicRecycler);
+        selectedBaseMode = p.getBaseMode() == base_comic ? base_comic : base_webtoon;
+        configureHomeRecycler(getSelectedRecycler());
         mainRecycler = null;
         localChangeListener = scope -> {
             if(!"recent".equals(scope) && !"bookmark".equals(scope))
@@ -292,7 +292,6 @@ public class MainMain extends Fragment{
             }
         };
 
-        selectedBaseMode = p.getBaseMode() == base_comic ? base_comic : base_webtoon;
         ensureHomeAdapter(selectedBaseMode);
         updateFirstContentMetricTargets();
         showInitialHomeRows(selectedBaseMode);
@@ -326,6 +325,8 @@ public class MainMain extends Fragment{
 
     private void configureHomeRecycler(RecyclerView recyclerView) {
         if(recyclerView == null)
+            return;
+        if(recyclerView.getLayoutManager() != null)
             return;
         NpaLinearLayoutManager lm = new NpaLinearLayoutManager(getContext());
         recyclerView.setLayoutManager(lm);
@@ -377,6 +378,7 @@ public class MainMain extends Fragment{
         Context context = getContext();
         if(context == null || !isAdded())
             return baseMode == base_comic ? mainComicAdapter : mainWebtoonAdapter;
+        configureHomeRecycler(getRecyclerForBaseMode(baseMode));
         if(baseMode == base_comic) {
             if(mainComicAdapter == null) {
                 mainComicAdapter = new MainWebtoonAdapter(context, base_comic);
@@ -432,6 +434,7 @@ public class MainMain extends Fragment{
         RecyclerView targetRecycler = baseMode == base_comic ? comicRecycler : webtoonRecycler;
         if(selectedBaseMode == baseMode && mainRecycler == targetRecycler)
             return;
+        boolean initialAttach = mainRecycler == null;
         selectedBaseMode = baseMode;
         p.setBaseMode(baseMode);
         PerformanceMonitor.updateSiteMode();
@@ -439,7 +442,8 @@ public class MainMain extends Fragment{
         updateFirstContentMetricTargets();
         updateModeToggle();
         MainWebtoonAdapter selectedAdapter = getSelectedAdapter();
-        if(selectedAdapter != null)
+        boolean alreadyHasRows = selectedAdapter != null && selectedAdapter.hasDisplayContent();
+        if(selectedAdapter != null && !alreadyHasRows)
             selectedAdapter.showPlaceholderIfEmpty();
         mainRecycler = targetRecycler;
         if(mainRecycler != null) {
@@ -447,11 +451,11 @@ public class MainMain extends Fragment{
                 previousRecycler.stopScroll();
             mainRecycler.stopScroll();
             showSelectedRecycler(previousRecycler, mainRecycler);
-            prepareSelectedHomeAfterSwitch(baseMode);
+            prepareSelectedHomeAfterSwitch(baseMode, initialAttach && alreadyHasRows);
         }
     }
 
-    private void prepareSelectedHomeAfterSwitch(int baseMode) {
+    private void prepareSelectedHomeAfterSwitch(int baseMode, boolean initialRowsAlreadyShown) {
         RecyclerView recyclerView = getSelectedRecycler();
         if(recyclerView == null)
             return;
@@ -461,7 +465,7 @@ public class MainMain extends Fragment{
                 return;
             applySelectedHomeTab();
             MainWebtoonAdapter adapter = getSelectedAdapter();
-            if(adapter != null)
+            if(adapter != null && !initialRowsAlreadyShown)
                 adapter.showInitialRows();
             scrollHomeToTop();
             if(adapter == null || !adapter.hasDisplayContent())
@@ -477,7 +481,11 @@ public class MainMain extends Fragment{
     }
 
     private RecyclerView getSelectedRecycler() {
-        return selectedBaseMode == base_comic ? comicRecycler : webtoonRecycler;
+        return getRecyclerForBaseMode(selectedBaseMode);
+    }
+
+    private RecyclerView getRecyclerForBaseMode(int baseMode) {
+        return baseMode == base_comic ? comicRecycler : webtoonRecycler;
     }
 
     private RecyclerView getOtherRecycler(RecyclerView recyclerView) {
