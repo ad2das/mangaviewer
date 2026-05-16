@@ -16,4 +16,12 @@ final class HomeEpisodePrefetchPolicy {
             return !ntkSite;
         return true;
     }
+
+    static boolean shouldPrefetchViewerImagesFromHome(String sourceSite, boolean ntkSite) {
+        if(!ntkSite)
+            return true;
+        if(sourceSite == null || sourceSite.trim().length() == 0)
+            return false;
+        return !"ntk".equals(sourceSite.trim().toLowerCase(Locale.ROOT));
+    }
 }

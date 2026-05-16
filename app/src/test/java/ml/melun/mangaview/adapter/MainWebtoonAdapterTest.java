@@ -65,6 +65,14 @@ public class MainWebtoonAdapterTest {
     }
 
     @Test
+    public void ntkHomeEpisodePrefetchSkipsViewerImageDecode() {
+        assertFalse(HomeEpisodePrefetchPolicy.shouldPrefetchViewerImagesFromHome("ntk", true));
+        assertFalse(HomeEpisodePrefetchPolicy.shouldPrefetchViewerImagesFromHome("", true));
+        assertTrue(HomeEpisodePrefetchPolicy.shouldPrefetchViewerImagesFromHome("wfwf", true));
+        assertTrue(HomeEpisodePrefetchPolicy.shouldPrefetchViewerImagesFromHome("ntk", false));
+    }
+
+    @Test
     public void visibleContinueWarmupKeepsHomeDecodePressureLow() {
         assertEquals(1, HomeContinueWarmupPolicy.visibleContinueWarmupLimitForTest(false));
         assertEquals(1, HomeContinueWarmupPolicy.visibleContinueWarmupLimitForTest(true));

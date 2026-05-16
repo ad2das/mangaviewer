@@ -1806,7 +1806,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 List<Manga> episodes = Utils.snapshotEpisodes(target);
                 if(result == Title.LOAD_OK && episodes != null && episodes.size() > 0) {
                     CacheFileStore.write(appContext, episodeSnapshotKey(target), new Gson().toJson(new EpisodeSnapshot(episodes)));
-                    PrefetchCoordinator.prefetchEpisodeList(appContext, target, episodes, -1, 0);
+                    if(HomeEpisodePrefetchPolicy.shouldPrefetchViewerImagesFromHome(target.getSourceSite(), isNtkSite()))
+                        PrefetchCoordinator.prefetchEpisodeList(appContext, target, episodes, -1, 0);
                 }
             } catch (Exception e) {
                 ml.melun.mangaview.report.CrashReporter.record(e);
