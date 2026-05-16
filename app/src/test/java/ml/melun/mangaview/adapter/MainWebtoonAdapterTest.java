@@ -63,4 +63,10 @@ public class MainWebtoonAdapterTest {
         assertFalse(HomeEpisodePrefetchPolicy.shouldPrefetchVisibleEpisodeSnapshot("ntk", false));
         assertTrue(HomeEpisodePrefetchPolicy.shouldPrefetchVisibleEpisodeSnapshot("", false));
     }
+
+    @Test
+    public void visibleContinueWarmupKeepsHomeDecodePressureLow() {
+        assertEquals(2, HomeContinueWarmupPolicy.visibleContinueWarmupLimitForTest(false));
+        assertEquals(1, HomeContinueWarmupPolicy.visibleContinueWarmupLimitForTest(true));
+    }
 }

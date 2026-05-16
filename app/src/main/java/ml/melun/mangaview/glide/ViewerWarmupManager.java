@@ -228,7 +228,7 @@ public class ViewerWarmupManager {
                         int result = prepareFirstFrame(appContext, candidate, currentTitle, page, width, false, p.getReverse(), MangaRepository.cancellation(), false);
                         if(result == LOAD_OK && hasImages(candidate, appContext)) {
                             int diskLimit = visibleResume && p.getDataSave() ? 4 : (p.getDataSave() ? 6 : 12);
-                            int decodedLimit = visibleResume && p.getDataSave() ? 1 : (p.getDataSave() ? 1 : 2);
+                            int decodedLimit = visibleResume ? 1 : (p.getDataSave() ? 1 : 2);
                             preloadLoadedImages(appContext, candidate, page, width, false, p.getReverse(), diskLimit, Priority.IMMEDIATE, decodedLimit);
                             cacheContinueSnapshot(appContext, scheduleKey, candidate);
                             logMetric(visibleResume ? "viewer_resume_visible_warmup_ready" : "viewer_continue_warmup_ready", candidate.getId());

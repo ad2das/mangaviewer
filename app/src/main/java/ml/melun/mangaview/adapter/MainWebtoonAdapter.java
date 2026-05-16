@@ -1719,7 +1719,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private void warmupVisibleContinueItems(List<Title> titles) {
         if(titles == null || titles.size() == 0 || context == null)
             return;
-        int limit = save ? 2 : 4;
+        int limit = HomeContinueWarmupPolicy.visibleContinueWarmupLimit(save);
         int warmed = 0;
         for(Title item : titles) {
             if(item == null || item.getId() <= 0)
