@@ -101,7 +101,7 @@ public class Migrator extends Worker {
                 .setContentText("진행률을 확인하려면 터치")
                 .setOngoing(true);
         if (Build.VERSION.SDK_INT >= 26)
-            notification.setSmallIcon(R.drawable.ic_logo);
+            notification.setSmallIcon(R.drawable.ic_notification_small);
         else
             notification.setSmallIcon(R.drawable.notification_logo);
         setForegroundAsync(new ForegroundInfo(nid, notification.build()));
@@ -117,7 +117,7 @@ public class Migrator extends Worker {
                 .setContentText("결과를 확인하려면 터치")
                 .setOngoing(false);
         if (Build.VERSION.SDK_INT >= 26)
-            notification.setSmallIcon(R.drawable.ic_logo);
+            notification.setSmallIcon(R.drawable.ic_notification_small);
         else
             notification.setSmallIcon(R.drawable.notification_logo);
         notificationManager.notify(nid, notification.build());

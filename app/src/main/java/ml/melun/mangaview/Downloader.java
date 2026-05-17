@@ -996,7 +996,7 @@ public class Downloader extends Worker {
                 .setContentTitle("다운로드를 시작합니다")
                 .setOngoing(true);
         if (Build.VERSION.SDK_INT >= 26)
-            notification.setSmallIcon(R.drawable.ic_logo);
+            notification.setSmallIcon(R.drawable.ic_notification_small);
         else
             notification.setSmallIcon(R.drawable.notification_logo);
         setForegroundAsync(new ForegroundInfo(nid, notification.build()));
@@ -1014,7 +1014,7 @@ public class Downloader extends Worker {
                 .setCategory(NotificationCompat.CATEGORY_PROGRESS)
                 .setOngoing(true);
         if (Build.VERSION.SDK_INT >= 26)
-            notification.setSmallIcon(R.drawable.ic_logo);
+            notification.setSmallIcon(R.drawable.ic_notification_small);
         else
             notification.setSmallIcon(R.drawable.notification_logo);
         notificationManager.notify(nid, notification.build());
@@ -1042,7 +1042,7 @@ public class Downloader extends Worker {
                 .setCategory(NotificationCompat.CATEGORY_PROGRESS)
                 .setOngoing(true);
         if (Build.VERSION.SDK_INT >= 26)
-            notification.setSmallIcon(R.drawable.ic_logo);
+            notification.setSmallIcon(R.drawable.ic_notification_small);
         else
             notification.setSmallIcon(R.drawable.notification_logo);
         notificationManager.notify(nid, notification.build());
@@ -1054,7 +1054,7 @@ public class Downloader extends Worker {
                 .setContentTitle("다운로드 완료")
                 .setOngoing(false);
         if (Build.VERSION.SDK_INT >= 26)
-            notification.setSmallIcon(R.drawable.ic_logo);
+            notification.setSmallIcon(R.drawable.ic_notification_small);
         else
             notification.setSmallIcon(R.drawable.notification_logo);
         notificationManager.notify(nid, notification.build());
@@ -1066,7 +1066,7 @@ public class Downloader extends Worker {
                 .setContentTitle("모든 다운로드가 완료되었습니다.")
                 .setOngoing(false);
         if (Build.VERSION.SDK_INT >= 26)
-            notification.setSmallIcon(R.drawable.ic_logo);
+            notification.setSmallIcon(R.drawable.ic_notification_small);
         else
             notification.setSmallIcon(R.drawable.notification_logo);
         if(failures>0) {
@@ -1082,7 +1082,7 @@ public class Downloader extends Worker {
                 .setContentTitle("다운로드가 취소되었습니다.")
                 .setOngoing(false);
         if (Build.VERSION.SDK_INT >= 26)
-            notification.setSmallIcon(R.drawable.ic_logo);
+            notification.setSmallIcon(R.drawable.ic_notification_small);
         else
             notification.setSmallIcon(R.drawable.notification_logo);
         notificationManager.notify(nid + 2, notification.build());
