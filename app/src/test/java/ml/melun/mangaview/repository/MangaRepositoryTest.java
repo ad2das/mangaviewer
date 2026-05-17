@@ -63,4 +63,14 @@ public class MangaRepositoryTest {
         assertTrue(MangaRepository.shouldReportEpisodeFetchFailure(
                 new IllegalStateException("parser invariant failed")));
     }
+
+    @Test
+    public void searchExpectedNetworkMissesDoNotReportAsCrashes() {
+        assertFalse(MangaRepository.shouldReportSearchFailure(
+                new Exception("Request failed: /search.html?q=one")));
+        assertFalse(MangaRepository.shouldReportSearchFailure(
+                new IOException("Network is unreachable")));
+        assertTrue(MangaRepository.shouldReportSearchFailure(
+                new IllegalStateException("parser invariant failed")));
+    }
 }

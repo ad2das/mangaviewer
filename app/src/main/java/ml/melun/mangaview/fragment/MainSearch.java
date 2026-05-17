@@ -1336,6 +1336,7 @@ public class MainSearch extends Fragment {
         private AppDispatchers.TaskHandle handle;
         private volatile boolean cancelled = false;
         private int partialResultCount = 0;
+        private Exception searchFailure;
 
         SearchManga(Search targetSearch, boolean replaceResults) {
             this.targetSearch = targetSearch;
@@ -1378,7 +1379,8 @@ public class MainSearch extends Fragment {
             try {
                 return MangaRepository.search(targetSearch, cancellation);
             } catch (Exception e) {
-                if(!cancelled)
+                searchFailure = e;
+                if(!cancelled && MangaRepository.shouldReportSearchFailure(e))
                     ml.melun.mangaview.report.CrashReporter.record(e);
                 return 1;
             }
@@ -1394,11 +1396,6 @@ public class MainSearch extends Fragment {
                 return;
             if(res == null)
                 res = 1;
-            if(res != 0){
-                // error
-                Utils.showCaptchaPopup(getContext(), 4, fragment, p);
-            }
-
             if(replaceResults) {
                 searchAdapter.setDataImmediate(targetSearch.getResult());
                 bindOnlineAdapter();
@@ -1420,6 +1417,8 @@ public class MainSearch extends Fragment {
                 }
             }else{
                 noResultText.setText("\"" + targetSearch.getQuery() + "\" 검색 결과가 없습니다");
+                if(res != 0)
+                    noResultText.setText("\"" + targetSearch.getQuery() + "\" \uac80\uc0c9 \uacb0\uacfc\ub97c \ubd88\ub7ec\uc624\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.\n\ub124\ud2b8\uc6cc\ud06c \ub610\ub294 \uc0ac\uc774\ud2b8 \uc8fc\uc18c\ub97c \ud655\uc778\ud55c \ub4a4 \ub2e4\uc2dc \uc2dc\ub3c4\ud574 \uc8fc\uc138\uc694.");
                 noresult.setVisibility(View.VISIBLE);
             }
 

@@ -140,6 +140,15 @@ public final class MangaRepository {
         return !(failure instanceof java.io.IOException);
     }
 
+    public static boolean shouldReportSearchFailure(Throwable failure) {
+        if(failure == null)
+            return false;
+        String message = failure.getMessage();
+        if(message != null && message.startsWith("Request failed:"))
+            return false;
+        return !(failure instanceof java.io.IOException);
+    }
+
     public static int fetchManga(Manga manga) {
         try {
             return fetchViewerSingleFlight(manga, null, false);
