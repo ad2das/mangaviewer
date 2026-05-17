@@ -880,8 +880,11 @@ public class MainActivity extends AppCompatActivity
             getWindow().setNavigationBarColor(background);
             getWindow().getDecorView().setSystemUiVisibility(0);
             View contentHolder = findViewById(R.id.contentHolder);
-            if(contentHolder != null)
+            if(contentHolder != null) {
                 contentHolder.setBackgroundColor(background);
+                if(contentHolder.getParent() instanceof View)
+                    ((View) contentHolder.getParent()).setBackgroundColor(background);
+            }
             Toolbar toolbar = findViewById(R.id.toolbar);
             if(toolbar != null) {
                 toolbar.setBackgroundColor(background);

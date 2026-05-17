@@ -4,6 +4,7 @@ import android.content.Intent;
 import android.content.DialogInterface;
 import android.content.Context;
 import android.graphics.Rect;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
@@ -25,6 +26,8 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.widget.LinearLayoutCompat;
 import androidx.appcompat.widget.PopupMenu;
+import androidx.cardview.widget.CardView;
+import androidx.core.content.ContextCompat;
 import androidx.fragment.app.Fragment;
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -257,6 +260,7 @@ public class MainSearch extends Fragment {
             searchMode.setPopupBackgroundResource(R.color.colorDarkWindowBackground);
             baseMode.setPopupBackgroundResource(R.color.colorDarkWindowBackground);
         }
+        applySearchTheme(rootView);
 
         searchBox.setOnFocusChangeListener((view, b) -> {
             if(optionsPanel != null)
@@ -321,6 +325,75 @@ public class MainSearch extends Fragment {
             }
         });
         return rootView;
+    }
+
+    private void applySearchTheme(ViewGroup rootView) {
+        if(getContext() == null || !p.getDarkTheme())
+            return;
+
+        int windowBackground = ContextCompat.getColor(getContext(), R.color.colorDarkWindowBackground);
+        int surface = ContextCompat.getColor(getContext(), R.color.colorDarkSurface);
+        int surfaceElevated = ContextCompat.getColor(getContext(), R.color.colorDarkSurfaceElevated);
+        int divider = ContextCompat.getColor(getContext(), R.color.colorDarkDivider);
+        int text = ContextCompat.getColor(getContext(), R.color.colorDarkText);
+        int secondary = ContextCompat.getColor(getContext(), R.color.colorDarkTextSecondary);
+        int accent = ContextCompat.getColor(getContext(), R.color.appAccent);
+
+        rootView.setBackgroundColor(windowBackground);
+        View searchCardView = rootView.findViewById(R.id.searchCard);
+        if(searchCardView instanceof CardView)
+            ((CardView) searchCardView).setCardBackgroundColor(surface);
+        if(searchBox != null) {
+            searchBox.setTextColor(text);
+            searchBox.setHintTextColor(secondary);
+        }
+        if(searchResult != null)
+            searchResult.setBackgroundColor(windowBackground);
+        if(swipe != null)
+            swipe.setBackgroundColor(windowBackground);
+        if(optionsPanel != null)
+            optionsPanel.setBackgroundColor(windowBackground);
+        if(libraryMeta != null)
+            libraryMeta.setBackgroundColor(windowBackground);
+        if(libraryCount != null)
+            libraryCount.setTextColor(secondary);
+        TextView librarySort = rootView.findViewById(R.id.librarySort);
+        if(librarySort != null)
+            librarySort.setTextColor(secondary);
+        if(libraryTab != null) {
+            libraryTab.setBackgroundColor(windowBackground);
+            libraryTab.setTabTextColors(secondary, accent);
+            libraryTab.setSelectedTabIndicatorColor(accent);
+        }
+        if(noresult != null)
+            noresult.setBackground(makeRoundedBackground(surface, divider, 16));
+        if(noResultText != null)
+            noResultText.setTextColor(secondary);
+        styleFilterSpinner(baseMode, surfaceElevated, divider, text);
+        styleFilterSpinner(searchMode, surfaceElevated, divider, text);
+    }
+
+    private void styleFilterSpinner(Spinner spinner, int background, int stroke, int text) {
+        if(spinner == null)
+            return;
+        spinner.setBackground(makeRoundedBackground(background, stroke, 10));
+        spinner.post(() -> {
+            View selected = spinner.getSelectedView();
+            if(selected instanceof TextView)
+                ((TextView) selected).setTextColor(text);
+        });
+    }
+
+    private GradientDrawable makeRoundedBackground(int color, int strokeColor, int radiusDp) {
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(color);
+        background.setCornerRadius(dp(radiusDp));
+        background.setStroke(dp(1), strokeColor);
+        return background;
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
     @Override
