@@ -118,7 +118,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 return true;
             case R.id.episode_download:
                 Intent download = new Intent(context, DownloadActivity.class);
-                download.putExtra("title", new Gson().toJson(title));
+                download.putExtra("title", toViewerTitleJson(title, true));
                 startActivity(download);
                 return true;
             case R.id.episode_more:
@@ -154,7 +154,7 @@ public class EpisodeActivity extends AppCompatActivity {
                     return true;
                 case 3:
                     Intent download = new Intent(context, DownloadActivity.class);
-                    download.putExtra("title", new Gson().toJson(title));
+                    download.putExtra("title", toViewerTitleJson(title, true));
                     startActivity(download);
                     return true;
             }

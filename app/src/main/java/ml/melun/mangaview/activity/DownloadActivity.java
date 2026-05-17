@@ -2,10 +2,13 @@ package ml.melun.mangaview.activity;
 
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.graphics.drawable.GradientDrawable;
+import androidx.appcompat.app.ActionBar;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import android.os.Bundle;
 
+import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.RecyclerView;
 import android.view.MenuItem;
 import android.view.View;
@@ -53,7 +56,7 @@ public class DownloadActivity extends AppCompatActivity {
             eplist.setItemViewCacheSize(20);
             eplist.setItemAnimator(null);
             eplist.setOverScrollMode(View.OVER_SCROLL_NEVER);
-            adapter = new SelectEpisodeAdapter(getApplicationContext(), episodes);
+            adapter = new SelectEpisodeAdapter(this, episodes);
             adapter.setClickListener((view, position) -> adapter.select(position));
             eplist.setAdapter(adapter);
         }catch (Exception e){
@@ -81,7 +84,9 @@ public class DownloadActivity extends AppCompatActivity {
             selected = adapter.getSelected(true);
             downloadClick();
         });
-        getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+        ActionBar actionBar = getSupportActionBar();
+        if(actionBar != null)
+            actionBar.setDisplayHomeAsUpEnabled(true);
 
         Button selectionMode = findViewById(R.id.dl_mode_btn);
         selectionMode.setOnClickListener(view -> {
@@ -95,6 +100,8 @@ public class DownloadActivity extends AppCompatActivity {
                 adapter.setSelectionMode(singleSelect);
             }
         });
+        if(dark)
+            applyDarkChrome(dl, dlAll, selectionMode);
     }
     public boolean onOptionsItemSelected(MenuItem item){
         if (item.getItemId() == android.R.id.home) {
@@ -124,5 +131,48 @@ public class DownloadActivity extends AppCompatActivity {
         else builder = new AlertDialog.Builder(this);
         builder.setMessage(title.getName()+ " 을(를) 다운로드 하시겠습니까?\n[ 총 "+selected.length()+"화 ]").setPositiveButton("네", dialogClickListener)
                 .setNegativeButton("아니오", dialogClickListener).show();
+    }
+
+    private void applyDarkChrome(Button downloadSelected, Button downloadAll, Button selectionMode) {
+        int window = ContextCompat.getColor(this, R.color.colorDarkWindowBackground);
+        int surface = ContextCompat.getColor(this, R.color.colorDarkSurface);
+        View root = findViewById(android.R.id.content);
+        View controls = findViewById(R.id.dl_buttonContainer);
+        if(root != null)
+            root.setBackgroundColor(window);
+        if(eplist != null)
+            eplist.setBackgroundColor(window);
+        if(controls != null)
+            controls.setBackgroundColor(surface);
+        getWindow().setStatusBarColor(surface);
+        getWindow().setNavigationBarColor(window);
+        styleAccentButton(downloadSelected);
+        styleSecondaryButton(downloadAll);
+        styleSecondaryButton(selectionMode);
+    }
+
+    private void styleAccentButton(Button button) {
+        if(button == null)
+            return;
+        button.setBackgroundTintList(null);
+        button.setBackground(roundedBackground(R.color.appAccent, R.color.appAccent, 10));
+        button.setTextColor(ContextCompat.getColor(this, android.R.color.white));
+    }
+
+    private void styleSecondaryButton(Button button) {
+        if(button == null)
+            return;
+        button.setBackgroundTintList(null);
+        button.setBackground(roundedBackground(R.color.colorDarkSurfaceElevated, R.color.colorDarkDivider, 10));
+        button.setTextColor(ContextCompat.getColor(this, R.color.colorDarkText));
+    }
+
+    private GradientDrawable roundedBackground(int fillColorRes, int strokeColorRes, int radiusDp) {
+        GradientDrawable drawable = new GradientDrawable();
+        float density = getResources().getDisplayMetrics().density;
+        drawable.setColor(ContextCompat.getColor(this, fillColorRes));
+        drawable.setCornerRadius(density * radiusDp);
+        drawable.setStroke(Math.max(1, Math.round(density)), ContextCompat.getColor(this, strokeColorRes));
+        return drawable;
     }
 }

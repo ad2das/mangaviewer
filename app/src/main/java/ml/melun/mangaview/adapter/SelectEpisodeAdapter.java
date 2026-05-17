@@ -1,7 +1,6 @@
 package ml.melun.mangaview.adapter;
 
 import android.content.Context;
-import android.graphics.Color;
 import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.RecyclerView;
 import android.util.TypedValue;
@@ -70,21 +69,20 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
             if(!isValidSelectionPosition(data, selected, position)) {
                 h.episode.setText("");
                 h.date.setText("");
-                h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, dark ? R.color.colorDarkItem : R.color.appCard));
+                setRowBackground(h, dark ? R.color.colorDarkSurface : R.color.appCard);
                 return;
             }
             Manga m = data.get(position);
             h.episode.setText(m == null ? "" : m.getName());
             h.date.setText(m == null ? "" : m.getDate());
             if (selected[position]) {
-                if(dark) h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.selectedDark));
-                else h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.appAccentLight));
+                setRowBackground(h, dark ? R.color.selectedDark : R.color.appAccentLight);
             } else {
-                h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, dark ? R.color.colorDarkItem : R.color.appCard));
+                setRowBackground(h, dark ? R.color.colorDarkSurface : R.color.appCard);
             }
 
             if(position == rs || position == re){
-                h.itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.appAccent));
+                setRowBackground(h, R.color.appAccent);
             }
         }catch (Exception e){
             ml.melun.mangaview.report.CrashReporter.record(e);
@@ -95,6 +93,16 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
     @Override
     public int getItemCount() {
         return data == null ? 0 : data.size();
+    }
+
+    private void setRowBackground(ViewHolder holder, int colorRes) {
+        int color = ContextCompat.getColor(mainContext, colorRes);
+        if(holder.card != null)
+            holder.card.setCardBackgroundColor(color);
+        else
+            holder.itemView.setBackgroundColor(color);
+        if(holder.cardContent != null)
+            holder.cardContent.setBackgroundColor(color);
     }
 
     public void select(int position){
@@ -152,10 +160,12 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
     // stores and recycles views as they are scrolled off screen
     public class ViewHolder extends RecyclerView.ViewHolder{
         TextView episode, date;
-        CardView thumbCard;
-        View action, newBadge;
+        CardView card, thumbCard;
+        View action, cardContent, newBadge;
         ViewHolder(View itemView) {
             super(itemView);
+            card = itemView.findViewById(R.id.episodeCard);
+            cardContent = itemView.findViewById(R.id.episodeCardContent);
             episode = itemView.findViewById(R.id.episode);
             date = itemView.findViewById(R.id.date);
             thumbCard = itemView.findViewById(R.id.episodeThumbCard);
@@ -165,8 +175,11 @@ public class SelectEpisodeAdapter extends RecyclerView.Adapter<RecyclerView.View
             action.setVisibility(View.GONE);
             newBadge.setVisibility(View.GONE);
             if(dark){
-                date.setTextColor(Color.WHITE);
-                episode.setTextColor(Color.WHITE);
+                itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.colorDarkWindowBackground));
+                if(cardContent != null)
+                    cardContent.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.colorDarkSurface));
+                date.setTextColor(ContextCompat.getColor(mainContext, R.color.colorDarkTextSecondary));
+                episode.setTextColor(ContextCompat.getColor(mainContext, R.color.colorDarkText));
             }
             else{
                 date.setTextColor(ContextCompat.getColor(mainContext, R.color.appTextSecondary));

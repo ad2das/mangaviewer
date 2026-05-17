@@ -194,7 +194,7 @@ public class Utils {
         if(p != null)
             p.ensureSourceSiteForTitle(title);
         Intent episodeView = new Intent(context, EpisodeActivity.class);
-        episodeView.putExtra("title", new Gson().toJson(title));
+        episodeView.putExtra("title", toViewerTitleJson(title, true));
         return episodeView;
     }
 
