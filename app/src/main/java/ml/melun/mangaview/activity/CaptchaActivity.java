@@ -183,14 +183,7 @@ public class CaptchaActivity extends AppCompatActivity {
         String purl = p.getUrl();
 
         Intent intent = getIntent();
-        String path = intent.getStringExtra("url");
-        String url;
-        if(path == null)
-            url = purl;
-        else if(path.startsWith("http://") || path.startsWith("https://"))
-            url = path;
-        else
-            url = purl + path;
+        String url = resolveCaptchaUrl(intent, purl);
 
         infoText = this.findViewById(R.id.infoText);
         try {
@@ -335,6 +328,27 @@ public class CaptchaActivity extends AppCompatActivity {
 
         infoText.setVisibility(View.GONE);
 
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        String purl = p.getUrl();
+        captchaLoadUrl = resolveCaptchaUrl(intent, purl);
+        hideCaptchaLoadError();
+        clearWebViewProxy();
+        if(webView != null)
+            loadCaptchaUrl(captchaLoadUrl);
+    }
+
+    private String resolveCaptchaUrl(Intent intent, String purl) {
+        String path = intent == null ? null : intent.getStringExtra("url");
+        if(path == null)
+            return purl;
+        if(path.startsWith("http://") || path.startsWith("https://"))
+            return path;
+        return purl + path;
     }
 
     private void configureActionButtons(String purl) {

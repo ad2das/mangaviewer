@@ -101,6 +101,7 @@
             android:name=".activity.CaptchaActivity"
             android:configChanges="orientation|screenSize"
             android:hardwareAccelerated="true"
+            android:launchMode="singleTop"
             android:theme="@style/AppTheme.NoActionBar" />
         <activity
             android:name=".activity.FirstTimeActivity"
