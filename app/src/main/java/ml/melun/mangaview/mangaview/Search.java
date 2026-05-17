@@ -246,7 +246,8 @@ public class Search {
             else if(status == 0)
                 status = comicResult.status;
         } catch (Exception e) {
-            ml.melun.mangaview.report.CrashReporter.record(e);
+            if(shouldReportSearchFailure(e))
+                ml.melun.mangaview.report.CrashReporter.record(e);
             status = 1;
         }
         result.addAll(combined);
@@ -291,7 +292,11 @@ public class Search {
         String message = e.getMessage();
         if(message != null && message.startsWith("Request failed:"))
             return false;
-        return true;
+        return !(e instanceof java.io.IOException);
+    }
+
+    static boolean shouldReportSearchFailureForTest(Exception e) {
+        return shouldReportSearchFailure(e);
     }
 
     private static class SearchResult {
@@ -654,7 +659,8 @@ public class Search {
             appendNewResults(webtoonResults);
             return 0;
         } catch (Exception e) {
-            ml.melun.mangaview.report.CrashReporter.record(e);
+            if(shouldReportSearchFailure(e))
+                ml.melun.mangaview.report.CrashReporter.record(e);
             return 1;
         }
     }
@@ -707,7 +713,8 @@ public class Search {
             appendNewResults(comicResults);
             return 0;
         } catch (Exception e) {
-            ml.melun.mangaview.report.CrashReporter.record(e);
+            if(shouldReportSearchFailure(e))
+                ml.melun.mangaview.report.CrashReporter.record(e);
             return 1;
         }
     }
@@ -1707,7 +1714,7 @@ public class Search {
                     : client.runWithRequestGroup(requestGroup, () -> loader.load());
             return new NtkHybridPart(kind, pageTitles, true);
         } catch (Exception e) {
-            if(requestGroup == null || !requestGroup.isCancelled())
+            if((requestGroup == null || !requestGroup.isCancelled()) && shouldReportSearchFailure(e))
                 ml.melun.mangaview.report.CrashReporter.record(e);
             return new NtkHybridPart(kind, new PageTitles(new ArrayList<>(), null, true, false, 0), false);
         }

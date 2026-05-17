@@ -50,15 +50,17 @@ public class MainWebtoonAdapterTest {
     @Test
     public void sectionFailurePolicyDoesNotReportExpectedRequestFailures() {
         assertFalse(HomeSectionFetchFailurePolicy.shouldReportForTest(new Exception("Request failed: /cm")));
+        assertFalse(HomeSectionFetchFailurePolicy.shouldReportForTest(new Exception("Cloudflare challenge")));
         assertTrue(HomeSectionFetchFailurePolicy.shouldReportForTest(new RuntimeException("unexpected")));
     }
 
     @Test
-    public void emptyNtkFetchOpensCaptchaEvenWhenPlaceholderIsVisible() {
-        assertTrue(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(true, true));
-        assertTrue(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(true, false));
-        assertTrue(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(false, false));
-        assertFalse(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(false, true));
+    public void emptyNtkFetchOpensCaptchaOnlyForObservedCloudflareChallenge() {
+        assertTrue(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(true, true, true));
+        assertTrue(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(true, false, true));
+        assertFalse(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(true, false, false));
+        assertTrue(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(false, false, false));
+        assertFalse(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(false, true, false));
     }
 
     @Test

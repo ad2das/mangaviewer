@@ -14,6 +14,8 @@ final class HomeSectionFetchFailurePolicy {
         String message = failure.getMessage();
         if(message != null && message.startsWith("Request failed:"))
             return false;
+        if("Cloudflare challenge".equals(message))
+            return false;
         return failure instanceof RuntimeException;
     }
 

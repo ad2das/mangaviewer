@@ -950,6 +950,12 @@ public class CustomHttpClient {
                 && System.currentTimeMillis() - lastCloudflareChallengeAt < 5 * 60 * 1000L;
     }
 
+    public boolean hasCloudflareChallengeSince(long timestamp) {
+        return lastCloudflareChallengeUrl != null
+                && lastCloudflareChallengeUrl.length() > 0
+                && lastCloudflareChallengeAt >= timestamp;
+    }
+
     public void clearLastCloudflareChallenge() {
         lastCloudflareChallengeUrl = null;
         lastCloudflareChallengeAt = 0L;

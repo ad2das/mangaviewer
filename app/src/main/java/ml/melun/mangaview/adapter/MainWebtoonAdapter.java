@@ -2509,6 +2509,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         private boolean keepExistingRowsDuringFetch;
         private AppDispatchers.TaskHandle handle;
         private volatile boolean cancelled = false;
+        private long fetchStartedAt;
 
         void start() {
             prepare();
@@ -2542,6 +2543,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
         private Boolean fetchSections() {
             cancellation = MangaRepository.cancellation();
+            fetchStartedAt = System.currentTimeMillis();
             if(cancelled)
                 return false;
             boolean ntk = siteNtkSnapshot;
@@ -2700,7 +2702,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 fetcher = null;
             if(!hasAnyResult) {
                 notifyFetchFinished(false);
-                if(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(siteNtkSnapshot, hasDisplayContent()) && listener != null)
+                boolean cloudflareChallenge = getHttpClient().hasCloudflareChallengeSince(fetchStartedAt);
+                if(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(siteNtkSnapshot, hasDisplayContent(), cloudflareChallenge) && listener != null)
                     listener.captchaCallback();
                 return;
             }

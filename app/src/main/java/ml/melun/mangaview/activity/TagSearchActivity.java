@@ -58,6 +58,7 @@ import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.PerfTrace;
 
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
 import static ml.melun.mangaview.Utils.openViewerPrepared;
@@ -585,6 +586,8 @@ public class TagSearchActivity extends AppCompatActivity {
         private MangaRepository.Cancellation cancellation;
         private AppDispatchers.TaskHandle handle;
         private volatile boolean cancelled;
+        private Exception searchFailure;
+        private long loadStartedAt;
 
         public void start(){
             long queuedAt = PerfTrace.start("tag_search_task_queue_ms");
@@ -597,10 +600,12 @@ public class TagSearchActivity extends AppCompatActivity {
 
         private Integer load(){
             cancellation = MangaRepository.cancellation();
+            loadStartedAt = System.currentTimeMillis();
             try {
                 return MangaRepository.search(search, cancellation);
             } catch (Exception e) {
-                if(!cancelled)
+                searchFailure = e;
+                if(!cancelled && MangaRepository.shouldReportSearchFailure(e))
                     ml.melun.mangaview.report.CrashReporter.record(e);
                 return 1;
             }
@@ -614,7 +619,7 @@ public class TagSearchActivity extends AppCompatActivity {
                 return;
             if(res == null)
                 res = 1;
-            if(res != 0){
+            if(shouldOpenCaptchaAfterSearchFailure(res, searchFailure, loadStartedAt)){
                 showCaptchaPopup(context, p);
             }
             long adapterStartedAt = PerfTrace.start("tag_search_adapter_main_ms");
@@ -663,6 +668,10 @@ public class TagSearchActivity extends AppCompatActivity {
                 finishInitialSearchTraceIfNeeded();
                 releaseDeferredSearchThumbnails();
             }else{
+                if(res != 0 && !shouldOpenCaptchaAfterSearchFailure(res, searchFailure, loadStartedAt))
+                    noresult.setText("\uacb0\uacfc\ub97c \ubd88\ub7ec\uc624\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.\n\ub124\ud2b8\uc6cc\ud06c \ub610\ub294 \uc0ac\uc774\ud2b8 \uc8fc\uc18c\ub97c \ud655\uc778\ud55c \ub4a4 \ub2e4\uc2dc \uc2dc\ub3c4\ud574 \uc8fc\uc138\uc694.");
+                else
+                    noresult.setText("\uac80\uc0c9 \uacb0\uacfc\uac00 \uc5c6\uc2b5\ub2c8\ub2e4");
                 noresult.setVisibility(View.VISIBLE);
                 adapter.setDeferThumbnails(false);
             }
@@ -683,6 +692,14 @@ public class TagSearchActivity extends AppCompatActivity {
                 handle.cancel();
             clearLoad(this);
         }
+    }
+
+    private static boolean shouldOpenCaptchaAfterSearchFailure(int result, Exception failure, long loadStartedAt) {
+        if(result == 0)
+            return false;
+        if(failure != null)
+            return MangaRepository.shouldReportSearchFailure(failure);
+        return getHttpClient().hasCloudflareChallengeSince(loadStartedAt);
     }
 
     private class getUpdated implements LoadOperation {

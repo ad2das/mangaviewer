@@ -2,6 +2,7 @@ package ml.melun.mangaview.mangaview;
 
 import org.junit.Test;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 
@@ -9,9 +10,20 @@ import static ml.melun.mangaview.mangaview.MTitle.base_auto;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class SearchTest {
+    @Test
+    public void expectedSearchNetworkFailuresDoNotReportAsCrashes() {
+        assertFalse(Search.shouldReportSearchFailureForTest(
+                new Exception("Request failed: /api/manhwa-list?status=completed")));
+        assertFalse(Search.shouldReportSearchFailureForTest(
+                new IOException("Network is unreachable")));
+        assertTrue(Search.shouldReportSearchFailureForTest(
+                new IllegalStateException("parser invariant failed")));
+    }
+
     @Test
     public void wfwfKeywordSearchUsesSingleSharedPathForAutoSearch() {
         assertEquals("/search.html?q=onepunch", Search.wfwfKeywordSearchPathForTest("onepunch"));
