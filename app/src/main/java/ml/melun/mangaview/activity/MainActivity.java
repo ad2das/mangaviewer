@@ -26,6 +26,7 @@ import android.view.ViewGroup;
 import android.view.ViewStub;
 import com.google.android.material.bottomsheet.BottomSheetDialog;
 import com.google.android.material.bottomnavigation.BottomNavigationView;
+import com.google.android.material.button.MaterialButton;
 import com.google.android.material.navigation.NavigationView;
 import androidx.core.view.GravityCompat;
 import androidx.drawerlayout.widget.DrawerLayout;
@@ -643,6 +644,7 @@ public class MainActivity extends AppCompatActivity
         accountSheetSettings = view.findViewById(R.id.account_sheet_settings);
         accountSheetUpdate = view.findViewById(R.id.account_sheet_update);
         accountSheetHint = view.findViewById(R.id.account_sheet_hint);
+        applyAccountSheetTheme(view);
         accountSheet.setContentView(view);
         accountSheet.setOnDismissListener(dialog -> clearAccountSheetRefs());
         updateAccountSheet(false);
@@ -730,6 +732,44 @@ public class MainActivity extends AppCompatActivity
         accountSheetSecondary.setVisibility(View.VISIBLE);
         accountSheetSecondary.setText(R.string.account_sign_out);
         accountSheetSecondary.setOnClickListener(v -> confirmSignOut());
+    }
+
+    private void applyAccountSheetTheme(View root) {
+        if(!dark || root == null)
+            return;
+        root.setBackground(makeRoundedBackground(R.color.colorDarkSurface, R.color.colorDarkDivider, 24));
+        int text = ContextCompat.getColor(this, R.color.colorDarkText);
+        int secondary = ContextCompat.getColor(this, R.color.colorDarkTextSecondary);
+        if(accountSheetName != null)
+            accountSheetName.setTextColor(text);
+        if(accountSheetEmail != null)
+            accountSheetEmail.setTextColor(secondary);
+        if(accountSheetHint != null)
+            accountSheetHint.setTextColor(secondary);
+        if(accountSheetStatus != null) {
+            accountSheetStatus.setTextColor(ContextCompat.getColor(this, R.color.appAccent));
+            accountSheetStatus.setBackground(makeRoundedBackground(R.color.colorDarkSurfaceElevated, R.color.colorDarkDivider, 15));
+        }
+        styleAccountSheetButton(accountSheetPrimary, true);
+        styleAccountSheetButton(accountSheetSecondary, false);
+        styleAccountSheetButton(accountSheetSettings, false);
+        styleAccountSheetButton(accountSheetUpdate, false);
+    }
+
+    private void styleAccountSheetButton(TextView view, boolean primary) {
+        if(view == null)
+            return;
+        int text = ContextCompat.getColor(this, primary ? R.color.colorTextOnPrimary : R.color.colorDarkText);
+        view.setTextColor(text);
+        if(view instanceof MaterialButton) {
+            MaterialButton button = (MaterialButton)view;
+            button.setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(this,
+                    primary ? R.color.appAccent : R.color.colorDarkSurface)));
+            button.setStrokeColor(ColorStateList.valueOf(ContextCompat.getColor(this,
+                    primary ? R.color.appAccent : R.color.colorDarkDivider)));
+        } else if(!primary) {
+            view.setBackground(makeRoundedBackground(R.color.colorDarkSurface, R.color.colorDarkDivider, 12));
+        }
     }
 
     private void clearAccountSheetRefs() {
@@ -878,6 +918,14 @@ public class MainActivity extends AppCompatActivity
         ColorStateList tint = new ColorStateList(states, colors);
         bottomNavigationView.setItemIconTintList(tint);
         bottomNavigationView.setItemTextColor(tint);
+    }
+
+    private GradientDrawable makeRoundedBackground(int fillColorRes, int strokeColorRes, int radiusDp) {
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(ContextCompat.getColor(this, fillColorRes));
+        background.setStroke(dp(1), ContextCompat.getColor(this, strokeColorRes));
+        background.setCornerRadius(dp(radiusDp));
+        return background;
     }
 
     private int dp(int value) {
