@@ -65,10 +65,42 @@ public class SearchTest {
     }
 
     @Test
-    public void ntkKeywordSearchSkipsHtmlFallbackWhenApiCompletedEmpty() {
-        assertEquals(false, Search.shouldFallbackToNtkHtmlKeywordSearchForTest(0, true));
-        assertEquals(true, Search.shouldFallbackToNtkHtmlKeywordSearchForTest(0, false));
-        assertEquals(false, Search.shouldFallbackToNtkHtmlKeywordSearchForTest(1, false));
+    public void ntkKeywordSearchMergesHtmlBeforeFilteredApiResults() {
+        ArrayList<Title> html = new ArrayList<>();
+        html.add(ntkTitle("One Piece", 100, base_comic, "/manhwa/100"));
+        html.add(ntkTitle("One Piece Special", 101, base_comic, "/manhwa/101"));
+        html.add(ntkTitle("One Piece Spin Off", 102, base_comic, "/manhwa/102"));
+        ArrayList<Title> api = new ArrayList<>();
+        api.add(ntkTitle("One Piece", 100, base_comic, "/manhwa/100"));
+        api.add(ntkTitle("One Piece API Only", 103, base_comic, "/manhwa/103"));
+
+        ArrayList<Title> merged = Search.mergeNtkHybridKeywordTitlesForTest(html, api);
+
+        assertEquals(4, merged.size());
+        assertEquals("/manhwa/100", merged.get(0).getPath());
+        assertEquals("/manhwa/101", merged.get(1).getPath());
+        assertEquals("/manhwa/102", merged.get(2).getPath());
+        assertEquals("/manhwa/103", merged.get(3).getPath());
+    }
+
+    @Test
+    public void ntkKeywordSearchKeepsHtmlResultsWhenApiIsEmpty() {
+        ArrayList<Title> html = new ArrayList<>();
+        html.add(ntkTitle("One Piece", 100, base_comic, "/manhwa/100"));
+        html.add(ntkTitle("One Piece Special", 101, base_comic, "/manhwa/101"));
+        html.add(ntkTitle("One Piece Spin Off", 102, base_comic, "/manhwa/102"));
+
+        ArrayList<Title> merged = Search.mergeNtkHybridKeywordTitlesForTest(html, new ArrayList<>());
+
+        assertEquals(3, merged.size());
+    }
+
+    @Test
+    public void ntkKeywordApiFilterDropsUnrelatedGenericRows() {
+        ArrayList<Title> titles = new ArrayList<>();
+        titles.add(ntkTitle("Unrelated Result", 1, base_comic, "/manhwa/1"));
+
+        assertEquals(0, Search.filterNtkKeywordResultsForTest(titles, "onepunch", 0).size());
     }
 
     @Test
@@ -90,5 +122,12 @@ public class SearchTest {
         assertEquals("/manhwa/u-moo205z1-yvf4", titles.get(0).getUrl());
         assertEquals("/manhwa/u-moo205z1-yvf4/u-episode",
                 Title.normalizeNtkEpisodePathForTest("/manhwa/u-moo205z1-yvf4/u-episode", "manhwa", "u-moo205z1-yvf4"));
+    }
+
+    private static Title ntkTitle(String name, int id, int baseMode, String path) {
+        Title title = new Title(name, "", "", new ArrayList<>(), "", id, baseMode);
+        title.setSourceSite("ntk");
+        title.setPath(path);
+        return title;
     }
 }

@@ -250,19 +250,20 @@ public class Search {
         ArrayList<Title> combined = new ArrayList<>();
         try {
             if(client != null && client.isNtk()) {
-                PageTitles apiResults = fetchNtkKeywordApiResults(client, base_auto, 240, 1);
-                appendUnique(combined, apiResults.titles);
-                if(shouldFallbackToNtkHtmlKeywordSearch(combined.size(), apiResults.hasMoreKnown))
-                    appendUnique(combined, fetchNtkSearchResults(client, ntkSearchPath(query, base_auto, 1), base_auto, 0, 1).titles);
+                int currentPage = page;
+                PageTitles hybridResults = fetchNtkHybridKeywordResults(client, base_auto, 240, currentPage);
+                appendUnique(combined, hybridResults.titles);
+                page++;
+                last = hybridResults.hasMoreKnown ? !hybridResults.hasMore : true;
             } else {
                 appendUnique(combined, fetchWfwfCombinedKeywordSearchResults(client).titles);
+                last = true;
             }
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
             status = 1;
         }
         result.addAll(combined);
-        last = true;
         int finalStatus = result.size() > 0 ? 0 : status;
         traceSearchMetric("keyword_search_total_ms", startedAt,
                 ",site=" + (client != null && client.isNtk() ? "ntk" : "wfwf")
@@ -291,9 +292,7 @@ public class Search {
                 continue;
             boolean exists = false;
             for(Title existing : target) {
-                if(existing != null
-                        && existing.getBaseMode() == title.getBaseMode()
-                        && existing.getId() == title.getId()) {
+                if(isSameTitleIdentity(existing, title)) {
                     exists = true;
                     break;
                 }
@@ -301,6 +300,50 @@ public class Search {
             if(!exists)
                 target.add(title);
         }
+    }
+
+    private static boolean isSameTitleIdentity(Title first, Title second) {
+        if(first == null || second == null || first.getBaseMode() != second.getBaseMode())
+            return false;
+        String firstPath = normalizedTitleIdentityPath(first);
+        String secondPath = normalizedTitleIdentityPath(second);
+        if(firstPath.length() > 0 && secondPath.length() > 0)
+            return firstPath.equals(secondPath);
+        return first.getId() > 0 && first.getId() == second.getId();
+    }
+
+    private static String titleIdentityKey(Title title) {
+        if(title == null)
+            return "";
+        String path = normalizedTitleIdentityPath(title);
+        if(path.length() > 0)
+            return title.getBaseMode() + ":" + path;
+        return title.getBaseMode() + ":" + title.getId();
+    }
+
+    private static String normalizedTitleIdentityPath(Title title) {
+        if(title == null)
+            return "";
+        String path = title.getPath();
+        if((path == null || path.trim().length() == 0) && "ntk".equals(title.getSourceSite()))
+            path = title.getUrl();
+        if(path == null)
+            return "";
+        String value = path.trim();
+        int scheme = value.indexOf("://");
+        if(scheme >= 0) {
+            int slash = value.indexOf('/', scheme + 3);
+            value = slash >= 0 ? value.substring(slash) : "";
+        }
+        int query = value.indexOf('?');
+        if(query >= 0)
+            value = value.substring(0, query);
+        int hash = value.indexOf('#');
+        if(hash >= 0)
+            value = value.substring(0, hash);
+        while(value.endsWith("/") && value.length() > 1)
+            value = value.substring(0, value.length() - 1);
+        return value;
     }
 
     private PageTitles fetchWfwfCombinedKeywordSearchResults(CustomHttpClient client) throws Exception {
@@ -794,7 +837,7 @@ public class Search {
         for(Title title : parsed) {
             if(title == null)
                 continue;
-            String key = title.getBaseMode() + ":" + title.getId();
+            String key = titleIdentityKey(title);
             if(seenTitleKeys.contains(key) || !pageKeys.add(key))
                 continue;
             target.add(title);
@@ -935,6 +978,10 @@ public class Search {
 
     private interface NtkApiPathLoader {
         NtkApiPathResult load();
+    }
+
+    private interface NtkHybridLoader {
+        PageTitles load() throws Exception;
     }
 
     private PageTitles cachedNtkPageTitles(CustomHttpClient client, String kind, String path, int targetBaseMode,
@@ -1383,7 +1430,7 @@ public class Search {
 
     private boolean appendNextNtkKeywordApiPage(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {
         int currentPage = page;
-        PageTitles pageTitles = fetchNtkKeywordApiResults(client, targetBaseMode, limit, currentPage);
+        PageTitles pageTitles = fetchNtkHybridKeywordResults(client, targetBaseMode, limit, currentPage);
         int added = appendUniquePageTitles(target, pageTitles.titles);
         page++;
         if(added > 0)
@@ -1398,16 +1445,8 @@ public class Search {
         return ntkClient && mode == 0;
     }
 
-    private static boolean shouldFallbackToNtkHtmlKeywordSearch(int resultCount, boolean apiComplete) {
-        return resultCount <= 0 && !apiComplete;
-    }
-
     private static boolean isNtkKeywordApiEmptyAuthoritative(int successfulPaths, int pathCount, int total, int parsedCandidates) {
         return pathCount > 0 && successfulPaths == pathCount && total == 0 && parsedCandidates == 0;
-    }
-
-    static boolean shouldFallbackToNtkHtmlKeywordSearchForTest(int resultCount, boolean apiComplete) {
-        return shouldFallbackToNtkHtmlKeywordSearch(resultCount, apiComplete);
     }
 
     static boolean isNtkKeywordApiEmptyAuthoritativeForTest(int successfulPaths, int pathCount, int total, int parsedCandidates) {
@@ -1582,6 +1621,85 @@ public class Search {
         appendUnique(target, filtered);
     }
 
+    private PageTitles fetchNtkHybridKeywordResults(CustomHttpClient client, int targetBaseMode, int limit, int currentPage) throws Exception {
+        if(client == null)
+            return new PageTitles(new ArrayList<>(), null, true, false, 0);
+        long totalStartedAt = PerfTrace.start("ntk_search_hybrid_total_ms");
+        CompletionService<NtkHybridPart> completion = AppDispatchers.ioCompletionService();
+        ArrayList<Future<NtkHybridPart>> running = new ArrayList<>();
+        CustomHttpClient.RequestGroup requestGroup = client.currentRequestGroup();
+        try {
+            running.add(completion.submit(AppDispatchers.safeCallable(() -> fetchNtkHybridPart(
+                    client, requestGroup, "html",
+                    () -> fetchNtkSearchResults(client, ntkSearchPath(query, targetBaseMode, currentPage), targetBaseMode, limit, currentPage)))));
+            running.add(completion.submit(AppDispatchers.safeCallable(() -> fetchNtkHybridPart(
+                    client, requestGroup, "api",
+                    () -> fetchNtkKeywordApiResults(client, targetBaseMode, limit, currentPage)))));
+
+            PageTitles htmlResults = new PageTitles(new ArrayList<>(), null, true, false, 0);
+            PageTitles apiResults = new PageTitles(new ArrayList<>(), null, true, false, 0);
+            int success = 0;
+            for(int i = 0; i < running.size(); i++) {
+                NtkHybridPart part = completion.take().get();
+                if(part == null)
+                    continue;
+                if(part.success)
+                    success++;
+                if("api".equals(part.kind))
+                    apiResults = part.pageTitles;
+                else
+                    htmlResults = part.pageTitles;
+            }
+            PageTitles merged = mergeNtkHybridKeywordResults(htmlResults, apiResults);
+            traceSearchMetric("ntk_search_hybrid_total_ms", totalStartedAt,
+                    ",success=" + success
+                            + ",html=" + htmlResults.titles.size()
+                            + ",api=" + apiResults.titles.size()
+                            + ",count=" + merged.titles.size()
+                            + ",hasMore=" + merged.hasMore);
+            return merged;
+        } finally {
+            for(Future<NtkHybridPart> future : running)
+                if(future != null && !future.isDone())
+                    future.cancel(true);
+        }
+    }
+
+    private NtkHybridPart fetchNtkHybridPart(CustomHttpClient client, CustomHttpClient.RequestGroup requestGroup,
+                                             String kind, NtkHybridLoader loader) {
+        try {
+            PageTitles pageTitles = requestGroup == null
+                    ? loader.load()
+                    : client.runWithRequestGroup(requestGroup, () -> loader.load());
+            return new NtkHybridPart(kind, pageTitles, true);
+        } catch (Exception e) {
+            if(requestGroup == null || !requestGroup.isCancelled())
+                ml.melun.mangaview.report.CrashReporter.record(e);
+            return new NtkHybridPart(kind, new PageTitles(new ArrayList<>(), null, true, false, 0), false);
+        }
+    }
+
+    private static PageTitles mergeNtkHybridKeywordResults(PageTitles htmlResults, PageTitles apiResults) {
+        if(htmlResults == null)
+            htmlResults = new PageTitles(new ArrayList<>(), null, true, false, 0);
+        if(apiResults == null)
+            apiResults = new PageTitles(new ArrayList<>(), null, true, false, 0);
+        ArrayList<Title> merged = new ArrayList<>();
+        appendUnique(merged, htmlResults.titles);
+        appendUnique(merged, apiResults.titles);
+        boolean hasMore = htmlResults.hasMore || (apiResults.hasMore && apiResults.titles.size() > 0);
+        boolean hasMoreKnown = htmlResults.hasMoreKnown || apiResults.hasMoreKnown;
+        String nextPath = htmlResults.nextPath != null && htmlResults.nextPath.length() > 0
+                ? htmlResults.nextPath : (apiResults.titles.size() > 0 ? apiResults.nextPath : null);
+        int total = Math.max(0, htmlResults.totalCount) + Math.max(0, apiResults.totalCount);
+        return new PageTitles(merged, nextPath, hasMoreKnown, hasMore, total);
+    }
+
+    static ArrayList<Title> mergeNtkHybridKeywordTitlesForTest(ArrayList<Title> htmlTitles, ArrayList<Title> apiTitles) {
+        return mergeNtkHybridKeywordResults(new PageTitles(htmlTitles, null, true, false, 0),
+                new PageTitles(apiTitles, null, true, false, 0)).titles;
+    }
+
     private PageTitles fetchNtkKeywordApiResults(CustomHttpClient client, int targetBaseMode, int limit, int currentPage) throws Exception {
         ArrayList<String> paths = ntkKeywordApiPaths(query, targetBaseMode, currentPage, limit);
         if(client == null || paths.size() == 0)
@@ -1596,10 +1714,13 @@ public class Search {
         if(shouldFetchNtkKeywordApiPathsInParallel(paths)) {
             CompletionService<NtkApiPathResult> completion = AppDispatchers.ioCompletionService();
             ArrayList<Future<NtkApiPathResult>> running = new ArrayList<>();
+            CustomHttpClient.RequestGroup requestGroup = client.currentRequestGroup();
             try {
                 for(String path : paths)
-                    running.add(completion.submit(AppDispatchers.safeCallable(() -> fetchNtkKeywordApiPathResult(
-                            client, path, targetBaseMode, limit, currentPage, totalStartedAt))));
+                    running.add(completion.submit(AppDispatchers.safeCallable(() -> requestGroup == null
+                            ? fetchNtkKeywordApiPathResult(client, path, targetBaseMode, limit, currentPage, totalStartedAt)
+                            : client.runWithRequestGroup(requestGroup, () -> fetchNtkKeywordApiPathResult(
+                                    client, path, targetBaseMode, limit, currentPage, totalStartedAt)))));
                 for(int i = 0; i < running.size(); i++) {
                     NtkApiPathResult result = completion.take().get();
                     if(result == null)
@@ -1752,6 +1873,18 @@ public class Search {
         }
     }
 
+    private static class NtkHybridPart {
+        final String kind;
+        final PageTitles pageTitles;
+        final boolean success;
+
+        NtkHybridPart(String kind, PageTitles pageTitles, boolean success) {
+            this.kind = kind == null ? "" : kind;
+            this.pageTitles = pageTitles == null ? new PageTitles(new ArrayList<>(), null) : pageTitles;
+            this.success = success;
+        }
+    }
+
     private static String ntkMetricPath(String path) {
         if(path == null)
             return "";
@@ -1866,7 +1999,7 @@ public class Search {
         for(Title title : source) {
             if(title == null)
                 continue;
-            String key = title.getBaseMode() + ":" + title.getId();
+            String key = titleIdentityKey(title);
             if(seenTitleKeys.add(key))
                 result.add(title);
         }

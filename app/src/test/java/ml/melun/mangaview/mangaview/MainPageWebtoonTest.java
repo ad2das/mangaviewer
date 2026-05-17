@@ -95,6 +95,20 @@ public class MainPageWebtoonTest {
     }
 
     @Test
+    public void parseWolfSearchHtmlFastReadsNtkSlugTitlePaths() {
+        ArrayList<Title> titles = MainPageWebtoon.parseWolfSearchHtmlFast(
+                "<a class='card' href='/manhwa/u-moo205z1-yvf4'>"
+                        + "<h6>Slug Comic</h6>"
+                        + "</a>",
+                base_comic, 0, "ntk");
+
+        assertEquals(1, titles.size());
+        assertTrue(titles.get(0).getId() > 0);
+        assertEquals("/manhwa/u-moo205z1-yvf4", titles.get(0).getPath());
+        assertEquals("/manhwa/u-moo205z1-yvf4", titles.get(0).getUrl());
+    }
+
+    @Test
     public void parseWolfTitles_readsNtkLazyThumbnailAttributes() {
         ArrayList<Title> dataSrcset = MainPageWebtoon.parseWolfTitles(
                 Jsoup.parse("<li><a href=\"/webtoon/501\"><img src=\"data:image/gif;base64,AA\" data-srcset=\"/data/webtoon/thumb-320.jpg 320w, /data/webtoon/thumb-640.jpg 640w\"><p class=\"subject\">NTK 웹툰</p></a></li>"),

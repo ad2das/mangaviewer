@@ -643,11 +643,7 @@ public class MainPageWebtoon {
         while(matcher.find()) {
             try {
                 String href = decodeHtml(matcher.group(2));
-                int id = getQueryInt(href, "toon");
-                if(id <= 0)
-                    id = getPathId(href, "webtoon");
-                if(id <= 0)
-                    id = getPathId(href, "manhwa");
+                int id = titleIdFromHref(href, baseMode);
                 if(id <= 0)
                     continue;
                 int detectedBaseMode = detectWolfBaseMode(href);
@@ -666,6 +662,9 @@ public class MainPageWebtoon {
                 Title parsed = new Title(name, thumb, "", new ArrayList<>(), "", id, baseMode);
                 if(sourceSite != null && sourceSite.trim().length() > 0)
                     parsed.setSourceSite(sourceSite.trim());
+                String titlePath = ntkTitlePathFromHref(href, baseMode);
+                if(titlePath.length() > 0)
+                    parsed.setPath(titlePath);
                 applyInferredSearchTagsIfLoaded(parsed);
                 titles.add(parsed);
                 if(limit > 0 && titles.size() >= limit)
@@ -685,11 +684,7 @@ public class MainPageWebtoon {
                 Element link = findTitleLink(e, baseMode);
                 if(link == null) continue;
                 String href = link.attr("href");
-                int id = getQueryInt(href, "toon");
-                if(id <= 0)
-                    id = getPathId(href, "webtoon");
-                if(id <= 0)
-                    id = getPathId(href, "manhwa");
+                int id = titleIdFromHref(href, baseMode);
                 if(id <= 0) continue;
                 int detectedBaseMode = detectWolfBaseMode(href);
                 if(detectedBaseMode != 0 && detectedBaseMode != baseMode)
@@ -747,6 +742,9 @@ public class MainPageWebtoon {
                 Title parsed = new Title(name, thumb, "", tags, release, id, baseMode);
                 if(sourceSite != null && sourceSite.trim().length() > 0)
                     parsed.setSourceSite(sourceSite.trim());
+                String titlePath = ntkTitlePathFromHref(href, baseMode);
+                if(titlePath.length() > 0)
+                    parsed.setPath(titlePath);
                 titles.add(parsed);
                 if(enrichClassification)
                     applyInferredSearchTags(parsed);
@@ -769,11 +767,7 @@ public class MainPageWebtoon {
             String href = link.attr("href");
             if(isEpisodePath(href, "webtoon") || isEpisodePath(href, "manhwa"))
                 continue;
-            int id = getQueryInt(href, "toon");
-            if(id <= 0)
-                id = getPathId(href, "webtoon");
-            if(id <= 0)
-                id = getPathId(href, "manhwa");
+            int id = titleIdFromHref(href, baseMode);
             if(id <= 0)
                 continue;
             int detectedBaseMode = detectWolfBaseMode(href);
@@ -808,7 +802,81 @@ public class MainPageWebtoon {
     }
 
     private static boolean isEpisodePath(String href, String segment) {
-        return getSecondPathId(href, segment) > 0;
+        return getSecondPathId(href, segment) > 0 || hasSecondPathSegment(href, segment);
+    }
+
+    private static int titleIdFromHref(String href, int baseMode) {
+        int id = getQueryInt(href, "toon");
+        if(id <= 0)
+            id = getPathId(href, "webtoon");
+        if(id <= 0)
+            id = getPathId(href, "manhwa");
+        if(id <= 0) {
+            String path = ntkTitlePathFromHref(href, baseMode);
+            if(path.length() > 0)
+                id = stableNtkSourceId(path.substring(path.lastIndexOf('/') + 1));
+        }
+        return id;
+    }
+
+    private static String ntkTitlePathFromHref(String href, int baseMode) {
+        String segment = baseMode == base_webtoon ? "webtoon" : "manhwa";
+        String path = normalizedPathOnly(href);
+        String marker = "/" + segment + "/";
+        int start = path.indexOf(marker);
+        if(start < 0)
+            return "";
+        start += marker.length();
+        int end = path.indexOf('/', start);
+        if(end < 0)
+            end = path.length();
+        if(end <= start)
+            return "";
+        return marker + path.substring(start, end);
+    }
+
+    private static boolean hasSecondPathSegment(String href, String segment) {
+        String path = normalizedPathOnly(href);
+        String marker = "/" + segment + "/";
+        int start = path.indexOf(marker);
+        if(start < 0)
+            return false;
+        start += marker.length();
+        int slash = path.indexOf('/', start);
+        return slash >= 0 && slash + 1 < path.length();
+    }
+
+    private static String normalizedPathOnly(String href) {
+        if(href == null)
+            return "";
+        String value = href.trim();
+        int scheme = value.indexOf("://");
+        if(scheme >= 0) {
+            int slash = value.indexOf('/', scheme + 3);
+            value = slash >= 0 ? value.substring(slash) : "";
+        }
+        int query = value.indexOf('?');
+        if(query >= 0)
+            value = value.substring(0, query);
+        int hash = value.indexOf('#');
+        if(hash >= 0)
+            value = value.substring(0, hash);
+        while(value.endsWith("/") && value.length() > 1)
+            value = value.substring(0, value.length() - 1);
+        return value;
+    }
+
+    private static int stableNtkSourceId(String value) {
+        if(value == null)
+            return 0;
+        String trimmed = value.trim();
+        if(trimmed.length() == 0)
+            return 0;
+        int hash = 0x811c9dc5;
+        for(int i = 0; i < trimmed.length(); i++)
+            hash = (hash ^ trimmed.charAt(i)) * 0x01000193;
+        hash &= 0x7fffffff;
+        return hash == 0 ? 1 : hash;
     }
 
     private static int detectWolfBaseMode(String href) {
