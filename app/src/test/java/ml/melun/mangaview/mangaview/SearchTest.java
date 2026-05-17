@@ -37,8 +37,8 @@ public class SearchTest {
         ArrayList<String> paths = Search.ntkKeywordApiPathsForTest("onepunch", base_auto, 1, 120);
 
         assertEquals(2, paths.size());
-        assertEquals("/api/works?keyword=onepunch&page=1&pageSize=30&withTotal=1", paths.get(0));
-        assertEquals("/api/manhwa-list?keyword=onepunch&page=1&pageSize=30&withTotal=1", paths.get(1));
+        assertEquals("/api/works?keyword=onepunch&page=1&pageSize=120&withTotal=1", paths.get(0));
+        assertEquals("/api/manhwa-list?keyword=onepunch&page=1&pageSize=120&withTotal=1", paths.get(1));
         assertTrue(Search.shouldFetchNtkKeywordApiPathsInParallelForTest(paths));
     }
 

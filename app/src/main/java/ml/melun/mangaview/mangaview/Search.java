@@ -41,7 +41,7 @@ public class Search {
     private static final int MAX_TIMEOUT_RETRIES = 2;
     private static final int CLASSIFICATION_DB_PAGE_SIZE = 120;
     private static final int NTK_CATEGORY_PAGE_SIZE = 30;
-    private static final int NTK_KEYWORD_PAGE_SIZE = 30;
+    private static final int NTK_KEYWORD_PAGE_SIZE = 120;
     private static final long WFWF_RESULT_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final int WFWF_RESULT_CACHE_MAX_ENTRIES = 80;
     private static final long NTK_RESULT_CACHE_TTL_MS = 10 * 60 * 1000L;
@@ -250,7 +250,7 @@ public class Search {
         ArrayList<Title> combined = new ArrayList<>();
         try {
             if(client != null && client.isNtk()) {
-                PageTitles apiResults = fetchNtkKeywordApiResults(client, base_auto, 120, 1);
+                PageTitles apiResults = fetchNtkKeywordApiResults(client, base_auto, 240, 1);
                 appendUnique(combined, apiResults.titles);
                 if(shouldFallbackToNtkHtmlKeywordSearch(combined.size(), apiResults.hasMoreKnown))
                     appendUnique(combined, fetchNtkSearchResults(client, ntkSearchPath(query, base_auto, 1), base_auto, 0, 1).titles);
