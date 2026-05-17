@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -176,6 +177,7 @@ public class ViewerActivity extends AppCompatActivity {
         pageBtn.setText("-/-");
         saveBtn = this.findViewById(R.id.viewerSaveButton);
         episodeButton = this.findViewById(R.id.toolbar_spinner);
+        applyViewerChromeTheme();
         width = getScreenWidth(getWindowManager().getDefaultDisplay());
 
         //initial padding setup
@@ -1046,9 +1048,65 @@ public class ViewerActivity extends AppCompatActivity {
         cut.setText(autoCut ? "분할 켜짐" : "분할 꺼짐");
         cut.setContentDescription(autoCut ? "자동분할 켜짐" : "자동분할 꺼짐");
         cut.setBackgroundTintList(null);
+        if(dark) {
+            int fill = autoCut ? R.color.appAccent : R.color.colorDarkSurfaceElevated;
+            int text = autoCut ? android.R.color.white : R.color.colorDarkText;
+            ViewCompat.setBackground(cut, roundedBackground(fill, R.color.colorDarkDivider, 8));
+            cut.setTextColor(ContextCompat.getColor(this, text));
+            return;
+        }
         ViewCompat.setBackground(cut, ContextCompat.getDrawable(this,
                 autoCut ? R.drawable.viewer_autocut_on_bg : R.drawable.viewer_autocut_off_bg));
         cut.setTextColor(ContextCompat.getColor(this, autoCut ? android.R.color.white : R.color.appText));
+    }
+
+    private void applyViewerChromeTheme() {
+        int surface = ContextCompat.getColor(this, dark ? R.color.colorDarkSurface : R.color.appCard);
+        int text = ContextCompat.getColor(this, dark ? R.color.colorDarkText : R.color.appText);
+        int chip = dark ? R.color.colorDarkSurfaceElevated : R.color.appCard;
+        if(toolbar != null)
+            toolbar.setBackgroundColor(surface);
+        if(appbar != null)
+            appbar.setBackgroundColor(surface);
+        if(appbarBottom != null)
+            appbarBottom.setBackgroundColor(surface);
+        View topContent = findViewById(R.id.viewerToolbarContent);
+        View bottomContent = findViewById(R.id.viewerToolbarBottomContent);
+        if(topContent != null)
+            topContent.setBackgroundColor(surface);
+        if(bottomContent != null)
+            bottomContent.setBackgroundColor(surface);
+        getWindow().setStatusBarColor(surface);
+        getWindow().setNavigationBarColor(Color.BLACK);
+        if(toolbarTitle != null)
+            toolbarTitle.setTextColor(text);
+        if(pageBtn != null) {
+            pageBtn.setBackground(roundedBackground(dark ? R.color.colorDarkSurfaceElevated : R.color.appCard,
+                    dark ? R.color.colorDarkDivider : R.color.appDivider, 8));
+            pageBtn.setTextColor(text);
+        }
+        if(cut != null)
+            updateAutoCutButtonState();
+        styleViewerIconButton(findViewById(R.id.backButton), chip, dark ? R.color.colorDarkText : R.color.appText);
+        styleViewerIconButton(saveBtn, chip, R.color.appAccent);
+        styleViewerIconButton(prev, R.color.appAccent, dark ? R.color.colorDarkText : R.color.appCard);
+        styleViewerIconButton(next, R.color.appAccent, dark ? R.color.colorDarkText : R.color.appCard);
+        styleViewerIconButton(episodeButton, R.color.appAccent, dark ? R.color.colorDarkText : R.color.appCard);
+    }
+
+    private void styleViewerIconButton(ImageButton button, int fillColorRes, int iconColorRes) {
+        if(button == null)
+            return;
+        button.setBackground(roundedBackground(fillColorRes, dark ? R.color.colorDarkDivider : R.color.appCard, 8));
+        button.setColorFilter(ContextCompat.getColor(this, iconColorRes));
+    }
+
+    private GradientDrawable roundedBackground(int fillColorRes, int strokeColorRes, int radiusDp) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(ContextCompat.getColor(this, fillColorRes));
+        drawable.setCornerRadius(dp(radiusDp));
+        drawable.setStroke(dp(1), ContextCompat.getColor(this, strokeColorRes));
+        return drawable;
     }
 
 
