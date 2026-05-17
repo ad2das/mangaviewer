@@ -8,6 +8,7 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -368,7 +369,7 @@ public class SettingsActivity extends AppCompatActivity {
 
     private void styleSettingsScreen() {
         View root = findViewById(android.R.id.content);
-        root.setBackgroundColor(ContextCompat.getColor(this, R.color.appSurface));
+        root.setBackgroundColor(ContextCompat.getColor(this, dark ? R.color.colorDarkWindowBackground : R.color.appSurface));
         styleSettingsTree(root);
 
         int[] rowIds = {
@@ -397,7 +398,10 @@ public class SettingsActivity extends AppCompatActivity {
             View row = findViewById(id);
             if (row == null)
                 continue;
-            row.setBackgroundResource(id == R.id.setting_reset ? R.drawable.app_danger_row_bg : R.drawable.app_setting_row_bg);
+            if(dark)
+                row.setBackground(makeSettingsRowBackground(id == R.id.setting_reset));
+            else
+                row.setBackgroundResource(id == R.id.setting_reset ? R.drawable.app_danger_row_bg : R.drawable.app_setting_row_bg);
             row.setPadding(dp(12), 0, dp(12), 0);
             row.setMinimumHeight(dp(62));
             if (row.getLayoutParams() instanceof LinearLayout.LayoutParams) {
@@ -416,37 +420,41 @@ public class SettingsActivity extends AppCompatActivity {
             boolean sectionHeader = view.getParent() instanceof LinearLayout
                     && !(view.getParent() instanceof ConstraintLayout);
             if (sectionHeader) {
-                text.setBackgroundColor(ContextCompat.getColor(this, R.color.appSurface));
+                text.setBackgroundColor(ContextCompat.getColor(this, dark ? R.color.colorDarkWindowBackground : R.color.appSurface));
                 text.setTextColor(ContextCompat.getColor(this, R.color.appAccent));
                 text.setTextSize(12);
                 text.setGravity(Gravity.BOTTOM | Gravity.START);
                 text.setAllCaps(false);
                 text.setPadding(dp(20), dp(18), dp(20), dp(7));
             } else {
-                text.setTextColor(ContextCompat.getColor(this, R.color.appText));
+                text.setTextColor(ContextCompat.getColor(this, dark ? R.color.colorDarkText : R.color.appText));
                 text.setTextSize(14);
                 text.setIncludeFontPadding(false);
                 text.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
             }
         }
 
-        if (view instanceof Spinner)
-            view.setBackgroundResource(R.drawable.app_search_filter_bg);
+        if (view instanceof Spinner) {
+            if(dark)
+                view.setBackground(makeSettingsRowBackground(false));
+            else
+                view.setBackgroundResource(R.drawable.app_search_filter_bg);
+        }
 
         if (view instanceof Switch && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             int accent = ContextCompat.getColor(this, R.color.appAccent);
-            int muted = ContextCompat.getColor(this, R.color.appDivider);
+            int muted = ContextCompat.getColor(this, dark ? R.color.colorDarkDivider : R.color.appDivider);
             int[][] states = new int[][]{
                     new int[]{android.R.attr.state_checked},
                     new int[]{}
             };
-            ((Switch) view).setThumbTintList(new ColorStateList(states, new int[]{accent, ContextCompat.getColor(this, R.color.appCard)}));
+            ((Switch) view).setThumbTintList(new ColorStateList(states, new int[]{accent, ContextCompat.getColor(this, dark ? R.color.colorDarkSurface : R.color.appCard)}));
             ((Switch) view).setTrackTintList(new ColorStateList(states, new int[]{ContextCompat.getColor(this, R.color.appAccentLight), muted}));
         }
 
         if (view instanceof LinearLayout) {
             LinearLayout layout = (LinearLayout) view;
-            layout.setBackgroundColor(ContextCompat.getColor(this, R.color.appSurface));
+            layout.setBackgroundColor(ContextCompat.getColor(this, dark ? R.color.colorDarkWindowBackground : R.color.appSurface));
         }
 
         if (view instanceof android.view.ViewGroup) {
@@ -458,6 +466,14 @@ public class SettingsActivity extends AppCompatActivity {
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private GradientDrawable makeSettingsRowBackground(boolean danger) {
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(ContextCompat.getColor(this, danger ? R.color.colorDarkSurfaceElevated : R.color.colorDarkSurface));
+        background.setStroke(dp(1), ContextCompat.getColor(this, danger ? R.color.appAccent : R.color.colorDarkDivider));
+        background.setCornerRadius(dp(8));
+        return background;
     }
 
     private void updateSiteToggleText() {

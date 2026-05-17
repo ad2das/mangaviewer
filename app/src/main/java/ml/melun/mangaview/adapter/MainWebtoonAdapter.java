@@ -353,6 +353,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(!AdapterPositionGuard.isValidPosition(rows, position))
             return;
         Object row = rows.get(position);
+        applyRowTheme(holder.itemView);
         if(holder instanceof HeroHolder)
             ((HeroHolder) holder).bind((HeroRow) row);
         else if(holder instanceof HomeSectionHolder)
@@ -1330,6 +1331,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         void bind(HomeSection section) {
+            if(dark) {
+                itemView.setBackgroundColor(ContextCompat.getColor(context, R.color.colorDarkWindowBackground));
+                title.setTextColor(ContextCompat.getColor(context, R.color.colorDarkText));
+                action.setTextColor(ContextCompat.getColor(context, R.color.appAccent));
+                list.setBackgroundColor(ContextCompat.getColor(context, R.color.colorDarkWindowBackground));
+            }
             setTextIfChanged(title, section.title);
             setTextIfChanged(action, section.action);
             boolean hasAction = section.path.length() > 0;
@@ -1472,6 +1479,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
 
             void bind(Title item, int position) {
+                if(dark) {
+                    card.setBackground(makeRoundedBackground(R.color.colorDarkSurface, R.color.colorDarkDivider, 16));
+                    name.setTextColor(ContextCompat.getColor(context, R.color.colorDarkText));
+                    episode.setTextColor(ContextCompat.getColor(context, R.color.colorDarkTextSecondary));
+                    percent.setTextColor(ContextCompat.getColor(context, R.color.colorDarkTextSecondary));
+                }
                 boolean continueStyle = style == STYLE_CONTINUE;
                 int progressPercent = continueStyle ? readingProgressPercent(item) : 0;
                 String sourceSite = continueStyle ? sourceSiteForContinueItem(item) : "";
@@ -1669,6 +1682,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
 
             void bind(Title item, int position) {
+                if(dark) {
+                    card.setBackground(makeRoundedBackground(R.color.colorDarkSurface, R.color.colorDarkDivider, 16));
+                    title.setTextColor(ContextCompat.getColor(context, R.color.colorDarkText));
+                    meta.setTextColor(ContextCompat.getColor(context, R.color.colorDarkTextSecondary));
+                }
                 String release = item == null ? "" : item.getRelease();
                 String nextKey = titleContentKey(item) + ":" + position;
                 if(!nextKey.equals(boundKey)) {
@@ -2032,6 +2050,20 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     int dp(int value) {
         return (int) (value * context.getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private void applyRowTheme(View itemView) {
+        if(itemView == null || !dark)
+            return;
+        itemView.setBackgroundColor(ContextCompat.getColor(context, R.color.colorDarkWindowBackground));
+    }
+
+    private Drawable makeRoundedBackground(int fillColorRes, int strokeColorRes, int radiusDp) {
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(ContextCompat.getColor(context, fillColorRes));
+        background.setStroke(dp(1), ContextCompat.getColor(context, strokeColorRes));
+        background.setCornerRadius(dp(radiusDp));
+        return background;
     }
 
     private void setTextIfChanged(TextView view, CharSequence text) {

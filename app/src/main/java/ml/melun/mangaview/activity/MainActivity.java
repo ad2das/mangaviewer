@@ -12,6 +12,7 @@ import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -338,6 +339,7 @@ public class MainActivity extends AppCompatActivity
         toolbar.setNavigationIcon(null);
         bottomNavigationView = findViewById(R.id.bottom_nav);
         if(bottomNavigationView != null) {
+            applyBottomNavigationChrome();
             bottomNavigationView.setOnItemSelectedListener(item -> {
                 int index = getFragmentIndex(item.getItemId());
                 if(index < 0)
@@ -695,7 +697,7 @@ public class MainActivity extends AppCompatActivity
         accountSheetSettings.setOnClickListener(v -> {
             if(accountSheet != null)
                 accountSheet.dismiss();
-            Utils.safeStartActivity(context, new Intent(context, SettingsActivity.class));
+            startActivityForResult(new Intent(context, SettingsActivity.class), 0);
         });
         accountSheetUpdate.setText(R.string.account_check_update);
         accountSheetUpdate.setOnClickListener(v -> {
@@ -832,11 +834,54 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void applyMainWindowChrome() {
-        if(dark)
+        if(dark) {
+            int background = ContextCompat.getColor(this, R.color.colorDarkWindowBackground);
+            getWindow().setStatusBarColor(background);
+            getWindow().setNavigationBarColor(background);
+            getWindow().getDecorView().setSystemUiVisibility(0);
+            View contentHolder = findViewById(R.id.contentHolder);
+            if(contentHolder != null)
+                contentHolder.setBackgroundColor(background);
+            Toolbar toolbar = findViewById(R.id.toolbar);
+            if(toolbar != null) {
+                toolbar.setBackgroundColor(background);
+                toolbar.setTitleTextColor(ContextCompat.getColor(this, R.color.colorDarkText));
+            }
+            View root = findViewById(R.id.drawer_layout);
+            if(root != null)
+                root.setBackgroundColor(background);
             return;
+        }
         getWindow().setStatusBarColor(ContextCompat.getColor(this, R.color.appSurface));
         getWindow().setNavigationBarColor(ContextCompat.getColor(this, R.color.appCard));
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+    }
+
+    private void applyBottomNavigationChrome() {
+        if(bottomNavigationView == null)
+            return;
+        if(!dark)
+            return;
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(ContextCompat.getColor(this, R.color.colorDarkSurface));
+        background.setStroke(dp(1), ContextCompat.getColor(this, R.color.colorDarkDivider));
+        background.setCornerRadius(dp(24));
+        bottomNavigationView.setBackground(background);
+        int[][] states = new int[][]{
+                new int[]{android.R.attr.state_checked},
+                new int[]{}
+        };
+        int[] colors = new int[]{
+                ContextCompat.getColor(this, R.color.appAccent),
+                ContextCompat.getColor(this, R.color.colorDarkTextSecondary)
+        };
+        ColorStateList tint = new ColorStateList(states, colors);
+        bottomNavigationView.setItemIconTintList(tint);
+        bottomNavigationView.setItemTextColor(tint);
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
     private void syncNavigationSelection() {
@@ -1117,9 +1162,7 @@ public class MainActivity extends AppCompatActivity
             Utils.safeStartActivity(context, getIntent());
         }
         if(resultCode == RESULT_NEED_RESTART){
-            Intent intent = getIntent();
-            finish();
-            Utils.safeStartActivity(context, intent);
+            recreate();
         }
     }
 

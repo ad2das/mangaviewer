@@ -3,6 +3,7 @@ package ml.melun.mangaview.fragment;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.ColorStateList;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -135,6 +136,7 @@ public class MainMain extends Fragment{
         modeComic = rootView.findViewById(R.id.modeComic);
         homeLoadStatus = rootView.findViewById(R.id.homeLoadStatus);
         homeLoadStatusText = rootView.findViewById(R.id.homeLoadStatusText);
+        applyHomeTheme(rootView);
 
         TabLayout.Tab forYouTab = mainTabLayout.newTab().setText("홈");
         TabLayout.Tab popularTab = mainTabLayout.newTab().setText("인기");
@@ -545,8 +547,56 @@ public class MainMain extends Fragment{
             button.setTextColor(ContextCompat.getColor(getContext(), selected ? android.R.color.white : R.color.appTextSecondary));
             return;
         }
-        view.setBackgroundResource(selected ? R.drawable.app_accent_button_bg : android.R.color.transparent);
-        view.setTextColor(ContextCompat.getColor(getContext(), selected ? android.R.color.white : R.color.appTextSecondary));
+        if(p.getDarkTheme() && selected) {
+            GradientDrawable background = new GradientDrawable();
+            background.setColor(ContextCompat.getColor(getContext(), R.color.appAccent));
+            background.setCornerRadius(dp(10));
+            view.setBackground(background);
+        } else {
+            view.setBackgroundResource(selected ? R.drawable.app_accent_button_bg : android.R.color.transparent);
+        }
+        view.setTextColor(ContextCompat.getColor(getContext(),
+                selected ? android.R.color.white : (p.getDarkTheme() ? R.color.colorDarkTextSecondary : R.color.appTextSecondary)));
+    }
+
+    private void applyHomeTheme(ViewGroup rootView) {
+        if(getContext() == null || !p.getDarkTheme())
+            return;
+        int background = ContextCompat.getColor(getContext(), R.color.colorDarkWindowBackground);
+        int text = ContextCompat.getColor(getContext(), R.color.colorDarkText);
+        int secondary = ContextCompat.getColor(getContext(), R.color.colorDarkTextSecondary);
+        rootView.setBackgroundColor(background);
+        if(mainTabLayout != null) {
+            mainTabLayout.setBackgroundColor(background);
+            mainTabLayout.setTabTextColors(secondary, ContextCompat.getColor(getContext(), R.color.appAccent));
+        }
+        if(webtoonRecycler != null)
+            webtoonRecycler.setBackgroundColor(background);
+        if(comicRecycler != null)
+            comicRecycler.setBackgroundColor(background);
+        tintText(rootView, R.id.homeTitle, text);
+        tintText(rootView, R.id.homeSubtitle, secondary);
+        GradientDrawable toggle = new GradientDrawable();
+        toggle.setColor(ContextCompat.getColor(getContext(), R.color.colorDarkSurface));
+        toggle.setStroke(dp(1), ContextCompat.getColor(getContext(), R.color.colorDarkDivider));
+        toggle.setCornerRadius(dp(12));
+        View modeToggle = rootView.findViewById(R.id.mainModeToggle);
+        if(modeToggle != null)
+            modeToggle.setBackground(toggle);
+        if(homeLoadStatus != null)
+            homeLoadStatus.setBackgroundColor(ContextCompat.getColor(getContext(), R.color.colorDarkSurface));
+        if(homeLoadStatusText != null)
+            homeLoadStatusText.setTextColor(secondary);
+    }
+
+    private void tintText(View rootView, int id, int color) {
+        View view = rootView.findViewById(id);
+        if(view instanceof TextView)
+            ((TextView)view).setTextColor(color);
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
     public void scrollToSelectedTab() {
