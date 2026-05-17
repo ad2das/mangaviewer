@@ -2,6 +2,7 @@ package ml.melun.mangaview;
 
 import org.junit.Test;
 
+import java.io.IOException;
 import java.lang.reflect.Field;
 
 import static org.junit.Assert.assertEquals;
@@ -49,5 +50,13 @@ public class AppUpdateManagerTest {
     @Test
     public void automaticUpdateCheckDoesNotShowModalPrompt() {
         assertFalse(AppUpdateManager.automaticUpdatePromptsEnabledForTest());
+    }
+
+    @Test
+    public void versionFetchExpectedNetworkMissesDoNotReportAsCrashes() {
+        assertFalse(AppUpdateManager.shouldReportVersionFetchFailure(
+                new IOException("Network is unreachable")));
+        assertTrue(AppUpdateManager.shouldReportVersionFetchFailure(
+                new IllegalStateException("bad version payload")));
     }
 }

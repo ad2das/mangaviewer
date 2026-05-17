@@ -273,7 +273,8 @@ public final class AppUpdateManager {
                 return new UpdateInfo(version, link);
             }
         } catch (Exception e) {
-            CrashReporter.record(e);
+            if(shouldReportVersionFetchFailure(e))
+                CrashReporter.record(e);
             log("versionFetchException source=" + source
                     + " " + e.getClass().getSimpleName() + ": " + e.getMessage()
                     + " ms=" + (System.currentTimeMillis() - started));
@@ -305,12 +306,17 @@ public final class AppUpdateManager {
                 return info;
             }
         } catch (Exception e) {
-            CrashReporter.record(e);
+            if(shouldReportVersionFetchFailure(e))
+                CrashReporter.record(e);
             log("versionFetchException source=github-main-latest-release "
                     + e.getClass().getSimpleName() + ": " + e.getMessage()
                     + " ms=" + (System.currentTimeMillis() - started));
             return null;
         }
+    }
+
+    static boolean shouldReportVersionFetchFailure(Throwable failure) {
+        return failure != null && !(failure instanceof java.io.IOException);
     }
 
     private static UpdateInfo parseLatestReleaseInfo(JSONObject releaseJson) {
