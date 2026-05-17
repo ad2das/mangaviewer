@@ -2,6 +2,7 @@ package ml.melun.mangaview.repository;
 
 import org.junit.Test;
 
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 
@@ -51,5 +52,15 @@ public class MangaRepositoryTest {
         assertTrue(MangaRepository.isCacheFreshForTest(now - 999L, now, ttl));
         assertFalse(MangaRepository.isCacheFreshForTest(now - 1001L, now, ttl));
         assertFalse(MangaRepository.isCacheFreshForTest(now + 1L, now, ttl));
+    }
+
+    @Test
+    public void episodeFetchExpectedNetworkMissesDoNotReportAsCrashes() {
+        assertFalse(MangaRepository.shouldReportEpisodeFetchFailure(
+                new Exception("Request failed: /cl?toon=10005")));
+        assertFalse(MangaRepository.shouldReportEpisodeFetchFailure(
+                new IOException("Network is unreachable")));
+        assertTrue(MangaRepository.shouldReportEpisodeFetchFailure(
+                new IllegalStateException("parser invariant failed")));
     }
 }

@@ -617,10 +617,20 @@ public class Title extends MTitle {
         }catch(Exception e) {
             if(isCloudflareChallenge(e))
                 return LOAD_CAPTCHA;
-            ml.melun.mangaview.report.CrashReporter.record(e);
+            if(shouldReportFetchFailure(e))
+                ml.melun.mangaview.report.CrashReporter.record(e);
             return LOAD_ERROR;
         }
         return LOAD_OK;
+    }
+
+    static boolean shouldReportFetchFailure(Throwable failure) {
+        if(failure == null)
+            return false;
+        String message = failure.getMessage();
+        if(message != null && message.startsWith("Request failed:"))
+            return false;
+        return !(failure instanceof java.io.IOException);
     }
 
     public int getBookmark(){

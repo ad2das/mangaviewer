@@ -125,10 +125,19 @@ public final class MangaRepository {
         try {
             return getHttpClient().runWithRequestGroup(requestGroup, () -> title.fetchEps(getHttpClient()));
         } catch (Exception e) {
-            if(reportFailure)
+            if(reportFailure && shouldReportEpisodeFetchFailure(e))
                 ml.melun.mangaview.report.CrashReporter.record(e);
             return Title.LOAD_ERROR;
         }
+    }
+
+    static boolean shouldReportEpisodeFetchFailure(Throwable failure) {
+        if(failure == null)
+            return false;
+        String message = failure.getMessage();
+        if(message != null && message.startsWith("Request failed:"))
+            return false;
+        return !(failure instanceof java.io.IOException);
     }
 
     public static int fetchManga(Manga manga) {

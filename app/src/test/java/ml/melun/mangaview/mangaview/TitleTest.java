@@ -2,11 +2,21 @@ package ml.melun.mangaview.mangaview;
 
 import org.junit.Test;
 
+import java.io.IOException;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class TitleTest {
+    @Test
+    public void expectedEpisodeFetchFailuresDoNotReportAsCrashes() {
+        assertFalse(Title.shouldReportFetchFailure(new Exception("Request failed: /cl?toon=10001")));
+        assertFalse(Title.shouldReportFetchFailure(new IOException("Network is unreachable")));
+        assertTrue(Title.shouldReportFetchFailure(new IllegalStateException("parser invariant failed")));
+    }
+
     @Test
     public void cleanNtkEpisodeTitleRemovesReadFromFirstEpisodeAction() {
         String title = Title.cleanNtkEpisodeTitleForTest(
