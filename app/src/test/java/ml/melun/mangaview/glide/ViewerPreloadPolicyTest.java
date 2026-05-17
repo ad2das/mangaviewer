@@ -90,12 +90,12 @@ public class ViewerPreloadPolicyTest {
     public void scrollAheadWindow_decodesNearPagesOnly() {
         ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.scrollAheadWindow(false);
 
-        assertEquals(4, window.decodedLimit);
-        assertEquals(8, window.immediateLimit);
-        assertEquals(24, window.highLimit);
-        assertEquals(24, window.totalLimit);
-        assertEquals(ViewerPreloadPolicy.TIER_HIGH, ViewerPreloadPolicy.tierForOffset(window, 18));
-        assertEquals(ViewerPreloadPolicy.TIER_NORMAL, ViewerPreloadPolicy.tierForOffset(window, 24));
+        assertEquals(2, window.decodedLimit);
+        assertEquals(4, window.immediateLimit);
+        assertEquals(16, window.highLimit);
+        assertEquals(16, window.totalLimit);
+        assertEquals(ViewerPreloadPolicy.TIER_HIGH, ViewerPreloadPolicy.tierForOffset(window, 10));
+        assertEquals(ViewerPreloadPolicy.TIER_NORMAL, ViewerPreloadPolicy.tierForOffset(window, 16));
     }
 
     @Test
@@ -106,5 +106,15 @@ public class ViewerPreloadPolicyTest {
         assertEquals(2, window.immediateLimit);
         assertEquals(2, window.highLimit);
         assertEquals(2, window.totalLimit);
+    }
+
+    @Test
+    public void nextEpisodeWindowKeepsBackgroundWorkBounded() {
+        ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.nextEpisodeWindow(false);
+
+        assertEquals(1, window.decodedLimit);
+        assertEquals(3, window.immediateLimit);
+        assertEquals(10, window.highLimit);
+        assertEquals(10, window.totalLimit);
     }
 }

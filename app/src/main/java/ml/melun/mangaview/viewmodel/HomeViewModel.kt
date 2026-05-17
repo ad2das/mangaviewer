@@ -8,8 +8,15 @@ class HomeViewModel : BaseStateViewModel<MainPage>() {
     private var requestGroup: CustomHttpClient.RequestGroup? = null
 
     fun loadHome() {
-        requestGroup = CustomHttpClient.RequestGroup()
-        load { MangaRepository.loadComicHome(requestGroup) }
+        val group = CustomHttpClient.RequestGroup()
+        requestGroup = group
+        load(onCancel = {
+            group.cancel()
+            if(requestGroup == group)
+                requestGroup = null
+        }) {
+            MangaRepository.loadComicHome(group)
+        }
     }
 
     override fun onCleared() {

@@ -10,10 +10,15 @@ class SearchViewModel : BaseStateViewModel<List<Title>>() {
 
     fun search(query: String, page: Int, baseMode: Int) {
         requestGroup?.cancel()
-        requestGroup = CustomHttpClient.RequestGroup()
-        load {
+        val group = CustomHttpClient.RequestGroup()
+        requestGroup = group
+        load(onCancel = {
+            group.cancel()
+            if(requestGroup == group)
+                requestGroup = null
+        }) {
             val search = Search(query, page, baseMode)
-            MangaRepository.search(search, requestGroup)
+            MangaRepository.search(search, group)
             search.result
         }
     }

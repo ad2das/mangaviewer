@@ -29,4 +29,11 @@ public class NtkWebViewFallbackManagerTest {
         assertFalse(NtkWebViewFallbackManager.isFinishedDocumentUrlForTest(
                 "https://sbxh1.com/", "https://sbxh1.com", "/webtoon/1/2"));
     }
+
+    @Test
+    public void callerWaitStopsOnCancellationOrTimeout() {
+        assertTrue(NtkWebViewFallbackManager.shouldStopWaitingForCallerForTest(true, 1000L, 2000L));
+        assertTrue(NtkWebViewFallbackManager.shouldStopWaitingForCallerForTest(false, 2000L, 2000L));
+        assertFalse(NtkWebViewFallbackManager.shouldStopWaitingForCallerForTest(false, 1999L, 2000L));
+    }
 }

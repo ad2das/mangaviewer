@@ -52,7 +52,14 @@ final class NtkWebViewFallbackManager {
     }
 
     Response fetch(String userAgent, String baseUrl, String path, Map<String, String> headers) {
+        return fetch(userAgent, baseUrl, path, headers, null);
+    }
+
+    Response fetch(String userAgent, String baseUrl, String path, Map<String, String> headers,
+                   CustomHttpClient.RequestGroup requestGroup) {
         if(Looper.myLooper() == Looper.getMainLooper() || baseUrl == null || path == null)
+            return null;
+        if(requestGroup != null && requestGroup.isCancelled())
             return null;
         FetchTask task;
         boolean reused = false;
@@ -75,8 +82,7 @@ final class NtkWebViewFallbackManager {
             }
         }
         try {
-            if(!task.done.await(CALLER_WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                cancelIfStillActive(task);
+            if(!awaitTask(task, requestGroup)) {
                 return null;
             }
             if(task.code <= 0 || task.body == null || task.body.length() == 0)
@@ -85,7 +91,7 @@ final class NtkWebViewFallbackManager {
                     "{\"code\":" + task.code + ",\"body\":" + jsonQuote(task.body) + "}");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            cancelIfStillActive(task);
+            releaseWaiterAndCancelIfUnused(task);
             return null;
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
@@ -94,6 +100,54 @@ final class NtkWebViewFallbackManager {
             if(reused)
                 ViewerWarmupManager.logMetric("ntk_webview_reused", 1);
         }
+    }
+
+    private boolean awaitTask(FetchTask task, CustomHttpClient.RequestGroup requestGroup) throws InterruptedException {
+        long deadline = SystemClock.elapsedRealtime() + CALLER_WAIT_TIMEOUT_MS;
+        while(true) {
+            if(task.done.await(100L, TimeUnit.MILLISECONDS))
+                return true;
+            boolean cancelled = requestGroup != null && requestGroup.isCancelled();
+            if(shouldStopWaitingForCaller(cancelled, SystemClock.elapsedRealtime(), deadline)) {
+                releaseWaiterAndCancelIfUnused(task);
+                return false;
+            }
+        }
+    }
+
+    static boolean shouldStopWaitingForCallerForTest(boolean requestCancelled, long now, long deadline) {
+        return shouldStopWaitingForCaller(requestCancelled, now, deadline);
+    }
+
+    private static boolean shouldStopWaitingForCaller(boolean requestCancelled, long now, long deadline) {
+        return requestCancelled || now >= deadline;
+    }
+
+    private void releaseWaiterAndCancelIfUnused(FetchTask task) {
+        if(task == null || task.completed)
+            return;
+        boolean cancelActive = false;
+        boolean completeQueued = false;
+        synchronized (lock) {
+            if(task.waiters > 0)
+                task.waiters--;
+            if(task.waiters > 0 || task.completed)
+                return;
+            if(activeTask == task) {
+                cancelActive = true;
+                inFlight.remove(task.key);
+            } else {
+                completeQueued = true;
+                task.completed = true;
+                inFlight.remove(task.key);
+                queue.remove(task);
+                startNextLocked();
+            }
+        }
+        if(cancelActive)
+            cancelIfStillActive(task);
+        else if(completeQueued)
+            task.done.countDown();
     }
 
     private void preemptActiveBackgroundTaskLocked() {

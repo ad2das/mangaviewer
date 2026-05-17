@@ -73,4 +73,13 @@ public class MangaRepositoryTest {
         assertTrue(MangaRepository.shouldReportSearchFailure(
                 new IllegalStateException("parser invariant failed")));
     }
+
+    @Test
+    public void cancellationTracksCancelledState() {
+        MangaRepository.Cancellation cancellation = MangaRepository.cancellation();
+
+        assertFalse(cancellation.isCancelled());
+        cancellation.cancel();
+        assertTrue(cancellation.isCancelled());
+    }
 }

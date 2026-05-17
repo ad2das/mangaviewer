@@ -2314,7 +2314,7 @@ public class CustomHttpClient {
     }
 
     private Response getWithNtkWebViewFallback(String baseUrl, String path, Map<String, String> headers) {
-        return NtkWebViewFallbackManager.get(context).fetch(agent, baseUrl, path, headers);
+        return NtkWebViewFallbackManager.get(context).fetch(agent, baseUrl, path, headers, currentRequestGroup.get());
     }
 
     static String buildNtkWebViewFetchScript(String path, Map<String, String> headers) {

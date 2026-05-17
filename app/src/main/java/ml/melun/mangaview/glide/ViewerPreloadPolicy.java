@@ -40,7 +40,7 @@ public final class ViewerPreloadPolicy {
     public static Window scrollAheadWindow(boolean dataSave) {
         return dataSave
                 ? new Window(1, 2, 6, 6)
-                : new Window(4, 8, 24, 24);
+                : new Window(2, 4, 16, 16);
     }
 
     public static Window scrollBusyWindow(boolean dataSave) {
@@ -52,7 +52,7 @@ public final class ViewerPreloadPolicy {
     public static Window nextEpisodeWindow(boolean dataSave) {
         return dataSave
                 ? new Window(1, 2, 6, 6)
-                : new Window(2, 5, 16, 16);
+                : new Window(1, 3, 10, 10);
     }
 
     public static int tierForOffset(Window window, int offset) {

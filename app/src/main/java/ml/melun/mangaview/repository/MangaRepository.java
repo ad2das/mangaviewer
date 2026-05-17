@@ -106,12 +106,24 @@ public final class MangaRepository {
         return fetchEpisodes(title, false);
     }
 
+    public static int fetchEpisodes(Title title, Cancellation cancellation) {
+        return fetchEpisodes(title, false, true, group(cancellation));
+    }
+
     public static int fetchEpisodesBackground(Title title) {
         return fetchEpisodes(title, false, false);
     }
 
+    public static int fetchEpisodesBackground(Title title, Cancellation cancellation) {
+        return fetchEpisodes(title, false, false, group(cancellation));
+    }
+
     public static int fetchEpisodesForeground(Title title) {
         return fetchEpisodes(title, true, true);
+    }
+
+    public static int fetchEpisodesForeground(Title title, Cancellation cancellation) {
+        return fetchEpisodes(title, true, true, group(cancellation));
     }
 
     private static int fetchEpisodes(Title title, boolean allowWolfWebViewFallback) {
@@ -119,9 +131,17 @@ public final class MangaRepository {
     }
 
     private static int fetchEpisodes(Title title, boolean allowWolfWebViewFallback, boolean reportFailure) {
-        CustomHttpClient.RequestGroup requestGroup = new CustomHttpClient.RequestGroup();
+        return fetchEpisodes(title, allowWolfWebViewFallback, reportFailure, null);
+    }
+
+    private static int fetchEpisodes(Title title, boolean allowWolfWebViewFallback, boolean reportFailure,
+                                     CustomHttpClient.RequestGroup requestGroup) {
+        if(requestGroup == null)
+            requestGroup = new CustomHttpClient.RequestGroup();
         if(allowWolfWebViewFallback)
             requestGroup.allowWolfWebViewFallback();
+        if(requestGroup.isCancelled())
+            return Title.LOAD_ERROR;
         try {
             return getHttpClient().runWithRequestGroup(requestGroup, () -> title.fetchEps(getHttpClient()));
         } catch (Exception e) {
