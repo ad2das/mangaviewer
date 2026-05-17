@@ -1,12 +1,14 @@
 package ml.melun.mangaview.adapter;
 import android.content.Context;
 
+import androidx.cardview.widget.CardView;
 import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.util.TypedValue;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -183,7 +185,8 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
                 setVisibilityIfChanged(h.newBadge, Dposition == 0 ? View.VISIBLE : View.GONE);
                 setVisibilityIfChanged(h.action, mode == 0 || mode == 1 || mode == 3 || mode == 4 ? View.VISIBLE : View.GONE);
                 h.action.setImageResource(mode == 0 ? R.drawable.download : R.drawable.ic_baseline_close_24);
-                h.action.setColorFilter(ContextCompat.getColor(mainContext, mode == 0 ? R.color.appAccent : R.color.appTextSecondary));
+                h.action.setColorFilter(ContextCompat.getColor(mainContext,
+                        mode == 0 ? R.color.appAccent : (dark ? R.color.colorDarkTextSecondary : R.color.appTextSecondary)));
                 h.boundKey = rowKey;
             }
             String thumb = title == null ? "" : title.getThumb();
@@ -257,10 +260,13 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     private void bindSelection(ViewHolder holder, int position) {
         int color = position == bookmark
                 ? ContextCompat.getColor(mainContext, dark ? R.color.selectedDark : R.color.appAccentLight)
-                : ContextCompat.getColor(mainContext, dark ? R.color.colorDarkBackground : R.color.appCard);
+                : ContextCompat.getColor(mainContext, dark ? R.color.colorDarkSurface : R.color.appCard);
         Object tag = holder.itemView.getTag(R.id.episode);
         if(!(tag instanceof Integer) || ((Integer) tag) != color) {
-            holder.itemView.setBackgroundColor(color);
+            if(holder.card != null)
+                holder.card.setCardBackgroundColor(color);
+            else
+                holder.itemView.setBackgroundColor(color);
             holder.itemView.setTag(R.id.episode, color);
         }
     }
@@ -301,14 +307,26 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         TextView newBadge;
         ImageView thumb;
         ImageView action;
+        CardView card;
+        View cardContent;
         String boundKey;
         ViewHolder(View itemView) {
             super(itemView);
+            card = itemView.findViewById(R.id.episodeCard);
+            cardContent = itemView.findViewById(R.id.episodeCardContent);
             episode = itemView.findViewById(R.id.episode);
             date = itemView.findViewById(R.id.date);
             newBadge = itemView.findViewById(R.id.episodeNew);
             thumb = itemView.findViewById(R.id.episodeThumb);
             action = itemView.findViewById(R.id.episodeAction);
+            if(dark) {
+                itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.colorDarkWindowBackground));
+                if(cardContent != null)
+                    cardContent.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.colorDarkSurface));
+                episode.setTextColor(ContextCompat.getColor(mainContext, R.color.colorDarkText));
+                date.setTextColor(ContextCompat.getColor(mainContext, R.color.colorDarkTextSecondary));
+                action.setBackground(roundedBackground(R.color.colorDarkSurfaceElevated, R.color.colorDarkDivider, 12));
+            }
             itemView.setOnClickListener(v -> {
                 int position = getAdapterPosition();
                 if(position == RecyclerView.NO_POSITION || mClickListener == null || !isValidEpisodePosition(mData, position))
@@ -339,13 +357,14 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     public class HeaderHolder extends RecyclerView.ViewHolder{
         TextView h_title, h_author, h_release, h_overview;
         TextView h_intro_tab, h_episode_tab, h_info_tab, h_info;
+        TextView h_top_episodes;
         ImageView h_thumb;
         ImageView h_star_icon;
         ImageView h_bookmark_icon;
 
         Button h_first;
         RecyclerView h_tags;
-        View h_bookmark, h_star, h_recommend, h_indicator, h_tabs;
+        View h_bookmark, h_star, h_recommend, h_indicator, h_tabs, h_button_container, h_detail_content;
 
         TextView h_recommend_c;
             HeaderHolder(View itemView) {
@@ -364,6 +383,9 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             h_info_tab = itemView.findViewById(R.id.detailInfoTab);
             h_indicator = itemView.findViewById(R.id.detailTabIndicator);
             h_tabs = itemView.findViewById(R.id.detailTabs);
+            h_button_container = itemView.findViewById(R.id.HeaderBtnContainer);
+            h_detail_content = itemView.findViewById(R.id.detailContent);
+            h_top_episodes = itemView.findViewById(R.id.topEpisodesLabel);
             h_bookmark_icon = itemView.findViewById(R.id.bookmarkIcon);
 
             h_star = itemView.findViewById(R.id.HeaderFavorite);
@@ -372,6 +394,8 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
 
             h_recommend_c = itemView.findViewById(R.id.recommendText);
 
+            if(dark)
+                applyDarkHeaderStyle(itemView);
 
             h_star.setOnClickListener(v -> {
                 if(mClickListener != null) mClickListener.onStarClick();
@@ -419,9 +443,55 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         }
 
         void styleTab(TextView tab, boolean selected) {
-            tab.setTextColor(ContextCompat.getColor(mainContext, selected ? R.color.appText : R.color.appTextSecondary));
+            int selectedColor = dark ? R.color.colorDarkText : R.color.appText;
+            int normalColor = dark ? R.color.colorDarkTextSecondary : R.color.appTextSecondary;
+            tab.setTextColor(ContextCompat.getColor(mainContext, selected ? selectedColor : normalColor));
             tab.setTypeface(Typeface.DEFAULT, selected ? Typeface.BOLD : Typeface.NORMAL);
         }
+    }
+
+    private void applyDarkHeaderStyle(View itemView) {
+        itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.colorDarkWindowBackground));
+        TextView[] primary = { itemView.findViewById(R.id.HeaderTitle) };
+        for(TextView view : primary)
+            if(view != null)
+                view.setTextColor(ContextCompat.getColor(mainContext, R.color.colorDarkText));
+        TextView[] secondary = {
+                itemView.findViewById(R.id.headerAuthor),
+                itemView.findViewById(R.id.HeaderRelease),
+                itemView.findViewById(R.id.detailOverview),
+                itemView.findViewById(R.id.detailInfo),
+                itemView.findViewById(R.id.recommendText)
+        };
+        for(TextView view : secondary)
+            if(view != null)
+                view.setTextColor(ContextCompat.getColor(mainContext, R.color.colorDarkTextSecondary));
+        View[] panels = {
+                itemView.findViewById(R.id.HeaderBtnContainer),
+                itemView.findViewById(R.id.detailTabs),
+                itemView.findViewById(R.id.detailContent),
+                itemView.findViewById(R.id.HeaderFavorite),
+                itemView.findViewById(R.id.HeaderBookmark)
+        };
+        for(View view : panels)
+            if(view != null)
+                view.setBackground(roundedBackground(R.color.colorDarkSurface, R.color.colorDarkDivider, 8));
+        TextView label = itemView.findViewById(R.id.topEpisodesLabel);
+        if(label != null) {
+            label.setTextColor(ContextCompat.getColor(mainContext, R.color.appAccent));
+            label.setBackground(roundedBackground(R.color.colorDarkSurfaceElevated, R.color.colorDarkDivider, 8));
+        }
+        ImageView bookmarkIcon = itemView.findViewById(R.id.bookmarkIcon);
+        if(bookmarkIcon != null)
+            bookmarkIcon.setColorFilter(ContextCompat.getColor(mainContext, R.color.colorDarkTextSecondary));
+    }
+
+    private GradientDrawable roundedBackground(int fillColorRes, int strokeColorRes, int radiusDp) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(ContextCompat.getColor(mainContext, fillColorRes));
+        drawable.setCornerRadius(dp(radiusDp));
+        drawable.setStroke(dp(1), ContextCompat.getColor(mainContext, strokeColorRes));
+        return drawable;
     }
 
     private String overviewText(String release) {

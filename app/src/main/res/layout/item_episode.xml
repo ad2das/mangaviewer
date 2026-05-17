@@ -11,6 +11,7 @@
     android:background="@color/appSurface">
 
     <androidx.cardview.widget.CardView
+        android:id="@+id/episodeCard"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         app:cardCornerRadius="14dp"
@@ -22,6 +23,7 @@
         app:layout_constraintEnd_toEndOf="parent">
 
         <androidx.constraintlayout.widget.ConstraintLayout
+            android:id="@+id/episodeCardContent"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:minHeight="96dp"

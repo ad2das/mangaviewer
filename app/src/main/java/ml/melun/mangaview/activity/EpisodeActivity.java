@@ -226,6 +226,7 @@ public class EpisodeActivity extends AppCompatActivity {
         favoriteResult = intent.getBooleanExtra("favorite",false);
         recentResult = intent.getBooleanExtra("recent",false);
         episodeList = this.findViewById(R.id.EpisodeList);
+        applyEpisodeWindowChrome();
         episodeList.setLayoutManager(new NpaLinearLayoutManager(this));
         episodeList.setHasFixedSize(true);
         episodeList.setItemViewCacheSize(20);
@@ -945,10 +946,25 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     private void applyEpisodeWindowChrome() {
-        if(dark)
+        View root = findViewById(android.R.id.content);
+        View appBar = findViewById(R.id.episode_toolbar);
+        View toolbar = findViewById(R.id.toolbar);
+        int surface = ContextCompat.getColor(this, dark ? R.color.colorDarkWindowBackground : R.color.appSurface);
+        int chrome = ContextCompat.getColor(this, dark ? R.color.colorDarkSurface : R.color.appSurface);
+        getWindow().setStatusBarColor(chrome);
+        getWindow().setNavigationBarColor(surface);
+        if(root != null)
+            root.setBackgroundColor(surface);
+        if(appBar != null)
+            appBar.setBackgroundColor(chrome);
+        if(toolbar != null)
+            toolbar.setBackgroundColor(chrome);
+        if(episodeList != null)
+            episodeList.setBackgroundColor(surface);
+        if(dark) {
+            getWindow().getDecorView().setSystemUiVisibility(0);
             return;
-        getWindow().setStatusBarColor(ContextCompat.getColor(this, R.color.appSurface));
-        getWindow().setNavigationBarColor(ContextCompat.getColor(this, R.color.appSurface));
+        }
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
     }
 
