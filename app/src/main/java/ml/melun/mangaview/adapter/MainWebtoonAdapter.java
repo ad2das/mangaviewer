@@ -1113,7 +1113,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 .listener(new RequestListener<Drawable>() {
                     @Override
                     public boolean onLoadFailed(GlideException e, Object model, Target<Drawable> target, boolean isFirstResource) {
-                        return false;
+                        thumbView.setImageResource(placeholderRes);
+                        return true;
                     }
 
                     @Override

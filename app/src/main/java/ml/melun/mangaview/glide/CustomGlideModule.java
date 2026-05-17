@@ -3,6 +3,8 @@ package ml.melun.mangaview.glide;
 import android.content.Context;
 import androidx.annotation.NonNull;
 
+import android.util.Log;
+
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.GlideBuilder;
 import com.bumptech.glide.Registry;
@@ -25,6 +27,7 @@ public class CustomGlideModule extends AppGlideModule {
                 sourceThreads,
                 "manga-source",
                 GlideExecutor.UncaughtThrowableStrategy.LOG));
+        builder.setLogLevel(glideLogLevelForTest());
     }
 
     @Override
@@ -35,5 +38,9 @@ public class CustomGlideModule extends AppGlideModule {
     @Override
     public boolean isManifestParsingEnabled() {
         return false;
+    }
+
+    static int glideLogLevelForTest() {
+        return Log.ERROR;
     }
 }
