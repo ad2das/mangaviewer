@@ -403,6 +403,7 @@ public class MainActivity extends AppCompatActivity
             return;
         long monitorStartedAt = PerfTrace.start("main_perf_monitor_attach_ms");
         PerformanceMonitor.attach(this);
+        PerformanceMonitor.screen(performanceScreenName(currentTab));
         PerformanceMonitor.resume();
         PerfTrace.end("main_perf_monitor_attach_ms", monitorStartedAt);
     }
