@@ -894,8 +894,17 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void showFragment(int index) {
-        ensureMainFragment(index);
+        Fragment target = ensureMainFragment(index);
+        if(target == null)
+            return;
         FragmentTransaction transaction = getSupportFragmentManager().beginTransaction();
+        for(Fragment fragment : getSupportFragmentManager().getFragments()) {
+            if(fragment != null
+                    && fragment.getId() == R.id.contentHolder
+                    && fragment != target
+                    && fragment.isAdded())
+                transaction.hide(fragment);
+        }
         for(int i = 0; i < fragments.length; i++) {
             Fragment fragment = fragments[i];
             if(fragment == null)
@@ -909,7 +918,7 @@ public class MainActivity extends AppCompatActivity
                 transaction.hide(fragment);
             }
         }
-        transaction.commit();
+        transaction.commitNowAllowingStateLoss();
     }
 
     private void applyMainWindowChrome() {
@@ -1126,7 +1135,6 @@ public class MainActivity extends AppCompatActivity
                 ((MainSearch) fragments[1]).enterSearchMode();
             currentTab = index;
             PerformanceMonitor.screen(performanceScreenName(index));
-            showFragment(index);
             res = true;
         } else if(index == 1 && fragments[1] instanceof MainSearch) {
             ((MainSearch) fragments[1]).enterSearchMode();
@@ -1135,6 +1143,7 @@ public class MainActivity extends AppCompatActivity
             ((MainSearch) fragments[2]).enterLibraryMode();
             PerformanceMonitor.screen("library");
         }
+        showFragment(index);
         getSupportActionBar().setTitle(getTabTitle(currentTab));
         syncNavigationSelection();
         syncBottomNavigationSelection();
