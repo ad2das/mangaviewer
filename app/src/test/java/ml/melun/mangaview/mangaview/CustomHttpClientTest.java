@@ -69,16 +69,16 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void wfwfForcedDomainRetryIsEpisodeOnly() {
+    public void wfwfForcedDomainRetryCoversEpisodesAndSearch() {
         assertTrue(CustomHttpClient.shouldForceResolveWfwfOnRetryForTest("/cl?toon=10007"));
         assertTrue(CustomHttpClient.shouldForceResolveWfwfOnRetryForTest("/cv?toon=10007&num=1"));
-        assertFalse(CustomHttpClient.shouldForceResolveWfwfOnRetryForTest("/search.html?q=onepunch"));
+        assertTrue(CustomHttpClient.shouldForceResolveWfwfOnRetryForTest("/search.html?q=onepunch"));
         assertFalse(CustomHttpClient.shouldForceResolveWfwfOnRetryForTest("/cm?type1=genre"));
     }
 
     @Test
-    public void wfwfListAndSearchUseSingleFastAttempt() {
-        assertEquals(1, CustomHttpClient.pageNetworkAttemptsForTest(false, "/search.html?q=onepunch"));
+    public void wfwfSearchRetriesAfterDomainResolve() {
+        assertEquals(2, CustomHttpClient.pageNetworkAttemptsForTest(false, "/search.html?q=onepunch"));
         assertEquals(1, CustomHttpClient.pageNetworkAttemptsForTest(false, "/cm?type1=genre"));
         assertEquals(2, CustomHttpClient.pageNetworkAttemptsForTest(false, "/cl?toon=10007"));
         assertEquals(1, CustomHttpClient.pageNetworkAttemptsForTest(true, "/api/manhwa-list"));

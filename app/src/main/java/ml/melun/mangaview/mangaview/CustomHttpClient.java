@@ -1973,6 +1973,8 @@ public class CustomHttpClient {
             return 1;
         if(isWolfEpisodeDocumentPath(path))
             return 2;
+        if(isWfwfSearchPath(path))
+            return 2;
         if(isWfwfDocumentPath(path))
             return 1;
         return 3;
@@ -2001,7 +2003,7 @@ public class CustomHttpClient {
     }
 
     private static boolean shouldForceResolveWfwfOnRetry(String path, boolean wolfEpisodeDocumentPath) {
-        return wolfEpisodeDocumentPath && isWfwfDocumentPath(path);
+        return (wolfEpisodeDocumentPath || isWfwfSearchPath(path)) && isWfwfDocumentPath(path);
     }
 
     private static boolean shouldResolveWfwfBeforeMget(String path) {

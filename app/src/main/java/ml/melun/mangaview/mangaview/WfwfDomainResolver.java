@@ -7,6 +7,10 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -25,6 +29,7 @@ public class WfwfDomainResolver {
     private static final int BACKWARD_SCAN_LIMIT = 30;
     private static final int NEARBY_SCAN_LIMIT = 30;
     private static final long RESOLVE_TIMEOUT_MS = 6_000L;
+    private static final int PARALLEL_PROBE_COUNT = 12;
 
     public static String resolve(OkHttpClient client, String currentUrl, Map<String, String> headers) {
         return resolve(client, currentUrl, headers, null);
@@ -116,16 +121,47 @@ public class WfwfDomainResolver {
     }
 
     private static String findAliveCandidate(OkHttpClient client, List<String> candidates, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup, long deadlineMs) {
-        for(String root : candidates) {
-            if(requestGroup != null && requestGroup.isCancelled())
-                return null;
-            if(deadlineMs - System.currentTimeMillis() <= 0)
-                return null;
-            String resolved = resolveCandidate(client, root, headers, requestGroup);
-            if(resolved != null)
-                return resolved;
+        if(candidates == null || candidates.isEmpty())
+            return null;
+        ExecutorService executor = Executors.newFixedThreadPool(PARALLEL_PROBE_COUNT);
+        ExecutorCompletionService<String> completion = new ExecutorCompletionService<>(executor);
+        ArrayList<Future<String>> futures = new ArrayList<>();
+        int submitted = 0;
+        int completed = 0;
+        try {
+            while(submitted < candidates.size() && submitted < PARALLEL_PROBE_COUNT && deadlineMs - System.currentTimeMillis() > 0) {
+                futures.add(submitProbe(completion, client, candidates.get(submitted++), headers, requestGroup));
+            }
+            while(completed < submitted) {
+                if(requestGroup != null && requestGroup.isCancelled())
+                    return null;
+                long remaining = deadlineMs - System.currentTimeMillis();
+                if(remaining <= 0)
+                    return null;
+                Future<String> future = completion.poll(remaining, TimeUnit.MILLISECONDS);
+                if(future == null)
+                    return null;
+                completed++;
+                String resolved = future.get();
+                if(resolved != null)
+                    return resolved;
+                if(submitted < candidates.size() && deadlineMs - System.currentTimeMillis() > 0)
+                    futures.add(submitProbe(completion, client, candidates.get(submitted++), headers, requestGroup));
+            }
+        } catch (Exception ignored) {
+            return null;
+        } finally {
+            for(Future<String> future : futures)
+                future.cancel(true);
+            executor.shutdownNow();
         }
         return null;
+    }
+
+    private static Future<String> submitProbe(ExecutorCompletionService<String> completion, OkHttpClient client,
+                                              String root, Map<String, String> headers,
+                                              CustomHttpClient.RequestGroup requestGroup) {
+        return completion.submit(() -> resolveCandidate(client, root, headers, requestGroup));
     }
 
     private static void add(List<String> roots, Set<Integer> seen, Domain domain, int number) {
@@ -141,15 +177,15 @@ public class WfwfDomainResolver {
         boolean ntk = root != null && (root.contains("://ntk") || root.contains("://newtoki") || root.contains("://sbxh") || root.contains("://www.sbxh"));
         String comicPath = ntk ? "/manhwa" : "/cm";
         ProbeResult ing = probe(client, root + "/ing", headers, requestGroup);
-        String verified = verifyUpdatedRoot(client, root, ing.updatedRoot, headers, requestGroup, new HashSet<>(), 0);
-        if(verified != null)
-            return verified;
+        String hinted = normalizeVerifiedRoot(ing.updatedRoot);
+        if(hinted != null && !hinted.equals(root))
+            return hinted;
         if(ing.alive)
             return root;
         ProbeResult comic = probe(client, root + comicPath, headers, requestGroup);
-        verified = verifyUpdatedRoot(client, root, comic.updatedRoot, headers, requestGroup, new HashSet<>(), 0);
-        if(verified != null)
-            return verified;
+        hinted = normalizeVerifiedRoot(comic.updatedRoot);
+        if(hinted != null && !hinted.equals(root))
+            return hinted;
         if(comic.alive)
             return root;
         return null;
