@@ -2,6 +2,12 @@ package ml.melun.mangaview.mangaview;
 import androidx.annotation.NonNull;
 import android.util.Log;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+
+import java.net.URLEncoder;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -167,6 +173,10 @@ public class Title extends MTitle {
     }
 
     private int fetchNtkEps(CustomHttpClient client) {
+        return fetchNtkEps(client, true);
+    }
+
+    private int fetchNtkEps(CustomHttpClient client, boolean allowPathRefresh) {
         try {
             String segment = ntkSegment();
             String titlePath = ntkTitlePath(segment);
@@ -227,7 +237,9 @@ public class Title extends MTitle {
             eps.sort((left, right) -> Integer.compare(right.getId(), left.getId()));
             if(eps.size() == 0) {
                 logNtkEpisodeParse("empty", page, segment, matchedEpisodeLinks, episodeLinks.size());
-                return LOAD_CAPTCHA;
+                if(allowPathRefresh && refreshNtkTitlePathFromApi(client, segment, titlePath))
+                    return fetchNtkEps(client, false);
+                return LOAD_ERROR;
             }
         }catch(Exception e) {
             if(isNtkLoadBlocked(e))
@@ -622,6 +634,111 @@ public class Title extends MTitle {
             return LOAD_ERROR;
         }
         return LOAD_OK;
+    }
+
+    private boolean refreshNtkTitlePathFromApi(CustomHttpClient client, String segment, String currentPath) {
+        if(client == null || name == null || name.trim().length() == 0)
+            return false;
+        try {
+            String apiPath = "/api/" + ("webtoon".equals(segment) ? "works" : "manhwa-list")
+                    + "?keyword=" + ntkEncodeQuery(name.trim()) + "&page=1&pageSize=10&withTotal=1";
+            CustomHttpClient.PageResponse page = client.mgetCachedPage(apiPath, PAGE_CACHE_TTL_MS);
+            if(client.isCloudflareChallengeResponse(page.code, page.body) || page.code >= 400)
+                return false;
+            JsonElement root = JsonParser.parseString(page.body == null || page.body.length() == 0 ? "{}" : page.body);
+            if(root == null || !root.isJsonObject())
+                return false;
+            JsonArray works = root.getAsJsonObject().has("works") && root.getAsJsonObject().get("works").isJsonArray()
+                    ? root.getAsJsonObject().getAsJsonArray("works")
+                    : null;
+            if(works == null)
+                return false;
+            String normalizedName = normalizeNtkTitleName(name);
+            for(int i = 0; i < works.size(); i++) {
+                JsonElement workElement = works.get(i);
+                if(workElement == null || !workElement.isJsonObject())
+                    continue;
+                JsonObject work = workElement.getAsJsonObject();
+                if(!normalizedName.equals(normalizeNtkTitleName(jsonString(work, "title"))))
+                    continue;
+                String sourceWorkId = firstNonEmpty(jsonString(work, "sourceWorkId"), jsonString(work, "id"));
+                String refreshedPath = ntkApiTitlePath(segment, sourceWorkId);
+                if(refreshedPath.length() == 0 || refreshedPath.equals(currentPath))
+                    return false;
+                int refreshedId = parsePositiveInt(sourceWorkId);
+                if(refreshedId > 0)
+                    id = refreshedId;
+                setPath(refreshedPath);
+                setSourceSite("ntk");
+                Log.d(TAG, "ntk_episode_path_refreshed old=" + currentPath + ",new=" + refreshedPath + ",name=" + name);
+                return true;
+            }
+        } catch(Exception e) {
+            Log.d(TAG, "ntk_episode_path_refresh_failed id=" + id + ",name=" + name, e);
+        }
+        return false;
+    }
+
+    private static String ntkEncodeQuery(String value) throws Exception {
+        return URLEncoder.encode(value == null ? "" : value, "UTF-8").replace("+", "%20");
+    }
+
+    static String ntkApiTitlePathForTest(String segment, String sourceWorkId) {
+        return ntkApiTitlePath(segment, sourceWorkId);
+    }
+
+    private static String ntkApiTitlePath(String segment, String sourceWorkId) {
+        if(sourceWorkId == null)
+            return "";
+        String value = sourceWorkId.trim();
+        if(value.length() == 0)
+            return "";
+        int scheme = value.indexOf("://");
+        if(scheme >= 0) {
+            int slash = value.indexOf('/', scheme + 3);
+            value = slash >= 0 ? value.substring(slash) : "";
+        }
+        int query = value.indexOf('?');
+        if(query >= 0)
+            value = value.substring(0, query);
+        int hash = value.indexOf('#');
+        if(hash >= 0)
+            value = value.substring(0, hash);
+        if(value.startsWith("/manhwa/") || value.startsWith("/webtoon/"))
+            return trimTrailingPathSlash(value);
+        while(value.startsWith("/"))
+            value = value.substring(1);
+        if(value.length() == 0)
+            return "";
+        String resolvedSegment = "webtoon".equals(segment) ? "webtoon" : "manhwa";
+        return trimTrailingPathSlash("/" + resolvedSegment + "/" + value);
+    }
+
+    private static String trimTrailingPathSlash(String value) {
+        while(value != null && value.endsWith("/") && value.length() > 1)
+            value = value.substring(0, value.length() - 1);
+        return value == null ? "" : value;
+    }
+
+    private static String normalizeNtkTitleName(String value) {
+        return value == null ? "" : value.toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", "");
+    }
+
+    private static String firstNonEmpty(String first, String second) {
+        if(first != null && first.trim().length() > 0)
+            return first.trim();
+        return second == null ? "" : second.trim();
+    }
+
+    private static String jsonString(JsonObject json, String key) {
+        if(json == null || key == null || !json.has(key))
+            return "";
+        try {
+            JsonElement value = json.get(key);
+            return value == null || value.isJsonNull() ? "" : value.getAsString();
+        } catch(Exception e) {
+            return "";
+        }
     }
 
     static boolean shouldReportFetchFailure(Throwable failure) {

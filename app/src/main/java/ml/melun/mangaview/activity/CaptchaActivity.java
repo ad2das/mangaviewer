@@ -507,8 +507,8 @@ public class CaptchaActivity extends AppCompatActivity {
                     if(normalNtkPageCount >= 1 && elapsed > 400L)
                         finished = readCookiesAndFinish(CookieManager.getInstance(), p.getUrl(), webView == null ? null : webView.getUrl());
                     if(!finished && shouldFinishNormalNtkPageForTest(normalNtkPageCount, elapsed)) {
-                        android.util.Log.d("CaptchaActivity", "NTK normal page stable; finishing captcha without Turnstile");
-                        finishWithNtkAccessVerified();
+                        android.util.Log.d("CaptchaActivity", "NTK normal page stable; verifying app access before finishing captcha");
+                        verifyNtkAccessAndFinish(p.getUrl(), webView == null ? null : webView.getUrl(), null);
                     }
                 } else {
                     isFirstAttempt = false;
@@ -518,23 +518,6 @@ public class CaptchaActivity extends AppCompatActivity {
                 android.util.Log.e("CaptchaActivity", "Failed to parse turnstile result", e);
             }
         });
-    }
-
-    private void finishWithNtkAccessVerified() {
-        if(isFinishing)
-            return;
-        CookieManager manager = CookieManager.getInstance();
-        manager.flush();
-        getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
-        getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
-        if(webView != null)
-            getHttpClient().syncCookiesFromWebView(webView.getUrl(), true);
-        getHttpClient().markNtkAccessVerified();
-        isFinishing = true;
-        handler.removeCallbacksAndMessages(null);
-        Intent resultIntent = new Intent();
-        setResult(RESULT_CAPTCHA, resultIntent);
-        finish();
     }
 
     private void simulateTouch(View view, float centerX, float centerY, float width, float height) {

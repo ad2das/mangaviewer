@@ -71,6 +71,13 @@ public class TitleTest {
     }
 
     @Test
+    public void ntkApiTitlePathUsesResolvedSourceWorkPath() {
+        assertEquals("/manhwa/u-moo205z1-yvf4", Title.ntkApiTitlePathForTest("manhwa", "u-moo205z1-yvf4/"));
+        assertEquals("/manhwa/u-moo205z1-yvf4", Title.ntkApiTitlePathForTest("manhwa", "https://ntk01.com/manhwa/u-moo205z1-yvf4?x=1"));
+        assertEquals("/webtoon/17801", Title.ntkApiTitlePathForTest("webtoon", "17801"));
+    }
+
+    @Test
     public void titleMinimizePreservesSourceSite() {
         Title title = new Title("title", "", "", null, "", 10, MTitle.base_webtoon);
         title.setSourceSite("ntk");

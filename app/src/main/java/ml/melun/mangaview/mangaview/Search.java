@@ -155,6 +155,7 @@ public class Search {
 
                 Elements titles = d.select("div.list-item");
 
+                throwIfCloudflareChallenge(client, code, body, '/' + baseModeStr(baseMode) + "/p" + (page - 1) + searchUrl);
                 if(code>=400){
                     return 1;
                 } else if (titles.size() < 1)
@@ -385,6 +386,7 @@ public class Search {
                 ",fromCache=" + page.fromCache
                         + ",code=" + page.code
                         + ",bodyLen=" + (page.body == null ? 0 : page.body.length()));
+        throwIfCloudflareChallenge(client, page.code, page.body, path);
         if(page.code >= 400)
             throw new Exception("WFWF search failed: " + page.code);
         long parseStartedAt = PerfTrace.start("wfwf_search_parse_ms");
@@ -730,6 +732,7 @@ public class Search {
 
     private PageTitles fetchWebtoonResultsUncached(CustomHttpClient client, String path, int limit, int currentPage) throws Exception {
         CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+        throwIfCloudflareChallenge(client, page.code, page.body, path);
         if(page.code >= 400)
             throw new Exception("Webtoon search failed: " + page.code);
         if(client != null && client.isNtk() && isNtkApiListPath(path))
@@ -741,6 +744,7 @@ public class Search {
                 : MainPageWebtoon.parseWolfTitles(d, baseMode, limit);
         if(parsed.size() == 0 && client.resolveWfwfDomainNow()) {
             page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+            throwIfCloudflareChallenge(client, page.code, page.body, path);
             if(page.code >= 400)
                 throw new Exception("Webtoon search failed: " + page.code);
             d = fastWfwfKeyword ? null : Jsoup.parse(page.body);
@@ -1513,6 +1517,7 @@ public class Search {
                         + ",fromCache=" + page.fromCache
                         + ",code=" + page.code
                         + ",bodyLen=" + (page.body == null ? 0 : page.body.length()));
+        throwIfCloudflareChallenge(client, page.code, page.body, path);
         if(page.code >= 400)
             throw new Exception("NTK search failed: " + page.code);
         long parseStartedAt = PerfTrace.start("ntk_search_html_parse_ms");
@@ -1602,6 +1607,7 @@ public class Search {
         for(String path : paths) {
             try {
                 CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+                throwIfCloudflareChallenge(client, page.code, page.body, path);
                 if(page.code >= 400)
                     throw new Exception("NTK search failed: " + page.code);
                 Document d = Jsoup.parse(page.body);
@@ -1645,6 +1651,7 @@ public class Search {
                 + "&page=1&pageSize=" + pageSize;
         PageTitles parsed = cachedNtkPageTitles(client, "keyword", path, targetBaseMode, limit, 1, () -> {
             CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+            throwIfCloudflareChallenge(client, page.code, page.body, path);
             if(page.code >= 400)
                 return new PageTitles(new ArrayList<>(), null);
             return parseNtkApiPage(page.body, path, targetBaseMode, 0, 1);
@@ -1817,6 +1824,7 @@ public class Search {
                             + ",fromCache=" + page.fromCache
                             + ",code=" + page.code
                             + ",bodyLen=" + (page.body == null ? 0 : page.body.length()));
+            throwIfCloudflareChallenge(client, page.code, page.body, path);
             if(page.code >= 400)
                 return new NtkApiPathResult(path, new PageTitles(new ArrayList<>(), null), false, 0);
             int parsedBaseMode = path.startsWith("/api/manhwa-list") ? base_comic : base_webtoon;
@@ -2091,6 +2099,26 @@ public class Search {
                 encoded.append('%').append(String.format("%02X", c));
         }
         return encoded.toString();
+    }
+
+    private static void throwIfCloudflareChallenge(CustomHttpClient client, int code, String body, String path) throws Exception {
+        if(client == null || !client.isCloudflareChallengeResponse(code, body))
+            return;
+        client.markCloudflareChallenge(resolveChallengeUrl(client, path));
+        throw new Exception("Cloudflare challenge");
+    }
+
+    private static String resolveChallengeUrl(CustomHttpClient client, String path) {
+        if(path == null || path.length() == 0)
+            return null;
+        String lower = path.toLowerCase(Locale.ROOT);
+        if(lower.startsWith("http://") || lower.startsWith("https://"))
+            return path;
+        return client.getUrl(path) + path;
+    }
+
+    static boolean shouldTreatSearchResponseAsCaptchaForTest(CustomHttpClient client, int code, String body) {
+        return client != null && client.isCloudflareChallengeResponse(code, body);
     }
 
     private static String webtoonStatus(String value) {

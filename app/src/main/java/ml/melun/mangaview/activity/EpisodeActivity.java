@@ -216,7 +216,12 @@ public class EpisodeActivity extends AppCompatActivity {
         setContentView(R.layout.activity_episode);
         applyEpisodeWindowChrome();
         Intent intent = getIntent();
-        title = new Gson().fromJson(intent.getStringExtra("title"),new TypeToken<Title>(){}.getType());
+        title = parseIntentTitle(intent.getStringExtra("title"));
+        if(title == null) {
+            Toast.makeText(this, "작품 정보를 열 수 없습니다.", Toast.LENGTH_SHORT).show();
+            finish();
+            return;
+        }
         switchToTitleSourceSite();
         firstContentStartedAt = PerfTrace.start("episode_first_content_ms");
         online = intent.getBooleanExtra("online", true);
@@ -892,6 +897,20 @@ public class EpisodeActivity extends AppCompatActivity {
 
     static boolean shouldLoadDiskEpisodeCacheAsyncForTest(boolean renderedMemoryCache) {
         return !renderedMemoryCache;
+    }
+
+    static Title parseIntentTitleForTest(String json) {
+        return parseIntentTitle(json);
+    }
+
+    private static Title parseIntentTitle(String json) {
+        if(json == null || json.trim().length() == 0)
+            return null;
+        try {
+            return new Gson().fromJson(json, new TypeToken<Title>(){}.getType());
+        } catch(Exception e) {
+            return null;
+        }
     }
 
     @Override

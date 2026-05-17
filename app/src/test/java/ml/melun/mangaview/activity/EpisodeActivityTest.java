@@ -6,10 +6,12 @@ import java.util.ArrayList;
 import java.util.List;
 
 import ml.melun.mangaview.mangaview.Manga;
+import ml.melun.mangaview.mangaview.Title;
 
 import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class EpisodeActivityTest {
@@ -62,6 +64,14 @@ public class EpisodeActivityTest {
     public void diskEpisodeCacheLoadsOnlyAfterMemoryMiss() {
         assertFalse(EpisodeActivity.shouldLoadDiskEpisodeCacheAsyncForTest(true));
         assertTrue(EpisodeActivity.shouldLoadDiskEpisodeCacheAsyncForTest(false));
+    }
+
+    @Test
+    public void malformedIntentTitleDoesNotCrashEpisodeScreen() {
+        assertNull(EpisodeActivity.parseIntentTitleForTest("{name:broken"));
+
+        Title title = EpisodeActivity.parseIntentTitleForTest("{\"name\":\"Sky\",\"id\":10994,\"baseMode\":1}");
+        assertEquals("Sky", title.getName());
     }
 
     @Test

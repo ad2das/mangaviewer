@@ -55,6 +55,7 @@ import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.PerfTrace;
 
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
 import static ml.melun.mangaview.Utils.openViewer;
@@ -110,6 +111,7 @@ public class MainSearch extends Fragment {
     long librarySnapshotVersion = -1L;
     final ArrayList<Title>[] librarySnapshots = new ArrayList[4];
     int keyboardShowGeneration = 0;
+    boolean suppressNextAutoCaptchaOpen = false;
 
     public static MainSearch newSearchTab() {
         MainSearch fragment = new MainSearch();
@@ -318,7 +320,7 @@ public class MainSearch extends Fragment {
                 if (!search.isLast()) {
                     if(searchTask == null) {
                         activeSearchKey = null;
-                        searchTask = new SearchManga(search, false);
+                        searchTask = new SearchManga(search, false, false);
                         searchTask.start();
                     }
                 } else swipe.setRefreshing(false);
@@ -1232,7 +1234,8 @@ public class MainSearch extends Fragment {
                 searchTask.cancel(true);
             activeSearchKey = key;
             searchFirstStartedAt = PerfTrace.start("search_first_result_ms");
-            searchTask = new SearchManga(search, true);
+            searchTask = new SearchManga(search, true, suppressNextAutoCaptchaOpen);
+            suppressNextAutoCaptchaOpen = false;
             searchTask.start();
         }
     }
@@ -1339,8 +1342,10 @@ public class MainSearch extends Fragment {
     @Override
     public void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if(resultCode == RESULT_CAPTCHA && searchAdapter!=null && search != null)
+        if(resultCode == RESULT_CAPTCHA && searchAdapter!=null && search != null) {
+            suppressNextAutoCaptchaOpen = true;
             searchSubmit();
+        }
     }
 
     @Override
@@ -1405,15 +1410,18 @@ public class MainSearch extends Fragment {
     private class SearchManga {
         private final Search targetSearch;
         private final boolean replaceResults;
+        private final boolean suppressAutoCaptchaOpen;
         private MangaRepository.Cancellation cancellation;
         private AppDispatchers.TaskHandle handle;
         private volatile boolean cancelled = false;
         private int partialResultCount = 0;
         private Exception searchFailure;
+        private long loadStartedAt;
 
-        SearchManga(Search targetSearch, boolean replaceResults) {
+        SearchManga(Search targetSearch, boolean replaceResults, boolean suppressAutoCaptchaOpen) {
             this.targetSearch = targetSearch;
             this.replaceResults = replaceResults;
+            this.suppressAutoCaptchaOpen = suppressAutoCaptchaOpen;
         }
 
         void start() {
@@ -1449,6 +1457,7 @@ public class MainSearch extends Fragment {
 
         private Integer load() {
             cancellation = MangaRepository.cancellation();
+            loadStartedAt = System.currentTimeMillis();
             try {
                 return MangaRepository.search(targetSearch, cancellation);
             } catch (Exception e) {
@@ -1469,6 +1478,9 @@ public class MainSearch extends Fragment {
                 return;
             if(res == null)
                 res = 1;
+            boolean captchaRequired = !suppressAutoCaptchaOpen && shouldOpenCaptchaAfterSearchFailure(res, loadStartedAt);
+            if(captchaRequired)
+                Utils.showCaptchaPopup(getContext(), RESULT_CAPTCHA, MainSearch.this, p);
             if(replaceResults) {
                 searchAdapter.setDataImmediate(targetSearch.getResult());
                 bindOnlineAdapter();
@@ -1490,7 +1502,7 @@ public class MainSearch extends Fragment {
                 }
             }else{
                 noResultText.setText("\"" + targetSearch.getQuery() + "\" 검색 결과가 없습니다");
-                if(res != 0)
+                if(res != 0 && !captchaRequired)
                     noResultText.setText("\"" + targetSearch.getQuery() + "\" \uac80\uc0c9 \uacb0\uacfc\ub97c \ubd88\ub7ec\uc624\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.\n\ub124\ud2b8\uc6cc\ud06c \ub610\ub294 \uc0ac\uc774\ud2b8 \uc8fc\uc18c\ub97c \ud655\uc778\ud55c \ub4a4 \ub2e4\uc2dc \uc2dc\ub3c4\ud574 \uc8fc\uc138\uc694.");
                 noresult.setVisibility(View.VISIBLE);
             }
@@ -1511,5 +1523,9 @@ public class MainSearch extends Fragment {
             }
             return handle == null || handle.cancel();
         }
+    }
+
+    private static boolean shouldOpenCaptchaAfterSearchFailure(int result, long loadStartedAt) {
+        return result != 0 && getHttpClient().hasCloudflareChallengeSince(loadStartedAt);
     }
 }

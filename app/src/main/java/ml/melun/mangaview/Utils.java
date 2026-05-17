@@ -940,7 +940,7 @@ public class Utils {
                 //showErrorPopup(context, "네트워크 연결이 없습니다.", e, force_close);
                 safeToast(context, "네트워크 연결이 없습니다.", Toast.LENGTH_LONG);
                 if (force_close && context instanceof Activity) ((Activity) context).finish();
-            } else if (captchaCount == 0 || getHttpClient().isNtk()) {
+            } else if (!getHttpClient().isNtk() && captchaCount == 0) {
                 startCaptchaActivity(context, code, fragment, url);
             } else {
                 AlertDialog.Builder builder;
@@ -971,6 +971,8 @@ public class Utils {
     private static boolean shouldOpenCloudflareCaptchaAutomatically() {
         if(!getHttpClient().isNtk())
             return false;
+        if(!getHttpClient().hasRecentCloudflareChallenge())
+            return false;
         if(getHttpClient().hasNtkAccessProof() && !getHttpClient().hasRecentCloudflareChallenge())
             return false;
         long now = System.currentTimeMillis();
@@ -993,8 +995,9 @@ public class Utils {
         if(shouldOpenCloudflareCaptchaAutomatically()) {
             startCaptchaActivity(context, code, fragment, null);
             captchaCount++;
+            return true;
         }
-        return true;
+        return false;
     }
 
     public static boolean showNtkTurnstileCaptchaIfNeeded(Context context, int code, Fragment fragment, Preference preference) {
