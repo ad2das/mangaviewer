@@ -147,7 +147,7 @@ public class MainActivity extends AppCompatActivity
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        openSearchQueryFromIntent();
+        openSearchQueryFromIntentWhenReady();
     }
 
     @Override
@@ -171,6 +171,14 @@ public class MainActivity extends AppCompatActivity
         ensureMainFragment(1);
         changeFragment(1);
         ((MainSearch) fragments[1]).enterSearchMode();
+    }
+
+    private void openSearchQueryFromIntentWhenReady() {
+        if(content == null) {
+            openSearchQueryFromIntent();
+            return;
+        }
+        content.post(this::openSearchQueryFromIntent);
     }
 
     private void openSearchQueryFromIntent() {
