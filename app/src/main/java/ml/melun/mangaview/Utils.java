@@ -194,6 +194,7 @@ public class Utils {
         if(p != null)
             p.ensureSourceSiteForTitle(title);
         Intent episodeView = new Intent(context, EpisodeActivity.class);
+        episodeView.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
         episodeView.putExtra("title", toViewerTitleJson(title, true));
         return episodeView;
     }
