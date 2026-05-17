@@ -129,6 +129,8 @@ public class MainActivity extends AppCompatActivity
     UrlUpdateCallback pendingUrlUpdateCallback;
     private static final int FIRST_TIME_ACTIVITY = 9;
     private static final String FRAGMENT_TAG_PREFIX = "main_tab_";
+    private static final String EXTRA_SEARCH_QUERY = "searchQuery";
+    private static final String EXTRA_SEARCH_BASE_MODE = "searchBaseMode";
 
 
     Fragment[] fragments = new Fragment[3];
@@ -139,6 +141,13 @@ public class MainActivity extends AppCompatActivity
     protected void onSaveInstanceState(Bundle outState) {
         outState.putInt("currentTab", currentTab);
         super.onSaveInstanceState(outState);
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        openSearchQueryFromIntent();
     }
 
     @Override
@@ -162,6 +171,27 @@ public class MainActivity extends AppCompatActivity
         ensureMainFragment(1);
         changeFragment(1);
         ((MainSearch) fragments[1]).enterSearchMode();
+    }
+
+    private void openSearchQueryFromIntent() {
+        Intent intent = getIntent();
+        if(intent == null)
+            return;
+        String query = intent.getStringExtra(EXTRA_SEARCH_QUERY);
+        if(query == null)
+            return;
+        query = query.trim();
+        if(query.length() == 0)
+            return;
+
+        ensureMainFragment(1);
+        changeFragment(1);
+        getSupportFragmentManager().executePendingTransactions();
+        MainSearch searchFragment = (MainSearch) fragments[1];
+        searchFragment.setBaseMode(intent.getIntExtra(EXTRA_SEARCH_BASE_MODE, p.getBaseMode()));
+        searchFragment.setSearch(query);
+        if(toolbar != null)
+            toolbar.setTitle(getTabTitle(1));
     }
 
     private boolean forceWfwfOnStartup() {
@@ -378,6 +408,7 @@ public class MainActivity extends AppCompatActivity
             changeFragment(t>-1 ? t : 0);
         }else
             changeFragment(0);
+        openSearchQueryFromIntent();
         PerfTrace.end("main_initial_fragment_ms", fragmentStartedAt);
 
         long postStartupStartedAt = PerfTrace.start("main_post_startup_ms");
