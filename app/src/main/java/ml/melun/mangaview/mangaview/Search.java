@@ -1507,6 +1507,9 @@ public class Search {
                 if(title != null)
                     title.setSourceSite("ntk");
         }
+        int rawCount = parsed.size();
+        if(client != null && client.isNtk() && mode == 0)
+            parsed = filterNtkKeywordResults(parsed, query, limit);
         String nextPath = null;
         if(!fastKeywordSearch) {
             if(d == null)
@@ -1516,6 +1519,7 @@ public class Search {
         traceSearchMetric("ntk_search_html_parse_ms", parseStartedAt,
                 ",path=" + ntkMetricPath(path)
                         + ",fast=" + fastKeywordSearch
+                        + ",raw=" + rawCount
                         + ",count=" + parsed.size());
         return new PageTitles(parsed, nextPath);
     }
