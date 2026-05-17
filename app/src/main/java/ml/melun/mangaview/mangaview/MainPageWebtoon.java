@@ -709,10 +709,7 @@ public class MainPageWebtoon {
                 if(name.length() == 0)
                     name = cleanNtkListText(context.text());
 
-                String thumb = "";
-                Element img = context.selectFirst("img");
-                if(img != null)
-                    thumb = firstImageAttr(img);
+                String thumb = firstCardImageAttr(context);
                 if(thumb.length() == 0) {
                     Element background = context.selectFirst("[style*=background-image], [style*=background]");
                     if(background != null)
@@ -991,35 +988,16 @@ public class MainPageWebtoon {
         if(html == null)
             return "";
         Matcher imgMatcher = FAST_IMG_PATTERN.matcher(html);
-        if(imgMatcher.find()) {
+        String platformFallback = "";
+        while(imgMatcher.find()) {
             String attrs = imgMatcher.group(1);
-            String[] names = {
-                    "data-original",
-                    "data-src",
-                    "data-lazy-src",
-                    "data-url",
-                    "data-image",
-                    "data-img",
-                    "data-thumb",
-                    "data-thumbnail",
-                    "data-background-image"
-            };
-            for(String attr : names) {
-                String value = attrValue(attrs, attr);
-                if(isUsableImageValue(value))
-                    return decodeHtml(value).trim();
-            }
-            String srcset = firstSrcsetImage(attrValue(attrs, "data-srcset"));
-            if(srcset.length() == 0)
-                srcset = firstSrcsetImage(attrValue(attrs, "srcset"));
-            if(srcset.length() > 0)
-                return decodeHtml(srcset).trim();
-            String styleImage = extractBackgroundImage(attrValue(attrs, "style"));
-            if(isUsableImageValue(styleImage))
-                return decodeHtml(styleImage).trim();
-            String src = attrValue(attrs, "src");
-            if(isUsableImageValue(src))
-                return decodeHtml(src).trim();
+            String thumb = firstFastImageAttr(attrs);
+            if(thumb.length() == 0)
+                continue;
+            if(!isPlatformLogoThumb(thumb))
+                return thumb;
+            if(platformFallback.length() == 0)
+                platformFallback = thumb;
         }
         Matcher styleMatcher = FAST_STYLE_PATTERN.matcher(html);
         while(styleMatcher.find()) {
@@ -1027,6 +1005,37 @@ public class MainPageWebtoon {
             if(isUsableImageValue(styleImage))
                 return decodeHtml(styleImage).trim();
         }
+        return platformFallback;
+    }
+
+    private static String firstFastImageAttr(String attrs) {
+        String[] names = {
+                "data-original",
+                "data-src",
+                "data-lazy-src",
+                "data-url",
+                "data-image",
+                "data-img",
+                "data-thumb",
+                "data-thumbnail",
+                "data-background-image"
+        };
+        for(String attr : names) {
+            String value = attrValue(attrs, attr);
+            if(isUsableImageValue(value))
+                return decodeHtml(value).trim();
+        }
+        String srcset = firstSrcsetImage(attrValue(attrs, "data-srcset"));
+        if(srcset.length() == 0)
+            srcset = firstSrcsetImage(attrValue(attrs, "srcset"));
+        if(srcset.length() > 0)
+            return decodeHtml(srcset).trim();
+        String styleImage = extractBackgroundImage(attrValue(attrs, "style"));
+        if(isUsableImageValue(styleImage))
+            return decodeHtml(styleImage).trim();
+        String src = attrValue(attrs, "src");
+        if(isUsableImageValue(src))
+            return decodeHtml(src).trim();
         return "";
     }
 
@@ -1121,6 +1130,22 @@ public class MainPageWebtoon {
         if(dbTitle != null && !isPlatformLogoThumb(dbTitle.thumb) && dbTitle.thumb != null && dbTitle.thumb.length() > 0)
             return dbTitle.thumb;
         return "";
+    }
+
+    private static String firstCardImageAttr(Element context) {
+        if(context == null)
+            return "";
+        String platformFallback = "";
+        for(Element img : context.select("img")) {
+            String thumb = firstImageAttr(img);
+            if(thumb.length() == 0)
+                continue;
+            if(!isPlatformLogoThumb(thumb))
+                return thumb;
+            if(platformFallback.length() == 0)
+                platformFallback = thumb;
+        }
+        return platformFallback;
     }
 
     public static String resolveCoverThumbIfLoaded(String name, int id, String thumb, int baseMode) {

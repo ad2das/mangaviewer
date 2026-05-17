@@ -1953,14 +1953,7 @@ public class Search {
     private static boolean matchesNtkKeyword(Title title, String normalizedQuery) {
         if(normalizedQuery.length() == 0)
             return true;
-        if(normalizeSearchText(title.getName()).contains(normalizedQuery))
-            return true;
-        if(normalizeSearchText(title.getRelease()).contains(normalizedQuery))
-            return true;
-        for(String tag : title.getTags())
-            if(normalizeSearchText(tag).contains(normalizedQuery))
-                return true;
-        return false;
+        return normalizeSearchText(title.getName()).contains(normalizedQuery);
     }
 
     private static String normalizeSearchText(String value) {

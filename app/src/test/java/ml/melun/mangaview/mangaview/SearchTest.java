@@ -3,6 +3,7 @@ package ml.melun.mangaview.mangaview;
 import org.junit.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 
 import static ml.melun.mangaview.mangaview.MTitle.base_auto;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
@@ -101,6 +102,27 @@ public class SearchTest {
         titles.add(ntkTitle("Unrelated Result", 1, base_comic, "/manhwa/1"));
 
         assertEquals(0, Search.filterNtkKeywordResultsForTest(titles, "onepunch", 0).size());
+    }
+
+    @Test
+    public void ntkKeywordApiFilterMatchesTitlesOnly() {
+        ArrayList<Title> titles = new ArrayList<>();
+        Title byTag = new Title("\uC5C9\uB6B1\uD55C \uC791\uD488", "", "",
+                Arrays.asList("\uC2A4\uD53C\uB4DC"), "", 1, base_webtoon);
+        byTag.setSourceSite("ntk");
+        byTag.setPath("/webtoon/1");
+        Title byRelease = new Title("\uB2E4\uB978 \uC791\uD488", "", "", new ArrayList<>(),
+                "\uC2A4\uD53C 10\uD654", 2, base_webtoon);
+        byRelease.setSourceSite("ntk");
+        byRelease.setPath("/webtoon/2");
+        titles.add(byTag);
+        titles.add(byRelease);
+        titles.add(ntkTitle("\uC2A4\uD53C\uB9BF \uD551\uAC70\uC2A4", 3, base_webtoon, "/webtoon/3"));
+
+        ArrayList<Title> filtered = Search.filterNtkKeywordResultsForTest(titles, "\uC2A4\uD53C", 0);
+
+        assertEquals(1, filtered.size());
+        assertEquals(3, filtered.get(0).getId());
     }
 
     @Test

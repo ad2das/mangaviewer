@@ -95,6 +95,34 @@ public class MainPageWebtoonTest {
     }
 
     @Test
+    public void parseWolfSearchHtmlFastUsesLaterCoverWhenFirstImageIsPlatformLogo() {
+        ArrayList<Title> titles = MainPageWebtoon.parseWolfSearchHtmlFast(
+                "<a class='card' href='/webtoon/302'>"
+                        + "<img src='/platforms/toonflix.png'>"
+                        + "<img data-src='/data/webtoon/302.webp' alt='NTK Fast Webtoon'>"
+                        + "<h6>NTK Fast Webtoon</h6>"
+                        + "</a>",
+                base_webtoon, 0, "ntk");
+
+        assertEquals(1, titles.size());
+        assertEquals("/data/webtoon/302.webp", titles.get(0).getThumb());
+    }
+
+    @Test
+    public void parseWolfTitlesUsesLaterCoverWhenFirstImageIsPlatformLogo() {
+        ArrayList<Title> titles = MainPageWebtoon.parseWolfTitles(
+                Jsoup.parse("<a class='card' href='/webtoon/303'>"
+                        + "<img src='/platforms/toonflix.png'>"
+                        + "<img data-src='/data/webtoon/303.webp' alt='NTK Webtoon'>"
+                        + "<p class='subject'>NTK Webtoon</p>"
+                        + "</a>"),
+                base_webtoon, 0, "ntk");
+
+        assertEquals(1, titles.size());
+        assertEquals("/data/webtoon/303.webp", titles.get(0).getThumb());
+    }
+
+    @Test
     public void parseWolfSearchHtmlFastReadsNtkSlugTitlePaths() {
         ArrayList<Title> titles = MainPageWebtoon.parseWolfSearchHtmlFast(
                 "<a class='card' href='/manhwa/u-moo205z1-yvf4'>"
