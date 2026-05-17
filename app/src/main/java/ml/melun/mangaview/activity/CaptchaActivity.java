@@ -2,6 +2,7 @@ package ml.melun.mangaview.activity;
 
 import android.content.Context;
 import android.content.Intent;
+import android.content.ClipboardManager;
 
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
@@ -26,6 +27,7 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -58,6 +60,7 @@ import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_WEBTOON_URL;
 
 public class CaptchaActivity extends AppCompatActivity {
     WebView webView;
+    private TextView infoText;
     public static final int RESULT_CAPTCHA = 15;
     public static final int REQUEST_CAPTCHA = 32;
     String domain;
@@ -165,6 +168,8 @@ public class CaptchaActivity extends AppCompatActivity {
     private String lastVerificationClearanceValue = null;
     private long lastClearanceVerificationAt = 0;
     private long lastInvalidClearanceReloadAt = 0;
+    private String captchaLoadUrl;
+    private boolean captchaLoadErrorVisible = false;
     private LocalWebViewProxy localWebViewProxy;
 
     @Override
@@ -187,7 +192,7 @@ public class CaptchaActivity extends AppCompatActivity {
         else
             url = purl + path;
 
-        TextView infoText = this.findViewById(R.id.infoText);
+        infoText = this.findViewById(R.id.infoText);
         try {
             URL u = new URL(purl);
             domain = u.getHost();
@@ -201,6 +206,8 @@ public class CaptchaActivity extends AppCompatActivity {
 
         webView = this.findViewById(R.id.captchaWebView);
         webView.setWebContentsDebuggingEnabled(true);
+        captchaLoadUrl = url;
+        configureActionButtons(purl);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -254,6 +261,7 @@ public class CaptchaActivity extends AppCompatActivity {
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
                 handler.removeCallbacksAndMessages(null);
+                hideCaptchaLoadError();
                 pageFinishedTime = 0;
                 lastAttemptTime = 0;
                 normalNtkPageCount = 0;
@@ -270,8 +278,10 @@ public class CaptchaActivity extends AppCompatActivity {
                 String failingUrl = request != null && request.getUrl() != null ? request.getUrl().toString() : (view == null ? null : view.getUrl());
                 if(shouldSuppressNtkLoadErrorPopupForTest(p != null && p.isNtkSite(), failingUrl, purl)) {
                     android.util.Log.d("CaptchaActivity", "Suppressing NTK captcha WebView load error popup: " + failingUrl);
+                    showCaptchaLoadError(failingUrl);
                     return;
                 }
+                showCaptchaLoadError(failingUrl);
                 showPopup(context, "오류", "연결에 실패했습니다. URL을 확인해 주세요");
             }
 
@@ -327,6 +337,71 @@ public class CaptchaActivity extends AppCompatActivity {
 
     }
 
+    private void configureActionButtons(String purl) {
+        View reload = findViewById(R.id.captchaReload);
+        View checkCookie = findViewById(R.id.captchaCheckCookie);
+        View pasteCookie = findViewById(R.id.captchaPasteCookie);
+        View close = findViewById(R.id.captchaClose);
+        if(reload != null)
+            reload.setOnClickListener(v -> {
+                hideCaptchaLoadError();
+                clearWebViewProxy();
+                loadCaptchaUrl(captchaLoadUrl);
+            });
+        if(checkCookie != null)
+            checkCookie.setOnClickListener(v -> {
+                Toast.makeText(this, "쿠키를 확인합니다.", Toast.LENGTH_SHORT).show();
+                readCookiesAndFinish(CookieManager.getInstance(), purl, webView == null ? null : webView.getUrl());
+            });
+        if(pasteCookie != null)
+            pasteCookie.setOnClickListener(v -> pasteClearanceCookie(purl));
+        if(close != null)
+            close.setOnClickListener(v -> finish());
+    }
+
+    private void showCaptchaLoadError(String failingUrl) {
+        captchaLoadErrorVisible = true;
+        handler.removeCallbacksAndMessages(null);
+        if(webView != null)
+            webView.setVisibility(View.INVISIBLE);
+        if(infoText == null)
+            return;
+        infoText.setText("사이트에 연결할 수 없습니다.\n네트워크 또는 사이트 차단 상태일 수 있습니다.\n새로고침하거나 닫은 뒤 다른 사이트로 전환하세요.");
+        infoText.setVisibility(View.VISIBLE);
+    }
+
+    private void hideCaptchaLoadError() {
+        captchaLoadErrorVisible = false;
+        if(webView != null)
+            webView.setVisibility(View.VISIBLE);
+        if(infoText != null)
+            infoText.setVisibility(View.GONE);
+    }
+
+    private void pasteClearanceCookie(String purl) {
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        CharSequence text = clipboard != null
+                && clipboard.hasPrimaryClip()
+                && clipboard.getPrimaryClip() != null
+                && clipboard.getPrimaryClip().getItemCount() > 0
+                ? clipboard.getPrimaryClip().getItemAt(0).coerceToText(this)
+                : null;
+        String clearance = extractCookieValueForTest(text == null ? null : text.toString(), "cf_clearance");
+        if(clearance == null || !isValidClearanceValue(clearance)) {
+            Toast.makeText(this, "cf_clearance 쿠키를 찾지 못했습니다.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        CookieManager manager = CookieManager.getInstance();
+        for(String url : cookieReadUrls(purl, webView == null ? null : webView.getUrl())) {
+            if(url != null && url.length() > 0)
+                manager.setCookie(url, "cf_clearance=" + clearance);
+        }
+        manager.flush();
+        getHttpClient().setCookie("cf_clearance", clearance);
+        Toast.makeText(this, "쿠키를 적용했습니다.", Toast.LENGTH_SHORT).show();
+        verifyNtkAccessAndFinish(purl, webView == null ? null : webView.getUrl(), clearance);
+    }
+
     private void loadCaptchaUrl(String url) {
         if(WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE) && p != null && p.isNtkSite()) {
             try {
@@ -357,7 +432,7 @@ public class CaptchaActivity extends AppCompatActivity {
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
-                if(isFinishing || isDestroyed()) return;
+                if(isFinishing || isDestroyed() || captchaLoadErrorVisible) return;
 
                 // Check if we've been waiting too long
                 if(System.currentTimeMillis() - pageFinishedTime > TURNSTILE_MAX_WAIT_MS) {
@@ -380,7 +455,7 @@ public class CaptchaActivity extends AppCompatActivity {
     }
 
     private void attemptTurnstileClick() {
-        if(webView == null) return;
+        if(webView == null || captchaLoadErrorVisible) return;
 
         long now = System.currentTimeMillis();
         long requiredInterval = isFirstAttempt ? FIRST_CLICK_DELAY_MS : (RETRY_MIN_MS + (long)(Math.random() * (RETRY_MAX_MS - RETRY_MIN_MS)));
@@ -740,6 +815,22 @@ public class CaptchaActivity extends AppCompatActivity {
 
     static boolean shouldFinishNormalNtkPageForTest(int normalPageCount, long elapsedMs) {
         return normalPageCount >= 2 && elapsedMs > 1200L;
+    }
+
+    static String extractCookieValueForTest(String text, String cookieName) {
+        if(text == null || cookieName == null || cookieName.length() == 0)
+            return null;
+        String[] parts = text.split("[;\\n\\r]+");
+        for(String raw : parts) {
+            String part = raw == null ? "" : raw.trim();
+            int eq = part.indexOf('=');
+            if(eq <= 0)
+                continue;
+            String key = part.substring(0, eq).trim();
+            if(cookieName.equalsIgnoreCase(key))
+                return part.substring(eq + 1).trim();
+        }
+        return null;
     }
 
     private static boolean isNtkLikeUrlForCaptcha(String url) {

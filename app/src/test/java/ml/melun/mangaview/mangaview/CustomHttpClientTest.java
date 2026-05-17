@@ -2,6 +2,7 @@ package ml.melun.mangaview.mangaview;
 
 import org.junit.Test;
 
+import java.net.ConnectException;
 import java.net.InetAddress;
 import java.util.Arrays;
 import java.util.List;
@@ -162,6 +163,30 @@ public class CustomHttpClientTest {
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
         assertFalse(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/manhwa/1/1",
                 CustomHttpClient.FetchMode.CACHE_ONLY));
+    }
+
+    @Test
+    public void ntkNetworkMissesAreExpectedRequestFailures() {
+        assertFalse(CustomHttpClient.shouldRecordRequestFailureForTest(
+                "https://sbxh1.com/api/manhwa-list?page=1",
+                new ConnectException("Network is unreachable"),
+                false,
+                true));
+        assertFalse(CustomHttpClient.shouldRecordRequestFailureForTest(
+                "https://ntk01.com/manhwa/1",
+                new java.io.InterruptedIOException("timeout"),
+                false,
+                true));
+        assertFalse(CustomHttpClient.shouldRecordRequestFailureForTest(
+                "https://sbxh1.com/api/manhwa-list?page=1",
+                new ConnectException("Network is unreachable"),
+                true,
+                true));
+        assertTrue(CustomHttpClient.shouldRecordRequestFailureForTest(
+                "https://example.com/api/manhwa-list?page=1",
+                new ConnectException("Network is unreachable"),
+                false,
+                false));
     }
 
     @Test

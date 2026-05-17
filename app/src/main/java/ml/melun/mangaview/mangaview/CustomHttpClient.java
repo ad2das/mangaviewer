@@ -1411,13 +1411,27 @@ public class CustomHttpClient {
     }
 
     private boolean shouldRecordRequestFailure(String url, Exception e, RequestGroup requestGroup, boolean fastNtkPageDirect) {
-        if(isInterruptedRequest(e) || (requestGroup != null && requestGroup.isCancelled()))
+        return shouldRecordRequestFailureForState(url, e,
+                requestGroup != null && requestGroup.isCancelled(),
+                fastNtkPageDirect);
+    }
+
+    private static boolean shouldRecordRequestFailureForState(String url, Exception e,
+                                                              boolean requestCancelled,
+                                                              boolean fastNtkPageDirect) {
+        if(isInterruptedRequest(e) || requestCancelled)
             return false;
-        if(fastNtkPageDirect && isNtkUrl(url) && e instanceof InterruptedIOException)
+        if(isNtkUrlForTest(url) && e instanceof java.io.IOException)
             return false;
         if(shouldUseFastWolfPageDirectUrl(url) && e instanceof java.io.IOException)
             return false;
-        return !(e instanceof SSLException && (isNtkUrl(url) || isNtk()));
+        return !(fastNtkPageDirect && e instanceof SSLException);
+    }
+
+    static boolean shouldRecordRequestFailureForTest(String url, Exception e,
+                                                     boolean requestCancelled,
+                                                     boolean fastNtkPageDirect) {
+        return shouldRecordRequestFailureForState(url, e, requestCancelled, fastNtkPageDirect);
     }
 
     static boolean shouldUseFastWolfPageDirectUrlForTest(String url) {
