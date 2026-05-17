@@ -50,4 +50,12 @@ public class WfwfDomainResolverTest {
         assertEquals("https://wfwf449.com", WfwfDomainResolver.candidatesForTest("https://wfwf450.com").get(1));
         assertEquals("https://wfwf447.com", WfwfDomainResolver.candidatesForTest("https://wfwf450.com").get(5));
     }
+
+    @Test
+    public void domainScanSuppressionExpires() {
+        WfwfDomainResolver.suppressDomainScanForTest(1000);
+        assertTrue(WfwfDomainResolver.isDomainScanSuppressedForTest());
+        WfwfDomainResolver.suppressDomainScanForTest(0);
+        assertFalse(WfwfDomainResolver.isDomainScanSuppressedForTest());
+    }
 }

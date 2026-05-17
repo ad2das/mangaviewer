@@ -207,7 +207,8 @@ public class Search {
                 } catch (Exception e) {
                     page--;
                     timeoutRetries = 0;
-                    ml.melun.mangaview.report.CrashReporter.record(e);
+                    if(shouldReportSearchFailure(e))
+                        ml.melun.mangaview.report.CrashReporter.record(e);
                     return 1;
                 }
             }
@@ -269,7 +270,8 @@ public class Search {
                 last = true;
             }
         } catch (Exception e) {
-            ml.melun.mangaview.report.CrashReporter.record(e);
+            if(shouldReportSearchFailure(e))
+                ml.melun.mangaview.report.CrashReporter.record(e);
             status = 1;
         }
         result.addAll(combined);
@@ -281,6 +283,15 @@ public class Search {
                         + ",count=" + result.size()
                         + ",status=" + finalStatus);
         return finalStatus;
+    }
+
+    private static boolean shouldReportSearchFailure(Exception e) {
+        if(e == null)
+            return false;
+        String message = e.getMessage();
+        if(message != null && message.startsWith("Request failed:"))
+            return false;
+        return true;
     }
 
     private static class SearchResult {
@@ -1816,7 +1827,8 @@ public class Search {
             traceSearchMetric("ntk_search_api_error_ms", totalStartedAt,
                     ",path=" + ntkMetricPath(path)
                             + ",type=" + e.getClass().getSimpleName());
-            ml.melun.mangaview.report.CrashReporter.record(e);
+            if(shouldReportSearchFailure(e))
+                ml.melun.mangaview.report.CrashReporter.record(e);
             return new NtkApiPathResult(path, new PageTitles(new ArrayList<>(), null), false, 0);
         }
     }

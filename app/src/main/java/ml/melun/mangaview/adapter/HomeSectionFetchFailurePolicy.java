@@ -8,7 +8,20 @@ final class HomeSectionFetchFailurePolicy {
         return cancelled || failure instanceof InterruptedException;
     }
 
+    static boolean shouldReport(Throwable failure) {
+        if(failure == null)
+            return false;
+        String message = failure.getMessage();
+        if(message != null && message.startsWith("Request failed:"))
+            return false;
+        return failure instanceof RuntimeException;
+    }
+
     static boolean shouldAbortForTest(Throwable failure, boolean cancelled) {
         return shouldAbort(failure, cancelled);
+    }
+
+    static boolean shouldReportForTest(Throwable failure) {
+        return shouldReport(failure);
     }
 }

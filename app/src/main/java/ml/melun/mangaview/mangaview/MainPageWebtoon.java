@@ -171,7 +171,8 @@ public class MainPageWebtoon {
             for(String[] section : sections)
                 dataSet.add(parseWolfTitle(client, section[0], section[1], baseMode));
         }catch (Exception e){
-            ml.melun.mangaview.report.CrashReporter.record(e);
+            if(shouldReportSectionFailure(e))
+                ml.melun.mangaview.report.CrashReporter.record(e);
         }
     }
 
@@ -213,11 +214,21 @@ public class MainPageWebtoon {
                     Thread.currentThread().interrupt();
                     return ranking;
                 }
-                ml.melun.mangaview.report.CrashReporter.record(e);
+                if(shouldReportSectionFailure(e))
+                    ml.melun.mangaview.report.CrashReporter.record(e);
             }
             return ranking;
         }
         return new Ranking<>(title);
+    }
+
+    private static boolean shouldReportSectionFailure(Exception e) {
+        if(e == null)
+            return false;
+        String message = e.getMessage();
+        if(message != null && message.startsWith("Request failed:"))
+            return false;
+        return true;
     }
 
     private Ranking<Title> parseNtkApiTitle(CustomHttpClient client, String title, String path, int baseMode) throws Exception {

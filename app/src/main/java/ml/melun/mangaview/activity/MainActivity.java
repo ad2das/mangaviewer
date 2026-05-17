@@ -60,10 +60,12 @@ import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.fragment.MainMain;
 
 import ml.melun.mangaview.fragment.MainSearch;
+import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.MainActivityCallback;
 import ml.melun.mangaview.interfaces.UrlUpdateCallback;
 import ml.melun.mangaview.model.UrlUpdateResult;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.BackgroundPrefetchBudget;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.PerfTrace;
 import ml.melun.mangaview.state.UiState;
@@ -192,6 +194,9 @@ public class MainActivity extends AppCompatActivity
     protected void onCreate(Bundle savedInstanceState) {
         long onCreateStartedAt = PerfTrace.start("main_on_create_ms");
         long beforeSuperStartedAt = PerfTrace.start("main_before_super_ms");
+        long startupPrefetchSuppressMs = startupVisibleWarmupSuppressMsForTest();
+        ViewerWarmupManager.suppressVisibleContinueWarmups(startupPrefetchSuppressMs);
+        BackgroundPrefetchBudget.suppressNonCriticalPrefetch(startupPrefetchSuppressMs);
         if(savedInstanceState == null)
             forceWfwfOnStartup();
         fragments[0] = MainMain.newInstance();
@@ -395,7 +400,7 @@ public class MainActivity extends AppCompatActivity
             attachPerformanceMonitorNow();
             return;
         }
-        decor.postDelayed(this::attachPerformanceMonitorNow, 3200);
+        decor.postDelayed(this::attachPerformanceMonitorNow, startupPerformanceMonitorDelayMsForTest());
     }
 
     private void attachPerformanceMonitorNow() {
@@ -466,11 +471,19 @@ public class MainActivity extends AppCompatActivity
     }
 
     static long startupDeferredTasksDelayMsForTest() {
-        return 2200L;
+        return 12_000L;
     }
 
     static long startupUpdateCheckDelayMsForTest() {
         return 5 * 60_000L;
+    }
+
+    static long startupVisibleWarmupSuppressMsForTest() {
+        return 15_000L;
+    }
+
+    static long startupPerformanceMonitorDelayMsForTest() {
+        return 16_000L;
     }
 
     @Override

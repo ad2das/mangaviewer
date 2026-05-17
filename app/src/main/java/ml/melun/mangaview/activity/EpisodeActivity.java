@@ -45,6 +45,7 @@ import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.model.EpisodeLoadResult;
 import ml.melun.mangaview.repository.CacheFileStore;
 import ml.melun.mangaview.repository.CachePolicy;
+import ml.melun.mangaview.repository.EpisodeSnapshotCache;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.repository.OfflineStore;
 import ml.melun.mangaview.runtime.AppDispatchers;
@@ -822,17 +823,19 @@ public class EpisodeActivity extends AppCompatActivity {
     private void saveEpisodeCache(List<Manga> episodes) {
         if(title == null || episodes == null || episodes.size() == 0)
             return;
-        CachedEpisodes cached = new CachedEpisodes();
-        cached.savedAt = System.currentTimeMillis();
-        cached.episodes = new ArrayList<>(episodes);
-        CacheFileStore.write(context, episodeCacheKey(), new Gson().toJson(cached));
+        Context appContext = getApplicationContext();
+        String cacheKey = episodeCacheKey();
+        ArrayList<Manga> episodeSnapshot = new ArrayList<>(episodes);
+        AppDispatchers.submitIo(() -> {
+            CachedEpisodes cached = new CachedEpisodes();
+            cached.savedAt = System.currentTimeMillis();
+            cached.episodes = episodeSnapshot;
+            CacheFileStore.write(appContext, cacheKey, new Gson().toJson(cached));
+        });
     }
 
     private String episodeCacheKey() {
-        String source = title == null ? "" : title.getSourceSite();
-        if((source == null || source.length() == 0) && p != null)
-            source = p.isNtkSite() ? "ntk" : "wfwf";
-        return "episodeSnapshotV2_" + (source == null ? "" : source) + "_" + (title == null ? 0 : title.getBaseMode()) + "_" + (title == null ? 0 : title.getId());
+        return EpisodeSnapshotCache.key(title, p != null && p.isNtkSite());
     }
 
     private void markFirstContent() {

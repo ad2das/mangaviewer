@@ -54,8 +54,10 @@ import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Ranking;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.repository.CacheFileStore;
+import ml.melun.mangaview.repository.EpisodeSnapshotCache;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.BackgroundPrefetchBudget;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.PerfTrace;
 import ml.melun.mangaview.runtime.PrefetchCoordinator;
@@ -1791,10 +1793,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             p.ensureSourceSiteForTitle(item);
         if(!HomeEpisodePrefetchPolicy.shouldPrefetchVisibleEpisodeSnapshot(item.getSourceSite(), isNtkSite()))
             return false;
+        if(BackgroundPrefetchBudget.isNonCriticalPrefetchSuppressed())
+            return false;
         String key = item.getSourceSite() + ":" + item.getBaseMode() + ":" + item.getId();
+        if(!BackgroundPrefetchBudget.tryAcquireEpisodeSnapshot(key))
+            return false;
         synchronized (visibleEpisodePrefetchKeys) {
-            if(visibleEpisodePrefetchKeys.contains(key))
+            if(visibleEpisodePrefetchKeys.contains(key)) {
+                BackgroundPrefetchBudget.releaseEpisodeSnapshot(key);
                 return false;
+            }
             visibleEpisodePrefetchKeys.add(key);
             trimVisibleEpisodePrefetches();
         }
@@ -1802,15 +1810,20 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         Title target = new Title(item);
         AppDispatchers.submitIo(() -> {
             try {
-                int result = MangaRepository.fetchEpisodes(target);
+                int result = MangaRepository.fetchEpisodesBackground(target);
                 List<Manga> episodes = Utils.snapshotEpisodes(target);
                 if(result == Title.LOAD_OK && episodes != null && episodes.size() > 0) {
                     CacheFileStore.write(appContext, episodeSnapshotKey(target), new Gson().toJson(new EpisodeSnapshot(episodes)));
                     if(HomeEpisodePrefetchPolicy.shouldPrefetchViewerImagesFromHome(target.getSourceSite(), isNtkSite()))
                         PrefetchCoordinator.prefetchEpisodeList(appContext, target, episodes, -1, 0);
+                } else if(result == Title.LOAD_ERROR) {
+                    BackgroundPrefetchBudget.recordEpisodeSnapshotFailure();
                 }
             } catch (Exception e) {
+                BackgroundPrefetchBudget.recordEpisodeSnapshotFailure();
                 ml.melun.mangaview.report.CrashReporter.record(e);
+            } finally {
+                BackgroundPrefetchBudget.releaseEpisodeSnapshot(key);
             }
         });
         return true;
@@ -1827,10 +1840,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private String episodeSnapshotKey(Title title) {
-        String source = title == null ? "" : title.getSourceSite();
-        if((source == null || source.length() == 0) && p != null)
-            source = p.isNtkSite() ? "ntk" : "wfwf";
-        return "episodeSnapshotV2_" + (source == null ? "" : source) + "_" + (title == null ? 0 : title.getBaseMode()) + "_" + (title == null ? 0 : title.getId());
+        return EpisodeSnapshotCache.key(title, p != null && p.isNtkSite());
     }
 
     private Title firstContinueTitle() {
@@ -2550,8 +2560,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     final String[] section = sections[i];
                     if(!shouldFetchHomeSection(section, ntk))
                         continue;
-                    running.add(completion.submit(AppDispatchers.safeCallable(() -> new SectionResult(index,
-                            MangaRepository.loadWebtoonSection(parser, section[0], section[1], baseMode, cancellation)))));
+                    running.add(completion.submit(() -> new SectionResult(index,
+                            MangaRepository.loadWebtoonSection(parser, section[0], section[1], baseMode, cancellation))));
                     submitted++;
                 }
 
@@ -2564,7 +2574,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                         Throwable cause = e.getCause() == null ? e : e.getCause();
                         if(HomeSectionFetchFailurePolicy.shouldAbort(cause, isCancelled()))
                             break;
-                        ml.melun.mangaview.report.CrashReporter.record(cause);
+                        if(HomeSectionFetchFailurePolicy.shouldReport(cause))
+                            ml.melun.mangaview.report.CrashReporter.record(cause);
                         continue;
                     }
                     if(result != null && result.ranking != null) {
@@ -2745,9 +2756,14 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             anchorRecycler.postDelayed(() -> {
                 if(anchorRecycler == null || anchorRecycler.getScrollState() == RecyclerView.SCROLL_STATE_SETTLING)
                     return;
+                if(BackgroundPrefetchBudget.isNonCriticalPrefetchSuppressed()) {
+                    scheduleThumbnailPreload(sections);
+                    return;
+                }
                 preloadThumbnails(sections);
-            }, HomeContinueWarmupPolicy.visibleHomeWarmupDelayMs(save));
-        else
+            }, Math.max(HomeContinueWarmupPolicy.visibleHomeWarmupDelayMs(save),
+                    BackgroundPrefetchBudget.nonCriticalPrefetchDelayMs()));
+        else if(!BackgroundPrefetchBudget.isNonCriticalPrefetchSuppressed())
             preloadThumbnails(sections);
     }
 

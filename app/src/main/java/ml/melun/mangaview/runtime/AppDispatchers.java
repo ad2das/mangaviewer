@@ -9,10 +9,13 @@ import java.util.concurrent.CompletionService;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import ml.melun.mangaview.report.CrashReporter;
 
@@ -28,6 +31,8 @@ public final class AppDispatchers {
             AppDispatcherPolicy.IMAGE_WARMUP_MAX_THREADS,
             AppDispatcherPolicy.IMAGE_WARMUP_QUEUE_SIZE);
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    private static final int OVERFLOW_THREAD_LIMIT = 4;
+    private static final AtomicInteger OVERFLOW_THREADS = new AtomicInteger();
 
     private AppDispatchers() {
     }
@@ -92,6 +97,14 @@ public final class AppDispatchers {
         return new TaskHandle(IMAGE_WARMUP.submit(safe(runnable)));
     }
 
+    public static boolean tryRunIo(Runnable runnable) {
+        return tryExecute(IO, runnable);
+    }
+
+    public static boolean tryRunImageWarmup(Runnable runnable) {
+        return tryExecute(IMAGE_WARMUP, runnable);
+    }
+
     public static <T> CompletionService<T> ioCompletionService() {
         return new ExecutorCompletionService<>(NETWORK_FANOUT);
     }
@@ -126,6 +139,25 @@ public final class AppDispatchers {
         };
     }
 
+    private static boolean tryExecute(ThreadPoolExecutor executor, Runnable runnable) {
+        if(isSaturated(executor))
+            return false;
+        try {
+            executor.execute(safe(runnable));
+            return !isSaturated(executor) || !executor.isShutdown();
+        } catch (RejectedExecutionException e) {
+            CrashReporter.record(e);
+            return false;
+        }
+    }
+
+    private static boolean isSaturated(ThreadPoolExecutor executor) {
+        return executor == null
+                || executor.isShutdown()
+                || (executor.getQueue().remainingCapacity() == 0
+                && executor.getPoolSize() >= executor.getMaximumPoolSize());
+    }
+
     private static ThreadPoolExecutor boundedPool(String name, int core, int max, int queueSize) {
         BlockingQueue<Runnable> queue = new LinkedBlockingQueue<>(queueSize);
         ThreadPoolExecutor executor = new java.util.concurrent.ThreadPoolExecutor(
@@ -136,15 +168,47 @@ public final class AppDispatchers {
                 queue,
                 namedThreadFactory(name),
                 (runnable, rejectedExecutor) -> {
-                    if(rejectedExecutor == null || rejectedExecutor.isShutdown())
+                    if(rejectedExecutor == null || rejectedExecutor.isShutdown()) {
+                        cancelRejected(runnable);
                         return;
-                    if(name.startsWith("manga-image"))
+                    }
+                    if(name.startsWith("manga-image")) {
+                        CrashReporter.record(new RejectedExecutionException(name + " queue full"));
+                        cancelRejected(runnable);
                         return;
-                    Thread overflow = namedThreadFactory(name + "-overflow").newThread(() -> safe(runnable).run());
+                    }
+                    if(!tryAcquireOverflowThread(name)) {
+                        cancelRejected(runnable);
+                        return;
+                    }
+                    Thread overflow = namedThreadFactory(name + "-overflow").newThread(() -> {
+                        try {
+                            safe(runnable).run();
+                        } finally {
+                            OVERFLOW_THREADS.decrementAndGet();
+                        }
+                    });
                     overflow.start();
                 });
         executor.allowCoreThreadTimeOut(true);
         return executor;
+    }
+
+    private static void cancelRejected(Runnable runnable) {
+        if(runnable instanceof FutureTask)
+            ((FutureTask) runnable).cancel(false);
+    }
+
+    private static boolean tryAcquireOverflowThread(String name) {
+        while(true) {
+            int current = OVERFLOW_THREADS.get();
+            if(current >= OVERFLOW_THREAD_LIMIT) {
+                CrashReporter.record(new RejectedExecutionException(name + " overflow queue full"));
+                return false;
+            }
+            if(OVERFLOW_THREADS.compareAndSet(current, current + 1))
+                return true;
+        }
     }
 
     private static ThreadFactory namedThreadFactory(String name) {

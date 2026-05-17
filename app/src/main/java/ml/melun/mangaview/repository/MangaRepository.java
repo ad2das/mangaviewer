@@ -106,18 +106,27 @@ public final class MangaRepository {
         return fetchEpisodes(title, false);
     }
 
+    public static int fetchEpisodesBackground(Title title) {
+        return fetchEpisodes(title, false, false);
+    }
+
     public static int fetchEpisodesForeground(Title title) {
-        return fetchEpisodes(title, true);
+        return fetchEpisodes(title, true, true);
     }
 
     private static int fetchEpisodes(Title title, boolean allowWolfWebViewFallback) {
+        return fetchEpisodes(title, allowWolfWebViewFallback, true);
+    }
+
+    private static int fetchEpisodes(Title title, boolean allowWolfWebViewFallback, boolean reportFailure) {
         CustomHttpClient.RequestGroup requestGroup = new CustomHttpClient.RequestGroup();
         if(allowWolfWebViewFallback)
             requestGroup.allowWolfWebViewFallback();
         try {
             return getHttpClient().runWithRequestGroup(requestGroup, () -> title.fetchEps(getHttpClient()));
         } catch (Exception e) {
-            ml.melun.mangaview.report.CrashReporter.record(e);
+            if(reportFailure)
+                ml.melun.mangaview.report.CrashReporter.record(e);
             return Title.LOAD_ERROR;
         }
     }

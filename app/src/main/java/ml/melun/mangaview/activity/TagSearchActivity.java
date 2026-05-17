@@ -26,10 +26,17 @@ import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.widget.TextView;
 
+import com.google.gson.Gson;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayout;
 import com.omadahealth.github.swipyrefreshlayout.library.SwipyRefreshLayoutDirection;
 
 import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.ui.StableScrollbarRecyclerView;
@@ -43,7 +50,10 @@ import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.mangaview.UpdatedList;
 import ml.melun.mangaview.mangaview.UpdatedManga;
+import ml.melun.mangaview.repository.CacheFileStore;
+import ml.melun.mangaview.repository.EpisodeSnapshotCache;
 import ml.melun.mangaview.repository.MangaRepository;
+import ml.melun.mangaview.runtime.BackgroundPrefetchBudget;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.PerfTrace;
@@ -59,6 +69,10 @@ import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 public class TagSearchActivity extends AppCompatActivity {
     private static final int THUMBNAIL_PRELOAD_AHEAD = 6;
     private static final int THUMBNAIL_PRELOAD_DELAY_MS = 80;
+    private static final int EPISODE_SNAPSHOT_PREFETCH_AHEAD = 3;
+    private static final int EPISODE_SNAPSHOT_PREFETCH_DELAY_MS = 260;
+    private static final int EPISODE_SNAPSHOT_PREFETCH_ACTIVE_LIMIT = 2;
+    private static final int EPISODE_SNAPSHOT_BACKGROUND_LIMIT = 24;
     private static final int LOAD_MORE_THRESHOLD = 18;
     RecyclerView searchResult;
     int mode;
@@ -97,6 +111,10 @@ public class TagSearchActivity extends AppCompatActivity {
     View touchChild;
     View touchAnchor;
     Runnable touchLongPressRunnable;
+    Runnable episodeSnapshotPreloadRunnable;
+    final Set<String> requestedEpisodeSnapshots = new HashSet<>();
+    final Deque<Title> episodeSnapshotQueue = new ArrayDeque<>();
+    int activeEpisodeSnapshotPrefetches = 0;
 
 
     @Override
@@ -157,6 +175,7 @@ public class TagSearchActivity extends AppCompatActivity {
                 if(newState == RecyclerView.SCROLL_STATE_IDLE)
                     PerformanceMonitor.reportNow("tag_search_scroll_idle");
                 scheduleThumbnailPreload();
+                scheduleEpisodeSnapshotPreload();
                 maybeLoadMoreSearchResults();
             }
 
@@ -509,6 +528,8 @@ public class TagSearchActivity extends AppCompatActivity {
                     public void onItemClick(int position) {
                         // start intent : Episode viewer
                         Title selected = adapter.getItem(position);
+                        enqueueEpisodeSnapshot(selected, true);
+                        drainEpisodeSnapshotQueue();
                         Intent episodeView = episodeIntent(context, selected);
                         episodeView.putExtra("online", true);
                         startActivity(episodeView);
@@ -648,6 +669,7 @@ public class TagSearchActivity extends AppCompatActivity {
             updateVirtualScrollbar();
             updateResultMeta();
             scheduleThumbnailPreload();
+            scheduleEpisodeSnapshotPreload();
             swipe.setRefreshing(false);
             PerfTrace.end("tag_search_chrome_main_ms", chromeStartedAt);
             PerfTrace.end("tag_search_finish_main_ms", finishStartedAt);
@@ -727,6 +749,7 @@ public class TagSearchActivity extends AppCompatActivity {
             }
             updateResultMeta();
             scheduleThumbnailPreload();
+            scheduleEpisodeSnapshotPreload();
             swipe.setRefreshing(false);
         }
 
@@ -796,6 +819,193 @@ public class TagSearchActivity extends AppCompatActivity {
             adapter.preloadThumbnails(first, preloadCount);
         if(uadapter != null)
             uadapter.preloadThumbnails(first, preloadCount);
+    }
+
+    private void scheduleEpisodeSnapshotPreload() {
+        if(searchResult == null || adapter == null || mode != 8)
+            return;
+        if(episodeSnapshotPreloadRunnable != null)
+            searchResult.removeCallbacks(episodeSnapshotPreloadRunnable);
+        episodeSnapshotPreloadRunnable = () -> {
+            enqueueVisibleEpisodeSnapshots();
+            enqueueNearbyEpisodeSnapshots();
+            drainEpisodeSnapshotQueue();
+        };
+        searchResult.postDelayed(episodeSnapshotPreloadRunnable, EPISODE_SNAPSHOT_PREFETCH_DELAY_MS);
+    }
+
+    private void enqueueVisibleEpisodeSnapshots() {
+        if(searchResult == null || adapter == null || destroyed || isFinishing())
+            return;
+        if(searchResult.getScrollState() != RecyclerView.SCROLL_STATE_IDLE)
+            return;
+        RecyclerView.LayoutManager manager = searchResult.getLayoutManager();
+        if(!(manager instanceof LinearLayoutManager))
+            return;
+        LinearLayoutManager layoutManager = (LinearLayoutManager) manager;
+        int first = layoutManager.findFirstVisibleItemPosition();
+        int last = layoutManager.findLastVisibleItemPosition();
+        if(first == RecyclerView.NO_POSITION)
+            first = 0;
+        if(last < first)
+            last = first + EPISODE_SNAPSHOT_PREFETCH_AHEAD;
+        int end = Math.min(adapter.getItemCount() - 1, last + EPISODE_SNAPSHOT_PREFETCH_AHEAD);
+        for(int i = end; i >= first; i--)
+            enqueueEpisodeSnapshot(adapter.getItem(i), true);
+    }
+
+    private void enqueueNearbyEpisodeSnapshots() {
+        if(searchResult == null || adapter == null || destroyed || isFinishing())
+            return;
+        RecyclerView.LayoutManager manager = searchResult.getLayoutManager();
+        int anchor = 0;
+        if(manager instanceof LinearLayoutManager) {
+            int first = ((LinearLayoutManager) manager).findFirstVisibleItemPosition();
+            if(first != RecyclerView.NO_POSITION)
+                anchor = Math.max(0, first);
+        }
+        int count = adapter.getItemCount();
+        int end = Math.min(count, anchor + EPISODE_SNAPSHOT_BACKGROUND_LIMIT);
+        for(int i = anchor; i < end; i++)
+            enqueueEpisodeSnapshot(adapter.getItem(i), false);
+    }
+
+    private boolean enqueueEpisodeSnapshot(Title item, boolean priority) {
+        if(item == null || item.getId() <= 0)
+            return false;
+        p.ensureSourceSiteForTitle(item);
+        if(!shouldPrefetchEpisodeSnapshot(item.getSourceSite()))
+            return false;
+        String key = episodeSnapshotRequestKey(item);
+        boolean alreadyRequested;
+        synchronized (requestedEpisodeSnapshots) {
+            alreadyRequested = requestedEpisodeSnapshots.contains(key);
+            if(!alreadyRequested) {
+                requestedEpisodeSnapshots.add(key);
+                trimRequestedEpisodeSnapshots();
+            }
+        }
+        if(alreadyRequested && !priority)
+            return false;
+        synchronized (episodeSnapshotQueue) {
+            Title queued = new Title(item);
+            if(priority) {
+                removeQueuedEpisodeSnapshotLocked(key);
+                episodeSnapshotQueue.addFirst(queued);
+            } else
+                episodeSnapshotQueue.addLast(new Title(item));
+        }
+        return !alreadyRequested;
+    }
+
+    private void removeQueuedEpisodeSnapshotLocked(String key) {
+        if(key == null || key.length() == 0)
+            return;
+        for(java.util.Iterator<Title> iterator = episodeSnapshotQueue.iterator(); iterator.hasNext();) {
+            Title queued = iterator.next();
+            if(queued != null && key.equals(episodeSnapshotRequestKey(queued))) {
+                iterator.remove();
+                return;
+            }
+        }
+    }
+
+    private void drainEpisodeSnapshotQueue() {
+        if(destroyed || isFinishing())
+            return;
+        while(activeEpisodeSnapshotPrefetches < EPISODE_SNAPSHOT_PREFETCH_ACTIVE_LIMIT) {
+            Title target;
+            synchronized (episodeSnapshotQueue) {
+                target = episodeSnapshotQueue.pollFirst();
+            }
+            if(target == null)
+                return;
+            String budgetKey = episodeSnapshotRequestKey(target);
+            if(BackgroundPrefetchBudget.isNonCriticalPrefetchSuppressed()) {
+                synchronized (episodeSnapshotQueue) {
+                    episodeSnapshotQueue.addFirst(target);
+                }
+                return;
+            }
+            if(!BackgroundPrefetchBudget.tryAcquireEpisodeSnapshot(budgetKey)) {
+                synchronized (episodeSnapshotQueue) {
+                    episodeSnapshotQueue.addFirst(target);
+                }
+                return;
+            }
+            activeEpisodeSnapshotPrefetches++;
+            Context appContext = getApplicationContext();
+            boolean scheduled = AppDispatchers.tryRunIo(() -> {
+                try {
+                    fetchAndStoreEpisodeSnapshot(appContext, target);
+                } finally {
+                    BackgroundPrefetchBudget.releaseEpisodeSnapshot(budgetKey);
+                    AppDispatchers.runOnMain(() -> {
+                        activeEpisodeSnapshotPrefetches = Math.max(0, activeEpisodeSnapshotPrefetches - 1);
+                        drainEpisodeSnapshotQueue();
+                    });
+                }
+            });
+            if(!scheduled) {
+                BackgroundPrefetchBudget.releaseEpisodeSnapshot(budgetKey);
+                activeEpisodeSnapshotPrefetches = Math.max(0, activeEpisodeSnapshotPrefetches - 1);
+                synchronized (episodeSnapshotQueue) {
+                    episodeSnapshotQueue.addFirst(target);
+                }
+                return;
+            }
+        }
+    }
+
+    private void fetchAndStoreEpisodeSnapshot(Context appContext, Title target) {
+        if(appContext == null || target == null)
+            return;
+        try {
+            int result = MangaRepository.fetchEpisodesBackground(target);
+            List<Manga> episodes = Utils.snapshotEpisodes(target);
+            if(result == Title.LOAD_OK && episodes != null && episodes.size() > 0)
+                CacheFileStore.write(appContext, episodeSnapshotKey(target), new Gson().toJson(new EpisodeSnapshot(episodes)));
+            else if(result == Title.LOAD_ERROR)
+                BackgroundPrefetchBudget.recordEpisodeSnapshotFailure();
+        } catch (Exception e) {
+            BackgroundPrefetchBudget.recordEpisodeSnapshotFailure();
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
+    private boolean shouldPrefetchEpisodeSnapshot(String sourceSite) {
+        if(sourceSite == null || sourceSite.trim().length() == 0)
+            return true;
+        String source = sourceSite.trim().toLowerCase(Locale.ROOT);
+        boolean ntk = p.isNtkSite();
+        if("ntk".equals(source))
+            return ntk;
+        if("wfwf".equals(source) || source.startsWith("wolf"))
+            return !ntk;
+        return true;
+    }
+
+    private String episodeSnapshotRequestKey(Title title) {
+        return title.getSourceSite() + ":" + title.getBaseMode() + ":" + title.getId() + ":" + title.getPath();
+    }
+
+    private void trimRequestedEpisodeSnapshots() {
+        if(requestedEpisodeSnapshots.size() > 96)
+            requestedEpisodeSnapshots.clear();
+    }
+
+    private String episodeSnapshotKey(Title title) {
+        return EpisodeSnapshotCache.key(title, p != null && p.isNtkSite());
+    }
+
+    private static class EpisodeSnapshot {
+        long savedAt;
+        ArrayList<Manga> episodes;
+
+        EpisodeSnapshot(List<Manga> episodes) {
+            this.savedAt = System.currentTimeMillis();
+            this.episodes = new ArrayList<>(episodes);
+        }
     }
 
     private void maybeLoadMoreSearchResults() {
@@ -895,8 +1105,13 @@ public class TagSearchActivity extends AppCompatActivity {
             loadTask.cancel();
             loadTask = null;
         }
+        synchronized (episodeSnapshotQueue) {
+            episodeSnapshotQueue.clear();
+        }
         if(searchResult != null && thumbnailPreloadRunnable != null)
             searchResult.removeCallbacks(thumbnailPreloadRunnable);
+        if(searchResult != null && episodeSnapshotPreloadRunnable != null)
+            searchResult.removeCallbacks(episodeSnapshotPreloadRunnable);
         super.onDestroy();
     }
 }

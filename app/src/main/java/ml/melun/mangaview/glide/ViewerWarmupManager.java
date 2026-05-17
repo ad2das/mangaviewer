@@ -129,7 +129,7 @@ public class ViewerWarmupManager {
         Context appContext = context.getApplicationContext();
         String warmupSource = title == null ? null : title.getSourceSite();
         int startPage = pageIndex;
-        AppDispatchers.submitImageWarmup(() -> {
+        boolean scheduled = AppDispatchers.tryRunImageWarmup(() -> {
             int result = LOAD_OK;
             try {
                 result = runDirectOnlyWarmup(warmupSource, () -> {
@@ -148,6 +148,8 @@ public class ViewerWarmupManager {
                 finishActive(key, state, result);
             }
         });
+        if(!scheduled)
+            finishActive(key, state, LOAD_OK);
     }
 
     public static void warmupContinue(Context context, Manga manga, Title title) {
@@ -1168,23 +1170,29 @@ public class ViewerWarmupManager {
         state.done.countDown();
     }
 
-    private static synchronized void cacheSnapshot(Context context, String key, Manga manga) {
+    private static void cacheSnapshot(Context context, String key, Manga manga) {
         WarmupSnapshot snapshot = new WarmupSnapshot(manga);
         if(snapshot.images.size() == 0)
             return;
-        snapshots.put(key, snapshot);
+        synchronized (ViewerWarmupManager.class) {
+            snapshots.put(key, snapshot);
+            trimSnapshots();
+        }
         writeDiskSnapshot(context, "viewerSnapshotV2_", key, snapshot);
-        trimSnapshots();
     }
 
-    private static synchronized void invalidateSnapshot(Context context, String key) {
-        snapshots.remove(key);
+    private static void invalidateSnapshot(Context context, String key) {
+        synchronized (ViewerWarmupManager.class) {
+            snapshots.remove(key);
+        }
         if(context != null)
             CacheFileStore.delete(context.getApplicationContext(), "viewerSnapshotV2_" + key);
     }
 
-    private static synchronized void invalidateContinueSnapshot(Context context, String key) {
-        continueSnapshots.remove(key);
+    private static void invalidateContinueSnapshot(Context context, String key) {
+        synchronized (ViewerWarmupManager.class) {
+            continueSnapshots.remove(key);
+        }
         if(context != null)
             CacheFileStore.delete(context.getApplicationContext(), "viewerContinueSnapshotV2_" + key);
     }
@@ -1199,60 +1207,86 @@ public class ViewerWarmupManager {
         return preparedTitleId <= 0 || requestedTitleId <= 0 || preparedTitleId == requestedTitleId;
     }
 
-    private static synchronized void cacheContinueSnapshot(Context context, String key, Manga manga) {
+    private static void cacheContinueSnapshot(Context context, String key, Manga manga) {
         WarmupSnapshot snapshot = new WarmupSnapshot(manga);
         if(snapshot.images.size() == 0)
             return;
-        continueSnapshots.put(key, snapshot);
+        synchronized (ViewerWarmupManager.class) {
+            continueSnapshots.put(key, snapshot);
+            trimContinueSnapshots();
+        }
         writeDiskSnapshot(context, "viewerContinueSnapshotV2_", key, snapshot);
-        trimContinueSnapshots();
     }
 
-    private static synchronized Manga continueSnapshotManga(Context context, String key, Manga fallback) {
-        WarmupSnapshot snapshot = continueSnapshots.get(key);
+    private static Manga continueSnapshotManga(Context context, String key, Manga fallback) {
+        WarmupSnapshot snapshot;
+        synchronized (ViewerWarmupManager.class) {
+            snapshot = continueSnapshots.get(key);
+        }
         if(snapshot == null) {
             snapshot = readDiskSnapshot(context, "viewerContinueSnapshotV2_", key, true);
-            if(snapshot != null)
-                continueSnapshots.put(key, snapshot);
+            if(snapshot != null) {
+                synchronized (ViewerWarmupManager.class) {
+                    continueSnapshots.put(key, snapshot);
+                }
+            }
         }
         if(snapshot == null)
             return null;
         if(!isDiskSnapshotUsableForColdStart(snapshot.createdAt, System.currentTimeMillis())) {
-            continueSnapshots.remove(key);
+            synchronized (ViewerWarmupManager.class) {
+                continueSnapshots.remove(key);
+            }
             snapshot = readDiskSnapshot(context, "viewerContinueSnapshotV2_", key, true);
             if(snapshot == null)
                 return null;
-            continueSnapshots.put(key, snapshot);
+            synchronized (ViewerWarmupManager.class) {
+                continueSnapshots.put(key, snapshot);
+            }
         }
         return snapshot.toManga(fallback);
     }
 
-    private static synchronized Manga continueSnapshotMangaFromMemory(String key, Manga fallback) {
-        WarmupSnapshot snapshot = continueSnapshots.get(key);
+    private static Manga continueSnapshotMangaFromMemory(String key, Manga fallback) {
+        WarmupSnapshot snapshot;
+        synchronized (ViewerWarmupManager.class) {
+            snapshot = continueSnapshots.get(key);
+        }
         if(snapshot == null)
             return null;
         if(!isDiskSnapshotFresh(snapshot.createdAt, System.currentTimeMillis())) {
-            continueSnapshots.remove(key);
+            synchronized (ViewerWarmupManager.class) {
+                continueSnapshots.remove(key);
+            }
             return null;
         }
         return snapshot.toManga(fallback);
     }
 
-    private static synchronized boolean applySnapshot(Context context, String key, Manga target) {
-        WarmupSnapshot snapshot = snapshots.get(key);
-        if(snapshot == null) {
+    private static boolean applySnapshot(Context context, String key, Manga target) {
+        WarmupSnapshot snapshot;
+        synchronized (ViewerWarmupManager.class) {
+            snapshot = snapshots.get(key);
+        }
+        if(snapshot == null)
             snapshot = readDiskSnapshot(context, "viewerSnapshotV2_", key, true);
-            if(snapshot != null)
+        if(snapshot != null) {
+            synchronized (ViewerWarmupManager.class) {
                 snapshots.put(key, snapshot);
+            }
         }
         if(snapshot == null)
             return false;
         if(!isDiskSnapshotFresh(snapshot.createdAt, System.currentTimeMillis())) {
-            snapshots.remove(key);
+            synchronized (ViewerWarmupManager.class) {
+                snapshots.remove(key);
+            }
             snapshot = readDiskSnapshot(context, "viewerSnapshotV2_", key, true);
             if(snapshot == null)
                 return false;
-            snapshots.put(key, snapshot);
+            synchronized (ViewerWarmupManager.class) {
+                snapshots.put(key, snapshot);
+            }
         }
         return snapshot.applyTo(target);
     }
@@ -1407,7 +1441,25 @@ public class ViewerWarmupManager {
     private static void putDecodedBitmap(String key, Bitmap bitmap) {
         if(key == null || key.length() == 0 || bitmap == null || bitmap.isRecycled())
             return;
-        decodedBitmapCache.put(key, new CachedBitmap(bitmap, bitmapSizeKb(bitmap)));
+        Bitmap displayBitmap = copyBitmapForDisplay(bitmap);
+        if(displayBitmap == null)
+            return;
+        decodedBitmapCache.put(key, new CachedBitmap(displayBitmap, bitmapSizeKb(displayBitmap)));
+    }
+
+    private static Bitmap copyBitmapForDisplay(Bitmap bitmap) {
+        if(bitmap == null || bitmap.isRecycled() || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0)
+            return null;
+        try {
+            Bitmap.Config config = bitmap.getConfig() == null ? Bitmap.Config.ARGB_8888 : bitmap.getConfig();
+            Bitmap copy = bitmap.copy(config, false);
+            if(copy == null || copy.isRecycled() || copy.getWidth() <= 0 || copy.getHeight() <= 0)
+                return null;
+            return copy;
+        } catch (RuntimeException e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return null;
+        }
     }
 
     private static int bitmapSizeKb(Bitmap bitmap) {

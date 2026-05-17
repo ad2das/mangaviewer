@@ -7,6 +7,7 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
 
@@ -19,6 +20,7 @@ import okhttp3.ResponseBody;
 
 public final class ClassificationDbUpdater {
     private static final long CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L;
+    private static final long FAILURE_RETRY_MS = 60 * 60 * 1000L;
     private static final String PREF = "classificationDbUpdater";
     private static final String WEBTOON_URL = "https://raw.githubusercontent.com/ad2das/mangaviewer/main/webtoon-classification.json";
     private static final String COMIC_URL = "https://raw.githubusercontent.com/ad2das/mangaviewer/main/comic-classification.json";
@@ -40,9 +42,9 @@ public final class ClassificationDbUpdater {
     }
 
     private static void updateOne(Context context, boolean comic, String url, String fileName) {
+        SharedPreferences pref = context.getSharedPreferences(PREF, Context.MODE_PRIVATE);
+        String key = comic ? "comic" : "webtoon";
         try {
-            SharedPreferences pref = context.getSharedPreferences(PREF, Context.MODE_PRIVATE);
-            String key = comic ? "comic" : "webtoon";
             long now = System.currentTimeMillis();
             long lastChecked = pref.getLong(key + ".checkedAt", 0);
             if(now - lastChecked < CHECK_INTERVAL_MS)
@@ -90,6 +92,9 @@ public final class ClassificationDbUpdater {
                 }
                 editor.apply();
             }
+        } catch (IOException e) {
+            long retryCheckedAt = System.currentTimeMillis() - CHECK_INTERVAL_MS + FAILURE_RETRY_MS;
+            pref.edit().putLong(key + ".checkedAt", retryCheckedAt).apply();
         } catch (Exception e) {
             CrashReporter.record(e);
         }

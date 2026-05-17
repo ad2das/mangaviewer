@@ -48,6 +48,12 @@ public class MainWebtoonAdapterTest {
     }
 
     @Test
+    public void sectionFailurePolicyDoesNotReportExpectedRequestFailures() {
+        assertFalse(HomeSectionFetchFailurePolicy.shouldReportForTest(new Exception("Request failed: /cm")));
+        assertTrue(HomeSectionFetchFailurePolicy.shouldReportForTest(new RuntimeException("unexpected")));
+    }
+
+    @Test
     public void emptyNtkFetchOpensCaptchaEvenWhenPlaceholderIsVisible() {
         assertTrue(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(true, true));
         assertTrue(HomeCaptchaPolicy.shouldOpenCaptchaOnEmptyFetch(true, false));
@@ -76,7 +82,7 @@ public class MainWebtoonAdapterTest {
     public void visibleContinueWarmupKeepsHomeDecodePressureLow() {
         assertEquals(1, HomeContinueWarmupPolicy.visibleContinueWarmupLimitForTest(false));
         assertEquals(1, HomeContinueWarmupPolicy.visibleContinueWarmupLimitForTest(true));
-        assertEquals(360L, HomeContinueWarmupPolicy.visibleHomeWarmupDelayMsForTest(false));
-        assertEquals(900L, HomeContinueWarmupPolicy.visibleHomeWarmupDelayMsForTest(true));
+        assertEquals(1800L, HomeContinueWarmupPolicy.visibleHomeWarmupDelayMsForTest(false));
+        assertEquals(2400L, HomeContinueWarmupPolicy.visibleHomeWarmupDelayMsForTest(true));
     }
 }

@@ -22,6 +22,7 @@ public final class CacheFileStore {
             return size() > MEMORY_CACHE_MAX_ENTRIES;
         }
     };
+    private static final Map<String, Object> KEY_LOCKS = new LinkedHashMap<>();
 
     private CacheFileStore() {
     }
@@ -32,44 +33,53 @@ public final class CacheFileStore {
         String cached = readMemoryInternal(key);
         if(cached != null)
             return cached;
-        File file = file(context, key);
-        if(!file.exists())
-            return "";
-        try (FileInputStream stream = new FileInputStream(file)) {
-            String value = readUtf8Text(stream);
-            rememberMemory(key, value);
-            return value;
-        } catch (Exception e) {
-            ml.melun.mangaview.report.CrashReporter.record(e);
-            return "";
+        synchronized (lockForKey(key)) {
+            cached = readMemoryInternal(key);
+            if(cached != null)
+                return cached;
+            File file = file(context, key);
+            if(!file.exists())
+                return "";
+            try (FileInputStream stream = new FileInputStream(file)) {
+                String value = readUtf8Text(stream);
+                rememberMemory(key, value);
+                return value;
+            } catch (Exception e) {
+                ml.melun.mangaview.report.CrashReporter.record(e);
+                return "";
+            }
         }
     }
 
     public static void write(Context context, String key, String value) {
         if(context == null || key == null || value == null)
             return;
-        File file = file(context, key);
-        File dir = file.getParentFile();
-        if(dir != null && !dir.exists() && !dir.mkdirs())
-            return;
-        try {
-            writeUtf8Text(file, value);
-            rememberMemory(key, value);
-        } catch (Exception e) {
-            ml.melun.mangaview.report.CrashReporter.record(e);
+        synchronized (lockForKey(key)) {
+            File file = file(context, key);
+            File dir = file.getParentFile();
+            if(dir != null && !dir.exists() && !dir.mkdirs())
+                return;
+            try {
+                writeUtf8Text(file, value);
+                rememberMemory(key, value);
+            } catch (Exception e) {
+                ml.melun.mangaview.report.CrashReporter.record(e);
+            }
         }
     }
 
     public static void delete(Context context, String key) {
         if(context == null || key == null)
             return;
-        try {
-            File file = file(context, key);
-            if(file.exists())
-                file.delete();
-            forgetMemory(key);
-        } catch (Exception e) {
-            ml.melun.mangaview.report.CrashReporter.record(e);
+        synchronized (lockForKey(key)) {
+            try {
+                File file = file(context, key);
+                if(file.exists())
+                    file.delete();
+                forgetMemory(key);
+            } catch (Exception e) {
+                ml.melun.mangaview.report.CrashReporter.record(e);
+            }
         }
     }
 
@@ -121,6 +131,18 @@ public final class CacheFileStore {
             return null;
         synchronized (MEMORY_CACHE) {
             return MEMORY_CACHE.get(key);
+        }
+    }
+
+    private static Object lockForKey(String key) {
+        String lockKey = key == null ? "" : key;
+        synchronized (KEY_LOCKS) {
+            Object lock = KEY_LOCKS.get(lockKey);
+            if(lock == null) {
+                lock = new Object();
+                KEY_LOCKS.put(lockKey, lock);
+            }
+            return lock;
         }
     }
 

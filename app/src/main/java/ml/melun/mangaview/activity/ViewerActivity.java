@@ -59,6 +59,7 @@ import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.model.PageItem;
 import ml.melun.mangaview.repository.CacheFileStore;
 import ml.melun.mangaview.repository.CachePolicy;
+import ml.melun.mangaview.repository.EpisodeSnapshotCache;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
@@ -1506,6 +1507,8 @@ public class ViewerActivity extends AppCompatActivity {
         try {
             String json = CacheFileStore.read(context, episodeCacheKey(currentTitle));
             if(json == null || json.length() == 0)
+                json = CacheFileStore.read(context, EpisodeSnapshotCache.legacyKey(currentTitle));
+            if(json == null || json.length() == 0)
                 return;
             CachedEpisodes cached = new Gson().fromJson(json, new TypeToken<CachedEpisodes>(){}.getType());
             if(cached == null || !CachePolicy.isFresh(cached.savedAt, CachePolicy.EPISODE_TTL_MS)
@@ -1518,7 +1521,7 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private String episodeCacheKey(Title targetTitle) {
-        return "episodeSnapshotV1_" + (targetTitle == null ? 0 : targetTitle.getBaseMode()) + "_" + (targetTitle == null ? 0 : targetTitle.getId());
+        return EpisodeSnapshotCache.key(targetTitle, p != null && p.isNtkSite());
     }
 
     private static class CachedEpisodes {
