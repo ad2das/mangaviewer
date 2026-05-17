@@ -156,7 +156,7 @@ public final class PrefetchCoordinator {
             return 1;
         if(ntkSite)
             return 1;
-        return aggressiveAllowed ? 4 : 3;
+        return aggressiveAllowed ? 2 : 1;
     }
 
     public static List<Integer> visibleEpisodeTargets(List<Manga> episodes, int firstAdapterPosition,

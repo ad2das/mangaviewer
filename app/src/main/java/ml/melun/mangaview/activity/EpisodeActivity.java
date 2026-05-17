@@ -419,7 +419,6 @@ public class EpisodeActivity extends AppCompatActivity {
             return;
         PrefetchCoordinator.prefetchEpisodeList(context, title, episodes, bookmarkIndex, mode);
         warmupLikelyNtkViewerPage();
-        scheduleVisibleEpisodeWarmup(initialVisibleEpisodeWarmupDelayMs());
     }
 
     private long initialVisibleEpisodeWarmupDelayMs() {
@@ -479,7 +478,7 @@ public class EpisodeActivity extends AppCompatActivity {
             return 1;
         if(ntkSite)
             return 1;
-        return aggressiveAllowed ? 2 : 1;
+        return 1;
     }
 
     static long visibleEpisodeWarmupIdleDelayMsForTest() {
