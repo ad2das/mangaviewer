@@ -71,6 +71,11 @@ public class Search {
     String ntkSearchNextPath = null;
     private ArrayList<Title> result;
     private final Set<String> seenTitleKeys = new HashSet<>();
+    private transient PartialResultListener partialResultListener;
+
+    public interface PartialResultListener {
+        void onPartialResults(ArrayList<Title> titles);
+    }
 
     public Search(String q, int mode, int baseMode) {
         query = q;
@@ -84,6 +89,10 @@ public class Search {
 
     public String getQuery() {
         return query;
+    }
+
+    public void setPartialResultListener(PartialResultListener partialResultListener) {
+        this.partialResultListener = partialResultListener;
     }
 
     public Boolean isLast() {
@@ -1649,6 +1658,8 @@ public class Search {
                     continue;
                 if(part.success)
                     success++;
+                if(part.pageTitles != null && part.pageTitles.titles.size() > 0)
+                    publishPartialResults(part.pageTitles.titles);
                 if("api".equals(part.kind))
                     apiResults = part.pageTitles;
                 else
@@ -1667,6 +1678,13 @@ public class Search {
                 if(future != null && !future.isDone())
                     future.cancel(true);
         }
+    }
+
+    private void publishPartialResults(ArrayList<Title> titles) {
+        PartialResultListener listener = partialResultListener;
+        if(listener == null || titles == null || titles.size() == 0)
+            return;
+        listener.onPartialResults(new ArrayList<>(titles));
     }
 
     private NtkHybridPart fetchNtkHybridPart(CustomHttpClient client, CustomHttpClient.RequestGroup requestGroup,

@@ -1318,6 +1318,7 @@ public class MainSearch extends Fragment {
         private MangaRepository.Cancellation cancellation;
         private AppDispatchers.TaskHandle handle;
         private volatile boolean cancelled = false;
+        private int partialResultCount = 0;
 
         SearchManga(Search targetSearch, boolean replaceResults) {
             this.targetSearch = targetSearch;
@@ -1325,12 +1326,34 @@ public class MainSearch extends Fragment {
         }
 
         void start() {
+            targetSearch.setPartialResultListener(titles -> {
+                if(titles == null || titles.size() == 0)
+                    return;
+                AppDispatchers.runOnMain(() -> showPartialResults(titles));
+            });
             long queuedAt = PerfTrace.start("search_task_queue_ms");
             handle = AppDispatchers.submitSearch(() -> {
                 PerfTrace.end("search_task_queue_ms", queuedAt);
                 Integer result = load();
                 AppDispatchers.runOnMain(() -> finish(result));
             });
+        }
+
+        private void showPartialResults(ArrayList<Title> titles) {
+            if(cancelled || targetSearch != search || getContext() == null || !replaceResults)
+                return;
+            if(titles == null || titles.size() <= partialResultCount)
+                return;
+            partialResultCount = titles.size();
+            searchAdapter.setDataImmediate(titles);
+            bindOnlineAdapter();
+            scheduleVisibleResumeWarmup();
+            noresult.setVisibility(View.GONE);
+            if(searchFirstStartedAt > 0) {
+                PerfTrace.end("search_first_result_ms", searchFirstStartedAt);
+                searchFirstStartedAt = 0L;
+                releaseDeferredSearchThumbnails();
+            }
         }
 
         private Integer load() {
@@ -1349,6 +1372,7 @@ public class MainSearch extends Fragment {
                 searchTask = null;
                 activeSearchKey = null;
             }
+            targetSearch.setPartialResultListener(null);
             if(cancelled || targetSearch != search || getContext() == null)
                 return;
             if(res == null)
@@ -1387,6 +1411,7 @@ public class MainSearch extends Fragment {
 
         boolean cancel(boolean mayInterruptIfRunning) {
             cancelled = true;
+            targetSearch.setPartialResultListener(null);
             if(cancellation != null)
                 cancellation.cancel();
             if(searchTask == this) {
