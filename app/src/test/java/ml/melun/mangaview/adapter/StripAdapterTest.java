@@ -49,6 +49,11 @@ public class StripAdapterTest {
     }
 
     @Test
+    public void displayBitmapRejectsMissingBitmap() {
+        assertFalse(StripAdapter.isDisplayBitmapUsableForTest(null));
+    }
+
+    @Test
     public void transientImageFailuresRetryThreeTimesOnlyForActivePages() {
         assertTrue(StripAdapter.shouldRetryImageLoadForTest(false, "page", 0));
         assertTrue(StripAdapter.shouldRetryImageLoadForTest(false, "page", 1));
