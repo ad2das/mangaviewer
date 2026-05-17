@@ -972,6 +972,7 @@ public class MainActivity extends AppCompatActivity
         ensureMainFragment(index);
         boolean res = false;
         if(index>-1 && index != currentTab){
+            cancelHiddenHomeWork(index);
             if(index == 1 && fragments[1] instanceof MainSearch)
                 ((MainSearch) fragments[1]).enterSearchMode();
             currentTab = index;
@@ -990,6 +991,11 @@ public class MainActivity extends AppCompatActivity
         syncBottomNavigationSelection();
         invalidateOptionsMenu();
         return res;
+    }
+
+    private void cancelHiddenHomeWork(int nextIndex) {
+        if(currentTab == 0 && nextIndex != 0 && fragments[0] instanceof MainMain)
+            ((MainMain) fragments[0]).cancelHomeFetches();
     }
 
     private String performanceScreenName(int index) {

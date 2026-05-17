@@ -132,6 +132,8 @@ public class ViewerActivity extends AppCompatActivity {
     private int pendingInitialResumeOffset;
     private boolean initialResumeRestorePending = false;
     private boolean userScrolledAfterInitialResume = false;
+    private boolean openedWithResumePagePosition = false;
+    private boolean userDraggedAfterViewerPositionPrepared = false;
     private final Runnable clearInitialResumeRestore = this::clearInitialResumeRestore;
     private Manga initialToolbarGuardManga = null;
     private boolean initialToolbarGuardActive = false;
@@ -330,8 +332,10 @@ public class ViewerActivity extends AppCompatActivity {
                     if(strip.getLayoutManager().getItemCount()>0 && newState == RecyclerView.SCROLL_STATE_DRAGGING && toolbarshow) {
                         hideToolbarImmediately();
                     }
-                    if(newState == RecyclerView.SCROLL_STATE_DRAGGING)
+                    if(newState == RecyclerView.SCROLL_STATE_DRAGGING) {
+                        userDraggedAfterViewerPositionPrepared = true;
                         markUserScrolledAfterInitialResume();
+                    }
                     if(newState == RecyclerView.SCROLL_STATE_IDLE)
                         loadEpisodeAtBoundaryIfNeeded();
                     if(newState == RecyclerView.SCROLL_STATE_IDLE) {
@@ -1569,11 +1573,18 @@ public class ViewerActivity extends AppCompatActivity {
         View view = manager.findViewByPosition(position);
         if(view == null)
             return;
-        int offset = view.getTop() - strip.getPaddingTop();
-        p.setViewerBookmark(page.manga, page.index, offset, page.side);
         Title bookmarkTitle = titleForProgress(page.manga);
+        if(bookmarkTitle != null) {
+            p.ensureSourceSiteForTitle(bookmarkTitle);
+            page.manga.setTitle(bookmarkTitle);
+            page.manga.setTitleId(bookmarkTitle.getId());
+        }
         if(title == null)
             title = bookmarkTitle;
+        int offset = view.getTop() - strip.getPaddingTop();
+        if(shouldSkipInitialTopBookmarkOverwrite(page))
+            return;
+        p.setViewerBookmark(page.manga, page.index, offset, page.side);
         p.setBookmark(bookmarkTitle, page.manga.getId());
     }
 
@@ -1587,6 +1598,8 @@ public class ViewerActivity extends AppCompatActivity {
             return;
         PageItem page = initialPageItem(target, policy);
         int offset = initialPageOffset(target, policy);
+        openedWithResumePagePosition = hasInitialResumePosition(page, offset);
+        userDraggedAfterViewerPositionPrepared = false;
         if(hasInitialResumePosition(page, offset))
             hideToolbarImmediately();
         restoreInitialViewerPosition(page, offset);
@@ -1595,6 +1608,43 @@ public class ViewerActivity extends AppCompatActivity {
 
     private boolean hasInitialResumePosition(PageItem page, int offset) {
         return page != null && (page.index > 0 || offset != 0 || page.side != PageItem.FIRST);
+    }
+
+    private boolean shouldSkipInitialTopBookmarkOverwrite(PageItem page) {
+        if(page == null || page.manga == null)
+            return false;
+        return shouldSkipInitialTopBookmarkOverwrite(openedWithResumePagePosition,
+                userDraggedAfterViewerPositionPrepared,
+                page.index,
+                page.side,
+                p.getViewerBookmark(page.manga),
+                p.getViewerBookmarkOffset(page.manga),
+                p.getViewerBookmarkSide(page.manga));
+    }
+
+    private static boolean shouldSkipInitialTopBookmarkOverwrite(boolean openedWithResumePosition,
+                                                                boolean userDragged,
+                                                                int pageIndex,
+                                                                int side,
+                                                                int savedIndex,
+                                                                int savedOffset,
+                                                                int savedSide) {
+        if(!openedWithResumePosition || userDragged)
+            return false;
+        if(pageIndex > 0 || side != PageItem.FIRST)
+            return false;
+        return savedIndex > 0 || savedOffset != 0 || savedSide != PageItem.FIRST;
+    }
+
+    static boolean shouldSkipInitialTopBookmarkOverwriteForTest(boolean openedWithResumePosition,
+                                                               boolean userDragged,
+                                                               int pageIndex,
+                                                               int side,
+                                                               int savedIndex,
+                                                               int savedOffset,
+                                                               int savedSide) {
+        return shouldSkipInitialTopBookmarkOverwrite(openedWithResumePosition, userDragged,
+                pageIndex, side, savedIndex, savedOffset, savedSide);
     }
 
     private void hideToolbarImmediately() {

@@ -61,6 +61,8 @@ import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 
 public class MainSearch extends Fragment {
     private static final String ARG_LIBRARY_MODE = "libraryMode";
+    private static final int KEYBOARD_SHOW_DELAY_MS = 120;
+    private static final int KEYBOARD_SHOW_MAX_ATTEMPTS = 3;
     SwipyRefreshLayout swipe;
     FloatingActionButton advSearchBtn;
     View noresult;
@@ -104,6 +106,7 @@ public class MainSearch extends Fragment {
     int libraryFilterGeneration = 0;
     long librarySnapshotVersion = -1L;
     final ArrayList<Title>[] librarySnapshots = new ArrayList[4];
+    int keyboardShowGeneration = 0;
 
     public static MainSearch newSearchTab() {
         MainSearch fragment = new MainSearch();
@@ -393,13 +396,26 @@ public class MainSearch extends Fragment {
             optionsPanel.setVisibility(View.VISIBLE);
         searchBox.requestFocus();
         updateAdvSearchVisibility();
-        searchBox.post(() -> {
-            if(getContext() == null)
-                return;
-            InputMethodManager imm = (InputMethodManager) getContext().getSystemService(android.content.Context.INPUT_METHOD_SERVICE);
-            if(imm != null)
-                imm.showSoftInput(searchBox, InputMethodManager.SHOW_IMPLICIT);
-        });
+        scheduleShowKeyboard(++keyboardShowGeneration, 0);
+    }
+
+    private void scheduleShowKeyboard(int generation, int attempt) {
+        if(searchBox == null)
+            return;
+        searchBox.postDelayed(() -> showKeyboardIfReady(generation, attempt), KEYBOARD_SHOW_DELAY_MS);
+    }
+
+    private void showKeyboardIfReady(int generation, int attempt) {
+        if(generation != keyboardShowGeneration || getContext() == null || searchBox == null || !isAdded())
+            return;
+        if(getActivity() == null || !searchBox.isAttachedToWindow() || !searchBox.hasWindowFocus() || !getActivity().hasWindowFocus()) {
+            if(attempt < KEYBOARD_SHOW_MAX_ATTEMPTS)
+                scheduleShowKeyboard(generation, attempt + 1);
+            return;
+        }
+        InputMethodManager imm = (InputMethodManager) getContext().getSystemService(android.content.Context.INPUT_METHOD_SERVICE);
+        if(imm != null)
+            imm.showSoftInput(searchBox, InputMethodManager.SHOW_IMPLICIT);
     }
 
     public void enterLibraryMode() {
@@ -1256,6 +1272,7 @@ public class MainSearch extends Fragment {
 
     @Override
     public void onDestroyView() {
+        keyboardShowGeneration++;
         cancelTitleListLongPress();
         if(localChangeListener != null) {
             p.removeLocalChangeListener(localChangeListener);

@@ -6,6 +6,7 @@ import java.util.Arrays;
 import java.util.Collections;
 
 import ml.melun.mangaview.glide.ViewerWarmupManager;
+import ml.melun.mangaview.model.PageItem;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -78,5 +79,25 @@ public class ViewerActivityTest {
     @Test
     public void nextEpisodePrefetchWaitsUntilInitialFrameSettles() {
         assertTrue(ViewerActivity.initialNextEpisodePrefetchDelayMsForTest() >= 1000L);
+    }
+
+    @Test
+    public void initialResumeTopOverwriteKeepsExistingBookmarkUntilUserDrags() {
+        assertTrue(ViewerActivity.shouldSkipInitialTopBookmarkOverwriteForTest(
+                true, false, 0, PageItem.FIRST, 7, 0, PageItem.FIRST));
+        assertTrue(ViewerActivity.shouldSkipInitialTopBookmarkOverwriteForTest(
+                true, false, 0, PageItem.FIRST, 0, -240, PageItem.FIRST));
+        assertTrue(ViewerActivity.shouldSkipInitialTopBookmarkOverwriteForTest(
+                true, false, 0, PageItem.FIRST, 0, 0, PageItem.SECOND));
+    }
+
+    @Test
+    public void initialResumeTopOverwriteAllowsUserOrNonResumeSaves() {
+        assertFalse(ViewerActivity.shouldSkipInitialTopBookmarkOverwriteForTest(
+                true, true, 0, PageItem.FIRST, 7, 0, PageItem.FIRST));
+        assertFalse(ViewerActivity.shouldSkipInitialTopBookmarkOverwriteForTest(
+                false, false, 0, PageItem.FIRST, 7, 0, PageItem.FIRST));
+        assertFalse(ViewerActivity.shouldSkipInitialTopBookmarkOverwriteForTest(
+                true, false, 1, PageItem.FIRST, 7, 0, PageItem.FIRST));
     }
 }
