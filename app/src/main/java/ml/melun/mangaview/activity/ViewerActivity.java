@@ -899,6 +899,8 @@ public class ViewerActivity extends AppCompatActivity {
     protected void onStop() {
         mainHandler.removeCallbacks(delayedScrollBookmarkSave);
         saveCurrentScrollBookmark();
+        if(isFinishing())
+            releaseStripAdapter();
         super.onStop();
     }
 
@@ -2674,8 +2676,16 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private void releaseStripAdapter() {
-        if(stripAdapter != null)
-            stripAdapter.release();
+        StripAdapter adapter = stripAdapter;
+        if(adapter == null)
+            return;
+        adapter.release();
+        if(strip != null && strip.getAdapter() == adapter) {
+            strip.stopScroll();
+            strip.setAdapter(null);
+            strip.getRecycledViewPool().clear();
+        }
+        stripAdapter = null;
     }
 
     private void showViewerImagesUnavailable(Manga target) {
