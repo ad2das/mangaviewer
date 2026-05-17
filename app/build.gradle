@@ -56,6 +56,19 @@ android {
         jvmTarget = '1.8'
     }
 }
+
+afterEvaluate {
+    def debugJavaClasses = layout.buildDirectory.dir("intermediates/javac/debug/compileDebugJavaWithJavac/classes")
+    tasks.matching { it.name == "compileDebugUnitTestJavaWithJavac" }.configureEach {
+        dependsOn("compileDebugJavaWithJavac")
+        classpath += files(debugJavaClasses)
+    }
+    tasks.matching { it.name == "testDebugUnitTest" }.configureEach {
+        dependsOn("compileDebugJavaWithJavac")
+        classpath += files(debugJavaClasses)
+    }
+}
+
 repositories {
     mavenCentral()
     maven { url "https://jitpack.io" }

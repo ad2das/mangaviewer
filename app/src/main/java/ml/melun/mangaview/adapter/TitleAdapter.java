@@ -16,6 +16,7 @@ import android.widget.TextView;
 
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
+import com.google.android.material.card.MaterialCardView;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -820,7 +821,14 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
 
 
             if(dark){
-                card.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.colorDarkBackground));
+                card.setCardBackgroundColor(ContextCompat.getColor(mainContext, R.color.colorDarkSurface));
+                if(card instanceof MaterialCardView)
+                    ((MaterialCardView) card).setStrokeColor(ContextCompat.getColor(mainContext, R.color.colorDarkDivider));
+                name.setTextColor(ContextCompat.getColor(mainContext, R.color.colorDarkText));
+                author.setTextColor(ContextCompat.getColor(mainContext, R.color.colorDarkTextSecondary));
+                tags.setTextColor(ContextCompat.getColor(mainContext, R.color.colorDarkTextSecondary));
+                progressText.setTextColor(ContextCompat.getColor(mainContext, R.color.colorDarkTextSecondary));
+                baseModeStr.setTextColor(ContextCompat.getColor(mainContext, R.color.appAccent));
                 resume.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.resumeDark));
             }
             disableTouchTarget(itemView);

@@ -1989,6 +1989,8 @@ public class Search {
             if(limit > 0 && filtered.size() >= limit)
                 break;
         }
+        if(filtered.size() == 0 && titles.size() > 1 && shouldUseNtkKeywordApiFallback(normalized))
+            appendNtkKeywordFallbackResults(filtered, titles, limit);
         return filtered;
     }
 
@@ -1996,6 +1998,27 @@ public class Search {
         if(normalizedQuery.length() == 0)
             return true;
         return normalizeSearchText(title.getName()).contains(normalizedQuery);
+    }
+
+    private static boolean shouldUseNtkKeywordApiFallback(String normalizedQuery) {
+        if(normalizedQuery == null || normalizedQuery.length() == 0)
+            return false;
+        for(int i = 0; i < normalizedQuery.length(); i++) {
+            char c = normalizedQuery.charAt(i);
+            if(c >= 'a' && c <= 'z' || c >= '0' && c <= '9')
+                return true;
+        }
+        return false;
+    }
+
+    private static void appendNtkKeywordFallbackResults(ArrayList<Title> target, ArrayList<Title> titles, int limit) {
+        for(Title title : titles) {
+            if(title == null)
+                continue;
+            target.add(title);
+            if(limit > 0 && target.size() >= limit)
+                break;
+        }
     }
 
     private static String normalizeSearchText(String value) {
