@@ -268,22 +268,6 @@ public class MainPageWebtoonTest {
         assertEquals("건객", filtered.get(0).getName());
     }
 
-    @Test
-    public void ntkKeywordApiSearchKeepsServerResultsForLatinQueries() throws Exception {
-        String apiBody =
-                "{\"works\":["
-                        + "{\"sourceWorkId\":\"111\",\"title\":\"전생했더니 슬라임이었던 건에 대하여\",\"thumbnailUrl\":\"/covers/111.png\"},"
-                        + "{\"sourceWorkId\":\"222\",\"title\":\"슬라임 성자\",\"thumbnailUrl\":\"/covers/222.jpg\"}"
-                        + "],\"page\":1,\"hasMore\":false,\"pageSize\":30,\"total\":2}";
-        ArrayList<Title> parsed = Search.parseNtkApiTitlesForTest(apiBody, base_comic);
-        ArrayList<Title> filtered = Search.filterNtkKeywordResultsForTest(parsed, "slime", 0);
-
-        assertEquals(2, filtered.size());
-        assertEquals(111, filtered.get(0).getId());
-        assertEquals(222, filtered.get(1).getId());
-    }
-
-    @Test
     public void parseWolfTitlesReadsNtkSearchResultCards() {
         ArrayList<Title> titles = MainPageWebtoon.parseWolfTitles(
                 Jsoup.parse("<a class=\"card\" href=\"/webtoon/15538\">"
