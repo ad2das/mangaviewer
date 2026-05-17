@@ -1123,6 +1123,7 @@ public class MainSearch extends Fragment {
         prequery = null;
         onlineSearchMode = true;
         searchSubmitOnline();
+        searchBox.postDelayed(this::hideKeyboard, 120);
     }
 
     void searchSubmit(){
