@@ -34,6 +34,26 @@ public class SearchTest {
     }
 
     @Test
+    public void wfwfFastSearchParserBackfillsClassificationTags() {
+        MainPageWebtoon.clearClassificationDbForTest();
+        try {
+            MainPageWebtoon.putClassificationDbTitleForTest(12683, "Jagan", true, "\uC561\uC158", "\uC2A4\uB9B4\uB7EC");
+
+            ArrayList<Title> titles = Search.parseWfwfSearchHtmlFastForTest(
+                    "<article class='searchItem'><a href='/cl?toon=12683' class='searchLink'>"
+                            + "<div class='searchPng' style='background-image:url(https://i.example/12683.jpg)'></div>"
+                            + "<div class='searchDetail'><h6 class='searchDetailTitle'>Jagan</h6></div>"
+                            + "</a></article>",
+                    base_comic, 20);
+
+            assertEquals(1, titles.size());
+            assertEquals(Arrays.asList("\uC561\uC158", "\uC2A4\uB9B4\uB7EC"), titles.get(0).getTags());
+        } finally {
+            MainPageWebtoon.clearClassificationDbForTest();
+        }
+    }
+
+    @Test
     public void ntkAutoKeywordSearchUsesBothApiLists() {
         ArrayList<String> paths = Search.ntkKeywordApiPathsForTest("onepunch", base_auto, 1, 120);
 

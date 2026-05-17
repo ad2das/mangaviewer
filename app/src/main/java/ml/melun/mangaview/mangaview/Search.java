@@ -410,6 +410,7 @@ public class Search {
                 String thumb = fastThumb(inner);
                 Title title = new Title(name, thumb, "", new ArrayList<>(), "", id, targetBaseMode);
                 title.setSourceSite("wfwf");
+                MainPageWebtoon.applyInferredSearchTags(title);
                 titles.add(title);
                 if(limit > 0 && titles.size() >= limit)
                     break;
