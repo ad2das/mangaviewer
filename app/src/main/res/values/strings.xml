@@ -286,6 +286,7 @@
     <string name="home_eyebrow">READER</string>
     <string name="home_title">읽던 작품으로 바로 이동</string>
     <string name="home_subtitle">최근 기록, 인기 목록, 신작과 장르를 한 화면에서 정리했습니다.</string>
+    <string name="home_load_failed_message">목록을 불러오지 못했습니다.\n네트워크 또는 사이트 연결을 확인한 뒤 다시 시도해 주세요.</string>
     <string name="mode_webtoon">웹툰</string>
     <string name="mode_comic">만화</string>
     <string name="first_time_app_name">MangaViewAndroid</string>
