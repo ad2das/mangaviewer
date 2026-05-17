@@ -73,6 +73,9 @@ public class CustomHttpClient {
     private static final long WFWF_PAGE_CONNECT_TIMEOUT_MS = 2_500L;
     private static final long WFWF_PAGE_READ_TIMEOUT_MS = 7_000L;
     private static final long WFWF_PAGE_CALL_TIMEOUT_MS = 8_000L;
+    private static final long WFWF_SEARCH_CONNECT_TIMEOUT_MS = 800L;
+    private static final long WFWF_SEARCH_READ_TIMEOUT_MS = 1_500L;
+    private static final long WFWF_SEARCH_CALL_TIMEOUT_MS = 1_700L;
     private static final long NTK_DOH_TIMEOUT_MS = 1_500L;
     private static final long NTK_DNS_CACHE_DEFAULT_TTL_MS = 5 * 60 * 1000L;
     private static final long NTK_DNS_CACHE_MAX_TTL_MS = 30 * 60 * 1000L;
@@ -822,6 +825,8 @@ public class CustomHttpClient {
     private OkHttpClient unsafeNtkPageFastClient;
     private OkHttpClient wolfPageFastClient;
     private OkHttpClient unsafeWolfPageFastClient;
+    private OkHttpClient wolfSearchFastClient;
+    private OkHttpClient unsafeWolfSearchFastClient;
     Map<String, String> cookies;
     Map<String, Long> cookieSyncAt;
     Map<String, CachedPage> pageCache;
@@ -879,6 +884,10 @@ public class CustomHttpClient {
                 .build();
         this.wolfPageFastClient = fastWolfPageClient(new OkHttpClient.Builder()).build();
         this.unsafeWolfPageFastClient = fastWolfPageClient(getUnsafeOkHttpClient())
+                .protocols(ntkTlsFallbackProtocolsForTest())
+                .build();
+        this.wolfSearchFastClient = fastWolfSearchClient(new OkHttpClient.Builder()).build();
+        this.unsafeWolfSearchFastClient = fastWolfSearchClient(getUnsafeOkHttpClient())
                 .protocols(ntkTlsFallbackProtocolsForTest())
                 .build();
 
@@ -1357,9 +1366,12 @@ public class CustomHttpClient {
         Call call = null;
         RequestGroup requestGroup = currentRequestGroup.get();
         boolean fastWolfPageDirect = shouldUseFastWolfPageDirectUrl(url);
+        boolean fastWolfSearchDirect = shouldUseFastWolfSearchDirectUrl(url);
         OkHttpClient primaryClient = fastNtkPageDirect ? ntkPageFastClient
+                : fastWolfSearchDirect ? wolfSearchFastClient
                 : fastWolfPageDirect ? wolfPageFastClient : this.client;
         OkHttpClient fallbackClient = fastNtkPageDirect ? unsafeNtkPageFastClient
+                : fastWolfSearchDirect ? unsafeWolfSearchFastClient
                 : fastWolfPageDirect ? unsafeWolfPageFastClient : this.unsafeFallbackClient;
         try {
             Request.Builder builder = new Request.Builder()
@@ -1412,6 +1424,10 @@ public class CustomHttpClient {
         return shouldUseFastWolfPageDirectUrl(url);
     }
 
+    static boolean shouldUseFastWolfSearchDirectUrlForTest(String url) {
+        return shouldUseFastWolfSearchDirectUrl(url);
+    }
+
     private static boolean shouldUseFastWolfPageDirectUrl(String url) {
         if(url == null)
             return false;
@@ -1427,6 +1443,14 @@ public class CustomHttpClient {
                 || lower.contains("/webtoon")
                 || lower.contains("/comic")
                 || lower.contains("/search.html"));
+    }
+
+    private static boolean shouldUseFastWolfSearchDirectUrl(String url) {
+        if(url == null)
+            return false;
+        String lower = url.toLowerCase(Locale.ROOT);
+        return (lower.contains("://wfwf") || lower.contains("://wolf"))
+                && lower.contains("/search.html");
     }
 
     private boolean allowUnsafeFallback(String url) {
@@ -2898,6 +2922,17 @@ public class CustomHttpClient {
                 .connectTimeout(WFWF_PAGE_CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 .readTimeout(WFWF_PAGE_READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 .callTimeout(WFWF_PAGE_CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
+
+    private static OkHttpClient.Builder fastWolfSearchClient(OkHttpClient.Builder builder) {
+        return baseClient(builder)
+                .connectTimeout(WFWF_SEARCH_CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                .readTimeout(WFWF_SEARCH_READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                .callTimeout(WFWF_SEARCH_CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
+
+    static long fastWolfSearchCallTimeoutMsForTest() {
+        return WFWF_SEARCH_CALL_TIMEOUT_MS;
     }
 
     static List<Protocol> ntkTlsFallbackProtocolsForTest() {

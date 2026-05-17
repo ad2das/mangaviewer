@@ -180,6 +180,15 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void wolfSearchUsesDedicatedFastTimeout() {
+        assertTrue(CustomHttpClient.shouldUseFastWolfSearchDirectUrlForTest("https://wfwf451.com/search.html?q=onepunch"));
+        assertTrue(CustomHttpClient.shouldUseFastWolfSearchDirectUrlForTest("https://wolf.example/search.html?q=onepunch"));
+        assertFalse(CustomHttpClient.shouldUseFastWolfSearchDirectUrlForTest("https://wfwf451.com/cm?type1=genre"));
+        assertFalse(CustomHttpClient.shouldUseFastWolfSearchDirectUrlForTest("https://i1.imgcloud18.com/search.html?q=onepunch"));
+        assertTrue(CustomHttpClient.fastWolfSearchCallTimeoutMsForTest() < 3_000L);
+    }
+
+    @Test
     public void ntkWebViewFallbackScriptUsesAsyncRequestBridge() {
         String script = CustomHttpClient.buildNtkWebViewFetchScriptForTest("/manhwa/1", "text/html");
 
