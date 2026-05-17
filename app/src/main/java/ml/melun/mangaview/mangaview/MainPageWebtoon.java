@@ -37,6 +37,7 @@ public class MainPageWebtoon {
     private static final int MAIN_SECTION_LIMIT = 10;
     private static final long PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final Pattern FAST_TITLE_LINK_PATTERN = Pattern.compile("(?is)<a\\b[^>]*href\\s*=\\s*(['\"])(.*?)\\1[^>]*>(.*?)</a>");
+    private static final Pattern FAST_TITLE_TEXT_PATTERN = Pattern.compile("(?is)<([a-z0-9]+)\\b(?=[^>]*\\bclass\\s*=\\s*(['\"])[^'\"]*\\b(?:subject|wr-subject|searchDetailTitle|search-title|post-title|episode-title|title|name)\\b[^'\"]*\\2)[^>]*>(.*?)</\\1>");
     private static final Pattern FAST_HEADING_PATTERN = Pattern.compile("(?is)<h[1-6]\\b[^>]*>(.*?)</h[1-6]>");
     private static final Pattern FAST_IMG_PATTERN = Pattern.compile("(?is)<img\\b([^>]*)>");
     private static final Pattern FAST_STYLE_PATTERN = Pattern.compile("(?is)style\\s*=\\s*(['\"])(.*?)\\1");
@@ -654,7 +655,7 @@ public class MainPageWebtoon {
                     continue;
 
                 String inner = matcher.group(3);
-                String name = firstHeadingText(inner);
+                String name = firstFastTitleText(inner);
                 if(name.length() == 0)
                     name = cleanNtkListText(decodeHtml(stripTags(inner)));
                 String thumb = firstFastThumb(inner);
@@ -963,6 +964,27 @@ public class MainPageWebtoon {
         if(!matcher.find())
             return "";
         return cleanNtkListText(decodeHtml(stripTags(matcher.group(1))));
+    }
+
+    private static String firstFastTitleText(String html) {
+        if(html == null)
+            return "";
+        Matcher matcher = FAST_TITLE_TEXT_PATTERN.matcher(html);
+        if(matcher.find()) {
+            String text = cleanNtkListText(decodeHtml(stripTags(matcher.group(3))));
+            if(text.length() > 0)
+                return text;
+        }
+        String heading = firstHeadingText(html);
+        if(heading.length() > 0)
+            return heading;
+        Matcher imgMatcher = FAST_IMG_PATTERN.matcher(html);
+        while(imgMatcher.find()) {
+            String alt = cleanNtkListText(decodeHtml(attrValue(imgMatcher.group(1), "alt")));
+            if(alt.length() > 0)
+                return alt;
+        }
+        return "";
     }
 
     private static String firstFastThumb(String html) {

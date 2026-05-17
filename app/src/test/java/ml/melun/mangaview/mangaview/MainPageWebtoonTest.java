@@ -109,6 +109,20 @@ public class MainPageWebtoonTest {
     }
 
     @Test
+    public void parseWolfSearchHtmlFastKeepsNtkTitleSeparateFromGenre() {
+        ArrayList<Title> titles = MainPageWebtoon.parseWolfSearchHtmlFast(
+                "<a class=\"card\" href=\"/manhwa/2\">"
+                        + "<div class=\"thumb\"><img src=\"/data/toon_category/2.webp\" alt=\"One Piece\"></div>"
+                        + "<div class=\"info\"><p class=\"subject\">One Piece</p><p class=\"genre\">Anime,Action,Fantasy</p><p class=\"ep\">1292</p></div>"
+                        + "</a>",
+                base_comic, 0, "ntk");
+
+        assertEquals(1, titles.size());
+        assertEquals("One Piece", titles.get(0).getName());
+        assertEquals("/data/toon_category/2.webp", titles.get(0).getThumb());
+    }
+
+    @Test
     public void parseWolfTitles_readsNtkLazyThumbnailAttributes() {
         ArrayList<Title> dataSrcset = MainPageWebtoon.parseWolfTitles(
                 Jsoup.parse("<li><a href=\"/webtoon/501\"><img src=\"data:image/gif;base64,AA\" data-srcset=\"/data/webtoon/thumb-320.jpg 320w, /data/webtoon/thumb-640.jpg 640w\"><p class=\"subject\">NTK 웹툰</p></a></li>"),
