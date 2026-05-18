@@ -1469,11 +1469,21 @@ public class CustomHttpClient {
                 && lower.contains("/search.html");
     }
 
-    private boolean allowUnsafeFallback(String url) {
+    private static boolean allowUnsafeFallback(String url) {
         if(url == null)
             return false;
-        String lower = url.toLowerCase(Locale.ROOT);
-        return lower.contains("wfwf") || lower.contains("wolf") || lower.contains("ntk") || lower.contains("sbxh");
+        HttpUrl parsed = HttpUrl.parse(url);
+        if(parsed == null)
+            return false;
+        String host = parsed.host().toLowerCase(Locale.ROOT);
+        return host.startsWith("wfwf")
+                || host.contains("wolf")
+                || host.contains("ntk")
+                || host.contains("sbxh");
+    }
+
+    static boolean allowUnsafeFallbackForTest(String url) {
+        return allowUnsafeFallback(url);
     }
 
     private void applyJitterIfNeeded(String url) {

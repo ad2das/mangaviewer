@@ -218,6 +218,14 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void unsafeTlsFallbackMatchesScrapeHostOnly() {
+        assertTrue(CustomHttpClient.allowUnsafeFallbackForTest("https://wfwf451.com/cm"));
+        assertTrue(CustomHttpClient.allowUnsafeFallbackForTest("https://sbxh1.com/manhwa/1"));
+        assertFalse(CustomHttpClient.allowUnsafeFallbackForTest("https://example.com/path/wfwf451.com/cm"));
+        assertFalse(CustomHttpClient.allowUnsafeFallbackForTest("not a url with wfwf"));
+    }
+
+    @Test
     public void ntkWebViewFallbackScriptUsesAsyncRequestBridge() {
         String script = CustomHttpClient.buildNtkWebViewFetchScriptForTest("/manhwa/1", "text/html");
 
