@@ -21,7 +21,6 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
 
-import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -38,8 +37,6 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.io.File;
-
 import ml.melun.mangaview.Preference;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
@@ -48,7 +45,6 @@ import ml.melun.mangaview.runtime.AppDispatchers;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
-import static ml.melun.mangaview.Utils.CODE_SCOPED_STORAGE;
 import static ml.melun.mangaview.Utils.readPreferenceFromFile;
 import static ml.melun.mangaview.Utils.showPopup;
 import static ml.melun.mangaview.Utils.showStringInputPopup;
@@ -91,15 +87,12 @@ public class SettingsActivity extends AppCompatActivity {
         context = this;
         s_setHomeDir = this.findViewById(R.id.setting_dir);
         s_setHomeDir.setOnClickListener(v -> {
-            if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
+            {
                 // Choose a directory using the system's file picker.
                 Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
                 Uri uri = Uri.parse(p.getHomeDir());
                 intent.putExtra(EXTRA_INITIAL_URI, uri);
                 Toast.makeText(context, "다운로드 위치를 선택해 주세요", Toast.LENGTH_SHORT).show();
-                startActivityForResult(intent, MODE_FOLDER_SELECT);
-            }else{
-                Intent intent = new Intent(context, FolderSelectActivity.class);
                 startActivityForResult(intent, MODE_FOLDER_SELECT);
             }
         });
@@ -322,33 +315,23 @@ public class SettingsActivity extends AppCompatActivity {
         this.findViewById(R.id.setting_buttonLayout).setOnClickListener(view -> startActivity(new Intent(context, LayoutEditActivity.class)));
 
         this.findViewById(R.id.setting_dataExport).setOnClickListener(view -> {
-            if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
+             {
                 Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
                 Uri uri = Uri.parse(p.getHomeDir());
                 intent.putExtra(EXTRA_INITIAL_URI, uri);
                 Toast.makeText(context, "백업 파일을 저장할 폴더를 선택해 주세요", Toast.LENGTH_SHORT).show();
                 startActivityForResult(intent, MODE_FILE_SAVE);
-            }else{
-                Intent intent = new Intent(context, FolderSelectActivity.class);
-                intent.putExtra("mode", MODE_FILE_SAVE);
-                intent.putExtra("title", "파일 저장");
-                startActivityForResult(intent, MODE_FILE_SAVE);
             }
         });
 
         this.findViewById(R.id.setting_dataImport).setOnClickListener(view -> {
-            if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
+             {
                 Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
                 Uri uri = Uri.parse(p.getHomeDir());
                 intent.addCategory(Intent.CATEGORY_OPENABLE);
                 intent.setType("application/*");
                 intent.putExtra(EXTRA_INITIAL_URI, uri);
                 Toast.makeText(context, "백업 파일 선택", Toast.LENGTH_SHORT).show();
-                startActivityForResult(intent, MODE_FILE_SELECT);
-            }else {
-                Intent intent = new Intent(context, FolderSelectActivity.class);
-                intent.putExtra("mode", MODE_FILE_SELECT);
-                intent.putExtra("title", "파일 선택");
                 startActivityForResult(intent, MODE_FILE_SELECT);
             }
         });
@@ -441,7 +424,7 @@ public class SettingsActivity extends AppCompatActivity {
                 view.setBackgroundResource(R.drawable.app_search_filter_bg);
         }
 
-        if (view instanceof Switch && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+        if (view instanceof Switch) {
             int accent = ContextCompat.getColor(this, R.color.appAccent);
             int muted = ContextCompat.getColor(this, dark ? R.color.colorDarkDivider : R.color.appDivider);
             int[][] states = new int[][]{
@@ -668,7 +651,7 @@ public class SettingsActivity extends AppCompatActivity {
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
 
-        if (Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
+         {
             if (resultCode == Activity.RESULT_OK && data != null) {
                 final Uri uri = data.getData();
                 switch (requestCode) {
@@ -709,32 +692,6 @@ public class SettingsActivity extends AppCompatActivity {
 
                         }, (dialogInterface, i) -> Toast.makeText(context,"취소되었습니다", Toast.LENGTH_SHORT).show(), dialogInterface -> Toast.makeText(context,"취소되었습니다", Toast.LENGTH_SHORT).show());
                         break;
-                }
-            }
-        }else {
-            if (data != null) {
-                String path = data.getStringExtra("path");
-                if (path != null) {
-                    switch (requestCode) {
-                        case MODE_FILE_SELECT:
-                            if (readPreferenceFromFile(p, context, new File(path))) {
-                                setResult(RESULT_NEED_RESTART);
-                                showPopup(context, "데이터 불러오기", "데이터 불러오기를 성공했습니다. 변경사항을 적용하기 위해 앱을 재시작 합니다.", (dialogInterface, i) -> finish(), dialogInterface -> finish());
-                            } else
-                                Toast.makeText(context, "불러오기 실패", Toast.LENGTH_LONG).show();
-                            break;
-                        case MODE_FOLDER_SELECT:
-                            p.setHomeDir(path);
-                            Toast.makeText(context, "설정 완료!", Toast.LENGTH_LONG).show();
-                            break;
-                        case MODE_FILE_SAVE:
-                            if (writePreferenceToFile(context, new File(path)))
-                                Toast.makeText(context, "내보내기 완료!", Toast.LENGTH_LONG).show();
-                            else
-                                Toast.makeText(context, "내보내기 실패", Toast.LENGTH_LONG).show();
-
-                            break;
-                    }
                 }
             }
         }

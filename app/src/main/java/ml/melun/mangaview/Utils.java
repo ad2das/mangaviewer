@@ -520,7 +520,7 @@ public class Utils {
     private static boolean canUseActivity(Activity activity) {
         if(activity == null || activity.isFinishing())
             return false;
-        return Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN_MR1 || !activity.isDestroyed();
+        return !activity.isDestroyed();
     }
 
     public static boolean canUseContextForUi(Context context) {
@@ -1828,8 +1828,7 @@ public class Utils {
     }
 
     public static boolean useScopedStorageHome(String homeDir) {
-        return Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE
-                && homeDir != null
+        return homeDir != null
                 && homeDir.startsWith("content://");
     }
 

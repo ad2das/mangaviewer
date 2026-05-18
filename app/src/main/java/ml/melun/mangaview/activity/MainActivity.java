@@ -73,8 +73,6 @@ import ml.melun.mangaview.runtime.PerfTrace;
 import ml.melun.mangaview.state.UiState;
 import ml.melun.mangaview.viewmodel.StartupViewModel;
 
-import static android.Manifest.permission.READ_EXTERNAL_STORAGE;
-import static android.Manifest.permission.WRITE_EXTERNAL_STORAGE;
 import static ml.melun.mangaview.Downloader.BROADCAST_STOP;
 import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
@@ -84,7 +82,6 @@ import static ml.melun.mangaview.Migrator.MIGRATE_RESULT;
 import static ml.melun.mangaview.Migrator.MIGRATE_START;
 import static ml.melun.mangaview.Migrator.MIGRATE_STOP;
 import static ml.melun.mangaview.Migrator.MIGRATE_SUCCESS;
-import static ml.melun.mangaview.Utils.CODE_SCOPED_STORAGE;
 import static ml.melun.mangaview.Utils.showPopup;
 import static ml.melun.mangaview.Utils.showYesNoNeutralPopup;
 import static ml.melun.mangaview.Utils.writePreferenceToFile;
@@ -595,14 +592,6 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void requestStartupPermissions() {
-        int permissionCheck = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE);
-        if(permissionCheck == PackageManager.PERMISSION_DENIED) {
-            if(Build.VERSION.SDK_INT >= CODE_SCOPED_STORAGE) {
-                // Scoped storage does not need the legacy storage permission.
-            } else {
-                requestPermissions(new String[]{READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE}, PERMISSION_CODE);
-            }
-        }
         if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
                 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_DENIED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, PERMISSION_CODE + 1);

@@ -37,7 +37,6 @@ import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
-import okhttp3.CipherSuite;
 import okhttp3.Call;
 import okhttp3.ConnectionSpec;
 import okhttp3.Dispatcher;
@@ -55,8 +54,6 @@ import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.repository.CacheFileStore;
 
 import static ml.melun.mangaview.MainApplication.p;
-import static ml.melun.mangaview.Utils.CODE_SCOPED_STORAGE;
-
 public class CustomHttpClient {
     public static final String DEFAULT_COMIC_URL = "https://wfwf450.com/cm";
     public static final String WEBTOON_URL = "https://wfwf450.com";
@@ -2970,16 +2967,6 @@ public class CustomHttpClient {
                 .writeTimeout(20, TimeUnit.SECONDS)
                 .callTimeout(25, TimeUnit.SECONDS)
                 .dns(NETWORK_RESILIENT_DNS);
-        if(android.os.Build.VERSION.SDK_INT < CODE_SCOPED_STORAGE) {
-            List<CipherSuite> cipherSuites = new ArrayList<>(ConnectionSpec.MODERN_TLS.cipherSuites());
-            cipherSuites.add(CipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA);
-            cipherSuites.add(CipherSuite.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA);
-
-            ConnectionSpec legacyTls = new ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS)
-                    .cipherSuites(cipherSuites.toArray(new CipherSuite[0]))
-                    .build();
-            configured.connectionSpecs(Arrays.asList(legacyTls, ConnectionSpec.CLEARTEXT));
-        }
         return configured;
     }
 
