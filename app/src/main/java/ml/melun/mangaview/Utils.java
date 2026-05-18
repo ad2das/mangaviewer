@@ -22,6 +22,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.SystemClock;
 import android.text.InputType;
 import android.util.DisplayMetrics;
 import android.view.Display;
@@ -81,7 +82,9 @@ import static ml.melun.mangaview.activity.SettingsActivity.urlSettingPopup;
 
 public class Utils {
     private static final Map<Context, Integer> viewerLaunchTokens = new WeakHashMap<>();
+    private static final Map<Context, Long> viewerLaunchTimes = new WeakHashMap<>();
     private static int viewerLaunchSequence = 0;
+    private static final long VIEWER_LAUNCH_DEBOUNCE_MS = 700L;
     private static final String MANGA_STATE_V2 = "manga_state_v2";
     private static final String MANGA_ID = "manga_id";
     private static final String MANGA_NAME = "manga_name";
@@ -509,8 +512,23 @@ public class Utils {
         Integer latest = viewerLaunchTokens.get(key);
         if(latest == null || latest != token)
             return false;
+        long now = SystemClock.uptimeMillis();
+        Long lastLaunchAt = viewerLaunchTimes.get(key);
+        if(lastLaunchAt != null && !shouldAllowViewerLaunch(now, lastLaunchAt)) {
+            viewerLaunchTokens.put(key, ++viewerLaunchSequence);
+            return false;
+        }
         viewerLaunchTokens.put(key, ++viewerLaunchSequence);
+        viewerLaunchTimes.put(key, now);
         return true;
+    }
+
+    static boolean shouldAllowViewerLaunchForTest(long now, long lastLaunchAt) {
+        return shouldAllowViewerLaunch(now, lastLaunchAt);
+    }
+
+    private static boolean shouldAllowViewerLaunch(long now, long lastLaunchAt) {
+        return now - lastLaunchAt >= VIEWER_LAUNCH_DEBOUNCE_MS;
     }
 
     private static Context launchTokenKey(Context context) {

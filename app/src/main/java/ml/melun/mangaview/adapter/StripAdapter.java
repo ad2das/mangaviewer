@@ -69,7 +69,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private static final int DATA_SAVE_PRELOAD_AHEAD_COUNT = 4;
     private static final int INITIAL_PRELOAD_AHEAD_COUNT = 10;
     private static final int PRELOAD_TRACK_LIMIT = 500;
-    private static final int DECODED_PRELOAD_ACTIVE_LIMIT = 8;
+    private static final int DECODED_PRELOAD_ACTIVE_LIMIT = 4;
     private static final int IMAGE_LOAD_RETRY_LIMIT = 3;
     private static final String PAYLOAD_HEIGHT = "height";
     ViewerActivity.InfiniteScrollCallback callback;
@@ -920,7 +920,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     private RequestOptions viewerImageOptions(PageItem item) {
         RequestOptions options = new RequestOptions()
-                .diskCacheStrategy(DiskCacheStrategy.ALL)
+                .diskCacheStrategy(DiskCacheStrategy.DATA)
                 .downsample(DownsampleStrategy.AT_MOST)
                 .override(Math.max(width, 1), Target.SIZE_ORIGINAL);
         if(item != null)
@@ -1044,7 +1044,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             preloadDirectionalWindow(adapterPosition, direction, ViewerPreloadPolicy.scrollBusyWindow(p.getDataSave()), generation);
             return;
         }
-        int decodedLimit = p.getDataSave() ? 2 : 4;
+        int decodedLimit = p.getDataSave() ? 1 : 2;
         preloadDirectionalWindow(adapterPosition, direction, new ViewerPreloadPolicy.Window(decodedLimit, decodedLimit, decodedLimit, decodedLimit), generation);
     }
 

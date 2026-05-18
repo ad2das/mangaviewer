@@ -156,4 +156,10 @@ public class UtilsTest {
         assertFalse(Utils.shouldScheduleViewerIntentWarmupForTest(false, true, false));
         assertFalse(Utils.shouldScheduleViewerIntentWarmupForTest(true, false, false));
     }
+
+    @Test
+    public void viewerLaunchDebounceRejectsRapidDuplicateStarts() {
+        assertFalse(Utils.shouldAllowViewerLaunchForTest(1_500L, 1_000L));
+        assertTrue(Utils.shouldAllowViewerLaunchForTest(1_700L, 1_000L));
+    }
 }
