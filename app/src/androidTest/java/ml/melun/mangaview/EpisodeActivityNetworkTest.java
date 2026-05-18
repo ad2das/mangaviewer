@@ -28,6 +28,32 @@ public class EpisodeActivityNetworkTest {
 
     @Test
     public void ntkComicTitleOpensEpisodeList() throws Exception {
+        launchNtkComicTitle();
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeList = device.wait(Until.findObject(By.res(PACKAGE_NAME, "EpisodeList")), 60000L);
+        assertNotNull("Expected NTK episode list to render", episodeList);
+        UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 60000L);
+        assertNotNull("Expected NTK title to render at least one episode", episodeRow);
+    }
+
+    @Test
+    public void ntkComicEpisodeOpensViewer() throws Exception {
+        launchNtkComicTitle();
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 60000L);
+        assertNotNull("Expected NTK title to render at least one episode", episodeRow);
+
+        episodeRow.click();
+
+        UiObject2 viewerToolbar = device.wait(Until.findObject(By.res(PACKAGE_NAME, "viewerToolbar")), 60000L);
+        assertNotNull("Expected tapping an NTK episode to open the viewer", viewerToolbar);
+        UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 60000L);
+        assertNotNull("Expected NTK viewer content strip to render", strip);
+    }
+
+    private void launchNtkComicTitle() {
         Context context = ApplicationProvider.getApplicationContext();
         MainApplication.p.setNtkSitePreset("https://sbxh1.com");
         MainApplication.p.setBaseMode(MTitle.base_comic);
@@ -47,12 +73,6 @@ public class EpisodeActivityNetworkTest {
         intent.putExtra("online", true);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
 
-        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
         context.startActivity(intent);
-
-        UiObject2 episodeList = device.wait(Until.findObject(By.res(PACKAGE_NAME, "EpisodeList")), 60000L);
-        assertNotNull("Expected NTK episode list to render", episodeList);
-        UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 60000L);
-        assertNotNull("Expected NTK title to render at least one episode", episodeRow);
     }
 }
