@@ -581,6 +581,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             markDisplayedAndPreload(holder, item, pageKey);
             return;
         }
+        cancelDecodedPreload(cacheKey);
         holder.frame.setImageDrawable(null);
         holder.refresh.setVisibility(View.GONE);
         if (autoCut) {
@@ -1294,6 +1295,22 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     private static String decodedPreloadRequestKey(String pageKey) {
         return "decoded:" + pageKey;
+    }
+
+    private void cancelDecodedPreload(String pageKey) {
+        if(pageKey == null || pageKey.length() == 0)
+            return;
+        String requestKey = decodedPreloadRequestKey(pageKey);
+        CustomTarget<Bitmap> target = decodedPreloadTargets.remove(requestKey);
+        if(target == null)
+            return;
+        preloadedImages.remove(requestKey);
+        if(isContextDestroyed())
+            return;
+        try {
+            Glide.with(mainContext).clear(target);
+        } catch (IllegalArgumentException ignored) {
+        }
     }
 
     static boolean shouldRetainTrackedPreloadForLoadedPageForTest(String trackedKey, Set<String> activePageKeys) {
