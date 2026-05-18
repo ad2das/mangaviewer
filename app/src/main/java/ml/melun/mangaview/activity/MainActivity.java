@@ -128,6 +128,10 @@ public class MainActivity extends AppCompatActivity
     StartupViewModel startupViewModel;
     UrlUpdateCallback pendingUrlUpdateCallback;
     private static final int FIRST_TIME_ACTIVITY = 9;
+
+    private void registerInternalReceiver(BroadcastReceiver receiver, IntentFilter filter) {
+        ContextCompat.registerReceiver(this, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
+    }
     private static final String FRAGMENT_TAG_PREFIX = "main_tab_";
     private static final String EXTRA_SEARCH_QUERY = "searchQuery";
     private static final String EXTRA_SEARCH_BASE_MODE = "searchBaseMode";
@@ -301,7 +305,7 @@ public class MainActivity extends AppCompatActivity
             infil.addAction(MIGRATE_STOP);
             infil.addAction(MIGRATE_FAIL);
             infil.addAction(MIGRATE_SUCCESS);
-            registerReceiver(migratorStatusReceiver, infil);
+            registerInternalReceiver(migratorStatusReceiver, infil);
 
             Migrator.requestProgress(getApplicationContext());
 
@@ -1036,7 +1040,7 @@ public class MainActivity extends AppCompatActivity
                                 };
                                 IntentFilter infil = new IntentFilter();
                                 infil.addAction(BROADCAST_STOP);
-                                registerReceiver(statusReceiver, infil);
+                                registerInternalReceiver(statusReceiver, infil);
                                 Downloader.cancelAll(getApplicationContext());
 
                             }else{
