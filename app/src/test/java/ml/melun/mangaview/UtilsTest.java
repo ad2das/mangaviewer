@@ -162,4 +162,10 @@ public class UtilsTest {
         assertFalse(Utils.shouldAllowViewerLaunchForTest(3_000L, 1_000L));
         assertTrue(Utils.shouldAllowViewerLaunchForTest(3_200L, 1_000L));
     }
+
+    @Test
+    public void destinationLaunchDebounceRejectsRapidDuplicateStarts() {
+        assertFalse(Utils.shouldAllowDestinationLaunchForTest(2_000L, 1_000L, 1_500L));
+        assertTrue(Utils.shouldAllowDestinationLaunchForTest(2_500L, 1_000L, 1_500L));
+    }
 }

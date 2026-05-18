@@ -67,6 +67,7 @@ public class MainSearch extends Fragment {
     private static final String ARG_LIBRARY_MODE = "libraryMode";
     private static final int KEYBOARD_SHOW_DELAY_MS = 120;
     private static final int KEYBOARD_SHOW_MAX_ATTEMPTS = 3;
+    private static final long DESTINATION_LAUNCH_DEBOUNCE_MS = 1500L;
     SwipyRefreshLayout swipe;
     FloatingActionButton advSearchBtn;
     View noresult;
@@ -272,7 +273,7 @@ public class MainSearch extends Fragment {
         });
 
         advSearchBtn.setOnClickListener(v -> {
-            if(getContext() == null)
+            if(getContext() == null || !canLaunchDestination())
                 return;
             Intent advSearch = new Intent(getContext(), AdvSearchActivity.class);
             startActivity(advSearch);
@@ -680,6 +681,8 @@ public class MainSearch extends Fragment {
                 if(title == null)
                     return;
                 int bookmark = resolveLatestBookmark(title, id);
+                if(!canLaunchDestination())
+                    return;
                 openResume(title, bookmark);
             }
 
@@ -687,6 +690,8 @@ public class MainSearch extends Fragment {
             public void onItemClick(int position) {
                 Title title = searchAdapter.getItem(position);
                 if(title == null)
+                    return;
+                if(!canLaunchDestination())
                     return;
                 if(isOfflineTitle(title)) {
                     Intent episodeView = episodeIntent(getContext(), title);
@@ -1393,6 +1398,8 @@ public class MainSearch extends Fragment {
                 if(title == null)
                     return;
                 int bookmark = resolveLatestBookmark(title, id);
+                if(!canLaunchDestination())
+                    return;
                 openResume(title, bookmark);
             }
 
@@ -1401,10 +1408,18 @@ public class MainSearch extends Fragment {
                 Title title = searchAdapter.getItem(position);
                 if(title == null)
                     return;
+                if(!canLaunchDestination())
+                    return;
                 Intent episodeView = episodeIntent(getContext(), title);
                 startActivity(episodeView);
             }
         });
+    }
+
+    private boolean canLaunchDestination() {
+        return isAdded()
+                && isResumed()
+                && Utils.consumeFocusedDestinationLaunch(getActivity(), DESTINATION_LAUNCH_DEBOUNCE_MS);
     }
 
     private void releaseDeferredSearchThumbnails() {

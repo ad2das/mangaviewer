@@ -53,6 +53,7 @@ import static ml.melun.mangaview.Utils.showPopup;
 import static ml.melun.mangaview.Utils.viewerIntent;
 
 public class RecyclerFragment extends Fragment {
+    private static final long DESTINATION_LAUNCH_DEBOUNCE_MS = 1500L;
     int selectedPosition = -1;
     TitleAdapter titleAdapter;
     RecyclerView recyclerView;
@@ -172,6 +173,8 @@ public class RecyclerFragment extends Fragment {
                 int bookmark = resolveLatestBookmark(title, id);
                 if(bookmark <= 0)
                     return;
+                if(!canLaunchDestination())
+                    return;
                 if(mode == R.id.nav_recent) {
                     Manga manga = new Manga(bookmark, "", "" , title.getBaseMode());
                     manga.setTitle(title);
@@ -204,6 +207,8 @@ public class RecyclerFragment extends Fragment {
                 selectedPosition = position;
                 Title title = titleAdapter.getItem(position);
                 if(title == null)
+                    return;
+                if(!canLaunchDestination())
                     return;
                 Intent episodeView = episodeIntent(getContext(), title);
                 if(mode == R.id.nav_favorite) {
@@ -580,6 +585,12 @@ public class RecyclerFragment extends Fragment {
         if(title != null)
             manga.setTitle(title);
         openViewerPrepared(getContext(), manga, code, false, true, mode == R.id.nav_recent, title, true);
+    }
+
+    private boolean canLaunchDestination() {
+        return isAdded()
+                && isResumed()
+                && Utils.consumeFocusedDestinationLaunch(getActivity(), DESTINATION_LAUNCH_DEBOUNCE_MS);
     }
 
     void popup(View view, final int position, final Title title, final int m){

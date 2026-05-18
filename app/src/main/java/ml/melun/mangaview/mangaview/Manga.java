@@ -1291,8 +1291,8 @@ public class Manga {
     String date;
     int seed;
     int mode;
-    Listener listener;
-    Manga nextEp, prevEp;
+    transient Listener listener;
+    transient Manga nextEp, prevEp;
 
     public interface Listener {
         void setMessage(String msg);

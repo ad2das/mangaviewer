@@ -217,6 +217,7 @@ public class EpisodeActivity extends AppCompatActivity {
         }else if(resultCode == RESULT_CAPTCHA){
             //captcha Checked
             Intent restartIntent = new Intent(this, EpisodeActivity.class);
+            restartIntent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
             Intent currentIntent = getIntent();
             if(currentIntent != null) {
                 if(currentIntent.getExtras() != null)
@@ -225,6 +226,7 @@ public class EpisodeActivity extends AppCompatActivity {
             }
             finish();
             startActivity(restartIntent);
+            overridePendingTransition(0, 0);
         }
     }
 
@@ -233,6 +235,7 @@ public class EpisodeActivity extends AppCompatActivity {
         dark = p.getDarkTheme();
         if(dark) setTheme(R.style.AppThemeDarkNoTitle);
         super.onCreate(savedInstanceState);
+        overridePendingTransition(0, 0);
         PerformanceMonitor.attach(this);
         PerformanceMonitor.screen("episode");
         setContentView(R.layout.activity_episode);
@@ -1271,6 +1274,7 @@ public class EpisodeActivity extends AppCompatActivity {
     protected void onPause() {
         PerformanceMonitor.pause();
         super.onPause();
+        overridePendingTransition(0, 0);
     }
 
     @Override

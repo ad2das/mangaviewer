@@ -83,6 +83,7 @@ import static ml.melun.mangaview.activity.SettingsActivity.urlSettingPopup;
 public class Utils {
     private static final Map<Context, Integer> viewerLaunchTokens = new WeakHashMap<>();
     private static final Map<Context, Long> viewerLaunchTimes = new WeakHashMap<>();
+    private static final Map<Activity, Long> focusedDestinationLaunchTimes = new WeakHashMap<>();
     private static int viewerLaunchSequence = 0;
     private static final long VIEWER_LAUNCH_DEBOUNCE_MS = 2200L;
     private static final String MANGA_STATE_V2 = "manga_state_v2";
@@ -198,6 +199,7 @@ public class Utils {
             p.ensureSourceSiteForTitle(title);
         Intent episodeView = new Intent(context, EpisodeActivity.class);
         episodeView.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        episodeView.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
         episodeView.putExtra("title", toViewerTitleJson(title, true));
         return episodeView;
     }
@@ -539,6 +541,25 @@ public class Utils {
         if(activity == null || activity.isFinishing())
             return false;
         return !activity.isDestroyed();
+    }
+
+    public static synchronized boolean consumeFocusedDestinationLaunch(Activity activity, long debounceMs) {
+        if(!canUseActivity(activity) || !activity.hasWindowFocus())
+            return false;
+        long now = SystemClock.uptimeMillis();
+        Long lastLaunchAt = focusedDestinationLaunchTimes.get(activity);
+        if(lastLaunchAt != null && !shouldAllowDestinationLaunch(now, lastLaunchAt, debounceMs))
+            return false;
+        focusedDestinationLaunchTimes.put(activity, now);
+        return true;
+    }
+
+    static boolean shouldAllowDestinationLaunchForTest(long now, long lastLaunchAt, long debounceMs) {
+        return shouldAllowDestinationLaunch(now, lastLaunchAt, debounceMs);
+    }
+
+    private static boolean shouldAllowDestinationLaunch(long now, long lastLaunchAt, long debounceMs) {
+        return now - lastLaunchAt >= debounceMs;
     }
 
     public static boolean canUseContextForUi(Context context) {
@@ -1048,21 +1069,17 @@ public class Utils {
         syncNtkCloudflareCookies(preference, false);
         AppDispatchers.runUserAction(() -> {
             boolean challenged = isNtkAccessChallengeActive();
-            AppDispatchers.runOnMain(() -> {
-                if(!canUseContextForUi(context))
-                    return;
-                if(challenged) {
-                    Preference source = preference != null ? preference : p;
-                    if(source != null)
-                        getHttpClient().clearCloudflareWebViewCookies(source.getWebtoonUrl(), source.getUrl());
-                    else
-                        getHttpClient().clearCloudflareCookies();
+            if(challenged) {
+                clearNtkChallengeCookies(preference);
+                AppDispatchers.runOnMain(() -> {
+                    if(!canUseContextForUi(context))
+                        return;
                     startCaptchaActivity(context, code, fragment, null);
                     captchaCount++;
-                } else {
-                    getHttpClient().markNtkAccessVerified();
-                }
-            });
+                });
+            } else {
+                getHttpClient().markNtkAccessVerified();
+            }
         });
         return true;
     }
@@ -1090,17 +1107,23 @@ public class Utils {
         AppDispatchers.runUserAction(() -> {
             if(!isNtkAccessChallengeActive())
                 return;
+            clearNtkChallengeCookies(preference);
             AppDispatchers.runOnMain(() -> {
-                Preference source = preference != null ? preference : p;
-                if(source != null)
-                    getHttpClient().clearCloudflareWebViewCookies(source.getWebtoonUrl(), source.getUrl());
-                else
-                    getHttpClient().clearCloudflareCookies();
+                if(!canUseContextForUi(context))
+                    return;
                 startCaptchaActivity(context, code, fragment, null);
                 captchaCount++;
             });
         });
         return true;
+    }
+
+    private static void clearNtkChallengeCookies(Preference preference) {
+        Preference source = preference != null ? preference : p;
+        if(source != null)
+            getHttpClient().clearCloudflareWebViewCookies(source.getWebtoonUrl(), source.getUrl());
+        else
+            getHttpClient().clearCloudflareCookies();
     }
 
     private static boolean isNtkAccessChallengeActive() {

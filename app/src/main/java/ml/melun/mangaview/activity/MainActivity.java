@@ -16,6 +16,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 
 import androidx.core.content.ContextCompat;
 import androidx.appcompat.app.AlertDialog;
@@ -124,6 +125,8 @@ public class MainActivity extends AppCompatActivity
     TextView accountSheetHint;
     StartupViewModel startupViewModel;
     UrlUpdateCallback pendingUrlUpdateCallback;
+    private boolean ntkCaptchaCheckScheduled = false;
+    private long lastNtkCaptchaCheckAt = 0L;
     private static final int FIRST_TIME_ACTIVITY = 9;
 
     private void registerInternalReceiver(BroadcastReceiver receiver, IntentFilter filter) {
@@ -437,7 +440,7 @@ public class MainActivity extends AppCompatActivity
             if(!isFinishing() && !isDestroyed())
                 AppUpdateManager.checkForUpdate(this);
         }, startupUpdateCheckDelayMsForTest());
-        content.post(this::maybeOpenNtkCaptcha);
+        scheduleNtkCaptchaCheck(startupNtkCaptchaCheckDelayMsForTest());
         PerfTrace.end("main_post_startup_ms", postStartupStartedAt);
         PerfTrace.end("main_activity_init_ms", initStartedAt);
 
@@ -469,8 +472,6 @@ public class MainActivity extends AppCompatActivity
 
     private void runDeferredStartupTasks() {
         if(isFinishing() || isDestroyed())
-            return;
-        if(maybeOpenNtkCaptcha())
             return;
         MainApplication.initDeferredServices();
         refreshNtkDomainIfNeeded();
@@ -540,6 +541,14 @@ public class MainActivity extends AppCompatActivity
         return 16_000L;
     }
 
+    static long startupNtkCaptchaCheckDelayMsForTest() {
+        return 20_000L;
+    }
+
+    static long ntkCaptchaCheckMinIntervalMsForTest() {
+        return 10_000L;
+    }
+
     static boolean shouldFinishDuplicateLauncherForTest(boolean isTaskRoot, String action, boolean hasLauncherCategory) {
         return !isTaskRoot
                 && Intent.ACTION_MAIN.equals(action)
@@ -552,7 +561,7 @@ public class MainActivity extends AppCompatActivity
         PerformanceMonitor.resume();
         AppUpdateManager.resumePendingInstall(this);
         invalidateOptionsMenu();
-        maybeOpenNtkCaptcha();
+        scheduleNtkCaptchaCheck(startupNtkCaptchaCheckDelayMsForTest());
     }
 
     @Override
@@ -567,6 +576,26 @@ public class MainActivity extends AppCompatActivity
         if(isFinishing() || isDestroyed())
             return false;
         return Utils.startNtkTurnstileCaptchaIfNeeded(this, 3, null, p);
+    }
+
+    private void scheduleNtkCaptchaCheck(long delayMs) {
+        if(content == null) {
+            maybeOpenNtkCaptcha();
+            return;
+        }
+        if(ntkCaptchaCheckScheduled)
+            return;
+        ntkCaptchaCheckScheduled = true;
+        content.postDelayed(() -> {
+            ntkCaptchaCheckScheduled = false;
+            if(isFinishing() || isDestroyed())
+                return;
+            long now = SystemClock.uptimeMillis();
+            if(now - lastNtkCaptchaCheckAt < ntkCaptchaCheckMinIntervalMsForTest())
+                return;
+            lastNtkCaptchaCheckAt = now;
+            maybeOpenNtkCaptcha();
+        }, delayMs);
     }
 
     private void refreshNtkDomainIfNeeded() {

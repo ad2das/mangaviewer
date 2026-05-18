@@ -2,6 +2,8 @@ package ml.melun.mangaview.mangaview;
 
 import org.junit.Test;
 
+import com.google.gson.Gson;
+
 import java.io.File;
 import java.nio.file.Files;
 import java.util.ArrayList;
@@ -36,6 +38,18 @@ public class MangaTest {
         Manga manga = new Manga(12, "episode", "", MTitle.base_comic);
 
         assertEquals("/comic/12", Manga.safeUrl(manga));
+    }
+
+    @Test
+    public void gsonSerializationIgnoresNavigationLinks() {
+        Manga first = new Manga(1, "first", "", MTitle.base_comic);
+        Manga second = new Manga(2, "second", "", MTitle.base_comic);
+        first.setNextEp(second);
+        second.setPrevEp(first);
+
+        String json = new Gson().toJson(first);
+
+        assertTrue(json.contains("\"id\":1"));
     }
 
     @Test

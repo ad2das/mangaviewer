@@ -70,6 +70,7 @@ import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 public class TagSearchActivity extends AppCompatActivity {
     private static final int THUMBNAIL_PRELOAD_AHEAD = 6;
     private static final int THUMBNAIL_PRELOAD_DELAY_MS = 80;
+    private static final long DESTINATION_LAUNCH_DEBOUNCE_MS = 1500L;
     private static final int EPISODE_SNAPSHOT_PREFETCH_AHEAD = 3;
     private static final int EPISODE_SNAPSHOT_PREFETCH_DELAY_MS = 260;
     private static final int EPISODE_SNAPSHOT_PREFETCH_ACTIVE_LIMIT = 2;
@@ -513,6 +514,8 @@ public class TagSearchActivity extends AppCompatActivity {
                 adapter.setClickListener(new TitleAdapter.ItemClickListener() {
                     @Override
                     public void onResumeClick(int position, int id) {
+                        if(!canLaunchDestination())
+                            return;
                         Title title = adapter.getItem(position);
                         Manga manga = new Manga(id,"","", title == null ? baseMode : title.getBaseMode());
                         if(title != null) {
@@ -527,6 +530,8 @@ public class TagSearchActivity extends AppCompatActivity {
 
                     @Override
                     public void onItemClick(int position) {
+                        if(!canLaunchDestination())
+                            return;
                         // start intent : Episode viewer
                         Title selected = adapter.getItem(position);
                         enqueueEpisodeSnapshot(selected, true);
@@ -629,6 +634,8 @@ public class TagSearchActivity extends AppCompatActivity {
                 adapter.setClickListener(new TitleAdapter.ItemClickListener() {
                     @Override
                     public void onResumeClick(int position, int id) {
+                        if(!canLaunchDestination())
+                            return;
                         Title title = adapter.getItem(position);
                         Manga manga = new Manga(id,"","", search.getBaseMode());
                         if(title != null) {
@@ -643,6 +650,8 @@ public class TagSearchActivity extends AppCompatActivity {
 
                     @Override
                     public void onItemClick(int position) {
+                        if(!canLaunchDestination())
+                            return;
                         // start intent : Episode viewer
                         Title selected = adapter.getItem(position);
                         Intent episodeView = episodeIntent(context, selected);
@@ -744,6 +753,8 @@ public class TagSearchActivity extends AppCompatActivity {
                 uadapter.setOnClickListener(new UpdatedAdapter.onclickListener() {
                     @Override
                     public void onEpsClick(Title t) {
+                        if(!canLaunchDestination())
+                            return;
                         Intent eps = episodeIntent(context, t);
                         eps.putExtra("online", true);
                         startActivity(eps);
@@ -751,6 +762,8 @@ public class TagSearchActivity extends AppCompatActivity {
 
                     @Override
                     public void onClick(Manga m) {
+                        if(!canLaunchDestination())
+                            return;
                         //open viewer
                         openViewerPrepared(context, m, 0, false, true, false, m == null ? null : m.getTitle(), true);
                     }
@@ -836,6 +849,10 @@ public class TagSearchActivity extends AppCompatActivity {
             adapter.preloadThumbnails(first, preloadCount);
         if(uadapter != null)
             uadapter.preloadThumbnails(first, preloadCount);
+    }
+
+    private boolean canLaunchDestination() {
+        return Utils.consumeFocusedDestinationLaunch(this, DESTINATION_LAUNCH_DEBOUNCE_MS);
     }
 
     private void scheduleEpisodeSnapshotPreload() {
