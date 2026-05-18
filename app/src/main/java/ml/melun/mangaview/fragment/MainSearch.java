@@ -674,6 +674,7 @@ public class MainSearch extends Fragment {
                     episodeView.putExtra("online", false);
                     startActivity(episodeView);
                 } else if(title.getId() > 0) {
+                    title = resolveLatestTitleForEpisode(title);
                     startActivity(episodeIntent(getContext(), title));
                 }
             }
@@ -823,6 +824,61 @@ public class MainSearch extends Fragment {
         if(bookmark > 0)
             latest.setBookmark(bookmark);
         return latest;
+    }
+
+    private Title resolveLatestTitleForEpisode(Title title) {
+        if(title == null)
+            return null;
+        if(!"ntk".equals(title.getSourceSite()))
+            return title;
+        Title stored = chooseStoredTitleForEpisode(title, p.getRecent(), p.getFavorite());
+        return stored == null ? title : stored;
+    }
+
+    static Title chooseStoredTitleForEpisodeForTest(Title title, List<MTitle> recent, List<MTitle> favorite) {
+        return chooseStoredTitleForEpisode(title, recent, favorite);
+    }
+
+    private static Title chooseStoredTitleForEpisode(Title title, List<MTitle> recent, List<MTitle> favorite) {
+        Title stored = storedTitleWithSameName(title, recent);
+        if(stored == null)
+            stored = storedTitleWithSameName(title, favorite);
+        return stored;
+    }
+
+    private static Title storedTitleWithSameName(Title title, List<MTitle> source) {
+        if(title == null || source == null || !"ntk".equals(title.getSourceSite()))
+            return null;
+        String name = normalizedTitleName(title);
+        if(name.length() == 0)
+            return null;
+        for(MTitle stored : source) {
+            if(!isUsableStoredNtkTitle(title, stored, name))
+                continue;
+            return stored instanceof Title ? (Title) stored : new Title(stored);
+        }
+        return null;
+    }
+
+    private static boolean isUsableStoredNtkTitle(Title title, MTitle stored, String normalizedName) {
+        if(stored == null || stored.getId() <= 0)
+            return false;
+        if(stored.getId() == title.getId())
+            return false;
+        if(stored.getBaseMode() != title.getBaseMode())
+            return false;
+        if(!"ntk".equals(stored.getSourceSite()))
+            return false;
+        if(!normalizedName.equals(normalizedTitleName(stored)))
+            return false;
+        return stored.getBookmarkEpisodeId() > 0
+                || stored.getBookmarkEpisodeIndex() > 0
+                || stored.getEpisodeCount() > 0
+                || (stored.getPath() != null && stored.getPath().length() > 0);
+    }
+
+    private static String normalizedTitleName(MTitle title) {
+        return title == null ? "" : title.getName().trim().replaceAll("\\s+", " ");
     }
 
     private MTitle findStoredTitle(Title title, List<MTitle> source) {

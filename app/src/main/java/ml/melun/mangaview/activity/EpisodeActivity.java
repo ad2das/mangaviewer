@@ -12,6 +12,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
 import android.os.Bundle;
+import android.util.Log;
 
 import androidx.appcompat.widget.LinearLayoutCompat;
 import androidx.appcompat.widget.Toolbar;
@@ -30,6 +31,10 @@ import android.widget.Toast;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -101,6 +106,7 @@ public class EpisodeActivity extends AppCompatActivity {
     boolean ntkLoadTimeoutHandled = false;
     boolean ntkCaptchaLaunchInFlight = false;
     boolean visibleEpisodeWarmupScheduled = false;
+    String originalTitleName = "";
     final Set<Integer> requestedVisibleWarmups = new HashSet<>();
     final Runnable visibleEpisodeWarmupRunnable = () -> {
         visibleEpisodeWarmupScheduled = false;
@@ -222,6 +228,7 @@ public class EpisodeActivity extends AppCompatActivity {
             finish();
             return;
         }
+        originalTitleName = title.getName();
         switchToTitleSourceSite();
         firstContentStartedAt = PerfTrace.start("episode_first_content_ms");
         online = intent.getBooleanExtra("online", true);
@@ -665,6 +672,8 @@ public class EpisodeActivity extends AppCompatActivity {
                 hideProgress();
                 return;
             }
+            if(showCompatibleCachedEpisodesForBrokenTitle())
+                return;
             ntkLoadTimeoutHandled = true;
             hideProgress();
             showErrorPopup(context, "정보를 불러오는데 실패하였습니다.", null, false);
@@ -802,6 +811,131 @@ public class EpisodeActivity extends AppCompatActivity {
         return true;
     }
 
+    private boolean showCompatibleCachedEpisodesForBrokenTitle() {
+        CompatibleCachedEpisodes compatible = findCompatibleCachedEpisodes(getApplicationContext(), title, originalTitleName);
+        if(compatible == null)
+            return false;
+        if(compatible.sourceSite != null && compatible.sourceSite.length() > 0)
+            title.setSourceSite(compatible.sourceSite);
+        if(compatible.titleId > 0)
+            title.setId(compatible.titleId);
+        if(originalTitleName != null && originalTitleName.trim().length() > 0)
+            title.setName(originalTitleName);
+        if(compatible.episodeCount > 0)
+            title.setReadingProgress(title.getBookmarkEpisodeId(), title.getBookmarkEpisodeIndex(), compatible.episodeCount);
+        boolean shown = showCachedEpisodes(compatible.cached);
+        if(shown)
+            Log.d("ViewerPerf", "episode_cache_compatible_hit source=" + compatible.sourceSite
+                    + ",id=" + compatible.titleId + ",name=" + title.getName());
+        return shown;
+    }
+
+    private static CompatibleCachedEpisodes findCompatibleCachedEpisodes(Context cacheContext, Title target, String stableName) {
+        String matchName = stableName != null && stableName.trim().length() > 0
+                ? stableName
+                : target == null ? "" : target.getName();
+        if(cacheContext == null || target == null || matchName.trim().length() == 0)
+            return null;
+        File dir = new File(cacheContext.getCacheDir(), "structured_cache");
+        File[] files = dir.listFiles();
+        if(files == null || files.length == 0)
+            return null;
+        String normalizedName = normalizeCachedTitleName(matchName);
+        CompatibleCachedEpisodes best = null;
+        Gson gson = new Gson();
+        for(File file : files) {
+            CacheFileMeta meta = cacheFileMeta(file == null ? "" : file.getName());
+            if(meta == null || meta.baseMode != target.getBaseMode())
+                continue;
+            if(meta.titleId == target.getId() && meta.sourceSite.equals(target.getSourceSite()))
+                continue;
+            try {
+                String json = readUtf8(file);
+                if(json.length() == 0)
+                    continue;
+                CachedEpisodes cached = gson.fromJson(json, new TypeToken<CachedEpisodes>(){}.getType());
+                if(cached == null || cached.episodes == null || cached.episodes.size() == 0)
+                    continue;
+                if(!CachePolicy.isFresh(cached.savedAt, CachePolicy.EPISODE_TTL_MS)
+                        && !CachePolicy.isReusableForColdStart(cached.savedAt))
+                    continue;
+                int matchScore = cachedEpisodeTitleMatchScore(normalizedName, cached.episodes);
+                if(matchScore <= 0)
+                    continue;
+                CompatibleCachedEpisodes candidate = new CompatibleCachedEpisodes();
+                candidate.cached = cached;
+                candidate.sourceSite = meta.sourceSite;
+                candidate.titleId = meta.titleId;
+                candidate.episodeCount = cached.episodes.size();
+                candidate.score = matchScore + ("ntk".equals(meta.sourceSite) ? 1000 : 0);
+                if(best == null || candidate.score > best.score || (candidate.score == best.score
+                        && candidate.cached.savedAt > best.cached.savedAt))
+                    best = candidate;
+            } catch(Exception e) {
+                ml.melun.mangaview.report.CrashReporter.record(e);
+            }
+        }
+        return best;
+    }
+
+    static int cachedEpisodeTitleMatchScoreForTest(String titleName, List<Manga> episodes) {
+        return cachedEpisodeTitleMatchScore(normalizeCachedTitleName(titleName), episodes);
+    }
+
+    private static int cachedEpisodeTitleMatchScore(String normalizedTitleName, List<Manga> episodes) {
+        if(normalizedTitleName == null || normalizedTitleName.length() == 0 || episodes == null)
+            return 0;
+        int matches = 0;
+        int checked = 0;
+        for(Manga episode : episodes) {
+            if(episode == null)
+                continue;
+            checked++;
+            String episodeName = normalizeCachedTitleName(episode.getName());
+            if(episodeName.startsWith(normalizedTitleName))
+                matches++;
+            if(checked >= 20)
+                break;
+        }
+        if(matches >= 2)
+            return matches;
+        return matches == 1 && episodes.size() == 1 ? 1 : 0;
+    }
+
+    private static String normalizeCachedTitleName(String value) {
+        return value == null ? "" : value.toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", "");
+    }
+
+    private static CacheFileMeta cacheFileMeta(String fileName) {
+        if(fileName == null || !fileName.startsWith("episodeSnapshotV2_"))
+            return null;
+        String[] parts = fileName.split("_", 5);
+        if(parts.length < 5)
+            return null;
+        try {
+            CacheFileMeta meta = new CacheFileMeta();
+            meta.sourceSite = parts[1];
+            meta.baseMode = Integer.parseInt(parts[2]);
+            meta.titleId = Integer.parseInt(parts[3]);
+            return meta;
+        } catch(Exception e) {
+            return null;
+        }
+    }
+
+    private static String readUtf8(File file) throws Exception {
+        if(file == null || !file.exists())
+            return "";
+        try (FileInputStream input = new FileInputStream(file);
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while((read = input.read(buffer)) > 0)
+                output.write(buffer, 0, read);
+            return output.toString(StandardCharsets.UTF_8.name());
+        }
+    }
+
     private boolean hasRenderedEpisodes() {
         return loaded
                 && episodes != null
@@ -876,6 +1010,20 @@ public class EpisodeActivity extends AppCompatActivity {
     private static class CachedEpisodes {
         long savedAt;
         ArrayList<Manga> episodes;
+    }
+
+    private static class CompatibleCachedEpisodes {
+        CachedEpisodes cached;
+        String sourceSite;
+        int titleId;
+        int episodeCount;
+        int score;
+    }
+
+    private static class CacheFileMeta {
+        String sourceSite;
+        int baseMode;
+        int titleId;
     }
 
     public void openViewer(Manga manga, int code){

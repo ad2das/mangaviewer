@@ -91,4 +91,14 @@ public class EpisodeActivityTest {
         freshFirst.setNtkEpisodePath("/manhwa/10/2");
         assertFalse(EpisodeActivity.sameEpisodeIdentityList(cached, fresh));
     }
+
+    @Test
+    public void compatibleEpisodeCacheMatchesTitlePrefix() {
+        List<Manga> episodes = new ArrayList<>();
+        episodes.add(new Manga(256, "Sky Invasion 258", "", base_webtoon));
+        episodes.add(new Manga(255, "Sky Invasion 257", "", base_webtoon));
+
+        assertTrue(EpisodeActivity.cachedEpisodeTitleMatchScoreForTest("Sky Invasion", episodes) > 0);
+        assertEquals(0, EpisodeActivity.cachedEpisodeTitleMatchScoreForTest("Other Title", episodes));
+    }
 }
