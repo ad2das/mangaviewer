@@ -376,8 +376,15 @@ public class CustomHttpClient {
                 return null;
             PersistedDns persisted = GSON.fromJson(json, PersistedDns.class);
             long now = System.currentTimeMillis();
-            if(persisted == null || !isPersistedNtkDnsUsable(persisted.savedAt, persisted.expiresAt, now, allowStale)) {
+            if(persisted == null || persisted.savedAt > now) {
                 CacheFileStore.delete(context, key);
+                return null;
+            }
+            boolean fresh = isPersistedNtkDnsFresh(persisted.expiresAt, now);
+            boolean stale = isPersistedNtkDnsStale(persisted.savedAt, persisted.expiresAt, now);
+            if(!fresh && !(allowStale && stale)) {
+                if(!stale)
+                    CacheFileStore.delete(context, key);
                 return null;
             }
             ArrayList<InetAddress> addresses = parsePersistedDnsAddresses(hostname, persisted.addresses);
@@ -385,8 +392,7 @@ public class CustomHttpClient {
                 CacheFileStore.delete(context, key);
                 return null;
             }
-            boolean stale = isPersistedNtkDnsStale(persisted.savedAt, persisted.expiresAt, now);
-            if(!stale)
+            if(fresh)
                 writeMemoryCachedNtkDns(hostname, addresses, persisted.expiresAt);
             return new DnsCacheEntry(addresses, stale);
         } catch (Exception e) {
@@ -1813,8 +1819,13 @@ public class CustomHttpClient {
             loadState = pageLoads.get(loadKey);
         }
         try {
-            return loadPageFromNetworkWithDomainRetry(normalized, now, staleCached);
+            PageResponse loaded = loadPageFromNetworkWithDomainRetry(normalized, now, staleCached);
+            if(loadState != null)
+                loadState.response = loaded;
+            return loaded;
         } catch (Exception e) {
+            if(loadState != null)
+                loadState.error = e;
             if(staleCached != null)
                 return new PageResponse(staleCached.code, staleCached.body, true);
             throw e;
@@ -1904,16 +1915,17 @@ public class CustomHttpClient {
         String body = readBody(response);
         if(wolfDocument)
             ViewerWarmupManager.logMetric("wfwf_page_network_ms", System.currentTimeMillis() - startedAt);
+        if(code >= 500 && staleCached != null)
+            return new PageResponse(staleCached.code, staleCached.body, true);
         if(isCloudflareChallenge(code, body)) {
             lastCloudflareChallengeUrl = getBaseUrl(normalized) + normalized;
             lastCloudflareChallengeAt = System.currentTimeMillis();
-            clearCloudflareCookies();
-            throw new Exception("Cloudflare challenge");
+            if(code == 403)
+                clearCloudflareCookies();
+            throw new Exception(code == 403 ? "Cloudflare challenge" : "Cloudflare/server error");
         }
         if(isNtk())
             clearLastCloudflareChallenge();
-        if(code >= 500 && staleCached != null)
-            return new PageResponse(staleCached.code, staleCached.body, true);
         if(shouldRejectWfwfPageBody(normalized, code, body)) {
             if(staleCached != null)
                 return new PageResponse(staleCached.code, staleCached.body, true);
@@ -1962,6 +1974,8 @@ public class CustomHttpClient {
                 Thread.currentThread().interrupt();
                 throw e;
             }
+            if(loadState.response != null)
+                return loadState.response;
         }
         long now = System.currentTimeMillis();
         synchronized (pageCacheLock) {
@@ -1981,6 +1995,8 @@ public class CustomHttpClient {
         }
         if(staleCached != null)
             return new PageResponse(staleCached.code, staleCached.body, true);
+        if(loadState.error != null)
+            throw loadState.error;
         throw new Exception("Request failed: " + cacheKey);
     }
 
@@ -2341,7 +2357,12 @@ public class CustomHttpClient {
         js.append("x.onerror=function(){finish({code:0,error:'error'});};");
         js.append("x.ontimeout=function(){finish({code:0,error:'timeout'});};");
         js.append("x.send(null);");
-        js.append("}catch(e){window.NtkBridge.onResult(JSON.stringify({code:0,error:String(e)}));}");
+        js.append("}catch(e){var err=JSON.stringify({code:0,error:String(e)});");
+        if(token == null)
+            js.append("window.NtkBridge.onResult(err);");
+        else
+            js.append("window.NtkBridge.onFetchResult(").append(jsQuote(token)).append(",err);");
+        js.append("}");
         js.append("})()");
         return js.toString();
     }
@@ -2531,7 +2552,9 @@ public class CustomHttpClient {
                                                                FetchMode fetchMode) {
         if(!ntkUrl)
             return false;
-        return true;
+        if(hasFreshClearance || hasRecentVerification)
+            return true;
+        return fetchMode == FetchMode.DIRECT_ONLY || fetchMode == FetchMode.CACHE_ONLY;
     }
 
     private void applyNtkApiHeaders(Map<String, String> headers, String baseUrl, String path) {
@@ -2738,6 +2761,8 @@ public class CustomHttpClient {
 
     private static class PageLoadState {
         final CountDownLatch done = new CountDownLatch(1);
+        volatile PageResponse response;
+        volatile Exception error;
     }
 
     public Response post(String url, RequestBody body, Map<String,String> headers){
@@ -2745,6 +2770,8 @@ public class CustomHttpClient {
     }
 
     public Response post(String url, RequestBody body, Map<String,String> headers, boolean localCookies){
+        if(headers == null)
+            headers = new HashMap<>();
 
         if(localCookies)
             syncCookiesFromWebView(getBaseUrl(url));
@@ -2914,6 +2941,8 @@ public class CustomHttpClient {
                 .followSslRedirects(false)
                 .connectTimeout(20, TimeUnit.SECONDS)
                 .readTimeout(20, TimeUnit.SECONDS)
+                .writeTimeout(20, TimeUnit.SECONDS)
+                .callTimeout(25, TimeUnit.SECONDS)
                 .dns(NETWORK_RESILIENT_DNS);
         if(android.os.Build.VERSION.SDK_INT < CODE_SCOPED_STORAGE) {
             List<CipherSuite> cipherSuites = new ArrayList<>(ConnectionSpec.MODERN_TLS.cipherSuites());

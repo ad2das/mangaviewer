@@ -1216,9 +1216,10 @@ public class MainSearch extends Fragment {
             libraryFilterTask.cancel();
         final int generation = ++libraryFilterGeneration;
         final String filterQuery = query;
+        final ArrayList<Title> source = getLibraryTitles(tab);
         libraryFilterTask = AppDispatchers.submitUiDiff(() -> {
             ArrayList<Title> data = new ArrayList<>();
-            for(Title title : getLibraryTitles(tab))
+            for(Title title : source)
                 if(matchesLibraryQuery(title, filterQuery))
                     data.add(title);
             AppDispatchers.runOnMain(() -> {
@@ -1322,7 +1323,8 @@ public class MainSearch extends Fragment {
         searchAdapter.setResume(true);
         searchAdapter.setForceThumbnail(false);
         searchAdapter.setLongClickEnabled(true);
-        searchResult.setAdapter(searchAdapter);
+        if(searchResult.getAdapter() != searchAdapter)
+            searchResult.setAdapter(searchAdapter);
         searchAdapter.setClickListener(new TitleAdapter.ItemClickListener() {
             @Override
             public void onLongClick(View view, int position) {
@@ -1421,6 +1423,11 @@ public class MainSearch extends Fragment {
             libraryFilterTask.cancel();
         libraryFilterGeneration++;
         activeSearchKey = null;
+        if(searchResult != null) {
+            searchResult.stopScroll();
+            searchResult.setAdapter(null);
+        }
+        searchAdapter = null;
         super.onDestroyView();
     }
 
@@ -1485,7 +1492,8 @@ public class MainSearch extends Fragment {
             targetSearch.setPartialResultListener(titles -> {
                 if(titles == null || titles.size() == 0)
                     return;
-                AppDispatchers.runOnMain(() -> showPartialResults(titles));
+                ArrayList<Title> snapshot = new ArrayList<>(titles);
+                AppDispatchers.runOnMain(() -> showPartialResults(snapshot));
             });
             long queuedAt = PerfTrace.start("search_task_queue_ms");
             handle = AppDispatchers.submitSearch(() -> {
@@ -1539,10 +1547,10 @@ public class MainSearch extends Fragment {
             if(captchaRequired)
                 Utils.showCaptchaPopup(getContext(), RESULT_CAPTCHA, MainSearch.this, p);
             if(replaceResults) {
-                searchAdapter.setDataImmediate(targetSearch.getResult());
+                searchAdapter.setDataImmediate(new ArrayList<>(targetSearch.getResult()));
                 bindOnlineAdapter();
             }else{
-                searchAdapter.addData(targetSearch.getResult());
+                searchAdapter.addData(new ArrayList<>(targetSearch.getResult()));
             }
             scheduleVisibleResumeWarmup();
 

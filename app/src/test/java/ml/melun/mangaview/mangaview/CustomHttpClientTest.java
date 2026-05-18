@@ -105,11 +105,15 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void ntkHeaderBuildNeverSyncsWebViewCookies() {
-        assertTrue(CustomHttpClient.shouldSkipWebViewCookieSyncForTest(true, false, false, false,
+    public void ntkHeaderBuildSyncsWebViewCookiesWhenClearanceIsMissing() {
+        assertFalse(CustomHttpClient.shouldSkipWebViewCookieSyncForTest(true, false, false, false,
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
         assertTrue(CustomHttpClient.shouldSkipWebViewCookieSyncForTest(true, true, false, true,
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertTrue(CustomHttpClient.shouldSkipWebViewCookieSyncForTest(true, false, true, false,
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertTrue(CustomHttpClient.shouldSkipWebViewCookieSyncForTest(true, false, false, false,
+                CustomHttpClient.FetchMode.DIRECT_ONLY));
         assertFalse(CustomHttpClient.shouldSkipWebViewCookieSyncForTest(false, false, false, false,
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
     }
@@ -227,6 +231,7 @@ public class CustomHttpClientTest {
         String script = CustomHttpClient.buildNtkWebViewFetchScript("/manhwa/1", null, "42");
 
         assertTrue(script.contains("window.NtkBridge.onFetchResult(\"42\""));
+        assertFalse(script.contains("catch(e){window.NtkBridge.onResult"));
     }
 
     @Test

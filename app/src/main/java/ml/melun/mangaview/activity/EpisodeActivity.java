@@ -80,6 +80,7 @@ public class EpisodeActivity extends AppCompatActivity {
     private static final long VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS = 220L;
     private static final long INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 260L;
     private static final long NTK_INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 700L;
+    private static final long MAX_EPISODE_CACHE_FILE_BYTES = 2 * 1024 * 1024L;
     private static final int VISIBLE_EPISODE_WARMUP_AHEAD = 2;
     //global variables
     Title title;
@@ -106,10 +107,16 @@ public class EpisodeActivity extends AppCompatActivity {
     boolean ntkLoadTimeoutHandled = false;
     boolean ntkCaptchaLaunchInFlight = false;
     boolean visibleEpisodeWarmupScheduled = false;
+    boolean destroyed = false;
+    boolean compatibleCacheLookupInFlight = false;
+    boolean pendingLoadErrorAfterCacheLookup = false;
+    Runnable ntkEpisodeLoadWatchdogRunnable;
     String originalTitleName = "";
     final Set<Integer> requestedVisibleWarmups = new HashSet<>();
     final Runnable visibleEpisodeWarmupRunnable = () -> {
         visibleEpisodeWarmupScheduled = false;
+        if(!isUiAlive())
+            return;
         warmupVisibleEpisodeRows();
     };
 
@@ -296,12 +303,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 scheduleNtkEpisodeLoadWatchdog();
             }
         }else{
-            OfflineStore.OfflineEpisodes offlineEpisodes = OfflineStore.loadEpisodes(context, title);
-            episodes = offlineEpisodes.episodes;
-            attachLoadedEpisodesToTitle(episodes);
-            mode = offlineEpisodes.mode;
-            episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
-            afterLoad();
+            loadOfflineEpisodesAsync();
         }
     }
 
@@ -555,6 +557,8 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     private void deleteOfflineEpisode(int position, Manga manga) {
+        if(deleteOfflineEpisodeAsync(position, manga))
+            return;
         boolean deleted = OfflineStore.deleteEpisode(context, manga);
         if(!deleted) {
             Toast.makeText(context, "삭제를 실패했습니다.", Toast.LENGTH_SHORT).show();
@@ -647,46 +651,51 @@ public class EpisodeActivity extends AppCompatActivity {
 
     @SuppressWarnings("unchecked")
     private void renderEpisodeState(UiState<EpisodeLoadResult> state) {
+        if(!isUiAlive())
+            return;
         if(state instanceof UiState.Loading) {
             hideProgress();
             return;
         }
         if(state instanceof UiState.Error) {
+            ntkLoadTimeoutHandled = true;
+            cancelNtkEpisodeLoadWatchdog();
             hideProgress();
-            showCaptchaPopup(title.getUrl(), context, p);
+            if(title != null)
+                showCaptchaPopup(title.getUrl(), context, p);
             return;
         }
         if(!(state instanceof UiState.Content))
             return;
         EpisodeLoadResult result = ((UiState.Content<EpisodeLoadResult>) state).getValue();
+        if(result == null) {
+            hideProgress();
+            return;
+        }
         if(result.getResultCode() == LOAD_CAPTCHA){
             ntkLoadTimeoutHandled = true;
+            cancelNtkEpisodeLoadWatchdog();
             if(p != null && p.isNtkSite())
                 openNtkCaptchaDirect();
             else
-                showCaptchaPopup(title.getUrl(), context, RESULT_CAPTCHA, p);
+                showCaptchaPopup(title == null ? "" : title.getUrl(), context, RESULT_CAPTCHA, p);
             return;
         }
         if(result.getResultCode() == LOAD_ERROR){
-            if(hasRenderedEpisodes()) {
-                hideProgress();
-                return;
-            }
-            if(showCompatibleCachedEpisodesForBrokenTitle())
-                return;
-            ntkLoadTimeoutHandled = true;
-            hideProgress();
-            showErrorPopup(context, "정보를 불러오는데 실패하였습니다.", null, false);
+            handleLoadErrorWithCacheFallback();
             return;
         }
         List<Manga> loadedEpisodes = result.getEpisodes();
         if(loadedEpisodes == null || loadedEpisodes.size()==0){
             if(this.episodes == null || this.episodes.size() == 0) {
                 ntkLoadTimeoutHandled = true;
-                showCaptchaPopup(title.getUrl(), context, p);
+                cancelNtkEpisodeLoadWatchdog();
+                if(title != null)
+                    showCaptchaPopup(title.getUrl(), context, p);
             }
             return;
         }
+        cancelNtkEpisodeLoadWatchdog();
         if(sameEpisodeIdentityList(episodes, loadedEpisodes) && hasRenderedEpisodes()) {
             ntkLoadTimeoutHandled = true;
             attachLoadedEpisodesToTitle(episodes);
@@ -709,21 +718,29 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     private void scheduleNtkEpisodeLoadWatchdog() {
-        if(!online || p == null || !p.isNtkSite())
+        if(!online || p == null || !p.isNtkSite() || episodeList == null)
             return;
-        episodeList.postDelayed(() -> {
-            if(isFinishing() || loaded || ntkLoadTimeoutHandled)
+        cancelNtkEpisodeLoadWatchdog();
+        ntkEpisodeLoadWatchdogRunnable = () -> {
+            if(!isUiAlive() || loaded || ntkLoadTimeoutHandled)
                 return;
             if(episodeAdapter != null && episodeAdapter.getItemCount() > 0)
                 return;
             ntkLoadTimeoutHandled = true;
             hideProgress();
             openNtkCaptchaDirect();
-        }, 3000L);
+        };
+        episodeList.postDelayed(ntkEpisodeLoadWatchdogRunnable, 3000L);
+    }
+
+    private void cancelNtkEpisodeLoadWatchdog() {
+        if(episodeList != null && ntkEpisodeLoadWatchdogRunnable != null)
+            episodeList.removeCallbacks(ntkEpisodeLoadWatchdogRunnable);
+        ntkEpisodeLoadWatchdogRunnable = null;
     }
 
     private void openNtkCaptchaDirect() {
-        if(isFinishing() || ntkCaptchaLaunchInFlight)
+        if(!isUiAlive() || ntkCaptchaLaunchInFlight)
             return;
         ntkCaptchaLaunchInFlight = true;
         AppDispatchers.runUserAction(() -> {
@@ -731,7 +748,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 getHttpClient().resolveNtkDomainNow();
             AppDispatchers.runOnMain(() -> {
                 ntkCaptchaLaunchInFlight = false;
-                if(isFinishing())
+                if(!isUiAlive())
                     return;
                 Intent captchaIntent = new Intent(context, CaptchaActivity.class);
                 String url = title == null ? null : title.getUrl();
@@ -754,6 +771,52 @@ public class EpisodeActivity extends AppCompatActivity {
         }
     }
 
+    private boolean deleteOfflineEpisodeAsync(int position, Manga manga) {
+        if(manga == null)
+            return true;
+        Context appContext = getApplicationContext();
+        AppDispatchers.submitIo(() -> {
+            boolean deleted = OfflineStore.deleteEpisode(appContext, manga);
+            AppDispatchers.runOnMain(() -> {
+                if(!isUiAlive())
+                    return;
+                if(!deleted) {
+                    Toast.makeText(context, "삭제를 실패했습니다.", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                p.removeViewerBookmark(manga);
+                if(position >= 0 && episodes != null && position < episodes.size() && episodeAdapter != null) {
+                    if(episodes.get(position) == manga)
+                        episodeAdapter.removeEpisode(position);
+                    else {
+                        episodes.remove(manga);
+                        episodeAdapter.notifyItemRangeChanged(0, episodeAdapter.getItemCount());
+                    }
+                }
+                Toast.makeText(context, "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
+                if(episodes == null || episodes.size() == 0) {
+                    deleteEmptyOfflineTitleAsync();
+                    finish();
+                }
+            });
+        });
+        return true;
+    }
+
+    private void deleteEmptyOfflineTitleAsync() {
+        if(title == null || title.getPath() == null || title.getPath().length() == 0)
+            return;
+        Context appContext = getApplicationContext();
+        Title currentTitle = title;
+        AppDispatchers.submitIo(() -> {
+            try {
+                OfflineStore.deleteTitle(appContext, currentTitle);
+            } catch (Exception e) {
+                ml.melun.mangaview.report.CrashReporter.record(e);
+            }
+        });
+    }
+
     private void loadCachedEpisodesAsync() {
         Context appContext = getApplicationContext();
         String cacheKey = episodeCacheKey();
@@ -763,7 +826,10 @@ public class EpisodeActivity extends AppCompatActivity {
             PerfTrace.end("episode_cache_async_load_ms", startedAt);
             if(cached == null)
                 return;
-            AppDispatchers.runOnMain(() -> showCachedEpisodes(cached));
+            AppDispatchers.runOnMain(() -> {
+                if(isUiAlive())
+                    showCachedEpisodes(cached);
+            });
         });
     }
 
@@ -811,9 +877,43 @@ public class EpisodeActivity extends AppCompatActivity {
         return true;
     }
 
-    private boolean showCompatibleCachedEpisodesForBrokenTitle() {
-        CompatibleCachedEpisodes compatible = findCompatibleCachedEpisodes(getApplicationContext(), title, originalTitleName);
-        if(compatible == null)
+    private void handleLoadErrorWithCacheFallback() {
+        if(hasRenderedEpisodes()) {
+            hideProgress();
+            return;
+        }
+        if(compatibleCacheLookupInFlight) {
+            pendingLoadErrorAfterCacheLookup = true;
+            return;
+        }
+        compatibleCacheLookupInFlight = true;
+        pendingLoadErrorAfterCacheLookup = true;
+        Context appContext = getApplicationContext();
+        Title target = title;
+        String stableName = originalTitleName;
+        AppDispatchers.submitIo(() -> {
+            CompatibleCachedEpisodes compatible = findCompatibleCachedEpisodes(appContext, target, stableName);
+            AppDispatchers.runOnMain(() -> {
+                compatibleCacheLookupInFlight = false;
+                if(!isUiAlive())
+                    return;
+                if(applyCompatibleCachedEpisodes(compatible)) {
+                    pendingLoadErrorAfterCacheLookup = false;
+                    return;
+                }
+                if(pendingLoadErrorAfterCacheLookup && !hasRenderedEpisodes()) {
+                    pendingLoadErrorAfterCacheLookup = false;
+                    ntkLoadTimeoutHandled = true;
+                    cancelNtkEpisodeLoadWatchdog();
+                    hideProgress();
+                    showErrorPopup(context, "정보를 불러오는데 실패하였습니다.", null, false);
+                }
+            });
+        });
+    }
+
+    private boolean applyCompatibleCachedEpisodes(CompatibleCachedEpisodes compatible) {
+        if(compatible == null || title == null)
             return false;
         if(compatible.sourceSite != null && compatible.sourceSite.length() > 0)
             title.setSourceSite(compatible.sourceSite);
@@ -824,9 +924,11 @@ public class EpisodeActivity extends AppCompatActivity {
         if(compatible.episodeCount > 0)
             title.setReadingProgress(title.getBookmarkEpisodeId(), title.getBookmarkEpisodeIndex(), compatible.episodeCount);
         boolean shown = showCachedEpisodes(compatible.cached);
-        if(shown)
+        if(shown) {
+            cancelNtkEpisodeLoadWatchdog();
             Log.d("ViewerPerf", "episode_cache_compatible_hit source=" + compatible.sourceSite
                     + ",id=" + compatible.titleId + ",name=" + title.getName());
+        }
         return shown;
     }
 
@@ -924,10 +1026,12 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     private static String readUtf8(File file) throws Exception {
-        if(file == null || !file.exists())
+        if(file == null || !file.exists() || !file.isFile())
+            return "";
+        if(file.length() <= 0 || file.length() > MAX_EPISODE_CACHE_FILE_BYTES)
             return "";
         try (FileInputStream input = new FileInputStream(file);
-             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+             ByteArrayOutputStream output = new ByteArrayOutputStream((int) file.length())) {
             byte[] buffer = new byte[8192];
             int read;
             while((read = input.read(buffer)) > 0)
@@ -975,7 +1079,13 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     private String episodeCacheKey() {
-        return EpisodeSnapshotCache.key(title, p != null && p.isNtkSite());
+        return EpisodeSnapshotCache.key(title, isNtkTitle());
+    }
+
+    private boolean isNtkTitle() {
+        if(title != null && title.getSourceSite() != null)
+            return "ntk".equals(title.getSourceSite().trim().toLowerCase(java.util.Locale.ROOT));
+        return p != null && p.isNtkSite();
     }
 
     private void markFirstContent() {
@@ -1031,6 +1141,8 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     public void openViewer(Manga manga, int code, boolean exactEpisode){
+        if(manga == null || title == null)
+            return;
         manga.setMode(mode);
         manga.setTitle(title);
         manga.setTitleId(title == null ? manga.getTitleId() : title.getId());
@@ -1040,7 +1152,7 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     private boolean shouldRefreshEpisodesAfterCache(boolean renderedCachedEpisodes) {
-        return !renderedCachedEpisodes || p.isNtkSite() || getHttpClient().isNtk();
+        return !renderedCachedEpisodes || isNtkTitle() || getHttpClient().isNtk();
     }
 
     static boolean shouldLoadDiskEpisodeCacheAsyncForTest(boolean renderedMemoryCache) {
@@ -1107,9 +1219,35 @@ public class EpisodeActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
-        if(episodeViewModel != null)
+        destroyed = true;
+        cancelVisibleEpisodeWarmup();
+        cancelNtkEpisodeLoadWatchdog();
+        if(episodeViewModel != null && !isChangingConfigurations())
             episodeViewModel.cancelActiveLoad();
+        if(episodeList != null)
+            episodeList.setAdapter(null);
         super.onDestroy();
+    }
+
+    private boolean isUiAlive() {
+        return !destroyed && !isFinishing() && !isDestroyed();
+    }
+
+    private void loadOfflineEpisodesAsync() {
+        Context appContext = getApplicationContext();
+        Title currentTitle = title;
+        AppDispatchers.submitIo(() -> {
+            OfflineStore.OfflineEpisodes offlineEpisodes = OfflineStore.loadEpisodes(appContext, currentTitle);
+            AppDispatchers.runOnMain(() -> {
+                if(!isUiAlive())
+                    return;
+                episodes = offlineEpisodes.episodes;
+                attachLoadedEpisodesToTitle(episodes);
+                mode = offlineEpisodes.mode;
+                episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
+                afterLoad();
+            });
+        });
     }
 
     private void applyEpisodeWindowChrome() {
