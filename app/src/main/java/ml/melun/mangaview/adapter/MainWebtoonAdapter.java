@@ -210,11 +210,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             placeholderRows = buildRows(dataSet, false);
         if(!hasDisplayContent(placeholderRows))
             return;
-        pendingRows = null;
-        rowDiffGeneration++;
-        rows = placeholderRows;
         initialRowsShown = true;
-        notifyDataSetChanged();
+        updateRows(placeholderRows);
     }
 
     public boolean isFetching() {
@@ -1411,9 +1408,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             String nextKey = titleListKey(next);
             if(nextKey.equals(itemsKey))
                 return;
+            int oldSize = this.items == null ? 0 : this.items.size();
             this.items = next;
             this.itemsKey = nextKey;
-            notifyDataSetChanged();
+            dispatchListSizeAwareUpdates(this, oldSize, next.size());
         }
 
         @NonNull
@@ -2079,6 +2077,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             view.setVisibility(visibility);
     }
 
+    private void dispatchListSizeAwareUpdates(RecyclerView.Adapter<?> adapter, int oldSize, int newSize) {
+        int common = Math.min(oldSize, newSize);
+        if(common > 0)
+            adapter.notifyItemRangeChanged(0, common);
+        if(newSize > oldSize)
+            adapter.notifyItemRangeInserted(oldSize, newSize - oldSize);
+        else if(oldSize > newSize)
+            adapter.notifyItemRangeRemoved(newSize, oldSize - newSize);
+    }
+
     class GroupHolder extends RecyclerView.ViewHolder {
         TextView title;
 
@@ -2147,9 +2155,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             String nextKey = cardListKey(next);
             if(nextKey.equals(itemsKey))
                 return;
+            int oldSize = this.items == null ? 0 : this.items.size();
             this.items = next;
             this.itemsKey = nextKey;
-            notifyDataSetChanged();
+            dispatchListSizeAwareUpdates(this, oldSize, next.size());
         }
 
         @NonNull
