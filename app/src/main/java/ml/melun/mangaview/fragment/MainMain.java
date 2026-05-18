@@ -1,10 +1,12 @@
 package ml.melun.mangaview.fragment;
 
+import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.ColorStateList;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -78,6 +80,8 @@ public class MainMain extends Fragment{
     int webtoonFetchState = HOME_FETCH_IDLE;
     boolean viewStarted = false;
     int scrollRequestVersion = 0;
+    long lastDestinationLaunchAt = 0L;
+    private static final long DESTINATION_LAUNCH_DEBOUNCE_MS = 1500L;
     int inactivePrefetchRequestVersion = 0;
     Preference.LocalChangeListener localChangeListener;
 
@@ -189,12 +193,16 @@ public class MainMain extends Fragment{
 
             @Override
             public void clickedTitle(Title t) {
+                if(!canLaunchDestination())
+                    return;
                 cancelHomeFetches();
                 startActivity(episodeIntent(getContext(), t));
             }
 
             @Override
             public void clickedManga(Manga m) {
+                if(!canLaunchDestination())
+                    return;
                 //mget title from manga m and start intent for manga m
                 //getTitleFromManga intentStarter = new getTitleFromManga();
                 //intentStarter.execute(m);
@@ -204,6 +212,8 @@ public class MainMain extends Fragment{
 
             @Override
             public void clickedGenre(String t) {
+                if(!canLaunchDestination())
+                    return;
                 cancelHomeFetches();
                 Intent i = new Intent(getContext(), TagSearchActivity.class);
                 i.putExtra("query",t);
@@ -214,6 +224,8 @@ public class MainMain extends Fragment{
 
             @Override
             public void clickedName(String t) {
+                if(!canLaunchDestination())
+                    return;
                 cancelHomeFetches();
                 Intent i = new Intent(getContext(), TagSearchActivity.class);
                 i.putExtra("query",t);
@@ -224,6 +236,8 @@ public class MainMain extends Fragment{
 
             @Override
             public void clickedRelease(String t) {
+                if(!canLaunchDestination())
+                    return;
                 cancelHomeFetches();
                 Intent i = new Intent(getContext(), TagSearchActivity.class);
                 i.putExtra("query",t);
@@ -234,6 +248,8 @@ public class MainMain extends Fragment{
 
             @Override
             public void clickedMoreUpdated() {
+                if(!canLaunchDestination())
+                    return;
                 cancelHomeFetches();
                 Intent i = new Intent(getContext(), TagSearchActivity.class);
                 i.putExtra("mode",5);
@@ -257,6 +273,8 @@ public class MainMain extends Fragment{
 
             @Override
             public void clickedCategoryPath(String title, String path) {
+                if(!canLaunchDestination())
+                    return;
                 boolean ntkSite = getHttpClient().isNtk();
                 String currentSitePath = MainPageWebtoon.resolveCurrentSiteFilterPath(title, p.getBaseMode(), ntkSite);
                 String launchPath = currentSitePath.length() > 0 ? currentSitePath : path;
@@ -327,6 +345,22 @@ public class MainMain extends Fragment{
             }, HomeStartupPolicy.activeFetchDelayMs(getHttpClient().isNtk()));
         }
         return rootView;
+    }
+
+    private boolean canLaunchDestination() {
+        Activity activity = getActivity();
+        if(!(isAdded()
+                && isResumed()
+                && activity != null
+                && !activity.isFinishing()
+                && !activity.isDestroyed()
+                && activity.hasWindowFocus()))
+            return false;
+        long now = SystemClock.uptimeMillis();
+        if(now - lastDestinationLaunchAt < DESTINATION_LAUNCH_DEBOUNCE_MS)
+            return false;
+        lastDestinationLaunchAt = now;
+        return true;
     }
 
     private void configureHomeRecycler(RecyclerView recyclerView) {

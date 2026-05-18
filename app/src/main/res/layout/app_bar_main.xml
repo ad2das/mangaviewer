@@ -38,13 +38,14 @@
 
     </FrameLayout>
 
-    <include
+    <FrameLayout
+        android:id="@+id/progress_panel"
         android:layout_height="match_parent"
         android:layout_marginBottom="72dp"
         android:layout_marginTop="56dp"
         android:layout_width="match_parent"
-        android:visibility="gone"
-        layout="@layout/progress_panel" />
+        android:background="@color/appSurface"
+        android:visibility="gone" />
 
     <com.google.android.material.bottomnavigation.BottomNavigationView
         android:id="@+id/bottom_nav"

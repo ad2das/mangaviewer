@@ -84,7 +84,7 @@ public class Utils {
     private static final Map<Context, Integer> viewerLaunchTokens = new WeakHashMap<>();
     private static final Map<Context, Long> viewerLaunchTimes = new WeakHashMap<>();
     private static int viewerLaunchSequence = 0;
-    private static final long VIEWER_LAUNCH_DEBOUNCE_MS = 700L;
+    private static final long VIEWER_LAUNCH_DEBOUNCE_MS = 2200L;
     private static final String MANGA_STATE_V2 = "manga_state_v2";
     private static final String MANGA_ID = "manga_id";
     private static final String MANGA_NAME = "manga_name";

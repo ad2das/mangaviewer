@@ -159,7 +159,7 @@ public class UtilsTest {
 
     @Test
     public void viewerLaunchDebounceRejectsRapidDuplicateStarts() {
-        assertFalse(Utils.shouldAllowViewerLaunchForTest(1_500L, 1_000L));
-        assertTrue(Utils.shouldAllowViewerLaunchForTest(1_700L, 1_000L));
+        assertFalse(Utils.shouldAllowViewerLaunchForTest(3_000L, 1_000L));
+        assertTrue(Utils.shouldAllowViewerLaunchForTest(3_200L, 1_000L));
     }
 }
