@@ -558,6 +558,10 @@ public class Utils {
         return shouldAllowDestinationLaunch(now, lastLaunchAt, debounceMs);
     }
 
+    static boolean shouldBlockCaptchaForOffline(boolean connected) {
+        return !connected;
+    }
+
     private static boolean shouldAllowDestinationLaunch(long now, long lastLaunchAt, long debounceMs) {
         return now - lastLaunchAt >= debounceMs;
     }
@@ -958,18 +962,29 @@ public class Utils {
     }
 
     public static boolean checkConnection(Context context){
-        if(context instanceof Activity && canUseActivity((Activity) context)) {
+        if(context == null)
+            return false;
+        try {
+            Context targetContext = context.getApplicationContext() == null ? context : context.getApplicationContext();
             ConnectivityManager connectivityManager
-                    = (ConnectivityManager) ((Activity) context).getSystemService(Context.CONNECTIVITY_SERVICE);
+                    = (ConnectivityManager) targetContext.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if(connectivityManager == null)
+                return false;
             NetworkInfo activeNetworkInfo = connectivityManager.getActiveNetworkInfo();
             return activeNetworkInfo != null && activeNetworkInfo.isConnectedOrConnecting();
-        }else return false;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
 
 
     public static void showCaptchaPopup(String url, Context context, int code, Exception e, boolean force_close, Fragment fragment, Preference p){
         if(canUseContextForUi(context)) {
+            if(shouldBlockCaptchaForOffline(checkConnection(context))) {
+                showNoConnectionCaptchaFallback(context, force_close);
+                return;
+            }
             if(showNtkTurnstileCaptchaIfNeeded(url, context, code, fragment, p))
                 return;
             if (shouldOpenCloudflareCaptchaAutomatically()) {
@@ -1007,6 +1022,12 @@ public class Utils {
         }
     }
 
+    private static void showNoConnectionCaptchaFallback(Context context, boolean forceClose) {
+        safeToast(context, "?ㅽ듃?뚰겕 ?곌껐???놁뒿?덈떎.", Toast.LENGTH_LONG);
+        if(forceClose && context instanceof Activity)
+            ((Activity) context).finish();
+    }
+
     private static boolean shouldOpenCloudflareCaptchaAutomatically() {
         if(!getHttpClient().isNtk())
             return false;
@@ -1023,6 +1044,8 @@ public class Utils {
 
     public static boolean showNtkTurnstileCaptchaIfNeeded(String url, Context context, int code, Fragment fragment, Preference preference) {
         if(!canUseContextForUi(context) || !getHttpClient().isNtk())
+            return false;
+        if(shouldBlockCaptchaForOffline(checkConnection(context)))
             return false;
         syncNtkCloudflareCookies(preference, false);
         if(isNtkEpisodeUrl(url))
@@ -1046,6 +1069,8 @@ public class Utils {
     public static boolean startNtkTurnstileCaptchaIfNeeded(Context context, int code, Fragment fragment, Preference preference) {
         if(!canUseContextForUi(context) || !getHttpClient().isNtk())
             return false;
+        if(shouldBlockCaptchaForOffline(checkConnection(context)))
+            return false;
         syncNtkCloudflareCookies(preference, false);
         if(getHttpClient().hasNtkAccessProof() || getHttpClient().hasRecentNtkAccessVerification()) {
             verifyNtkAccessAndOpenCaptchaIfNeeded(context, code, fragment, preference);
@@ -1065,6 +1090,8 @@ public class Utils {
 
     public static boolean verifyNtkAccessAndOpenCaptchaIfNeeded(Context context, int code, Fragment fragment, Preference preference) {
         if(!canUseContextForUi(context) || !getHttpClient().isNtk())
+            return false;
+        if(shouldBlockCaptchaForOffline(checkConnection(context)))
             return false;
         syncNtkCloudflareCookies(preference, false);
         AppDispatchers.runUserAction(() -> {
@@ -1097,6 +1124,8 @@ public class Utils {
 
     public static boolean startNtkTurnstileCaptcha(Context context, int code, Fragment fragment, Preference preference) {
         if(!canUseContextForUi(context) || !getHttpClient().isNtk())
+            return false;
+        if(shouldBlockCaptchaForOffline(checkConnection(context)))
             return false;
         syncNtkCloudflareCookies(preference, true);
         if(!getHttpClient().hasNtkAccessProof() && !getHttpClient().hasRecentNtkAccessVerification()) {
@@ -1180,6 +1209,10 @@ public class Utils {
     static void startCaptchaActivity(Context context, int code, Fragment fragment, String url){
         if(!canUseContextForUi(context))
             return;
+        if(shouldBlockCaptchaForOffline(checkConnection(context))) {
+            showNoConnectionCaptchaFallback(context, false);
+            return;
+        }
         if(shouldSkipNtkCaptchaLaunch())
             return;
         long now = System.currentTimeMillis();
@@ -1202,6 +1235,10 @@ public class Utils {
     static void startCaptchaActivity(Context context, int code, Fragment fragment){
         if(!canUseContextForUi(context))
             return;
+        if(shouldBlockCaptchaForOffline(checkConnection(context))) {
+            showNoConnectionCaptchaFallback(context, false);
+            return;
+        }
         if(shouldSkipNtkCaptchaLaunch())
             return;
         long now = System.currentTimeMillis();

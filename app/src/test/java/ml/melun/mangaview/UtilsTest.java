@@ -168,4 +168,10 @@ public class UtilsTest {
         assertFalse(Utils.shouldAllowDestinationLaunchForTest(2_000L, 1_000L, 1_500L));
         assertTrue(Utils.shouldAllowDestinationLaunchForTest(2_500L, 1_000L, 1_500L));
     }
+
+    @Test
+    public void captchaLaunchBlocksWhenOffline() {
+        assertTrue(Utils.shouldBlockCaptchaForOffline(false));
+        assertFalse(Utils.shouldBlockCaptchaForOffline(true));
+    }
 }
