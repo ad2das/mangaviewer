@@ -219,6 +219,8 @@ final class NtkWebViewFallbackManager {
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
         settings.setUserAgentString(userAgent);
         CookieManager.getInstance().setAcceptCookie(true);
         webView.addJavascriptInterface(new Bridge(), "NtkBridge");

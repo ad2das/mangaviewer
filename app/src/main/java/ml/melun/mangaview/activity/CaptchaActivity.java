@@ -3,6 +3,7 @@ package ml.melun.mangaview.activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ClipboardManager;
+import android.content.pm.ApplicationInfo;
 
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
@@ -198,13 +199,15 @@ public class CaptchaActivity extends AppCompatActivity {
         }
 
         webView = this.findViewById(R.id.captchaWebView);
-        webView.setWebContentsDebuggingEnabled(true);
+        WebView.setWebContentsDebuggingEnabled((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0);
         captchaLoadUrl = url;
         configureActionButtons(purl);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         settings.setLoadsImagesAutomatically(true);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
