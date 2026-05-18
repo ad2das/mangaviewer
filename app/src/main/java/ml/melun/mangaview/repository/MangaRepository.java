@@ -306,7 +306,8 @@ public final class MangaRepository {
     }
 
     private static void cacheViewerFetch(String key, ViewerFetchResult result) {
-        if(key == null || result == null || result.result != Title.LOAD_OK || imageUrls(result.manga, null).size() == 0)
+        if(key == null || result == null || result.result != Title.LOAD_OK || result.manga == null
+                || result.manga.isFetchInProgress() || imageUrls(result.manga, null).size() == 0)
             return;
         ViewerFetchResult snapshot = snapshotViewerFetchResult(result);
         if(snapshot == null || imageUrls(snapshot.manga, null).size() == 0)
@@ -324,6 +325,8 @@ public final class MangaRepository {
 
     private static Manga snapshotViewerManga(Manga source) {
         if(source == null)
+            return null;
+        if(source.isFetchInProgress())
             return null;
         Manga snapshot = new Manga(source.getId(), source.getName(), source.getDate(), source.getBaseMode());
         snapshot.setMode(source.getMode());

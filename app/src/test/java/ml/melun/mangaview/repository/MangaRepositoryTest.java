@@ -45,6 +45,20 @@ public class MangaRepositoryTest {
     }
 
     @Test
+    public void viewerFetchSnapshotSkipsBusyFetchSource() {
+        Manga source = new Manga(12, "episode", "today", MTitle.base_comic) {
+            @Override
+            public boolean isFetchInProgress() {
+                return true;
+            }
+        };
+        source.setTitleId(99);
+        source.setImgs(new java.util.ArrayList<>(Arrays.asList("a.jpg", "b.jpg")));
+
+        assertEquals(null, MangaRepository.snapshotViewerMangaForTest(source));
+    }
+
+    @Test
     public void cacheFreshnessRejectsExpiredAndFutureEntries() {
         long now = 10_000L;
         long ttl = 1_000L;

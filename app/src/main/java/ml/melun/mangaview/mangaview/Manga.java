@@ -58,6 +58,7 @@ public class Manga {
     int baseMode = base_comic;
     int titleId = -1;
     private String ntkEpisodePath = "";
+    private volatile boolean fetchInProgress;
 
     public Manga(int i, String n, String d, int baseMode) {
         id = i;
@@ -121,7 +122,8 @@ public class Manga {
         if(source == null
                 || source.getId() != getId()
                 || source.getBaseMode() != getBaseMode()
-                || source.getTitleId() != getTitleId())
+                || source.getTitleId() != getTitleId()
+                || source.isFetchInProgress())
             return false;
         List<String> sourceImages = source.getImgs(null);
         if(sourceImages != null)
@@ -138,6 +140,10 @@ public class Manga {
             setTitleId(source.getTitleId());
         setNtkEpisodePath(source.getNtkEpisodePath());
         return true;
+    }
+
+    public boolean isFetchInProgress() {
+        return fetchInProgress;
     }
 
     public String getThumb() {
@@ -158,76 +164,78 @@ public class Manga {
     }
 
     public synchronized int fetch(CustomHttpClient client, boolean doLogin, Map<String, String> cookies) {
-        if(shouldFetchNtk(client))
-            return fetchNtk(client);
-        if(isComicWolfSource())
-            return fetchWolf(client, "/cv?toon=", "/cv?toon=");
-        if(isWebtoonWolfSource())
-            return fetchWolf(client, "/view?toon=", "/view?toon=");
+        fetchInProgress = true;
+        try {
+            if(shouldFetchNtk(client))
+                return fetchNtk(client);
+            if(isComicWolfSource())
+                return fetchWolf(client, "/cv?toon=", "/cv?toon=");
+            if(isWebtoonWolfSource())
+                return fetchWolf(client, "/view?toon=", "/view?toon=");
 
-        mode = 0;
-        List<Manga> previousEpisodes = safeEpisodeCopy(eps);
-        imgs = new ArrayList<>();
-        Set<String> seenImages = new LinkedHashSet<>();
-        eps = new ArrayList<>();
-        int tries = 0;
-        int timeoutRetries = 0;
+            mode = 0;
+            List<Manga> previousEpisodes = safeEpisodeCopy(eps);
+            imgs = new ArrayList<>();
+            Set<String> seenImages = new LinkedHashSet<>();
+            eps = new ArrayList<>();
+            int tries = 0;
+            int timeoutRetries = 0;
 
-        while (imgs.size() == 0 && tries < 2) {
-            Response r = null;
-            try {
-                String path = baseModeStr(baseMode) + '/' + id;
-                String body;
-                if(doLogin && cookies == null) {
-                    CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
-                    body = page.body;
-                    if(page.code == 302 && body.contains("captcha.php"))
-                        return LOAD_CAPTCHA;
-                } else {
-                    r = client.mget(path, false, cookies);
-                    if(r == null)
-                        break;
-                    String location = r.header("location");
-                    if (r.code() == 302 && location != null && location.contains("captcha.php")) {
-                        r.close();
-                        return LOAD_CAPTCHA;
-                    }
-                    body = CustomHttpClient.readBody(r);
-                    r = null;
-                }
-                if (body.contains("Connect Error: Connection timed out")) {
-                    if(++timeoutRetries > MAX_TIMEOUT_RETRIES)
-                        break;
-                    continue;
-                }
-                timeoutRetries = 0;
-
-                Document d = Jsoup.parse(body);
-                seed = extractSeed(body, d, null);
-
-                //name
-                Element titleElement = d.selectFirst("div.toon-title");
-                if(titleElement != null)
-                    name = titleElement.ownText();
-
-                //temp title
-                Element navbar = d.selectFirst("div.toon-nav");
-                if(navbar != null) {
-                    Element titleLink = navbar.select("a").last();
-                    if(titleLink != null) {
-                        int tid = parseEpisodeId(titleLink.attr("href"), baseModeStr(baseMode) + '/');
-                        if (title == null && tid > 0) title = new Title(name, "", "", null, "", tid, baseMode);
-                    }
-
-                    //eps
-                    Element select = navbar.selectFirst("select");
-                    if(select != null) {
-                        for (Element e : select.select("option")) {
-                            int episodeId = parseEpisodeOptionId(e.attr("value"));
-                            if (episodeId > 0)
-                                eps.add(new Manga(episodeId, e.ownText(), "", baseMode));
+            while (imgs.size() == 0 && tries < 2) {
+                Response r = null;
+                try {
+                    String path = baseModeStr(baseMode) + '/' + id;
+                    String body;
+                    if(doLogin && cookies == null) {
+                        CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+                        body = page.body;
+                        if(page.code == 302 && body.contains("captcha.php"))
+                            return LOAD_CAPTCHA;
+                    } else {
+                        r = client.mget(path, false, cookies);
+                        if(r == null)
+                            break;
+                        String location = r.header("location");
+                        if (r.code() == 302 && location != null && location.contains("captcha.php")) {
+                            r.close();
+                            return LOAD_CAPTCHA;
                         }
+                        body = CustomHttpClient.readBody(r);
+                        r = null;
                     }
+                    if (body.contains("Connect Error: Connection timed out")) {
+                        if(++timeoutRetries > MAX_TIMEOUT_RETRIES)
+                            break;
+                        continue;
+                    }
+                    timeoutRetries = 0;
+
+                    Document d = Jsoup.parse(body);
+                    seed = extractSeed(body, d, null);
+
+                    //name
+                    Element titleElement = d.selectFirst("div.toon-title");
+                    if(titleElement != null)
+                        name = titleElement.ownText();
+
+                    //temp title
+                    Element navbar = d.selectFirst("div.toon-nav");
+                    if(navbar != null) {
+                        Element titleLink = navbar.select("a").last();
+                        if(titleLink != null) {
+                            int tid = parseEpisodeId(titleLink.attr("href"), baseModeStr(baseMode) + '/');
+                            if (title == null && tid > 0) title = new Title(name, "", "", null, "", tid, baseMode);
+                        }
+
+                        //eps
+                        Element select = navbar.selectFirst("select");
+                        if(select != null) {
+                            for (Element e : select.select("option")) {
+                                int episodeId = parseEpisodeOptionId(e.attr("value"));
+                                if (episodeId > 0)
+                                    eps.add(new Manga(episodeId, e.ownText(), "", baseMode));
+                            }
+                        }
                 }
 
                 //imgs
@@ -276,9 +284,12 @@ public class Manga {
             }
             tries++;
         }
-        restoreBetterEpisodeList(previousEpisodes);
-        attachEpisodeSeriesMetadata();
-        return LOAD_OK;
+            restoreBetterEpisodeList(previousEpisodes);
+            attachEpisodeSeriesMetadata();
+            return LOAD_OK;
+        } finally {
+            fetchInProgress = false;
+        }
     }
 
     private int fetchNtk(CustomHttpClient client) {
@@ -1011,36 +1022,51 @@ public class Manga {
         return title == null ? -1 : title.getId();
     }
 
-    public synchronized List<String> getImgs(Context context) {
-        if (mode != 0) {
-            if (imgs == null) {
-                imgs = new ArrayList<>();
-                if(offlinePath == null || offlinePath.length() == 0)
-                    return imgs;
-                //is offline : read image list
-                if (useScopedStorageHome(offlinePath)) {
-                    DocumentFile root = documentFileFromUri(context, offlinePath);
-                    DocumentFile[] offimgs = root == null ? null : root.listFiles();
-                    if(offimgs == null)
+    public List<String> getImgs(Context context) {
+        if(mode == 0 && isFetchInProgress())
+            return imageSnapshot();
+        synchronized (this) {
+            if (mode != 0) {
+                if (imgs == null) {
+                    imgs = new ArrayList<>();
+                    if(offlinePath == null || offlinePath.length() == 0)
                         return imgs;
-                    Arrays.sort(offimgs, (documentFile, t1) -> String.valueOf(documentFile.getName()).compareTo(String.valueOf(t1.getName())));
-                    for (DocumentFile f : offimgs) {
-                        if(isOfflineImageFile(f == null ? null : f.getName(), f != null && f.isFile()))
-                            imgs.add(f.getUri().toString());
-                    }
-                } else {
-                    File[] offimgs = new File(offlinePath).listFiles();
-                    if(offimgs == null)
-                        return imgs;
-                    Arrays.sort(offimgs);
-                    for (File img : offimgs) {
-                        if(isOfflineImageFile(img == null ? null : img.getName(), img != null && img.isFile()))
-                            imgs.add(img.getAbsolutePath());
+                    //is offline : read image list
+                    if (useScopedStorageHome(offlinePath)) {
+                        DocumentFile root = documentFileFromUri(context, offlinePath);
+                        DocumentFile[] offimgs = root == null ? null : root.listFiles();
+                        if(offimgs == null)
+                            return imgs;
+                        Arrays.sort(offimgs, (documentFile, t1) -> String.valueOf(documentFile.getName()).compareTo(String.valueOf(t1.getName())));
+                        for (DocumentFile f : offimgs) {
+                            if(isOfflineImageFile(f == null ? null : f.getName(), f != null && f.isFile()))
+                                imgs.add(f.getUri().toString());
+                        }
+                    } else {
+                        File[] offimgs = new File(offlinePath).listFiles();
+                        if(offimgs == null)
+                            return imgs;
+                        Arrays.sort(offimgs);
+                        for (File img : offimgs) {
+                            if(isOfflineImageFile(img == null ? null : img.getName(), img != null && img.isFile()))
+                                imgs.add(img.getAbsolutePath());
+                        }
                     }
                 }
             }
+            return imgs;
         }
-        return imgs;
+    }
+
+    private List<String> imageSnapshot() {
+        List<String> current = imgs;
+        if(current == null)
+            return null;
+        try {
+            return new ArrayList<>(current);
+        } catch (RuntimeException e) {
+            return new ArrayList<>();
+        }
     }
 
     private static boolean isOfflineImageFile(String name, boolean file) {

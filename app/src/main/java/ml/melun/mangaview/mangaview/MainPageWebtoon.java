@@ -42,6 +42,7 @@ public class MainPageWebtoon {
     private static final Pattern FAST_IMG_PATTERN = Pattern.compile("(?is)<img\\b([^>]*)>");
     private static final Pattern FAST_STYLE_PATTERN = Pattern.compile("(?is)style\\s*=\\s*(['\"])(.*?)\\1");
     private static final Pattern FAST_TAG_PATTERN = Pattern.compile("(?is)<[^>]+>");
+    private static final Pattern CLASSIFICATION_NAME_DROP_PATTERN = Pattern.compile("[\\s\\p{Punct}·・…]+");
 
     private static final String[] WEBTOON_STATUS = {"ing", "end"};
     private static final String[] WEBTOON_STATUS_LABELS = {"연재웹툰", "완결웹툰"};
@@ -1746,7 +1747,7 @@ public class MainPageWebtoon {
     private static String normalizeClassificationName(String value) {
         if(value == null)
             return "";
-        return value.replaceAll("[\\s\\p{Punct}·・…]+", "").toLowerCase(Locale.ROOT);
+        return CLASSIFICATION_NAME_DROP_PATTERN.matcher(value).replaceAll("").toLowerCase(Locale.ROOT);
     }
 
     private static String normalizeClassificationTag(String value) {

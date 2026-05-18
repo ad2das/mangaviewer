@@ -61,6 +61,23 @@ public class MangaTest {
     }
 
     @Test
+    public void onlineImagesReturnSnapshotWhileFetchIsBusy() {
+        Manga manga = new Manga(12, "episode", "", MTitle.base_comic) {
+            @Override
+            public boolean isFetchInProgress() {
+                return true;
+            }
+        };
+        manga.setMode(0);
+        manga.setImgs(new ArrayList<>(Arrays.asList("a.jpg", "b.jpg")));
+
+        List<String> images = manga.getImgs(null);
+        images.clear();
+
+        assertEquals(Arrays.asList("a.jpg", "b.jpg"), manga.getImgs(null));
+    }
+
+    @Test
     public void offlineImagesSkipDownloadArtifacts() throws Exception {
         File dir = Files.createTempDirectory("offline-images").toFile();
         File image = new File(dir, "0001.jpg");

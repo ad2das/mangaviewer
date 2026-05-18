@@ -2,6 +2,8 @@ package ml.melun.mangaview.activity;
 
 import org.junit.Test;
 
+import com.google.gson.Gson;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -64,6 +66,26 @@ public class EpisodeActivityTest {
     public void diskEpisodeCacheLoadsOnlyAfterMemoryMiss() {
         assertFalse(EpisodeActivity.shouldLoadDiskEpisodeCacheAsyncForTest(true));
         assertTrue(EpisodeActivity.shouldLoadDiskEpisodeCacheAsyncForTest(false));
+    }
+
+    @Test
+    public void episodeCacheSnapshotDoesNotSerializeRecursiveEpisodes() {
+        Title title = new Title("Sky", "", "", null, "", 42, base_webtoon);
+        List<Manga> episodes = new ArrayList<>();
+        Manga first = new Manga(1, "1", "today", base_webtoon);
+        first.setTitle(title);
+        first.setTitleId(title.getId());
+        first.setEps(episodes);
+        first.setNtkEpisodePath("/webtoon/42/1");
+        episodes.add(first);
+        title.setEps(episodes);
+
+        ArrayList<Manga> snapshot = EpisodeActivity.episodeCacheSnapshotForTest(episodes);
+        String json = new Gson().toJson(snapshot);
+
+        assertTrue(json.contains("/webtoon/42/1"));
+        assertNull(snapshot.get(0).getTitle());
+        assertTrue(snapshot.get(0).getEps() == null || snapshot.get(0).getEps().isEmpty());
     }
 
     @Test

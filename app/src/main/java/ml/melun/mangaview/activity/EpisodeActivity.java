@@ -1129,13 +1129,31 @@ public class EpisodeActivity extends AppCompatActivity {
             return;
         Context appContext = getApplicationContext();
         String cacheKey = episodeCacheKey();
-        ArrayList<Manga> episodeSnapshot = new ArrayList<>(episodes);
+        ArrayList<Manga> episodeSnapshot = episodeCacheSnapshot(episodes);
         AppDispatchers.submitIo(() -> {
             CachedEpisodes cached = new CachedEpisodes();
             cached.savedAt = System.currentTimeMillis();
             cached.episodes = episodeSnapshot;
             CacheFileStore.write(appContext, cacheKey, new Gson().toJson(cached));
         });
+    }
+
+    private static ArrayList<Manga> episodeCacheSnapshot(List<Manga> episodes) {
+        ArrayList<Manga> snapshot = new ArrayList<>();
+        if(episodes == null)
+            return snapshot;
+        for(Manga episode : episodes) {
+            if(episode == null)
+                continue;
+            Manga copy = new Manga(episode.getId(), episode.getName(), episode.getDate(), episode.getBaseMode());
+            copy.addThumb(episode.getThumb());
+            copy.setMode(episode.getMode());
+            copy.setTitleId(episode.getTitleId());
+            copy.setNtkEpisodePath(episode.getNtkEpisodePath());
+            copy.setOfflinePath(episode.getOfflinePath());
+            snapshot.add(copy);
+        }
+        return snapshot;
     }
 
     private String episodeCacheKey() {
@@ -1219,6 +1237,10 @@ public class EpisodeActivity extends AppCompatActivity {
 
     static boolean shouldLoadDiskEpisodeCacheAsyncForTest(boolean renderedMemoryCache) {
         return !renderedMemoryCache;
+    }
+
+    static ArrayList<Manga> episodeCacheSnapshotForTest(List<Manga> episodes) {
+        return episodeCacheSnapshot(episodes);
     }
 
     static Title parseIntentTitleForTest(String json) {
