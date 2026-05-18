@@ -82,7 +82,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             return;
         this.deferThumbnails = deferThumbnails;
         if(!deferThumbnails)
-            notifyDataSetChanged();
+            notifyAllItemsChanged();
     }
 
     void init(Context context){
@@ -171,12 +171,15 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                 inserted++;
             }
         }
-        mDataFiltered = statusFilter.length() == 0 ? mData : filteredByStatus();
         bindMetaCache.clear();
-        if(inserted > 0 && statusFilter.length() == 0)
+        if(inserted <= 0)
+            return;
+        if(statusFilter.length() == 0) {
+            mDataFiltered = mData;
             notifyItemRangeInserted(oSize, inserted);
-        else if(inserted > 0)
-            notifyDataSetChanged();
+        } else {
+            dispatchFilteredList(filteredByStatus());
+        }
     }
 
     public void preloadThumbnails(int startPosition, int count) {
@@ -277,13 +280,14 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
 
     public void setDataImmediate(List<?> t){
         ArrayList<Title> next = normalizeTitles(t);
+        int oldSize = getItemCount();
         mData = next;
         mDataFiltered = statusFilter.length() == 0 ? new ArrayList<>(next) : filteredByStatus();
         searching = false;
         diffGeneration++;
         tagTextCache.clear();
         bindMetaCache.clear();
-        notifyDataSetChanged();
+        notifyListReplaced(oldSize, getItemCount());
     }
 
     private void dispatchFilteredList(ArrayList<Title> next) {
@@ -526,12 +530,12 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
 
     private void bindVisibleThumbnails(RecyclerView recyclerView) {
         if(recyclerView == null) {
-            notifyDataSetChanged();
+            notifyAllItemsChanged();
             return;
         }
         int childCount = recyclerView.getChildCount();
         if(childCount <= 0) {
-            notifyDataSetChanged();
+            notifyAllItemsChanged();
             return;
         }
         for(int i = 0; i < childCount; i++) {
@@ -546,6 +550,22 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                 continue;
             bindThumbnail((ViewHolder) baseHolder, mDataFiltered.get(position));
         }
+    }
+
+    private void notifyAllItemsChanged() {
+        int count = getItemCount();
+        if(count > 0)
+            notifyItemRangeChanged(0, count);
+    }
+
+    private void notifyListReplaced(int oldSize, int newSize) {
+        int common = Math.min(oldSize, newSize);
+        if(common > 0)
+            notifyItemRangeChanged(0, common);
+        if(newSize > oldSize)
+            notifyItemRangeInserted(oldSize, newSize - oldSize);
+        else if(oldSize > newSize)
+            notifyItemRangeRemoved(newSize, oldSize - newSize);
     }
 
     private void bindThumbnail(ViewHolder holder, Title data) {
