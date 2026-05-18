@@ -89,6 +89,7 @@ public class MainSearch extends Fragment {
     TabLayout libraryTab;
     ArrayList<Title> offlineTitles = new ArrayList<>();
     LoadOfflineTitles offlineTask;
+    boolean offlineTitlesLoaded = false;
     int pendingBaseMode = -1;
     String activeLibraryQuery = null;
     Preference.LocalChangeListener localChangeListener;
@@ -405,8 +406,10 @@ public class MainSearch extends Fragment {
             applyPendingSearch();
         } else if(libraryMode && search == null && !onlineSearchMode) {
             int tab = getLibraryTabPosition();
-            if(tab == 0 || tab == 3)
+            if(tab == 0 || tab == 3) {
                 offlineTitles = new ArrayList<>();
+                offlineTitlesLoaded = false;
+            }
             showLibrary();
         }
     }
@@ -570,11 +573,23 @@ public class MainSearch extends Fragment {
         searchAdapter.setDeferThumbnails(false);
         int tab = getLibraryTabPosition();
         ArrayList<Title> data = getLibraryTitles(tab);
-        if((tab == 0 || tab == 3) && offlineTitles.size() == 0 && offlineTask == null) {
+        loadOfflineTitlesIfNeeded(tab);
+        bindLibraryData(data, libraryEmptyMessage(tab));
+    }
+
+    private void loadOfflineTitlesIfNeeded(int tab) {
+        if(shouldLoadOfflineTitles(tab, offlineTitlesLoaded, offlineTask != null)) {
             offlineTask = new LoadOfflineTitles();
             offlineTask.start();
         }
-        bindLibraryData(data, libraryEmptyMessage(tab));
+    }
+
+    private static boolean shouldLoadOfflineTitles(int tab, boolean loaded, boolean loading) {
+        return (tab == 0 || tab == 3) && !loaded && !loading;
+    }
+
+    static boolean shouldLoadOfflineTitlesForTest(int tab, boolean loaded, boolean loading) {
+        return shouldLoadOfflineTitles(tab, loaded, loading);
     }
 
     private int getLibraryTabPosition() {
@@ -1044,7 +1059,7 @@ public class MainSearch extends Fragment {
     }
 
     private void refreshLibraryAfterOfflineDelete() {
-        offlineTitles = new ArrayList<>();
+        offlineTitlesLoaded = true;
         if(activeLibraryQuery != null && activeLibraryQuery.length() > 0)
             performLibrarySearch(activeLibraryQuery);
         else
@@ -1235,10 +1250,7 @@ public class MainSearch extends Fragment {
         }
         hideKeyboard();
         int tab = getLibraryTabPosition();
-        if((tab == 0 || tab == 3) && offlineTitles.size() == 0 && offlineTask == null) {
-            offlineTask = new LoadOfflineTitles();
-            offlineTask.start();
-        }
+        loadOfflineTitlesIfNeeded(tab);
         if(libraryFilterTask != null)
             libraryFilterTask.cancel();
         final int generation = ++libraryFilterGeneration;
@@ -1487,6 +1499,7 @@ public class MainSearch extends Fragment {
             if(offlineTask == this)
                 offlineTask = null;
             offlineTitles = titles == null ? new ArrayList<>() : titles;
+            offlineTitlesLoaded = true;
             invalidateLibrarySnapshots("offline");
             if(search == null) {
                 if(searchResult != null && searchResult.getScrollState() != RecyclerView.SCROLL_STATE_IDLE)

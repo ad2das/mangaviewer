@@ -13,6 +13,7 @@ import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 public class MainSearchTest {
     @Test
@@ -48,5 +49,14 @@ public class MainSearchTest {
 
         assertFalse(MainSearch.matchesLibraryQueryForTest(title, "sky"));
         assertEquals("", MainSearch.normalizedTitleNameForTest(title));
+    }
+
+    @Test
+    public void emptyOfflineLibraryDoesNotReloadAfterLoaded() {
+        assertTrue(MainSearch.shouldLoadOfflineTitlesForTest(0, false, false));
+        assertTrue(MainSearch.shouldLoadOfflineTitlesForTest(3, false, false));
+        assertFalse(MainSearch.shouldLoadOfflineTitlesForTest(3, true, false));
+        assertFalse(MainSearch.shouldLoadOfflineTitlesForTest(3, false, true));
+        assertFalse(MainSearch.shouldLoadOfflineTitlesForTest(1, false, false));
     }
 }

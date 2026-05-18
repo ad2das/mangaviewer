@@ -101,4 +101,11 @@ public class EpisodeActivityTest {
         assertTrue(EpisodeActivity.cachedEpisodeTitleMatchScoreForTest("Sky Invasion", episodes) > 0);
         assertEquals(0, EpisodeActivity.cachedEpisodeTitleMatchScoreForTest("Other Title", episodes));
     }
+
+    @Test
+    public void compatibleEpisodeCacheDoesNotCrossKnownSources() {
+        assertTrue(EpisodeActivity.isCompatibleCacheSourceForTest("ntk", "ntk"));
+        assertFalse(EpisodeActivity.isCompatibleCacheSourceForTest("ntk", "wfwf"));
+        assertTrue(EpisodeActivity.isCompatibleCacheSourceForTest("", "ntk"));
+    }
 }

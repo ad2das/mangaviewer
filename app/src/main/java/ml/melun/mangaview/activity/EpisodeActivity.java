@@ -429,6 +429,7 @@ public class EpisodeActivity extends AppCompatActivity {
             startActivity(i);
         });
         warmupInitialViewerTargets();
+        scheduleVisibleEpisodeWarmup(initialVisibleEpisodeWarmupDelayMs());
         markFirstContent();
     }
 
@@ -663,8 +664,9 @@ public class EpisodeActivity extends AppCompatActivity {
             ntkLoadTimeoutHandled = true;
             cancelNtkEpisodeLoadWatchdog();
             hideProgress();
-            if(title != null)
-                showCaptchaPopup(title.getUrl(), context, p);
+            if(hasRenderedEpisodes())
+                return;
+            handleLoadErrorWithCacheFallback();
             return;
         }
         if(!(state instanceof UiState.Content))
@@ -973,11 +975,14 @@ public class EpisodeActivity extends AppCompatActivity {
         if(files == null || files.length == 0)
             return null;
         String normalizedName = normalizeCachedTitleName(matchName);
+        String targetSource = normalizeCacheSource(target.getSourceSite());
         CompatibleCachedEpisodes best = null;
         Gson gson = new Gson();
         for(File file : files) {
             CacheFileMeta meta = cacheFileMeta(file == null ? "" : file.getName());
             if(meta == null || meta.baseMode != target.getBaseMode())
+                continue;
+            if(!isCompatibleCacheSource(targetSource, meta.sourceSite))
                 continue;
             if(meta.titleId == target.getId() && meta.sourceSite.equals(target.getSourceSite()))
                 continue;
@@ -1010,6 +1015,16 @@ public class EpisodeActivity extends AppCompatActivity {
         return best;
     }
 
+    private static boolean isCompatibleCacheSource(String targetSource, String candidateSource) {
+        if(targetSource == null || targetSource.length() == 0)
+            return true;
+        return targetSource.equals(normalizeCacheSource(candidateSource));
+    }
+
+    static boolean isCompatibleCacheSourceForTest(String targetSource, String candidateSource) {
+        return isCompatibleCacheSource(normalizeCacheSource(targetSource), candidateSource);
+    }
+
     static int cachedEpisodeTitleMatchScoreForTest(String titleName, List<Manga> episodes) {
         return cachedEpisodeTitleMatchScore(normalizeCachedTitleName(titleName), episodes);
     }
@@ -1036,6 +1051,10 @@ public class EpisodeActivity extends AppCompatActivity {
 
     private static String normalizeCachedTitleName(String value) {
         return value == null ? "" : value.toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", "");
+    }
+
+    private static String normalizeCacheSource(String value) {
+        return value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
     }
 
     private static CacheFileMeta cacheFileMeta(String fileName) {

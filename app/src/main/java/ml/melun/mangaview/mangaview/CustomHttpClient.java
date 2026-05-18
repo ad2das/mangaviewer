@@ -210,7 +210,7 @@ public class CustomHttpClient {
         NTK_DNS_EXECUTOR.execute(() -> {
             boolean success = false;
             try {
-                success = !lookupNtkDoh(hostname).isEmpty();
+                success = !lookupNtkDohFresh(hostname, "ntk_dns_doh_warm_ms").isEmpty();
             } finally {
                 synchronized (NTK_DNS_CACHE_LOCK) {
                     NTK_DNS_WARMING.remove(key);
@@ -264,6 +264,10 @@ public class CustomHttpClient {
         List<InetAddress> cached = readCachedNtkDns(hostname);
         if(cached != null)
             return cached;
+        return lookupNtkDohFresh(hostname, "ntk_dns_doh_ms");
+    }
+
+    private static List<InetAddress> lookupNtkDohFresh(String hostname, String metricName) {
         long startedAt = System.currentTimeMillis();
         Response response = null;
         try {
@@ -289,7 +293,7 @@ public class CustomHttpClient {
         } finally {
             if(response != null)
                 response.close();
-            ViewerWarmupManager.logMetric("ntk_dns_doh_ms", System.currentTimeMillis() - startedAt);
+            ViewerWarmupManager.logMetric(metricName, System.currentTimeMillis() - startedAt);
         }
     }
 
@@ -739,33 +743,7 @@ public class CustomHttpClient {
     }
 
     private static List<InetAddress> lookupNtkDohFreshForDiagnostic(String hostname) {
-        long startedAt = System.currentTimeMillis();
-        Response response = null;
-        try {
-            HttpUrl url = HttpUrl.get("https://" + CLOUDFLARE_DOH_HOST + "/dns-query")
-                    .newBuilder()
-                    .addQueryParameter("name", hostname)
-                    .addQueryParameter("type", "A")
-                    .build();
-            Request request = new Request.Builder()
-                    .url(url)
-                    .header("Accept", "application/dns-json")
-                    .get()
-                    .build();
-            response = DOH_CLIENT.newCall(request).execute();
-            if(response.code() < 200 || response.code() >= 400 || response.body() == null)
-                return new ArrayList<>();
-            DnsAnswer answer = parseDohAnswer(hostname, response.body().string());
-            if(!answer.addresses.isEmpty())
-                writeCachedNtkDns(hostname, answer.addresses, answer.ttlMs);
-            return answer.addresses;
-        } catch (Exception e) {
-            return new ArrayList<>();
-        } finally {
-            if(response != null)
-                response.close();
-            ViewerWarmupManager.logMetric("ntk_dns_doh_diagnostic_ms", System.currentTimeMillis() - startedAt);
-        }
+        return lookupNtkDohFresh(hostname, "ntk_dns_doh_diagnostic_ms");
     }
 
     private static void appendDiagnosticLine(StringBuilder builder, String key, String value) {
