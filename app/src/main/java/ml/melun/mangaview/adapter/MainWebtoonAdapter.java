@@ -1,5 +1,6 @@
 package ml.melun.mangaview.adapter;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -273,26 +274,17 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             this.anchorRecycler.removeOnScrollListener(anchorScrollListener);
         if(this.anchorRecycler != null && anchorContinueTouchListener != null)
             this.anchorRecycler.removeOnItemTouchListener(anchorContinueTouchListener);
-        if(this.anchorRecycler != null)
-            this.anchorRecycler.setOnTouchListener(null);
         this.anchorRecycler = recyclerView;
         if(this.anchorRecycler != null) {
-            this.anchorRecycler.setOnTouchListener(this::handleAnchorContinueTouch);
             anchorContinueTouchListener = new RecyclerView.SimpleOnItemTouchListener() {
                 @Override
                 public boolean onInterceptTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent event) {
-                    if(event.getActionMasked() == MotionEvent.ACTION_DOWN
-                            && listener != null
-                            && activeHomeTab == 0
-                            && isLikelyContinueTapZone(rv, event.getY())) {
+                    boolean likelyContinueTouch = event.getActionMasked() == MotionEvent.ACTION_DOWN
+                            ? isLikelyContinueTapZone(rv, event.getY())
+                            : !anchorTouchMoved;
+                    if(listener != null && activeHomeTab == 0 && likelyContinueTouch)
                         handleAnchorContinueTouch(rv, event);
-                    }
                     return false;
-                }
-
-                @Override
-                public void onTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent event) {
-                    handleAnchorContinueTouch(rv, event);
                 }
             };
             this.anchorRecycler.addOnItemTouchListener(anchorContinueTouchListener);
@@ -1312,6 +1304,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         float continueDownX;
         float continueDownY;
         boolean continueTouchMoved;
+        boolean continueTouchActive;
 
         HomeSectionHolder(View itemView) {
             super(itemView);
@@ -1328,6 +1321,14 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             list.setRecycledViewPool(sharedHomePool);
             list.setItemViewCacheSize(6);
             manager.setInitialPrefetchItemCount(0);
+            list.addOnItemTouchListener(new RecyclerView.SimpleOnItemTouchListener() {
+                @Override
+                public boolean onInterceptTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent event) {
+                    if(continueTouchActive)
+                        handleContinueSectionTouch(event);
+                    return false;
+                }
+            });
         }
 
         void bind(HomeSection section) {
@@ -1357,11 +1358,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             else
                 list.setAdapter(new HomeTitleAdapter(section.titles, section.style));
             if(section.style == STYLE_CONTINUE) {
-                list.setOnTouchListener((v, event) -> handleContinueSectionTouch(event));
+                continueTouchActive = true;
                 list.postDelayed(() -> warmupVisibleContinueItems(section.titles),
                         HomeContinueWarmupPolicy.visibleHomeWarmupDelayMs(save));
             } else {
-                list.setOnTouchListener(null);
+                continueTouchActive = false;
                 list.postDelayed(() -> prefetchEpisodeSnapshots(section.titles, section.style == STYLE_RANKING ? 2 : 1),
                         HomeContinueWarmupPolicy.visibleHomeWarmupDelayMs(save));
             }
@@ -1478,6 +1479,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 progress = itemView.findViewById(R.id.home_continue_progress);
             }
 
+            @SuppressLint("ClickableViewAccessibility")
             void bind(Title item, int position) {
                 if(dark) {
                     card.setBackground(makeRoundedBackground(R.color.colorDarkSurface, R.color.colorDarkDivider, 16));

@@ -375,11 +375,6 @@ public class ViewerActivity extends AppCompatActivity {
                     handlePreviousEpisodePull(event);
                 }
             });
-            strip.setOnTouchListener((view, event) -> {
-                handlePreviousEpisodePull(event);
-                return false;
-            });
-
         }catch(Exception e){
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
