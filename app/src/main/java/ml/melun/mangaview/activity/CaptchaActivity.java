@@ -1,5 +1,6 @@
 package ml.melun.mangaview.activity;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ClipboardManager;
@@ -421,24 +422,31 @@ public class CaptchaActivity extends AppCompatActivity {
 
     private void loadCaptchaUrl(String url) {
         if(WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE) && p != null && p.isNtkSite()) {
-            try {
-                localWebViewProxy = LocalWebViewProxy.start();
-                ProxyConfig proxyConfig = new ProxyConfig.Builder()
-                        .addProxyRule("127.0.0.1:" + localWebViewProxy.port())
-                        .build();
-                Executor direct = Runnable::run;
-                ProxyController.getInstance().setProxyOverride(proxyConfig, direct, () -> {
-                    android.util.Log.d("CaptchaActivity", "NTK WebView proxy enabled on port " + localWebViewProxy.port());
-                    webView.loadUrl(url);
-                    webView.evaluateJavascript(SHADOW_HOOK_JS, null);
-                });
+            if(loadCaptchaUrlWithProxy(url))
                 return;
-            } catch (Exception e) {
-                android.util.Log.d("CaptchaActivity", "Failed to enable NTK WebView proxy", e);
-            }
         }
         webView.loadUrl(url);
         webView.evaluateJavascript(SHADOW_HOOK_JS, null);
+    }
+
+    @SuppressLint("RequiresFeature")
+    private boolean loadCaptchaUrlWithProxy(String url) {
+        try {
+            localWebViewProxy = LocalWebViewProxy.start();
+            ProxyConfig proxyConfig = new ProxyConfig.Builder()
+                    .addProxyRule("127.0.0.1:" + localWebViewProxy.port())
+                    .build();
+            Executor direct = Runnable::run;
+            ProxyController.getInstance().setProxyOverride(proxyConfig, direct, () -> {
+                android.util.Log.d("CaptchaActivity", "NTK WebView proxy enabled on port " + localWebViewProxy.port());
+                webView.loadUrl(url);
+                webView.evaluateJavascript(SHADOW_HOOK_JS, null);
+            });
+            return true;
+        } catch (Exception e) {
+            android.util.Log.d("CaptchaActivity", "Failed to enable NTK WebView proxy", e);
+            return false;
+        }
     }
 
     private void startTurnstileAutoClick() {
