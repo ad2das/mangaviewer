@@ -115,7 +115,9 @@ public class AdvSearchActivity extends AppCompatActivity {
             startActivity(searchActivity);
         });
 
-        getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+        androidx.appcompat.app.ActionBar actionBar = getSupportActionBar();
+        if(actionBar != null)
+            actionBar.setDisplayHomeAsUpEnabled(true);
     }
 
     public boolean onOptionsItemSelected(MenuItem item){

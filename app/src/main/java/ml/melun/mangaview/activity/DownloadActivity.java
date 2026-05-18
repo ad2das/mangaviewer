@@ -48,17 +48,20 @@ public class DownloadActivity extends AppCompatActivity {
         eplist = this.findViewById(R.id.dl_eplist);
         Intent intent = getIntent();
         try {
-            title = new Gson().fromJson(intent.getStringExtra("title"),new TypeToken<Title>(){}.getType());
-            java.util.ArrayList<Manga> episodes = Utils.snapshotEpisodes(title);
-            title.setEps(episodes);
-            eplist.setLayoutManager(new NpaLinearLayoutManager(this));
-            eplist.setHasFixedSize(true);
-            eplist.setItemViewCacheSize(20);
-            eplist.setItemAnimator(null);
-            eplist.setOverScrollMode(View.OVER_SCROLL_NEVER);
-            adapter = new SelectEpisodeAdapter(this, episodes);
-            adapter.setClickListener((view, position) -> adapter.select(position));
-            eplist.setAdapter(adapter);
+            String titleJson = intent == null ? null : intent.getStringExtra("title");
+            title = new Gson().fromJson(titleJson,new TypeToken<Title>(){}.getType());
+            if(title != null) {
+                java.util.ArrayList<Manga> episodes = Utils.snapshotEpisodes(title);
+                title.setEps(episodes);
+                eplist.setLayoutManager(new NpaLinearLayoutManager(this));
+                eplist.setHasFixedSize(true);
+                eplist.setItemViewCacheSize(20);
+                eplist.setItemAnimator(null);
+                eplist.setOverScrollMode(View.OVER_SCROLL_NEVER);
+                adapter = new SelectEpisodeAdapter(this, episodes);
+                adapter.setClickListener((view, position) -> adapter.select(position));
+                eplist.setAdapter(adapter);
+            }
         }catch (Exception e){
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
@@ -90,6 +93,8 @@ public class DownloadActivity extends AppCompatActivity {
 
         Button selectionMode = findViewById(R.id.dl_mode_btn);
         selectionMode.setOnClickListener(view -> {
+            if(adapter == null)
+                return;
             if(singleSelect){
                 singleSelect = false;
                 selectionMode.setText("범위 선택 모드");

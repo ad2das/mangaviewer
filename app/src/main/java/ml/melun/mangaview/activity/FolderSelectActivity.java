@@ -87,8 +87,10 @@ public class FolderSelectActivity extends AppCompatActivity {
         input = this.findViewById(R.id.fileNameInput);
 
         actionBar = getSupportActionBar();
-        actionBar.setTitle(title);
-        actionBar.setDisplayHomeAsUpEnabled(true);
+        if(actionBar != null) {
+            actionBar.setTitle(title);
+            actionBar.setDisplayHomeAsUpEnabled(true);
+        }
         path = this.findViewById(R.id.path);
         //adapter create
         listContent = refresh();
