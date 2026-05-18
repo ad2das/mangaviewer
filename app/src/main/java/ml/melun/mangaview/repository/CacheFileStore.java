@@ -30,6 +30,12 @@ public final class CacheFileStore {
     public static String read(Context context, String key) {
         if(context == null || key == null)
             return "";
+        return read(fileRoot(context), key);
+    }
+
+    public static String read(File rootDir, String key) {
+        if(rootDir == null || key == null)
+            return "";
         String cached = readMemoryInternal(key);
         if(cached != null)
             return cached;
@@ -37,7 +43,7 @@ public final class CacheFileStore {
             cached = readMemoryInternal(key);
             if(cached != null)
                 return cached;
-            File file = file(context, key);
+            File file = file(rootDir, key);
             if(!file.exists())
                 return "";
             try (FileInputStream stream = new FileInputStream(file)) {
@@ -54,8 +60,14 @@ public final class CacheFileStore {
     public static void write(Context context, String key, String value) {
         if(context == null || key == null || value == null)
             return;
+        write(fileRoot(context), key, value);
+    }
+
+    public static void write(File rootDir, String key, String value) {
+        if(rootDir == null || key == null || value == null)
+            return;
         synchronized (lockForKey(key)) {
-            File file = file(context, key);
+            File file = file(rootDir, key);
             File dir = file.getParentFile();
             if(dir != null && !dir.exists() && !dir.mkdirs())
                 return;
@@ -71,9 +83,15 @@ public final class CacheFileStore {
     public static void delete(Context context, String key) {
         if(context == null || key == null)
             return;
+        delete(fileRoot(context), key);
+    }
+
+    public static void delete(File rootDir, String key) {
+        if(rootDir == null || key == null)
+            return;
         synchronized (lockForKey(key)) {
             try {
-                File file = file(context, key);
+                File file = file(rootDir, key);
                 if(file.exists())
                     file.delete();
                 forgetMemory(key);
@@ -88,8 +106,14 @@ public final class CacheFileStore {
         return cached == null ? "" : cached;
     }
 
-    private static File file(Context context, String key) {
-        return new File(new File(context.getCacheDir(), DIR_NAME), fileNameForKey(key));
+    public static File fileRoot(Context context) {
+        if(context == null)
+            return null;
+        return new File(context.getCacheDir(), DIR_NAME);
+    }
+
+    private static File file(File rootDir, String key) {
+        return new File(rootDir, fileNameForKey(key));
     }
 
     static String readUtf8TextForTest(InputStream input) throws Exception {

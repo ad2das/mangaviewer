@@ -9,6 +9,7 @@ import com.google.gson.Gson;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.File;
 import java.io.InterruptedIOException;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
@@ -118,7 +119,7 @@ public class CustomHttpClient {
             .callTimeout(NTK_DOH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             .build();
     private static final Dns NETWORK_RESILIENT_DNS = CustomHttpClient::lookupNetworkResilientDns;
-    private static volatile Context dnsCacheContext;
+    private static volatile File dnsCacheRoot;
 
     private static class CachedDns {
         final List<InetAddress> addresses;
@@ -370,44 +371,44 @@ public class CustomHttpClient {
     }
 
     private static DnsCacheEntry readDiskCachedNtkDns(String hostname, boolean allowStale) {
-        Context context = dnsCacheContext;
-        if(context == null)
+        File cacheRoot = dnsCacheRoot;
+        if(cacheRoot == null)
             return null;
         String key = ntkDnsCacheKey(hostname);
         try {
-            String json = CacheFileStore.read(context, key);
+            String json = CacheFileStore.read(cacheRoot, key);
             if(json == null || json.length() == 0)
                 return null;
             PersistedDns persisted = GSON.fromJson(json, PersistedDns.class);
             long now = System.currentTimeMillis();
             if(persisted == null || persisted.savedAt > now) {
-                CacheFileStore.delete(context, key);
+                CacheFileStore.delete(cacheRoot, key);
                 return null;
             }
             boolean fresh = isPersistedNtkDnsFresh(persisted.expiresAt, now);
             boolean stale = isPersistedNtkDnsStale(persisted.savedAt, persisted.expiresAt, now);
             if(!fresh && !(allowStale && stale)) {
                 if(!stale)
-                    CacheFileStore.delete(context, key);
+                    CacheFileStore.delete(cacheRoot, key);
                 return null;
             }
             ArrayList<InetAddress> addresses = parsePersistedDnsAddresses(hostname, persisted.addresses);
             if(addresses.isEmpty()) {
-                CacheFileStore.delete(context, key);
+                CacheFileStore.delete(cacheRoot, key);
                 return null;
             }
             if(fresh)
                 writeMemoryCachedNtkDns(hostname, addresses, persisted.expiresAt);
             return new DnsCacheEntry(addresses, stale);
         } catch (Exception e) {
-            CacheFileStore.delete(context, key);
+            CacheFileStore.delete(cacheRoot, key);
             return null;
         }
     }
 
     private static void writeDiskCachedNtkDns(String hostname, List<InetAddress> addresses, long savedAt, long expiresAt) {
-        Context context = dnsCacheContext;
-        if(context == null || addresses == null || addresses.isEmpty())
+        File cacheRoot = dnsCacheRoot;
+        if(cacheRoot == null || addresses == null || addresses.isEmpty())
             return;
         PersistedDns persisted = new PersistedDns();
         persisted.savedAt = savedAt;
@@ -418,7 +419,7 @@ public class CustomHttpClient {
                 persisted.addresses.add(address.getHostAddress());
         if(persisted.addresses.isEmpty())
             return;
-        CacheFileStore.write(context, ntkDnsCacheKey(hostname), GSON.toJson(persisted));
+        CacheFileStore.write(cacheRoot, ntkDnsCacheKey(hostname), GSON.toJson(persisted));
     }
 
     private static ArrayList<InetAddress> parsePersistedDnsAddresses(String hostname, List<String> persistedAddresses) {
@@ -859,7 +860,7 @@ public class CustomHttpClient {
 
     public CustomHttpClient(Context context){
         this.context = context.getApplicationContext();
-        dnsCacheContext = this.context;
+        dnsCacheRoot = CacheFileStore.fileRoot(this.context);
         this.cookies = new HashMap<>();
         this.cookieSyncAt = new HashMap<>();
         this.pageLoads = new HashMap<>();

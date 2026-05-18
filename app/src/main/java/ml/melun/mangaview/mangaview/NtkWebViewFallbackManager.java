@@ -13,6 +13,7 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.Locale;
@@ -28,7 +29,7 @@ final class NtkWebViewFallbackManager {
     private static final long WEBVIEW_LOAD_TIMEOUT_MS = 10_000L;
     private static final long CALLER_WAIT_TIMEOUT_MS = 15_000L;
     private static final Object INSTANCE_LOCK = new Object();
-    private static NtkWebViewFallbackManager instance;
+    private static WeakReference<NtkWebViewFallbackManager> instanceRef;
 
     private final Object lock = new Object();
     private final Context context;
@@ -46,8 +47,10 @@ final class NtkWebViewFallbackManager {
 
     static NtkWebViewFallbackManager get(Context context) {
         synchronized (INSTANCE_LOCK) {
+            NtkWebViewFallbackManager instance = instanceRef == null ? null : instanceRef.get();
             if(instance == null)
                 instance = new NtkWebViewFallbackManager(context);
+            instanceRef = new WeakReference<>(instance);
             return instance;
         }
     }
