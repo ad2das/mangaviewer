@@ -52,6 +52,14 @@ public class ViewerPagerAdapter extends FragmentStatePagerAdapter
         }
         refreshPages();
     }
+
+    public void release() {
+        fragments.clear();
+        context = null;
+        itf = null;
+        fm = null;
+    }
+
     @Override
     public int getItemPosition(Object object) {
         return POSITION_NONE;

@@ -82,7 +82,10 @@ public class ViewerPageFragment extends Fragment {
                 loadImage(frame, refresh);
             }
         });
-        rootView.setOnClickListener(v -> i.onPageClick());
+        rootView.setOnClickListener(v -> {
+            if(i != null)
+                i.onPageClick();
+        });
 
         return rootView;
     }

@@ -725,6 +725,15 @@ public class ViewerActivity3 extends AppCompatActivity {
             imageLoad.cancel();
             imageLoad = null;
         }
+        if(viewPager != null) {
+            viewPager.removeOnPageChangeListener(listener);
+            viewPager.setAdapter(null);
+        }
+        if(pageAdapter != null) {
+            pageAdapter.release();
+            pageAdapter = null;
+        }
+        ViewerWarmupManager.clearDecodedWork(context);
         super.onDestroy();
     }
 }
