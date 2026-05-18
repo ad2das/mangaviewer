@@ -237,6 +237,14 @@ public class MainActivity extends AppCompatActivity
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        Intent intent = getIntent();
+        if(shouldFinishDuplicateLauncherForTest(isTaskRoot(),
+                intent == null ? null : intent.getAction(),
+                intent != null && intent.hasCategory(Intent.CATEGORY_LAUNCHER))) {
+            super.onCreate(savedInstanceState);
+            finish();
+            return;
+        }
         long onCreateStartedAt = PerfTrace.start("main_on_create_ms");
         long beforeSuperStartedAt = PerfTrace.start("main_before_super_ms");
         long startupPrefetchSuppressMs = startupVisibleWarmupSuppressMsForTest();
@@ -254,7 +262,6 @@ public class MainActivity extends AppCompatActivity
         PerfTrace.end("main_super_on_create_ms", superStartedAt);
         schedulePerformanceMonitorAttach();
         context = this;
-        Intent intent = getIntent();
         String action = intent.getAction();
 
 
@@ -531,6 +538,12 @@ public class MainActivity extends AppCompatActivity
 
     static long startupPerformanceMonitorDelayMsForTest() {
         return 16_000L;
+    }
+
+    static boolean shouldFinishDuplicateLauncherForTest(boolean isTaskRoot, String action, boolean hasLauncherCategory) {
+        return !isTaskRoot
+                && Intent.ACTION_MAIN.equals(action)
+                && hasLauncherCategory;
     }
 
     @Override
