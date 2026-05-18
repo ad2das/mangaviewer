@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-05-16",
+  "updated": "2026-05-18",
   "sourceRoot": "https://wfwf450.com",
   "sources": [
     "source-comic-genre"
@@ -4926,7 +4926,7 @@
       "inferredTags": [
         "러브코미디",
         "이세계",
-        "개그"
+        "라노벨"
       ]
     },
     "10524": {
@@ -7706,8 +7706,8 @@
       "release": "",
       "inferredTags": [
         "러브코미디",
-        "학원",
-        "개그"
+        "개그",
+        "학원"
       ]
     },
     "10825": {
@@ -19679,7 +19679,7 @@
       "thumb": "https://i6.imgcloud18.com/12149/3f4da450.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12150": {
@@ -22145,7 +22145,7 @@
       "thumb": "https://i6.imgcloud18.com/12430/aee4b074.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12431": {
@@ -22244,7 +22244,7 @@
       "thumb": "https://i6.imgcloud18.com/12441/82af3261.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12442": {
@@ -23522,7 +23522,7 @@
       "thumb": "https://i0.imgcloud18.com/12586/71f2d602.jpg?v=1",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12587": {
@@ -25473,7 +25473,7 @@
       "inferredTags": [
         "라노벨",
         "이세계",
-        "판타지"
+        "공포"
       ]
     },
     "12798": {
@@ -32451,8 +32451,8 @@
       "release": "",
       "inferredTags": [
         "TS",
-        "붕탁",
-        "라노벨"
+        "라노벨",
+        "붕탁"
       ]
     },
     "13587": {
@@ -78211,12 +78211,38 @@
         "순정"
       ]
     },
+    "18662": {
+      "name": "피아노의 숲",
+      "thumb": "https://c11cm.net/18662/7srct5p5adeuainuovclcfbnxywy11jw7p.jpg",
+      "release": "",
+      "sourceTags": [
+        "음악"
+      ]
+    },
     "18663": {
       "name": "러브리스 (LOVELESS)",
       "thumb": "https://c11cm.net/18663/e2eslyse28unvnt7sikuupoucq23aujrhe.jpg",
       "release": "",
       "sourceTags": [
         "드라마"
+      ]
+    },
+    "18664": {
+      "name": "술 한잔 인생 한입",
+      "thumb": "https://c11cm.net/18664/5bvptf1rmdhk5t07vqrt3jbmh5l9xomgov.jpg",
+      "release": "",
+      "sourceTags": [
+        "먹방"
+      ]
+    },
+    "18665": {
+      "name": "생명의 그릇",
+      "thumb": "https://c11cm.net/18665/ett4ccdy5f7rrrxb6epeeq2qarvewamzde.jpg",
+      "release": "",
+      "sourceTags": [
+        "드라마",
+        "러브코미디",
+        "개그"
       ]
     },
     "18666": {
@@ -78232,7 +78258,7 @@
       "thumb": "https://c11cm.net/18667/grp0svhx6y4wnuecurltzljmdam9gvpo5a.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "18668": {
@@ -78282,6 +78308,116 @@
       "release": "",
       "sourceTags": [
         "드라마"
+      ]
+    },
+    "18676": {
+      "name": "로맨틱 닥터",
+      "thumb": "https://c11cm.net/18676/l3aqgi2wkdorbhmivneicbvwwxckt47q9t.jpg",
+      "release": "",
+      "sourceTags": [
+        "성인"
+      ]
+    },
+    "18677": {
+      "name": "아웃",
+      "thumb": "https://c11cm.net/18677/xdnxfxeywfoiulfh6kn3ybfwjycrjdtkbh.jpg",
+      "release": "",
+      "sourceTags": [
+        "액션"
+      ]
+    },
+    "18678": {
+      "name": "퍼펙트 서비스",
+      "thumb": "https://c11cm.net/18678/ao83ihfd5a0sf00exagrac4gjrcar5n6gy.jpg",
+      "release": "",
+      "sourceTags": [
+        "스포츠"
+      ]
+    },
+    "18679": {
+      "name": "도시 전설 탐정 사무소",
+      "thumb": "https://c11cm.net/18679/xa6xbvbh8nwgcihjkemzu19n75zc9lbik6.jpg",
+      "release": "",
+      "sourceTags": [
+        "판타지",
+        "학원"
+      ]
+    },
+    "18714": {
+      "name": "고블린 슬레이어 : 데이 인",
+      "thumb": "https://c11cm.net/18714/umjkxhv5axbrfwycvbuqvzj2voc1srase9.jpg",
+      "release": "",
+      "sourceTags": [
+        "판타지",
+        "액션"
+      ]
+    },
+    "18715": {
+      "name": "좀100 -좀비가 되기 전에",
+      "thumb": "https://c11cm.net/18715/rov4ddkmjhonjve9nmpcxuy8o3hh0dnejz.jpg",
+      "release": "",
+      "sourceTags": [
+        "개그",
+        "스릴러",
+        "공포"
+      ]
+    },
+    "18717": {
+      "name": "전생에 최강 마도사였던 나,",
+      "thumb": "https://c11cm.net/18717/i6ld21wnstpyihvl5hdrt1kczesl39uo5w.jpg",
+      "release": "",
+      "sourceTags": [
+        "판타지",
+        "라노벨"
+      ]
+    },
+    "18718": {
+      "name": "매니저의 나날",
+      "thumb": "https://c11cm.net/18718/lf6roaabdhwjraiimgorwobgi38p9qxvpe.jpg",
+      "release": "",
+      "sourceTags": [
+        "일상",
+        "학원"
+      ]
+    },
+    "18721": {
+      "name": "노처녀 자시키와라시 히나는",
+      "thumb": "https://c11cm.net/18721/6bolxaylfyej968y2pakzbstzn3cz4fday.jpg",
+      "release": "",
+      "sourceTags": [
+        "러브코미디",
+        "개그"
+      ]
+    },
+    "18722": {
+      "name": "우연히 도와준 미소녀가 어째",
+      "thumb": "https://c11cm.net/18722/5cwr3sxwwlhibi5tugf3ck9nq5fdyap3sy.jpg",
+      "release": "",
+      "sourceTags": [
+        "러브코미디",
+        "개그",
+        "라노벨",
+        "드라마"
+      ]
+    },
+    "18723": {
+      "name": "방송과 치명적으로 맞지 않는",
+      "thumb": "https://c11cm.net/18723/qxm4ohlyjpwsrnipcct4jmjk2ofbjdvwqm.jpg",
+      "release": "",
+      "sourceTags": [
+        "판타지",
+        "액션",
+        "라노벨"
+      ]
+    },
+    "18724": {
+      "name": "허당 대수령짱과 아저씨 전투",
+      "thumb": "https://c11cm.net/18724/mwomzgayo9e8aogxihnaxr0uccfh8ufrki.jpg",
+      "release": "",
+      "sourceTags": [
+        "판타지",
+        "개그",
+        "일상"
       ]
     }
   }
