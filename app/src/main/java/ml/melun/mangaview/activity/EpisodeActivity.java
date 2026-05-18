@@ -216,8 +216,15 @@ public class EpisodeActivity extends AppCompatActivity {
                 resumefab.hide();
         }else if(resultCode == RESULT_CAPTCHA){
             //captcha Checked
+            Intent restartIntent = new Intent(this, EpisodeActivity.class);
+            Intent currentIntent = getIntent();
+            if(currentIntent != null) {
+                if(currentIntent.getExtras() != null)
+                    restartIntent.putExtras(new Bundle(currentIntent.getExtras()));
+                restartIntent.setData(currentIntent.getData());
+            }
             finish();
-            startActivity(getIntent());
+            startActivity(restartIntent);
         }
     }
 
