@@ -2,6 +2,8 @@ package ml.melun.mangaview.activity;
 
 import org.junit.Test;
 
+import androidx.recyclerview.widget.RecyclerView;
+
 import java.util.Arrays;
 import java.util.Collections;
 
@@ -79,6 +81,18 @@ public class ViewerActivityTest {
     @Test
     public void nextEpisodePrefetchWaitsUntilInitialFrameSettles() {
         assertTrue(ViewerActivity.initialNextEpisodePrefetchDelayMsForTest() >= 1000L);
+    }
+
+    @Test
+    public void boundaryEpisodeLoadsWaitForIdleScroll() {
+        assertTrue(ViewerActivity.shouldCheckBoundaryDuringScrollStateForTest(RecyclerView.SCROLL_STATE_IDLE));
+        assertFalse(ViewerActivity.shouldCheckBoundaryDuringScrollStateForTest(RecyclerView.SCROLL_STATE_DRAGGING));
+        assertFalse(ViewerActivity.shouldCheckBoundaryDuringScrollStateForTest(RecyclerView.SCROLL_STATE_SETTLING));
+    }
+
+    @Test
+    public void failedBoundaryEpisodeLoadsBackOffBeforeRetry() {
+        assertTrue(ViewerActivity.boundaryLoadFailureCooldownMsForTest() >= 1000L);
     }
 
     @Test

@@ -1951,11 +1951,34 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private void loadEpisodeAtBoundaryIfNeededThrottled() {
+        if(strip == null || !shouldCheckBoundaryDuringScrollState(strip.getScrollState()))
+            return;
         long now = android.os.SystemClock.uptimeMillis();
         if(now - lastBoundaryCheckMs < 80)
             return;
         lastBoundaryCheckMs = now;
         loadEpisodeAtBoundaryIfNeeded();
+    }
+
+    static boolean shouldCheckBoundaryDuringScrollStateForTest(int scrollState) {
+        return shouldCheckBoundaryDuringScrollState(scrollState);
+    }
+
+    private static boolean shouldCheckBoundaryDuringScrollState(int scrollState) {
+        return scrollState == RecyclerView.SCROLL_STATE_IDLE;
+    }
+
+    private void suppressBoundaryLoadsUntilNextScroll() {
+        suppressBoundaryLoadUntilMs = android.os.SystemClock.uptimeMillis() + boundaryLoadFailureCooldownMs();
+        suppressBoundaryLoadUntilUserScroll = true;
+    }
+
+    static long boundaryLoadFailureCooldownMsForTest() {
+        return boundaryLoadFailureCooldownMs();
+    }
+
+    private static long boundaryLoadFailureCooldownMs() {
+        return 2200L;
     }
 
     private void handlePreviousEpisodePull(MotionEvent event) {
@@ -2108,7 +2131,11 @@ public class ViewerActivity extends AppCompatActivity {
                 previousEpisodeBoundaryLoading = false;
                 boolean shouldJump = jumpToEpisode || previousEpisodeBoundaryJumpPending;
                 previousEpisodeBoundaryJumpPending = false;
-                if(m == null || strip == null || stripAdapter == null || isFinishing())
+                if(m == null) {
+                    suppressBoundaryLoadsUntilNextScroll();
+                    return;
+                }
+                if(strip == null || stripAdapter == null || isFinishing())
                     return;
                 strip.post(() -> {
                     int position = stripAdapter.findLastPagePosition(m);
@@ -2208,7 +2235,11 @@ public class ViewerActivity extends AppCompatActivity {
                 boolean shouldJump = jumpToEpisode || nextEpisodeBoundaryJumpPending;
                 nextEpisodeBoundaryLoading = false;
                 nextEpisodeBoundaryJumpPending = false;
-                if(m == null || strip == null || stripAdapter == null || isFinishing())
+                if(m == null) {
+                    suppressBoundaryLoadsUntilNextScroll();
+                    return;
+                }
+                if(strip == null || stripAdapter == null || isFinishing())
                     return;
                 strip.post(() -> {
                     int position = stripAdapter.findFirstPagePosition(m);
