@@ -437,15 +437,25 @@ public class CaptchaActivity extends AppCompatActivity {
     @SuppressLint("RequiresFeature")
     private boolean loadCaptchaUrlWithProxy(String url) {
         try {
-            localWebViewProxy = LocalWebViewProxy.start();
+            LocalWebViewProxy proxy = LocalWebViewProxy.start();
+            localWebViewProxy = proxy;
+            int proxyPort = proxy.port();
             ProxyConfig proxyConfig = new ProxyConfig.Builder()
-                    .addProxyRule("127.0.0.1:" + localWebViewProxy.port())
+                    .addProxyRule("127.0.0.1:" + proxyPort)
                     .build();
             Executor direct = Runnable::run;
             ProxyController.getInstance().setProxyOverride(proxyConfig, direct, () -> {
-                android.util.Log.d("CaptchaActivity", "NTK WebView proxy enabled on port " + localWebViewProxy.port());
-                webView.loadUrl(url);
-                webView.evaluateJavascript(SHADOW_HOOK_JS, null);
+                if(isFinishing || isDestroyed() || webView == null || localWebViewProxy != proxy) {
+                    proxy.close();
+                    return;
+                }
+                android.util.Log.d("CaptchaActivity", "NTK WebView proxy enabled on port " + proxyPort);
+                try {
+                    webView.loadUrl(url);
+                    webView.evaluateJavascript(SHADOW_HOOK_JS, null);
+                } catch (Exception e) {
+                    android.util.Log.d("CaptchaActivity", "Failed to load NTK captcha through proxy", e);
+                }
             });
             return true;
         } catch (Exception e) {

@@ -16,4 +16,10 @@ public class HomeStartupPolicyTest {
         assertEquals(220L, HomeStartupPolicy.activeFetchDelayMsForTest(false));
         assertEquals(320L, HomeStartupPolicy.activeFetchDelayMsForTest(true));
     }
+
+    @Test
+    public void ntkCaptchaWaitsUntilHomeIsUsable() {
+        assertEquals(0L, HomeStartupPolicy.autoCaptchaDelayMsForTest(false));
+        assertEquals(20_000L, HomeStartupPolicy.autoCaptchaDelayMsForTest(true));
+    }
 }

@@ -81,6 +81,7 @@ public class MainMain extends Fragment{
     boolean viewStarted = false;
     int scrollRequestVersion = 0;
     long lastDestinationLaunchAt = 0L;
+    long homeCreatedAt = 0L;
     private static final long DESTINATION_LAUNCH_DEBOUNCE_MS = 1500L;
     int inactivePrefetchRequestVersion = 0;
     Preference.LocalChangeListener localChangeListener;
@@ -133,6 +134,7 @@ public class MainMain extends Fragment{
     @Override
     public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
         ViewGroup rootView = (ViewGroup) inflater.inflate(R.layout.content_main , container, false);
+        homeCreatedAt = SystemClock.uptimeMillis();
 
 
         mainTabLayout = rootView.findViewById(R.id.mainTab);
@@ -258,6 +260,8 @@ public class MainMain extends Fragment{
 
             @Override
             public void captchaCallback() {
+                if(shouldSuppressAutoCaptcha())
+                    return;
                 Utils.showCaptchaPopup(getActivity(), 3, fragment, p);
             }
 
@@ -702,7 +706,17 @@ public class MainMain extends Fragment{
     private boolean maybeOpenNtkCaptcha() {
         if(!isAdded() || getActivity() == null)
             return false;
+        if(shouldSuppressAutoCaptcha())
+            return false;
         return Utils.startNtkTurnstileCaptchaIfNeeded(getActivity(), 3, this, p);
+    }
+
+    private boolean shouldSuppressAutoCaptcha() {
+        if(!getHttpClient().isNtk())
+            return false;
+        if(homeCreatedAt <= 0L)
+            return false;
+        return SystemClock.uptimeMillis() - homeCreatedAt < HomeStartupPolicy.autoCaptchaDelayMs(true);
     }
 
     private void showInitialHomeRows(int baseMode) {

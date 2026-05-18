@@ -269,7 +269,7 @@ public class Manga {
                 }
 
             } catch (Exception e2) {
-                ml.melun.mangaview.report.CrashReporter.record(e2);
+                recordFetchException(e2);
             }
             if (r != null) {
                 r.close();
@@ -334,7 +334,7 @@ public class Manga {
         } catch (Exception e) {
             if(isCloudflareChallenge(e))
                 return LOAD_CAPTCHA;
-            ml.melun.mangaview.report.CrashReporter.record(e);
+            recordFetchException(e);
         }
         restoreBetterEpisodeList(previousEpisodes);
         attachEpisodeSeriesMetadata();
@@ -469,6 +469,26 @@ public class Manga {
     private static boolean isCloudflareChallenge(Exception e) {
         String message = e == null ? null : e.getMessage();
         return message != null && message.toLowerCase(Locale.ROOT).contains("cloudflare");
+    }
+
+    private static void recordFetchException(Exception e) {
+        if(isRecoverableNetworkFetchFailure(e)) {
+            Log.w(TAG, "manga_fetch_network_failure " + e.getMessage());
+            return;
+        }
+        ml.melun.mangaview.report.CrashReporter.record(e);
+    }
+
+    private static boolean isRecoverableNetworkFetchFailure(Throwable e) {
+        String message = e == null ? null : e.getMessage();
+        if(message == null)
+            return false;
+        String lower = message.toLowerCase(Locale.ROOT);
+        return lower.startsWith("request failed:")
+                || lower.contains("network is unreachable")
+                || lower.contains("failed to connect")
+                || lower.contains("connection reset")
+                || lower.contains("timeout");
     }
 
     static int parseEpisodeId(String href, String marker) {
@@ -619,7 +639,7 @@ public class Manga {
             } catch (Exception e) {
                 if(isCloudflareChallenge(e))
                     return LOAD_CAPTCHA;
-                ml.melun.mangaview.report.CrashReporter.record(e);
+                recordFetchException(e);
                 break;
             }
         }

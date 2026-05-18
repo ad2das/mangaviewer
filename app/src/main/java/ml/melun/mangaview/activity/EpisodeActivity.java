@@ -76,6 +76,7 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_ERROR;
 
 
 public class EpisodeActivity extends AppCompatActivity {
+    private static final long DESTINATION_LAUNCH_DEBOUNCE_MS = 1500L;
     private static final long VIEWER_PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final long VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS = 220L;
     private static final long INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 260L;
@@ -1201,6 +1202,8 @@ public class EpisodeActivity extends AppCompatActivity {
 
     public void openViewer(Manga manga, int code, boolean exactEpisode){
         if(manga == null || title == null)
+            return;
+        if(!ml.melun.mangaview.Utils.consumeFocusedDestinationLaunch(this, DESTINATION_LAUNCH_DEBOUNCE_MS))
             return;
         manga.setMode(mode);
         manga.setTitle(title);

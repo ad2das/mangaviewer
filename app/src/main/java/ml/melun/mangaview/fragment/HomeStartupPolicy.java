@@ -12,11 +12,19 @@ final class HomeStartupPolicy {
         return ntk ? 320L : 220L;
     }
 
+    static long autoCaptchaDelayMs(boolean ntk) {
+        return ntk ? 20_000L : 0L;
+    }
+
     static long inactiveInitialRowsDelayMsForTest(boolean ntk) {
         return inactiveInitialRowsDelayMs(ntk);
     }
 
     static long activeFetchDelayMsForTest(boolean ntk) {
         return activeFetchDelayMs(ntk);
+    }
+
+    static long autoCaptchaDelayMsForTest(boolean ntk) {
+        return autoCaptchaDelayMs(ntk);
     }
 }
