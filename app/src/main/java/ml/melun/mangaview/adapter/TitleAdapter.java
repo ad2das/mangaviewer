@@ -806,7 +806,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             thumbStatusBadge = itemView.findViewById(R.id.ThumbStatusBadge);
             card = itemView.findViewById(R.id.titleCard);
             content = itemView.findViewById(R.id.titleContent);
-            thumbCard = itemView.findViewById(R.id.Thumb);
+            thumbCard = thumb;
             resume = itemView.findViewById(R.id.epsButton);
             resumeSiteIcon = itemView.findViewById(R.id.TitleResumeSiteIcon);
             recommend_c = itemView.findViewById(R.id.TitleRecommend_c);
