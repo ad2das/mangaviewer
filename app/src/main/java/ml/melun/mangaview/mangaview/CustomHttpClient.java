@@ -1029,7 +1029,7 @@ public class CustomHttpClient {
             SharedPreferences pref = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE);
             String value = pref.getString("cfClearanceValue", null);
             long expireAt = pref.getLong("cfClearanceExpireAt", 0);
-            if(value == null || value.length() == 0 || expireAt <= System.currentTimeMillis())
+            if(!shouldApplyRestoredClearance(cookies.get("cf_clearance"), value, expireAt, System.currentTimeMillis()))
                 return;
             cookies.put("cf_clearance", value);
             invalidateCookieHeaderCache();
@@ -1037,6 +1037,16 @@ public class CustomHttpClient {
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
+    }
+
+    static boolean shouldApplyRestoredClearanceForTest(String currentValue, String restoredValue, long expireAt, long now) {
+        return shouldApplyRestoredClearance(currentValue, restoredValue, expireAt, now);
+    }
+
+    private static boolean shouldApplyRestoredClearance(String currentValue, String restoredValue, long expireAt, long now) {
+        if(restoredValue == null || restoredValue.length() == 0 || expireAt <= now)
+            return false;
+        return !restoredValue.equals(currentValue);
     }
 
     public boolean isClearanceExpired() {

@@ -42,6 +42,17 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void restoredClearanceIsAppliedOnlyWhenFreshAndChanged() {
+        long now = 10_000L;
+
+        assertFalse(CustomHttpClient.shouldApplyRestoredClearanceForTest("token", "token", now + 1_000L, now));
+        assertFalse(CustomHttpClient.shouldApplyRestoredClearanceForTest("", "token", now, now));
+        assertFalse(CustomHttpClient.shouldApplyRestoredClearanceForTest("", "", now + 1_000L, now));
+        assertTrue(CustomHttpClient.shouldApplyRestoredClearanceForTest("", "token", now + 1_000L, now));
+        assertTrue(CustomHttpClient.shouldApplyRestoredClearanceForTest("old", "token", now + 1_000L, now));
+    }
+
+    @Test
     public void wolfDocumentDomainResolveRunsOnlyBeforeNetworkMiss() {
         assertTrue(CustomHttpClient.shouldResolveWolfDocumentBeforeNetworkForTest(true, false,
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
