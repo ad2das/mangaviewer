@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 public class CacheFileStoreTest {
     @Test
@@ -56,6 +57,47 @@ public class CacheFileStoreTest {
 
         assertNull(CacheFileStore.readMemoryForTest("key0"));
         assertEquals("value64", CacheFileStore.readMemoryForTest("key64"));
+    }
+
+    @Test
+    public void keyLocksAreCapped() {
+        File dir = new File(System.getProperty("java.io.tmpdir"), "cache-lock-test-" + System.nanoTime());
+        assertTrue(dir.mkdirs());
+        try {
+            for(int i = 0; i < CacheFileStore.keyLocksMaxEntriesForTest() + 20; i++)
+                CacheFileStore.write(dir, "key-" + i, "{\"ok\":true}");
+
+            assertTrue(CacheFileStore.keyLockCountForTest() <= CacheFileStore.keyLocksMaxEntriesForTest());
+        } finally {
+            File[] files = dir.listFiles();
+            if(files != null) {
+                for(File file : files)
+                    file.delete();
+            }
+            dir.delete();
+        }
+    }
+
+    @Test
+    public void oversizedCacheFilesAreIgnored() throws Exception {
+        File dir = new File(System.getProperty("java.io.tmpdir"), "cache-size-test-" + System.nanoTime());
+        assertTrue(dir.mkdirs());
+        try {
+            String key = "large";
+            File file = new File(dir, CacheFileStore.fileNameForKeyForTest(key));
+            try (java.io.RandomAccessFile randomAccessFile = new java.io.RandomAccessFile(file, "rw")) {
+                randomAccessFile.setLength(CacheFileStore.maxReadBytesForTest() + 1);
+            }
+
+            assertEquals("", CacheFileStore.read(dir, key));
+        } finally {
+            File[] files = dir.listFiles();
+            if(files != null) {
+                for(File file : files)
+                    file.delete();
+            }
+            dir.delete();
+        }
     }
 
     private static final class OneByteInputStream extends InputStream {

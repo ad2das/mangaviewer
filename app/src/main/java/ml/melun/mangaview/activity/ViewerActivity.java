@@ -114,6 +114,7 @@ public class ViewerActivity extends AppCompatActivity {
     LoadImagesJob loader;
     PrefetchImagesJob nextPrefetcher;
     final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private boolean destroyed = false;
     int episodeLoaderGeneration = 0;
     int nextPrefetchEpisodeId = -1;
     int nextPrefetchBaseMode = -1;
@@ -124,7 +125,7 @@ public class ViewerActivity extends AppCompatActivity {
     long lastBoundaryCheckMs = 0L;
     long suppressBoundaryLoadUntilMs = 0L;
     boolean suppressBoundaryLoadUntilUserScroll = false;
-    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 10;
+    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 5;
     private static final int NEXT_EPISODE_ATTACH_THRESHOLD = 22;
     private static final int DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD = 12;
     private static final int PREVIOUS_EPISODE_PULL_THRESHOLD_DP = 36;
@@ -433,6 +434,8 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     void refreshExactEpisode(){
+        if(!isUiAlive())
+            return;
         loadManga(manga, ViewerLoadPolicy.EXACT);
     }
 
@@ -1902,7 +1905,7 @@ public class ViewerActivity extends AppCompatActivity {
         if(strip == null || target == null)
             return;
         strip.postDelayed(() -> {
-            if(!isFinishing() && manga != null && manga.getId() == target.getId())
+            if(isUiAlive() && manga != null && manga.getId() == target.getId())
                 preloadInitialViewerPages(target, policy);
         }, initialViewerPreloadDelayMs());
     }
@@ -1922,7 +1925,7 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private void preloadFocusedPages() {
-        if(stripAdapter == null || isFinishing())
+        if(stripAdapter == null || !isUiAlive())
             return;
         PageItem page = getFocusedVisiblePage();
         if(page == null)
@@ -2690,22 +2693,36 @@ public class ViewerActivity extends AppCompatActivity {
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (resultCode == RESULT_CAPTCHA) {
-            getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
-            getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
-            refreshExactEpisode();
+            AppDispatchers.runUserAction(() -> {
+                getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
+                getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
+                AppDispatchers.runOnMain(() -> {
+                    if(isUiAlive())
+                        refreshExactEpisode();
+                });
+            });
         }
     }
 
     @Override
     protected void onDestroy() {
+        destroyed = true;
         Utils.cancelPendingViewerLaunches(this);
-        mainHandler.removeCallbacks(delayedScrollBookmarkSave);
+        mainHandler.removeCallbacksAndMessages(null);
         if(loader != null)
             loader.cancel();
         cancelNextPrefetcher();
         releaseStripAdapter();
         ViewerWarmupManager.clearDecodedWork(context);
         super.onDestroy();
+    }
+
+    private boolean isUiAlive() {
+        return !destroyed && !isFinishing() && !isDestroyed();
+    }
+
+    static int initialPreloadAheadCountForTest() {
+        return INITIAL_PRELOAD_AHEAD_COUNT;
     }
 
     private void releaseStripAdapter() {

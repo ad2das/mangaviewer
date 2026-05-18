@@ -79,6 +79,11 @@ public class ViewerActivityTest {
     }
 
     @Test
+    public void initialViewerPreloadBudgetStaysConservative() {
+        assertTrue(ViewerActivity.initialPreloadAheadCountForTest() <= 5);
+    }
+
+    @Test
     public void nextEpisodePrefetchWaitsUntilInitialFrameSettles() {
         assertTrue(ViewerActivity.initialNextEpisodePrefetchDelayMsForTest() >= 1000L);
     }

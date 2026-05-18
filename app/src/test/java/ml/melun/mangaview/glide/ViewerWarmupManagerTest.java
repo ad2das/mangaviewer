@@ -209,4 +209,9 @@ public class ViewerWarmupManagerTest {
         assertTrue(ViewerWarmupManager.shouldSuppressVisibleContinueWarmupForTest(1500L, 1500L, true));
         assertFalse(ViewerWarmupManager.shouldSuppressVisibleContinueWarmupForTest(1500L, 1500L, false));
     }
+
+    @Test
+    public void decodedWarmupActiveLimitStaysConservative() {
+        assertTrue(ViewerWarmupManager.decodedTargetActiveSoftLimitForTest() <= 4);
+    }
 }

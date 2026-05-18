@@ -16,13 +16,20 @@ public final class CacheFileStore {
     private static final String DIR_NAME = "structured_cache";
     private static final char[] HEX = "0123456789abcdef".toCharArray();
     private static final int MEMORY_CACHE_MAX_ENTRIES = 64;
+    private static final int KEY_LOCKS_MAX_ENTRIES = 512;
+    private static final long MAX_READ_BYTES = 4L * 1024L * 1024L;
     private static final Map<String, String> MEMORY_CACHE = new LinkedHashMap<String, String>(MEMORY_CACHE_MAX_ENTRIES, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
             return size() > MEMORY_CACHE_MAX_ENTRIES;
         }
     };
-    private static final Map<String, Object> KEY_LOCKS = new LinkedHashMap<>();
+    private static final Map<String, Object> KEY_LOCKS = new LinkedHashMap<String, Object>(KEY_LOCKS_MAX_ENTRIES, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Object> eldest) {
+            return size() > KEY_LOCKS_MAX_ENTRIES;
+        }
+    };
 
     private CacheFileStore() {
     }
@@ -45,6 +52,8 @@ public final class CacheFileStore {
                 return cached;
             File file = file(rootDir, key);
             if(!file.exists())
+                return "";
+            if(file.length() > MAX_READ_BYTES)
                 return "";
             try (FileInputStream stream = new FileInputStream(file)) {
                 String value = readUtf8Text(stream);
@@ -140,6 +149,20 @@ public final class CacheFileStore {
 
     static String readMemoryForTest(String key) {
         return readMemoryInternal(key);
+    }
+
+    static int keyLockCountForTest() {
+        synchronized (KEY_LOCKS) {
+            return KEY_LOCKS.size();
+        }
+    }
+
+    static int keyLocksMaxEntriesForTest() {
+        return KEY_LOCKS_MAX_ENTRIES;
+    }
+
+    static long maxReadBytesForTest() {
+        return MAX_READ_BYTES;
     }
 
     private static void rememberMemory(String key, String value) {

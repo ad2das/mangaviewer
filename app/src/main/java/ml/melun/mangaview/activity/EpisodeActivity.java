@@ -82,6 +82,7 @@ public class EpisodeActivity extends AppCompatActivity {
     private static final long INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 260L;
     private static final long NTK_INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 700L;
     private static final long MAX_EPISODE_CACHE_FILE_BYTES = 2 * 1024 * 1024L;
+    private static final int MEMORY_CACHE_MAIN_THREAD_PARSE_MAX_CHARS = 16 * 1024;
     private static final int VISIBLE_EPISODE_WARMUP_AHEAD = 2;
     //global variables
     Title title;
@@ -782,7 +783,21 @@ public class EpisodeActivity extends AppCompatActivity {
 
     private boolean showCachedEpisodesFromMemory() {
         try {
-            return showCachedEpisodesJson(CacheFileStore.readMemory(episodeCacheKey()));
+            String json = CacheFileStore.readMemory(episodeCacheKey());
+            if(json == null || json.length() == 0)
+                return false;
+            if(shouldParseMemoryCacheOnMain(json.length()))
+                return showCachedEpisodesJson(json);
+            AppDispatchers.submitIo(() -> {
+                CachedEpisodes cached = parseCachedEpisodesJson(json);
+                if(cached == null)
+                    return;
+                AppDispatchers.runOnMain(() -> {
+                    if(isUiAlive())
+                        showCachedEpisodes(cached);
+                });
+            });
+            return false;
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
             return false;
@@ -856,11 +871,8 @@ public class EpisodeActivity extends AppCompatActivity {
             String json = CacheFileStore.read(cacheContext, cacheKey);
             if(json == null || json.length() == 0)
                 return null;
-            CachedEpisodes cached = new Gson().fromJson(json, new TypeToken<CachedEpisodes>(){}.getType());
-            if(cached == null || cached.episodes == null || cached.episodes.size() == 0)
-                return null;
-            if(!CachePolicy.isFresh(cached.savedAt, CachePolicy.EPISODE_TTL_MS)
-                    && !CachePolicy.isReusableForColdStart(cached.savedAt))
+            CachedEpisodes cached = parseCachedEpisodesJson(json);
+            if(cached == null)
                 return null;
             return cached;
         } catch (Exception e) {
@@ -874,6 +886,21 @@ public class EpisodeActivity extends AppCompatActivity {
             return false;
         CachedEpisodes cached = new Gson().fromJson(json, new TypeToken<CachedEpisodes>(){}.getType());
         return showCachedEpisodes(cached);
+    }
+
+    private CachedEpisodes parseCachedEpisodesJson(String json) {
+        if(json == null || json.length() == 0)
+            return null;
+        CachedEpisodes cached = new Gson().fromJson(json, new TypeToken<CachedEpisodes>(){}.getType());
+        return isUsableCachedEpisodes(cached) ? cached : null;
+    }
+
+    private static boolean shouldParseMemoryCacheOnMain(int jsonLength) {
+        return jsonLength > 0 && jsonLength <= MEMORY_CACHE_MAIN_THREAD_PARSE_MAX_CHARS;
+    }
+
+    static boolean shouldParseMemoryCacheOnMainForTest(int jsonLength) {
+        return shouldParseMemoryCacheOnMain(jsonLength);
     }
 
     private boolean showCachedEpisodes(CachedEpisodes cached) {

@@ -69,6 +69,13 @@ public class EpisodeActivityTest {
     }
 
     @Test
+    public void largeMemoryCacheSnapshotsParseOffMainThread() {
+        assertTrue(EpisodeActivity.shouldParseMemoryCacheOnMainForTest(16 * 1024));
+        assertFalse(EpisodeActivity.shouldParseMemoryCacheOnMainForTest(16 * 1024 + 1));
+        assertFalse(EpisodeActivity.shouldParseMemoryCacheOnMainForTest(0));
+    }
+
+    @Test
     public void episodeCacheSnapshotDoesNotSerializeRecursiveEpisodes() {
         Title title = new Title("Sky", "", "", null, "", 42, base_webtoon);
         List<Manga> episodes = new ArrayList<>();

@@ -89,4 +89,11 @@ public class StripAdapterTest {
         assertTrue(StripAdapter.shouldLogFirstVisibleForTest(false));
         assertFalse(StripAdapter.shouldLogFirstVisibleForTest(true));
     }
+
+    @Test
+    public void preloadBudgetsStayConservative() {
+        assertTrue(StripAdapter.preloadAheadCountForTest() <= 6);
+        assertTrue(StripAdapter.initialPreloadAheadCountForTest() <= 5);
+        assertTrue(StripAdapter.decodedPreloadActiveLimitForTest() <= 2);
+    }
 }

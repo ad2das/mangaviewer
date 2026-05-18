@@ -48,6 +48,8 @@ import android.widget.Toast;
 import com.google.firebase.auth.FirebaseUser;
 
 import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
 
 import ml.melun.mangaview.Downloader;
 import ml.melun.mangaview.AppUpdateManager;
@@ -124,10 +126,12 @@ public class MainActivity extends AppCompatActivity
     UrlUpdateCallback pendingUrlUpdateCallback;
     private boolean ntkCaptchaCheckScheduled = false;
     private long lastNtkCaptchaCheckAt = 0L;
+    private final List<BroadcastReceiver> internalReceivers = new ArrayList<>();
     private static final int FIRST_TIME_ACTIVITY = 9;
 
     private void registerInternalReceiver(BroadcastReceiver receiver, IntentFilter filter) {
         ContextCompat.registerReceiver(this, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
+        internalReceivers.add(receiver);
     }
 
     private void restartMainActivity() {
@@ -566,6 +570,22 @@ public class MainActivity extends AppCompatActivity
         if(fragments[0] instanceof MainMain)
             ((MainMain) fragments[0]).cancelHomeFetches();
         super.onPause();
+    }
+
+    @Override
+    protected void onDestroy() {
+        unregisterInternalReceivers();
+        super.onDestroy();
+    }
+
+    private void unregisterInternalReceivers() {
+        for(BroadcastReceiver receiver : new ArrayList<>(internalReceivers)) {
+            try {
+                unregisterReceiver(receiver);
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+        internalReceivers.clear();
     }
 
     private boolean maybeOpenNtkCaptcha() {
@@ -1057,8 +1077,6 @@ public class MainActivity extends AppCompatActivity
                                         if(intent.getAction().matches(BROADCAST_STOP)){
                                             //service stopped
                                             finishAffinity();
-                                            System.runFinalization();
-                                            System.exit(0);
                                         }
                                     }
                                 };
@@ -1070,8 +1088,6 @@ public class MainActivity extends AppCompatActivity
                             }else{
                                 //kill application
                                 finishAffinity();
-                                System.runFinalization();
-                                System.exit(0);
                             }
                             break;
                         case DialogInterface.BUTTON_NEGATIVE:

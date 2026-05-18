@@ -65,11 +65,11 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     int width;
     int count = 0;
     final static int MaxStackSize = 3;
-    private static final int PRELOAD_AHEAD_COUNT = 12;
+    private static final int PRELOAD_AHEAD_COUNT = 6;
     private static final int DATA_SAVE_PRELOAD_AHEAD_COUNT = 4;
-    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 10;
+    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 5;
     private static final int PRELOAD_TRACK_LIMIT = 500;
-    private static final int DECODED_PRELOAD_ACTIVE_LIMIT = 4;
+    private static final int DECODED_PRELOAD_ACTIVE_LIMIT = 2;
     private static final int IMAGE_LOAD_RETRY_LIMIT = 3;
     private static final String PAYLOAD_HEIGHT = "height";
     ViewerActivity.InfiniteScrollCallback callback;
@@ -1134,6 +1134,18 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     private void preloadPageIntoDecodedCache(PageItem page, Priority priority) {
         preloadPageIntoDecodedCache(page, priority, preloadGeneration);
+    }
+
+    static int preloadAheadCountForTest() {
+        return PRELOAD_AHEAD_COUNT;
+    }
+
+    static int initialPreloadAheadCountForTest() {
+        return INITIAL_PRELOAD_AHEAD_COUNT;
+    }
+
+    static int decodedPreloadActiveLimitForTest() {
+        return DECODED_PRELOAD_ACTIVE_LIMIT;
     }
 
     private void preloadPageIntoDecodedCache(PageItem page, Priority priority, long generation) {

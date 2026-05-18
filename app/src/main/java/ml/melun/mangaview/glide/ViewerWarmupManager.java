@@ -56,7 +56,7 @@ public class ViewerWarmupManager {
     private static final String TAG = "ViewerPerf";
     private static final int ACTIVE_LIMIT = 36;
     private static final int DECODED_TARGET_LIMIT = 48;
-    private static final int DECODED_TARGET_ACTIVE_SOFT_LIMIT = 8;
+    private static final int DECODED_TARGET_ACTIVE_SOFT_LIMIT = 4;
     private static final long FIRST_PAGE_BLOCKING_DECODE_TIMEOUT_MS = 650L;
     private static final long OTHER_PAGE_BLOCKING_DECODE_TIMEOUT_MS = 250L;
     private static final int SNAPSHOT_LIMIT = 64;
@@ -805,6 +805,10 @@ public class ViewerWarmupManager {
 
     private static synchronized boolean canStartDecodedTarget() {
         return decodedTargets.size() < DECODED_TARGET_ACTIVE_SOFT_LIMIT;
+    }
+
+    public static int decodedTargetActiveSoftLimitForTest() {
+        return DECODED_TARGET_ACTIVE_SOFT_LIMIT;
     }
 
     private static boolean markPagePreload(PageItem page, boolean autoCut, boolean reverse, int width, long now) {
