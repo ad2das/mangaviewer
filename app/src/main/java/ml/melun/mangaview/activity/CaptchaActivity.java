@@ -29,6 +29,7 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.RenderProcessGoneDetail;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -296,6 +297,22 @@ public class CaptchaActivity extends AppCompatActivity {
                 // causing Turnstile to trigger more aggressively.
                 // UA is already synchronized via setUserAgentString() during setup.
                 return super.shouldInterceptRequest(view, request);
+            }
+
+            @Override
+            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                android.util.Log.w("CaptchaActivity", "Captcha WebView renderer gone; recovering without crashing");
+                handler.removeCallbacksAndMessages(null);
+                clearWebViewProxy();
+                if(view == webView) {
+                    detachCaptchaWebView();
+                    destroyReleasedWebViewLater();
+                    if(!isFinishing && !isDestroyed()) {
+                        Toast.makeText(CaptchaActivity.this, "Captcha page closed. Please try again.", Toast.LENGTH_SHORT).show();
+                        finish();
+                    }
+                }
+                return true;
             }
 
             @Override
@@ -981,6 +998,10 @@ public class CaptchaActivity extends AppCompatActivity {
         releasedWebView = target;
         try {
             target.stopLoading();
+        } catch (Exception ignored) {
+        }
+        try {
+            target.loadUrl("about:blank");
         } catch (Exception ignored) {
         }
         try {

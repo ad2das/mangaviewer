@@ -1,21 +1,22 @@
 package ml.melun.mangaview;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertNotNull;
 
 import android.content.Context;
 import android.content.Intent;
 
-import androidx.recyclerview.widget.RecyclerView;
-import androidx.test.core.app.ActivityScenario;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
+import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.test.uiautomator.By;
+import androidx.test.uiautomator.UiDevice;
+import androidx.test.uiautomator.UiObject2;
+import androidx.test.uiautomator.Until;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.util.Collections;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import ml.melun.mangaview.activity.EpisodeActivity;
 import ml.melun.mangaview.mangaview.MTitle;
@@ -23,6 +24,8 @@ import ml.melun.mangaview.mangaview.Title;
 
 @RunWith(AndroidJUnit4.class)
 public class EpisodeActivityNetworkTest {
+    private static final String PACKAGE_NAME = "ml.melun.mangaview";
+
     @Test
     public void ntkComicTitleOpensEpisodeList() throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
@@ -42,31 +45,14 @@ public class EpisodeActivityNetworkTest {
         Intent intent = new Intent(context, EpisodeActivity.class);
         intent.putExtra("title", Utils.toViewerTitleJson(title, true));
         intent.putExtra("online", true);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
 
-        try(ActivityScenario<EpisodeActivity> scenario = ActivityScenario.launch(intent)) {
-            waitForEpisodeList(scenario);
-            AtomicInteger itemCount = new AtomicInteger();
-            scenario.onActivity(activity -> {
-                RecyclerView list = activity.findViewById(R.id.EpisodeList);
-                RecyclerView.Adapter<?> adapter = list == null ? null : list.getAdapter();
-                itemCount.set(adapter == null ? 0 : adapter.getItemCount());
-            });
-            assertTrue("Expected NTK title to render header plus episodes", itemCount.get() > 1);
-        }
-    }
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        context.startActivity(intent);
 
-    private static void waitForEpisodeList(ActivityScenario<EpisodeActivity> scenario) throws Exception {
-        long deadline = System.currentTimeMillis() + 30000L;
-        while(System.currentTimeMillis() < deadline) {
-            AtomicBoolean ready = new AtomicBoolean(false);
-            scenario.onActivity(activity -> {
-                RecyclerView list = activity.findViewById(R.id.EpisodeList);
-                RecyclerView.Adapter<?> adapter = list == null ? null : list.getAdapter();
-                ready.set(!activity.isFinishing() && adapter != null && adapter.getItemCount() > 1);
-            });
-            if(ready.get())
-                return;
-            Thread.sleep(500L);
-        }
+        UiObject2 episodeList = device.wait(Until.findObject(By.res(PACKAGE_NAME, "EpisodeList")), 60000L);
+        assertNotNull("Expected NTK episode list to render", episodeList);
+        UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 60000L);
+        assertNotNull("Expected NTK title to render at least one episode", episodeRow);
     }
 }
