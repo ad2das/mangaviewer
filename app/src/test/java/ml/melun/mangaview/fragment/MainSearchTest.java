@@ -11,6 +11,7 @@ import ml.melun.mangaview.mangaview.Title;
 
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 
 public class MainSearchTest {
@@ -40,5 +41,12 @@ public class MainSearchTest {
         List<MTitle> recent = Collections.singletonList(stored);
 
         assertNull(MainSearch.chooseStoredTitleForEpisodeForTest(searched, recent, new ArrayList<>()));
+    }
+    @Test
+    public void librarySearchHandlesNullPersistedFields() {
+        Title title = new Title(null, "", null, null, null, 1, base_comic);
+
+        assertFalse(MainSearch.matchesLibraryQueryForTest(title, "sky"));
+        assertEquals("", MainSearch.normalizedTitleNameForTest(title));
     }
 }

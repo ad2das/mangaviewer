@@ -543,7 +543,12 @@ public class CustomHttpClient {
     }
 
     private static List<InetAddress> selectNetworkResilientAddresses(String hostname, List<InetAddress> addresses) throws UnknownHostException {
-        return ipv4OnlyOrThrow(hostname, addresses);
+        if(requiresIpv4OnlyDns(hostname))
+            return ipv4OnlyOrThrow(hostname, addresses);
+        List<InetAddress> sorted = mergeIpv4First(hostname, addresses, null, null);
+        if(!sorted.isEmpty())
+            return sorted;
+        throw new UnknownHostException(hostname == null ? "" : hostname);
     }
 
     private static List<InetAddress> ipv6FirstThenIpv4(String hostname, List<InetAddress> addresses) throws UnknownHostException {
@@ -565,7 +570,16 @@ public class CustomHttpClient {
     }
 
     private static boolean prefersIpv6ForWfwfHost(String hostname) {
-        return false;
+        return !requiresIpv4OnlyDns(hostname);
+    }
+
+    private static boolean requiresIpv4OnlyDns(String hostname) {
+        String normalized = normalizeDnsHost(hostname);
+        return isNtkDnsProtectedHost(normalized)
+                || normalized.matches("wfwf\\d+\\.com")
+                || normalized.contains("imgcloud")
+                || normalized.endsWith("v12st.com")
+                || normalized.endsWith(".v12st.com");
     }
 
     private static boolean isNtkDnsProtectedHost(String hostname) {
@@ -1583,15 +1597,17 @@ public class CustomHttpClient {
             DomainResolveState resolveState;
             boolean shouldResolve = false;
             synchronized (wfwfDomainLock) {
-                long lastCheck = pref.getLong("wfwfDomainLastCheck", 0);
-                if(!force && now - lastCheck < WFWF_DOMAIN_CHECK_INTERVAL_MS)
-                    return false;
-                if(wfwfDomainResolveState == null) {
+                if(wfwfDomainResolveState != null) {
+                    resolveState = wfwfDomainResolveState;
+                } else {
+                    long lastCheck = pref.getLong("wfwfDomainLastCheck", 0);
+                    if(!force && now - lastCheck < WFWF_DOMAIN_CHECK_INTERVAL_MS)
+                        return false;
                     wfwfDomainResolveState = new DomainResolveState();
                     pref.edit().putLong("wfwfDomainLastCheck", now).apply();
                     shouldResolve = true;
+                    resolveState = wfwfDomainResolveState;
                 }
-                resolveState = wfwfDomainResolveState;
             }
 
             if(!shouldResolve)
@@ -1637,6 +1653,13 @@ public class CustomHttpClient {
 
     private boolean ensureNtkDomainIfNeeded(boolean force) {
         long now = System.currentTimeMillis();
+        DomainResolveState activeResolve = null;
+        synchronized (wfwfDomainLock) {
+            if(ntkDomainResolveState != null)
+                activeResolve = ntkDomainResolveState;
+        }
+        if(activeResolve != null)
+            return waitForWfwfDomainResolve(activeResolve);
         synchronized (wfwfDomainLock) {
             if(!force && ntkDomainLastCheck > 0 && now - ntkDomainLastCheck < NTK_DOMAIN_CHECK_INTERVAL_MS)
                 return false;
@@ -2270,8 +2293,10 @@ public class CustomHttpClient {
         boolean wolfWebViewFallbackAllowed = allowsWolfWebViewFallback();
         Response response = get(baseUrl + url, headers, fastNtkPageDirect);
         if(ntkBaseUrl && shouldRetryWithResolvedDomain(response)) {
-            if(response != null)
+            if(response != null) {
+                rememberCloudflareChallengeIfPresent(response, baseUrl, url);
                 response.close();
+            }
             ensureWfwfDomainForRetry();
             baseUrl = getBaseUrl(url);
             ntkBaseUrl = isNtkUrl(baseUrl);
@@ -2282,8 +2307,10 @@ public class CustomHttpClient {
         }
         if(shouldUseNtkWebViewFallback(ntkBaseUrl,
                 response == null || isNtkWebViewFallbackCandidate(response, url), url, fetchMode)) {
-            if(response != null)
+            if(response != null) {
+                rememberCloudflareChallengeIfPresent(response, baseUrl, url);
                 response.close();
+            }
             response = getWithNtkWebViewFallback(baseUrl, url, headers);
         }
         if(!ntkBaseUrl && allowWfwfDomainRetry && shouldRetryWithResolvedDomain(response)) {
@@ -2298,8 +2325,10 @@ public class CustomHttpClient {
             response = get(baseUrl + url, headers, fastNtkPageDirect);
             if(shouldUseNtkWebViewFallback(ntkBaseUrl,
                     response == null || isNtkWebViewFallbackCandidate(response, url), url, fetchMode)) {
-                if(response != null)
+                if(response != null) {
+                    rememberCloudflareChallengeIfPresent(response, baseUrl, url);
                     response.close();
+                }
                 response = getWithNtkWebViewFallback(baseUrl, url, headers);
             }
         }
@@ -2317,6 +2346,24 @@ public class CustomHttpClient {
             response = getWithNtkWebViewFallback(baseUrl, url, headers);
         }
         return response;
+    }
+
+    private void rememberCloudflareChallengeIfPresent(Response response, String baseUrl, String path) {
+        if(response == null)
+            return;
+        int code = response.code();
+        if(code != 403 && code < 500)
+            return;
+        try {
+            String body = response.peekBody(256 * 1024L).string();
+            if(isCloudflareChallenge(code, body)) {
+                lastCloudflareChallengeUrl = (baseUrl == null ? "" : baseUrl) + (path == null ? "" : path);
+                lastCloudflareChallengeAt = System.currentTimeMillis();
+                if(code == 403)
+                    clearCloudflareCookies();
+            }
+        } catch (Exception ignored) {
+        }
     }
 
     private boolean isNtkWebViewFallbackCandidate(Response response, String path) {

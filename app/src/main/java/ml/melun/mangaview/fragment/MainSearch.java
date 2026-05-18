@@ -509,6 +509,8 @@ public class MainSearch extends Fragment {
             searchTask.cancel(true);
             searchTask = null;
         }
+        if(searchAdapter != null)
+            searchAdapter.setDeferThumbnails(false);
         if(searchBox != null)
             searchBox.setText("");
         if(searchBox != null)
@@ -565,6 +567,7 @@ public class MainSearch extends Fragment {
             searchAdapter = new TitleAdapter(getContext());
         searchAdapter.setResume(true);
         searchAdapter.setForceThumbnail(false);
+        searchAdapter.setDeferThumbnails(false);
         int tab = getLibraryTabPosition();
         ArrayList<Title> data = getLibraryTitles(tab);
         if((tab == 0 || tab == 3) && offlineTitles.size() == 0 && offlineTask == null) {
@@ -633,6 +636,7 @@ public class MainSearch extends Fragment {
             searchAdapter = new TitleAdapter(getContext());
         searchAdapter.setResume(true);
         searchAdapter.setForceThumbnail(false);
+        searchAdapter.setDeferThumbnails(false);
         searchAdapter.setLongClickEnabled(true);
         if(searchResult.getAdapter() != searchAdapter)
             searchResult.setAdapter(searchAdapter);
@@ -878,7 +882,12 @@ public class MainSearch extends Fragment {
     }
 
     private static String normalizedTitleName(MTitle title) {
-        return title == null ? "" : title.getName().trim().replaceAll("\\s+", " ");
+        String name = title == null ? null : title.getName();
+        return name == null ? "" : name.trim().replaceAll("\\s+", " ");
+    }
+
+    static String normalizedTitleNameForTest(MTitle title) {
+        return normalizedTitleName(title);
     }
 
     private MTitle findStoredTitle(Title title, List<MTitle> source) {
@@ -933,14 +942,24 @@ public class MainSearch extends Fragment {
     }
 
     private void openOfflineResume(Title title, int bookmark) {
-        Manga manga = OfflineStore.resolveResumeManga(getContext(), title, bookmark);
-        if(manga == null) {
-            confirmOnlineResume(title, bookmark);
+        Context context = getContext();
+        if(context == null)
             return;
-        }
-        manga.setTitle(title);
-        manga.setTitleId(title.getId());
-        openViewer(getContext(), manga, -1);
+        Context appContext = context.getApplicationContext();
+        AppDispatchers.submitIo(() -> {
+            Manga manga = OfflineStore.resolveResumeManga(appContext, title, bookmark);
+            AppDispatchers.runOnMain(() -> {
+                if(getContext() == null)
+                    return;
+                if(manga == null) {
+                    confirmOnlineResume(title, bookmark);
+                    return;
+                }
+                manga.setTitle(title);
+                manga.setTitleId(title.getId());
+                openViewer(getContext(), manga, -1);
+            });
+        });
     }
 
     private void confirmOnlineResume(Title title, int bookmark) {
@@ -990,16 +1009,24 @@ public class MainSearch extends Fragment {
     }
 
     private void deleteOfflineTitle(Title title) {
-        if(getContext() == null || title == null)
+        Context context = getContext();
+        if(context == null || title == null)
             return;
-        boolean deleted = OfflineStore.deleteTitle(getContext(), title);
-        if(deleted) {
-            removeOfflineTitleFromCache(title);
-            Toast.makeText(getContext(), "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
-            refreshLibraryAfterOfflineDelete();
-        } else {
-            showPopup(getContext(), "알림", "삭제를 실패했습니다");
-        }
+        Context appContext = context.getApplicationContext();
+        AppDispatchers.submitIo(() -> {
+            boolean deleted = OfflineStore.deleteTitle(appContext, title);
+            AppDispatchers.runOnMain(() -> {
+                if(getContext() == null)
+                    return;
+                if(deleted) {
+                    removeOfflineTitleFromCache(title);
+                    Toast.makeText(getContext(), "삭제가 완료되었습니다.", Toast.LENGTH_SHORT).show();
+                    refreshLibraryAfterOfflineDelete();
+                } else {
+                    showPopup(getContext(), "알림", "삭제를 실패했습니다");
+                }
+            });
+        });
     }
 
     private void removeOfflineTitleFromCache(Title title) {
@@ -1245,10 +1272,16 @@ public class MainSearch extends Fragment {
             return true;
         if(containsIgnoreCase(title.getBaseModeStr(), normalized))
             return true;
-        for(String tag : title.getTags())
-            if(containsIgnoreCase(tag, normalized))
-                return true;
+        List<String> tags = title.getTags();
+        if(tags != null)
+            for(String tag : tags)
+                if(containsIgnoreCase(tag, normalized))
+                    return true;
         return false;
+    }
+
+    static boolean matchesLibraryQueryForTest(Title title, String query) {
+        return new MainSearch().matchesLibraryQuery(title, query);
     }
 
     private boolean containsIgnoreCase(String value, String normalizedQuery) {

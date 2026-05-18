@@ -423,4 +423,20 @@ public class CustomHttpClientTest {
 
         CustomHttpClient.ipv4OnlyOrThrowForTest("sbxh1.com", Arrays.asList(ipv6));
     }
+
+    @Test
+    public void generalAppDnsAllowsIpv6OnlyAnswers() throws Exception {
+        InetAddress ipv6 = InetAddress.getByAddress("example.com",
+                new byte[] {
+                        (byte)0x26, (byte)0x06, (byte)0x47, (byte)0x00,
+                        (byte)0x00, (byte)0x20, (byte)0x00, (byte)0x00,
+                        (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00,
+                        (byte)0x68, (byte)0x1a, (byte)0x0b, (byte)0xfa});
+
+        List<InetAddress> selected = CustomHttpClient.selectNetworkResilientAddressesForTest(
+                "example.com", Arrays.asList(ipv6));
+
+        assertEquals(1, selected.size());
+        assertEquals(ipv6, selected.get(0));
+    }
 }

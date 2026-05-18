@@ -193,6 +193,8 @@ public class EpisodeActivity extends AppCompatActivity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if(resultCode== RESULT_OK){
+            if(data == null)
+                return;
             int newid = data.getIntExtra("id", -1);
             if(newid>0 && newid!=bookmarkId){
                 bookmarkId = newid;
@@ -682,6 +684,8 @@ public class EpisodeActivity extends AppCompatActivity {
             return;
         }
         if(result.getResultCode() == LOAD_ERROR){
+            ntkLoadTimeoutHandled = true;
+            cancelNtkEpisodeLoadWatchdog();
             handleLoadErrorWithCacheFallback();
             return;
         }
@@ -698,6 +702,7 @@ public class EpisodeActivity extends AppCompatActivity {
         cancelNtkEpisodeLoadWatchdog();
         if(sameEpisodeIdentityList(episodes, loadedEpisodes) && hasRenderedEpisodes()) {
             ntkLoadTimeoutHandled = true;
+            mergeFreshEpisodeMetadata(episodes, loadedEpisodes);
             attachLoadedEpisodesToTitle(episodes);
             saveEpisodeCache(loadedEpisodes);
             hideProgress();
@@ -859,10 +864,7 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     private boolean showCachedEpisodes(CachedEpisodes cached) {
-        if(cached == null || cached.episodes == null || cached.episodes.size() == 0)
-            return false;
-        if(!CachePolicy.isFresh(cached.savedAt, CachePolicy.EPISODE_TTL_MS)
-                && !CachePolicy.isReusableForColdStart(cached.savedAt))
+        if(!isUsableCachedEpisodes(cached))
             return false;
         if(hasRenderedEpisodes())
             return false;
@@ -875,6 +877,14 @@ public class EpisodeActivity extends AppCompatActivity {
         hideProgress();
         invalidateOptionsMenu();
         return true;
+    }
+
+    private boolean isUsableCachedEpisodes(CachedEpisodes cached) {
+        return cached != null
+                && cached.episodes != null
+                && cached.episodes.size() > 0
+                && (CachePolicy.isFresh(cached.savedAt, CachePolicy.EPISODE_TTL_MS)
+                || CachePolicy.isReusableForColdStart(cached.savedAt));
     }
 
     private void handleLoadErrorWithCacheFallback() {
@@ -915,6 +925,8 @@ public class EpisodeActivity extends AppCompatActivity {
     private boolean applyCompatibleCachedEpisodes(CompatibleCachedEpisodes compatible) {
         if(compatible == null || title == null)
             return false;
+        if(hasRenderedEpisodes() || !isUsableCachedEpisodes(compatible.cached))
+            return false;
         if(compatible.sourceSite != null && compatible.sourceSite.length() > 0)
             title.setSourceSite(compatible.sourceSite);
         if(compatible.titleId > 0)
@@ -930,6 +942,24 @@ public class EpisodeActivity extends AppCompatActivity {
                     + ",id=" + compatible.titleId + ",name=" + title.getName());
         }
         return shown;
+    }
+
+    private void mergeFreshEpisodeMetadata(List<Manga> current, List<Manga> fresh) {
+        if(current == null || fresh == null)
+            return;
+        int count = Math.min(current.size(), fresh.size());
+        for(int i = 0; i < count; i++) {
+            Manga target = current.get(i);
+            Manga source = fresh.get(i);
+            if(target == null || source == null)
+                continue;
+            if(target.getId() != source.getId() || target.getBaseMode() != source.getBaseMode())
+                continue;
+            target.copyViewerStateFrom(source);
+            String freshPath = source.getNtkEpisodePath();
+            if(freshPath != null && freshPath.length() > 0)
+                target.setNtkEpisodePath(freshPath);
+        }
     }
 
     private static CompatibleCachedEpisodes findCompatibleCachedEpisodes(Context cacheContext, Title target, String stableName) {
