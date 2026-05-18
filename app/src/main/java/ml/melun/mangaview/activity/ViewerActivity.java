@@ -300,6 +300,10 @@ public class ViewerActivity extends AppCompatActivity {
                     manga = new Gson().fromJson(intent.getStringExtra("manga"), new TypeToken<Manga>() {
                     }.getType());
             }
+            if(manga == null) {
+                finish();
+                return;
+            }
 
             toolbarTitle.setText(manga.getName());
             toolbarTitle.setSelected(true);

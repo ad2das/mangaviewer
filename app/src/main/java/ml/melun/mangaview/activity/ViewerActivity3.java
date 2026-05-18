@@ -225,6 +225,10 @@ public class ViewerActivity3 extends AppCompatActivity {
                     manga = new Gson().fromJson(intent.getStringExtra("manga"), new TypeToken<Manga>() {
                     }.getType());
             }
+            if(manga == null) {
+                finish();
+                return;
+            }
 
             if(title == null)
                 title = manga.getTitle();

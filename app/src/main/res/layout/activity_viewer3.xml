@@ -59,7 +59,7 @@
             app:contentInsetStart="0dp"
             app:popupTheme="@style/AppTheme.PopupOverlay">
 
-            <include layout="@layout/viewer_toolbar_bottom" />
+            <include layout="@layout/viewer_toolbar_bottom_spinner" />
 
         </androidx.appcompat.widget.Toolbar>
 

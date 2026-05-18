@@ -81,7 +81,8 @@ public class ViewerActivity2 extends AppCompatActivity {
     Manga manga;
     ImageButton next, prev, saveBtn;
     androidx.appcompat.widget.Toolbar toolbar;
-    Button pageBtn, nextPageBtn, prevPageBtn, touchToggleBtn;
+    Button pageBtn, touchToggleBtn;
+    View nextPageBtn, prevPageBtn;
     AppBarLayout appbar, appbarBottom;
     TextView toolbarTitle;
     int viewerBookmark = 0;
@@ -246,6 +247,10 @@ public class ViewerActivity2 extends AppCompatActivity {
                 manga = new Gson().fromJson(intent.getStringExtra("manga"), new TypeToken<Manga>() {
                 }.getType());
             dirty = true;
+        }
+        if(manga == null) {
+            finish();
+            return;
         }
         if(title != null)
             manga.setTitle(title);
