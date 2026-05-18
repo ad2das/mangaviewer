@@ -2,6 +2,8 @@ package ml.melun.mangaview.glide;
 
 import android.app.Activity;
 import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 import android.os.Handler;
@@ -109,6 +111,8 @@ public class ViewerWarmupManager {
     private static void warmup(Context context, Manga manga, Title title, int pageIndex, ViewerPreloadPolicy.Window window) {
         if(context == null || manga == null || !manga.isOnline())
             return;
+        if(shouldSkipOnlineWarmup(!hasNetworkConnection(context), manga.isOnline()))
+            return;
         final ViewerPreloadPolicy.Window warmupWindow = window == null
                 ? ViewerPreloadPolicy.firstFrameWindow(p.getDataSave())
                 : window;
@@ -151,6 +155,22 @@ public class ViewerWarmupManager {
         });
         if(!scheduled)
             finishActive(key, state, LOAD_OK);
+    }
+
+    private static boolean hasNetworkConnection(Context context) {
+        try {
+            ConnectivityManager manager = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if(manager == null)
+                return false;
+            NetworkInfo active = manager.getActiveNetworkInfo();
+            return active != null && active.isConnectedOrConnecting();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    static boolean shouldSkipOnlineWarmup(boolean networkUnavailable, boolean onlineManga) {
+        return onlineManga && networkUnavailable;
     }
 
     public static void warmupContinue(Context context, Manga manga, Title title) {

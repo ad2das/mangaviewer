@@ -196,6 +196,13 @@ public class ViewerWarmupManagerTest {
     }
 
     @Test
+    public void onlineWarmupSkipsWhenNetworkUnavailable() {
+        assertTrue(ViewerWarmupManager.shouldSkipOnlineWarmup(true, true));
+        assertFalse(ViewerWarmupManager.shouldSkipOnlineWarmup(false, true));
+        assertFalse(ViewerWarmupManager.shouldSkipOnlineWarmup(true, false));
+    }
+
+    @Test
     public void visibleContinueWarmupCanBeSuppressedDuringViewerEntry() {
         assertTrue(ViewerWarmupManager.shouldSuppressVisibleContinueWarmupForTest(1000L, 1500L));
         assertFalse(ViewerWarmupManager.shouldSuppressVisibleContinueWarmupForTest(1500L, 1500L));
