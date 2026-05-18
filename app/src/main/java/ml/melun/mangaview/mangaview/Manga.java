@@ -118,28 +118,40 @@ public class Manga {
         this.imgs = imgs;
     }
 
-    public synchronized boolean copyViewerStateFrom(Manga source) {
+    public boolean copyViewerStateFrom(Manga source) {
         if(source == null
                 || source.getId() != getId()
                 || source.getBaseMode() != getBaseMode()
                 || source.getTitleId() != getTitleId()
+                || isFetchInProgress()
                 || source.isFetchInProgress())
             return false;
         List<String> sourceImages = source.getImgs(null);
-        if(sourceImages != null)
-            imgs = new ArrayList<>(sourceImages);
         List<Manga> sourceEpisodes = safeEpisodeCopy(source.getEps());
-        if(sourceEpisodes != null)
-            eps = sourceEpisodes;
-        seed = source.getSeed();
-        if(source.getName() != null && source.getName().length() > 0)
-            name = source.getName();
-        if(source.getTitle() != null)
-            setTitle(source.getTitle());
-        else
-            setTitleId(source.getTitleId());
-        setNtkEpisodePath(source.getNtkEpisodePath());
-        return true;
+        int sourceSeed = source.getSeed();
+        String sourceName = source.getName();
+        Title sourceTitle = source.getTitle();
+        int sourceTitleId = source.getTitleId();
+        String sourceNtkEpisodePath = source.getNtkEpisodePath();
+        if(isFetchInProgress())
+            return false;
+        synchronized (this) {
+            if(isFetchInProgress())
+                return false;
+            if(sourceImages != null)
+                imgs = new ArrayList<>(sourceImages);
+            if(sourceEpisodes != null)
+                eps = sourceEpisodes;
+            seed = sourceSeed;
+            if(sourceName != null && sourceName.length() > 0)
+                name = sourceName;
+            if(sourceTitle != null)
+                setTitle(sourceTitle);
+            else
+                setTitleId(sourceTitleId);
+            setNtkEpisodePath(sourceNtkEpisodePath);
+            return true;
+        }
     }
 
     public boolean isFetchInProgress() {

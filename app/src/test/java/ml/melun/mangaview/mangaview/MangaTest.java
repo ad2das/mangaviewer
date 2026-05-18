@@ -78,6 +78,21 @@ public class MangaTest {
     }
 
     @Test
+    public void copyViewerStateSkipsBusyTargetWithoutMutating() {
+        Manga target = new Manga(12, "target", "", MTitle.base_comic) {
+            @Override
+            public boolean isFetchInProgress() {
+                return true;
+            }
+        };
+        Manga source = new Manga(12, "source", "", MTitle.base_comic);
+        source.setImgs(new ArrayList<>(Arrays.asList("a.jpg")));
+
+        assertTrue(!target.copyViewerStateFrom(source));
+        assertNull(target.getImgs(null));
+    }
+
+    @Test
     public void offlineImagesSkipDownloadArtifacts() throws Exception {
         File dir = Files.createTempDirectory("offline-images").toFile();
         File image = new File(dir, "0001.jpg");
