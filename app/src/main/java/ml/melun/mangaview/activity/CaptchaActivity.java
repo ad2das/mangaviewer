@@ -70,6 +70,7 @@ public class CaptchaActivity extends AppCompatActivity {
     private static final long TURNSTILE_CHECK_DELAY_MS = 0;
     private static final long TURNSTILE_CHECK_INTERVAL_MS = 500;
     private static final long TURNSTILE_MAX_WAIT_MS = 30000;
+    private static final long COOKIE_READ_THROTTLE_MS = 350;
     private static final String NTK_ACCESS_VERIFY_PATH = "/api/manhwa-list?page=1&pageSize=1&withTotal=1";
     public static final String SHADOW_HOOK_JS = "(function(){" +
             "if(window.__sh)return;" +
@@ -170,6 +171,7 @@ public class CaptchaActivity extends AppCompatActivity {
     private String lastVerificationClearanceValue = null;
     private long lastClearanceVerificationAt = 0;
     private long lastInvalidClearanceReloadAt = 0;
+    private long lastCookieReadAt = 0;
     private String captchaLoadUrl;
     private boolean captchaLoadErrorVisible = false;
     private LocalWebViewProxy localWebViewProxy;
@@ -261,6 +263,7 @@ public class CaptchaActivity extends AppCompatActivity {
                 hideCaptchaLoadError();
                 pageFinishedTime = 0;
                 lastAttemptTime = 0;
+                lastCookieReadAt = 0;
                 normalNtkPageCount = 0;
                 turnstileAutoClickStarted = false;
                 view.evaluateJavascript(SHADOW_HOOK_JS, null);
@@ -295,7 +298,7 @@ public class CaptchaActivity extends AppCompatActivity {
             @Override
             public void onLoadResource(WebView view, String url) {
                 if(isFinishing) return;
-                if(readCookiesAndFinish(cookiem, purl, url))
+                if(readCookiesAndFinish(cookiem, purl, url, true))
                     return;
 
                 // Attempt click immediately when resources load (Turnstile iframe appears mid-load)
@@ -640,45 +643,58 @@ public class CaptchaActivity extends AppCompatActivity {
     }
 
     private boolean readCookiesAndFinish(CookieManager cookiem, String purl, String currentUrl){
+        return readCookiesAndFinish(cookiem, purl, currentUrl, false);
+    }
+
+    private boolean readCookiesAndFinish(CookieManager cookiem, String purl, String currentUrl, boolean throttle){
         if(isFinishing) return true;
+        if(throttle) {
+            long now = SystemClock.elapsedRealtime();
+            if(now - lastCookieReadAt < COOKIE_READ_THROTTLE_MS)
+                return false;
+            lastCookieReadAt = now;
+        }
         try {
             boolean hasClearance = false;
-            String clearanceValue = null;
+            final String[] clearanceValue = new String[1];
             for(String cookieUrl : cookieReadUrls(purl, currentUrl)) {
                 if(cookieUrl == null || cookieUrl.length() == 0)
                     continue;
                 String cookieStr = cookiem.getCookie(cookieUrl);
                 if(cookieStr == null || cookieStr.length() == 0)
                     continue;
-                for (String s : cookieStr.split(";")) {
-                    String cookie = s.trim();
-                    int eq = cookie.indexOf("=");
-                    if(eq <= 0)
-                        continue;
-                    String k = cookie.substring(0, eq);
-                    String v = cookie.substring(eq + 1);
+                final boolean[] foundClearance = { hasClearance };
+                forEachCookiePair(cookieStr, (k, v) -> {
                     boolean clearance = "cf_clearance".equalsIgnoreCase(k);
                     if(clearance && !isValidClearanceValue(v))
-                        continue;
+                        return;
                     if(clearance && rejectedClearanceValues.contains(v))
-                        continue;
+                        return;
                     getHttpClient().setCookie(k, v);
                     if(clearance) {
-                        hasClearance = true;
-                        clearanceValue = v;
+                        foundClearance[0] = true;
+                        clearanceValue[0] = v;
                     }
-                }
+                });
+                hasClearance = foundClearance[0];
             }
             // Cookie presence alone is not enough: stale WebView clearances can make this
             // activity close while OkHttp still receives the Cloudflare challenge.
             if(hasClearance) {
+                long now = System.currentTimeMillis();
+                if(accessVerificationInFlight)
+                    return false;
+                if(clearanceValue[0] != null
+                        && clearanceValue[0].equals(lastVerificationClearanceValue)
+                        && now - lastClearanceVerificationAt < 5000L)
+                    return false;
                 cookiem.flush();
                 getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
                 getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
                 getHttpClient().syncCookiesFromWebView(purl, true);
                 if(currentUrl != null)
                     getHttpClient().syncCookiesFromWebView(currentUrl, true);
-                verifyNtkAccessAndFinish(purl, currentUrl, clearanceValue);
+                verifyNtkAccessAndFinish(purl, currentUrl, clearanceValue[0]);
             }
         }catch (Exception e){
             ml.melun.mangaview.report.CrashReporter.record(e);
@@ -828,17 +844,12 @@ public class CaptchaActivity extends AppCompatActivity {
     static String extractCookieValueForTest(String text, String cookieName) {
         if(text == null || cookieName == null || cookieName.length() == 0)
             return null;
-        String[] parts = text.split("[;\\n\\r]+");
-        for(String raw : parts) {
-            String part = raw == null ? "" : raw.trim();
-            int eq = part.indexOf('=');
-            if(eq <= 0)
-                continue;
-            String key = part.substring(0, eq).trim();
-            if(cookieName.equalsIgnoreCase(key))
-                return part.substring(eq + 1).trim();
-        }
-        return null;
+        final String[] value = new String[1];
+        forEachCookiePair(text, (key, cookieValue) -> {
+            if(value[0] == null && cookieName.equalsIgnoreCase(key))
+                value[0] = cookieValue;
+        });
+        return value[0];
     }
 
     private static boolean isNtkLikeUrlForCaptcha(String url) {
@@ -858,18 +869,48 @@ public class CaptchaActivity extends AppCompatActivity {
             String cookieStr = cookiem.getCookie(url);
             if(cookieStr == null || cookieStr.length() == 0)
                 continue;
-            for(String raw : cookieStr.split(";")) {
-                String cookie = raw.trim();
-                int eq = cookie.indexOf("=");
-                if(eq <= 0)
-                    continue;
-                String key = cookie.substring(0, eq);
-                String value = cookie.substring(eq + 1);
+            forEachCookiePair(cookieStr, (key, value) -> {
                 if("cf_clearance".equalsIgnoreCase(key) && isValidClearanceValue(value))
                     values.add(value);
-            }
+            });
         }
         return values;
+    }
+
+    private interface CookiePairConsumer {
+        void accept(String key, String value);
+    }
+
+    private static void forEachCookiePair(String cookieStr, CookiePairConsumer consumer) {
+        if(cookieStr == null || consumer == null)
+            return;
+        int start = 0;
+        int length = cookieStr.length();
+        while(start < length) {
+            int end = nextCookieSeparator(cookieStr, start);
+            int eq = cookieStr.indexOf('=', start);
+            if(eq > start && eq < end) {
+                String key = cookieStr.substring(start, eq).trim();
+                String value = cookieStr.substring(eq + 1, end).trim();
+                if(key.length() > 0)
+                    consumer.accept(key, value);
+            }
+            start = end + 1;
+        }
+    }
+
+    private static int nextCookieSeparator(String cookieStr, int start) {
+        int end = cookieStr.length();
+        int semicolon = cookieStr.indexOf(';', start);
+        if(semicolon >= 0 && semicolon < end)
+            end = semicolon;
+        int newline = cookieStr.indexOf('\n', start);
+        if(newline >= 0 && newline < end)
+            end = newline;
+        int carriageReturn = cookieStr.indexOf('\r', start);
+        if(carriageReturn >= 0 && carriageReturn < end)
+            end = carriageReturn;
+        return end;
     }
 
     private boolean isValidClearanceValue(String value) {
