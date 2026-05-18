@@ -1,5 +1,6 @@
 package ml.melun.mangaview;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -7,12 +8,14 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Point;
 
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.widget.PopupMenu;
+import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
 import androidx.fragment.app.Fragment;
 
@@ -93,6 +96,7 @@ public class Utils {
     private static final String MANGA_BASE_MODE = "manga_base_mode";
     private static final String MANGA_MODE = "manga_mode";
     private static final String MANGA_OFFLINE_PATH = "manga_offline_path";
+    private static final int DOWNLOAD_NOTIFICATION_PERMISSION_REQUEST = 132_324;
 
     private static int captchaCount = 1;
     private static long lastAutoCloudflareCaptchaAt = 0L;
@@ -772,6 +776,7 @@ public class Utils {
         }
         if(!ensureOfflineHomeWritable(context))
             return false;
+        maybeRequestDownloadNotificationPermission(context);
         try {
             DownloadRepository.enqueue(context, title, selected);
         } catch (Exception e) {
@@ -781,6 +786,25 @@ public class Utils {
         }
         Toast.makeText(context,"오프라인 저장을 시작합니다.", Toast.LENGTH_LONG).show();
         return true;
+    }
+
+    private static void maybeRequestDownloadNotificationPermission(Context context) {
+        if(!(context instanceof Activity))
+            return;
+        Activity activity = (Activity) context;
+        if(!canUseActivity(activity))
+            return;
+        boolean permissionGranted = ContextCompat.checkSelfPermission(
+                activity,
+                Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+        if(shouldRequestNotificationPermissionForDownloads(Build.VERSION.SDK_INT, permissionGranted))
+            activity.requestPermissions(
+                    new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                    DOWNLOAD_NOTIFICATION_PERMISSION_REQUEST);
+    }
+
+    static boolean shouldRequestNotificationPermissionForDownloads(int sdkVersion, boolean permissionGranted) {
+        return sdkVersion >= Build.VERSION_CODES.TIRAMISU && !permissionGranted;
     }
 
     private static int findEpisodeIndex(List<Manga> episodes, Manga target) {

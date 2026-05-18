@@ -1,6 +1,5 @@
 package ml.melun.mangaview.activity;
 
-import android.Manifest;
 import android.app.ProgressDialog;
 import android.content.BroadcastReceiver;
 import android.content.ClipData;
@@ -9,12 +8,10 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
 
@@ -476,7 +473,6 @@ public class MainActivity extends AppCompatActivity
         MainApplication.initDeferredServices();
         refreshNtkDomainIfNeeded();
         startDeferredUrlUpdate();
-        requestStartupPermissions();
     }
 
     private void setupNavigationDrawer() {
@@ -630,13 +626,6 @@ public class MainActivity extends AppCompatActivity
             if(pendingUrlUpdateCallback != null)
                 pendingUrlUpdateCallback.callback(false);
             pendingUrlUpdateCallback = null;
-        }
-    }
-
-    private void requestStartupPermissions() {
-        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-                && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_DENIED) {
-            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, PERMISSION_CODE + 1);
         }
     }
 

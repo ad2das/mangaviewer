@@ -174,4 +174,11 @@ public class UtilsTest {
         assertTrue(Utils.shouldBlockCaptchaForOffline(false));
         assertFalse(Utils.shouldBlockCaptchaForOffline(true));
     }
+
+    @Test
+    public void notificationPermissionIsOnlyRequestedForDownloadNotificationsOnAndroid13Plus() {
+        assertFalse(Utils.shouldRequestNotificationPermissionForDownloads(32, false));
+        assertTrue(Utils.shouldRequestNotificationPermissionForDownloads(33, false));
+        assertFalse(Utils.shouldRequestNotificationPermissionForDownloads(33, true));
+    }
 }

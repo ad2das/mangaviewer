@@ -47,6 +47,7 @@ import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
@@ -1058,7 +1059,8 @@ public class CaptchaActivity extends AppCompatActivity {
                 while(!closed) {
                     try {
                         Socket client = serverSocket.accept();
-                        executor.execute(() -> handle(client));
+                        if(!executeProxyTask(() -> handle(client)))
+                            closeQuietly(client);
                     } catch (Exception e) {
                         if(!closed)
                             android.util.Log.d("CaptchaActivity", "NTK WebView proxy accept failed", e);
@@ -1098,14 +1100,30 @@ public class CaptchaActivity extends AppCompatActivity {
                 output.flush();
                 pipeBoth(client, upstream);
             } catch (Exception e) {
-                android.util.Log.d("CaptchaActivity", "NTK WebView proxy connection failed", e);
+                if(!closed)
+                    android.util.Log.d("CaptchaActivity", "NTK WebView proxy connection failed", e);
                 closeQuietly(client);
             }
         }
 
         private void pipeBoth(Socket a, Socket b) {
-            executor.execute(() -> pipe(a, b));
-            executor.execute(() -> pipe(b, a));
+            boolean first = executeProxyTask(() -> pipe(a, b));
+            boolean second = executeProxyTask(() -> pipe(b, a));
+            if(!first || !second) {
+                closeQuietly(a);
+                closeQuietly(b);
+            }
+        }
+
+        private boolean executeProxyTask(Runnable task) {
+            if(closed || executor.isShutdown())
+                return false;
+            try {
+                executor.execute(task);
+                return true;
+            } catch (RejectedExecutionException ignored) {
+                return false;
+            }
         }
 
         private void pipe(Socket from, Socket to) {
