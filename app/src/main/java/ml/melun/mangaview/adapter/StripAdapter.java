@@ -554,13 +554,12 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             if(item.index > 0)
                 ViewerWarmupManager.logMetric("viewer_next_page_cache_hit", 1);
             failedImageRetries.remove(pageKey);
-            Bitmap displayBitmap = copyBitmapForDisplay(cached.bitmap);
-            if(displayBitmap == null) {
+            if(!isDisplayBitmapUsable(cached.bitmap)) {
                 decodedBitmapCache.remove(cacheKey);
                 handleImageLoadFailed(holder, item, pageKey, bindGeneration);
                 return;
             }
-            bindBitmap(holder, pageKey, displayBitmap);
+            bindBitmap(holder, pageKey, cached.bitmap);
             holder.refresh.setVisibility(View.GONE);
             markDisplayedAndPreload(holder, item, pageKey);
             return;
@@ -572,14 +571,13 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             if(item.index > 0)
                 ViewerWarmupManager.logMetric("viewer_next_page_cache_hit", 1);
             failedImageRetries.remove(pageKey);
-            Bitmap displayBitmap = copyBitmapForDisplay(warmupCached);
-            if(displayBitmap == null) {
+            if(!isDisplayBitmapUsable(warmupCached)) {
                 handleImageLoadFailed(holder, item, pageKey, bindGeneration);
                 return;
             }
-            bindBitmap(holder, pageKey, displayBitmap);
+            bindBitmap(holder, pageKey, warmupCached);
             holder.refresh.setVisibility(View.GONE);
-            cacheDisplayedBitmap(cacheKey, displayBitmap);
+            cacheDisplayedBitmap(cacheKey, warmupCached);
             markDisplayedAndPreload(holder, item, pageKey);
             return;
         }
@@ -734,9 +732,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private void cacheDisplayedBitmap(String cacheKey, Bitmap bitmap) {
         if(!shouldCacheDisplayedBitmap(cacheKey, isDisplayBitmapUsable(bitmap)))
             return;
-        Bitmap cacheBitmap = copyBitmapForDisplay(bitmap);
-        if(cacheBitmap != null)
-            putDecodedBitmap(cacheKey, cacheBitmap);
+        putDecodedBitmap(cacheKey, bitmap);
     }
 
     static boolean shouldCacheDisplayedBitmapForTest(String cacheKey, boolean holderActive, boolean bitmapUsable) {
