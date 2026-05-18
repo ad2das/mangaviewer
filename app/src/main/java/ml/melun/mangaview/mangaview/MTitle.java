@@ -3,6 +3,7 @@ package ml.melun.mangaview.mangaview;
 import androidx.annotation.NonNull;
 
 import java.util.ArrayList;
+import java.util.Locale;
 import java.util.List;
 
 public class MTitle{
@@ -52,7 +53,7 @@ public class MTitle{
     private String normalizeSourceSite(String sourceSite) {
         if(sourceSite == null)
             return "";
-        String lower = sourceSite.trim().toLowerCase();
+        String lower = sourceSite.trim().toLowerCase(Locale.ROOT);
         if(lower.length() == 0)
             return "";
         if(lower.contains("ntk") || lower.contains("sbxh") || lower.contains("toonflix"))

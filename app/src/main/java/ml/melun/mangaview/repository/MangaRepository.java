@@ -5,6 +5,7 @@ import android.content.Context;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
@@ -418,7 +419,7 @@ public final class MangaRepository {
     private static boolean isNtkRoot(String root) {
         if(root == null)
             return false;
-        String lower = root.toLowerCase();
+        String lower = root.toLowerCase(Locale.ROOT);
         return lower.contains("://ntk")
                 || lower.contains("://newtoki")
                 || lower.contains("://sbxh")

@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -526,7 +527,7 @@ public class Preference {
             String host = URI.create(normalized).getHost();
             if(host == null)
                 return false;
-            host = host.toLowerCase();
+            host = host.toLowerCase(Locale.ROOT);
             if(host.startsWith("www."))
                 host = host.substring(4);
             return host.startsWith("ntk")
@@ -567,7 +568,7 @@ public class Preference {
             if(normalized.length() == 0)
                 return false;
             String host = URI.create(normalized).getHost();
-            return host != null && host.toLowerCase().startsWith(prefix);
+            return host != null && host.toLowerCase(Locale.ROOT).startsWith(prefix);
         } catch (Exception e) {
             return false;
         }
@@ -706,7 +707,7 @@ public class Preference {
             String host = URI.create(normalizeHttpUrl(root, "")).getHost();
             if(host == null)
                 return false;
-            host = host.toLowerCase();
+            host = host.toLowerCase(Locale.ROOT);
             if(host.startsWith("www."))
                 host = host.substring(4);
             return "ntk01.com".equals(host);
@@ -1123,7 +1124,7 @@ public class Preference {
     private String canonicalSourceSite(String source) {
         if(source == null)
             return "";
-        String lower = source.trim().toLowerCase();
+        String lower = source.trim().toLowerCase(Locale.ROOT);
         if(lower.length() == 0)
             return "";
         if(lower.contains("ntk") || lower.contains("sbxh") || lower.contains("toonflix"))

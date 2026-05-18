@@ -15,6 +15,7 @@ import android.webkit.WebViewClient;
 
 import java.util.ArrayDeque;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -400,10 +401,10 @@ final class NtkWebViewFallbackManager {
             return false;
         if(isFinishedDocumentUrl(url, baseUrl, path))
             return false;
-        String lower = url.toLowerCase();
+        String lower = url.toLowerCase(Locale.ROOT);
         if(lower.startsWith("about:") || lower.startsWith("data:"))
             return false;
-        return lower.contains("t.me/") || !lower.startsWith(baseUrl.toLowerCase());
+        return lower.contains("t.me/") || !lower.startsWith(baseUrl.toLowerCase(Locale.ROOT));
     }
 
     private static Map<String, String> webViewHeaders(Map<String, String> headers) {
