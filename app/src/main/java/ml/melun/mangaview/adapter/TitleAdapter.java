@@ -280,9 +280,16 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
 
     public void setDataImmediate(List<?> t){
         ArrayList<Title> next = normalizeTitles(t);
+        ArrayList<Title> nextFiltered = filteredByStatus(next);
+        if(listContentSignature(mDataFiltered).equals(listContentSignature(nextFiltered))) {
+            mData = next;
+            mDataFiltered = nextFiltered;
+            searching = false;
+            return;
+        }
         int oldSize = getItemCount();
         mData = next;
-        mDataFiltered = statusFilter.length() == 0 ? new ArrayList<>(next) : filteredByStatus();
+        mDataFiltered = nextFiltered;
         searching = false;
         diffGeneration++;
         tagTextCache.clear();
@@ -378,8 +385,14 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     }
 
     private ArrayList<Title> filteredByStatus() {
+        return filteredByStatus(mData);
+    }
+
+    private ArrayList<Title> filteredByStatus(List<Title> source) {
         ArrayList<Title> filtered = new ArrayList<>();
-        for(Title title : mData) {
+        if(source == null)
+            return filtered;
+        for(Title title : source) {
             if(title == null)
                 continue;
             if(statusFilter.length() == 0 || statusFilter.equals(title.getNtkStatusLabel()))
