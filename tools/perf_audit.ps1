@@ -116,7 +116,7 @@ function Tap-HomeFirstTitle {
 }
 
 function Tap-FirstEpisode {
-    Invoke-Adb shell input tap 460 876 | Out-Null
+    Invoke-Adb shell input tap 540 1780 | Out-Null
     Start-Sleep -Seconds 5
 }
 
