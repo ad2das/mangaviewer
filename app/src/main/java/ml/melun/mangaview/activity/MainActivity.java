@@ -132,6 +132,10 @@ public class MainActivity extends AppCompatActivity
     private void registerInternalReceiver(BroadcastReceiver receiver, IntentFilter filter) {
         ContextCompat.registerReceiver(this, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
     }
+
+    private void restartMainActivity() {
+        startActivity(new Intent(this, MainActivity.class));
+    }
     private static final String FRAGMENT_TAG_PREFIX = "main_tab_";
     private static final String EXTRA_SEARCH_QUERY = "searchQuery";
     private static final String EXTRA_SEARCH_BASE_MODE = "searchBaseMode";
@@ -339,7 +343,7 @@ public class MainActivity extends AppCompatActivity
                                     Toast.makeText(getApplication(), "작업을 시작합니다.", Toast.LENGTH_LONG).show();
                                     //restart activity
                                     finish();
-                                    startActivity(getIntent());
+                                    restartMainActivity();
                                 })
                                 .setNegativeButton("취소", (dialogInterface14, i12) -> finish())
                                 .setOnCancelListener(dialogInterface13 -> finish())
@@ -1262,7 +1266,7 @@ public class MainActivity extends AppCompatActivity
             }else Utils.safeToast(context, "백업 실패", Toast.LENGTH_LONG);
 
             finish();
-            Utils.safeStartActivity(context, getIntent());
+            restartMainActivity();
         }
         if(resultCode == RESULT_NEED_RESTART){
             recreate();
