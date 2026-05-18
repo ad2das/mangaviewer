@@ -1134,16 +1134,7 @@ public class CustomHttpClient {
             String cookieStr = CookieManager.getInstance().getCookie(url);
             if(cookieStr == null || cookieStr.length() == 0)
                 return;
-            Map<String, String> webViewCookies = new HashMap<>();
-            for(String raw : cookieStr.split(";")){
-                String s = raw.trim();
-                int eq = s.indexOf("=");
-                if(eq <= 0)
-                    continue;
-                String key = s.substring(0, eq);
-                String value = s.substring(eq + 1);
-                webViewCookies.put(key, value);
-            }
+            Map<String, String> webViewCookies = parseCookieHeader(cookieStr);
             if(webViewCookies.size() == 0)
                 return;
 
@@ -1174,6 +1165,40 @@ public class CustomHttpClient {
             if(ntkUrl)
                 ViewerWarmupManager.logMetric("ntk_cookie_sync_ms", System.currentTimeMillis() - startedAt);
         }
+    }
+
+    static Map<String, String> parseCookieHeaderForTest(String cookieStr) {
+        return parseCookieHeader(cookieStr);
+    }
+
+    private static Map<String, String> parseCookieHeader(String cookieStr) {
+        Map<String, String> webViewCookies = new HashMap<>();
+        if(cookieStr == null || cookieStr.length() == 0)
+            return webViewCookies;
+        int start = 0;
+        while(start < cookieStr.length()) {
+            int end = nextCookieSeparator(cookieStr, start);
+            String part = cookieStr.substring(start, end).trim();
+            int eq = part.indexOf("=");
+            if(eq > 0)
+                webViewCookies.put(part.substring(0, eq), part.substring(eq + 1));
+            start = end + 1;
+        }
+        return webViewCookies;
+    }
+
+    private static int nextCookieSeparator(String cookieStr, int start) {
+        int semi = cookieStr.indexOf(';', start);
+        int newline = cookieStr.indexOf('\n', start);
+        int carriage = cookieStr.indexOf('\r', start);
+        int end = cookieStr.length();
+        if(semi >= 0 && semi < end)
+            end = semi;
+        if(newline >= 0 && newline < end)
+            end = newline;
+        if(carriage >= 0 && carriage < end)
+            end = carriage;
+        return end;
     }
 
     private synchronized boolean canAcceptWebViewClearance(String value) {

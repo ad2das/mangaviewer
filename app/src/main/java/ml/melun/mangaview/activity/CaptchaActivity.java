@@ -19,6 +19,7 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.webkit.CookieManager;
 import android.webkit.JsResult;
 import android.webkit.WebChromeClient;
@@ -175,6 +176,7 @@ public class CaptchaActivity extends AppCompatActivity {
     private String captchaLoadUrl;
     private boolean captchaLoadErrorVisible = false;
     private LocalWebViewProxy localWebViewProxy;
+    private WebView releasedWebView;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -483,7 +485,7 @@ public class CaptchaActivity extends AppCompatActivity {
     }
 
     private void attemptTurnstileClick() {
-        if(webView == null || captchaLoadErrorVisible) return;
+        if(isFinishing || isDestroyed() || webView == null || captchaLoadErrorVisible) return;
 
         long now = System.currentTimeMillis();
         long requiredInterval = isFirstAttempt ? FIRST_CLICK_DELAY_MS : (RETRY_MIN_MS + (long)(Math.random() * (RETRY_MAX_MS - RETRY_MIN_MS)));
@@ -491,6 +493,8 @@ public class CaptchaActivity extends AppCompatActivity {
         lastAttemptTime = now;
 
         webView.evaluateJavascript(TURNSTILE_AUTO_JS, result -> {
+            if(isFinishing || isDestroyed() || webView == null)
+                return;
             android.util.Log.d("CaptchaActivity", "Turnstile check result: " + result);
             if(result == null || result.equals("null")) return;
 
@@ -510,7 +514,10 @@ public class CaptchaActivity extends AppCompatActivity {
                     final float h = (float) obj.optDouble("h", 60);
                     android.util.Log.d("CaptchaActivity", "Turnstile iframe found at: " + x + "," + y + " size:" + w + "x" + h);
 
-                    webView.post(() -> simulateTouchBurst(webView, x, y, w, h));
+                    webView.post(() -> {
+                        if(!isFinishing && !isDestroyed() && webView != null)
+                            simulateTouchBurst(webView, x, y, w, h);
+                    });
                     isFirstAttempt = false;
                 } else if("normal".equals(type)) {
                     isFirstAttempt = false;
@@ -779,12 +786,14 @@ public class CaptchaActivity extends AppCompatActivity {
     }
 
     private void finishWithVerifiedClearance() {
+        String currentWebViewUrl = webView == null ? null : webView.getUrl();
+        detachCaptchaWebView();
         CookieManager manager = CookieManager.getInstance();
         manager.flush();
         getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
         getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
-        if(webView != null)
-            getHttpClient().syncCookiesFromWebView(webView.getUrl(), true);
+        if(currentWebViewUrl != null)
+            getHttpClient().syncCookiesFromWebView(currentWebViewUrl, true);
         getHttpClient().saveClearanceToDisk();
         getHttpClient().markNtkAccessVerified();
         isFinishing = true;
@@ -939,14 +948,9 @@ public class CaptchaActivity extends AppCompatActivity {
         handler.removeCallbacksAndMessages(null);
         getHttpClient().setCloudflareCaptchaActive(false);
         clearWebViewProxy();
+        detachCaptchaWebView();
         super.onDestroy();
-        //destroy webview
-        ((ConstraintLayout) findViewById(R.id.captchaContainer)).removeAllViews();
-        if(webView != null) {
-            webView.clearHistory();
-            webView.clearCache(true);
-            webView.destroy();
-        }
+        destroyReleasedWebViewLater();
     }
 
     @Override
@@ -956,6 +960,53 @@ public class CaptchaActivity extends AppCompatActivity {
         clearWebViewProxy();
         super.finish();
         this.overridePendingTransition(R.anim.fade_in, R.anim.fade_out);
+    }
+
+    private void detachCaptchaWebView() {
+        WebView target = webView;
+        if(target == null)
+            return;
+        webView = null;
+        releasedWebView = target;
+        try {
+            target.stopLoading();
+        } catch (Exception ignored) {
+        }
+        try {
+            target.onPause();
+            target.pauseTimers();
+        } catch (Exception ignored) {
+        }
+        try {
+            target.setWebChromeClient(null);
+            target.setWebViewClient(null);
+        } catch (Exception ignored) {
+        }
+        try {
+            target.setVisibility(View.GONE);
+            ViewGroup parent = (target.getParent() instanceof ViewGroup) ? (ViewGroup) target.getParent() : null;
+            if(parent != null)
+                parent.removeView(target);
+        } catch (Exception ignored) {
+        }
+        ConstraintLayout container = findViewById(R.id.captchaContainer);
+        if(container != null)
+            container.removeAllViews();
+    }
+
+    private void destroyReleasedWebViewLater() {
+        WebView target = releasedWebView;
+        releasedWebView = null;
+        if(target == null)
+            return;
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            try {
+                target.clearHistory();
+                target.removeAllViews();
+                target.destroy();
+            } catch (Exception ignored) {
+            }
+        }, 750L);
     }
 
     private void clearWebViewProxy() {

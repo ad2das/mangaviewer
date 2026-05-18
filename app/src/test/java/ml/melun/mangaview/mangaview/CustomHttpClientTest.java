@@ -6,6 +6,7 @@ import java.net.ConnectException;
 import java.net.InetAddress;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 import okhttp3.Protocol;
 
@@ -50,6 +51,17 @@ public class CustomHttpClientTest {
         assertFalse(CustomHttpClient.shouldApplyRestoredClearanceForTest("", "", now + 1_000L, now));
         assertTrue(CustomHttpClient.shouldApplyRestoredClearanceForTest("", "token", now + 1_000L, now));
         assertTrue(CustomHttpClient.shouldApplyRestoredClearanceForTest("old", "token", now + 1_000L, now));
+    }
+
+    @Test
+    public void webViewCookieHeaderParserAvoidsRegexSplitting() {
+        Map<String, String> cookies = CustomHttpClient.parseCookieHeaderForTest(
+                " session=one ; cf_clearance=abc=def\n theme=dark\r invalid ");
+
+        assertEquals("one", cookies.get("session"));
+        assertEquals("abc=def", cookies.get("cf_clearance"));
+        assertEquals("dark", cookies.get("theme"));
+        assertFalse(cookies.containsKey("invalid"));
     }
 
     @Test
