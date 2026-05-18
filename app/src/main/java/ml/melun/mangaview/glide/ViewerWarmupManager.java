@@ -72,6 +72,7 @@ public class ViewerWarmupManager {
     private static final LinkedHashMap<String, Long> recentPagePreloads = new LinkedHashMap<>(PAGE_PRELOAD_DEDUPE_LIMIT, 0.75f, true);
     private static final Map<String, CustomTarget<Bitmap>> decodedTargets = new HashMap<>();
     private static volatile long suppressVisibleContinueWarmupsUntilMs = 0L;
+    private static volatile boolean suppressVisibleContinueWarmupsWhileViewerActive = false;
     private static final LruCache<String, CachedBitmap> decodedBitmapCache = new LruCache<String, CachedBitmap>(decodedCacheSizeKb()) {
         @Override
         protected int sizeOf(String key, CachedBitmap value) {
@@ -169,6 +170,10 @@ public class ViewerWarmupManager {
                 SystemClock.uptimeMillis() + Math.max(0L, durationMs));
     }
 
+    public static void suppressVisibleContinueWarmupsWhileViewerActive(boolean active) {
+        suppressVisibleContinueWarmupsWhileViewerActive = active;
+    }
+
     public static void warmupSavedContinues(Context context, int limit) {
         if(context == null || p == null)
             return;
@@ -218,7 +223,8 @@ public class ViewerWarmupManager {
         }
         if(!sourceMatchesCurrentSite(title))
             return;
-        if(visibleResume && shouldSuppressVisibleContinueWarmup(SystemClock.uptimeMillis(), suppressVisibleContinueWarmupsUntilMs))
+        if(visibleResume && shouldSuppressVisibleContinueWarmup(SystemClock.uptimeMillis(),
+                suppressVisibleContinueWarmupsUntilMs, suppressVisibleContinueWarmupsWhileViewerActive))
             return;
         Title warmupTitle = title;
         Context appContext = context.getApplicationContext();
@@ -235,7 +241,8 @@ public class ViewerWarmupManager {
         String warmupSource = title == null ? null : title.getSourceSite();
         AppDispatchers.submitImageWarmup(() -> {
             try {
-                if(visibleResume && shouldSuppressVisibleContinueWarmup(SystemClock.uptimeMillis(), suppressVisibleContinueWarmupsUntilMs))
+                if(visibleResume && shouldSuppressVisibleContinueWarmup(SystemClock.uptimeMillis(),
+                        suppressVisibleContinueWarmupsUntilMs, suppressVisibleContinueWarmupsWhileViewerActive))
                     return;
                 runDirectOnlyWarmup(warmupSource, () -> {
                     Manga target = manga;
@@ -816,11 +823,19 @@ public class ViewerWarmupManager {
     }
 
     private static boolean shouldSuppressVisibleContinueWarmup(long now, long suppressUntil) {
-        return now < suppressUntil;
+        return shouldSuppressVisibleContinueWarmup(now, suppressUntil, false);
     }
 
     static boolean shouldSuppressVisibleContinueWarmupForTest(long now, long suppressUntil) {
         return shouldSuppressVisibleContinueWarmup(now, suppressUntil);
+    }
+
+    static boolean shouldSuppressVisibleContinueWarmupForTest(long now, long suppressUntil, boolean viewerActive) {
+        return shouldSuppressVisibleContinueWarmup(now, suppressUntil, viewerActive);
+    }
+
+    private static boolean shouldSuppressVisibleContinueWarmup(long now, long suppressUntil, boolean viewerActive) {
+        return viewerActive || now < suppressUntil;
     }
 
     private static boolean decodeFirstPagesBlocking(Context context, Manga manga, int pageIndex, int width, boolean autoCut, boolean reverse) {

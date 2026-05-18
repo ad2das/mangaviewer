@@ -163,6 +163,7 @@ public class ViewerActivity extends AppCompatActivity {
         PerformanceMonitor.attach(this);
         PerformanceMonitor.screen("viewer");
         ViewerWarmupManager.suppressVisibleContinueWarmups(3000L);
+        ViewerWarmupManager.suppressVisibleContinueWarmupsWhileViewerActive(true);
         setContentView(R.layout.activity_viewer);
 
         next = this.findViewById(R.id.toolbar_next);
@@ -881,6 +882,7 @@ public class ViewerActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        ViewerWarmupManager.suppressVisibleContinueWarmupsWhileViewerActive(true);
         PerformanceMonitor.resume();
         if(toolbarshow) getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
         else getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN);
@@ -891,6 +893,7 @@ public class ViewerActivity extends AppCompatActivity {
         mainHandler.removeCallbacks(delayedScrollBookmarkSave);
         saveCurrentScrollBookmark();
         PerformanceMonitor.pause();
+        ViewerWarmupManager.suppressVisibleContinueWarmupsWhileViewerActive(false);
         super.onPause();
     }
 

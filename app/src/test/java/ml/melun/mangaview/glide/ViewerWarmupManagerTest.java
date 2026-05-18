@@ -199,5 +199,7 @@ public class ViewerWarmupManagerTest {
     public void visibleContinueWarmupCanBeSuppressedDuringViewerEntry() {
         assertTrue(ViewerWarmupManager.shouldSuppressVisibleContinueWarmupForTest(1000L, 1500L));
         assertFalse(ViewerWarmupManager.shouldSuppressVisibleContinueWarmupForTest(1500L, 1500L));
+        assertTrue(ViewerWarmupManager.shouldSuppressVisibleContinueWarmupForTest(1500L, 1500L, true));
+        assertFalse(ViewerWarmupManager.shouldSuppressVisibleContinueWarmupForTest(1500L, 1500L, false));
     }
 }
