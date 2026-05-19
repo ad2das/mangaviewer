@@ -89,6 +89,17 @@ public class TitleTest {
     }
 
     @Test
+    public void ntkTitleMissingPageIgnoresNextErrorTokensWhenEpisodesExist() {
+        assertFalse(Title.looksLikeNtkMissingPageForTest(
+                "<html><body><script>self.__next_f.push([\"$\",\"__next_error__\"])</script>"
+                        + "<a class=\"ep-row-v2-link\" href=\"/manhwa/34911/u-mp8ngtgm-gp0d\"><strong>27화</strong></a>"
+                        + "</body></html>"));
+
+        assertTrue(Title.looksLikeNtkMissingPageForTest(
+                "<html id=\"__next_error__\"><script>self.__next_f.push([\"NEXT_HTTP_ERROR_FALLBACK\",404])</script></html>"));
+    }
+
+    @Test
     public void titleMinimizePreservesSourceSite() {
         Title title = new Title("title", "", "", null, "", 10, MTitle.base_webtoon);
         title.setSourceSite("ntk");

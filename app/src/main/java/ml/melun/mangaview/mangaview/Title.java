@@ -279,11 +279,20 @@ public class Title extends MTitle {
         if(body == null || body.length() == 0)
             return true;
         String lower = body.toLowerCase(java.util.Locale.ROOT);
-        return lower.contains("next_http_error_fallback")
-                || lower.contains("__next_error__")
+        if(hasNtkEpisodeListContent(lower))
+            return false;
+        return lower.matches("(?s).*next_http_error_fallback[^\\]]*(?:404|410).*")
+                || lower.matches("(?s).*<html[^>]+id=[\"']__next_error__[\"'].*")
                 || lower.contains("404: this page could not be found")
                 || body.contains("\uC791\uD488\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4")
                 || body.contains("\uD68C\uCC28 \uC5C6\uC74C");
+    }
+
+    private static boolean hasNtkEpisodeListContent(String lowerBody) {
+        if(lowerBody == null || lowerBody.length() == 0)
+            return false;
+        return lowerBody.contains("ep-row-v2-link")
+                || lowerBody.matches("(?s).*/(?:manhwa|webtoon)/[^\"'<>\\s]+/[^\"'<>\\s]+.*");
     }
 
     private static Element firstNtkTitleImage(Document document, String titleKey, String titleName) {
@@ -438,6 +447,10 @@ public class Title extends MTitle {
 
     static int ntkEpisodeSortIdForTest(String html, String epPath, String segment) {
         return ntkEpisodeSortId(Jsoup.parseBodyFragment(html).body(), epPath, segment);
+    }
+
+    static boolean looksLikeNtkMissingPageForTest(String body) {
+        return looksLikeNtkMissingPage(body);
     }
 
     private static String cleanNtkEpisodeTitle(Element link) {
