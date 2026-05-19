@@ -493,7 +493,9 @@ public class Manga {
         String normalized = normalizeNtkEmbeddedImageText(body);
         if(hasNtkPageImageMatch(normalized, NTK_TEXT_IMAGE_PATTERN, false))
             return true;
-        return hasNtkPageImageMatch(body, NTK_ENCODED_TEXT_IMAGE_PATTERN, true);
+        if(hasNtkPageImageMatch(body, NTK_ENCODED_TEXT_IMAGE_PATTERN, true))
+            return true;
+        return hasNtkViewerBoardUploadImageInText(normalized);
     }
 
     private static boolean hasNtkPageImageMatch(String source, Pattern pattern, boolean percentEncoded) {
@@ -510,6 +512,15 @@ public class Manga {
                 return true;
         }
         return false;
+    }
+
+    private static boolean hasNtkViewerBoardUploadImageInText(String body) {
+        if(body == null || body.length() == 0)
+            return false;
+        String lower = body.toLowerCase(Locale.ROOT);
+        if(lower.contains("vw-imgs") && lower.contains("/board_uploads/") && lower.contains("alt=\"page "))
+            return true;
+        return lower.matches("(?s).*\"images\"\\s*:\\s*\\[.*\"page\"\\s*:\\s*\\d+\\s*,\\s*\"src\"\\s*:\\s*\"https?://[^\"<>]+/board_uploads/[^\"<>]+\\.(?:jpg|jpeg|png|webp).*");
     }
 
     private static String extractNtkViewerEpisodeName(Document d) {
