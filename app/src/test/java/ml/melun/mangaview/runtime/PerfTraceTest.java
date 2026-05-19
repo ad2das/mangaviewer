@@ -19,7 +19,7 @@ public class PerfTraceTest {
     }
 
     @Test
-    public void traceLoggingIsEnabledInDebugBuilds() {
-        assertTrue(PerfTrace.shouldLogForTest(true, false));
+    public void traceLoggingStillRequiresTagInDebugBuilds() {
+        assertFalse(PerfTrace.shouldLogForTest(true, false));
     }
 }

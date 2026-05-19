@@ -18,6 +18,7 @@ import okhttp3.Call;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
+import ml.melun.mangaview.runtime.PerfTrace;
 
 public class WfwfDomainResolver {
     private static final Pattern WFWF_PATTERN = Pattern.compile("^https?://wfwf(\\d+)\\.com(?:/cm)?/?$");
@@ -52,7 +53,7 @@ public class WfwfDomainResolver {
         if(resolved != null)
             return resolved;
         if(isDomainScanSuppressed()) {
-            android.util.Log.d("PerfTrace", "wfwf_domain_scan_skipped=network_unavailable");
+            PerfTrace.mark("wfwf_domain_scan_skipped", "network_unavailable");
             return null;
         }
 
@@ -71,7 +72,7 @@ public class WfwfDomainResolver {
                 .build();
 
         if(isDomainScanSuppressed()) {
-            android.util.Log.d("PerfTrace", "wfwf_domain_scan_skipped=network_unavailable");
+            PerfTrace.mark("wfwf_domain_scan_skipped", "network_unavailable");
             return null;
         }
         return findAliveCandidate(probeClient, candidates(domain), headers, requestGroup, System.currentTimeMillis() + RESOLVE_TIMEOUT_MS);
@@ -255,7 +256,7 @@ public class WfwfDomainResolver {
                 return logProbe(url, code, body.length(), false, updatedRoot);
             return logProbe(url, code, body.length(), looksLikeWfwf(body), null);
         } catch (Exception e) {
-            android.util.Log.d("PerfTrace", "wfwf_probe_error url=" + url + ",error=" + e.getClass().getSimpleName());
+            PerfTrace.mark("wfwf_probe_error", "url=" + url + ",error=" + e.getClass().getSimpleName());
             return ProbeResult.empty();
         } finally {
             if(requestGroup != null && call != null)
@@ -266,7 +267,7 @@ public class WfwfDomainResolver {
     }
 
     private static ProbeResult logProbe(String url, int code, int bodyLen, boolean alive, String updatedRoot) {
-        android.util.Log.d("PerfTrace", "wfwf_probe url=" + url
+        PerfTrace.mark("wfwf_probe", "url=" + url
                 + ",code=" + code
                 + ",len=" + bodyLen
                 + ",alive=" + alive

@@ -31,7 +31,7 @@ public final class PerformanceMonitor {
     }
 
     public static void attach(Activity activity) {
-        if(activity == null)
+        if(activity == null || !PerfTrace.shouldLog())
             return;
         try {
             activity.getWindow().getDecorView();

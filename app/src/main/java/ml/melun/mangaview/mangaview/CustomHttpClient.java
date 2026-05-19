@@ -52,6 +52,7 @@ import okhttp3.ResponseBody;
 
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.repository.CacheFileStore;
+import ml.melun.mangaview.runtime.PerfTrace;
 
 import static ml.melun.mangaview.MainApplication.p;
 public class CustomHttpClient {
@@ -1601,7 +1602,7 @@ public class CustomHttpClient {
                 return;
             wfwfDomainLastCanceledLog = now;
         }
-        android.util.Log.d("PerfTrace", "wfwf_domain_resolve_skipped=canceled");
+        PerfTrace.mark("wfwf_domain_resolve_skipped", "canceled");
     }
 
     private boolean ensureNumberedDomain(boolean force) {
@@ -1652,7 +1653,7 @@ public class CustomHttpClient {
                     clearPageCache();
                     changed = true;
                 }
-                android.util.Log.d("PerfTrace", "wfwf_domain_resolve_ms=" + (System.currentTimeMillis() - started)
+                PerfTrace.mark("wfwf_domain_resolve_ms", (System.currentTimeMillis() - started)
                         + ",force=" + force
                         + ",root=" + root
                         + ",resolved=" + (resolved == null ? "" : resolved)

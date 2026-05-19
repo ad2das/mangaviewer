@@ -44,7 +44,7 @@ public final class PerfTrace {
     }
 
     private static boolean shouldLog(boolean debugBuild, boolean debugTagLoggable) {
-        return debugBuild || debugTagLoggable;
+        return debugTagLoggable;
     }
 
     private static boolean isDebuggableApp() {
