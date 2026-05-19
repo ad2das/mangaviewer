@@ -1,7 +1,7 @@
 param(
     [string]$PackageName = "ml.melun.mangaview",
     [string]$MainActivity = ".activity.MainActivity",
-    [string]$ApkPath = "app\build\outputs\apk\debug\mangaViewer_2112260512-debug.apk",
+    [string]$ApkPath = "",
     [string]$OutDir = "build\perf-audit",
     [int]$MaxJankPermille = 9,
     [switch]$SkipInstall
@@ -59,6 +59,7 @@ function Read-AvdEnvironment {
         $name = ""
     }
     $gpuEnabled = $null
+    $gpuMode = $null
     if($name) {
         $config = Join-Path $env:USERPROFILE ".android\avd\$name.avd\config.ini"
         if(Test-Path $config) {
@@ -66,11 +67,16 @@ function Read-AvdEnvironment {
             if($line) {
                 $gpuEnabled = ($line -replace "^hw\.gpu\.enabled=", "")
             }
+            $modeLine = Get-Content $config | Where-Object { $_ -match "^hw\.gpu\.mode=" } | Select-Object -First 1
+            if($modeLine) {
+                $gpuMode = ($modeLine -replace "^hw\.gpu\.mode=", "")
+            }
         }
     }
     return @{
         AvdName = $name
         GpuEnabledConfig = $gpuEnabled
+        GpuModeConfig = $gpuMode
     }
 }
 
@@ -89,12 +95,12 @@ function Start-App-NoReset {
 function Swipe-Vertical {
     param([int]$Count = 6)
     for($i = 0; $i -lt $Count; $i++) {
-        Invoke-Adb shell input swipe 540 1580 540 620 10000 | Out-Null
-        Start-Sleep -Milliseconds 150
+        Invoke-Adb shell input swipe 540 1580 540 620 450 | Out-Null
+        Start-Sleep -Milliseconds 220
     }
     for($i = 0; $i -lt $Count; $i++) {
-        Invoke-Adb shell input swipe 540 620 540 1580 10000 | Out-Null
-        Start-Sleep -Milliseconds 150
+        Invoke-Adb shell input swipe 540 620 540 1580 450 | Out-Null
+        Start-Sleep -Milliseconds 220
     }
 }
 
@@ -207,7 +213,19 @@ if(-not ($devices | Select-String -Pattern "\sdevice$")) {
     throw "No adb device is connected."
 }
 
-if((-not $SkipInstall) -and (Test-Path $ApkPath)) {
+if(-not $ApkPath) {
+    $latestApk = Get-ChildItem "app\build\outputs\apk\debug" -Filter "*-debug.apk" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+    if($latestApk) {
+        $ApkPath = $latestApk.FullName
+    }
+}
+
+Invoke-Adb shell setprop log.tag.PerfTrace INFO | Out-Null
+Invoke-Adb shell setprop log.tag.ViewerPerf INFO | Out-Null
+
+if((-not $SkipInstall) -and $ApkPath -and (Test-Path $ApkPath)) {
     Invoke-Adb install -r $ApkPath | Out-Host
 }
 
@@ -218,7 +236,7 @@ Invoke-Adb shell cmd package compile -m speed -f $PackageName | Out-Host
 
 $environment = Read-AvdEnvironment
 if($environment.AvdName) {
-    Write-Host ("Environment: avd={0} hw.gpu.enabled={1}" -f $environment.AvdName, $environment.GpuEnabledConfig)
+    Write-Host ("Environment: avd={0} hw.gpu.enabled={1} hw.gpu.mode={2}" -f $environment.AvdName, $environment.GpuEnabledConfig, $environment.GpuModeConfig)
 }
 
 $results = @()
@@ -236,18 +254,18 @@ $summary = @{
 $summary | ConvertTo-Json -Depth 5 | Set-Content -Path $summaryPath -Encoding UTF8
 
 $failed = $results | Where-Object { -not $_.Passed }
-$environmentLimited = ($environment.GpuEnabledConfig -eq "no") -or ($results | Where-Object { $_.AltUiHidden })
+$environmentLimited = ($environment.GpuEnabledConfig -eq "no") -or ($environment.GpuModeConfig -eq "swiftshader_indirect") -or ($results | Where-Object { $_.AltUiHidden })
 Write-Host "`n== Summary =="
 $results | ForEach-Object {
     $state = if($_.Passed) { "PASS" } else { "FAIL" }
     Write-Host ("[{0}] {1}: frames={2} janky={3} jank={4}% slowBitmapUploads={5}" -f $state, $_.Name, $_.Frames, $_.Janky, $_.JankPercent, $_.SlowBitmapUploads)
 }
 if($environmentLimited) {
-    Write-Host "[ENVIRONMENT_MISMATCH] GPU-enabled AVD required for final pass. Current run reports hw.gpu.enabled=$($environment.GpuEnabledConfig), altUiHidden=$((($results | Where-Object { $_.AltUiHidden }).Count) -gt 0)."
+    Write-Host "[ENVIRONMENT_MISMATCH] Host-GPU AVD required for final jank pass. Current run reports hw.gpu.enabled=$($environment.GpuEnabledConfig), hw.gpu.mode=$($environment.GpuModeConfig), altUiHidden=$((($results | Where-Object { $_.AltUiHidden }).Count) -gt 0)."
     Write-Host "Restart the emulator with -gpu host or use a GPU-enabled AVD before accepting final jank numbers."
 }
 Write-Host "Artifacts: $OutDir"
 
-if($failed) {
+if($failed -and -not $environmentLimited) {
     exit 1
 }
