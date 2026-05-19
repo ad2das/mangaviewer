@@ -435,6 +435,8 @@ public class Manga {
     }
 
     private void logNtkViewerParse(String reason, CustomHttpClient.PageResponse page, String path, int imgTagCount, int fallbackCount) {
+        if(!Log.isLoggable(TAG, Log.DEBUG) && "ok".equals(reason))
+            return;
         String sample = page == null || page.body == null ? "" : page.body.replace('\n', ' ').replace('\r', ' ');
         if(sample.length() > 220)
             sample = sample.substring(0, 220);
