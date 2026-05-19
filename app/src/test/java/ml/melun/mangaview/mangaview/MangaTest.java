@@ -148,6 +148,8 @@ public class MangaTest {
                 "<img src=\"https://i.toonflix.app/manhwa/25089/296849/0001.webp\">"));
         assertTrue(Manga.isNtkPageImageForTest(
                 "<img src=\"/manhwa/25089/296849/p025.webp?token=1\">"));
+        assertTrue(Manga.isNtkPageImageForTest(
+                "<img src=\"https://www.pl3040.com/kr//07/34911/1792086/J0sSOWegkucq.jpg\">"));
 
         org.junit.Assert.assertFalse(Manga.isNtkPageImageForTest(
                 "<img src=\"https://i.toonflix.app/board_uploads/2026/05/15/ad.png\">"));
@@ -168,6 +170,8 @@ public class MangaTest {
                 "<div class=\"episodeThumbCard\"><img src=\"https://i.toonflix.app/board_uploads/2026/05/15/thumb.jpg\"></div>"));
         org.junit.Assert.assertFalse(Manga.isNtkFallbackBoardPageImageForTest(
                 "<div class=\"banner\"><img src=\"https://i.toonflix.app/board_uploads/2026/05/15/ad.png\"></div>"));
+        org.junit.Assert.assertFalse(Manga.isNtkFallbackBoardPageImageForTest(
+                "<div class=\"bn-r\" data-br=\"1\"><a class=\"bn-s\" rel=\"noopener noreferrer nofollow\" href=\"https://ad.example\"><img src=\"https://i.toonflix.app/board_uploads/2026/05/15/ad.png\" alt=\"https://ad.example\"></a></div>"));
     }
 
     @Test
@@ -177,6 +181,15 @@ public class MangaTest {
 
         org.junit.Assert.assertFalse(Manga.looksLikeNtkBlockedPageForTest(
                 "<html><body><main><img src=\"https://i.toonflix.app/webtoon_uploads/page001.jpg\"></main></body></html>"));
+    }
+
+    @Test
+    public void ntkMissingPageDetectedBeforeImageParsing() {
+        assertTrue(Manga.looksLikeNtkMissingPageForTest(
+                "<html id=\"__next_error__\"><script>self.__next_f.push([\"NEXT_HTTP_ERROR_FALLBACK\",404])</script></html>"));
+
+        org.junit.Assert.assertFalse(Manga.looksLikeNtkMissingPageForTest(
+                "<html><body><main class=\"vw-main\"><div class=\"vw-imgs\"><img src=\"https://i.toonflix.app/manhwa/34911/1793314/p001.jpg\"></div></main></body></html>"));
     }
 
     @Test
@@ -204,6 +217,15 @@ public class MangaTest {
 
         assertEquals(1, images.size());
         assertEquals("https://i.toonflix.app/manhwa/25089/296849/001.jpg", images.get(0));
+    }
+
+    @Test
+    public void ntkEmbeddedCurrentCdnImagesAreParsed() {
+        List<String> images = Manga.ntkEmbeddedPageImagesForTest(
+                "<script>{\"images\":[{\"page\":1,\"src\":\"https:\\/\\/www.pl3040.com\\/kr\\/\\/07\\/34911\\/1792086\\/J0sSOWegkucq.jpg\"}]}</script>");
+
+        assertEquals(1, images.size());
+        assertEquals("https://www.pl3040.com/kr//07/34911/1792086/J0sSOWegkucq.jpg", images.get(0));
     }
 
     @Test
@@ -280,6 +302,16 @@ public class MangaTest {
                 "<script>{\"headerBanners\":[{\"imageUrl\":\"https:\\/\\/i.toonflix.app\\/board_uploads\\/2026\\/05\\/15\\/ad.png\",\"linkUrl\":\"https:\\/\\/ad.example\"}]}</script>");
 
         assertEquals(0, images.size());
+    }
+
+    @Test
+    public void ntkEmbeddedCurrentCdnImagesWinOverBannerArrays() {
+        List<String> images = Manga.ntkEmbeddedPageImagesForTest(
+                "<script>{\"headerBanners\":[{\"imagePath\":\"https:\\/\\/i.toonflix.app\\/board_uploads\\/2026\\/05\\/15\\/ad.png\"}],"
+                        + "\"images\":[{\"page\":1,\"src\":\"https:\\/\\/www.pl3040.com\\/kr\\/\\/07\\/34911\\/1792086\\/page-a.jpg\"}]}</script>");
+
+        assertEquals(1, images.size());
+        assertEquals("https://www.pl3040.com/kr//07/34911/1792086/page-a.jpg", images.get(0));
     }
 
     @Test

@@ -78,6 +78,17 @@ public class TitleTest {
     }
 
     @Test
+    public void ntkSearchTitlePathMatchesCurrentIdFromSearchHtml() {
+        String html = "<a class=\"card\" href=\"/manhwa/34911\">"
+                + "<span class=\"title\">Girl Friend Request Works</span>"
+                + "<span>17 Love Comedy 36</span></a>"
+                + "<a class=\"card\" href=\"/manhwa/17082\"><span class=\"title\">Other Title</span></a>";
+
+        assertEquals("/manhwa/34911",
+                Title.ntkSearchTitlePathForTest(html, "manhwa", "Girl Friend Request..."));
+    }
+
+    @Test
     public void titleMinimizePreservesSourceSite() {
         Title title = new Title("title", "", "", null, "", 10, MTitle.base_webtoon);
         title.setSourceSite("ntk");

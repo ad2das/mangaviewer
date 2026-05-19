@@ -187,6 +187,12 @@ public class Title extends MTitle {
                 logNtkEpisodeParse("challenge_or_error", page, segment, 0, 0);
                 return LOAD_CAPTCHA;
             }
+            if(page.code >= 400 || looksLikeNtkMissingPage(page.body)) {
+                logNtkEpisodeParse("missing", page, segment, 0, 0);
+                if(allowPathRefresh && refreshNtkTitlePathFromApi(client, segment, titlePath))
+                    return fetchNtkEps(client, false);
+                return LOAD_ERROR;
+            }
             Document d = Jsoup.parse(page.body);
 
             Element h1 = d.selectFirst("h1");
@@ -267,6 +273,17 @@ public class Title extends MTitle {
                 || lower.contains("cf-challenge")
                 || lower.contains("cf_chl")
                 || lower.contains("turnstile");
+    }
+
+    private static boolean looksLikeNtkMissingPage(String body) {
+        if(body == null || body.length() == 0)
+            return true;
+        String lower = body.toLowerCase(java.util.Locale.ROOT);
+        return lower.contains("next_http_error_fallback")
+                || lower.contains("__next_error__")
+                || lower.contains("404: this page could not be found")
+                || body.contains("\uC791\uD488\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4")
+                || body.contains("\uD68C\uCC28 \uC5C6\uC74C");
     }
 
     private static Element firstNtkTitleImage(Document document, String titleKey, String titleName) {
@@ -644,40 +661,88 @@ public class Title extends MTitle {
             String apiPath = "/api/" + ("webtoon".equals(segment) ? "works" : "manhwa-list")
                     + "?keyword=" + ntkEncodeQuery(name.trim()) + "&page=1&pageSize=10&withTotal=1";
             CustomHttpClient.PageResponse page = client.mgetCachedPage(apiPath, PAGE_CACHE_TTL_MS);
-            if(client.isCloudflareChallengeResponse(page.code, page.body) || page.code >= 400)
-                return false;
-            JsonElement root = JsonParser.parseString(page.body == null || page.body.length() == 0 ? "{}" : page.body);
-            if(root == null || !root.isJsonObject())
-                return false;
-            JsonArray works = root.getAsJsonObject().has("works") && root.getAsJsonObject().get("works").isJsonArray()
-                    ? root.getAsJsonObject().getAsJsonArray("works")
-                    : null;
-            if(works == null)
-                return false;
-            String normalizedName = normalizeNtkTitleName(name);
-            for(int i = 0; i < works.size(); i++) {
-                JsonElement workElement = works.get(i);
-                if(workElement == null || !workElement.isJsonObject())
-                    continue;
-                JsonObject work = workElement.getAsJsonObject();
-                if(!normalizedName.equals(normalizeNtkTitleName(jsonString(work, "title"))))
-                    continue;
-                String sourceWorkId = firstNonEmpty(jsonString(work, "sourceWorkId"), jsonString(work, "id"));
-                String refreshedPath = ntkApiTitlePath(segment, sourceWorkId);
-                if(refreshedPath.length() == 0 || refreshedPath.equals(currentPath))
-                    return false;
-                int refreshedId = parsePositiveInt(sourceWorkId);
-                if(refreshedId > 0)
-                    id = refreshedId;
-                setPath(refreshedPath);
-                setSourceSite("ntk");
-                Log.d(TAG, "ntk_episode_path_refreshed old=" + currentPath + ",new=" + refreshedPath + ",name=" + name);
-                return true;
+            if(!client.isCloudflareChallengeResponse(page.code, page.body) && page.code < 400) {
+                JsonElement root = JsonParser.parseString(page.body == null || page.body.length() == 0 ? "{}" : page.body);
+                JsonArray works = root != null && root.isJsonObject()
+                        && root.getAsJsonObject().has("works")
+                        && root.getAsJsonObject().get("works").isJsonArray()
+                        ? root.getAsJsonObject().getAsJsonArray("works")
+                        : null;
+                if(works != null) {
+                    for(int i = 0; i < works.size(); i++) {
+                        JsonElement workElement = works.get(i);
+                        if(workElement == null || !workElement.isJsonObject())
+                            continue;
+                        JsonObject work = workElement.getAsJsonObject();
+                        if(!isNtkTitleNameMatch(name, jsonString(work, "title")))
+                            continue;
+                        String sourceWorkId = firstNonEmpty(jsonString(work, "sourceWorkId"), jsonString(work, "id"));
+                        if(applyNtkTitlePathRefresh(segment, sourceWorkId, currentPath))
+                            return true;
+                    }
+                }
             }
         } catch(Exception e) {
             Log.d(TAG, "ntk_episode_path_refresh_failed id=" + id + ",name=" + name, e);
         }
+        return refreshNtkTitlePathFromSearch(client, segment, currentPath);
+    }
+
+    private boolean refreshNtkTitlePathFromSearch(CustomHttpClient client, String segment, String currentPath) {
+        try {
+            String searchPath = "/search?q=" + ntkEncodeQuery(name.trim());
+            CustomHttpClient.PageResponse page = client.mgetCachedPage(searchPath, PAGE_CACHE_TTL_MS);
+            if(client.isCloudflareChallengeResponse(page.code, page.body) || page.code >= 400)
+                return false;
+            String refreshedPath = findNtkSearchTitlePath(Jsoup.parse(page.body), segment, name);
+            if(refreshedPath.length() == 0)
+                return false;
+            return applyNtkTitlePathRefresh(segment, refreshedPath, currentPath);
+        } catch(Exception e) {
+            Log.d(TAG, "ntk_episode_search_refresh_failed id=" + id + ",name=" + name, e);
+        }
         return false;
+    }
+
+    private boolean applyNtkTitlePathRefresh(String segment, String sourceWorkId, String currentPath) {
+        String refreshedPath = ntkApiTitlePath(segment, sourceWorkId);
+        if(refreshedPath.length() == 0 || refreshedPath.equals(currentPath))
+            return false;
+        int refreshedId = parsePositiveInt(sourceWorkId);
+        if(refreshedId > 0)
+            id = refreshedId;
+        setPath(refreshedPath);
+        setSourceSite("ntk");
+        Log.d(TAG, "ntk_episode_path_refreshed old=" + currentPath + ",new=" + refreshedPath + ",name=" + name);
+        return true;
+    }
+
+    private static String findNtkSearchTitlePath(Document document, String segment, String expectedTitle) {
+        if(document == null)
+            return "";
+        String prefix = "/" + ("webtoon".equals(segment) ? "webtoon" : "manhwa") + "/";
+        for(Element link : document.select("a[href]")) {
+            String candidatePath = ntkApiTitlePath(segment, link.attr("href"));
+            if(!candidatePath.startsWith(prefix))
+                continue;
+            if(isNtkTitleNameMatch(expectedTitle, ntkSearchCandidateTitle(link)))
+                return candidatePath;
+        }
+        return "";
+    }
+
+    private static String ntkSearchCandidateTitle(Element link) {
+        if(link == null)
+            return "";
+        Element titleElement = link.selectFirst(".title, .card-title, h1, h2, h3, strong, b");
+        String text = titleElement == null ? "" : titleElement.text().trim();
+        if(text.length() > 0)
+            return text;
+        Element image = link.selectFirst("img[alt]");
+        text = image == null ? "" : image.attr("alt").trim();
+        if(text.length() > 0)
+            return text;
+        return link.text().trim();
     }
 
     private static String ntkEncodeQuery(String value) throws Exception {
@@ -686,6 +751,10 @@ public class Title extends MTitle {
 
     static String ntkApiTitlePathForTest(String segment, String sourceWorkId) {
         return ntkApiTitlePath(segment, sourceWorkId);
+    }
+
+    static String ntkSearchTitlePathForTest(String html, String segment, String expectedTitle) {
+        return findNtkSearchTitlePath(Jsoup.parse(html == null ? "" : html), segment, expectedTitle);
     }
 
     private static String ntkApiTitlePath(String segment, String sourceWorkId) {
@@ -722,7 +791,20 @@ public class Title extends MTitle {
     }
 
     private static String normalizeNtkTitleName(String value) {
-        return value == null ? "" : value.toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", "");
+        return value == null ? "" : value.toLowerCase(java.util.Locale.ROOT)
+                .replace("\u2026", "")
+                .replaceAll("[\\s.]+", "");
+    }
+
+    private static boolean isNtkTitleNameMatch(String expectedTitle, String candidateTitle) {
+        String expected = normalizeNtkTitleName(expectedTitle);
+        String candidate = normalizeNtkTitleName(candidateTitle);
+        if(expected.length() == 0 || candidate.length() == 0)
+            return false;
+        if(expected.equals(candidate))
+            return true;
+        return expected.length() >= 6 && candidate.contains(expected)
+                || candidate.length() >= 6 && expected.contains(candidate);
     }
 
     private static String firstNonEmpty(String first, String second) {

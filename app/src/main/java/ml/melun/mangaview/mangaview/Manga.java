@@ -48,12 +48,16 @@ public class Manga {
     private static final long PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final int MAX_TIMEOUT_RETRIES = 2;
     private static final String TAG = "ViewerPerf";
+    private static final String NTK_IMAGE_HOST_PATTERN =
+            "(?:(?:[a-z0-9.-]+\\.)?toonflix\\.app|img\\.[a-z0-9.-]+|(?:www\\.)?pl\\d+\\.com)";
     private static final Pattern NTK_TEXT_IMAGE_PATTERN = Pattern.compile(
-            "(?i)(?:https?:)?//(?:(?:[a-z0-9.-]+\\.)?toonflix\\.app|img\\.[a-z0-9.-]+)/[^\\s\"'<>\\\\]+?\\.(?:jpg|jpeg|png|webp|gif)(?:\\?[^\\s\"'<>\\\\]*)?");
+            "(?i)(?:https?:)?//" + NTK_IMAGE_HOST_PATTERN + "/[^\\s\"'<>\\\\]+?\\.(?:jpg|jpeg|png|webp|gif)(?:\\?[^\\s\"'<>\\\\]*)?");
     private static final Pattern NTK_ENCODED_TEXT_IMAGE_PATTERN = Pattern.compile(
-            "(?i)https%3A%2F%2F(?:(?:[a-z0-9.-]+\\.)?toonflix\\.app|img\\.[a-z0-9.-]+)%2F[^\\s\"'<>\\\\]+?\\.(?:jpg|jpeg|png|webp|gif)(?:%3F[^\\s\"'<>\\\\]*)?");
+            "(?i)https%3A%2F%2F" + NTK_IMAGE_HOST_PATTERN + "%2F[^\\s\"'<>\\\\]+?\\.(?:jpg|jpeg|png|webp|gif)(?:%3F[^\\s\"'<>\\\\]*)?");
     private static final Pattern NTK_NUMBERED_PAGE_IMAGE_PATTERN = Pattern.compile(
-            "(?i)(?:(?:https?:)?//(?:(?:[a-z0-9.-]+\\.)?toonflix\\.app|img\\.[a-z0-9.-]+))?/(?:manhwa|webtoon|comic)/\\d+/[^/?#]+/(?:p)?\\d{1,4}\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$");
+            "(?i)(?:(?:https?:)?//" + NTK_IMAGE_HOST_PATTERN + ")?/(?:manhwa|webtoon|comic)/\\d+/[^/?#]+/(?:p)?\\d{1,4}\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$");
+    private static final Pattern NTK_CURRENT_CDN_PAGE_IMAGE_PATTERN = Pattern.compile(
+            "(?i)(?:https?:)?//(?:www\\.)?pl\\d+\\.com/.*/\\d+/\\d+/[^/?#]+\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$");
 
     int baseMode = base_comic;
     int titleId = -1;
@@ -326,6 +330,10 @@ public class Manga {
                 logNtkViewerParse("blocked", page, path, 0, 0);
                 return LOAD_CAPTCHA;
             }
+            if(page.code >= 400 || looksLikeNtkMissingPage(page.body)) {
+                logNtkViewerParse("missing", page, path, 0, 0);
+                return LOAD_ERROR;
+            }
             Document d = Jsoup.parse(page.body);
 
             Element h1 = d.selectFirst("h1");
@@ -369,6 +377,7 @@ public class Manga {
         if(d == null)
             return;
         Elements pageImages = d.select("img");
+        boolean hasViewerContent = hasNtkViewerContent(d);
         for(Element img : pageImages) {
             for(String attr : new String[]{"data-original", "data-src", "data-lazy-src", "src"}) {
                 String src = img.attr(attr);
@@ -382,7 +391,7 @@ public class Manga {
             String src = preload.attr("href");
             if(isNtkPageImage(null, src))
                 addImageIfValid(client, seenImages, src);
-            else if(isNtkBoardUploadImage(src))
+            else if(hasViewerContent && isNtkBoardUploadImage(src))
                 fallbackBoardImages.add(src);
         }
     }
@@ -465,6 +474,17 @@ public class Manga {
                 || lower.contains("cf_chl")
                 || lower.contains("cf-mitigated")
                 || lower.contains("turnstile");
+    }
+
+    private static boolean looksLikeNtkMissingPage(String body) {
+        if(body == null || body.length() == 0)
+            return true;
+        String lower = body.toLowerCase(Locale.ROOT);
+        return lower.contains("next_http_error_fallback")
+                || lower.contains("__next_error__")
+                || lower.contains("404: this page could not be found")
+                || body.contains("\uC791\uD488\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4")
+                || body.contains("\uD68C\uCC28 \uC5C6\uC74C");
     }
 
     private static String extractNtkViewerEpisodeName(Document d) {
@@ -770,22 +790,26 @@ public class Manga {
                 || lower.contains("/ads/"))
             return false;
         String context = ntkImageContext(img);
-        if(context.contains("banner")
-                || context.contains("advert")
-                || context.contains("sponsor")
-                || context.contains("popup"))
+        if(hasNtkBlockedImageContext(context))
             return false;
         return lower.contains("/webtoon_uploads/")
                 || lower.contains("/manhwa_uploads/")
                 || lower.contains("/comic_uploads/")
                 || lower.contains("/blacktoon/episodes/")
-                || isNtkNumberedPageImage(lower);
+                || isNtkNumberedPageImage(lower)
+                || isNtkCurrentCdnPageImage(lower);
     }
 
     private static boolean isNtkNumberedPageImage(String src) {
         if(src == null || src.length() == 0)
             return false;
         return NTK_NUMBERED_PAGE_IMAGE_PATTERN.matcher(src).matches();
+    }
+
+    private static boolean isNtkCurrentCdnPageImage(String src) {
+        if(src == null || src.length() == 0)
+            return false;
+        return NTK_CURRENT_CDN_PAGE_IMAGE_PATTERN.matcher(src).matches();
     }
 
     private static boolean isNtkFallbackBoardPageImage(Element img, String src) {
@@ -795,7 +819,7 @@ public class Manga {
         if(!isNtkBoardUploadImage(lower))
             return false;
         String context = ntkImageContext(img);
-        return !hasNtkBlockedImageContext(context);
+        return hasNtkViewerImageContext(context) && !hasNtkBlockedImageContext(context);
     }
 
     private static boolean isNtkBoardUploadImage(String src) {
@@ -806,6 +830,20 @@ public class Manga {
                 && lower.matches(".*\\.(jpg|jpeg|png|webp|gif)(\\?.*)?$");
     }
 
+    private static boolean hasNtkViewerContent(Document document) {
+        return document != null
+                && document.selectFirst(".vw-main, .vw-imgs, .viewer-content, .toon-view, main[class*=viewer]") != null;
+    }
+
+    private static boolean hasNtkViewerImageContext(String context) {
+        if(context == null)
+            return false;
+        return context.contains("vw-main")
+                || context.contains("vw-imgs")
+                || context.contains("viewer-content")
+                || context.contains("toon-view");
+    }
+
     private static boolean hasNtkBlockedImageContext(String context) {
         if(context == null)
             return false;
@@ -813,6 +851,15 @@ public class Manga {
                 || context.contains("advert")
                 || context.contains("sponsor")
                 || context.contains("popup")
+                || context.contains("bn-r")
+                || context.contains("bn-s")
+                || context.contains("bn-ph")
+                || context.contains("data-br")
+                || context.contains("nofollow")
+                || context.contains("http://")
+                || context.contains("https://")
+                || context.contains("ad-")
+                || context.contains("-ad")
                 || context.contains("thumb")
                 || context.contains("cover")
                 || context.contains("logo")
@@ -831,11 +878,17 @@ public class Manga {
         StringBuilder context = new StringBuilder();
         context.append(img.id()).append(' ')
                 .append(img.className()).append(' ')
-                .append(img.attr("alt"));
+                .append(img.attr("alt")).append(' ')
+                .append(img.attr("title")).append(' ')
+                .append(img.attr("aria-label"));
         for(Element parent = img.parent(); parent != null; parent = parent.parent()) {
             context.append(' ')
                     .append(parent.id()).append(' ')
-                    .append(parent.className());
+                    .append(parent.className()).append(' ')
+                    .append(parent.attr("href")).append(' ')
+                    .append(parent.attr("rel")).append(' ')
+                    .append(parent.attr("aria-label")).append(' ')
+                    .append(parent.attr("data-br"));
             if("body".equals(parent.tagName()))
                 break;
         }
@@ -860,6 +913,10 @@ public class Manga {
 
     static boolean looksLikeNtkBlockedPageForTest(String body) {
         return looksLikeNtkBlockedPage(body);
+    }
+
+    static boolean looksLikeNtkMissingPageForTest(String body) {
+        return looksLikeNtkMissingPage(body);
     }
 
     static String ntkViewerEpisodeNameForTest(String body) {
