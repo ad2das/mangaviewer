@@ -479,12 +479,37 @@ public class Manga {
     private static boolean looksLikeNtkMissingPage(String body) {
         if(body == null || body.length() == 0)
             return true;
+        if(hasNtkPageImageInText(body))
+            return false;
         String lower = body.toLowerCase(Locale.ROOT);
-        return lower.contains("next_http_error_fallback")
-                || lower.contains("__next_error__")
+        return lower.matches("(?s).*next_http_error_fallback[^\\]]*(?:404|410).*")
+                || lower.matches("(?s).*<html[^>]+id=[\"']__next_error__[\"'].*")
                 || lower.contains("404: this page could not be found")
                 || body.contains("\uC791\uD488\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4")
                 || body.contains("\uD68C\uCC28 \uC5C6\uC74C");
+    }
+
+    private static boolean hasNtkPageImageInText(String body) {
+        String normalized = normalizeNtkEmbeddedImageText(body);
+        if(hasNtkPageImageMatch(normalized, NTK_TEXT_IMAGE_PATTERN, false))
+            return true;
+        return hasNtkPageImageMatch(body, NTK_ENCODED_TEXT_IMAGE_PATTERN, true);
+    }
+
+    private static boolean hasNtkPageImageMatch(String source, Pattern pattern, boolean percentEncoded) {
+        Matcher matcher = pattern.matcher(source);
+        while(matcher.find()) {
+            String url = matcher.group();
+            if(percentEncoded) {
+                try {
+                    url = URLDecoder.decode(url, "UTF-8");
+                } catch (Exception ignored) {
+                }
+            }
+            if(isNtkPageImage(null, normalizeNtkEmbeddedImageText(url)))
+                return true;
+        }
+        return false;
     }
 
     private static String extractNtkViewerEpisodeName(Document d) {

@@ -190,6 +190,12 @@ public class MangaTest {
 
         org.junit.Assert.assertFalse(Manga.looksLikeNtkMissingPageForTest(
                 "<html><body><main class=\"vw-main\"><div class=\"vw-imgs\"><img src=\"https://i.toonflix.app/manhwa/34911/1793314/p001.jpg\"></div></main></body></html>"));
+
+        org.junit.Assert.assertFalse(Manga.looksLikeNtkMissingPageForTest(
+                "<html><body><script>self.__next_f.push([\"$\",\"__next_error__\"])</script><img src=\"https://www.pl3040.com/kr//07/34911/1792086/001.jpg\"></body></html>"));
+
+        org.junit.Assert.assertFalse(Manga.looksLikeNtkMissingPageForTest(
+                "<html><body>회차 없음<script>self.__next_f.push([\"https:\\/\\/www.pl3040.com\\/kr\\/\\/07\\/34911\\/1792086\\/001.jpg\"])</script></body></html>"));
     }
 
     @Test
