@@ -104,13 +104,18 @@ public class SearchTest {
         html.add(ntkTitle("One Piece Special", 101, base_comic, "/manhwa/101"));
         html.add(ntkTitle("One Piece Spin Off", 102, base_comic, "/manhwa/102"));
         ArrayList<Title> api = new ArrayList<>();
-        api.add(ntkTitle("One Piece", 100, base_comic, "/manhwa/100"));
+        Title duplicate = ntkTitle("One Piece", 100, base_comic, "/manhwa/100");
+        duplicate.setTags(Arrays.asList("\uC131\uC778", "\uC561\uC158"));
+        duplicate.setRelease("10\uD654");
+        api.add(duplicate);
         api.add(ntkTitle("One Piece API Only", 103, base_comic, "/manhwa/103"));
 
         ArrayList<Title> merged = Search.mergeNtkHybridKeywordTitlesForTest(html, api);
 
         assertEquals(4, merged.size());
         assertEquals("/manhwa/100", merged.get(0).getPath());
+        assertEquals(Arrays.asList("\uC131\uC778", "\uC561\uC158"), merged.get(0).getTags());
+        assertEquals("10\uD654", merged.get(0).getRelease());
         assertEquals("/manhwa/101", merged.get(1).getPath());
         assertEquals("/manhwa/102", merged.get(2).getPath());
         assertEquals("/manhwa/103", merged.get(3).getPath());
@@ -162,6 +167,20 @@ public class SearchTest {
         assertEquals(true, Search.isNtkKeywordApiEmptyAuthoritativeForTest(2, 2, 0, 0));
         assertEquals(false, Search.isNtkKeywordApiEmptyAuthoritativeForTest(2, 2, 15518, 60));
         assertEquals(false, Search.isNtkKeywordApiEmptyAuthoritativeForTest(1, 2, 0, 0));
+    }
+
+    @Test
+    public void ntkApiParserNormalizesSearchResultGenres() throws Exception {
+        ArrayList<Title> titles = Search.parseNtkApiTitlesForTest(
+                "{\"works\":["
+                        + "{\"sourceWorkId\":\"1\",\"title\":\"Adult Code\",\"genre\":\"17, \\uB7EC\\uBE0C\\uCF54\\uBBF8\\uB514\"},"
+                        + "{\"sourceWorkId\":\"2\",\"title\":\"Object Tags\",\"tags\":[{\"name\":\"adult\"},\"\\uC561\\uC158/\\uD310\\uD0C0\\uC9C0\"]}"
+                        + "]}",
+                base_comic);
+
+        assertEquals(2, titles.size());
+        assertEquals(Arrays.asList("\uC131\uC778", "\uB7EC\uBE0C\uCF54\uBBF8\uB514"), titles.get(0).getTags());
+        assertEquals(Arrays.asList("\uC131\uC778", "\uC561\uC158", "\uD310\uD0C0\uC9C0"), titles.get(1).getTags());
     }
 
     @Test

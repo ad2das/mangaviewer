@@ -319,6 +319,7 @@ public class Search {
             boolean exists = false;
             for(Title existing : target) {
                 if(isSameTitleIdentity(existing, title)) {
+                    mergeTitleMetadata(existing, title);
                     exists = true;
                     break;
                 }
@@ -326,6 +327,26 @@ public class Search {
             if(!exists)
                 target.add(title);
         }
+    }
+
+    private static void mergeTitleMetadata(Title target, Title source) {
+        if(target == null || source == null)
+            return;
+        if((target.getThumb() == null || target.getThumb().trim().length() == 0) && source.getThumb() != null && source.getThumb().trim().length() > 0)
+            target.setThumb(source.getThumb());
+        if((target.getRelease() == null || target.getRelease().trim().length() == 0) && source.getRelease() != null && source.getRelease().trim().length() > 0)
+            target.setRelease(source.getRelease());
+        if((target.getPath() == null || target.getPath().trim().length() == 0) && source.getPath() != null && source.getPath().trim().length() > 0)
+            target.setPath(source.getPath());
+        if((target.getSourceSite() == null || target.getSourceSite().trim().length() == 0) && source.getSourceSite() != null && source.getSourceSite().trim().length() > 0)
+            target.setSourceSite(source.getSourceSite());
+        ArrayList<String> tags = new ArrayList<>(target.getTags());
+        for(String tag : source.getTags()) {
+            String normalized = normalizeNtkGenreTag(tag);
+            if(normalized.length() > 0 && !tags.contains(normalized))
+                tags.add(normalized);
+        }
+        target.setTags(tags);
     }
 
     private static boolean isSameTitleIdentity(Title first, Title second) {
@@ -1077,7 +1098,7 @@ public class Search {
                 if(name.length() == 0)
                     continue;
                 String thumb = jsonString(work, "thumbnailUrl");
-                ArrayList<String> tags = splitNtkGenre(jsonString(work, "genre"));
+                ArrayList<String> tags = ntkGenreTags(work);
                 String release = "";
                 if(hasJsonValue(work, "latestEpisodeNumber"))
                     release = jsonString(work, "latestEpisodeNumber") + "화";
@@ -1222,16 +1243,60 @@ public class Search {
         return value == null ? "" : value;
     }
 
-    private static ArrayList<String> splitNtkGenre(String value) {
+    private static ArrayList<String> ntkGenreTags(JsonObject work) {
         ArrayList<String> tags = new ArrayList<>();
-        if(value == null)
-            return tags;
-        for(String tag : value.split("[,/|]")) {
-            String trimmed = tag.trim();
-            if(trimmed.length() > 0 && !tags.contains(trimmed))
-                tags.add(trimmed);
-        }
+        appendNtkGenreValue(tags, work, "genre");
+        appendNtkGenreValue(tags, work, "genres");
+        appendNtkGenreValue(tags, work, "tags");
         return tags;
+    }
+
+    private static void appendNtkGenreValue(ArrayList<String> tags, JsonObject work, String key) {
+        if(tags == null || work == null || !hasJsonValue(work, key))
+            return;
+        appendNtkGenreElement(tags, work.get(key));
+    }
+
+    private static void appendNtkGenreElement(ArrayList<String> tags, JsonElement value) {
+        if(value == null || value.isJsonNull())
+            return;
+        if(value.isJsonArray()) {
+            JsonArray values = value.getAsJsonArray();
+            for(int i = 0; i < values.size(); i++)
+                appendNtkGenreElement(tags, values.get(i));
+            return;
+        }
+        if(value.isJsonObject()) {
+            JsonObject object = value.getAsJsonObject();
+            String label = firstNonEmpty(jsonString(object, "name"), jsonString(object, "label"));
+            label = firstNonEmpty(label, jsonString(object, "title"));
+            label = firstNonEmpty(label, jsonString(object, "value"));
+            splitNtkGenreInto(tags, label);
+            return;
+        }
+        if(value.isJsonPrimitive())
+            splitNtkGenreInto(tags, value.getAsString());
+    }
+
+    private static void splitNtkGenreInto(ArrayList<String> tags, String value) {
+        if(tags == null || value == null)
+            return;
+        for(String tag : value.split("[,/|]")) {
+            String normalized = normalizeNtkGenreTag(tag);
+            if(normalized.length() > 0 && !tags.contains(normalized))
+                tags.add(normalized);
+        }
+    }
+
+    private static String normalizeNtkGenreTag(String value) {
+        if(value == null)
+            return "";
+        String trimmed = value.trim();
+        if(trimmed.startsWith("#"))
+            trimmed = trimmed.substring(1).trim();
+        if("17".equals(trimmed) || "adult".equalsIgnoreCase(trimmed))
+            return "성인";
+        return trimmed;
     }
 
     private static String replaceNtkQueryParam(String path, String key, String value) {
