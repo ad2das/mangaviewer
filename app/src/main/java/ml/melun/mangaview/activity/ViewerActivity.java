@@ -130,7 +130,9 @@ public class ViewerActivity extends AppCompatActivity {
     private static final int DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD = 12;
     private static final int PREVIOUS_EPISODE_PULL_THRESHOLD_DP = 36;
     private static final long SCROLL_BOOKMARK_SAVE_DELAY_MS = 350L;
+    private static final long BOUNDARY_LOAD_IDLE_DELAY_MS = 450L;
     final Runnable delayedScrollBookmarkSave = this::saveCurrentScrollBookmark;
+    final Runnable delayedBoundaryLoad = this::loadEpisodeAtBoundaryIfNeeded;
     private PageItem pendingInitialResumePage;
     private int pendingInitialResumeOffset;
     private boolean initialResumeRestorePending = false;
@@ -346,7 +348,9 @@ public class ViewerActivity extends AppCompatActivity {
                         markUserScrolledAfterInitialResume();
                     }
                     if(newState == RecyclerView.SCROLL_STATE_IDLE)
-                        loadEpisodeAtBoundaryIfNeeded();
+                        scheduleBoundaryLoadAfterIdle();
+                    else
+                        cancelDelayedBoundaryLoad();
                     if(newState == RecyclerView.SCROLL_STATE_IDLE) {
                         mainHandler.removeCallbacks(delayedScrollBookmarkSave);
                         saveCurrentScrollBookmark();
@@ -365,6 +369,8 @@ public class ViewerActivity extends AppCompatActivity {
                     if(dy != 0 && recyclerView.getScrollState() != RecyclerView.SCROLL_STATE_IDLE)
                         suppressBoundaryLoadUntilUserScroll = false;
                     dispatchScrollAnchorToAdapter(recyclerView.getScrollState() != RecyclerView.SCROLL_STATE_IDLE);
+                    if(recyclerView.getScrollState() != RecyclerView.SCROLL_STATE_IDLE)
+                        cancelDelayedBoundaryLoad();
                     loadEpisodeAtBoundaryIfNeededThrottled();
                     scheduleScrollBookmarkSave();
                 }
@@ -1960,7 +1966,19 @@ public class ViewerActivity extends AppCompatActivity {
         if(now - lastBoundaryCheckMs < 80)
             return;
         lastBoundaryCheckMs = now;
-        loadEpisodeAtBoundaryIfNeeded();
+        scheduleBoundaryLoadAfterIdle();
+    }
+
+    private void scheduleBoundaryLoadAfterIdle() {
+        if(mainHandler == null || strip == null || strip.getScrollState() != RecyclerView.SCROLL_STATE_IDLE)
+            return;
+        mainHandler.removeCallbacks(delayedBoundaryLoad);
+        mainHandler.postDelayed(delayedBoundaryLoad, boundaryLoadIdleDelayMs());
+    }
+
+    private void cancelDelayedBoundaryLoad() {
+        if(mainHandler != null)
+            mainHandler.removeCallbacks(delayedBoundaryLoad);
     }
 
     static boolean shouldCheckBoundaryDuringScrollStateForTest(int scrollState) {
@@ -1978,6 +1996,14 @@ public class ViewerActivity extends AppCompatActivity {
 
     static long boundaryLoadFailureCooldownMsForTest() {
         return boundaryLoadFailureCooldownMs();
+    }
+
+    static long boundaryLoadIdleDelayMsForTest() {
+        return boundaryLoadIdleDelayMs();
+    }
+
+    private static long boundaryLoadIdleDelayMs() {
+        return BOUNDARY_LOAD_IDLE_DELAY_MS;
     }
 
     private static long boundaryLoadFailureCooldownMs() {

@@ -93,6 +93,7 @@ public class ViewerActivityTest {
         assertTrue(ViewerActivity.shouldCheckBoundaryDuringScrollStateForTest(RecyclerView.SCROLL_STATE_IDLE));
         assertFalse(ViewerActivity.shouldCheckBoundaryDuringScrollStateForTest(RecyclerView.SCROLL_STATE_DRAGGING));
         assertFalse(ViewerActivity.shouldCheckBoundaryDuringScrollStateForTest(RecyclerView.SCROLL_STATE_SETTLING));
+        assertTrue(ViewerActivity.boundaryLoadIdleDelayMsForTest() >= ViewerActivity.initialViewerPreloadDelayMsForTest());
     }
 
     @Test

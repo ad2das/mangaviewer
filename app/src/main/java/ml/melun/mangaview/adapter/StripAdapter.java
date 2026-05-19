@@ -105,7 +105,12 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     public void setScrollBusy(boolean scrollBusy) {
         if(released)
             return;
+        boolean changed = this.scrollBusy != scrollBusy;
         this.scrollBusy = scrollBusy;
+        if(changed && scrollBusy) {
+            preloadGeneration++;
+            clearDecodedPreloadTargets();
+        }
         if(!scrollBusy) {
             schedulePendingHeightCorrections();
             if(pendingPreloadPosition != RecyclerView.NO_POSITION)
@@ -592,13 +597,11 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
                     failedImageRetries.remove(pageKey);
-                    Bitmap displayBitmap = copyBitmapForDisplay(bitmap);
-                    if(displayBitmap == null) {
+                    if(!isDisplayBitmapUsable(bitmap)) {
                         handleImageLoadFailed(holder, item, pageKey, bindGeneration);
                         return;
                     }
-                    bindBitmap(holder, pageKey, displayBitmap);
-                    cacheDisplayedBitmap(cacheKey, displayBitmap);
+                    bindBitmap(holder, pageKey, bitmap);
                     holder.refresh.setVisibility(View.GONE);
                     if(item.index == 0)
                         ViewerWarmupManager.logMetric("viewer_first_bind_ms", android.os.SystemClock.elapsedRealtime() - bindStart);
@@ -637,13 +640,11 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
                         return;
                     failedImageRetries.remove(pageKey);
-                    Bitmap displayBitmap = copyBitmapForDisplay(resource);
-                    if(displayBitmap == null) {
+                    if(!isDisplayBitmapUsable(resource)) {
                         handleImageLoadFailed(holder, item, pageKey, bindGeneration);
                         return;
                     }
-                    bindBitmap(holder, pageKey, displayBitmap);
-                    cacheDisplayedBitmap(cacheKey, displayBitmap);
+                    bindBitmap(holder, pageKey, resource);
                     holder.refresh.setVisibility(View.GONE);
                     if(item.index == 0)
                         ViewerWarmupManager.logMetric("viewer_first_bind_ms", android.os.SystemClock.elapsedRealtime() - bindStart);
@@ -920,7 +921,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     private RequestOptions viewerImageOptions(PageItem item) {
         RequestOptions options = new RequestOptions()
-                .diskCacheStrategy(DiskCacheStrategy.DATA)
+                .diskCacheStrategy(DiskCacheStrategy.ALL)
                 .downsample(DownsampleStrategy.AT_MOST)
                 .override(Math.max(width, 1), Target.SIZE_ORIGINAL);
         if(item != null)

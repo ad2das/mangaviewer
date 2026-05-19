@@ -6,7 +6,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.net.UnknownHostException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
@@ -31,7 +30,6 @@ public class WfwfDomainResolver {
     private static final int NEARBY_SCAN_LIMIT = 30;
     private static final long RESOLVE_TIMEOUT_MS = 6_000L;
     private static final int PARALLEL_PROBE_COUNT = 12;
-    private static final long DNS_FAILURE_SUPPRESS_MS = 30_000L;
     private static volatile long suppressDomainScanUntilMs = 0L;
 
     public static String resolve(OkHttpClient client, String currentUrl, Map<String, String> headers) {
@@ -257,11 +255,7 @@ public class WfwfDomainResolver {
                 return logProbe(url, code, body.length(), false, updatedRoot);
             return logProbe(url, code, body.length(), looksLikeWfwf(body), null);
         } catch (Exception e) {
-            if(isUnknownHost(e))
-                suppressDomainScanUntilMs = Math.max(suppressDomainScanUntilMs,
-                        System.currentTimeMillis() + DNS_FAILURE_SUPPRESS_MS);
-            else
-                android.util.Log.d("PerfTrace", "wfwf_probe_error url=" + url + ",error=" + e.getClass().getSimpleName());
+            android.util.Log.d("PerfTrace", "wfwf_probe_error url=" + url + ",error=" + e.getClass().getSimpleName());
             return ProbeResult.empty();
         } finally {
             if(requestGroup != null && call != null)
@@ -308,16 +302,6 @@ public class WfwfDomainResolver {
 
     private static boolean isDomainScanSuppressed() {
         return suppressDomainScanUntilMs > System.currentTimeMillis();
-    }
-
-    private static boolean isUnknownHost(Throwable throwable) {
-        Throwable current = throwable;
-        while(current != null) {
-            if(current instanceof UnknownHostException)
-                return true;
-            current = current.getCause();
-        }
-        return false;
     }
 
     private static String extractUpdatedRoot(String body) {
