@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "updated": "2026-05-18",
-  "sourceRoot": "https://wfwf450.com",
+  "updated": "2026-05-19",
+  "sourceRoot": "https://wfwf452.com",
   "sources": [
     "source-comic-genre"
   ],
@@ -14056,7 +14056,7 @@
       "thumb": "https://i4.imgcloud18.com/11525/80f23440.jpg",
       "release": "",
       "inferredTags": [
-        "판타지"
+        "순정"
       ]
     },
     "11526": {
@@ -22252,7 +22252,7 @@
       "thumb": "https://i6.imgcloud18.com/12442/7b2779fd.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12443": {
@@ -22510,7 +22510,7 @@
       "thumb": "https://i6.imgcloud18.com/12471/8133da97.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12472": {
@@ -78417,6 +78417,25 @@
       "sourceTags": [
         "판타지",
         "개그",
+        "일상"
+      ]
+    },
+    "18725": {
+      "name": "럭키스타 코나타 30",
+      "thumb": "https://c11cm.net/18725/ox90shyyrwlhez4ugvphnmnsyvjdsploxf.jpg",
+      "release": "",
+      "sourceTags": [
+        "일상",
+        "개그"
+      ]
+    },
+    "18726": {
+      "name": "참견쟁이 여자, 사랑을 하다",
+      "thumb": "https://c11cm.net/18726/i3kbaplwqjcqnxpbml1nvepmyrkysfdig0.jpg",
+      "release": "",
+      "sourceTags": [
+        "개그",
+        "러브코미디",
         "일상"
       ]
     }
