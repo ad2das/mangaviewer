@@ -53,6 +53,33 @@ public class EpisodeActivityNetworkTest {
         assertNotNull("Expected NTK viewer content strip to render", strip);
     }
 
+    @Test
+    public void wfwfComicTitleOpensEpisodeList() throws Exception {
+        launchWfwfComicTitle();
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeList = device.wait(Until.findObject(By.res(PACKAGE_NAME, "EpisodeList")), 60000L);
+        assertNotNull("Expected WFWF episode list to render", episodeList);
+        UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 60000L);
+        assertNotNull("Expected WFWF title to render at least one episode", episodeRow);
+    }
+
+    @Test
+    public void wfwfComicEpisodeOpensViewer() throws Exception {
+        launchWfwfComicTitle();
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 60000L);
+        assertNotNull("Expected WFWF title to render at least one episode", episodeRow);
+
+        episodeRow.click();
+
+        UiObject2 viewerToolbar = device.wait(Until.findObject(By.res(PACKAGE_NAME, "viewerToolbar")), 60000L);
+        assertNotNull("Expected tapping a WFWF episode to open the viewer", viewerToolbar);
+        UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 60000L);
+        assertNotNull("Expected WFWF viewer content strip to render", strip);
+    }
+
     private void launchNtkComicTitle() {
         Context context = ApplicationProvider.getApplicationContext();
         MainApplication.p.setNtkSitePreset("https://sbxh1.com");
@@ -67,6 +94,29 @@ public class EpisodeActivityNetworkTest {
                 3540,
                 MTitle.base_comic);
         title.setSourceSite("ntk");
+
+        Intent intent = new Intent(context, EpisodeActivity.class);
+        intent.putExtra("title", Utils.toViewerTitleJson(title, true));
+        intent.putExtra("online", true);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+        context.startActivity(intent);
+    }
+
+    private void launchWfwfComicTitle() {
+        Context context = ApplicationProvider.getApplicationContext();
+        MainApplication.p.setSitePreset("https://wfwf452.com/cm", "https://wfwf452.com");
+        MainApplication.p.setBaseMode(MTitle.base_comic);
+
+        Title title = new Title(
+                "wfwf comic smoke",
+                "",
+                "",
+                Collections.singletonList("action"),
+                "",
+                18714,
+                MTitle.base_comic);
+        title.setSourceSite("wfwf");
 
         Intent intent = new Intent(context, EpisodeActivity.class);
         intent.putExtra("title", Utils.toViewerTitleJson(title, true));
