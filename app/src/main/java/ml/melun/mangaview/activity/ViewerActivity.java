@@ -315,7 +315,8 @@ public class ViewerActivity extends AppCompatActivity {
             strip = this.findViewById(R.id.strip);
             manager = new StripLayoutManager(this);
             manager.setOrientation(LinearLayoutManager.VERTICAL);
-            strip.setItemViewCacheSize(p.getDataSave() ? 8 : 18);
+            strip.setItemViewCacheSize(viewerItemViewCacheSize(manga, p.getDataSave()));
+            strip.setHasFixedSize(true);
             strip.setLayoutManager(manager);
             strip.setItemAnimator(null);
             strip.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -2458,6 +2459,23 @@ public class ViewerActivity extends AppCompatActivity {
                 || ntkClient
                 || "ntk".equalsIgnoreCase(source)
                 || "wfwf".equalsIgnoreCase(source);
+    }
+
+    static int viewerItemViewCacheSizeForTest(String sourceSite, boolean dataSave) {
+        return viewerItemViewCacheSize(sourceSite, dataSave);
+    }
+
+    private static int viewerItemViewCacheSize(Manga manga, boolean dataSave) {
+        String sourceSite = "";
+        if(manga != null && manga.getTitle() != null)
+            sourceSite = manga.getTitle().getSourceSite();
+        return viewerItemViewCacheSize(sourceSite, dataSave);
+    }
+
+    private static int viewerItemViewCacheSize(String sourceSite, boolean dataSave) {
+        if(dataSave)
+            return 8;
+        return "wfwf".equalsIgnoreCase(sourceSite == null ? "" : sourceSite.trim()) ? 4 : 18;
     }
 
     private boolean needsFullEpisodeList(Title currentTitle, Manga target) {

@@ -71,8 +71,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private static final int PRELOAD_TRACK_LIMIT = 500;
     private static final int DECODED_PRELOAD_ACTIVE_LIMIT = 2;
     private static final int IMAGE_LOAD_RETRY_LIMIT = 3;
-    private static final long SCROLL_IDLE_PRELOAD_DELAY_MS = 180L;
-    private static final long SCROLL_IDLE_HEIGHT_CORRECTION_DELAY_MS = 240L;
+    private static final long SCROLL_IDLE_PRELOAD_DELAY_MS = 260L;
+    private static final long SCROLL_IDLE_HEIGHT_CORRECTION_DELAY_MS = 320L;
     private static final String PAYLOAD_HEIGHT = "height";
     ViewerActivity.InfiniteScrollCallback callback;
     Title title;
@@ -1020,6 +1020,10 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 : (lastPreloadAnchorPosition != RecyclerView.NO_POSITION && adapterPosition < lastPreloadAnchorPosition ? -1 : 1);
         lastPreloadAnchorPosition = adapterPosition;
         long generation = preloadGeneration;
+        if(scrollBusy) {
+            preloadCriticalWindow(adapterPosition, direction, generation);
+            return;
+        }
         preloadCriticalWindow(adapterPosition, direction, generation);
         preloadDirectionalWindow(adapterPosition, direction, ViewerPreloadPolicy.scrollAheadWindow(p.getDataSave()), generation);
         preloadDirectionalWindow(adapterPosition, -direction, new ViewerPreloadPolicy.Window(0, 1, 2, 2), generation);
@@ -1068,10 +1072,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private void preloadCriticalWindow(int adapterPosition, int direction, long generation) {
         if(adapterPosition == RecyclerView.NO_POSITION || !canStartGlideRequest())
             return;
-        if(scrollBusy) {
-            preloadDirectionalWindow(adapterPosition, direction, ViewerPreloadPolicy.scrollBusyWindow(p.getDataSave()), generation);
+        if(scrollBusy)
             return;
-        }
         int decodedLimit = p.getDataSave() ? 1 : 2;
         preloadDirectionalWindow(adapterPosition, direction, new ViewerPreloadPolicy.Window(decodedLimit, decodedLimit, decodedLimit, decodedLimit), generation);
     }
@@ -1189,7 +1191,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             return;
         int activeLimit = scrollBusy ? (p.getDataSave() ? 0 : 1) : DECODED_PRELOAD_ACTIVE_LIMIT;
         if(activeLimit <= 0 || decodedPreloadTargets.size() >= activeLimit) {
-            preloadPage(page, Priority.HIGH);
+            if(!scrollBusy)
+                preloadPage(page, Priority.HIGH);
             return;
         }
         String key = decodedCacheKey(page);

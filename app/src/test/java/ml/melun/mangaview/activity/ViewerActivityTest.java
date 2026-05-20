@@ -51,6 +51,13 @@ public class ViewerActivityTest {
     }
 
     @Test
+    public void wfwfViewerKeepsFewerCachedRowsWithoutDataSaver() {
+        assertEquals(4, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", false));
+        assertEquals(18, ViewerActivity.viewerItemViewCacheSizeForTest("ntk", false));
+        assertEquals(8, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", true));
+    }
+
+    @Test
     public void boundaryLoadErrorsDoNotCloseExistingViewerContent() {
         assertTrue(ViewerActivity.shouldSuppressBoundaryLoadErrorForTest(false, true));
         assertFalse(ViewerActivity.shouldSuppressBoundaryLoadErrorForTest(true, true));
