@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-05-19",
+  "updated": "2026-05-20",
   "sourceRoot": "https://wfwf452.com",
   "sources": [
     "naver-webtoon-genre",
@@ -24250,8 +24250,8 @@
         "스토리"
       ],
       "tags": [
-        "액션",
         "스토리",
+        "액션",
         "학원"
       ],
       "naverTitleId": 570506,
@@ -63973,6 +63973,26 @@
         "성인"
       ]
     },
+    "7097": {
+      "name": "일타강사 백사부",
+      "thumb": "https://i8.ba7cloud.com/7097/bde9eda1f1b0519c2fbe10190dc3662decb7dbddb1a7bc70ca58050a627d5ba4.jpg",
+      "release": "",
+      "externalTags": [
+        "무협",
+        "스토리"
+      ],
+      "sourceTags": [
+        "무협"
+      ],
+      "tags": [
+        "무협",
+        "스토리"
+      ],
+      "naverTitleId": 779632,
+      "naverName": "일타강사 백사부",
+      "match": "normalized-title",
+      "matchScore": 1.0
+    },
     "7098": {
       "name": "간지몬스터",
       "thumb": "https://i8.ba7cloud.com/7098/7af7c80b70c3a9dd6c821475eb568ec45ee8e7b9fcc2ad231b02e108389fdb87.jpg",
@@ -67849,6 +67869,27 @@
         "학원",
         "로맨스"
       ]
+    },
+    "7535": {
+      "name": "여우애담",
+      "thumb": "https://i8.ba7cloud.com/7535/ac10840c0058e2140606b31efb5cd35e3fb0c9d9e59e1b2ecdf58a8237539a22.jpg",
+      "release": "",
+      "externalTags": [
+        "스토리",
+        "로맨스"
+      ],
+      "sourceTags": [
+        "무협"
+      ],
+      "tags": [
+        "스토리",
+        "로맨스",
+        "무협"
+      ],
+      "naverTitleId": 786082,
+      "naverName": "여우애담",
+      "match": "normalized-title",
+      "matchScore": 1.0
     },
     "7536": {
       "name": "차 한잔 하실래요?",
@@ -72324,6 +72365,14 @@
         "성인"
       ]
     },
+    "8026": {
+      "name": "시한부라서 파업했는데",
+      "thumb": "https://i9.ao9cloud.com/8026/94278f5df25a00f0ad0f29d117337cc533c809e7ad2b781b7485a078d45b7bda.jpg",
+      "release": "",
+      "sourceTags": [
+        "무협"
+      ]
+    },
     "8027": {
       "name": "버려진 나의 최애를 위하여",
       "thumb": "https://i9.ao9cloud.com/8027/3bc0345e44aef7784e348f6935e55ab4f8c00ae409a21a3155cbadb2547c516f.jpg",
@@ -74374,6 +74423,14 @@
         "BL"
       ]
     },
+    "8258": {
+      "name": "사생아 공주로 살아남기",
+      "thumb": "https://i9.ao9cloud.com/8258/e342c449dfe1ffd5e532282cf7aa04752758b6590143126cb40ebf9a447e50b1.jpg",
+      "release": "",
+      "sourceTags": [
+        "무협"
+      ]
+    },
     "8259": {
       "name": "sss급 영주로 회귀했다",
       "thumb": "https://i9.ao9cloud.com/8259/d359aeee65555e8c45cea472a394c5c66b46429cc1ff3136a917517cff9b6ade.jpg",
@@ -75436,6 +75493,14 @@
       "release": "",
       "sourceTags": [
         "로맨스"
+      ]
+    },
+    "8382": {
+      "name": "여우자매",
+      "thumb": "https://i9.ao9cloud.com/8382/e92fad67c17c7acb7a40f8727a723c436cb992f887435c6a735cc72a9211c67f.jpg",
+      "release": "",
+      "sourceTags": [
+        "무협"
       ]
     },
     "8383": {
@@ -86208,6 +86273,14 @@
         "BL"
       ]
     },
+    "9590": {
+      "name": "원포인트",
+      "thumb": "https://w11cloud.com/9590/52ad24432c2eec384a01ba8a33eb60f037d3281b7f6c977c2ac42b256fc2f5f1.jpg",
+      "release": "",
+      "sourceTags": [
+        "스포츠"
+      ]
+    },
     "9591": {
       "name": "모든 건 아기님 발 아래",
       "thumb": "https://w11cloud.com/9591/397592c8bdb7a69f57e438f1bd7aa8d18ecbc47a94e138d0ff844cf8b7b83cf9.jpg",
@@ -95844,24 +95917,6 @@
         "로맨스",
         "판타지"
       ]
-    },
-    "70685": {
-      "name": "할배무사와 지존 손녀",
-      "thumb": "https://v12st.com/70685/40cd59ee861dbe0b2ef6e7811ab92d82fa3a08ff9678d830fb1fd40192b10f73.jpg",
-      "release": "",
-      "externalTags": [
-        "무협"
-      ],
-      "sourceTags": [
-        "무협"
-      ],
-      "tags": [
-        "무협"
-      ],
-      "naverTitleId": 817246,
-      "naverName": "할배무사와 지존 손녀",
-      "match": "normalized-title",
-      "matchScore": 1.0
     },
     "70686": {
       "name": "젖은 티셔츠 아래",
@@ -108418,6 +108473,7 @@
         "로맨스"
       ],
       "tags": [
+        "스토리",
         "드라마",
         "로맨스"
       ],
@@ -117141,8 +117197,8 @@
         "드라마"
       ],
       "tags": [
-        "판타지",
         "스토리",
+        "판타지",
         "드라마"
       ],
       "naverTitleId": 828294,
@@ -128421,8 +128477,8 @@
         "드라마"
       ],
       "tags": [
-        "일상",
         "스토리",
+        "일상",
         "판타지",
         "드라마"
       ],
@@ -138706,13 +138762,15 @@
       "thumb": "https://y17stm.com/75092/jvmkq7nq7xwgzopdios2dhpwlypxl7t313.jpg",
       "release": "",
       "externalTags": [
-        "판타지"
+        "판타지",
+        "스토리"
       ],
       "sourceTags": [
         "액션",
         "판타지"
       ],
       "tags": [
+        "스토리",
         "판타지",
         "액션"
       ],
@@ -149520,8 +149578,8 @@
         "드라마"
       ],
       "tags": [
-        "드라마",
-        "스토리"
+        "스토리",
+        "드라마"
       ],
       "naverTitleId": 849482,
       "naverName": "열사병",
@@ -149559,8 +149617,8 @@
         "미스터리"
       ],
       "tags": [
-        "스릴러",
         "스토리",
+        "스릴러",
         "미스터리"
       ],
       "naverTitleId": 849851,
@@ -150395,7 +150453,8 @@
       "thumb": "https://k16stm.com/76121/voqhveygijx7fmrgzfauegieoqfqs5f1mc.jpg",
       "release": "",
       "sourceTags": [
-        "미분류"
+        "로맨스",
+        "판타지"
       ]
     },
     "76122": {
@@ -150403,7 +150462,8 @@
       "thumb": "https://y17stm.com/76122/ezabfqth0pbjieaabvn28pkyj7c3voe7fo.jpg",
       "release": "",
       "sourceTags": [
-        "미분류"
+        "로맨스",
+        "판타지"
       ]
     },
     "76123": {
@@ -150414,10 +150474,14 @@
         "액션",
         "스토리"
       ],
-      "sourceTags": [],
-      "tags": [
+      "sourceTags": [
         "액션",
-        "스토리"
+        "학원"
+      ],
+      "tags": [
+        "스토리",
+        "액션",
+        "학원"
       ],
       "naverTitleId": 849537,
       "naverName": "그아비에 그아들",
@@ -150429,7 +150493,7 @@
       "thumb": "https://y17stm.com/76124/dfcqqy9ojz8fnpzqstcc8w9kqu6njuzszb.jpg",
       "release": "",
       "sourceTags": [
-        "미분류"
+        "BL"
       ]
     },
     "76125": {
@@ -150437,7 +150501,7 @@
       "thumb": "https://k16stm.com/76125/3dlfkknlqdprioxzgxjqxfxufl7demnwzn.jpg",
       "release": "",
       "sourceTags": [
-        "미분류"
+        "BL"
       ]
     },
     "76126": {
@@ -150448,10 +150512,12 @@
         "드라마",
         "스토리"
       ],
-      "sourceTags": [],
+      "sourceTags": [
+        "드라마"
+      ],
       "tags": [
-        "드라마",
-        "스토리"
+        "스토리",
+        "드라마"
       ],
       "naverTitleId": 850022,
       "naverName": "영혼을 보는 변호사",
@@ -150466,15 +150532,51 @@
         "스토리",
         "판타지"
       ],
-      "sourceTags": [],
+      "sourceTags": [
+        "판타지",
+        "액션"
+      ],
       "tags": [
         "스토리",
-        "판타지"
+        "판타지",
+        "액션"
       ],
       "naverTitleId": 850109,
       "naverName": "조선야차",
       "match": "normalized-title",
       "matchScore": 1.0
+    },
+    "76128": {
+      "name": "뜬장 위의 개",
+      "thumb": "https://y17stm.com/76128/lxe5ub2quujtuvskb2hkibnqumiymkt87k.jpg",
+      "release": "",
+      "sourceTags": [
+        "미분류"
+      ]
+    },
+    "76129": {
+      "name": "병약한 소꿉친구를 치유하는",
+      "thumb": "https://k16stm.com/76129/pygzddrgspxzpyjufhxr9pikcdeupge4tg.jpg",
+      "release": "",
+      "sourceTags": [
+        "미분류"
+      ]
+    },
+    "76130": {
+      "name": "폐하의 밤 [완전판]",
+      "thumb": "https://y17stm.com/76130/berzy8nspzxfooe2tlnuhdgfnbms39szjf.jpg",
+      "release": "",
+      "sourceTags": [
+        "미분류"
+      ]
+    },
+    "76131": {
+      "name": "존경받는 남자",
+      "thumb": "https://y17stm.com/76131/0a67aog5pv84soajdutczs6wbphighbdyw.jpg",
+      "release": "",
+      "sourceTags": [
+        "미분류"
+      ]
     }
   }
 }
