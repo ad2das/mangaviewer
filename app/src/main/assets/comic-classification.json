@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-05-19",
+  "updated": "2026-05-20",
   "sourceRoot": "https://wfwf452.com",
   "sources": [
     "source-comic-genre"
@@ -6678,7 +6678,7 @@
       "thumb": "https://i2.imgcloud18.com/10714/0c5cf315.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "드라마"
       ]
     },
     "10715": {
@@ -13264,13 +13264,13 @@
     },
     "11439": {
       "name": "벗겨줘! 류가사키 양",
-      "thumb": "https://i0.imgcloud18.com/11439/7db7cb9f.jpg?v=1",
+      "thumb": "https://i0.imgcloud18.com/11439/c0ddfbcb.jpg?v=1",
       "release": "",
       "sourceTags": [
         "러브코미디",
-        "학원",
+        "개그",
         "판타지",
-        "개그"
+        "학원"
       ]
     },
     "11440": {
@@ -19679,7 +19679,7 @@
       "thumb": "https://i6.imgcloud18.com/12149/3f4da450.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12150": {
@@ -21919,7 +21919,7 @@
       "thumb": "https://i6.imgcloud18.com/12403/e597f9f0.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12404": {
@@ -22145,7 +22145,7 @@
       "thumb": "https://i6.imgcloud18.com/12430/aee4b074.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12431": {
@@ -22244,7 +22244,7 @@
       "thumb": "https://i6.imgcloud18.com/12441/82af3261.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12442": {
@@ -22464,7 +22464,7 @@
       "thumb": "https://i6.imgcloud18.com/12466/63393722.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12467": {
@@ -23522,7 +23522,7 @@
       "thumb": "https://i0.imgcloud18.com/12586/71f2d602.jpg?v=1",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12587": {
@@ -78437,6 +78437,24 @@
         "개그",
         "러브코미디",
         "일상"
+      ]
+    },
+    "18733": {
+      "name": "변방의 별 통신",
+      "thumb": "https://c11cm.net/18733/bgl2h4zja1ukwjpg2cbc57vw0tpcqfdwvk.jpg",
+      "release": "",
+      "sourceTags": [
+        "판타지",
+        "이세계"
+      ]
+    },
+    "18735": {
+      "name": "봄의 폭풍과 몬스터",
+      "thumb": "https://c11cm.net/18735/q2bhh16yparfabkrs0k7wnebpqsfttkpl8.jpg",
+      "release": "",
+      "sourceTags": [
+        "순정",
+        "학원"
       ]
     }
   }
