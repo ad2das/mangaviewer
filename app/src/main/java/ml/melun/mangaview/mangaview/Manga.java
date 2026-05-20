@@ -108,7 +108,13 @@ public class Manga {
     private String matchingNtkEpisodePath(List<Manga> episodes) {
         if(episodes == null || episodes.size() == 0)
             return "";
-        for(Manga episode : episodes) {
+        List<Manga> snapshot;
+        try {
+            snapshot = new ArrayList<>(episodes);
+        } catch (RuntimeException e) {
+            return "";
+        }
+        for(Manga episode : snapshot) {
             if(episode == null || episode == this || episode.getId() != id || !sameSeriesEpisode(episode))
                 continue;
             String path = episode.ntkEpisodePath == null ? "" : episode.ntkEpisodePath.trim();

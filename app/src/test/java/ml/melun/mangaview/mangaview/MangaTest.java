@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertEquals;
@@ -289,6 +290,32 @@ public class MangaTest {
 
         assertEquals("/manhwa/8605/u-mou88jul-3akm", candidate.getNtkEpisodePath());
         assertEquals("/manhwa/8605/u-mou88jul-3akm", candidate.getUrl());
+    }
+
+    @Test
+    public void ntkEpisodePathToleratesEpisodeListMutationDuringWarmup() {
+        Title title = new Title("one punch", "", "", null, "349", 8605, MTitle.base_comic);
+        title.setSourceSite("ntk");
+        AtomicReference<List<Manga>> episodesRef = new AtomicReference<>();
+        Manga mutating = new Manga(349, "275", "", MTitle.base_comic) {
+            @Override
+            public int getId() {
+                List<Manga> episodes = episodesRef.get();
+                if(episodes != null && episodes.size() == 2)
+                    episodes.add(new Manga(348, "274", "", MTitle.base_comic));
+                return super.getId();
+            }
+        };
+        mutating.setTitle(title);
+        Manga trailing = new Manga(348, "274", "", MTitle.base_comic);
+        trailing.setTitle(title);
+        ArrayList<Manga> episodes = new ArrayList<>(Arrays.asList(mutating, trailing));
+        episodesRef.set(episodes);
+        title.setEps(episodes);
+        Manga candidate = new Manga(349, "275", "", MTitle.base_comic);
+        candidate.setTitle(title);
+
+        assertEquals("", candidate.getNtkEpisodePath());
     }
 
     @Test

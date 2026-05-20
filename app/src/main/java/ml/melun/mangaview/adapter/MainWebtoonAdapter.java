@@ -26,6 +26,7 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.load.DataSource;
+import com.bumptech.glide.load.DecodeFormat;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import com.bumptech.glide.load.engine.GlideException;
 import com.bumptech.glide.request.RequestListener;
@@ -1096,6 +1097,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         Glide.with(thumbView)
                 .load(source)
                 .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                .format(DecodeFormat.PREFER_RGB_565)
                 .override(dp(widthDp), dp(heightDp))
                 .thumbnail(0.25f)
                 .dontAnimate()
@@ -1264,7 +1266,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             String release = hero == null ? "" : hero.getRelease();
             meta.setText(release == null || release.length() == 0 ? "지금 볼만한 추천 작품" : release);
             badge.setText("추천");
-            bindTitleThumb(thumb, hero, 240, 140);
+            bindTitleThumb(thumb, hero, 176, 104);
             bindHeroDots(row);
             card.postDelayed(() -> prefetchEpisodeSnapshot(hero),
                     HomeContinueWarmupPolicy.visibleHomeWarmupDelayMs(save));
@@ -2260,6 +2262,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 Glide.with(context)
                         .load(getGlideUrl(thumb, ((Title) item).getBaseMode()))
                         .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                        .format(DecodeFormat.PREFER_RGB_565)
                         .override(dp(128), dp(156))
                         .preload();
                 if(++preloadCount >= maxPerFetch)

@@ -50,7 +50,6 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     private int bookmark = -1;
     private static final Object PAYLOAD_SELECTION = "selection";
     private static final long HEADER_THUMBNAIL_DELAY_MS = 180L;
-    private static final long ROW_THUMBNAIL_DELAY_MS = 300L;
     private static final long TAG_BIND_DELAY_MS = 220L;
     //title is in index 0
     Title title;
@@ -189,13 +188,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
                         mode == 0 ? R.color.appAccent : (dark ? R.color.colorDarkTextSecondary : R.color.appTextSecondary)));
                 h.boundKey = rowKey;
             }
-            String thumb = title == null ? "" : title.getThumb();
-            if(!save && thumb != null && thumb.length() > 0) {
-                Object source = isLocalMediaPath(thumb) ? thumb : getGlideUrl(thumb, title.getBaseMode());
-                bindThumbnailDeferred(h.thumb, source, dp(52), dp(70), true, ROW_THUMBNAIL_DELAY_MS, false);
-            } else {
-                bindEmptyThumbnail(h.thumb, true);
-            }
+            bindEmptyThumbnail(h.thumb, true);
             bindSelection(h, position);
         }
     }
