@@ -73,10 +73,20 @@ function Read-AvdEnvironment {
             }
         }
     }
+    $runtimeGles = ""
+    try {
+        $surface = Invoke-Adb shell dumpsys SurfaceFlinger
+        $runtimeGles = (($surface | Select-String -Pattern "GLES:" | Select-Object -First 1) -replace "^\s*", "")
+    } catch {
+        $runtimeGles = ""
+    }
+    $runtimeHostGpu = $runtimeGles -match "OpenGL ES Translator" -and $runtimeGles -notmatch "SwiftShader"
     return @{
         AvdName = $name
         GpuEnabledConfig = $gpuEnabled
         GpuModeConfig = $gpuMode
+        RuntimeGles = $runtimeGles
+        RuntimeHostGpu = $runtimeHostGpu
     }
 }
 
@@ -236,7 +246,10 @@ Invoke-Adb shell cmd package compile -m speed -f $PackageName | Out-Host
 
 $environment = Read-AvdEnvironment
 if($environment.AvdName) {
-    Write-Host ("Environment: avd={0} hw.gpu.enabled={1} hw.gpu.mode={2}" -f $environment.AvdName, $environment.GpuEnabledConfig, $environment.GpuModeConfig)
+    Write-Host ("Environment: avd={0} hw.gpu.enabled={1} hw.gpu.mode={2} runtimeHostGpu={3}" -f $environment.AvdName, $environment.GpuEnabledConfig, $environment.GpuModeConfig, $environment.RuntimeHostGpu)
+    if($environment.RuntimeGles) {
+        Write-Host ("Runtime GLES: {0}" -f $environment.RuntimeGles)
+    }
 }
 
 $results = @()
@@ -254,14 +267,14 @@ $summary = @{
 $summary | ConvertTo-Json -Depth 5 | Set-Content -Path $summaryPath -Encoding UTF8
 
 $failed = $results | Where-Object { -not $_.Passed }
-$environmentLimited = ($environment.GpuEnabledConfig -eq "no") -or ($environment.GpuModeConfig -eq "swiftshader_indirect") -or ($results | Where-Object { $_.AltUiHidden })
+$environmentLimited = ($environment.GpuEnabledConfig -eq "no") -or (($environment.GpuModeConfig -eq "swiftshader_indirect") -and -not $environment.RuntimeHostGpu)
 Write-Host "`n== Summary =="
 $results | ForEach-Object {
     $state = if($_.Passed) { "PASS" } else { "FAIL" }
     Write-Host ("[{0}] {1}: frames={2} janky={3} jank={4}% slowBitmapUploads={5}" -f $state, $_.Name, $_.Frames, $_.Janky, $_.JankPercent, $_.SlowBitmapUploads)
 }
 if($environmentLimited) {
-    Write-Host "[ENVIRONMENT_MISMATCH] Host-GPU AVD required for final jank pass. Current run reports hw.gpu.enabled=$($environment.GpuEnabledConfig), hw.gpu.mode=$($environment.GpuModeConfig), altUiHidden=$((($results | Where-Object { $_.AltUiHidden }).Count) -gt 0)."
+    Write-Host "[ENVIRONMENT_MISMATCH] Host-GPU AVD required for final jank pass. Current run reports hw.gpu.enabled=$($environment.GpuEnabledConfig), hw.gpu.mode=$($environment.GpuModeConfig), runtimeHostGpu=$($environment.RuntimeHostGpu)."
     Write-Host "Restart the emulator with -gpu host or use a GPU-enabled AVD before accepting final jank numbers."
 }
 Write-Host "Artifacts: $OutDir"
