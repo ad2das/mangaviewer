@@ -19,7 +19,7 @@ public class ViewerRecyclerViewTest {
 
     @Test
     public void maxFlingVelocityScalesWithDensity() {
-        assertEquals(1900, ViewerRecyclerView.maxViewerFlingVelocityForTest(1f));
-        assertEquals(5225, ViewerRecyclerView.maxViewerFlingVelocityForTest(2.75f));
+        assertEquals(3200, ViewerRecyclerView.maxViewerFlingVelocityForTest(1f));
+        assertEquals(8800, ViewerRecyclerView.maxViewerFlingVelocityForTest(2.75f));
     }
 }

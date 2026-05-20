@@ -52,7 +52,7 @@ public class ViewerActivityTest {
 
     @Test
     public void wfwfViewerKeepsFewerCachedRowsWithoutDataSaver() {
-        assertEquals(4, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", false));
+        assertEquals(8, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", false));
         assertEquals(18, ViewerActivity.viewerItemViewCacheSizeForTest("ntk", false));
         assertEquals(8, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", true));
     }
@@ -87,7 +87,7 @@ public class ViewerActivityTest {
 
     @Test
     public void initialViewerPreloadBudgetStaysConservative() {
-        assertTrue(ViewerActivity.initialPreloadAheadCountForTest() <= 5);
+        assertTrue(ViewerActivity.initialPreloadAheadCountForTest() <= 8);
     }
 
     @Test

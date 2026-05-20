@@ -125,7 +125,7 @@ public class ViewerActivity extends AppCompatActivity {
     long lastBoundaryCheckMs = 0L;
     long suppressBoundaryLoadUntilMs = 0L;
     boolean suppressBoundaryLoadUntilUserScroll = false;
-    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 5;
+    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 8;
     private static final int NEXT_EPISODE_ATTACH_THRESHOLD = 22;
     private static final int DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD = 12;
     private static final int PREVIOUS_EPISODE_PULL_THRESHOLD_DP = 36;
@@ -2475,7 +2475,7 @@ public class ViewerActivity extends AppCompatActivity {
     private static int viewerItemViewCacheSize(String sourceSite, boolean dataSave) {
         if(dataSave)
             return 8;
-        return "wfwf".equalsIgnoreCase(sourceSite == null ? "" : sourceSite.trim()) ? 4 : 18;
+        return "wfwf".equalsIgnoreCase(sourceSite == null ? "" : sourceSite.trim()) ? 8 : 18;
     }
 
     private boolean needsFullEpisodeList(Title currentTitle, Manga target) {

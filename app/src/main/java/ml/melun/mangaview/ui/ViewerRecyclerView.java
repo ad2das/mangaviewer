@@ -8,7 +8,7 @@ import androidx.annotation.Nullable;
 import androidx.recyclerview.widget.RecyclerView;
 
 public class ViewerRecyclerView extends RecyclerView {
-    private static final int MAX_VIEWER_FLING_DP_PER_SECOND = 1900;
+    private static final int MAX_VIEWER_FLING_DP_PER_SECOND = 3200;
 
     public ViewerRecyclerView(@NonNull Context context) {
         super(context);
