@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-05-20",
+  "updated": "2026-05-21",
   "sourceRoot": "https://wfwf452.com",
   "sources": [
     "naver-webtoon-genre",
@@ -70013,7 +70013,7 @@
         "액션"
       ],
       "naverTitleId": 840485,
-      "naverName": "퇴마록 : 세계편 빅버드 / 나연경 / 이우혁",
+      "naverName": "퇴마록 : 세계편",
       "match": "normalized-title",
       "matchScore": 1.0
     },
@@ -95918,6 +95918,24 @@
         "판타지"
       ]
     },
+    "70685": {
+      "name": "할배무사와 지존 손녀",
+      "thumb": "https://v12st.com/70685/40cd59ee861dbe0b2ef6e7811ab92d82fa3a08ff9678d830fb1fd40192b10f73.jpg",
+      "release": "",
+      "externalTags": [
+        "무협"
+      ],
+      "sourceTags": [
+        "무협"
+      ],
+      "tags": [
+        "무협"
+      ],
+      "naverTitleId": 817246,
+      "naverName": "할배무사와 지존 손녀",
+      "match": "normalized-title",
+      "matchScore": 1.0
+    },
     "70686": {
       "name": "젖은 티셔츠 아래",
       "thumb": "https://v12st.com/70686/234da92785e8872c61f4be36c0616271912a9020e87807c7c19dd7aadf7b9c01.jpg",
@@ -116811,24 +116829,6 @@
         "미스터리"
       ]
     },
-    "72921": {
-      "name": "소년법칙",
-      "thumb": "https://z14cloud.com/72921/yhlognwtkiabvxwrkrqip3p1beiirwohxp.jpg",
-      "release": "",
-      "externalTags": [
-        "액션"
-      ],
-      "sourceTags": [
-        "액션"
-      ],
-      "tags": [
-        "액션"
-      ],
-      "naverTitleId": 827908,
-      "naverName": "소년법칙",
-      "match": "normalized-title",
-      "matchScore": 1.0
-    },
     "72922": {
       "name": "부부게임",
       "thumb": "https://vv14cloud.com/72922/o9s6lenmhx2tmb1k1gywv35vr5kxyhxgmt.jpg?v=1",
@@ -119680,15 +119680,6 @@
         "BL"
       ]
     },
-    "73213": {
-      "name": "렉카 드라이버",
-      "thumb": "https://y17stm.com/73213/99vpuklc3ug0n2xag8sujul6mr7lgxcj49.jpg",
-      "release": "",
-      "sourceTags": [
-        "학원",
-        "액션"
-      ]
-    },
     "73214": {
       "name": "AV 배우인 척 옆집 아이돌",
       "thumb": "https://vv14cloud.com/73214/274lig2jg5ziocwly3ochtci3gdeajtwuh.jpg",
@@ -121742,11 +121733,12 @@
         "판타지"
       ],
       "tags": [
+        "스토리",
         "판타지",
         "액션"
       ],
       "naverTitleId": 827759,
-      "naverName": "아라드의 빛: 먼저 걷는 자 제갈복자 / 펑키크리처 / 이수백",
+      "naverName": "아라드의 빛: 먼저 걷는 자",
       "match": "normalized-title",
       "matchScore": 1.0
     },
@@ -123630,8 +123622,8 @@
         "드라마"
       ],
       "tags": [
-        "판타지",
         "스토리",
+        "판타지",
         "드라마"
       ],
       "naverTitleId": 839007,
@@ -127493,7 +127485,7 @@
         "드라마"
       ],
       "naverTitleId": 840485,
-      "naverName": "퇴마록 : 세계편 빅버드 / 나연경 / 이우혁",
+      "naverName": "퇴마록 : 세계편",
       "match": "normalized-title",
       "matchScore": 1.0
     },
@@ -140444,8 +140436,8 @@
         "로맨스"
       ],
       "tags": [
-        "스토리",
         "드라마",
+        "스토리",
         "로맨스"
       ],
       "naverTitleId": 842321,
@@ -147902,7 +147894,7 @@
         "로맨스"
       ],
       "naverTitleId": 847842,
-      "naverName": "킬링 달링 베이비-잉♡ 고래짱 / 실버초코",
+      "naverName": "킬링 달링 베이비-잉♡",
       "match": "normalized-title",
       "matchScore": 1.0
     },
@@ -149683,8 +149675,8 @@
         "학원"
       ],
       "tags": [
-        "스토리",
         "드라마",
+        "스토리",
         "개그",
         "학원"
       ],
@@ -149706,8 +149698,8 @@
         "판타지"
       ],
       "tags": [
-        "스토리",
         "개그",
+        "스토리",
         "판타지"
       ],
       "naverTitleId": 849730,
@@ -149920,8 +149912,8 @@
         "액션"
       ],
       "tags": [
-        "스토리",
         "무협",
+        "스토리",
         "판타지",
         "액션"
       ],
@@ -150037,8 +150029,8 @@
         "액션"
       ],
       "tags": [
-        "판타지",
         "스토리",
+        "판타지",
         "액션"
       ],
       "naverTitleId": 850499,
@@ -150270,6 +150262,15 @@
       "release": "",
       "sourceTags": [
         "성인"
+      ]
+    },
+    "76098": {
+      "name": "에로만화 접습니다",
+      "thumb": "https://y17stm.com/76098/lwjyvp0bq7zrutarxzzsbzzcckfspmwtmz.jpg",
+      "release": "",
+      "sourceTags": [
+        "성인",
+        "드라마"
       ]
     },
     "76099": {
@@ -150551,7 +150552,7 @@
       "thumb": "https://y17stm.com/76128/lxe5ub2quujtuvskb2hkibnqumiymkt87k.jpg",
       "release": "",
       "sourceTags": [
-        "미분류"
+        "BL"
       ]
     },
     "76129": {
@@ -150559,7 +150560,9 @@
       "thumb": "https://k16stm.com/76129/pygzddrgspxzpyjufhxr9pikcdeupge4tg.jpg",
       "release": "",
       "sourceTags": [
-        "미분류"
+        "로맨스",
+        "판타지",
+        "성인"
       ]
     },
     "76130": {
@@ -150567,7 +150570,7 @@
       "thumb": "https://y17stm.com/76130/berzy8nspzxfooe2tlnuhdgfnbms39szjf.jpg",
       "release": "",
       "sourceTags": [
-        "미분류"
+        "성인"
       ]
     },
     "76131": {
@@ -150575,7 +150578,23 @@
       "thumb": "https://y17stm.com/76131/0a67aog5pv84soajdutczs6wbphighbdyw.jpg",
       "release": "",
       "sourceTags": [
-        "미분류"
+        "성인"
+      ]
+    },
+    "76132": {
+      "name": "두근두근 업앤다운",
+      "thumb": "https://y17stm.com/76132/mfcq0jfcho0pxqoj6xzcyt83csgro8glwi.jpg",
+      "release": "",
+      "sourceTags": [
+        "성인"
+      ]
+    },
+    "76133": {
+      "name": "남자가 부족해요",
+      "thumb": "https://k16stm.com/76133/uriqvznss8u1ddk3zjvu5ydhtkbw6qikpi.jpg",
+      "release": "",
+      "sourceTags": [
+        "성인"
       ]
     }
   }
