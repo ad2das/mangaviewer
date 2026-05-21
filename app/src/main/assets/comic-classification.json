@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-05-20",
+  "updated": "2026-05-21",
   "sourceRoot": "https://wfwf452.com",
   "sources": [
     "source-comic-genre"
@@ -12800,7 +12800,7 @@
       "thumb": "https://i4.imgcloud18.com/11388/c279f020.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "11389": {
@@ -20889,7 +20889,7 @@
       "thumb": "https://i6.imgcloud18.com/12286/62b67e3a.jpg",
       "release": "",
       "inferredTags": [
-        "일상"
+        "성인"
       ]
     },
     "12287": {
@@ -21878,7 +21878,7 @@
       "thumb": "https://i6.imgcloud18.com/12398/d9b43a1b.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12399": {
@@ -22145,7 +22145,7 @@
       "thumb": "https://i6.imgcloud18.com/12430/aee4b074.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "학원"
       ]
     },
     "12431": {
@@ -78258,7 +78258,7 @@
       "thumb": "https://c11cm.net/18667/grp0svhx6y4wnuecurltzljmdam9gvpo5a.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "18668": {
@@ -78455,6 +78455,24 @@
       "sourceTags": [
         "순정",
         "학원"
+      ]
+    },
+    "18737": {
+      "name": "바키 외전 돗포",
+      "thumb": "https://c11cm.net/18737/zm2twojs5rtpqsmkp7tpinciqvgyzdcs5l.jpg",
+      "release": "",
+      "sourceTags": [
+        "액션"
+      ]
+    },
+    "18738": {
+      "name": "기성수의 스즈네",
+      "thumb": "https://c11cm.net/18738/yvgczeprzhf450hrf8szv5ydpcisy6gu0a.jpg",
+      "release": "",
+      "sourceTags": [
+        "성인",
+        "스릴러",
+        "액션"
       ]
     }
   }
