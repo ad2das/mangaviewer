@@ -175,6 +175,12 @@ public class MangaEpisodeNavigationTest {
     }
 
     @Test
+    public void cleanViewerEpisodeNameRemovesToolbarProgressPrefix() {
+        assertEquals("서머타임 렌더링 92화", Manga.cleanViewerEpisodeName("(97/144) 서머타임 렌더링 92화"));
+        assertEquals("서머타임 렌더링 02화", Manga.cleanViewerEpisodeName("서머타임 렌더링 02화"));
+    }
+
+    @Test
     public void parseEpisodeId_acceptsSluggedViewerPaths() {
         assertEquals(123, Manga.parseEpisodeId("/webtoon/123", "webtoon/"));
         assertEquals(123, Manga.parseEpisodeId("/webtoon/123/title-slug", "webtoon/"));

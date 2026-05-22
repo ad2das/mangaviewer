@@ -63,6 +63,10 @@ public class ViewerWarmupManager {
     private static final long SNAPSHOT_TTL_MS = 2 * 60 * 1000L;
     private static final long DISK_SNAPSHOT_TTL_MS = 20 * 60 * 1000L;
     private static final long DISK_SNAPSHOT_COLD_START_TTL_MS = 7 * 24 * 60 * 60 * 1000L;
+    private static final String VIEWER_SNAPSHOT_PREFIX = "viewerSnapshotV3_";
+    private static final String CONTINUE_SNAPSHOT_PREFIX = "viewerContinueSnapshotV3_";
+    private static final String LEGACY_VIEWER_SNAPSHOT_PREFIX = "viewerSnapshotV2_";
+    private static final String LEGACY_CONTINUE_SNAPSHOT_PREFIX = "viewerContinueSnapshotV2_";
     private static final long CONTINUE_WARMUP_DEBOUNCE_MS = 800L;
     private static final long PAGE_PRELOAD_DEDUPE_MS = 1500L;
     private static final int PAGE_PRELOAD_DEDUPE_LIMIT = 256;
@@ -1217,23 +1221,27 @@ public class ViewerWarmupManager {
             snapshots.put(key, snapshot);
             trimSnapshots();
         }
-        writeDiskSnapshot(context, "viewerSnapshotV2_", key, snapshot);
+        writeDiskSnapshot(context, VIEWER_SNAPSHOT_PREFIX, key, snapshot);
     }
 
     private static void invalidateSnapshot(Context context, String key) {
         synchronized (ViewerWarmupManager.class) {
             snapshots.remove(key);
         }
-        if(context != null)
-            CacheFileStore.delete(context.getApplicationContext(), "viewerSnapshotV2_" + key);
+        if(context != null) {
+            CacheFileStore.delete(context.getApplicationContext(), VIEWER_SNAPSHOT_PREFIX + key);
+            CacheFileStore.delete(context.getApplicationContext(), LEGACY_VIEWER_SNAPSHOT_PREFIX + key);
+        }
     }
 
     private static void invalidateContinueSnapshot(Context context, String key) {
         synchronized (ViewerWarmupManager.class) {
             continueSnapshots.remove(key);
         }
-        if(context != null)
-            CacheFileStore.delete(context.getApplicationContext(), "viewerContinueSnapshotV2_" + key);
+        if(context != null) {
+            CacheFileStore.delete(context.getApplicationContext(), CONTINUE_SNAPSHOT_PREFIX + key);
+            CacheFileStore.delete(context.getApplicationContext(), LEGACY_CONTINUE_SNAPSHOT_PREFIX + key);
+        }
     }
 
     private static boolean samePreparedEpisode(Manga prepared, Manga requested) {
@@ -1254,7 +1262,7 @@ public class ViewerWarmupManager {
             continueSnapshots.put(key, snapshot);
             trimContinueSnapshots();
         }
-        writeDiskSnapshot(context, "viewerContinueSnapshotV2_", key, snapshot);
+        writeDiskSnapshot(context, CONTINUE_SNAPSHOT_PREFIX, key, snapshot);
     }
 
     private static Manga continueSnapshotManga(Context context, String key, Manga fallback) {
@@ -1263,7 +1271,7 @@ public class ViewerWarmupManager {
             snapshot = continueSnapshots.get(key);
         }
         if(snapshot == null) {
-            snapshot = readDiskSnapshot(context, "viewerContinueSnapshotV2_", key, true);
+            snapshot = readDiskSnapshot(context, CONTINUE_SNAPSHOT_PREFIX, key, true);
             if(snapshot != null) {
                 synchronized (ViewerWarmupManager.class) {
                     continueSnapshots.put(key, snapshot);
@@ -1276,7 +1284,7 @@ public class ViewerWarmupManager {
             synchronized (ViewerWarmupManager.class) {
                 continueSnapshots.remove(key);
             }
-            snapshot = readDiskSnapshot(context, "viewerContinueSnapshotV2_", key, true);
+            snapshot = readDiskSnapshot(context, CONTINUE_SNAPSHOT_PREFIX, key, true);
             if(snapshot == null)
                 return null;
             synchronized (ViewerWarmupManager.class) {
@@ -1308,7 +1316,7 @@ public class ViewerWarmupManager {
             snapshot = snapshots.get(key);
         }
         if(snapshot == null)
-            snapshot = readDiskSnapshot(context, "viewerSnapshotV2_", key, true);
+            snapshot = readDiskSnapshot(context, VIEWER_SNAPSHOT_PREFIX, key, true);
         if(snapshot != null) {
             synchronized (ViewerWarmupManager.class) {
                 snapshots.put(key, snapshot);
@@ -1320,7 +1328,7 @@ public class ViewerWarmupManager {
             synchronized (ViewerWarmupManager.class) {
                 snapshots.remove(key);
             }
-            snapshot = readDiskSnapshot(context, "viewerSnapshotV2_", key, true);
+            snapshot = readDiskSnapshot(context, VIEWER_SNAPSHOT_PREFIX, key, true);
             if(snapshot == null)
                 return false;
             synchronized (ViewerWarmupManager.class) {
@@ -1543,7 +1551,7 @@ public class ViewerWarmupManager {
             titleId = source.getTitleId();
             episodeId = source.getId();
             episodePath = source.getNtkEpisodePath();
-            name = source.getName();
+            name = Manga.cleanViewerEpisodeName(source.getName());
             seed = source.getSeed();
             title = source.getTitle();
             List<String> sourceImages = source.getImgs(null);
@@ -1557,7 +1565,7 @@ public class ViewerWarmupManager {
             titleId = source.titleId;
             episodeId = source.episodeId;
             episodePath = source.episodePath == null ? "" : source.episodePath;
-            name = source.name;
+            name = Manga.cleanViewerEpisodeName(source.name);
             seed = source.seed;
             title = source.title;
             images = usablePageImages(source.images);
@@ -1613,7 +1621,7 @@ public class ViewerWarmupManager {
             titleId = source.titleId;
             episodeId = source.episodeId;
             episodePath = source.episodePath;
-            name = source.name;
+            name = Manga.cleanViewerEpisodeName(source.name);
             seed = source.seed;
             title = source.title == null ? null : new Title(source.title.minimize());
             images = usablePageImages(source.images);
@@ -1628,7 +1636,7 @@ public class ViewerWarmupManager {
             for(Manga episode : sourceEpisodes) {
                 if(episode == null)
                     continue;
-                Manga copy = new Manga(episode.getId(), episode.getName(), episode.getDate(), episode.getBaseMode());
+                Manga copy = new Manga(episode.getId(), Manga.cleanViewerEpisodeName(episode.getName()), episode.getDate(), episode.getBaseMode());
                 copy.addThumb(episode.getThumb());
                 copy.setMode(episode.getMode());
                 copy.setTitleId(episode.getTitleId());

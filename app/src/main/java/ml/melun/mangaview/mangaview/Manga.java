@@ -684,7 +684,7 @@ public class Manga {
             try {
                 Element header = d.selectFirst("div.image-view h2 span");
                 if(header != null)
-                    name = header.ownText();
+                    name = cleanViewerEpisodeName(header.ownText());
             }catch (Exception e){}
 
             addWolfImageCandidates(client, d, seenImages);
@@ -1485,6 +1485,12 @@ public class Manga {
             key.append(number);
         }
         return key.toString();
+    }
+
+    public static String cleanViewerEpisodeName(String name) {
+        if(name == null)
+            return "";
+        return name.trim().replaceFirst("^\\(\\s*\\d+\\s*/\\s*\\d+\\s*\\)\\s*", "");
     }
 
     private static int resolvedTitleId(Manga manga) {
