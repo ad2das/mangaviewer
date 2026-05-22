@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-05-21",
+  "updated": "2026-05-22",
   "sourceRoot": "https://wfwf452.com",
   "sources": [
     "source-comic-genre"
@@ -13264,13 +13264,13 @@
     },
     "11439": {
       "name": "벗겨줘! 류가사키 양",
-      "thumb": "https://i0.imgcloud18.com/11439/c0ddfbcb.jpg?v=1",
+      "thumb": "https://i0.imgcloud18.com/11439/7db7cb9f.jpg?v=1",
       "release": "",
       "sourceTags": [
+        "학원",
         "러브코미디",
-        "개그",
         "판타지",
-        "학원"
+        "개그"
       ]
     },
     "11440": {
@@ -20889,7 +20889,7 @@
       "thumb": "https://i6.imgcloud18.com/12286/62b67e3a.jpg",
       "release": "",
       "inferredTags": [
-        "성인"
+        "일상"
       ]
     },
     "12287": {
@@ -21801,8 +21801,7 @@
       "thumb": "https://i6.imgcloud18.com/12389/aa095f95.jpg",
       "release": "",
       "inferredTags": [
-        "이세계",
-        "라노벨"
+        "러브코미디"
       ]
     },
     "12390": {
@@ -21878,7 +21877,7 @@
       "thumb": "https://i6.imgcloud18.com/12398/d9b43a1b.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12399": {
@@ -22252,7 +22251,7 @@
       "thumb": "https://i6.imgcloud18.com/12442/7b2779fd.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12443": {
@@ -78473,6 +78472,41 @@
         "성인",
         "스릴러",
         "액션"
+      ]
+    },
+    "18739": {
+      "name": "세월이 흘러 다리로 간다",
+      "thumb": "https://c11cm.net/18739/rccf40enj1baytkxmiufdceqxaw7uszqys.jpg",
+      "release": "",
+      "sourceTags": [
+        "드라마"
+      ]
+    },
+    "18740": {
+      "name": "복숭아빛 몽타주",
+      "thumb": "https://c11cm.net/18740/tae1o6wr3kujtaau8rxkmmbva0tumritin.jpg",
+      "release": "",
+      "sourceTags": [
+        "성인",
+        "드라마",
+        "학원"
+      ]
+    },
+    "18741": {
+      "name": "너와 넘어 사랑이 된다",
+      "thumb": "https://c11cm.net/18741/4d7pb6hrucmdi1hpd2cgjl0bij0qg2grlw.jpg",
+      "release": "",
+      "sourceTags": [
+        "순정"
+      ]
+    },
+    "18742": {
+      "name": "용랑전 - 왕패입국편",
+      "thumb": "https://c11cm.net/18742/yjcypipye1kbzyz4hf1jzd8f5tse2zxu9o.jpg",
+      "release": "",
+      "inferredTags": [
+        "액션",
+        "시대"
       ]
     }
   }
