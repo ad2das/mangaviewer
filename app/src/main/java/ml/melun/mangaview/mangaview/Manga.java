@@ -1395,7 +1395,7 @@ public class Manga {
         }
         for (int i = 0; i < episodes.size(); i++) {
             Manga episode = episodes.get(i);
-            if (sameSeriesEpisode(episode) && episode.getId() == id) return i;
+            if (sameEpisodeIdentity(this, episode)) return i;
         }
         return -1;
     }
@@ -1410,6 +1410,81 @@ public class Manga {
         if(currentTitleId > 0 && episodeTitleId > 0)
             return currentTitleId == episodeTitleId;
         return true;
+    }
+
+    public static boolean sameEpisodeIdentity(Manga first, Manga second) {
+        if(first == null || second == null)
+            return false;
+        if(first.getId() != second.getId() || first.getBaseMode() != second.getBaseMode())
+            return false;
+        int firstTitleId = resolvedTitleId(first);
+        int secondTitleId = resolvedTitleId(second);
+        if(firstTitleId > 0 && secondTitleId > 0 && firstTitleId != secondTitleId)
+            return false;
+        if(usesWfwfNameDisambiguation(first, second)) {
+            String firstName = episodeNameKey(first.getName());
+            String secondName = episodeNameKey(second.getName());
+            if(firstName.length() > 0 && secondName.length() > 0 && !firstName.equals(secondName))
+                return false;
+        }
+        return true;
+    }
+
+    public static String episodeIdentityKey(Manga manga) {
+        if(manga == null)
+            return ":0:0:0:";
+        String key = mangaSourceSite(manga)
+                + ":" + manga.getBaseMode()
+                + ":" + resolvedTitleId(manga)
+                + ":" + manga.getId();
+        if(isWfwfEpisode(manga)) {
+            String nameKey = episodeNameKey(manga.getName());
+            if(nameKey.length() > 0)
+                key += ":" + nameKey;
+        }
+        return key;
+    }
+
+    private static boolean usesWfwfNameDisambiguation(Manga first, Manga second) {
+        return isWfwfEpisode(first) || isWfwfEpisode(second);
+    }
+
+    private static boolean isWfwfEpisode(Manga manga) {
+        return "wfwf".equals(mangaSourceSite(manga));
+    }
+
+    private static String mangaSourceSite(Manga manga) {
+        if(manga == null || manga.getTitle() == null)
+            return "";
+        return manga.getTitle().getSourceSite();
+    }
+
+    private static String episodeNameKey(String name) {
+        if(name == null)
+            return "";
+        String value = name.trim().toLowerCase(Locale.ROOT)
+                .replaceFirst("^\\(\\s*\\d+\\s*/\\s*\\d+\\s*\\)\\s*", "");
+        Matcher matcher = Pattern.compile("(\\d+(?:\\s*,\\s*\\d+)*)\\s*화").matcher(value);
+        String episodeNumbers = "";
+        while(matcher.find())
+            episodeNumbers = matcher.group(1);
+        if(episodeNumbers.length() > 0)
+            return normalizeEpisodeNumbers(episodeNumbers);
+        return value.replaceAll("\\s+", "");
+    }
+
+    private static String normalizeEpisodeNumbers(String value) {
+        String[] parts = value.split(",");
+        StringBuilder key = new StringBuilder();
+        for(String part : parts) {
+            String number = part.trim().replaceFirst("^0+(?=\\d)", "");
+            if(number.length() == 0)
+                continue;
+            if(key.length() > 0)
+                key.append(',');
+            key.append(number);
+        }
+        return key.toString();
     }
 
     private static int resolvedTitleId(Manga manga) {

@@ -89,7 +89,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         if(manga == null)
             return RecyclerView.NO_ID;
         if(manga.getId() >= 0)
-            return (((long) manga.getBaseMode()) << 32) ^ (manga.getId() & 0xffffffffL);
+            return Manga.episodeIdentityKey(manga).hashCode();
         String key = manga.getOfflinePath();
         if(key == null || key.length() == 0)
             key = manga.getName();

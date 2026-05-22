@@ -2657,13 +2657,7 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private boolean sameManga(Manga a, Manga b) {
-        if(a == null || b == null)
-            return false;
-        if(a.getId() != b.getId() || a.getBaseMode() != b.getBaseMode())
-            return false;
-        int aTitleId = a.getTitleId();
-        int bTitleId = b.getTitleId();
-        return aTitleId <= 0 || bTitleId <= 0 || aTitleId == bTitleId;
+        return Manga.sameEpisodeIdentity(a, b);
     }
 
     private boolean allowsResumeFallback(ViewerLoadPolicy policy) {

@@ -5,7 +5,6 @@ import androidx.annotation.Nullable;
 import java.util.Objects;
 
 import ml.melun.mangaview.mangaview.Manga;
-import ml.melun.mangaview.mangaview.Title;
 
 public class PageItem{
     public static final int FIRST = 0;
@@ -26,9 +25,7 @@ public class PageItem{
     @Override
     public int hashCode() {
         return Objects.hash(
-                manga == null ? 0 : manga.getBaseMode(),
-                manga == null ? 0 : manga.getTitleId(),
-                manga == null ? 0 : manga.getId(),
+                episodeKey(manga),
                 index,
                 side,
                 img
@@ -48,37 +45,11 @@ public class PageItem{
     }
 
     private boolean sameManga(Manga a, Manga b) {
-        if(a == b)
-            return true;
-        if(a == null || b == null)
-            return false;
-        return a.getBaseMode() == b.getBaseMode()
-                && a.getTitleId() == b.getTitleId()
-                && a.getId() == b.getId();
+        return a == b || Manga.sameEpisodeIdentity(a, b);
     }
 
     public static String episodeKey(Manga manga) {
-        if(manga == null)
-            return ":0:0:0:";
-        return sourceKey(manga)
-                + ":" + manga.getBaseMode()
-                + ":" + manga.getTitleId()
-                + ":" + manga.getId();
-    }
-
-    private static String sourceKey(Manga manga) {
-        if(manga == null)
-            return "";
-        Title title = manga.getTitle();
-        String source = title == null ? "" : safe(title.getSourceSite());
-        String path = safe(manga.getNtkEpisodePath());
-        if(path.length() == 0 && title != null)
-            path = safe(title.getPath());
-        return source + ":" + path;
-    }
-
-    private static String safe(String value) {
-        return value == null ? "" : value.trim();
+        return Manga.episodeIdentityKey(manga);
     }
 
     public String pageKey(boolean autoCut, boolean reverse, int width) {

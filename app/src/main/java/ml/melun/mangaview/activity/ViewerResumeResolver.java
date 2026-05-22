@@ -69,9 +69,7 @@ public final class ViewerResumeResolver {
     }
 
     public static boolean sameManga(Manga a, Manga b) {
-        if(a == null || b == null)
-            return false;
-        return a.getId() == b.getId() && a.getBaseMode() == b.getBaseMode();
+        return Manga.sameEpisodeIdentity(a, b);
     }
 
     private static boolean containsEpisode(List<Manga> episodes, Manga target) {
@@ -83,7 +81,7 @@ public final class ViewerResumeResolver {
             return -1;
         for(int i = 0; i < episodes.size(); i++) {
             Manga episode = episodes.get(i);
-            if(episode != null && episode.getId() == target.getId() && episode.getBaseMode() == target.getBaseMode())
+            if(Manga.sameEpisodeIdentity(episode, target))
                 return i;
         }
         return -1;

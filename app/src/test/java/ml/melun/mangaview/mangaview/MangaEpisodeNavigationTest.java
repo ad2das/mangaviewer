@@ -7,7 +7,9 @@ import java.util.List;
 
 import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 public class MangaEpisodeNavigationTest {
     @Test
@@ -146,6 +148,30 @@ public class MangaEpisodeNavigationTest {
         assertEquals(4, title.getEpsCount());
         assertEquals(274, current.nextEp().getId());
         assertEquals(272, current.prevEp().getId());
+    }
+
+    @Test
+    public void wfwfNavigationDisambiguatesDuplicateEpisodeIdsByName() {
+        Title title = new Title("서머타임 렌더링", "", "", new ArrayList<>(), "", 10017, MTitle.base_comic);
+        title.setSourceSite("wfwf");
+        Manga ninetyThree = new Manga(2, "서머타임 렌더링 93화", "", MTitle.base_comic);
+        Manga next = new Manga(3, "서머타임 렌더링 03, 04화", "", MTitle.base_comic);
+        Manga listedCurrent = new Manga(2, "서머타임 렌더링 02화", "", MTitle.base_comic);
+        Manga previous = new Manga(1, "서머타임 렌더링 01화", "", MTitle.base_comic);
+        List<Manga> episodes = new ArrayList<>();
+        episodes.add(ninetyThree);
+        episodes.add(next);
+        episodes.add(listedCurrent);
+        episodes.add(previous);
+        title.setEps(episodes);
+
+        Manga current = new Manga(2, "(2/144) 서머타임 렌더링 02화", "", MTitle.base_comic);
+        current.setTitle(title);
+
+        assertFalse(Manga.sameEpisodeIdentity(ninetyThree, current));
+        assertTrue(Manga.sameEpisodeIdentity(listedCurrent, current));
+        assertEquals("서머타임 렌더링 03, 04화", current.nextEp().getName());
+        assertEquals("서머타임 렌더링 01화", current.prevEp().getName());
     }
 
     @Test

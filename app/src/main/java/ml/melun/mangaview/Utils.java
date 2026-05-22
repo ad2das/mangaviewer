@@ -814,7 +814,7 @@ public class Utils {
             Manga episode = episodes.get(i);
             if(episode == null)
                 continue;
-            if(episode.getId() == target.getId() && episode.getBaseMode() == target.getBaseMode())
+            if(Manga.sameEpisodeIdentity(episode, target))
                 return i;
         }
         return episodes.indexOf(target);

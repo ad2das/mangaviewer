@@ -311,10 +311,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private boolean sameManga(Manga a, Manga b) {
-        return a != null && b != null
-                && a.getId() == b.getId()
-                && a.getTitleId() == b.getTitleId()
-                && a.getBaseMode() == b.getBaseMode();
+        return Manga.sameEpisodeIdentity(a, b);
     }
 
     private int loadedEpisodeCount() {
