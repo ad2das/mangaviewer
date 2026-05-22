@@ -178,6 +178,50 @@ public class TitleTest {
     }
 
     @Test
+    public void wolfEpisodeParserSortsVisibleEpisodeNumbersInsideMainRuns() {
+        List<Manga> episodes = Title.parseWolfEpisodesForTest(
+                "<div class=\"webtoon-bbs-list bbs-list\"><ul>"
+                        + wolfEpisodeRow(25, "서머타임 렌더링 23화")
+                        + wolfEpisodeRow(24, "서머타임 렌더링 24화")
+                        + wolfEpisodeRow(23, "서머타임 렌더링 22화")
+                        + wolfEpisodeRow(22, "서머타임 렌더링 20화")
+                        + wolfEpisodeRow(21, "서머타임 렌더링 21화")
+                        + wolfEpisodeRow(20, "서머타임 렌더링 19화")
+                        + "</ul></div>",
+                10017,
+                "/cv?toon=",
+                MTitle.base_comic);
+
+        assertEquals("서머타임 렌더링 24화", episodes.get(0).getName());
+        assertEquals("서머타임 렌더링 23화", episodes.get(1).getName());
+        assertEquals("서머타임 렌더링 22화", episodes.get(2).getName());
+        assertEquals("서머타임 렌더링 21화", episodes.get(3).getName());
+        assertEquals("서머타임 렌더링 20화", episodes.get(4).getName());
+        assertEquals("서머타임 렌더링 19화", episodes.get(5).getName());
+    }
+
+    @Test
+    public void wolfEpisodeParserKeepsSpecialEpisodesAtSourceBreaks() {
+        List<Manga> episodes = Title.parseWolfEpisodesForTest(
+                "<div class=\"webtoon-bbs-list bbs-list\"><ul>"
+                        + wolfEpisodeRow(18, "서머타임 렌더링 17화")
+                        + wolfEpisodeRow(17, "서머타임 렌더링 16화")
+                        + wolfEpisodeRow(16, "서머타임 렌더링 번외편 3~4화 + 2권 부록")
+                        + wolfEpisodeRow(13, "서머타임 렌더링 15화")
+                        + wolfEpisodeRow(12, "서머타임 렌더링 14화")
+                        + "</ul></div>",
+                10017,
+                "/cv?toon=",
+                MTitle.base_comic);
+
+        assertEquals("서머타임 렌더링 17화", episodes.get(0).getName());
+        assertEquals("서머타임 렌더링 16화", episodes.get(1).getName());
+        assertEquals("서머타임 렌더링 번외편 3~4화 + 2권 부록", episodes.get(2).getName());
+        assertEquals("서머타임 렌더링 15화", episodes.get(3).getName());
+        assertEquals("서머타임 렌더링 14화", episodes.get(4).getName());
+    }
+
+    @Test
     public void legacyInfoRootFallsBackToDocumentWhenHeaderIsMissing() {
         assertEquals("episode", Title.legacyInfoRootTextForTest(
                 "<html><body><ul class=\"list-body\"><li class=\"list-item\">episode</li></ul></body></html>",
@@ -189,5 +233,10 @@ public class TitleTest {
         assertEquals(0, Title.legacyRecommendCountForTest("<table class=\"table\"></table>"));
         assertEquals(0, Title.legacyRecommendCountForTest("<table class=\"table\"><tr><td><button class=\"btn-red\"><b>n/a</b></button></td></tr></table>"));
         assertEquals(42, Title.legacyRecommendCountForTest("<table class=\"table\"><tr><td><button class=\"btn-red\"><b>42</b></button></td></tr></table>"));
+    }
+
+    private static String wolfEpisodeRow(int num, String title) {
+        return "<li><a href=\"/cv?toon=10017&num=" + num + "&title=" + title + "\" class=\"view_open\">"
+                + "<div class=\"list-box\"><div class=\"subject\">" + title + "</div></div></a></li>";
     }
 }

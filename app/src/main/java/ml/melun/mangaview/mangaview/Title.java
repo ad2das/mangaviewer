@@ -13,6 +13,8 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.jsoup.*;
 import org.jsoup.nodes.Document;
@@ -672,7 +674,85 @@ public class Title extends MTitle {
             tmp.setTitleId(titleId);
             episodes.add(tmp);
         }
+        sortWolfEpisodesByVisibleEpisodeNumber(episodes);
         return episodes;
+    }
+
+    private static void sortWolfEpisodesByVisibleEpisodeNumber(ArrayList<Manga> episodes) {
+        if(episodes == null || episodes.size() < 2)
+            return;
+        int blockStart = -1;
+        for(int i = 0; i <= episodes.size(); i++) {
+            boolean sortable = i < episodes.size() && wolfVisibleEpisodeNumber(episodes.get(i)) >= 0;
+            if(sortable) {
+                if(blockStart < 0)
+                    blockStart = i;
+                continue;
+            }
+            if(blockStart >= 0) {
+                sortWolfEpisodeBlock(episodes, blockStart, i);
+                blockStart = -1;
+            }
+        }
+    }
+
+    private static void sortWolfEpisodeBlock(ArrayList<Manga> episodes, int start, int end) {
+        if(end - start < 2)
+            return;
+        ArrayList<WolfEpisodeOrder> block = new ArrayList<>();
+        for(int i = start; i < end; i++)
+            block.add(new WolfEpisodeOrder(episodes.get(i), i - start, wolfVisibleEpisodeNumber(episodes.get(i))));
+        Collections.sort(block, (left, right) -> {
+            int numberCompare = Double.compare(right.number, left.number);
+            if(numberCompare != 0)
+                return numberCompare;
+            return Integer.compare(left.originalIndex, right.originalIndex);
+        });
+        for(int i = 0; i < block.size(); i++)
+            episodes.set(start + i, block.get(i).episode);
+    }
+
+    private static double wolfVisibleEpisodeNumber(Manga episode) {
+        return episode == null ? -1 : wolfVisibleEpisodeNumber(episode.getName());
+    }
+
+    private static double wolfVisibleEpisodeNumber(String title) {
+        if(title == null)
+            return -1;
+        String compact = title.replaceAll("\\s+", "");
+        if(compact.contains("번외")
+                || compact.contains("외전")
+                || compact.contains("특별")
+                || compact.contains("부록")
+                || compact.contains("기록")
+                || compact.contains("후기")
+                || compact.contains("프롤로그"))
+            return -1;
+        Matcher episodeMatcher = Pattern.compile("(\\d+(?:\\.\\d+)?(?:\\s*[,~～\\-]\\s*\\d+(?:\\.\\d+)?)*)\\s*화")
+                .matcher(title);
+        double result = -1;
+        while(episodeMatcher.find()) {
+            Matcher numberMatcher = Pattern.compile("\\d+(?:\\.\\d+)?").matcher(episodeMatcher.group(1));
+            while(numberMatcher.find()) {
+                try {
+                    result = Math.max(result, Double.parseDouble(numberMatcher.group()));
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        return result;
+    }
+
+    private static class WolfEpisodeOrder {
+        final Manga episode;
+        final int originalIndex;
+        final double number;
+
+        WolfEpisodeOrder(Manga episode, int originalIndex, double number) {
+            this.episode = episode;
+            this.originalIndex = originalIndex;
+            this.number = number;
+        }
     }
 
     private static String wolfEpisodeTitle(Element episodeLink, String href) {
