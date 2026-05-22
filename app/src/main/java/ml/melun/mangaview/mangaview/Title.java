@@ -215,37 +215,11 @@ public class Title extends MTitle {
             if(img != null)
                 thumb = img.hasAttr("data-original") ? img.attr("data-original") : img.attr("src");
 
-            eps = new ArrayList<>();
-            Set<String> seenEpisodePaths = new HashSet<>();
             Elements episodeLinks = d.select("a[href]");
-            int matchedEpisodeLinks = 0;
-            for(Element link : episodeLinks) {
-                if(link.hasClass("cta"))
-                    continue;
-                String href = link.attr("href");
-                String epPath = normalizeNtkEpisodePath(href, segment, titleKey);
-                if(epPath.length() == 0)
-                    continue;
-                matchedEpisodeLinks++;
-                int epId = ntkEpisodeSortId(link, epPath, segment);
-                if(epId <= 0)
-                    continue;
-                String epTitle = cleanNtkEpisodeTitle(link);
-                if(isNtkEpisodeActionTitle(epTitle))
-                    continue;
-                if(!seenEpisodePaths.add(epPath))
-                    continue;
-                String date = extractNtkEpisodeDate(link, epTitle);
-                Manga tmp = new Manga(epId, epTitle, date, baseMode);
-                tmp.setMode(0);
-                tmp.setTitle(this);
-                tmp.setTitleId(id);
-                tmp.setNtkEpisodePath(epPath);
-                eps.add(tmp);
-            }
-            Collections.sort(eps, (left, right) -> Integer.compare(right.getId(), left.getId()));
+            NtkEpisodeParseResult parsed = parseNtkEpisodes(d, segment, titleKey, baseMode, this);
+            eps = parsed.episodes;
             if(eps.size() == 0) {
-                logNtkEpisodeParse("empty", page, segment, matchedEpisodeLinks, episodeLinks.size());
+                logNtkEpisodeParse("empty", page, segment, parsed.matchedEpisodeLinks, episodeLinks.size());
                 if(allowPathRefresh && refreshNtkTitlePathFromApi(client, segment, titlePath))
                     return fetchNtkEps(client, false);
                 return LOAD_ERROR;
@@ -257,6 +231,47 @@ public class Title extends MTitle {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return LOAD_OK;
+    }
+
+    private static NtkEpisodeParseResult parseNtkEpisodes(Document document, String segment, String titleKey,
+                                                          int baseMode, Title title) {
+        NtkEpisodeParseResult result = new NtkEpisodeParseResult();
+        if(document == null)
+            return result;
+        int titleId = title == null ? parsePositiveInt(titleKey) : title.getId();
+        Set<String> seenEpisodePaths = new HashSet<>();
+        for(Element link : document.select("a[href]")) {
+            if(link.hasClass("cta"))
+                continue;
+            String href = link.attr("href");
+            String epPath = normalizeNtkEpisodePath(href, segment, titleKey);
+            if(epPath.length() == 0)
+                continue;
+            result.matchedEpisodeLinks++;
+            int epId = ntkEpisodeSortId(link, epPath, segment);
+            if(epId <= 0)
+                continue;
+            String epTitle = cleanNtkEpisodeTitle(link);
+            if(isNtkEpisodeActionTitle(epTitle))
+                continue;
+            if(!seenEpisodePaths.add(epPath))
+                continue;
+            String date = extractNtkEpisodeDate(link, epTitle);
+            Manga tmp = new Manga(epId, epTitle, date, baseMode);
+            tmp.setMode(0);
+            tmp.setTitle(title);
+            tmp.setTitleId(titleId);
+            tmp.setNtkEpisodePath(epPath);
+            result.episodes.add(tmp);
+        }
+        Collections.sort(result.episodes, (left, right) -> Integer.compare(right.getId(), left.getId()));
+        sortEpisodesByVisibleEpisodeNumber(result.episodes);
+        return result;
+    }
+
+    private static class NtkEpisodeParseResult {
+        final ArrayList<Manga> episodes = new ArrayList<>();
+        int matchedEpisodeLinks;
     }
 
     private static boolean looksLikeNtkErrorPage(String body) {
@@ -674,34 +689,34 @@ public class Title extends MTitle {
             tmp.setTitleId(titleId);
             episodes.add(tmp);
         }
-        sortWolfEpisodesByVisibleEpisodeNumber(episodes);
+        sortEpisodesByVisibleEpisodeNumber(episodes);
         return episodes;
     }
 
-    private static void sortWolfEpisodesByVisibleEpisodeNumber(ArrayList<Manga> episodes) {
+    private static void sortEpisodesByVisibleEpisodeNumber(ArrayList<Manga> episodes) {
         if(episodes == null || episodes.size() < 2)
             return;
         int blockStart = -1;
         for(int i = 0; i <= episodes.size(); i++) {
-            boolean sortable = i < episodes.size() && wolfVisibleEpisodeNumber(episodes.get(i)) >= 0;
+            boolean sortable = i < episodes.size() && visibleEpisodeNumber(episodes.get(i)) >= 0;
             if(sortable) {
                 if(blockStart < 0)
                     blockStart = i;
                 continue;
             }
             if(blockStart >= 0) {
-                sortWolfEpisodeBlock(episodes, blockStart, i);
+                sortEpisodeBlockByVisibleEpisodeNumber(episodes, blockStart, i);
                 blockStart = -1;
             }
         }
     }
 
-    private static void sortWolfEpisodeBlock(ArrayList<Manga> episodes, int start, int end) {
+    private static void sortEpisodeBlockByVisibleEpisodeNumber(ArrayList<Manga> episodes, int start, int end) {
         if(end - start < 2)
             return;
-        ArrayList<WolfEpisodeOrder> block = new ArrayList<>();
+        ArrayList<EpisodeOrder> block = new ArrayList<>();
         for(int i = start; i < end; i++)
-            block.add(new WolfEpisodeOrder(episodes.get(i), i - start, wolfVisibleEpisodeNumber(episodes.get(i))));
+            block.add(new EpisodeOrder(episodes.get(i), i - start, visibleEpisodeNumber(episodes.get(i))));
         Collections.sort(block, (left, right) -> {
             int numberCompare = Double.compare(right.number, left.number);
             if(numberCompare != 0)
@@ -712,11 +727,11 @@ public class Title extends MTitle {
             episodes.set(start + i, block.get(i).episode);
     }
 
-    private static double wolfVisibleEpisodeNumber(Manga episode) {
-        return episode == null ? -1 : wolfVisibleEpisodeNumber(episode.getName());
+    private static double visibleEpisodeNumber(Manga episode) {
+        return episode == null ? -1 : visibleEpisodeNumber(episode.getName());
     }
 
-    private static double wolfVisibleEpisodeNumber(String title) {
+    private static double visibleEpisodeNumber(String title) {
         if(title == null)
             return -1;
         String compact = title.replaceAll("\\s+", "");
@@ -743,12 +758,12 @@ public class Title extends MTitle {
         return result;
     }
 
-    private static class WolfEpisodeOrder {
+    private static class EpisodeOrder {
         final Manga episode;
         final int originalIndex;
         final double number;
 
-        WolfEpisodeOrder(Manga episode, int originalIndex, double number) {
+        EpisodeOrder(Manga episode, int originalIndex, double number) {
             this.episode = episode;
             this.originalIndex = originalIndex;
             this.number = number;
@@ -872,6 +887,19 @@ public class Title extends MTitle {
         return findNtkSearchTitlePath(Jsoup.parse(html == null ? "" : html), segment, expectedTitle);
     }
 
+    static List<Manga> parseNtkEpisodesForTest(String html, String segment, String titleKey, int baseMode) {
+        int titleId = parsePositiveInt(titleKey);
+        if(titleId <= 0)
+            titleId = 1;
+        Title title = new Title("title", "", "", null, "", titleId, baseMode);
+        title.setSourceSite("ntk");
+        title.setPath("/" + segment + "/" + titleKey);
+        NtkEpisodeParseResult parsed = parseNtkEpisodes(Jsoup.parse(html == null ? "" : html),
+                segment, titleKey, baseMode, title);
+        title.setEps(parsed.episodes);
+        return parsed.episodes;
+    }
+
     static List<Manga> parseWolfEpisodesForTest(String html, int titleId, String viewPath, int baseMode) {
         Title title = new Title("title", "", "", null, "", titleId, baseMode);
         title.setSourceSite("wfwf");
@@ -970,7 +998,21 @@ public class Title extends MTitle {
     }
 
     public void setEps(List<Manga> list){
-        eps = list;
+        eps = orderedEpisodeSnapshot(list);
+    }
+
+    public static ArrayList<Manga> orderedEpisodeSnapshot(List<Manga> list) {
+        if(list == null)
+            return null;
+        ArrayList<Manga> ordered;
+        try {
+            ordered = new ArrayList<>(list);
+        } catch (RuntimeException e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            ordered = new ArrayList<>();
+        }
+        sortEpisodesByVisibleEpisodeNumber(ordered);
+        return ordered;
     }
 
     public boolean ensureProgressEpisodes(Manga current) {

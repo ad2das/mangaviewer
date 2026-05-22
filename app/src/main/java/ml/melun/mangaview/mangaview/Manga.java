@@ -1104,7 +1104,7 @@ public class Manga {
     }
 
     public void setEps(List<Manga> eps) {
-        this.eps = eps;
+        this.eps = Title.orderedEpisodeSnapshot(eps);
         attachEpisodeSeriesMetadata();
     }
 

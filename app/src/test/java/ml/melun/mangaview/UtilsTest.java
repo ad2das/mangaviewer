@@ -6,7 +6,12 @@ import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
+
+import ml.melun.mangaview.mangaview.MTitle;
+import ml.melun.mangaview.mangaview.Manga;
+import ml.melun.mangaview.mangaview.Title;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -109,6 +114,24 @@ public class UtilsTest {
             tenth.delete();
             root.delete();
         }
+    }
+
+    @Test
+    public void episodeSnapshotsNormalizeVisibleEpisodeOrderForViewerPicker() {
+        Title title = new Title("서머타임 렌더링", "", "", null, "", 10017, MTitle.base_comic);
+        title.setSourceSite("wfwf");
+        ArrayList<Manga> episodes = new ArrayList<>();
+        episodes.add(new Manga(25, "서머타임 렌더링 23화", "", MTitle.base_comic));
+        episodes.add(new Manga(24, "서머타임 렌더링 24화", "", MTitle.base_comic));
+        episodes.add(new Manga(23, "서머타임 렌더링 22화", "", MTitle.base_comic));
+        title.setEps(episodes);
+
+        Manga current = new Manga(24, "서머타임 렌더링 24화", "", MTitle.base_comic);
+        current.setTitle(title);
+        current.setEps(episodes);
+
+        assertEquals("서머타임 렌더링 24화", Utils.snapshotEpisodes(title).get(0).getName());
+        assertEquals("서머타임 렌더링 24화", Utils.snapshotEpisodes(current).get(0).getName());
     }
 
     @Test

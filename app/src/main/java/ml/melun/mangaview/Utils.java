@@ -651,11 +651,17 @@ public class Utils {
     }
 
     public static ArrayList<Manga> snapshotEpisodes(Title title) {
-        return title == null ? new ArrayList<>() : snapshotList(title.getEps());
+        if(title == null)
+            return new ArrayList<>();
+        ArrayList<Manga> episodes = Title.orderedEpisodeSnapshot(title.getEps());
+        return episodes == null ? new ArrayList<>() : episodes;
     }
 
     public static ArrayList<Manga> snapshotEpisodes(Manga manga) {
-        return manga == null ? new ArrayList<>() : snapshotList(manga.getEps());
+        if(manga == null)
+            return new ArrayList<>();
+        ArrayList<Manga> episodes = Title.orderedEpisodeSnapshot(manga.getEps());
+        return episodes == null ? new ArrayList<>() : episodes;
     }
 
     public static <T> T safeGet(List<T> source, int index) {

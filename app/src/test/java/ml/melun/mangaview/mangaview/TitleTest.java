@@ -201,6 +201,61 @@ public class TitleTest {
     }
 
     @Test
+    public void wolfWebtoonEpisodeParserSortsVisibleEpisodeNumbersInsideMainRuns() {
+        List<Manga> episodes = Title.parseWolfEpisodesForTest(
+                "<div class=\"webtoon-bbs-list bbs-list\"><ul>"
+                        + wolfWebtoonEpisodeRow(25, "웹툰 제목 23화")
+                        + wolfWebtoonEpisodeRow(24, "웹툰 제목 24화")
+                        + wolfWebtoonEpisodeRow(23, "웹툰 제목 22화")
+                        + "</ul></div>",
+                10017,
+                "/view?toon=",
+                MTitle.base_webtoon);
+
+        assertEquals("웹툰 제목 24화", episodes.get(0).getName());
+        assertEquals("웹툰 제목 23화", episodes.get(1).getName());
+        assertEquals("웹툰 제목 22화", episodes.get(2).getName());
+    }
+
+    @Test
+    public void ntkManhwaEpisodeParserSortsVisibleEpisodeNumbersInsideMainRuns() {
+        List<Manga> episodes = Title.parseNtkEpisodesForTest(
+                "<main>"
+                        + ntkEpisodeRow("manhwa", 10017, 25, "서머타임 렌더링 23화")
+                        + ntkEpisodeRow("manhwa", 10017, 24, "서머타임 렌더링 24화")
+                        + ntkEpisodeRow("manhwa", 10017, 23, "서머타임 렌더링 22화")
+                        + ntkEpisodeRow("manhwa", 10017, 22, "서머타임 렌더링 20화")
+                        + ntkEpisodeRow("manhwa", 10017, 21, "서머타임 렌더링 21화")
+                        + "</main>",
+                "manhwa",
+                "10017",
+                MTitle.base_comic);
+
+        assertEquals("서머타임 렌더링 24화", episodes.get(0).getName());
+        assertEquals("서머타임 렌더링 23화", episodes.get(1).getName());
+        assertEquals("서머타임 렌더링 22화", episodes.get(2).getName());
+        assertEquals("서머타임 렌더링 21화", episodes.get(3).getName());
+        assertEquals("서머타임 렌더링 20화", episodes.get(4).getName());
+    }
+
+    @Test
+    public void ntkWebtoonEpisodeParserSortsVisibleEpisodeNumbersInsideMainRuns() {
+        List<Manga> episodes = Title.parseNtkEpisodesForTest(
+                "<main>"
+                        + ntkEpisodeRow("webtoon", 10017, 25, "웹툰 제목 23화")
+                        + ntkEpisodeRow("webtoon", 10017, 24, "웹툰 제목 24화")
+                        + ntkEpisodeRow("webtoon", 10017, 23, "웹툰 제목 22화")
+                        + "</main>",
+                "webtoon",
+                "10017",
+                MTitle.base_webtoon);
+
+        assertEquals("웹툰 제목 24화", episodes.get(0).getName());
+        assertEquals("웹툰 제목 23화", episodes.get(1).getName());
+        assertEquals("웹툰 제목 22화", episodes.get(2).getName());
+    }
+
+    @Test
     public void wolfEpisodeParserKeepsSpecialEpisodesAtSourceBreaks() {
         List<Manga> episodes = Title.parseWolfEpisodesForTest(
                 "<div class=\"webtoon-bbs-list bbs-list\"><ul>"
@@ -238,5 +293,15 @@ public class TitleTest {
     private static String wolfEpisodeRow(int num, String title) {
         return "<li><a href=\"/cv?toon=10017&num=" + num + "&title=" + title + "\" class=\"view_open\">"
                 + "<div class=\"list-box\"><div class=\"subject\">" + title + "</div></div></a></li>";
+    }
+
+    private static String wolfWebtoonEpisodeRow(int num, String title) {
+        return "<li><a href=\"/view?toon=10017&num=" + num + "&title=" + title + "\" class=\"view_open\">"
+                + "<div class=\"list-box\"><div class=\"subject\">" + title + "</div></div></a></li>";
+    }
+
+    private static String ntkEpisodeRow(String segment, int titleId, int episodeId, String title) {
+        return "<a class=\"ep-row-v2-link\" href=\"/" + segment + "/" + titleId + "/" + episodeId + "\">"
+                + "<strong>" + title + "</strong><span>26.05.09</span></a>";
     }
 }
