@@ -627,32 +627,7 @@ public class Title extends MTitle {
                 }
             }catch (Exception e){}
 
-            eps = new ArrayList<>();
-            Set<Integer> seenEpisodeIds = new HashSet<>();
-            for(Element e : d.select("a[href^=\"" + viewPath + id + "\"]")) {
-                String href = e.attr("href");
-                int epId = MainPageWebtoon.getQueryInt(href, "num");
-                if(epId <= 0) continue;
-                if(!seenEpisodeIds.add(epId)) continue;
-                String epTitle = "";
-                Element subject = e.selectFirst(".subject");
-                if(subject != null)
-                    epTitle = subject.ownText().replace("\u00a0", " ").trim();
-                if(epTitle.length() == 0)
-                    epTitle = e.ownText().replace("\u00a0", " ").trim();
-                if(epTitle.length() == 0)
-                    epTitle = MainPageWebtoon.getQueryString(href, "title");
-
-                String date = "";
-                Element dateElement = e.selectFirst("span.date, div.date, span:last-child");
-                if(dateElement != null)
-                    date = dateElement.ownText();
-
-                Manga tmp = new Manga(epId, epTitle, date, baseMode);
-                tmp.setMode(0);
-                tmp.setTitle(this);
-                eps.add(tmp);
-            }
+            eps = parseWolfEpisodes(d, id, viewPath, baseMode, this);
             if(eps.size() == 0 && client.resolveWfwfDomainNow())
                 return fetchWolfEps(client, listPath, viewPath);
             if(eps.size() == 0)
@@ -665,6 +640,53 @@ public class Title extends MTitle {
             return LOAD_ERROR;
         }
         return LOAD_OK;
+    }
+
+    private static ArrayList<Manga> parseWolfEpisodes(Document document, int titleId, String viewPath, int baseMode, Title title) {
+        ArrayList<Manga> episodes = new ArrayList<>();
+        if(document == null)
+            return episodes;
+
+        String episodeHrefSelector = "a[href^=\"" + viewPath + titleId + "\"]";
+        Elements links = document.select(".webtoon-bbs-list " + episodeHrefSelector + ":has(.list-box), "
+                + ".bbs-list " + episodeHrefSelector + ":has(.list-box), "
+                + episodeHrefSelector + ":has(.list-box)");
+        if(links.size() == 0)
+            links = document.select(episodeHrefSelector);
+
+        Set<Integer> seenEpisodeIds = new HashSet<>();
+        for(Element e : links) {
+            String href = e.attr("href");
+            int epId = MainPageWebtoon.getQueryInt(href, "num");
+            if(epId <= 0) continue;
+            if(!seenEpisodeIds.add(epId)) continue;
+            String epTitle = wolfEpisodeTitle(e, href);
+            String date = "";
+            Element dateElement = e.selectFirst("span.date, div.date, span:last-child");
+            if(dateElement != null)
+                date = dateElement.ownText();
+
+            Manga tmp = new Manga(epId, epTitle, date, baseMode);
+            tmp.setMode(0);
+            tmp.setTitle(title);
+            tmp.setTitleId(titleId);
+            episodes.add(tmp);
+        }
+        return episodes;
+    }
+
+    private static String wolfEpisodeTitle(Element episodeLink, String href) {
+        if(episodeLink == null)
+            return MainPageWebtoon.getQueryString(href, "title");
+        String epTitle = "";
+        Element subject = episodeLink.selectFirst(".subject");
+        if(subject != null)
+            epTitle = subject.ownText().replace("\u00a0", " ").trim();
+        if(epTitle.length() == 0)
+            epTitle = episodeLink.ownText().replace("\u00a0", " ").trim();
+        if(epTitle.length() == 0)
+            epTitle = MainPageWebtoon.getQueryString(href, "title");
+        return epTitle;
     }
 
     private boolean refreshNtkTitlePathFromApi(CustomHttpClient client, String segment, String currentPath) {
@@ -768,6 +790,14 @@ public class Title extends MTitle {
 
     static String ntkSearchTitlePathForTest(String html, String segment, String expectedTitle) {
         return findNtkSearchTitlePath(Jsoup.parse(html == null ? "" : html), segment, expectedTitle);
+    }
+
+    static List<Manga> parseWolfEpisodesForTest(String html, int titleId, String viewPath, int baseMode) {
+        Title title = new Title("title", "", "", null, "", titleId, baseMode);
+        title.setSourceSite("wfwf");
+        ArrayList<Manga> episodes = parseWolfEpisodes(Jsoup.parse(html == null ? "" : html), titleId, viewPath, baseMode, title);
+        title.setEps(episodes);
+        return episodes;
     }
 
     private static String ntkApiTitlePath(String segment, String sourceWorkId) {

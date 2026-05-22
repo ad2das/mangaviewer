@@ -154,6 +154,30 @@ public class TitleTest {
     }
 
     @Test
+    public void wolfEpisodeParserIgnoresFirstEpisodeShortcut() {
+        List<Manga> episodes = Title.parseWolfEpisodesForTest(
+                "<section id=\"content\">"
+                        + "<div class=\"btn\"><a href=\"/cv?toon=10017&num=1\" class=\"view_open\">첫화보기</a></div>"
+                        + "<div class=\"webtoon-bbs-list bbs-list\"><ul>"
+                        + "<li><a href=\"/cv?toon=10017&num=92&title=92화\" class=\"view_open\">"
+                        + "<div class=\"list-box\"><div class=\"num\">92</div><div class=\"subject\">92화</div><span class=\"date\">2026.05.22</span></div></a></li>"
+                        + "<li><a href=\"/cv?toon=10017&num=2&title=2화\" class=\"view_open\">"
+                        + "<div class=\"list-box\"><div class=\"num\">2</div><div class=\"subject\">2화</div></div></a></li>"
+                        + "<li><a href=\"/cv?toon=10017&num=1&title=1화\" class=\"view_open\">"
+                        + "<div class=\"list-box\"><div class=\"num\">1</div><div class=\"subject\">1화</div></div></a></li>"
+                        + "</ul></div></section>",
+                10017,
+                "/cv?toon=",
+                MTitle.base_comic);
+
+        assertEquals(3, episodes.size());
+        assertEquals(92, episodes.get(0).getId());
+        assertEquals(2, episodes.get(1).getId());
+        assertEquals(1, episodes.get(2).getId());
+        assertEquals(2, episodes.get(2).nextEp().getId());
+    }
+
+    @Test
     public void legacyInfoRootFallsBackToDocumentWhenHeaderIsMissing() {
         assertEquals("episode", Title.legacyInfoRootTextForTest(
                 "<html><body><ul class=\"list-body\"><li class=\"list-item\">episode</li></ul></body></html>",
