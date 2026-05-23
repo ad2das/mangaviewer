@@ -342,6 +342,8 @@ public class CustomHttpClientTest {
     public void ntkUrlDetectionHandlesResolvedHosts() {
         assertTrue(CustomHttpClient.isNtkUrlForTest("https://sbxh1.com/manhwa"));
         assertTrue(CustomHttpClient.isNtkUrlForTest("https://img.sbxh1.com/manhwa/1"));
+        assertTrue(CustomHttpClient.isNtkUrlForTest("https://newto03.com/manhwa"));
+        assertTrue(CustomHttpClient.isNtkUrlForTest("https://toonflix.app/manhwa"));
         assertFalse(CustomHttpClient.isNtkUrlForTest("https://example.com/manhwa"));
     }
 
@@ -350,6 +352,8 @@ public class CustomHttpClientTest {
         assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("sbxh1.com"));
         assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("www.sbxh1.com"));
         assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("img.sbxh1.com"));
+        assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("toonflix.app"));
+        assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("img.toonflix.app"));
         assertFalse(CustomHttpClient.isNtkDnsProtectedHostForTest("example.com"));
     }
 

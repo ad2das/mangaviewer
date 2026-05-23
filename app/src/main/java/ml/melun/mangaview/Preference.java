@@ -421,6 +421,14 @@ public class Preference {
         return normalizeWebtoonUrl(sourceUrl);
     }
 
+    static String normalizeComicUrlForTest(String sourceUrl, String ntkRootFallback) {
+        return normalizeComicUrl(sourceUrl, ntkRootFallback);
+    }
+
+    static String normalizeWebtoonUrlForTest(String sourceUrl, String ntkRootFallback) {
+        return normalizeWebtoonUrl(sourceUrl, ntkRootFallback);
+    }
+
     static boolean needsWfwfSitePresetForTest(String defUrl, String url, String webtoonUrl) {
         return needsWfwfSitePreset(defUrl, url, webtoonUrl);
     }
@@ -435,7 +443,7 @@ public class Preference {
         String normalized = normalizeHttpUrl(sourceUrl.trim(), DEFAULT_COMIC_URL);
         while(normalized.endsWith("/"))
             normalized = normalized.substring(0, normalized.length() - 1);
-        if(isNtkLikeUrl(normalized)) {
+        if(isNtkLikeUrl(normalized, ntkRootFallback)) {
             String root = ntkRoot(normalized);
             if(root.length() == 0)
                 root = normalizeNtkRoot(ntkRootFallback);
@@ -464,7 +472,7 @@ public class Preference {
         String normalized = normalizeHttpUrl(sourceUrl.trim(), WEBTOON_URL);
         while(normalized.endsWith("/"))
             normalized = normalized.substring(0, normalized.length() - 1);
-        if(isNtkLikeUrl(normalized)) {
+        if(isNtkLikeUrl(normalized, ntkRootFallback)) {
             String root = ntkRoot(normalized);
             if(root.length() == 0)
                 root = normalizeNtkRoot(ntkRootFallback);
@@ -547,6 +555,10 @@ public class Preference {
     }
 
     private static boolean isNtkLikeUrl(String sourceUrl) {
+        return isNtkLikeUrl(sourceUrl, "");
+    }
+
+    private static boolean isNtkLikeUrl(String sourceUrl, String ntkRootFallback) {
         try {
             if(sourceUrl == null || sourceUrl.trim().length() == 0)
                 return false;
@@ -559,14 +571,35 @@ public class Preference {
             host = host.toLowerCase(Locale.ROOT);
             if(host.startsWith("www."))
                 host = host.substring(4);
-            return host.startsWith("ntk")
+            if(host.startsWith("ntk")
                     || host.startsWith("newto")
                     || host.startsWith("sbxh")
                     || host.contains("newtoki")
+                    || host.startsWith("toonflix")
+                    || host.endsWith(".toonflix.app")
                     || "sbxh1.com".equals(host)
-                    || "www.sbxh1.com".equals(host);
+                    || "www.sbxh1.com".equals(host))
+                return true;
+            String fallbackHost = ntkHost(ntkRootFallback);
+            return fallbackHost.length() > 0
+                    && (host.equals(fallbackHost) || host.endsWith("." + fallbackHost));
         } catch (Exception e) {
             return false;
+        }
+    }
+
+    private static String ntkHost(String sourceUrl) {
+        try {
+            String normalized = normalizeHttpUrl(sourceUrl == null ? "" : sourceUrl.trim(), "");
+            if(normalized.length() == 0)
+                return "";
+            String host = URI.create(normalized).getHost();
+            if(host == null)
+                return "";
+            host = host.toLowerCase(Locale.ROOT);
+            return host.startsWith("www.") ? host.substring(4) : host;
+        } catch (Exception e) {
+            return "";
         }
     }
 
@@ -750,7 +783,9 @@ public class Preference {
     }
 
     public boolean isNtkSite() {
-        return isNtkLikeUrl(url) || isNtkLikeUrl(webtoonUrl) || isNtkLikeUrl(defUrl);
+        return isNtkLikeUrl(url, ntkResolvedRoot)
+                || isNtkLikeUrl(webtoonUrl, ntkResolvedRoot)
+                || isNtkLikeUrl(defUrl, ntkResolvedRoot);
     }
 
     private boolean isDefaultWfwfPreset(String comicUrl, String webtoonUrl) {
@@ -1169,7 +1204,7 @@ public class Preference {
     }
 
     private String sourceSiteFromUrl(String sourceUrl) {
-        if(isNtkLikeUrl(sourceUrl))
+        if(isNtkLikeUrl(sourceUrl, ntkResolvedRoot))
             return "ntk";
         if(isWfwfLikeUrl(sourceUrl))
             return "wfwf";

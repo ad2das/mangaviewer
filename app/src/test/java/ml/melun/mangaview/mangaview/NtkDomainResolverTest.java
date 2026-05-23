@@ -76,6 +76,14 @@ public class NtkDomainResolverTest {
     }
 
     @Test
+    public void acceptsUnexpectedOfficialAddressHost() {
+        String html = "<div class=\"tgme_widget_message_text\">\uB274\uD1A0\uB07C \uD604\uC7AC\uC8FC\uC18C "
+                + "<a href=\"https://odd-address.example/\">odd-address.example</a></div>";
+
+        assertEquals("https://odd-address.example", NtkDomainResolver.parseLatestRoot(html));
+    }
+
+    @Test
     public void findsAddressGuideLinksFromTelegramMessage() {
         String html = "<div class=\"tgme_widget_message_text\">"
                 + "\uB274\uD1A0\uB07C \uD604\uC7AC\uC8FC\uC18C <a href=\"https://sbxh1.com\">sbxh1.com</a><br>"

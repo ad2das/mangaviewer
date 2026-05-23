@@ -424,9 +424,12 @@ public final class MangaRepository {
             return false;
         String lower = root.toLowerCase(Locale.ROOT);
         return lower.contains("://ntk")
+                || lower.contains("://newto")
                 || lower.contains("://newtoki")
                 || lower.contains("://sbxh")
-                || lower.contains("://www.sbxh");
+                || lower.contains("://www.sbxh")
+                || lower.contains("://toonflix")
+                || lower.contains(".toonflix.app");
     }
 
     @SuppressWarnings("unchecked")

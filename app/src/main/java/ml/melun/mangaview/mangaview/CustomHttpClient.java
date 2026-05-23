@@ -592,6 +592,8 @@ public class CustomHttpClient {
                 || isNtkProtectedHostSuffix(normalized, PREVIOUS_NTK_HOST)
                 || normalized.matches("(?:[a-z0-9-]+\\.)?sbxh\\d+\\.com")
                 || normalized.matches("(?:[a-z0-9-]+\\.)?newto(?:ki)?\\d*\\.com")
+                || isNtkProtectedHostSuffix(normalized, "toonflix.app")
+                || isConfiguredNtkHost(normalized)
                 || normalized.equals(LEGACY_NTK_HOST)
                 || normalized.endsWith("." + LEGACY_NTK_HOST);
     }
@@ -1527,7 +1529,10 @@ public class CustomHttpClient {
         return host.startsWith("wfwf")
                 || host.contains("wolf")
                 || host.contains("ntk")
-                || host.contains("sbxh");
+                || host.contains("newto")
+                || host.contains("sbxh")
+                || host.contains("toonflix")
+                || isConfiguredNtkHost(host);
     }
 
     static boolean allowUnsafeFallbackForTest(String url) {
@@ -1753,7 +1758,7 @@ public class CustomHttpClient {
         ArrayList<String> candidates = new ArrayList<>();
         if(resolvedRoots != null)
             for(String root : resolvedRoots)
-                addNtkRootCandidate(candidates, root);
+                addNtkRootCandidate(candidates, root, true);
         addNtkRootCandidate(candidates, currentRoot);
         addNtkRootCandidate(candidates, "https://" + LEGACY_NTK_HOST);
         addNtkRootCandidate(candidates, NTK_WEBTOON_URL);
@@ -1764,8 +1769,14 @@ public class CustomHttpClient {
     }
 
     private void addNtkRootCandidate(List<String> candidates, String root) {
+        addNtkRootCandidate(candidates, root, false);
+    }
+
+    private void addNtkRootCandidate(List<String> candidates, String root, boolean trustedResolvedRoot) {
         root = NtkDomainResolver.normalizeRoot(root);
-        if(root == null || root.length() == 0 || !isNtkUrl(root) || candidates.contains(root))
+        if(root == null || root.length() == 0 || candidates.contains(root))
+            return;
+        if(!trustedResolvedRoot && !isNtkUrl(root))
             return;
         candidates.add(root);
     }
@@ -2246,7 +2257,7 @@ public class CustomHttpClient {
     }
 
     public boolean isNtkUrl(String url) {
-        return isNtkUrlForTest(url);
+        return isNtkUrlForTest(url) || isConfiguredNtkUrl(url);
     }
 
     static boolean isNtkUrlForTest(String url) {
@@ -2256,11 +2267,54 @@ public class CustomHttpClient {
         return lower.contains("://ntk")
                 || lower.contains("://newto")
                 || lower.contains("://newtoki")
+                || lower.contains("://toonflix")
+                || lower.contains(".toonflix.app")
                 || lower.contains("://" + NTK_HOST)
                 || lower.contains("://www." + NTK_HOST)
                 || lower.contains("://sbxh")
                 || lower.contains("://www.sbxh")
                 || lower.contains(".sbxh");
+    }
+
+    private boolean isConfiguredNtkUrl(String url) {
+        if(p == null || !p.isNtkSite())
+            return false;
+        String normalized = NtkDomainResolver.normalizeRoot(url);
+        if(normalized == null || normalized.length() == 0)
+            return false;
+        String host = configuredHostOf(normalized);
+        return isConfiguredNtkHost(host);
+    }
+
+    private static boolean isConfiguredNtkHost(String host) {
+        if(p == null || !p.isNtkSite())
+            return false;
+        String normalized = normalizeDnsHost(host);
+        if(normalized.length() == 0)
+            return false;
+        String webtoonHost = configuredHostOf(p.getWebtoonUrl());
+        String comicHost = configuredHostOf(p.getUrl());
+        return hostMatches(normalized, webtoonHost) || hostMatches(normalized, comicHost);
+    }
+
+    private static boolean hostMatches(String host, String rootHost) {
+        return rootHost != null && rootHost.length() > 0
+                && (host.equals(rootHost) || host.endsWith("." + rootHost));
+    }
+
+    private static String configuredHostOf(String url) {
+        try {
+            String root = NtkDomainResolver.normalizeRoot(url);
+            if(root == null || root.length() == 0)
+                return "";
+            String host = URI.create(root).getHost();
+            if(host == null)
+                return "";
+            host = host.toLowerCase(Locale.ROOT);
+            return host.startsWith("www.") ? host.substring(4) : host;
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     private boolean isWebtoonPath(String path){

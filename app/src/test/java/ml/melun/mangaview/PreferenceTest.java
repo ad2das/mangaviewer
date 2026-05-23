@@ -34,6 +34,16 @@ public class PreferenceTest {
         assertEquals("https://sbxh3.com", Preference.normalizeWebtoonUrlForTest("https://sbxh3.com/manhwa"));
         assertEquals("https://newto03.com/manhwa", Preference.normalizeComicUrlForTest("https://newto03.com"));
         assertEquals("https://newto03.com", Preference.normalizeWebtoonUrlForTest("https://newto03.com/manhwa"));
+        assertEquals("https://toonflix.app/manhwa", Preference.normalizeComicUrlForTest("https://toonflix.app"));
+        assertEquals("https://toonflix.app", Preference.normalizeWebtoonUrlForTest("https://toonflix.app/manhwa"));
+    }
+
+    @Test
+    public void siteUrlNormalizationKeepsStoredDynamicNtkRoot() {
+        assertEquals("https://odd-address.example/manhwa",
+                Preference.normalizeComicUrlForTest("https://odd-address.example", "https://odd-address.example"));
+        assertEquals("https://odd-address.example",
+                Preference.normalizeWebtoonUrlForTest("https://odd-address.example/manhwa", "https://odd-address.example"));
     }
 
     @Test

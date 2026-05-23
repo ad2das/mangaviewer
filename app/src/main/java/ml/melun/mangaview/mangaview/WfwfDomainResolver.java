@@ -184,7 +184,7 @@ public class WfwfDomainResolver {
     }
 
     private static String resolveCandidate(OkHttpClient client, String root, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup) {
-        boolean ntk = root != null && (root.contains("://ntk") || root.contains("://newtoki") || root.contains("://sbxh") || root.contains("://www.sbxh"));
+        boolean ntk = isKnownNtkRoot(root);
         String comicPath = ntk ? "/manhwa" : "/cm";
         ProbeResult ing = probe(client, root + "/ing", headers, requestGroup);
         String hinted = normalizeVerifiedRoot(ing.updatedRoot);
@@ -207,7 +207,7 @@ public class WfwfDomainResolver {
         String root = normalizeVerifiedRoot(updatedRoot);
         if(root == null || root.equals(currentRoot) || depth > 3 || !visited.add(root))
             return null;
-        boolean ntk = root.contains("://ntk") || root.contains("://newtoki") || root.contains("://sbxh") || root.contains("://www.sbxh");
+        boolean ntk = isKnownNtkRoot(root);
         String comicPath = ntk ? "/manhwa" : "/cm";
         ProbeResult ing = probe(client, root + "/ing", headers, requestGroup);
         if(ing.alive)
@@ -224,6 +224,19 @@ public class WfwfDomainResolver {
     static boolean shouldAcceptUpdatedRootForTest(String currentRoot, String updatedRoot) {
         String root = normalizeVerifiedRoot(updatedRoot);
         return root != null && !root.equals(currentRoot);
+    }
+
+    private static boolean isKnownNtkRoot(String root) {
+        if(root == null)
+            return false;
+        String lower = root.toLowerCase(Locale.ROOT);
+        return lower.contains("://ntk")
+                || lower.contains("://newto")
+                || lower.contains("://newtoki")
+                || lower.contains("://sbxh")
+                || lower.contains("://www.sbxh")
+                || lower.contains("://toonflix")
+                || lower.contains(".toonflix.app");
     }
 
     private static String normalizeVerifiedRoot(String updatedRoot) {
