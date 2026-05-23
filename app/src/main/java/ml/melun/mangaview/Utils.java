@@ -431,6 +431,9 @@ public class Utils {
                                                   boolean online, boolean recent, Title title, boolean includeTitleEpisodes,
                                                   int launchToken) {
         Context appContext = context.getApplicationContext();
+        AppDispatchers.main().postDelayed(() -> launchPreparedViewer(context, manga, code, returnToEpisodes,
+                        online, recent, title, includeTitleEpisodes, launchToken, false),
+                continueLaunchFallbackMs(title));
         AppDispatchers.submitNavigation(() -> {
             Manga prepared = ViewerWarmupManager.usePreparedFirstFrame(appContext, manga, title, false, p.getReverse());
             if(prepared == null)
@@ -442,6 +445,24 @@ public class Utils {
             AppDispatchers.runOnMain(() -> launchPreparedViewer(context, launchManga, code, returnToEpisodes,
                     online, recent, launchTitle, includeTitleEpisodes, launchToken, false));
         });
+    }
+
+    private static long continueLaunchFallbackMs(Title title) {
+        String source = title == null ? "" : title.getSourceSite();
+        return continueLaunchFallbackMs(source, p != null && p.isNtkSite());
+    }
+
+    static long continueLaunchFallbackMsForTest(String sourceSite, boolean ntkSite) {
+        return continueLaunchFallbackMs(sourceSite, ntkSite);
+    }
+
+    private static long continueLaunchFallbackMs(String sourceSite, boolean ntkSite) {
+        String source = sourceSite == null ? "" : sourceSite.trim().toLowerCase(Locale.ROOT);
+        if("ntk".equals(source))
+            return 180L;
+        if("wfwf".equals(source))
+            return 220L;
+        return ntkSite ? 180L : 220L;
     }
 
     private static void switchToTitleSourceSite(Title title) {

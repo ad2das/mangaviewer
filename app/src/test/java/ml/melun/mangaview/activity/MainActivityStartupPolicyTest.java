@@ -4,6 +4,7 @@ import org.junit.Test;
 
 import android.content.Intent;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertFalse;
 
@@ -14,6 +15,7 @@ public class MainActivityStartupPolicyTest {
         assertTrue(MainActivity.startupUpdateCheckDelayMsForTest() >= 300000L);
         assertTrue(MainActivity.startupNtkCaptchaCheckDelayMsForTest() >= 15000L);
         assertTrue(MainActivity.ntkCaptchaCheckMinIntervalMsForTest() >= 5000L);
+        assertEquals(0L, MainActivity.startupContinueWarmupSuppressMsForTest());
     }
 
     @Test

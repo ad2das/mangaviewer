@@ -252,7 +252,7 @@ public class MainActivity extends AppCompatActivity
         long onCreateStartedAt = PerfTrace.start("main_on_create_ms");
         long beforeSuperStartedAt = PerfTrace.start("main_before_super_ms");
         long startupPrefetchSuppressMs = startupVisibleWarmupSuppressMsForTest();
-        ViewerWarmupManager.suppressVisibleContinueWarmups(startupPrefetchSuppressMs);
+        ViewerWarmupManager.suppressVisibleContinueWarmups(startupContinueWarmupSuppressMsForTest());
         BackgroundPrefetchBudget.suppressNonCriticalPrefetch(startupPrefetchSuppressMs);
         if(savedInstanceState == null)
             forceWfwfOnStartup();
@@ -535,6 +535,10 @@ public class MainActivity extends AppCompatActivity
 
     static long startupVisibleWarmupSuppressMsForTest() {
         return 15_000L;
+    }
+
+    static long startupContinueWarmupSuppressMsForTest() {
+        return 0L;
     }
 
     static long startupPerformanceMonitorDelayMsForTest() {

@@ -165,6 +165,14 @@ public class UtilsTest {
     }
 
     @Test
+    public void continueViewerLaunchHasShortFallbackWhenPreparationIsSlow() {
+        assertEquals(220L, Utils.continueLaunchFallbackMsForTest("wfwf", false));
+        assertEquals(220L, Utils.continueLaunchFallbackMsForTest("", false));
+        assertEquals(180L, Utils.continueLaunchFallbackMsForTest("ntk", true));
+        assertEquals(180L, Utils.continueLaunchFallbackMsForTest("", true));
+    }
+
+    @Test
     public void exactViewerLaunchAllowsForegroundFallbackOnlyForWolf() {
         assertTrue(Utils.shouldAllowExactForegroundFallbackForTest("wfwf", false));
         assertTrue(Utils.shouldAllowExactForegroundFallbackForTest("", false));

@@ -225,7 +225,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     }
 
     public void warmupResumeClick(int position) {
-        warmupResumeAt(position);
+        warmupResumeAt(position, false);
     }
 
     private void warmupResumeRange(int first, int last, int limit) {
@@ -238,6 +238,10 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     }
 
     private boolean warmupResumeAt(int position) {
+        return warmupResumeAt(position, true);
+    }
+
+    private boolean warmupResumeAt(int position, boolean visibleResume) {
         if(!isValidPosition(position) || mainContext == null)
             return false;
         Title title = mDataFiltered.get(position);
@@ -253,19 +257,23 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(page < 0)
             page = 0;
         String key = sourceKey(title) + ":" + title.getBaseMode() + ":" + title.getId() + ":" + bookmark + ":" + page;
-        synchronized (resumeWarmupKeys) {
-            if(resumeWarmupKeys.containsKey(key))
-                return false;
-            resumeWarmupKeys.put(key, Boolean.TRUE);
-            while(resumeWarmupKeys.size() > 128) {
-                Iterator<String> iterator = resumeWarmupKeys.keySet().iterator();
-                if(!iterator.hasNext())
-                    break;
-                iterator.next();
-                iterator.remove();
+        if(visibleResume) {
+            synchronized (resumeWarmupKeys) {
+                if(resumeWarmupKeys.containsKey(key))
+                    return false;
+                resumeWarmupKeys.put(key, Boolean.TRUE);
+                while(resumeWarmupKeys.size() > 128) {
+                    Iterator<String> iterator = resumeWarmupKeys.keySet().iterator();
+                    if(!iterator.hasNext())
+                        break;
+                    iterator.next();
+                    iterator.remove();
+                }
             }
+            ViewerWarmupManager.warmupVisibleContinue(mainContext, manga, title);
+        } else {
+            ViewerWarmupManager.warmupContinueImmediate(mainContext, manga, title);
         }
-        ViewerWarmupManager.warmupVisibleContinue(mainContext, manga, title);
         return true;
     }
 
@@ -793,6 +801,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             return false;
         lastResumeOpenPosition = position;
         lastResumeOpenAt = now;
+        warmupResumeAt(position, false);
         mClickListener.onResumeClick(position, bookmark);
         return true;
     }
