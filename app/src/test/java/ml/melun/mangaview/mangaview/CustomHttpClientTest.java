@@ -279,11 +279,19 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void ntkRedirectRootAcceptsUnusualOfficialRedirectHost() {
+    public void ntkRedirectRootUsesTelegramOfficialRootInsteadOfRedirectHost() {
+        List<String> officialRoots = Arrays.asList("https://sbxh2.com/");
+
         assertEquals("https://nicelink53.com",
                 CustomHttpClient.ntkRedirectRootForTest("https://nicelink53.com"));
         assertEquals("https://nicelink53.com",
                 CustomHttpClient.ntkRedirectRootForTest("https://nicelink53.com/manhwa/7843"));
+        assertEquals("https://sbxh2.com", CustomHttpClient.officialNtkRootForRedirectForTest(
+                "https://sbxh1.com", "https://nicelink53.com/manhwa/7843", officialRoots));
+        assertEquals("https://sbxh2.com", CustomHttpClient.officialNtkRootForRedirectForTest(
+                "https://sbxh2.com", "https://nicelink53.com/manhwa/7843", officialRoots));
+        assertNull(CustomHttpClient.officialNtkRootForRedirectForTest(
+                "https://sbxh1.com", "https://nicelink53.com/manhwa/7843", Arrays.<String>asList()));
         assertNull(CustomHttpClient.ntkRedirectRootForTest("https://t.me/something"));
         assertNull(CustomHttpClient.ntkRedirectRootForTest("/manhwa/7843"));
     }
@@ -380,6 +388,8 @@ public class CustomHttpClientTest {
                 "https://sbxh1.com", "https://sbxh2.com", officialRoots));
         assertTrue(CustomHttpClient.shouldApplyResolvedNtkRootForTest(
                 "https://sbxh1.com", "https://odd-address.example", unusualRoots));
+        assertFalse(CustomHttpClient.shouldApplyResolvedNtkRootForTest(
+                "https://sbxh1.com", "https://odd-address.example", officialRoots));
         assertFalse(CustomHttpClient.shouldApplyResolvedNtkRootForTest(
                 "https://sbxh2.com", "https://sbxh2.com", officialRoots));
     }

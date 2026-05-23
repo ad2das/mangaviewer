@@ -1809,7 +1809,9 @@ public class CustomHttpClient {
         String current = NtkDomainResolver.normalizeRoot(currentRoot);
         if(normalized == null || normalized.length() == 0 || normalized.equals(current))
             return false;
-        return isNtkUrlForTest(normalized) || containsTrustedResolvedNtkRoot(trustedRoots, normalized);
+        if(trustedRoots != null && !trustedRoots.isEmpty())
+            return containsTrustedResolvedNtkRoot(trustedRoots, normalized);
+        return isNtkUrlForTest(normalized);
     }
 
     private static boolean containsTrustedResolvedNtkRoot(List<String> trustedRoots, String root) {
@@ -2513,18 +2515,50 @@ public class CustomHttpClient {
         if(redirectedRoot == null || redirectedRoot.length() == 0)
             return false;
         String currentRoot = WfwfDomainResolver.toRoot(currentBaseUrl == null ? getWebtoonUrl() : currentBaseUrl);
-        if(!shouldApplyResolvedNtkRoot(currentRoot, redirectedRoot, Arrays.asList(redirectedRoot)))
+        List<String> officialRoots = resolveOfficialNtkRoots();
+        String officialRoot = officialNtkRootForRedirect(currentRoot, redirectedRoot, officialRoots);
+        if(officialRoot == null || officialRoot.length() == 0) {
+            if(Log.isLoggable(TAG, Log.DEBUG))
+                Log.d(TAG, "ntk_redirect_root_ignored redirect=" + redirectedRoot + ",from=" + currentRoot);
             return false;
-        p.setNtkSitePreset(redirectedRoot);
-        resetCookie();
-        clearPageCache();
+        }
+        String normalizedCurrent = NtkDomainResolver.normalizeRoot(currentRoot);
+        if(!officialRoot.equals(normalizedCurrent)) {
+            p.setNtkSitePreset(officialRoot);
+            resetCookie();
+            clearPageCache();
+        }
         if(Log.isLoggable(TAG, Log.DEBUG))
-            Log.d(TAG, "ntk_redirect_root_applied root=" + redirectedRoot + ",from=" + currentRoot);
+            Log.d(TAG, "ntk_redirect_official_root_applied root=" + officialRoot
+                    + ",redirect=" + redirectedRoot + ",from=" + currentRoot);
         return true;
+    }
+
+    private List<String> resolveOfficialNtkRoots() {
+        Map<String, String> headers = new HashMap<>();
+        headers.put("User-Agent", agent);
+        headers.put("Referer", NtkDomainResolver.CHANNEL_URL);
+        return NtkDomainResolver.resolveCandidates(client, headers, currentRequestGroup.get());
+    }
+
+    private static String officialNtkRootForRedirect(String currentRoot, String redirectedRoot, List<String> officialRoots) {
+        if(redirectedRoot == null || redirectedRoot.length() == 0)
+            return null;
+        String officialRoot = firstTrustedResolvedNtkRoot(officialRoots);
+        if(officialRoot == null || officialRoot.length() == 0)
+            return null;
+        String normalizedCurrent = NtkDomainResolver.normalizeRoot(currentRoot);
+        if(officialRoot.equals(normalizedCurrent))
+            return officialRoot;
+        return shouldApplyResolvedNtkRoot(currentRoot, officialRoot, officialRoots) ? officialRoot : null;
     }
 
     static String ntkRedirectRootForTest(String location) {
         return ntkRedirectRoot(location);
+    }
+
+    static String officialNtkRootForRedirectForTest(String currentRoot, String location, List<String> officialRoots) {
+        return officialNtkRootForRedirect(currentRoot, ntkRedirectRoot(location), officialRoots);
     }
 
     private static String ntkRedirectRoot(String location) {
