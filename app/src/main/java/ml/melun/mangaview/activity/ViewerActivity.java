@@ -143,12 +143,13 @@ public class ViewerActivity extends AppCompatActivity {
     private static final int INITIAL_PRELOAD_AHEAD_COUNT = 24;
     private static final int NEXT_EPISODE_ATTACH_THRESHOLD = 22;
     private static final int DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD = 12;
-    private static final int NEXT_EPISODE_PREFETCH_CHAIN_DEPTH = 6;
+    private static final int NEXT_EPISODE_PREFETCH_CHAIN_DEPTH = 1;
     private static final int DATA_SAVE_NEXT_EPISODE_PREFETCH_CHAIN_DEPTH = 1;
     private static final int PREPARED_EPISODE_AUTO_APPEND_LIMIT = 1;
     private static final int PREVIOUS_EPISODE_PULL_THRESHOLD_DP = 36;
     private static final long SCROLL_BOOKMARK_SAVE_DELAY_MS = 1500L;
     private static final long BOUNDARY_LOAD_IDLE_DELAY_MS = 320L;
+    private static final long INITIAL_EPISODE_PREVIEW_ONLY_MS = 1800L;
     private static final long AUTO_APPEND_PREVIEW_ONLY_MS = 30000L;
     private static final long STRIP_MUTATION_STABLE_IDLE_MS = 3000L;
     private static final long INITIAL_BACKGROUND_WORK_GUARD_MS = 4000L;
@@ -1001,7 +1002,7 @@ public class ViewerActivity extends AppCompatActivity {
             beginInitialBackgroundWorkGuard();
             stripAdapter = new StripAdapter(context, m, autoCut, width,title, infiniteScrollCallback);
             if(m.isOnline())
-                stripAdapter.preferPreviewImages(m, autoAppendPreviewOnlyMs());
+                stripAdapter.preferPreviewImages(m, INITIAL_EPISODE_PREVIEW_ONLY_MS);
 
             refreshAdapter();
             prepareInitialViewerPosition(m, policy);
@@ -1621,7 +1622,7 @@ public class ViewerActivity extends AppCompatActivity {
             nextPrefetcher = null;
             if(cancelled || isFinishing() || result == LOAD_CAPTCHA || !hasLoadedImages(target))
                 return;
-            preloadFirstPages(target);
+            preloadFirstPages(target, true);
             ViewerWarmupManager.cacheLoadedContinueSnapshot(context, target, target, title, 0, 0);
             ViewerWarmupManager.logMetric("viewer_next_episode_ready_ms", android.os.SystemClock.elapsedRealtime() - startedAtMs);
             scheduleChainedNextEpisodePrefetch(target, remainingChainDepth);
@@ -3108,7 +3109,7 @@ public class ViewerActivity extends AppCompatActivity {
             return;
         boolean loadedImages = hasLoadedImages(target);
         if(loadedImages) {
-            preloadFirstPages(target);
+            preloadFirstPages(target, true);
             scheduleChainedNextEpisodePrefetch(target, Math.max(0, chainDepth - 1));
             if(stripAdapter != null && manager != null
                     && !shouldHoldInitialBackgroundWork()

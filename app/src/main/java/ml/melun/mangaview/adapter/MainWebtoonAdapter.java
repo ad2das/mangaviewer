@@ -1515,7 +1515,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     if(!continueStyle || item == null)
                         return false;
                     if(event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                        ViewerWarmupManager.logMetric("home_continue_card_touch_warmup_skipped", item.getId());
+                        Manga manga = resolveContinueManga(item);
+                        if(manga != null)
+                            ContinueReadinessCoordinator.primeImmediate(context, manga, item);
                     }
                     return false;
                 });
@@ -1546,8 +1548,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         void warmupContinueAt(RecyclerView recyclerView, float x, float y) {
             if(style == STYLE_CONTINUE) {
                 Title item = continueItemAt(recyclerView, x, y);
-                if(item != null)
-                    ViewerWarmupManager.logMetric("home_continue_touch_warmup_skipped", item.getId());
+                if(item != null) {
+                    Manga manga = resolveContinueManga(item);
+                    if(manga != null)
+                        ContinueReadinessCoordinator.primeImmediate(context, manga, item);
+                }
             }
         }
 

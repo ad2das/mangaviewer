@@ -81,9 +81,9 @@ public class MainWebtoonAdapterTest {
     }
 
     @Test
-    public void visibleContinueWarmupWaitsForUserIntent() {
-        assertEquals(0, HomeContinueWarmupPolicy.visibleContinueWarmupLimitForTest(false));
-        assertEquals(0, HomeContinueWarmupPolicy.visibleContinueWarmupLimitForTest(true));
+    public void visibleContinueWarmupPrimesVisibleCards() {
+        assertEquals(3, HomeContinueWarmupPolicy.visibleContinueWarmupLimitForTest(false));
+        assertEquals(1, HomeContinueWarmupPolicy.visibleContinueWarmupLimitForTest(true));
         assertEquals(0L, HomeContinueWarmupPolicy.visibleHomeWarmupDelayMsForTest(false));
         assertEquals(0L, HomeContinueWarmupPolicy.visibleHomeWarmupDelayMsForTest(true));
     }

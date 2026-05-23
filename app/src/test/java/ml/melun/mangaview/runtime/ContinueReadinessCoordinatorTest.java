@@ -6,9 +6,9 @@ import static org.junit.Assert.assertEquals;
 
 public class ContinueReadinessCoordinatorTest {
     @Test
-    public void coldStartDoesNotPreloadViewerImagesBeforeUserIntent() {
-        assertEquals(0, ContinueReadinessCoordinator.coldStartLimitForTest(false));
-        assertEquals(0, ContinueReadinessCoordinator.coldStartLimitForTest(true));
+    public void coldStartPrimesSavedContinues() {
+        assertEquals(3, ContinueReadinessCoordinator.coldStartLimitForTest(false));
+        assertEquals(1, ContinueReadinessCoordinator.coldStartLimitForTest(true));
     }
 
     @Test

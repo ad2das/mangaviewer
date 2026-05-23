@@ -183,6 +183,12 @@ public class ViewerWarmupManagerTest {
     }
 
     @Test
+    public void userSelectedEpisodeWarmupAvoidsPreLaunchDecode() {
+        assertEquals(0, ViewerWarmupManager.userSelectedWarmupDecodedLimitForTest(false));
+        assertEquals(0, ViewerWarmupManager.userSelectedWarmupDecodedLimitForTest(true));
+    }
+
+    @Test
     public void viewerRequestsReuseSourceDataWithoutCachingTransforms() {
         assertSame(DiskCacheStrategy.DATA, ViewerWarmupManager.viewerDiskCacheStrategyForTest());
     }

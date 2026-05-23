@@ -71,10 +71,10 @@ public class TagSearchActivity extends AppCompatActivity {
     private static final int THUMBNAIL_PRELOAD_AHEAD = 6;
     private static final int THUMBNAIL_PRELOAD_DELAY_MS = 80;
     private static final long DESTINATION_LAUNCH_DEBOUNCE_MS = 1500L;
-    private static final int EPISODE_SNAPSHOT_PREFETCH_AHEAD = 3;
-    private static final int EPISODE_SNAPSHOT_PREFETCH_DELAY_MS = 260;
-    private static final int EPISODE_SNAPSHOT_PREFETCH_ACTIVE_LIMIT = 2;
-    private static final int EPISODE_SNAPSHOT_BACKGROUND_LIMIT = 24;
+    private static final int EPISODE_SNAPSHOT_PREFETCH_AHEAD = 8;
+    private static final int EPISODE_SNAPSHOT_PREFETCH_DELAY_MS = 0;
+    private static final int EPISODE_SNAPSHOT_PREFETCH_ACTIVE_LIMIT = 4;
+    private static final int EPISODE_SNAPSHOT_BACKGROUND_LIMIT = 36;
     private static final int LOAD_MORE_THRESHOLD = 18;
     RecyclerView searchResult;
     int mode;
@@ -355,6 +355,10 @@ public class TagSearchActivity extends AppCompatActivity {
         View resume = resumeButtonFor(touchChild);
         touchOnResume = isTouchInsideDescendant(touchChild, resume, touchDownX, touchDownY);
         touchAnchor = touchOnResume && resume != null ? resume : touchChild;
+        if(mode == 8 && !touchOnResume) {
+            enqueueEpisodeSnapshot(adapter.getItem(touchPosition), true);
+            drainEpisodeSnapshotQueue();
+        }
         scheduleTitleLongPress(touchPosition, touchAnchor);
     }
 
@@ -654,6 +658,8 @@ public class TagSearchActivity extends AppCompatActivity {
                             return;
                         // start intent : Episode viewer
                         Title selected = adapter.getItem(position);
+                        enqueueEpisodeSnapshot(selected, true);
+                        drainEpisodeSnapshotQueue();
                         Intent episodeView = episodeIntent(context, selected);
                         episodeView.putExtra("online", true);
                         startActivity(episodeView);

@@ -81,11 +81,11 @@ public class EpisodeActivity extends AppCompatActivity {
     private static final long VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS = 360L;
     private static final long EPISODE_REFRESH_AFTER_CACHE_PROBE_MS = 160L;
     private static final long INITIAL_VIEWER_TARGET_WARMUP_DELAY_MS = 0L;
-    private static final long INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 80L;
-    private static final long NTK_INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 100L;
+    private static final long INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 800L;
+    private static final long NTK_INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 800L;
     private static final long MAX_EPISODE_CACHE_FILE_BYTES = 2 * 1024 * 1024L;
-    private static final int MEMORY_CACHE_MAIN_THREAD_PARSE_MAX_CHARS = 16 * 1024;
-    private static final int VISIBLE_EPISODE_WARMUP_AHEAD = 2;
+    private static final int MEMORY_CACHE_MAIN_THREAD_PARSE_MAX_CHARS = 256 * 1024;
+    private static final int VISIBLE_EPISODE_WARMUP_AHEAD = 1;
     //global variables
     Title title;
     EpisodeAdapter episodeAdapter;
@@ -126,7 +126,6 @@ public class EpisodeActivity extends AppCompatActivity {
             return;
         }
         warmupInitialViewerTargets();
-        scheduleVisibleEpisodeWarmup(initialVisibleEpisodeWarmupDelayMs());
     };
     final Runnable visibleEpisodeWarmupRunnable = () -> {
         visibleEpisodeWarmupScheduled = false;
@@ -435,7 +434,7 @@ public class EpisodeActivity extends AppCompatActivity {
             }
             @Override
             public void onItemPress(int position, Manga selected) {
-                warmupUserSelectedEpisode(selected);
+                // Keep episode taps responsive; visible-row warmup runs after the screen settles.
             }
             @Override
             public void onStarClick(){
@@ -487,6 +486,8 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     private void warmupInitialViewerTargets() {
+        if(!isUiAlive())
+            return;
         if(!online || episodes == null || episodes.size() == 0)
             return;
         PrefetchCoordinator.prefetchEpisodeList(context, title, episodes, bookmarkIndex, mode);
@@ -583,7 +584,7 @@ public class EpisodeActivity extends AppCompatActivity {
             return 1;
         if(ntkSite)
             return aggressiveAllowed ? 3 : 2;
-        return aggressiveAllowed ? 4 : 3;
+        return aggressiveAllowed ? 3 : 2;
     }
 
     static long visibleEpisodeWarmupIdleDelayMsForTest() {
@@ -873,11 +874,14 @@ public class EpisodeActivity extends AppCompatActivity {
         try {
             String json = CacheFileStore.readMemory(episodeCacheKey());
             if(json == null || json.length() == 0)
+                json = CacheFileStore.read(getApplicationContext(), episodeCacheKey());
+            if(json == null || json.length() == 0)
                 return false;
             if(shouldParseMemoryCacheOnMain(json.length()))
                 return showCachedEpisodesJson(json);
+            String cacheJson = json;
             AppDispatchers.submitIo(() -> {
-                CachedEpisodes cached = parseCachedEpisodesJson(json);
+                CachedEpisodes cached = parseCachedEpisodesJson(cacheJson);
                 if(cached == null)
                     return;
                 AppDispatchers.runOnMain(() -> {
@@ -1361,8 +1365,6 @@ public class EpisodeActivity extends AppCompatActivity {
         manga.setMode(mode);
         manga.setTitle(title);
         manga.setTitleId(title == null ? manga.getTitleId() : title.getId());
-        if(exactEpisode)
-            warmupUserSelectedEpisode(manga);
         if(!exactEpisode && getHttpClient().isNtk())
             ViewerWarmupManager.warmup(context, manga, title);
         openViewerPrepared(context, manga, code, false, online, true, title, !manga.isOnline(), exactEpisode);

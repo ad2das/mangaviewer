@@ -113,8 +113,8 @@ public class ViewerActivityTest {
 
     @Test
     public void nextEpisodePrefetchChainsAcrossShortChapters() {
-        assertTrue(ViewerActivity.nextEpisodePrefetchChainDepthForTest(false) >= 5);
-        assertTrue(ViewerActivity.nextEpisodePrefetchChainDepthForTest(true) >= 1);
+        assertEquals(1, ViewerActivity.nextEpisodePrefetchChainDepthForTest(false));
+        assertEquals(1, ViewerActivity.nextEpisodePrefetchChainDepthForTest(true));
     }
 
     @Test

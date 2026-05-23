@@ -87,10 +87,10 @@ public class PrefetchCoordinatorTest {
     @Test
     public void episodePrefetchLimitWarmsLikelyEntriesWhenDataSaverIsOff() {
         assertEquals(1, PrefetchCoordinator.episodePrefetchLimitForTest(true, false));
-        assertEquals(3, PrefetchCoordinator.episodePrefetchLimitForTest(false, false));
-        assertEquals(4, PrefetchCoordinator.episodePrefetchLimitForTest(false, true));
+        assertEquals(1, PrefetchCoordinator.episodePrefetchLimitForTest(false, false));
+        assertEquals(1, PrefetchCoordinator.episodePrefetchLimitForTest(false, true));
         assertEquals(1, PrefetchCoordinator.episodePrefetchLimitForTest(true, true, true));
-        assertEquals(3, PrefetchCoordinator.episodePrefetchLimitForTest(false, true, true));
+        assertEquals(1, PrefetchCoordinator.episodePrefetchLimitForTest(false, true, true));
     }
 
     @Test

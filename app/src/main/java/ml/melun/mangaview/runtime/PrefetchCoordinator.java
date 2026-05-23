@@ -71,7 +71,7 @@ public final class PrefetchCoordinator {
             manga.setMode(mode);
             manga.setTitle(title);
             manga.setTitleId(title.getId());
-            if(lightOnly && index != entryIndex)
+            if(lightOnly)
                 ViewerWarmupManager.warmupLight(appContext, manga, title, 0);
             else if(index == resumeIndex)
                 ViewerWarmupManager.warmupEntry(appContext, manga, title);
@@ -152,11 +152,7 @@ public final class PrefetchCoordinator {
     }
 
     static int episodePrefetchLimitForTest(boolean dataSave, boolean aggressiveAllowed, boolean ntkSite) {
-        if(dataSave)
-            return 1;
-        if(ntkSite)
-            return aggressiveAllowed ? 3 : 2;
-        return aggressiveAllowed ? 4 : 3;
+        return 1;
     }
 
     public static List<Integer> visibleEpisodeTargets(List<Manga> episodes, int firstAdapterPosition,

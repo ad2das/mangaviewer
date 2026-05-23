@@ -74,19 +74,19 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private static final int DATA_SAVE_PRELOAD_AHEAD_COUNT = 5;
     private static final int INITIAL_PRELOAD_AHEAD_COUNT = 24;
     private static final int PRELOAD_TRACK_LIMIT = 500;
-    private static final int DECODED_PRELOAD_ACTIVE_LIMIT = 2;
+    private static final int DECODED_PRELOAD_ACTIVE_LIMIT = 0;
     private static final int IMAGE_LOAD_RETRY_LIMIT = 3;
     private static final int SCROLL_BUSY_PRELOAD_MIN_DISTANCE = 4;
     private static final long SCROLL_BUSY_PRELOAD_MIN_INTERVAL_MS = 120L;
     private static final long SCROLL_IDLE_PRELOAD_DELAY_MS = 650L;
     private static final long SCROLL_IDLE_HEIGHT_CORRECTION_DELAY_MS = 1000L;
-    private static final int PREVIEW_MIN_WIDTH = 480;
-    private static final int PREVIEW_WIDTH_NUMERATOR = 4;
-    private static final int PREVIEW_WIDTH_DENOMINATOR = 9;
+    private static final int PREVIEW_MIN_WIDTH = 360;
+    private static final int PREVIEW_WIDTH_NUMERATOR = 1;
+    private static final int PREVIEW_WIDTH_DENOMINATOR = 3;
     private static final int PREVIEW_FULL_REBIND_BATCH = 1;
     private static final int PREVIEW_FULL_REBIND_RADIUS = 2;
-    private static final long PREVIEW_FULL_REBIND_DELAY_MS = 300L;
-    private static final long PREVIEW_FULL_STABLE_IDLE_MS = 5000L;
+    private static final long PREVIEW_FULL_REBIND_DELAY_MS = 650L;
+    private static final long PREVIEW_FULL_STABLE_IDLE_MS = 1800L;
     private static final int APPEND_BATCH_ITEMS = 4;
     private static final long APPEND_BATCH_DELAY_MS = 32L;
     private static final boolean AUTO_PROMOTE_PREVIEW_FULL_QUALITY = true;
@@ -206,8 +206,6 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     preloadGeneration++;
                 lastBusyPreloadPosition = adapterPosition;
                 lastBusyPreloadAtMs = now;
-                preloadSourceDirectionalWindow(adapterPosition, normalizedDirection,
-                        ViewerPreloadPolicy.scrollBusyWindow(p.getDataSave()), preloadGeneration);
             }
             return;
         }

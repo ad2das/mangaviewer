@@ -46,21 +46,21 @@ public class EpisodeActivityTest {
     @Test
     public void visibleEpisodeWarmupLimitWarmsTapTargetsWhenDataSaverIsOff() {
         assertEquals(1, EpisodeActivity.visibleEpisodeWarmupLimitForTest(true, false));
-        assertEquals(3, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, false));
-        assertEquals(4, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, true));
+        assertEquals(2, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, false));
+        assertEquals(3, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, true));
         assertEquals(3, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, true, true));
     }
 
     @Test
     public void visibleEpisodeWarmupStartsRightAfterEpisodeListSettles() {
-        assertTrue(EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest() <= 100L);
+        assertTrue(EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest() >= 800L);
         assertTrue(EpisodeActivity.visibleEpisodeWarmupIdleDelayMsForTest() >= 300L);
     }
 
     @Test
     public void ntkVisibleEpisodeWarmupStartsWithoutLongColdDelay() {
-        assertEquals(80L, EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(false));
-        assertTrue(EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(true) <= 120L);
+        assertEquals(800L, EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(false));
+        assertEquals(800L, EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(true));
         assertTrue(EpisodeActivity.initialViewerTargetWarmupDelayMsForTest(false) <= EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(false));
     }
 
@@ -72,9 +72,10 @@ public class EpisodeActivityTest {
     }
 
     @Test
-    public void largeMemoryCacheSnapshotsParseOffMainThread() {
+    public void mediumMemoryCacheSnapshotsParseOnMainThreadForInstantEpisodeList() {
         assertTrue(EpisodeActivity.shouldParseMemoryCacheOnMainForTest(16 * 1024));
-        assertFalse(EpisodeActivity.shouldParseMemoryCacheOnMainForTest(16 * 1024 + 1));
+        assertTrue(EpisodeActivity.shouldParseMemoryCacheOnMainForTest(256 * 1024));
+        assertFalse(EpisodeActivity.shouldParseMemoryCacheOnMainForTest(256 * 1024 + 1));
         assertFalse(EpisodeActivity.shouldParseMemoryCacheOnMainForTest(0));
     }
 

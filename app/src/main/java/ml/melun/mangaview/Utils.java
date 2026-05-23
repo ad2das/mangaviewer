@@ -215,25 +215,46 @@ public class Utils {
     }
 
     private static Intent viewerIntent(Context context, Manga manga, boolean warmupContinue){
+        return viewerIntent(context, manga, warmupContinue, true, true, true);
+    }
+
+    private static Intent viewerIntent(Context context, Manga manga, boolean warmupContinue,
+                                       boolean includeViewerTitle, boolean includeMangaEpisodes,
+                                       boolean includeTitleEpisodes){
         Intent viewer = null;
-        int viewerType = p == null ? new Preference(context).getViewerType() : p.getViewerType();
-        switch (viewerType){
-            case 0:
-                viewer = new Intent(context, ViewerActivity.class);
-                break;
-            case 2:
-                viewer = new Intent(context, ViewerActivity3.class);
-                break;
-            case 1:
-                viewer = new Intent(context, ViewerActivity2.class);
-                break;
+        if(shouldUseReaderV2(manga)) {
+            viewer = new Intent(context, ml.melun.mangaview.activity.ReaderV2Activity.class);
+        } else {
+            int viewerType = p == null ? new Preference(context).getViewerType() : p.getViewerType();
+            switch (viewerType){
+                case 0:
+                    viewer = new Intent(context, ViewerActivity.class);
+                    break;
+                case 2:
+                    viewer = new Intent(context, ViewerActivity3.class);
+                    break;
+                case 1:
+                    viewer = new Intent(context, ViewerActivity2.class);
+                    break;
+            }
         }
         if(shouldScheduleViewerIntentWarmup(context, manga, warmupContinue))
             ViewerWarmupManager.warmupContinue(context, manga, manga == null ? null : manga.getTitle());
         Title title = manga == null ? null : manga.getTitle();
-        viewer.putExtra("manga", toViewerMangaJson(manga, title));
-        viewer.putExtra("title", toViewerTitleJson(title, true));
+        viewer.putExtra("manga", toViewerMangaJson(manga, title, includeMangaEpisodes));
+        if(includeViewerTitle)
+            viewer.putExtra("title", toViewerTitleJson(title, includeTitleEpisodes));
         return viewer;
+    }
+
+    private static boolean shouldUseReaderV2(Manga manga) {
+        if(manga == null || !manga.isOnline())
+            return false;
+        Title title = manga.getTitle();
+        String source = title == null ? "" : title.getSourceSite();
+        if("wfwf".equals(source) || "ntk".equals(source))
+            return true;
+        return getHttpClient() != null;
     }
 
     private static boolean shouldScheduleViewerIntentWarmup(Context context, Manga manga, boolean warmupContinue) {
@@ -324,9 +345,7 @@ public class Utils {
                 return;
             }
         }
-        if(exactEpisode) {
-            ViewerWarmupManager.warmupUserSelectedEpisode(context, manga, launchTitle, 0);
-        } else if(waitForFirstFrame) {
+        if(!exactEpisode && waitForFirstFrame) {
             ViewerWarmupManager.prioritizeUserSelectedContinue();
             launchWhenFirstFrameReady(context, manga, code, returnToEpisodes, online, recent,
                     launchTitle, includeTitleEpisodes, launchToken);
@@ -542,7 +561,7 @@ public class Utils {
             return;
         if(context instanceof Activity && !canUseActivity((Activity) context))
             return;
-        Intent viewer = viewerIntent(context, manga, !exactEpisode);
+        Intent viewer = viewerIntent(context, manga, !exactEpisode, false, !exactEpisode, false);
         viewer.putExtra("online", online);
         if(exactEpisode) {
             viewer.putExtra(ViewerActivity.EXTRA_EXACT_EPISODE, true);
@@ -759,7 +778,11 @@ public class Utils {
     }
 
     public static String toViewerMangaJson(Manga manga, Title title) {
-        return new Gson().toJson(viewerMangaCopy(manga, title));
+        return toViewerMangaJson(manga, title, true);
+    }
+
+    public static String toViewerMangaJson(Manga manga, Title title, boolean includeEpisodes) {
+        return new Gson().toJson(viewerMangaCopy(manga, title, includeEpisodes));
     }
 
     public static String toViewerTitleJson(Title title) {
@@ -776,11 +799,17 @@ public class Utils {
     }
 
     private static Manga viewerMangaCopy(Manga source, Title title) {
+        return viewerMangaCopy(source, title, true);
+    }
+
+    private static Manga viewerMangaCopy(Manga source, Title title, boolean includeEpisodes) {
         if(source == null)
             return null;
         Manga copy = viewerEpisodeCopy(source, true);
-        List<Manga> episodes = title != null ? snapshotEpisodes(title) : snapshotEpisodes(source);
-        copy.setEps(viewerEpisodeCopies(episodes));
+        if(includeEpisodes) {
+            List<Manga> episodes = title != null ? snapshotEpisodes(title) : snapshotEpisodes(source);
+            copy.setEps(viewerEpisodeCopies(episodes));
+        }
         if(title != null)
             copy.setTitle(new Title(title.minimize()));
         return copy;
@@ -1446,6 +1475,33 @@ public class Utils {
         return getGlideUrl(image, guessImageBaseMode(image));
     }
 
+    public static String viewerImageRequestUrl(String image, int baseMode) {
+        return normalizeImageUrl(image, baseMode);
+    }
+
+    public static Map<String, String> viewerImageRequestHeaders(String image, int baseMode) {
+        String referer = getHttpClient().getUrl(baseMode);
+        String url = normalizeImageUrl(image, baseMode);
+        boolean ntkImage = getHttpClient().isNtkUrl(url) || isProtectedImageHost(url);
+        if(ntkImage)
+            referer = getSiteRoot(baseMode);
+        String cookie = getHttpClient().getCookieHeader();
+        LinkedHashMap<String, String> headers = new LinkedHashMap<>();
+        headers.put("Referer", referer);
+        headers.put("User-Agent", getHttpClient().agent);
+        if(cookie != null && cookie.length() > 0)
+            headers.put("Cookie", cookie);
+        if(ntkImage) {
+            headers.put("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8");
+            headers.put("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7");
+            headers.put("Sec-Fetch-Dest", "image");
+            headers.put("Sec-Fetch-Mode", "no-cors");
+            headers.put("Sec-Fetch-Site", "same-origin");
+            addClientHintHeaderMap(headers);
+        }
+        return headers;
+    }
+
     public static GlideUrl getGlideUrl(String image, int baseMode){
         String referer = getHttpClient().getUrl(baseMode);
         String url = normalizeImageUrl(image, baseMode);
@@ -1477,6 +1533,14 @@ public class Utils {
             glideUrlCache.put(cacheKey, glideUrl);
         }
         return glideUrl;
+    }
+
+    private static void addClientHintHeaderMap(Map<String, String> headers) {
+        int chromeMajor = chromeMajorVersion(getHttpClient().agent);
+        String version = chromeMajor > 0 ? String.valueOf(chromeMajor) : "147";
+        headers.put("sec-ch-ua", "\"Chromium\";v=\"" + version + "\", \"Android WebView\";v=\"" + version + "\", \"Not A(Brand\";v=\"24\"");
+        headers.put("sec-ch-ua-mobile", "?1");
+        headers.put("sec-ch-ua-platform", "\"Android\"");
     }
 
     private static void addClientHintHeaders(LazyHeaders.Builder headers) {

@@ -2,6 +2,8 @@ package ml.melun.mangaview;
 
 import org.junit.Test;
 
+import com.google.gson.Gson;
+
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.nio.file.Files;
@@ -204,6 +206,24 @@ public class UtilsTest {
         assertFalse(Utils.shouldScheduleViewerIntentWarmupForTest(true, true, true));
         assertFalse(Utils.shouldScheduleViewerIntentWarmupForTest(false, true, false));
         assertFalse(Utils.shouldScheduleViewerIntentWarmupForTest(true, false, false));
+    }
+
+    @Test
+    public void viewerMangaJsonCanOmitEpisodeListForExactLaunch() {
+        Title title = new Title("던전 밥", "", "", new ArrayList<>(), "", 10017, MTitle.base_comic);
+        ArrayList<Manga> episodes = new ArrayList<>();
+        episodes.add(new Manga(1, "던전 밥 1화", "", MTitle.base_comic));
+        episodes.add(new Manga(2, "던전 밥 2화", "", MTitle.base_comic));
+        title.setEps(episodes);
+        Manga selected = episodes.get(0);
+        selected.setTitle(title);
+        selected.setTitleId(title.getId());
+        selected.setEps(episodes);
+
+        Manga copy = new Gson().fromJson(Utils.toViewerMangaJson(selected, title, false), Manga.class);
+
+        assertEquals(0, Utils.snapshotEpisodes(copy).size());
+        assertEquals("던전 밥 1화", copy.getName());
     }
 
     @Test

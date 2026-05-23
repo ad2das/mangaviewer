@@ -138,7 +138,7 @@ public class ViewerWarmupManager {
         String continueKey = continueWarmupKey(manga, warmupTitle, startPage);
         boolean dataSave = p != null && p.getDataSave();
         boolean reverse = p != null && p.getReverse();
-        ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.immediateDisplayWindow(dataSave);
+        ViewerPreloadPolicy.Window window = userSelectedUrlWindow(dataSave);
         AppDispatchers.submitUserAction(() -> {
             try {
                 runDirectOnlyWarmup(warmupSource, () -> {
@@ -149,9 +149,7 @@ public class ViewerWarmupManager {
                         cacheContinueSnapshot(appContext, continueKey, manga);
                         preloadLoadedImages(appContext, manga, startPage, width, false, reverse,
                                 window.totalLimit, Priority.IMMEDIATE, window.decodedLimit);
-                        waitForFirstDecodedFrame(appContext, manga, startPage, width, false, reverse,
-                                userSelectedFirstFrameWaitMs(dataSave));
-                        logMetric("viewer_user_selected_warmup_ready", manga.getId());
+                        logMetric("viewer_user_selected_warmup_urls_ready", manga.getId());
                     }
                     return result;
                 });
@@ -191,6 +189,16 @@ public class ViewerWarmupManager {
 
     static long userSelectedFirstFrameWaitMsForTest(boolean dataSave) {
         return userSelectedFirstFrameWaitMs(dataSave);
+    }
+
+    static int userSelectedWarmupDecodedLimitForTest(boolean dataSave) {
+        return userSelectedUrlWindow(dataSave).decodedLimit;
+    }
+
+    private static ViewerPreloadPolicy.Window userSelectedUrlWindow(boolean dataSave) {
+        return dataSave
+                ? new ViewerPreloadPolicy.Window(0, 2, 3, 4)
+                : new ViewerPreloadPolicy.Window(0, 3, 5, 6);
     }
 
     private static long userSelectedFirstFrameWaitMs(boolean dataSave) {
@@ -670,7 +678,7 @@ public class ViewerWarmupManager {
                 preloadLoadedImages(context, warmed, firstPage, width, autoCut, reverse,
                         p.getDataSave() ? 6 : 12, Priority.IMMEDIATE, 1);
                 logMetric("viewer_click_immediate_url_snapshot", warmed.getId());
-                return null;
+                return exactEpisode ? warmed : null;
             }
         }
         if(hasImages(manga, context) && hasDecodedFrame(context, manga, firstPage, width, autoCut, reverse)) {
@@ -681,7 +689,7 @@ public class ViewerWarmupManager {
             preloadLoadedImages(context, manga, firstPage, width, autoCut, reverse,
                     p.getDataSave() ? 6 : 12, Priority.IMMEDIATE, 1);
             logMetric("viewer_click_immediate_url", manga.getId());
-            return null;
+            return exactEpisode ? manga : null;
         }
         return null;
     }

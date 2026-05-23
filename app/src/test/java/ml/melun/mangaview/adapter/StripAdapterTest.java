@@ -102,12 +102,12 @@ public class StripAdapterTest {
     public void preloadBudgetsCoverOneFastFling() {
         assertTrue(StripAdapter.preloadAheadCountForTest() >= 24);
         assertTrue(StripAdapter.initialPreloadAheadCountForTest() >= 24);
-        assertTrue(StripAdapter.decodedPreloadActiveLimitForTest() >= 2);
+        assertEquals(0, StripAdapter.decodedPreloadActiveLimitForTest());
         assertTrue(StripAdapter.scrollIdlePreloadDelayMsForTest() >= 600L);
         assertTrue(StripAdapter.scrollIdleHeightCorrectionDelayMsForTest()
                 >= StripAdapter.scrollIdlePreloadDelayMsForTest());
-        assertTrue(StripAdapter.previewWidthForTest(1080) >= 480);
-        assertEquals(480, StripAdapter.previewWidthForTest(1080));
+        assertTrue(StripAdapter.previewWidthForTest(1080) >= 360);
+        assertEquals(360, StripAdapter.previewWidthForTest(1080));
         assertTrue(StripAdapter.previewWidthForTest(1080) < 1080);
     }
 
