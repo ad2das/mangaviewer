@@ -39,8 +39,14 @@ public final class ViewerPreparationCoordinator {
         if(prepared == null)
             prepared = ViewerWarmupManager.usePreparedFirstFrame(context, manga, launchTitle, autoCut, reverse);
         if(prepared == null)
+            prepared = ViewerWarmupManager.usePreparedContinueImages(context, manga, launchTitle,
+                    firstPageForContinue(manga));
+        if(prepared == null)
             prepared = waitForPreparedFirstFrame(context, manga, launchTitle, autoCut, reverse,
                     postPrepareWaitMs(p != null && p.getDataSave()));
+        if(prepared == null)
+            prepared = ViewerWarmupManager.usePreparedContinueImages(context, manga, launchTitle,
+                    firstPageForContinue(manga));
         if(prepared != null)
             return PreparedViewerLaunch.ready(prepared, launchTitle != null ? launchTitle : prepared.getTitle());
         if(ViewerResumeResolver.shouldBlockPathlessNtkResume(manga, launchTitle))
@@ -152,6 +158,11 @@ public final class ViewerPreparationCoordinator {
             return 0L;
         long elapsed = SystemClock.elapsedRealtime() - startedAt;
         return Math.max(0L, waitMs - elapsed);
+    }
+
+    private static int firstPageForContinue(Manga manga) {
+        int firstPage = manga != null && manga.useBookmark() && p != null ? p.getViewerBookmark(manga) : 0;
+        return Math.max(0, firstPage);
     }
 
     private static Manga waitForPreparedFirstFrame(Context context, Manga manga, Title title,

@@ -1727,7 +1727,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 anchorDownX = event.getX();
                 anchorDownY = event.getY();
                 anchorTouchMoved = false;
-                warmupFirstContinueTitle();
                 return false;
             case MotionEvent.ACTION_MOVE:
                 if(Math.abs(event.getX() - anchorDownX) > dp(14) || Math.abs(event.getY() - anchorDownY) > dp(14))
@@ -1762,8 +1761,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         int warmed = 0;
         for(Title item : titles) {
             if(item == null || item.getId() <= 0)
-                continue;
-            if(!sourceMatchesCurrentSite(item))
                 continue;
             Manga manga = resolveContinueMangaForWarmup(item);
             if(manga == null)

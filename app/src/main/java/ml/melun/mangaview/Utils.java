@@ -445,7 +445,7 @@ public class Utils {
         AppDispatchers.submitUserAction(() -> {
             PreparedViewerLaunch prepared = ViewerPreparationCoordinator.prepareContinue(appContext, manga, title,
                     false, p.getReverse(), MangaRepository.cancellation());
-            if(!prepared.canLaunch() && shouldBlockUnpreparedContinueFallback(manga)) {
+            if(!prepared.canLaunch() && prepared.isCaptcha()) {
                 ViewerWarmupManager.logMetric("viewer_continue_unprepared_blocked", manga.getId());
                 AppDispatchers.runOnMain(() -> showViewerPreparationIssue(context, launchToken, prepared, manga));
                 return;
@@ -472,7 +472,7 @@ public class Utils {
     }
 
     private static boolean shouldBlockUnpreparedContinueFallback(Manga manga) {
-        return manga != null && manga.isOnline();
+        return false;
     }
 
     private static boolean shouldLaunchContinueFallback(Context context, Manga manga) {
@@ -485,7 +485,7 @@ public class Utils {
     }
 
     private static boolean shouldLaunchContinueFallback(boolean online, boolean hasLoadedImages) {
-        return !online;
+        return true;
     }
 
     static boolean shouldLaunchContinueFallbackForTest(boolean online, boolean hasLoadedImages) {
@@ -493,7 +493,7 @@ public class Utils {
     }
 
     static boolean shouldBlockUnpreparedContinueFallbackForTest(boolean online) {
-        return online;
+        return shouldBlockUnpreparedContinueFallback(null);
     }
 
     private static long continueLaunchFallbackMs(Title title) {

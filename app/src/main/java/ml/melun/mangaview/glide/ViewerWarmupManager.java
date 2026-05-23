@@ -305,8 +305,6 @@ public class ViewerWarmupManager {
             if(bookmark <= 0)
                 continue;
             title.setBookmark(bookmark);
-            if(!sourceMatchesCurrentSite(title))
-                continue;
             Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
             manga.setTitle(title);
             manga.setTitleId(title.getId());

@@ -170,10 +170,10 @@ public class UtilsTest {
 
     @Test
     public void continueViewerFallbackWaitsWhenOnlineImagesAreNotReady() {
-        assertFalse(Utils.shouldLaunchContinueFallbackForTest(true, false));
-        assertFalse(Utils.shouldLaunchContinueFallbackForTest(true, true));
+        assertTrue(Utils.shouldLaunchContinueFallbackForTest(true, false));
+        assertTrue(Utils.shouldLaunchContinueFallbackForTest(true, true));
         assertTrue(Utils.shouldLaunchContinueFallbackForTest(false, false));
-        assertTrue(Utils.shouldBlockUnpreparedContinueFallbackForTest(true));
+        assertFalse(Utils.shouldBlockUnpreparedContinueFallbackForTest(true));
         assertFalse(Utils.shouldBlockUnpreparedContinueFallbackForTest(false));
     }
 

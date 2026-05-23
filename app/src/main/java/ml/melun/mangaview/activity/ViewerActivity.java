@@ -136,7 +136,7 @@ public class ViewerActivity extends AppCompatActivity {
     private static final int INITIAL_PRELOAD_AHEAD_COUNT = 24;
     private static final int NEXT_EPISODE_ATTACH_THRESHOLD = 22;
     private static final int DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD = 12;
-    private static final int NEXT_EPISODE_PREFETCH_CHAIN_DEPTH = 3;
+    private static final int NEXT_EPISODE_PREFETCH_CHAIN_DEPTH = 5;
     private static final int DATA_SAVE_NEXT_EPISODE_PREFETCH_CHAIN_DEPTH = 1;
     private static final int PREVIOUS_EPISODE_PULL_THRESHOLD_DP = 36;
     private static final long SCROLL_BOOKMARK_SAVE_DELAY_MS = 350L;
@@ -358,6 +358,8 @@ public class ViewerActivity extends AppCompatActivity {
                 public void onScrollStateChanged(RecyclerView recyclerView, int newState) {
                     super.onScrollStateChanged(recyclerView, newState);
                     PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
+                    if(manager != null)
+                        manager.setScrollBusy(newState != RecyclerView.SCROLL_STATE_IDLE);
                     if(stripAdapter != null) {
                         stripAdapter.setScrollState(newState);
                         dispatchScrollAnchorToAdapter(newState != RecyclerView.SCROLL_STATE_IDLE);
@@ -2642,6 +2644,7 @@ public class ViewerActivity extends AppCompatActivity {
         boolean loadedImages = hasLoadedImages(target);
         if(loadedImages) {
             preloadFirstPages(target);
+            scheduleChainedNextEpisodePrefetch(target, Math.max(0, chainDepth - 1));
             if(stripAdapter != null && manager != null && manager.findLastVisibleItemPosition() >= manager.getItemCount() - NEXT_EPISODE_ATTACH_THRESHOLD)
                 attachNextEpisode(false);
             return;
@@ -2688,7 +2691,7 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private static long nextEpisodeChainPrefetchDelayMs() {
-        return 80L;
+        return 0L;
     }
 
     static int nextEpisodePrefetchChainDepthForTest(boolean dataSave) {

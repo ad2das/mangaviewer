@@ -16,17 +16,24 @@ public class StripLayoutManager extends NpaLinearLayoutManager {
     private static final int EXTRA_LAYOUT_AHEAD_SCREENS = 3;
     private static final int EXTRA_LAYOUT_BEHIND_SCREENS = 1;
     private static final int EXTRA_LAYOUT_IDLE_SCREENS = 2;
+    private static final int EXTRA_LAYOUT_BUSY_AHEAD_SCREENS = 1;
+    private static final int EXTRA_LAYOUT_BUSY_BEHIND_SCREENS = 0;
     StripAdapter adapter;
     private final int extraLayoutAheadPx;
     private final int extraLayoutBehindPx;
     private final int extraLayoutIdlePx;
+    private final int extraLayoutBusyAheadPx;
+    private final int extraLayoutBusyBehindPx;
     private int scrollDirection = 1;
+    private boolean scrollBusy = false;
 
     public StripLayoutManager(Context context) {
         super(context);
         extraLayoutAheadPx = extraLayoutSpacePx(context, EXTRA_LAYOUT_AHEAD_SCREENS);
         extraLayoutBehindPx = extraLayoutSpacePx(context, EXTRA_LAYOUT_BEHIND_SCREENS);
         extraLayoutIdlePx = extraLayoutSpacePx(context, EXTRA_LAYOUT_IDLE_SCREENS);
+        extraLayoutBusyAheadPx = extraLayoutSpacePx(context, EXTRA_LAYOUT_BUSY_AHEAD_SCREENS);
+        extraLayoutBusyBehindPx = extraLayoutSpacePx(context, EXTRA_LAYOUT_BUSY_BEHIND_SCREENS);
     }
 
     public StripLayoutManager(Context context, int orientation, boolean reverseLayout) {
@@ -34,6 +41,8 @@ public class StripLayoutManager extends NpaLinearLayoutManager {
         extraLayoutAheadPx = extraLayoutSpacePx(context, EXTRA_LAYOUT_AHEAD_SCREENS);
         extraLayoutBehindPx = extraLayoutSpacePx(context, EXTRA_LAYOUT_BEHIND_SCREENS);
         extraLayoutIdlePx = extraLayoutSpacePx(context, EXTRA_LAYOUT_IDLE_SCREENS);
+        extraLayoutBusyAheadPx = extraLayoutSpacePx(context, EXTRA_LAYOUT_BUSY_AHEAD_SCREENS);
+        extraLayoutBusyBehindPx = extraLayoutSpacePx(context, EXTRA_LAYOUT_BUSY_BEHIND_SCREENS);
     }
 
     public StripLayoutManager(Context context, AttributeSet attrs, int defStyleAttr, int defStyleRes) {
@@ -41,6 +50,8 @@ public class StripLayoutManager extends NpaLinearLayoutManager {
         extraLayoutAheadPx = extraLayoutSpacePx(context, EXTRA_LAYOUT_AHEAD_SCREENS);
         extraLayoutBehindPx = extraLayoutSpacePx(context, EXTRA_LAYOUT_BEHIND_SCREENS);
         extraLayoutIdlePx = extraLayoutSpacePx(context, EXTRA_LAYOUT_IDLE_SCREENS);
+        extraLayoutBusyAheadPx = extraLayoutSpacePx(context, EXTRA_LAYOUT_BUSY_AHEAD_SCREENS);
+        extraLayoutBusyBehindPx = extraLayoutSpacePx(context, EXTRA_LAYOUT_BUSY_BEHIND_SCREENS);
     }
 
 
@@ -59,12 +70,14 @@ public class StripLayoutManager extends NpaLinearLayoutManager {
     @Override
     protected void calculateExtraLayoutSpace(@NonNull RecyclerView.State state, @NonNull int[] extraLayoutSpace) {
         super.calculateExtraLayoutSpace(state, extraLayoutSpace);
+        int aheadPx = scrollBusy ? extraLayoutBusyAheadPx : extraLayoutAheadPx;
+        int behindPx = scrollBusy ? extraLayoutBusyBehindPx : extraLayoutBehindPx;
         if(scrollDirection > 0) {
-            extraLayoutSpace[0] = Math.max(extraLayoutSpace[0], extraLayoutBehindPx);
-            extraLayoutSpace[1] = Math.max(extraLayoutSpace[1], extraLayoutAheadPx);
+            extraLayoutSpace[0] = Math.max(extraLayoutSpace[0], behindPx);
+            extraLayoutSpace[1] = Math.max(extraLayoutSpace[1], aheadPx);
         } else if(scrollDirection < 0) {
-            extraLayoutSpace[0] = Math.max(extraLayoutSpace[0], extraLayoutAheadPx);
-            extraLayoutSpace[1] = Math.max(extraLayoutSpace[1], extraLayoutBehindPx);
+            extraLayoutSpace[0] = Math.max(extraLayoutSpace[0], aheadPx);
+            extraLayoutSpace[1] = Math.max(extraLayoutSpace[1], behindPx);
         } else {
             extraLayoutSpace[0] = Math.max(extraLayoutSpace[0], extraLayoutIdlePx);
             extraLayoutSpace[1] = Math.max(extraLayoutSpace[1], extraLayoutIdlePx);
@@ -78,6 +91,10 @@ public class StripLayoutManager extends NpaLinearLayoutManager {
             scrollDirection = -1;
         else
             scrollDirection = 0;
+    }
+
+    public void setScrollBusy(boolean busy) {
+        scrollBusy = busy;
     }
 
     private static int extraLayoutSpacePx(Context context, int screens) {

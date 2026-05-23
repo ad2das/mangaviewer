@@ -582,8 +582,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         holder.boundPageKey = pageKey;
         holder.bindStartedAtMs = android.os.SystemClock.elapsedRealtime();
         applyKnownHeight(holder, item, pageKey);
-        if(!scrollBusy)
-            preloadAheadFromBindPosition(pos);
+        preloadAheadFromBindPosition(pos);
         String cacheKey = decodedCacheKey(item);
         CachedBitmap cached = decodedBitmapCache.get(cacheKey);
         if(cached != null && cached.isUsable() && isHolderStillBound(holder, item, pageKey)) {

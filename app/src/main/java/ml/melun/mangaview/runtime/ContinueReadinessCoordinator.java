@@ -55,8 +55,6 @@ public final class ContinueReadinessCoordinator {
             Manga manga = resumeManga(title);
             if(manga == null)
                 continue;
-            if(!sourceMatchesCurrentSite(title))
-                continue;
             primeVisible(context, manga, title);
             primed++;
             if(primed >= limit)
@@ -187,7 +185,7 @@ public final class ContinueReadinessCoordinator {
     }
 
     private static int coldStartLimit(boolean dataSave) {
-        return dataSave ? DATA_SAVE_COLD_START_LIMIT : COLD_START_LIMIT;
+        return dataSave ? DATA_SAVE_COLD_START_LIMIT : Math.max(COLD_START_LIMIT, 2);
     }
 
     static State stateForTest(boolean firstFrame, boolean images, boolean episodes, boolean failed) {

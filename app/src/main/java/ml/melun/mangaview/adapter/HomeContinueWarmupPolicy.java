@@ -5,7 +5,7 @@ final class HomeContinueWarmupPolicy {
     }
 
     static int visibleContinueWarmupLimit(boolean dataSave) {
-        return 1;
+        return dataSave ? 2 : 3;
     }
 
     static long visibleHomeWarmupDelayMs(boolean dataSave) {
