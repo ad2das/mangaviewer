@@ -12,7 +12,7 @@ public final class ViewerPreloadPolicy {
     public static Window firstFrameWindow(boolean dataSave) {
         return dataSave
                 ? new Window(1, 2, 6, 6)
-                : new Window(4, 8, 16, 16);
+                : new Window(6, 12, 20, 20);
     }
 
     public static Window episodeListWarmupWindow(boolean dataSave) {
@@ -24,13 +24,13 @@ public final class ViewerPreloadPolicy {
     public static Window episodeEntryWarmupWindow(boolean dataSave) {
         return dataSave
                 ? new Window(1, 1, 2, 2)
-                : new Window(3, 6, 10, 10);
+                : new Window(4, 8, 14, 14);
     }
 
     public static Window immediateDisplayWindow(boolean dataSave) {
         return dataSave
                 ? new Window(1, 1, 2, 2)
-                : new Window(3, 6, 10, 10);
+                : new Window(4, 8, 14, 14);
     }
 
     public static Window initialScrollWindow(boolean dataSave) {
@@ -40,13 +40,13 @@ public final class ViewerPreloadPolicy {
     public static Window scrollAheadWindow(boolean dataSave) {
         return dataSave
                 ? new Window(1, 2, 6, 6)
-                : new Window(3, 7, 14, 14);
+                : new Window(4, 8, 16, 16);
     }
 
     public static Window scrollBusyWindow(boolean dataSave) {
         return dataSave
                 ? new Window(0, 1, 3, 3)
-                : new Window(1, 3, 6, 6);
+                : new Window(0, 3, 6, 6);
     }
 
     public static Window nextEpisodeWindow(boolean dataSave) {

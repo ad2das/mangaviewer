@@ -431,9 +431,10 @@ public class Utils {
                                                   boolean online, boolean recent, Title title, boolean includeTitleEpisodes,
                                                   int launchToken) {
         Context appContext = context.getApplicationContext();
-        AppDispatchers.main().postDelayed(() -> launchPreparedViewer(context, manga, code, returnToEpisodes,
-                        online, recent, title, includeTitleEpisodes, launchToken, false),
-                continueLaunchFallbackMs(title));
+        if(shouldLaunchContinueFallback(context, manga))
+            AppDispatchers.main().postDelayed(() -> launchPreparedViewer(context, manga, code, returnToEpisodes,
+                            online, recent, title, includeTitleEpisodes, launchToken, false),
+                    continueLaunchFallbackMs(title));
         AppDispatchers.submitNavigation(() -> {
             Manga prepared = ViewerWarmupManager.usePreparedFirstFrame(appContext, manga, title, false, p.getReverse());
             if(prepared == null)
@@ -445,6 +446,23 @@ public class Utils {
             AppDispatchers.runOnMain(() -> launchPreparedViewer(context, launchManga, code, returnToEpisodes,
                     online, recent, launchTitle, includeTitleEpisodes, launchToken, false));
         });
+    }
+
+    private static boolean shouldLaunchContinueFallback(Context context, Manga manga) {
+        boolean hasLoadedImages = false;
+        if(manga != null) {
+            List<String> images = MangaRepository.imageUrls(manga, context);
+            hasLoadedImages = images != null && images.size() > 0;
+        }
+        return shouldLaunchContinueFallback(manga != null && manga.isOnline(), hasLoadedImages);
+    }
+
+    private static boolean shouldLaunchContinueFallback(boolean online, boolean hasLoadedImages) {
+        return !online || hasLoadedImages;
+    }
+
+    static boolean shouldLaunchContinueFallbackForTest(boolean online, boolean hasLoadedImages) {
+        return shouldLaunchContinueFallback(online, hasLoadedImages);
     }
 
     private static long continueLaunchFallbackMs(Title title) {

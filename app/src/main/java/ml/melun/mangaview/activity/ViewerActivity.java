@@ -1391,8 +1391,9 @@ public class ViewerActivity extends AppCompatActivity {
             if(target == null || !target.isOnline())
                 return;
             int firstPage = initialPageIndex(target, policy);
+            ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.immediateDisplayWindow(p.getDataSave());
             ViewerWarmupManager.preloadLoadedImages(context, target, firstPage, width, autoCut,
-                    p.getReverse(), p.getDataSave() ? 2 : 4, Priority.IMMEDIATE, 1);
+                    p.getReverse(), window.totalLimit, Priority.IMMEDIATE, window.decodedLimit);
         }
 
         void finish(Integer res) {
@@ -2705,7 +2706,7 @@ public class ViewerActivity extends AppCompatActivity {
     private static int viewerItemViewCacheSize(String sourceSite, boolean dataSave) {
         if(dataSave)
             return 8;
-        return "wfwf".equalsIgnoreCase(sourceSite == null ? "" : sourceSite.trim()) ? 14 : 20;
+        return "wfwf".equalsIgnoreCase(sourceSite == null ? "" : sourceSite.trim()) ? 18 : 22;
     }
 
     private boolean needsFullEpisodeList(Title currentTitle, Manga target) {

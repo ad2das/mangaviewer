@@ -92,9 +92,9 @@ public class StripAdapterTest {
 
     @Test
     public void preloadBudgetsStayConservative() {
-        assertTrue(StripAdapter.preloadAheadCountForTest() <= 9);
-        assertTrue(StripAdapter.initialPreloadAheadCountForTest() <= 8);
-        assertTrue(StripAdapter.decodedPreloadActiveLimitForTest() <= 4);
+        assertTrue(StripAdapter.preloadAheadCountForTest() <= 12);
+        assertTrue(StripAdapter.initialPreloadAheadCountForTest() <= 12);
+        assertTrue(StripAdapter.decodedPreloadActiveLimitForTest() <= 6);
         assertTrue(StripAdapter.scrollIdlePreloadDelayMsForTest() <= 100L);
         assertTrue(StripAdapter.scrollIdleHeightCorrectionDelayMsForTest()
                 >= StripAdapter.scrollIdlePreloadDelayMsForTest());

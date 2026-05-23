@@ -65,11 +65,11 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     int width;
     int count = 0;
     final static int MaxStackSize = 3;
-    private static final int PRELOAD_AHEAD_COUNT = 9;
+    private static final int PRELOAD_AHEAD_COUNT = 12;
     private static final int DATA_SAVE_PRELOAD_AHEAD_COUNT = 5;
-    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 8;
+    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 12;
     private static final int PRELOAD_TRACK_LIMIT = 500;
-    private static final int DECODED_PRELOAD_ACTIVE_LIMIT = 4;
+    private static final int DECODED_PRELOAD_ACTIVE_LIMIT = 6;
     private static final int IMAGE_LOAD_RETRY_LIMIT = 3;
     private static final long SCROLL_IDLE_PRELOAD_DELAY_MS = 60L;
     private static final long SCROLL_IDLE_HEIGHT_CORRECTION_DELAY_MS = 180L;
@@ -770,16 +770,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private static Bitmap copyBitmapForDisplay(Bitmap bitmap) {
-        if(!isDisplayBitmapUsable(bitmap))
-            return null;
-        try {
-            Bitmap.Config config = bitmap.getConfig() == null ? Bitmap.Config.ARGB_8888 : bitmap.getConfig();
-            Bitmap copy = bitmap.copy(config, false);
-            return isDisplayBitmapUsable(copy) ? copy : null;
-        } catch (RuntimeException e) {
-            ml.melun.mangaview.report.CrashReporter.record(e);
-            return null;
-        }
+        return isDisplayBitmapUsable(bitmap) ? bitmap : null;
     }
 
     private void rememberPageHeight(String pageKey, Bitmap bitmap) {
@@ -1440,9 +1431,9 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     private int decodedCacheSizeKb() {
         int maxMemoryKb = (int)(Runtime.getRuntime().maxMemory() / 1024);
-        int targetKb = maxMemoryKb / (p.getDataSave() ? 16 : 8);
-        int minKb = p.getDataSave() ? 4 * 1024 : 8 * 1024;
-        int maxKb = p.getDataSave() ? 12 * 1024 : 32 * 1024;
+        int targetKb = maxMemoryKb / (p.getDataSave() ? 16 : 4);
+        int minKb = p.getDataSave() ? 4 * 1024 : 24 * 1024;
+        int maxKb = p.getDataSave() ? 12 * 1024 : 96 * 1024;
         return Math.max(minKb, Math.min(targetKb, maxKb));
     }
 

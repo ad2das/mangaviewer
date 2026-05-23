@@ -8,6 +8,7 @@ import java.util.Arrays;
 import java.util.Collections;
 
 import ml.melun.mangaview.mangaview.Manga;
+import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.Title;
 
 import static org.junit.Assert.assertFalse;
@@ -102,6 +103,13 @@ public class ViewerWarmupManagerTest {
     }
 
     @Test
+    public void visibleContinueWarmupAllowsCrossSiteCards() {
+        assertTrue(ViewerWarmupManager.shouldWarmupContinueForSiteForTest("ntk", false, true));
+        assertTrue(ViewerWarmupManager.shouldWarmupContinueForSiteForTest("wfwf", true, true));
+        assertFalse(ViewerWarmupManager.shouldWarmupContinueForSiteForTest("ntk", false, false));
+    }
+
+    @Test
     public void sourceMatchKeepsLegacyBlankSourcesCompatible() {
         assertTrue(ViewerWarmupManager.sourceMatchesCurrentSiteForTest("", true));
         assertTrue(ViewerWarmupManager.sourceMatchesCurrentSiteForTest(null, false));
@@ -132,6 +140,14 @@ public class ViewerWarmupManagerTest {
     public void backgroundWarmupUsesDirectOnlyForWolfAndNtk() {
         assertTrue(ViewerWarmupManager.shouldUseDirectOnlyBackgroundWarmupForTest("wfwf"));
         assertTrue(ViewerWarmupManager.shouldUseDirectOnlyBackgroundWarmupForTest("ntk"));
+    }
+
+    @Test
+    public void crossSiteWarmupUsesSourceSitePreset() {
+        assertEquals(CustomHttpClient.NTK_COMIC_URL, ViewerWarmupManager.sourceSitePresetForWarmupForTest("ntk")[0]);
+        assertEquals(CustomHttpClient.NTK_WEBTOON_URL, ViewerWarmupManager.sourceSitePresetForWarmupForTest("ntk")[1]);
+        assertEquals(CustomHttpClient.DEFAULT_COMIC_URL, ViewerWarmupManager.sourceSitePresetForWarmupForTest("wfwf")[0]);
+        assertEquals(CustomHttpClient.WEBTOON_URL, ViewerWarmupManager.sourceSitePresetForWarmupForTest("wfwf")[1]);
     }
 
     @Test

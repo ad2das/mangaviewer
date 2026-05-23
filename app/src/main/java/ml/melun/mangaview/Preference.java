@@ -459,6 +459,8 @@ public class Preference {
             return DEFAULT_COMIC_URL;
         if(normalized.equals(WEBTOON_URL))
             return DEFAULT_COMIC_URL;
+        if(isWfwfLikeUrl(normalized) && normalized.endsWith("/manhwa"))
+            return normalized.substring(0, normalized.length() - 7) + "/cm";
         return normalized;
     }
 
@@ -490,6 +492,8 @@ public class Preference {
             return WEBTOON_URL;
         if(normalized.endsWith("/cm"))
             return normalized.substring(0, normalized.length() - 3);
+        if(isWfwfLikeUrl(normalized) && normalized.endsWith("/manhwa"))
+            return normalized.substring(0, normalized.length() - 7);
         return normalized;
     }
 
@@ -802,6 +806,8 @@ public class Preference {
             return "";
         if(root.endsWith("/cm"))
             root = root.substring(0, root.length() - 3);
+        if(root.endsWith("/manhwa"))
+            root = root.substring(0, root.length() - 7);
         return root;
     }
 

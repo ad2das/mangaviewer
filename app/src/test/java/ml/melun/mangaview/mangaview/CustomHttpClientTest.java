@@ -120,6 +120,21 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkNextAppShellIsNotCacheableUntilRendered() {
+        String shell = "<html><body><div id=\"__next\"></div>"
+                + "<script src=\"/_next/static/chunks/app/manhwa/%5BsourceWorkId%5D/page-abcd.js\"></script>"
+                + "<next-route-announcer></next-route-announcer></body></html>";
+        String renderedTitle = shell + "<a href=\"/manhwa/7843/79\">79화</a>";
+        String renderedViewer = shell + "<main class=\"viewer\"><div class=\"vw-main\"><img src=\"https://pl1.com/a/1/2/p001.jpg\"></div></main>";
+
+        assertTrue(CustomHttpClient.looksLikeUnrenderedNtkDocumentForTest("/manhwa/7843", 200, shell));
+        assertFalse(CustomHttpClient.isCacheablePageBodyForTest(shell));
+        assertFalse(CustomHttpClient.looksLikeUnrenderedNtkDocumentForTest("/manhwa/7843", 200, renderedTitle));
+        assertFalse(CustomHttpClient.looksLikeUnrenderedNtkDocumentForTest("/manhwa/7843/79", 200, renderedViewer));
+        assertTrue(CustomHttpClient.isCacheablePageBodyForTest(renderedTitle));
+    }
+
+    @Test
     public void ntkWebViewFallbackRequiresSharedWebViewMode() {
         assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1/2",
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));

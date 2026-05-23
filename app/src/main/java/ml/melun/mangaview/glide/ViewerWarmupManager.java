@@ -245,7 +245,7 @@ public class ViewerWarmupManager {
         } else {
             title = manga.getTitle();
         }
-        if(!sourceMatchesCurrentSite(title))
+        if(!shouldWarmupContinueForSite(title, visibleResume))
             return;
         if(visibleResume && shouldSuppressVisibleContinueWarmup(SystemClock.uptimeMillis(),
                 suppressVisibleContinueWarmupsUntilMs, suppressVisibleContinueWarmupsWhileViewerActive))
@@ -263,11 +263,25 @@ public class ViewerWarmupManager {
         if(visibleResume)
             logMetric("viewer_resume_visible_warmup_scheduled", manga.getId());
         String warmupSource = title == null ? null : title.getSourceSite();
-        AppDispatchers.submitImageWarmup(() -> {
+        ViewerPreloadPolicy.Window visibleWindow = visibleResume
+                ? ViewerPreloadPolicy.immediateDisplayWindow(p.getDataSave())
+                : null;
+        Runnable warmupWork = () -> {
             try {
                 if(visibleResume && shouldSuppressVisibleContinueWarmup(SystemClock.uptimeMillis(),
                         suppressVisibleContinueWarmupsUntilMs, suppressVisibleContinueWarmupsWhileViewerActive))
                     return;
+                Manga snapshot = continueSnapshotMangaWithPageFallback(appContext, manga, warmupTitle, startPage, manga);
+                if(snapshot != null && hasImages(snapshot, appContext)) {
+                    if(warmupTitle != null)
+                        attachTitle(warmupTitle, snapshot);
+                    preloadLoadedImages(appContext, snapshot, startPage, width, false, p.getReverse(),
+                            continueWarmupDiskLimit(visibleWindow), Priority.IMMEDIATE,
+                            continueWarmupDecodedLimit(visibleWindow));
+                    cacheContinueSnapshot(appContext, scheduleKey, snapshot);
+                    logMetric(visibleResume ? "viewer_resume_visible_warmup_ready" : "viewer_continue_warmup_ready", snapshot.getId());
+                    return;
+                }
                 runDirectOnlyWarmup(warmupSource, () -> {
                     Manga target = manga;
                     Title currentTitle = warmupTitle != null ? warmupTitle : target.getTitle();
@@ -284,8 +298,8 @@ public class ViewerWarmupManager {
                         int page = ViewerResumeResolver.sameManga(candidate, target) ? startPage : 0;
                         int result = prepareFirstFrame(appContext, candidate, currentTitle, page, width, false, p.getReverse(), MangaRepository.cancellation(), false);
                         if(result == LOAD_OK && hasImages(candidate, appContext)) {
-                            int diskLimit = visibleResume && p.getDataSave() ? 4 : (p.getDataSave() ? 6 : 12);
-                            int decodedLimit = visibleResume ? 1 : (p.getDataSave() ? 1 : 2);
+                            int diskLimit = continueWarmupDiskLimit(visibleWindow);
+                            int decodedLimit = continueWarmupDecodedLimit(visibleWindow);
                             preloadLoadedImages(appContext, candidate, page, width, false, p.getReverse(), diskLimit, Priority.IMMEDIATE, decodedLimit);
                             cacheContinueSnapshot(appContext, scheduleKey, candidate);
                             logMetric(visibleResume ? "viewer_resume_visible_warmup_ready" : "viewer_continue_warmup_ready", candidate.getId());
@@ -297,7 +311,11 @@ public class ViewerWarmupManager {
             } catch (Exception e) {
                 ml.melun.mangaview.report.CrashReporter.record(e);
             }
-        });
+        };
+        if(visibleResume)
+            AppDispatchers.submitIo(warmupWork);
+        else
+            AppDispatchers.submitImageWarmup(warmupWork);
     }
 
     public static Manga prepareClickFirstFrame(Context context, Manga manga, Title title, boolean autoCut, boolean reverse) {
@@ -322,8 +340,7 @@ public class ViewerWarmupManager {
         if(firstPage < 0)
             firstPage = 0;
         String scheduleKey = continueWarmupKey(manga, title, firstPage);
-        Manga warmed = continueSnapshotMangaWithAliases(appContext, scheduleKey,
-                pathlessContinueWarmupKey(manga, title, firstPage), manga);
+        Manga warmed = continueSnapshotMangaWithPageFallback(appContext, manga, title, firstPage, manga);
         if(warmed != null) {
             if(title != null)
                 attachTitle(title, warmed);
@@ -340,7 +357,7 @@ public class ViewerWarmupManager {
         Title clickTitle = title;
         int clickFirstPage = firstPage;
         try {
-            Manga prepared = runDirectOnlyIfNtk(() -> {
+            CustomHttpClient.RequestWork<Manga> clickWork = () -> {
                 Manga target = manga;
                 Title currentTitle = clickTitle != null ? clickTitle : target.getTitle();
                 if(currentTitle != null && Utils.snapshotEpisodes(currentTitle).size() <= 1) {
@@ -373,7 +390,8 @@ public class ViewerWarmupManager {
                     }
                 }
                 return null;
-            });
+            };
+            Manga prepared = clickWork.run();
             if(prepared != null)
                 return prepared;
         } catch (Exception e) {
@@ -449,8 +467,7 @@ public class ViewerWarmupManager {
         String continueKey = continueWarmupKey(manga, title, firstPage);
         Manga warmed = exactEpisode
                 ? continueSnapshotManga(context, continueKey, manga)
-                : continueSnapshotMangaWithAliases(context, continueKey,
-                        pathlessContinueWarmupKey(manga, title, firstPage), manga);
+                : continueSnapshotMangaWithPageFallback(context, manga, title, firstPage, manga);
         if(exactEpisode && warmed != null && !samePreparedEpisode(warmed, manga)) {
             invalidateContinueSnapshot(context, continueKey);
             warmed = null;
@@ -1047,6 +1064,10 @@ public class ViewerWarmupManager {
         return shouldUseDirectOnlyBackgroundWarmup(sourceSite);
     }
 
+    static String[] sourceSitePresetForWarmupForTest(String sourceSite) {
+        return sourceSitePresetForWarmup(sourceSite);
+    }
+
     static boolean samePreparedEpisodeForTest(Manga prepared, Manga requested) {
         return samePreparedEpisode(prepared, requested);
     }
@@ -1093,6 +1114,22 @@ public class ViewerWarmupManager {
 
     private static boolean sourceMatchesCurrentSite(MTitle title) {
         return sourceMatchesCurrentSite(title == null ? null : title.getSourceSite(), isCurrentNtkSite());
+    }
+
+    private static boolean shouldWarmupContinueForSite(MTitle title, boolean visibleResume) {
+        return visibleResume || sourceMatchesCurrentSite(title);
+    }
+
+    static boolean shouldWarmupContinueForSiteForTest(String sourceSite, boolean ntkSite, boolean visibleResume) {
+        return visibleResume || sourceMatchesCurrentSite(sourceSite, ntkSite);
+    }
+
+    private static int continueWarmupDiskLimit(ViewerPreloadPolicy.Window visibleWindow) {
+        return visibleWindow != null ? visibleWindow.totalLimit : (p.getDataSave() ? 6 : 12);
+    }
+
+    private static int continueWarmupDecodedLimit(ViewerPreloadPolicy.Window visibleWindow) {
+        return visibleWindow != null ? visibleWindow.decodedLimit : (p.getDataSave() ? 1 : 2);
     }
 
     private static boolean sourceMatchesCurrentSite(String sourceSite, boolean ntkSite) {
@@ -1157,9 +1194,27 @@ public class ViewerWarmupManager {
     }
 
     private static <T> T runDirectOnlyWarmup(String sourceSite, CustomHttpClient.RequestWork<T> work) throws Exception {
-        if(shouldUseDirectOnlyBackgroundWarmup(sourceSite))
-            return runDirectOnly(work);
-        return work.run();
+        return runWithSourceSite(sourceSite, () -> {
+            if(shouldUseDirectOnlyBackgroundWarmup(sourceSite))
+                return runDirectOnly(work);
+            return work.run();
+        });
+    }
+
+    private static <T> T runWithSourceSite(String sourceSite, CustomHttpClient.RequestWork<T> work) throws Exception {
+        String[] preset = sourceSitePresetForWarmup(sourceSite);
+        if(preset == null)
+            return work.run();
+        return getHttpClient().runWithSitePreset(preset[0], preset[1], work);
+    }
+
+    private static String[] sourceSitePresetForWarmup(String sourceSite) {
+        String normalized = sourceSite == null ? "" : sourceSite.trim().toLowerCase(Locale.ROOT);
+        if("ntk".equals(normalized))
+            return new String[]{CustomHttpClient.NTK_COMIC_URL, CustomHttpClient.NTK_WEBTOON_URL};
+        if("wfwf".equals(normalized))
+            return new String[]{CustomHttpClient.DEFAULT_COMIC_URL, CustomHttpClient.WEBTOON_URL};
+        return null;
     }
 
     private static <T> T runDirectOnly(CustomHttpClient.RequestWork<T> work) throws Exception {
@@ -1349,6 +1404,20 @@ public class ViewerWarmupManager {
         if(aliasKey == null || aliasKey.equals(key))
             return null;
         return continueSnapshotManga(context, aliasKey, fallback);
+    }
+
+    private static Manga continueSnapshotMangaWithPageFallback(Context context, Manga manga, Title title, int startPage, Manga fallback) {
+        int page = Math.max(0, startPage);
+        Manga snapshot = continueSnapshotMangaWithAliases(context,
+                continueWarmupKey(manga, title, page),
+                pathlessContinueWarmupKey(manga, title, page),
+                fallback);
+        if(snapshot != null || page == 0)
+            return snapshot;
+        return continueSnapshotMangaWithAliases(context,
+                continueWarmupKey(manga, title, 0),
+                pathlessContinueWarmupKey(manga, title, 0),
+                fallback);
     }
 
     private static Manga continueSnapshotMangaFromMemory(String key, Manga fallback) {
@@ -1568,16 +1637,7 @@ public class ViewerWarmupManager {
     private static Bitmap copyBitmapForDisplay(Bitmap bitmap) {
         if(bitmap == null || bitmap.isRecycled() || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0)
             return null;
-        try {
-            Bitmap.Config config = bitmap.getConfig() == null ? Bitmap.Config.ARGB_8888 : bitmap.getConfig();
-            Bitmap copy = bitmap.copy(config, false);
-            if(copy == null || copy.isRecycled() || copy.getWidth() <= 0 || copy.getHeight() <= 0)
-                return null;
-            return copy;
-        } catch (RuntimeException e) {
-            ml.melun.mangaview.report.CrashReporter.record(e);
-            return null;
-        }
+        return bitmap;
     }
 
     private static int bitmapSizeKb(Bitmap bitmap) {

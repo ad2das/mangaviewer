@@ -52,8 +52,8 @@ public class ViewerActivityTest {
 
     @Test
     public void wfwfViewerKeepsExtraRowsReadyWithoutDataSaver() {
-        assertEquals(14, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", false));
-        assertEquals(20, ViewerActivity.viewerItemViewCacheSizeForTest("ntk", false));
+        assertEquals(18, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", false));
+        assertEquals(22, ViewerActivity.viewerItemViewCacheSizeForTest("ntk", false));
         assertEquals(8, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", true));
     }
 
@@ -87,7 +87,7 @@ public class ViewerActivityTest {
 
     @Test
     public void initialViewerPreloadBudgetStaysConservative() {
-        assertTrue(ViewerActivity.initialPreloadAheadCountForTest() <= 8);
+        assertTrue(ViewerActivity.initialPreloadAheadCountForTest() <= 12);
     }
 
     @Test

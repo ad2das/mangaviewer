@@ -39,6 +39,12 @@ public class PreferenceTest {
     }
 
     @Test
+    public void siteUrlNormalizationRepairsWolfManhwaPath() {
+        assertEquals("https://wfwf454.com/cm", Preference.normalizeComicUrlForTest("https://wfwf454.com/manhwa"));
+        assertEquals("https://wfwf454.com", Preference.normalizeWebtoonUrlForTest("https://wfwf454.com/manhwa"));
+    }
+
+    @Test
     public void siteUrlNormalizationKeepsStoredDynamicNtkRoot() {
         assertEquals("https://odd-address.example/manhwa",
                 Preference.normalizeComicUrlForTest("https://odd-address.example", "https://odd-address.example"));

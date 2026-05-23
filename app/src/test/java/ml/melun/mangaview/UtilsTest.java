@@ -173,6 +173,13 @@ public class UtilsTest {
     }
 
     @Test
+    public void continueViewerFallbackWaitsWhenOnlineImagesAreNotReady() {
+        assertFalse(Utils.shouldLaunchContinueFallbackForTest(true, false));
+        assertTrue(Utils.shouldLaunchContinueFallbackForTest(true, true));
+        assertTrue(Utils.shouldLaunchContinueFallbackForTest(false, false));
+    }
+
+    @Test
     public void exactViewerLaunchAllowsForegroundFallbackOnlyForWolf() {
         assertTrue(Utils.shouldAllowExactForegroundFallbackForTest("wfwf", false));
         assertTrue(Utils.shouldAllowExactForegroundFallbackForTest("", false));

@@ -31,6 +31,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLException;
@@ -848,6 +850,7 @@ public class CustomHttpClient {
     private volatile boolean cloudflareCaptchaActive = false;
     private final ThreadLocal<RequestGroup> currentRequestGroup = requestGroupLocal();
     private final ThreadLocal<FetchMode> currentFetchMode = new ThreadLocal<>();
+    private final ThreadLocal<SiteOverride> currentSiteOverride = new ThreadLocal<>();
 
     private ThreadLocal<RequestGroup> requestGroupLocal() {
         return new
@@ -867,6 +870,16 @@ public class CustomHttpClient {
         CACHE_ONLY,
         DIRECT_ONLY,
         ALLOW_SHARED_WEBVIEW
+    }
+
+    private static class SiteOverride {
+        String comicUrl;
+        String webtoonUrl;
+
+        SiteOverride(String comicUrl, String webtoonUrl) {
+            this.comicUrl = comicUrl;
+            this.webtoonUrl = webtoonUrl;
+        }
     }
 
     public CustomHttpClient(Context context){
@@ -1342,6 +1355,21 @@ public class CustomHttpClient {
         }
     }
 
+    public <T> T runWithSitePreset(String comicUrl, String webtoonUrl, RequestWork<T> work) throws Exception {
+        SiteOverride previous = currentSiteOverride.get();
+        currentSiteOverride.set(new SiteOverride(
+                siteOverrideUrl(comicUrl, DEFAULT_COMIC_URL),
+                siteOverrideUrl(webtoonUrl, WEBTOON_URL)));
+        try {
+            return work.run();
+        } finally {
+            if(previous == null)
+                currentSiteOverride.remove();
+            else
+                currentSiteOverride.set(previous);
+        }
+    }
+
     public boolean isDirectOnlyFetchMode() {
         FetchMode mode = effectiveFetchMode(FetchMode.ALLOW_SHARED_WEBVIEW);
         return mode == FetchMode.DIRECT_ONLY || mode == FetchMode.CACHE_ONLY;
@@ -1665,10 +1693,15 @@ public class CustomHttpClient {
                         ? WfwfDomainResolver.resolveReplacement(client, root, headers, currentRequestGroup.get())
                         : WfwfDomainResolver.resolve(client, root, headers, currentRequestGroup.get());
                 if(resolved != null && !resolved.equals(root)) {
-                    p.setWebtoonUrl(resolved);
-                    String comicPath = isNtkUrl(resolved) ? "/manhwa" : "/cm";
-                    p.setUrl(resolved + comicPath);
-                    p.setDefUrl(resolved + comicPath);
+                    SiteOverride override = currentSiteOverride.get();
+                    if(override != null) {
+                        override.webtoonUrl = trimTrailingSlash(resolved);
+                        override.comicUrl = trimTrailingSlash(resolved) + "/cm";
+                    } else {
+                        p.setWebtoonUrl(resolved);
+                        p.setUrl(resolved + "/cm");
+                        p.setDefUrl(resolved + "/cm");
+                    }
                     resetCookie();
                     clearPageCache();
                     changed = true;
@@ -1755,7 +1788,14 @@ public class CustomHttpClient {
                 List<String> resolvedRoots = NtkDomainResolver.resolveCandidates(client, headers, currentRequestGroup.get());
                 String reachable = reachableNtkRoot(currentRoot, resolvedRoots, headers);
                 if(shouldApplyResolvedNtkRoot(currentRoot, reachable, resolvedRoots)) {
-                    p.setNtkSitePreset(reachable);
+                    SiteOverride override = currentSiteOverride.get();
+                    if(override != null) {
+                        String root = trimTrailingSlash(reachable);
+                        override.webtoonUrl = root;
+                        override.comicUrl = root + "/manhwa";
+                    } else {
+                        p.setNtkSitePreset(reachable);
+                    }
                     resetCookie();
                     clearPageCache();
                     changed = true;
@@ -2300,14 +2340,20 @@ public class CustomHttpClient {
     }
 
     private String getComicUrl(){
-        String url = p.getUrl();
+        SiteOverride override = currentSiteOverride.get();
+        String url = override == null ? null : override.comicUrl;
+        if(url == null || url.length() == 0)
+            url = p.getUrl();
         if(url == null || url.length() == 0)
             url = DEFAULT_COMIC_URL;
         return trimTrailingSlash(url);
     }
 
     private String getWebtoonUrl(){
-        String url = p.getWebtoonUrl();
+        SiteOverride override = currentSiteOverride.get();
+        String url = override == null ? null : override.webtoonUrl;
+        if(url == null || url.length() == 0)
+            url = p.getWebtoonUrl();
         if(url == null || url.length() == 0)
             url = WEBTOON_URL;
         return trimTrailingSlash(url);
@@ -2344,6 +2390,9 @@ public class CustomHttpClient {
     }
 
     private boolean isConfiguredNtkUrl(String url) {
+        SiteOverride override = currentSiteOverride.get();
+        if(override != null)
+            return isConfiguredNtkUrl(url, override);
         if(p == null || !p.isNtkSite())
             return false;
         String normalized = NtkDomainResolver.normalizeRoot(url);
@@ -2351,6 +2400,18 @@ public class CustomHttpClient {
             return false;
         String host = configuredHostOf(normalized);
         return isConfiguredNtkHost(host);
+    }
+
+    private boolean isConfiguredNtkUrl(String url, SiteOverride override) {
+        if(override == null || (!isNtkUrlForTest(override.webtoonUrl) && !isNtkUrlForTest(override.comicUrl)))
+            return false;
+        String normalized = NtkDomainResolver.normalizeRoot(url);
+        if(normalized == null || normalized.length() == 0)
+            return false;
+        String host = configuredHostOf(normalized);
+        String webtoonHost = configuredHostOf(override.webtoonUrl);
+        String comicHost = configuredHostOf(override.comicUrl);
+        return hostMatches(normalizeDnsHost(host), webtoonHost) || hostMatches(normalizeDnsHost(host), comicHost);
     }
 
     private static boolean isConfiguredNtkHost(String host) {
@@ -2418,6 +2479,12 @@ public class CustomHttpClient {
         while(url.endsWith("/"))
             url = url.substring(0, url.length() - 1);
         return url;
+    }
+
+    private String siteOverrideUrl(String url, String fallback) {
+        if(url == null || url.length() == 0)
+            url = fallback;
+        return trimTrailingSlash(url);
     }
 
 
@@ -2607,7 +2674,16 @@ public class CustomHttpClient {
         String location = response.header("location", "");
         if((code == 301 || code == 302) && location != null && location.toLowerCase(Locale.ROOT).contains("t.me/"))
             return false;
-        return code == 301 || code == 302 || code == 403 || code == 404 || code >= 500;
+        if(code == 301 || code == 302 || code == 403 || code == 404 || code >= 500)
+            return true;
+        if(code >= 200 && code < 400) {
+            try {
+                String body = response.peekBody(256 * 1024L).string();
+                return looksLikeUnrenderedNtkDocument(path, code, body);
+            } catch (Exception ignored) {
+            }
+        }
+        return false;
     }
 
     private Response getWithNtkWebViewFallback(String baseUrl, String path, Map<String, String> headers) {
@@ -2977,7 +3053,56 @@ public class CustomHttpClient {
                 && !lower.contains("cf-challenge")
                 && !lower.contains("cf_chl")
                 && !lower.contains("cf-mitigated")
-                && !lower.contains("turnstile");
+                && !lower.contains("turnstile")
+                && !looksLikeUnrenderedNtkDocument(null, 200, body);
+    }
+
+    static boolean looksLikeUnrenderedNtkDocumentForTest(String path, int code, String body) {
+        return looksLikeUnrenderedNtkDocument(path, code, body);
+    }
+
+    private static boolean looksLikeUnrenderedNtkDocument(String path, int code, String body) {
+        if(code < 200 || code >= 400 || body == null || body.length() == 0)
+            return false;
+        if(path != null && !isNtkNavigableDocumentPath(path))
+            return false;
+        String lower = body.toLowerCase(Locale.ROOT);
+        if(!looksLikeNtkNextShell(lower))
+            return false;
+        return !hasRenderedNtkDocumentContent(lower);
+    }
+
+    private static boolean looksLikeNtkNextShell(String lowerBody) {
+        if(lowerBody == null)
+            return false;
+        return (lowerBody.contains("/_next/static/") || lowerBody.contains("self.__next_f")
+                || lowerBody.contains("id=\"__next\"") || lowerBody.contains("id='__next'"))
+                && (lowerBody.contains("%5bsourceworkid%5d") || lowerBody.contains("[sourceworkid]")
+                || lowerBody.contains("%5bviewid%5d") || lowerBody.contains("[viewid]")
+                || lowerBody.contains("next-route-announcer") || lowerBody.contains("app-router-announcer"));
+    }
+
+    private static boolean hasRenderedNtkDocumentContent(String lowerBody) {
+        if(lowerBody == null || lowerBody.length() == 0)
+            return false;
+        if(lowerBody.contains("vw-main") || lowerBody.contains("vw-imgs")
+                || lowerBody.contains("viewer-content") || lowerBody.contains("toon-view")
+                || lowerBody.contains("image-view") || lowerBody.contains("webtoon-body"))
+            return true;
+        if(lowerBody.contains("/webtoon_uploads/") || lowerBody.contains("/manhwa_uploads/")
+                || lowerBody.contains("/comic_uploads/") || lowerBody.contains("/blacktoon/episodes/"))
+            return true;
+        Matcher matcher = Pattern.compile("href\\s*=\\s*['\"][^'\"]*/(?:webtoon|manhwa)/([^'\"/?#%]+)/([^'\"/?#%]+)").matcher(lowerBody);
+        while(matcher.find()) {
+            String titlePart = matcher.group(1);
+            String episodePart = matcher.group(2);
+            if(titlePart == null || episodePart == null)
+                continue;
+            if(titlePart.contains("%5b") || episodePart.contains("%5b") || episodePart.startsWith("page-"))
+                continue;
+            return true;
+        }
+        return false;
     }
 
     private boolean isCloudflareChallenge(int code, String body) {
