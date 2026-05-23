@@ -362,6 +362,12 @@ public class Utils {
                     width, false, p.getReverse(), MangaRepository.cancellation(), exactFirstFrameWaitMs(title),
                     shouldAllowExactForegroundFallback(title));
             if(!prepared.canLaunch()) {
+                if(shouldLaunchExactWithoutPrepared(prepared)) {
+                    ViewerWarmupManager.logMetric("viewer_exact_unprepared_foreground_launch", manga == null ? -1 : manga.getId());
+                    AppDispatchers.runOnMain(() -> launchPreparedViewer(context, manga, code, returnToEpisodes,
+                            online, recent, title, includeTitleEpisodes, launchToken, true));
+                    return;
+                }
                 ViewerWarmupManager.logMetric("viewer_exact_unprepared_blocked", manga == null ? -1 : manga.getId());
                 AppDispatchers.runOnMain(() -> showViewerPreparationIssue(context, launchToken, prepared, manga));
                 return;
@@ -374,6 +380,14 @@ public class Utils {
             AppDispatchers.runOnMain(() -> launchPreparedViewer(context, launchManga, code, returnToEpisodes,
                     online, recent, finalLaunchTitle, includeTitleEpisodes, launchToken, true));
         });
+    }
+
+    private static boolean shouldLaunchExactWithoutPrepared(PreparedViewerLaunch prepared) {
+        return prepared == null || !prepared.isCaptcha();
+    }
+
+    static boolean shouldLaunchExactWithoutPreparedForTest(PreparedViewerLaunch prepared) {
+        return shouldLaunchExactWithoutPrepared(prepared);
     }
 
     private static long exactFirstFrameWaitMs(Title title) {

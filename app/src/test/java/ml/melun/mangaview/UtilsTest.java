@@ -12,6 +12,9 @@ import java.util.List;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.runtime.PreparedViewerLaunch;
+import ml.melun.mangaview.runtime.ViewerPreparationCoordinator;
+import ml.melun.mangaview.glide.ViewerWarmupManager;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -180,6 +183,19 @@ public class UtilsTest {
         assertTrue(Utils.shouldAllowExactForegroundFallbackForTest("", false));
         assertFalse(Utils.shouldAllowExactForegroundFallbackForTest("ntk", true));
         assertFalse(Utils.shouldAllowExactForegroundFallbackForTest("", true));
+    }
+
+    @Test
+    public void exactViewerLaunchDoesNotBlockUserSelectedEpisodeWhenPreparationIsPending() {
+        PreparedViewerLaunch pending = ViewerPreparationCoordinator.statusForResult(
+                ViewerWarmupManager.LOAD_FIRST_FRAME_PENDING);
+        PreparedViewerLaunch empty = ViewerPreparationCoordinator.statusForResult(
+                ViewerWarmupManager.LOAD_EMPTY_IMAGES);
+        PreparedViewerLaunch captcha = ViewerPreparationCoordinator.statusForResult(Title.LOAD_CAPTCHA);
+
+        assertTrue(Utils.shouldLaunchExactWithoutPreparedForTest(pending));
+        assertTrue(Utils.shouldLaunchExactWithoutPreparedForTest(empty));
+        assertFalse(Utils.shouldLaunchExactWithoutPreparedForTest(captcha));
     }
 
     @Test
