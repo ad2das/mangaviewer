@@ -2,6 +2,8 @@ package ml.melun.mangaview.adapter;
 
 import org.junit.Test;
 
+import com.bumptech.glide.load.engine.DiskCacheStrategy;
+
 import java.util.LinkedHashSet;
 import java.util.Set;
 
@@ -108,5 +110,17 @@ public class StripAdapterTest {
         assertTrue(StripAdapter.shouldRunBusyPreloadForTest(10, 14, 20L));
         assertFalse(StripAdapter.shouldRunBusyPreloadForTest(10, 11, 120L));
         assertTrue(StripAdapter.shouldRunBusyPreloadForTest(10, 11, 180L));
+    }
+
+    @Test
+    public void stripAdapterDoesNotStartHeavyPreloadFromRenderPath() {
+        assertFalse(StripAdapter.startsPreloadFromBindForTest());
+        assertFalse(StripAdapter.startsPreloadFromScrollAnchorForTest());
+    }
+
+    @Test
+    public void fastFlingBindPathDoesNotWriteDiskCache() {
+        assertEquals(DiskCacheStrategy.NONE, StripAdapter.viewerDiskCacheStrategyForTest(true));
+        assertEquals(DiskCacheStrategy.RESOURCE, StripAdapter.viewerDiskCacheStrategyForTest(false));
     }
 }

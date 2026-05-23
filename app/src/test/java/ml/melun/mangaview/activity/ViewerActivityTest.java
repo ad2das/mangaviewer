@@ -105,8 +105,10 @@ public class ViewerActivityTest {
     }
 
     @Test
-    public void nextEpisodePrefetchStartsImmediatelyForFastFling() {
-        assertEquals(0L, ViewerActivity.initialNextEpisodePrefetchDelayMsForTest());
+    public void nextEpisodePrefetchWaitsForViewerPipeline() {
+        assertTrue(ViewerActivity.initialNextEpisodePrefetchDelayMsForTest() >=
+                ViewerActivity.viewerPipelineStartDelayMsForTest());
+        assertTrue(ViewerActivity.initialNextEpisodePrefetchDelayMsForTest() <= 320L);
     }
 
     @Test
@@ -151,6 +153,28 @@ public class ViewerActivityTest {
     }
 
     @Test
+    public void missingEpisodePromptDoesNotUseNormalNextAttachThreshold() {
+        assertTrue(ViewerActivity.shouldAttachNextEpisodeAtPositionForTest(70, 98, 120, 22));
+        assertFalse(ViewerActivity.shouldPromptMissingEpisodeAtBoundaryForTest(false, true));
+    }
+
+    @Test
+    public void normalNextEpisodeAttachDoesNotTriggerAtFirstPageOfShortEpisode() {
+        assertFalse(ViewerActivity.shouldAttachNextEpisodeAtPositionForTest(0, 19, 22));
+        assertFalse(ViewerActivity.shouldAttachNextEpisodeAtPositionForTest(0, 18, 19, 22));
+        assertTrue(ViewerActivity.shouldAttachNextEpisodeAtPositionForTest(15, 19, 22));
+        assertTrue(ViewerActivity.shouldAttachNextEpisodeAtPositionForTest(14, 18, 19, 22));
+        assertFalse(ViewerActivity.shouldAttachNextEpisodeAtPositionForTest(96, 120, 22));
+        assertTrue(ViewerActivity.shouldAttachNextEpisodeAtPositionForTest(98, 120, 22));
+    }
+
+    @Test
+    public void bottomBoundaryIgnoresInitialFullSpanLayout() {
+        assertFalse(ViewerActivity.shouldTreatAsViewerBottomForTest(0, 18, 19));
+        assertTrue(ViewerActivity.shouldTreatAsViewerBottomForTest(14, 18, 19));
+    }
+
+    @Test
     public void boundaryEpisodeLoadsWaitForIdleScroll() {
         assertTrue(ViewerActivity.shouldCheckBoundaryDuringScrollStateForTest(RecyclerView.SCROLL_STATE_IDLE));
         assertFalse(ViewerActivity.shouldCheckBoundaryDuringScrollStateForTest(RecyclerView.SCROLL_STATE_DRAGGING));
@@ -178,6 +202,17 @@ public class ViewerActivityTest {
     @Test
     public void failedBoundaryEpisodeLoadsBackOffBeforeRetry() {
         assertTrue(ViewerActivity.boundaryLoadFailureCooldownMsForTest() >= 1000L);
+    }
+
+    @Test
+    public void boundaryPipelineFallsBackQuicklyIfEpisodeWasNotReady() {
+        assertTrue(ViewerActivity.pipelineBoundaryFallbackDelayMsForTest() <= 160L);
+    }
+
+    @Test
+    public void viewerPipelineStartsAfterInitialLayoutCanDraw() {
+        assertTrue(ViewerActivity.viewerPipelineStartDelayMsForTest() >= 120L);
+        assertTrue(ViewerActivity.viewerPipelineStartDelayMsForTest() <= 240L);
     }
 
     @Test

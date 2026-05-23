@@ -66,6 +66,7 @@ import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.PerfTrace;
 import ml.melun.mangaview.runtime.PreparedViewerLaunch;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
+import ml.melun.mangaview.runtime.ViewerPagePipeline;
 import ml.melun.mangaview.runtime.ViewerPreparationCoordinator;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -121,6 +122,7 @@ public class ViewerActivity extends AppCompatActivity {
     InfiniteScrollCallback infiniteScrollCallback;
     LoadImagesJob loader;
     PrefetchImagesJob nextPrefetcher;
+    ViewerPagePipeline pagePipeline;
     final Handler mainHandler = new Handler(Looper.getMainLooper());
     private boolean destroyed = false;
     int episodeLoaderGeneration = 0;
@@ -130,17 +132,19 @@ public class ViewerActivity extends AppCompatActivity {
     boolean nextEpisodeBoundaryLoading = false;
     boolean previousEpisodeBoundaryJumpPending = false;
     boolean nextEpisodeBoundaryJumpPending = false;
+    Manga pendingNextPipelineTarget = null;
+    Manga pendingNextPipelineSource = null;
     long lastBoundaryCheckMs = 0L;
     long suppressBoundaryLoadUntilMs = 0L;
     boolean suppressBoundaryLoadUntilUserScroll = false;
     private static final int INITIAL_PRELOAD_AHEAD_COUNT = 24;
     private static final int NEXT_EPISODE_ATTACH_THRESHOLD = 22;
     private static final int DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD = 12;
-    private static final int NEXT_EPISODE_PREFETCH_CHAIN_DEPTH = 5;
+    private static final int NEXT_EPISODE_PREFETCH_CHAIN_DEPTH = 6;
     private static final int DATA_SAVE_NEXT_EPISODE_PREFETCH_CHAIN_DEPTH = 1;
     private static final int PREVIOUS_EPISODE_PULL_THRESHOLD_DP = 36;
     private static final long SCROLL_BOOKMARK_SAVE_DELAY_MS = 350L;
-    private static final long BOUNDARY_LOAD_IDLE_DELAY_MS = 450L;
+    private static final long BOUNDARY_LOAD_IDLE_DELAY_MS = 64L;
     private static final int BUSY_SCROLL_ANCHOR_MIN_ITEM_DELTA = 4;
     private static final long BUSY_SCROLL_ANCHOR_MIN_INTERVAL_MS = 180L;
     private boolean scrollBookmarkSavePending = false;
@@ -964,6 +968,7 @@ public class ViewerActivity extends AppCompatActivity {
 
             refreshAdapter();
             prepareInitialViewerPosition(m, policy);
+            scheduleViewerPagePipelineStart(m, policy);
             bookmarkRefresh(m, policy);
             scheduleInitialViewerPreload(m, policy);
             scheduleFocusedPagePreload();
@@ -1583,11 +1588,11 @@ public class ViewerActivity extends AppCompatActivity {
             ViewerWarmupManager.cacheLoadedContinueSnapshot(context, target, target, title, 0, 0);
             ViewerWarmupManager.logMetric("viewer_next_episode_ready_ms", android.os.SystemClock.elapsedRealtime() - startedAtMs);
             scheduleChainedNextEpisodePrefetch(target, remainingChainDepth);
-            int attachThreshold = p.getDataSave() ? DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD : NEXT_EPISODE_ATTACH_THRESHOLD;
             if(!promotedToForeground
                     && stripAdapter != null
                     && manager != null
-                    && manager.findLastVisibleItemPosition() >= manager.getItemCount() - attachThreshold)
+                    && shouldAttachNextEpisodeAtPosition(manager.findFirstVisibleItemPosition(),
+                    manager.findLastVisibleItemPosition(), manager.getItemCount(), nextEpisodeAttachThreshold()))
                 attachNextEpisode(false);
         }
 
@@ -1989,6 +1994,7 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     public void onViewerPageDisplayed(PageItem item) {
+        prepareViewerPipelineForPage(item, isViewerScrollBusy());
         if(!initialResumeRestorePending || userScrolledAfterInitialResume || pendingInitialResumePage == null)
             return;
         if(sameInitialResumePage(pendingInitialResumePage, item))
@@ -2131,6 +2137,7 @@ public class ViewerActivity extends AppCompatActivity {
             lastBusyScrollAnchorAtMs = 0L;
         }
         stripAdapter.onScrollAnchor(anchor, lastViewerScrollDirection, busy);
+        dispatchScrollAnchorToPipeline(anchor, busy);
     }
 
     static boolean shouldDispatchBusyScrollAnchorForTest(int previousPosition, int nextPosition, long elapsedMs) {
@@ -2156,7 +2163,7 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private void preloadInitialViewerPages(Manga target, ViewerLoadPolicy policy) {
-        if(stripAdapter == null || target == null)
+        if(target == null)
             return;
         int pageIndex = initialPageIndex(target, policy);
         List<String> images = MangaRepository.imageUrls(target, context);
@@ -2164,6 +2171,14 @@ public class ViewerActivity extends AppCompatActivity {
             return;
         if(pageIndex < 0 || pageIndex >= images.size())
             pageIndex = 0;
+        if(target.isOnline() && pagePipeline == null)
+            return;
+        if(pagePipeline != null) {
+            pagePipeline.prepareCurrentWindow(target, pageIndex);
+            return;
+        }
+        if(stripAdapter == null)
+            return;
         stripAdapter.preloadInitialAroundPage(new PageItem(pageIndex, "", target));
     }
 
@@ -2196,8 +2211,182 @@ public class ViewerActivity extends AppCompatActivity {
         PageItem page = getFocusedVisiblePage();
         if(page == null)
             page = getFirstVisiblePage();
+        if(page != null && page.manga != null && page.manga.isOnline() && pagePipeline == null)
+            return;
+        if(page != null && pagePipeline != null) {
+            prepareViewerPipelineForPage(page, false);
+            return;
+        }
         if(page != null)
             stripAdapter.preloadAroundPage(page, INITIAL_PRELOAD_AHEAD_COUNT);
+    }
+
+    private void startViewerPagePipeline(Manga target, ViewerLoadPolicy policy) {
+        releaseViewerPagePipeline();
+        cancelNextPrefetcher();
+        if(target == null || !target.isOnline())
+            return;
+        pagePipeline = new ViewerPagePipeline(context, title, width, autoCut, p.getReverse(), p.getDataSave(),
+                new ViewerPagePipeline.Listener() {
+                    @Override
+                    public void onEpisodePrepared(Manga episode) {
+                        onViewerPipelineEpisodePrepared(episode);
+                    }
+
+                    @Override
+                    public void onEpisodePrepareFailed(Manga episode, int result) {
+                        onViewerPipelineEpisodeFailed(episode, result);
+                    }
+                });
+        prepareViewerPipelineAround(target, policy);
+    }
+
+    private void scheduleViewerPagePipelineStart(Manga target, ViewerLoadPolicy policy) {
+        if(strip == null) {
+            startViewerPagePipeline(target, policy);
+            return;
+        }
+        ViewerLoadPolicy finalPolicy = policy;
+        strip.postDelayed(() -> {
+            if(isUiAlive() && manga != null && sameManga(manga, target))
+                startViewerPagePipeline(target, finalPolicy);
+        }, viewerPipelineStartDelayMs());
+    }
+
+    private static long viewerPipelineStartDelayMs() {
+        return 180L;
+    }
+
+    static long viewerPipelineStartDelayMsForTest() {
+        return viewerPipelineStartDelayMs();
+    }
+
+    private void releaseViewerPagePipeline() {
+        ViewerPagePipeline pipeline = pagePipeline;
+        pagePipeline = null;
+        pendingNextPipelineTarget = null;
+        pendingNextPipelineSource = null;
+        if(pipeline != null)
+            pipeline.release();
+    }
+
+    private void prepareViewerPipelineAround(Manga target, ViewerLoadPolicy policy) {
+        if(pagePipeline == null || target == null || !target.isOnline())
+            return;
+        pagePipeline.prepareCurrentWindow(target, initialPageIndex(target, policy));
+    }
+
+    private void prepareViewerPipelineNextChain(Manga source, int depth) {
+        prepareViewerPipelineNextChain(source, depth, true);
+    }
+
+    private void prepareViewerPipelineNextChain(Manga source, int depth, boolean decodeBoundary) {
+        if(pagePipeline == null || source == null || depth <= 0)
+            return;
+        Manga current = source;
+        for(int i = 0; i < depth; i++) {
+            Manga next = nextEpisodeCandidate(current);
+            if(next == null || MissingEpisodeNavigator.hasMissingNextEpisodeGap(current, next))
+                return;
+            if(!shouldPipelineFetchEpisode(next))
+                return;
+            if(i == 0 && decodeBoundary)
+                pagePipeline.prepareNextEpisode(next);
+            else
+                pagePipeline.prepareFutureNextEpisode(next);
+            current = next;
+        }
+    }
+
+    private void prepareViewerPipelinePreviousChain(Manga source, int depth) {
+        if(pagePipeline == null || source == null || depth <= 0)
+            return;
+        Manga current = source;
+        for(int i = 0; i < depth; i++) {
+            Manga previous = previousEpisodeCandidate(current);
+            if(previous == null || !shouldPipelineFetchEpisode(previous))
+                return;
+            pagePipeline.preparePreviousEpisode(previous);
+            current = previous;
+        }
+    }
+
+    private boolean shouldPipelineFetchEpisode(Manga target) {
+        return !shouldSkipBackgroundNextEpisodeFetch(title == null ? null : title.getSourceSite(),
+                p.isNtkSite(), getHttpClient().isNtk(), hasLoadedImages(target));
+    }
+
+    private void prepareViewerPipelineForPage(PageItem page, boolean busy) {
+        if(pagePipeline == null || page == null || page.manga == null)
+            return;
+        pagePipeline.prepareScrollWindow(page.manga, page.index, lastViewerScrollDirection, busy);
+        if(busy)
+            return;
+        if(shouldPrepareNextEpisodesFromPage(page))
+            prepareViewerPipelineNextChain(page.manga, 1, shouldDecodeNextEpisodeFromPage(page));
+        if(page.index <= 2)
+            prepareViewerPipelinePreviousChain(page.manga, ViewerPagePipeline.previousEpisodeDepth(p.getDataSave()));
+    }
+
+    private boolean shouldPrepareNextEpisodesFromPage(PageItem page) {
+        if(page == null || page.manga == null)
+            return false;
+        int remaining = remainingPagesAfter(page);
+        if(remaining < 0)
+            return false;
+        return remaining <= (p.getDataSave() ? 2 : 4);
+    }
+
+    private boolean shouldDecodeNextEpisodeFromPage(PageItem page) {
+        int remaining = remainingPagesAfter(page);
+        if(remaining < 0)
+            return false;
+        return remaining <= (p.getDataSave() ? 1 : 2);
+    }
+
+    private int remainingPagesAfter(PageItem page) {
+        if(page == null || page.manga == null)
+            return -1;
+        List<String> images = MangaRepository.imageUrls(page.manga, context);
+        int imageCount = images == null ? 0 : images.size();
+        if(imageCount <= 0)
+            return -1;
+        return imageCount - page.index - 1;
+    }
+
+    private void dispatchScrollAnchorToPipeline(int anchor, boolean busy) {
+        if(pagePipeline == null || stripAdapter == null || anchor == RecyclerView.NO_POSITION)
+            return;
+        PageItem page = stripAdapter.getPageAtPosition(anchor);
+        prepareViewerPipelineForPage(page, busy);
+    }
+
+    private boolean isViewerScrollBusy() {
+        return strip != null && strip.getScrollState() != RecyclerView.SCROLL_STATE_IDLE;
+    }
+
+    private void onViewerPipelineEpisodePrepared(Manga episode) {
+        if(!isUiAlive() || episode == null)
+            return;
+        if(pendingNextPipelineTarget != null && sameManga(pendingNextPipelineTarget, episode)) {
+            appendPreparedNextEpisode(episode, nextEpisodeBoundaryJumpPending);
+            return;
+        }
+        PageItem last = getLastVisiblePage();
+        if(last == null || last.manga == null)
+            return;
+        Manga expected = nextEpisodeCandidate(last.manga);
+        if(!sameManga(expected, episode))
+            return;
+        if(stripAdapter != null && manager != null
+                && shouldAttachNextEpisodeAtPosition(manager.findFirstVisibleItemPosition(),
+                manager.findLastVisibleItemPosition(), manager.getItemCount(), nextEpisodeAttachThreshold()))
+            appendPreparedNextEpisode(episode, false);
+    }
+
+    private void onViewerPipelineEpisodeFailed(Manga episode, int result) {
+        if(pendingNextPipelineTarget != null && sameManga(pendingNextPipelineTarget, episode))
+            fallbackPipelineNextBoundaryLoad(pendingNextPipelineSource, pendingNextPipelineTarget);
     }
 
     private void loadEpisodeAtBoundaryIfNeeded() {
@@ -2210,13 +2399,56 @@ public class ViewerActivity extends AppCompatActivity {
         int first = manager.findFirstVisibleItemPosition();
         int last = manager.findLastVisibleItemPosition();
         int total = manager.getItemCount();
-        int attachThreshold = p.getDataSave() ? DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD : NEXT_EPISODE_ATTACH_THRESHOLD;
         // Previous episodes are loaded by the explicit top-pull gesture. Loading
         // them just because the viewer opens at the top can move resume backward.
-        if(last != RecyclerView.NO_POSITION && last >= total - attachThreshold)
+        if(shouldAttachNextEpisodeAtPosition(first, last, total, nextEpisodeAttachThreshold()))
             attachNextEpisode(false);
-        if(last != RecyclerView.NO_POSITION && isAtViewerBottom())
+        if(shouldTreatAsViewerBottom(first, last, total) && isAtViewerBottom())
             attachNextEpisode(true);
+    }
+
+    private int nextEpisodeAttachThreshold() {
+        return p.getDataSave() ? DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD : NEXT_EPISODE_ATTACH_THRESHOLD;
+    }
+
+    static boolean shouldAttachNextEpisodeAtPositionForTest(int lastVisible, int itemCount, int threshold) {
+        return shouldAttachNextEpisodeAtPosition(lastVisible, itemCount, threshold);
+    }
+
+    static boolean shouldAttachNextEpisodeAtPositionForTest(int firstVisible, int lastVisible, int itemCount, int threshold) {
+        return shouldAttachNextEpisodeAtPosition(firstVisible, lastVisible, itemCount, threshold);
+    }
+
+    static boolean shouldTreatAsViewerBottomForTest(int firstVisible, int lastVisible, int itemCount) {
+        return shouldTreatAsViewerBottom(firstVisible, lastVisible, itemCount);
+    }
+
+    private static boolean shouldAttachNextEpisodeAtPosition(int firstVisible, int lastVisible, int itemCount, int threshold) {
+        if(!shouldAttachNextEpisodeAtPosition(lastVisible, itemCount, threshold))
+            return false;
+        return !isInitialFullSpanLayout(firstVisible, lastVisible, itemCount, effectiveNextEpisodeAttachThreshold(itemCount, threshold));
+    }
+
+    private static boolean shouldAttachNextEpisodeAtPosition(int lastVisible, int itemCount, int threshold) {
+        if(lastVisible == RecyclerView.NO_POSITION || itemCount <= 0)
+            return false;
+        int effectiveThreshold = effectiveNextEpisodeAttachThreshold(itemCount, threshold);
+        return lastVisible >= itemCount - effectiveThreshold;
+    }
+
+    private static int effectiveNextEpisodeAttachThreshold(int itemCount, int threshold) {
+        return Math.min(Math.max(1, threshold), Math.max(2, itemCount / 4));
+    }
+
+    private static boolean shouldTreatAsViewerBottom(int firstVisible, int lastVisible, int itemCount) {
+        if(lastVisible == RecyclerView.NO_POSITION || itemCount <= 0 || lastVisible < itemCount - 1)
+            return false;
+        return !isInitialFullSpanLayout(firstVisible, lastVisible, itemCount,
+                effectiveNextEpisodeAttachThreshold(itemCount, NEXT_EPISODE_ATTACH_THRESHOLD));
+    }
+
+    private static boolean isInitialFullSpanLayout(int firstVisible, int lastVisible, int itemCount, int threshold) {
+        return firstVisible <= 0 && lastVisible >= itemCount - 1 && itemCount > threshold + 1;
     }
 
     private boolean isAtViewerBottom() {
@@ -2515,12 +2747,70 @@ public class ViewerActivity extends AppCompatActivity {
             }
             return;
         }
+        if(appendPreparedNextEpisode(target, jumpToEpisode))
+            return;
         if(nextEpisodeBoundaryLoading)
         {
             if(jumpToEpisode)
                 nextEpisodeBoundaryJumpPending = true;
             return;
         }
+        if(beginPipelineNextBoundaryLoad(page.manga, target, jumpToEpisode))
+            return;
+        startLegacyNextBoundaryLoad(page.manga, jumpToEpisode);
+    }
+
+    private boolean appendPreparedNextEpisode(Manga target, boolean jumpToEpisode) {
+        if(target == null || strip == null || stripAdapter == null || !hasLoadedImages(target))
+            return false;
+        nextEpisodeBoundaryJumpPending = jumpToEpisode || nextEpisodeBoundaryJumpPending;
+        nextEpisodeBoundaryLoading = true;
+        appendMangaWhenIdle(target, ViewerActivity.this::isNextTargetStillExpected, () ->
+                finishNextEpisodeBoundaryLoad(target, jumpToEpisode || nextEpisodeBoundaryJumpPending));
+        return true;
+    }
+
+    private boolean beginPipelineNextBoundaryLoad(Manga source, Manga target, boolean jumpToEpisode) {
+        if(pagePipeline == null || source == null || target == null)
+            return false;
+        nextEpisodeBoundaryJumpPending = jumpToEpisode || nextEpisodeBoundaryJumpPending;
+        nextEpisodeBoundaryLoading = true;
+        pendingNextPipelineSource = source;
+        pendingNextPipelineTarget = target;
+        pagePipeline.prepareNextEpisode(target);
+        mainHandler.postDelayed(() -> fallbackPipelineNextBoundaryLoad(source, target),
+                pipelineBoundaryFallbackDelayMs());
+        return true;
+    }
+
+    private void fallbackPipelineNextBoundaryLoad(Manga source, Manga target) {
+        if(pendingNextPipelineTarget == null || !sameManga(pendingNextPipelineTarget, target))
+            return;
+        if(!nextEpisodeBoundaryLoading)
+            return;
+        if(hasLoadedImages(target)) {
+            appendPreparedNextEpisode(target, nextEpisodeBoundaryJumpPending);
+            return;
+        }
+        boolean shouldJump = nextEpisodeBoundaryJumpPending;
+        pendingNextPipelineTarget = null;
+        pendingNextPipelineSource = null;
+        nextEpisodeBoundaryLoading = false;
+        nextEpisodeBoundaryJumpPending = false;
+        startLegacyNextBoundaryLoad(source, shouldJump);
+    }
+
+    private static long pipelineBoundaryFallbackDelayMs() {
+        return 120L;
+    }
+
+    static long pipelineBoundaryFallbackDelayMsForTest() {
+        return pipelineBoundaryFallbackDelayMs();
+    }
+
+    private void startLegacyNextBoundaryLoad(Manga source, boolean jumpToEpisode) {
+        if(source == null)
+            return;
         nextEpisodeBoundaryJumpPending = jumpToEpisode;
         nextEpisodeBoundaryLoading = true;
         infiniteScrollCallback.nextEp(new InfiniteLoadCallback() {
@@ -2530,28 +2820,34 @@ public class ViewerActivity extends AppCompatActivity {
 
             @Override
             public void nextLoaded(Manga m) {
-                boolean shouldJump = jumpToEpisode || nextEpisodeBoundaryJumpPending;
-                nextEpisodeBoundaryLoading = false;
-                nextEpisodeBoundaryJumpPending = false;
-                if(m == null) {
-                    suppressBoundaryLoadsUntilNextScroll();
-                    return;
-                }
-                if(strip == null || stripAdapter == null || isFinishing())
-                    return;
-                strip.post(() -> {
-                    int position = stripAdapter.findFirstPagePosition(m);
-                    if(position == RecyclerView.NO_POSITION)
-                        return;
-                    if(shouldJump) {
-                        manga = m;
-                        updateIntent(m);
-                        refreshToolbar(m);
-                        manager.scrollToPositionWithOffset(position, strip.getPaddingTop());
-                    }
-                });
+                finishNextEpisodeBoundaryLoad(m, jumpToEpisode || nextEpisodeBoundaryJumpPending);
             }
-        }, page.manga);
+        }, source);
+    }
+
+    private void finishNextEpisodeBoundaryLoad(Manga m, boolean shouldJump) {
+        nextEpisodeBoundaryLoading = false;
+        nextEpisodeBoundaryJumpPending = false;
+        pendingNextPipelineTarget = null;
+        pendingNextPipelineSource = null;
+        if(m == null) {
+            suppressBoundaryLoadsUntilNextScroll();
+            return;
+        }
+        if(strip == null || stripAdapter == null || isFinishing())
+            return;
+        strip.post(() -> {
+            int position = stripAdapter.findFirstPagePosition(m);
+            if(position == RecyclerView.NO_POSITION)
+                return;
+            prepareViewerPipelineAround(m, ViewerLoadPolicy.EXACT_FIRST_PAGE);
+            if(shouldJump) {
+                manga = m;
+                updateIntent(m);
+                refreshToolbar(m);
+                manager.scrollToPositionWithOffset(position, strip.getPaddingTop());
+            }
+        });
     }
 
     private void ensureEpisodeListThenAttachNext(Manga source, boolean jumpToEpisode) {
@@ -2637,6 +2933,12 @@ public class ViewerActivity extends AppCompatActivity {
             return;
         if(MissingEpisodeNavigator.hasMissingNextEpisodeGap(current, target))
             return;
+        if(pagePipeline != null) {
+            if(!shouldPipelineFetchEpisode(target))
+                return;
+            prepareViewerPipelineNextChain(current, 1, false);
+            return;
+        }
         if(nextPrefetcher != null
                 && nextPrefetchEpisodeId == target.getId()
                 && nextPrefetchBaseMode == target.getBaseMode())
@@ -2645,7 +2947,9 @@ public class ViewerActivity extends AppCompatActivity {
         if(loadedImages) {
             preloadFirstPages(target);
             scheduleChainedNextEpisodePrefetch(target, Math.max(0, chainDepth - 1));
-            if(stripAdapter != null && manager != null && manager.findLastVisibleItemPosition() >= manager.getItemCount() - NEXT_EPISODE_ATTACH_THRESHOLD)
+            if(stripAdapter != null && manager != null
+                    && shouldAttachNextEpisodeAtPosition(manager.findFirstVisibleItemPosition(),
+                    manager.findLastVisibleItemPosition(), manager.getItemCount(), nextEpisodeAttachThreshold()))
                 attachNextEpisode(false);
             return;
         }
@@ -2675,6 +2979,8 @@ public class ViewerActivity extends AppCompatActivity {
     private void scheduleNextEpisodePrefetch(Manga target) {
         if(strip == null || target == null)
             return;
+        if(target.isOnline())
+            return;
         strip.postDelayed(() -> {
             if(isFinishing() || manga == null || !sameManga(manga, target))
                 return;
@@ -2683,7 +2989,7 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private static long initialNextEpisodePrefetchDelayMs() {
-        return 0L;
+        return 260L;
     }
 
     static long initialNextEpisodePrefetchDelayMsForTest() {
@@ -3010,8 +3316,9 @@ public class ViewerActivity extends AppCompatActivity {
     private void preloadFirstPages(Manga target) {
         if(target == null || !target.isOnline())
             return;
-        List<String> images = MangaRepository.imageUrls(target, context);
-        ViewerWarmupManager.preloadWindow(context, target, 0, width, autoCut, p.getReverse(), ViewerPreloadPolicy.nextEpisodeWindow(p.getDataSave()));
+        ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.nextEpisodeWindow(p.getDataSave());
+        ViewerWarmupManager.preloadLoadedImages(context, target, 0, width, autoCut, p.getReverse(),
+                window.totalLimit, Priority.HIGH, 0);
     }
 
     private interface EpisodeExpectation {
@@ -3087,6 +3394,8 @@ public class ViewerActivity extends AppCompatActivity {
         nextEpisodeBoundaryLoading = false;
         previousEpisodeBoundaryJumpPending = false;
         nextEpisodeBoundaryJumpPending = false;
+        pendingNextPipelineTarget = null;
+        pendingNextPipelineSource = null;
     }
 
     private boolean isActiveEpisodeLoader(int generation) {
@@ -3214,6 +3523,7 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private void releaseStripAdapter() {
+        releaseViewerPagePipeline();
         StripAdapter adapter = stripAdapter;
         if(adapter == null)
             return;

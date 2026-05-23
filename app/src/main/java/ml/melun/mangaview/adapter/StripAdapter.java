@@ -75,6 +75,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private static final long SCROLL_BUSY_PRELOAD_MIN_INTERVAL_MS = 180L;
     private static final long SCROLL_IDLE_PRELOAD_DELAY_MS = 60L;
     private static final long SCROLL_IDLE_HEIGHT_CORRECTION_DELAY_MS = 180L;
+    private static final boolean RENDER_ONLY_PRELOADS = true;
     private static final String PAYLOAD_HEIGHT = "height";
     ViewerActivity.InfiniteScrollCallback callback;
     Title title;
@@ -130,7 +131,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         }
         if(!scrollBusy) {
             schedulePendingHeightCorrections();
-            if(pendingPreloadPosition != RecyclerView.NO_POSITION)
+            if(!RENDER_ONLY_PRELOADS && pendingPreloadPosition != RecyclerView.NO_POSITION)
                 schedulePreloadAroundScrollPosition(pendingPreloadPosition);
         }
     }
@@ -146,6 +147,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         lastScrollDirection = normalizedDirection;
         pendingPreloadDirection = normalizedDirection;
         pendingPreloadPosition = adapterPosition;
+        if(RENDER_ONLY_PRELOADS)
+            return;
         if(busy) {
             long now = android.os.SystemClock.uptimeMillis();
             if(shouldRunBusyPreload(lastBusyPreloadPosition, adapterPosition, now - lastBusyPreloadAtMs)) {
@@ -582,7 +585,6 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         holder.boundPageKey = pageKey;
         holder.bindStartedAtMs = android.os.SystemClock.elapsedRealtime();
         applyKnownHeight(holder, item, pageKey);
-        preloadAheadFromBindPosition(pos);
         String cacheKey = decodedCacheKey(item);
         CachedBitmap cached = decodedBitmapCache.get(cacheKey);
         if(cached != null && cached.isUsable() && isHolderStillBound(holder, item, pageKey)) {
@@ -932,9 +934,6 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             firstVisibleLogged = true;
             ViewerWarmupManager.logMetric("viewer_first_visible_ms", android.os.SystemClock.elapsedRealtime() - holder.bindStartedAtMs);
         }
-        int layoutPos = holder.getAdapterPosition();
-        if(layoutPos != RecyclerView.NO_POSITION && !scrollBusy)
-            schedulePreloadAroundScrollPosition(layoutPos);
     }
 
     static boolean shouldLogFirstVisibleForTest(boolean alreadyLogged) {
@@ -947,12 +946,20 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     private RequestOptions viewerImageOptions(PageItem item) {
         RequestOptions options = new RequestOptions()
-                .diskCacheStrategy(DiskCacheStrategy.ALL)
+                .diskCacheStrategy(ViewerWarmupManager.viewerDiskCacheStrategy(mainContext, scrollBusy))
                 .downsample(DownsampleStrategy.AT_MOST)
                 .override(Math.max(width, 1), Target.SIZE_ORIGINAL);
         if(item != null)
             options = options.transform(new ViewerPageTransformation(item, autoCut, reverse, width));
         return options;
+    }
+
+    static DiskCacheStrategy viewerDiskCacheStrategyForTest(boolean scrollBusy) {
+        return viewerDiskCacheStrategy(scrollBusy);
+    }
+
+    private static DiskCacheStrategy viewerDiskCacheStrategy(boolean scrollBusy) {
+        return scrollBusy ? DiskCacheStrategy.NONE : DiskCacheStrategy.RESOURCE;
     }
 
     private Object getImageModel(PageItem item) {
@@ -1217,6 +1224,14 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     static boolean shouldRunBusyPreloadForTest(int previousPosition, int nextPosition, long elapsedMs) {
         return shouldRunBusyPreload(previousPosition, nextPosition, elapsedMs);
+    }
+
+    static boolean startsPreloadFromBindForTest() {
+        return !RENDER_ONLY_PRELOADS;
+    }
+
+    static boolean startsPreloadFromScrollAnchorForTest() {
+        return !RENDER_ONLY_PRELOADS;
     }
 
     private static boolean shouldRunBusyPreload(int previousPosition, int nextPosition, long elapsedMs) {

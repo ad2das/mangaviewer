@@ -10,6 +10,7 @@ import com.bumptech.glide.GlideBuilder;
 import com.bumptech.glide.Registry;
 import com.bumptech.glide.annotation.GlideModule;
 import com.bumptech.glide.integration.okhttp3.OkHttpUrlLoader;
+import com.bumptech.glide.load.engine.cache.InternalCacheDiskCacheFactory;
 import com.bumptech.glide.load.engine.executor.GlideExecutor;
 import com.bumptech.glide.load.model.GlideUrl;
 import com.bumptech.glide.module.AppGlideModule;
@@ -27,6 +28,9 @@ public class CustomGlideModule extends AppGlideModule {
                 sourceThreads,
                 "manga-source",
                 GlideExecutor.UncaughtThrowableStrategy.LOG));
+        builder.setDiskCache(new InternalCacheDiskCacheFactory(context,
+                InternalCacheDiskCacheFactory.DEFAULT_DISK_CACHE_DIR,
+                viewerDiskCacheSizeBytes()));
         builder.setLogLevel(glideLogLevelForTest());
     }
 
@@ -42,5 +46,13 @@ public class CustomGlideModule extends AppGlideModule {
 
     static int glideLogLevelForTest() {
         return Log.ERROR;
+    }
+
+    static long viewerDiskCacheSizeBytesForTest() {
+        return viewerDiskCacheSizeBytes();
+    }
+
+    private static long viewerDiskCacheSizeBytes() {
+        return 24L * 1024L * 1024L;
     }
 }

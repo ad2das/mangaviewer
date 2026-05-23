@@ -56,8 +56,8 @@ public class ViewerWarmupManager {
     public static final int LOAD_FIRST_FRAME_PENDING = -3;
     private static final String TAG = "ViewerPerf";
     private static final int ACTIVE_LIMIT = 36;
-    private static final int DECODED_TARGET_LIMIT = 72;
-    private static final int DECODED_TARGET_ACTIVE_SOFT_LIMIT = 16;
+    private static final int DECODED_TARGET_LIMIT = 24;
+    private static final int DECODED_TARGET_ACTIVE_SOFT_LIMIT = 4;
     private static final long FIRST_PAGE_BLOCKING_DECODE_TIMEOUT_MS = 650L;
     private static final long OTHER_PAGE_BLOCKING_DECODE_TIMEOUT_MS = 250L;
     private static final int SNAPSHOT_LIMIT = 64;
@@ -71,6 +71,7 @@ public class ViewerWarmupManager {
     private static final long CONTINUE_WARMUP_DEBOUNCE_MS = 800L;
     private static final long PAGE_PRELOAD_DEDUPE_MS = 1500L;
     private static final int PAGE_PRELOAD_DEDUPE_LIMIT = 256;
+    private static final long VIEWER_DISK_CACHE_MIN_USABLE_BYTES = 768L * 1024L * 1024L;
     private static final Gson GSON = new Gson();
     private static final Map<String, WarmupState> activeWarmups = new HashMap<>();
     private static final LinkedHashMap<String, WarmupSnapshot> snapshots = new LinkedHashMap<>(SNAPSHOT_LIMIT, 0.75f, true);
@@ -707,12 +708,19 @@ public class ViewerWarmupManager {
 
     public static int prepareFirstFrame(Context context, Manga manga, Title title, int pageIndex, int width,
                                         boolean autoCut, boolean reverse, MangaRepository.Cancellation cancellation) throws Exception {
-        return prepareFirstFrame(context, manga, title, pageIndex, width, autoCut, reverse, cancellation, true);
+        return prepareFirstFrame(context, manga, title, pageIndex, width, autoCut, reverse, cancellation, true, true);
     }
 
     private static int prepareFirstFrame(Context context, Manga manga, Title title, int pageIndex, int width,
                                         boolean autoCut, boolean reverse, MangaRepository.Cancellation cancellation,
                                         boolean allowBlockingDecode) throws Exception {
+        return prepareFirstFrame(context, manga, title, pageIndex, width, autoCut, reverse, cancellation,
+                allowBlockingDecode, true);
+    }
+
+    private static int prepareFirstFrame(Context context, Manga manga, Title title, int pageIndex, int width,
+                                        boolean autoCut, boolean reverse, MangaRepository.Cancellation cancellation,
+                                        boolean allowBlockingDecode, boolean allowDecodedPreload) throws Exception {
         if(context == null || manga == null || !manga.isOnline())
             return LOAD_OK;
         if(title != null) {
@@ -766,6 +774,8 @@ public class ViewerWarmupManager {
                 decodedReady = hasDecodedFrame(context, manga, normalizedPage, width, autoCut, reverse);
             }
             if(decodedReady) {
+                preloadLoadedImages(context, manga, normalizedPage, width, autoCut, reverse, p.getDataSave() ? 2 : 4, Priority.HIGH, 0);
+            } else if(!allowDecodedPreload) {
                 preloadLoadedImages(context, manga, normalizedPage, width, autoCut, reverse, p.getDataSave() ? 2 : 4, Priority.HIGH, 0);
             } else {
                 preloadWindow(context, manga, normalizedPage, width, autoCut, reverse, new ViewerPreloadPolicy.Window(1, 1, 1, 1));
@@ -821,8 +831,14 @@ public class ViewerWarmupManager {
     }
 
     public static int prepareFirstFrameBackgroundDirectOnly(Context context, Manga manga, Title title, int pageIndex, int width,
-                                                  boolean autoCut, boolean reverse, MangaRepository.Cancellation cancellation) throws Exception {
+                                                            boolean autoCut, boolean reverse, MangaRepository.Cancellation cancellation) throws Exception {
         return runDirectOnly(() -> prepareFirstFrame(context, manga, title, pageIndex, width, autoCut, reverse, cancellation, false));
+    }
+
+    public static int prepareFirstFrameSourceOnlyDirectOnly(Context context, Manga manga, Title title, int pageIndex, int width,
+                                                            boolean autoCut, boolean reverse, MangaRepository.Cancellation cancellation) throws Exception {
+        return runDirectOnly(() -> prepareFirstFrame(context, manga, title, pageIndex, width, autoCut, reverse,
+                cancellation, false, false));
     }
 
     private static void validateReachabilityAsync(Context context, String key, Manga manga) {
@@ -933,7 +949,7 @@ public class ViewerWarmupManager {
             if(!isUsablePageImage(image))
                 continue;
             PageItem page = new PageItem(i, image, manga);
-            RequestOptions options = viewerOptions(page, autoCut, reverse, width);
+            RequestOptions options = viewerOptions(context, page, autoCut, reverse, width);
             boolean cacheDecoded = i - pageIndex < decodedLimit;
             if(cacheDecoded) {
                 preloadDecoded(context, page, options, priority, autoCut, reverse, width);
@@ -941,12 +957,7 @@ public class ViewerWarmupManager {
             }
             if(!markPagePreload(page, autoCut, reverse, width, SystemClock.elapsedRealtime()))
                 continue;
-            requestManager
-                    .asBitmap()
-                    .priority(priority)
-                    .apply(options)
-                    .load(Utils.getGlideUrl(image, manga.getBaseMode()))
-                    .preload();
+            preloadSourceOnly(requestManager, Utils.getGlideUrl(image, manga.getBaseMode()), priority);
         }
     }
 
@@ -968,7 +979,7 @@ public class ViewerWarmupManager {
             if(!isUsablePageImage(image))
                 continue;
             PageItem page = new PageItem(i, image, manga);
-            RequestOptions options = viewerOptions(page, autoCut, reverse, width);
+            RequestOptions options = viewerOptions(context, page, autoCut, reverse, width);
             int tier = ViewerPreloadPolicy.tierForOffset(window, preloaded);
             if(tier == ViewerPreloadPolicy.TIER_DECODED && canStartDecodedTarget()) {
                 preloadDecoded(context, page, options, Priority.IMMEDIATE, autoCut, reverse, width);
@@ -977,15 +988,22 @@ public class ViewerWarmupManager {
                     preloaded++;
                     continue;
                 }
-                requestManager
-                        .asBitmap()
-                        .priority(priorityForTier(tier))
-                        .apply(options)
-                        .load(Utils.getGlideUrl(image, manga.getBaseMode()))
-                        .preload();
+                preloadSourceOnly(requestManager, Utils.getGlideUrl(image, manga.getBaseMode()),
+                        priorityForTier(tier));
             }
             preloaded++;
         }
+    }
+
+    private static void preloadSourceOnly(RequestManager requestManager, Object model, Priority priority) {
+        if(requestManager == null || model == null)
+            return;
+        requestManager
+                .downloadOnly()
+                .priority(priority)
+                .diskCacheStrategy(DiskCacheStrategy.DATA)
+                .load(model)
+                .preload();
     }
 
     public static String decodedPageKey(PageItem page, boolean autoCut, boolean reverse, int width) {
@@ -994,9 +1012,9 @@ public class ViewerWarmupManager {
         return page.pageKey(autoCut, reverse, width);
     }
 
-    private static RequestOptions viewerOptions(PageItem page, boolean autoCut, boolean reverse, int width) {
+    private static RequestOptions viewerOptions(Context context, PageItem page, boolean autoCut, boolean reverse, int width) {
         RequestOptions options = new RequestOptions()
-                .diskCacheStrategy(viewerDiskCacheStrategy())
+                .diskCacheStrategy(viewerDiskCacheStrategy(context, false))
                 .downsample(DownsampleStrategy.AT_MOST)
                 .override(Math.max(width, 1), Target.SIZE_ORIGINAL);
         if(page != null)
@@ -1005,11 +1023,31 @@ public class ViewerWarmupManager {
     }
 
     static DiskCacheStrategy viewerDiskCacheStrategyForTest() {
-        return viewerDiskCacheStrategy();
+        return viewerDiskCacheStrategyForState(false, Long.MAX_VALUE);
     }
 
-    private static DiskCacheStrategy viewerDiskCacheStrategy() {
-        return DiskCacheStrategy.ALL;
+    static DiskCacheStrategy viewerDiskCacheStrategyForTest(boolean scrollBusy, long usableBytes) {
+        return viewerDiskCacheStrategyForState(scrollBusy, usableBytes);
+    }
+
+    public static DiskCacheStrategy viewerDiskCacheStrategy(Context context, boolean scrollBusy) {
+        return viewerDiskCacheStrategyForState(scrollBusy, viewerUsableCacheBytes(context));
+    }
+
+    private static DiskCacheStrategy viewerDiskCacheStrategyForState(boolean scrollBusy, long usableBytes) {
+        if(scrollBusy || usableBytes < VIEWER_DISK_CACHE_MIN_USABLE_BYTES)
+            return DiskCacheStrategy.NONE;
+        return DiskCacheStrategy.RESOURCE;
+    }
+
+    private static long viewerUsableCacheBytes(Context context) {
+        try {
+            if(context == null || context.getCacheDir() == null)
+                return Long.MAX_VALUE;
+            return context.getCacheDir().getUsableSpace();
+        } catch (Exception ignored) {
+            return Long.MAX_VALUE;
+        }
     }
 
     private static void preloadDecoded(Context context, PageItem page, RequestOptions options, Priority priority, boolean autoCut, boolean reverse, int width) {
@@ -1187,7 +1225,7 @@ public class ViewerWarmupManager {
             if(!isUsablePageImage(image))
                 continue;
             PageItem page = new PageItem(i, image, manga);
-            boolean decoded = decodePageBlocking(context, page, viewerOptions(page, autoCut, reverse, width), autoCut, reverse, width, i == pageIndex);
+            boolean decoded = decodePageBlocking(context, page, viewerOptions(context, page, autoCut, reverse, width), autoCut, reverse, width, i == pageIndex);
             if(i == pageIndex)
                 firstReady = decoded || hasDecodedFrame(context, manga, pageIndex, width, autoCut, reverse);
         }
