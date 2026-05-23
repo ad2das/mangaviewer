@@ -278,6 +278,8 @@ public class ViewerWarmupManager {
                     preloadLoadedImages(appContext, snapshot, startPage, width, false, p.getReverse(),
                             continueWarmupDiskLimit(visibleWindow), Priority.IMMEDIATE,
                             continueWarmupDecodedLimit(visibleWindow));
+                    waitForContinueFirstFrame(appContext, snapshot, startPage, width, false, p.getReverse(),
+                            visibleResume || immediate);
                     cacheContinueSnapshot(appContext, scheduleKey, snapshot);
                     logMetric(visibleResume ? "viewer_resume_visible_warmup_ready" : "viewer_continue_warmup_ready", snapshot.getId());
                     return;
@@ -292,7 +294,7 @@ public class ViewerWarmupManager {
                     }
                     boolean skipTarget = ViewerResumeResolver.shouldResolveBeforeDirectFetch(target, currentTitle);
                     List<Manga> candidates = ViewerResumeResolver.candidates(target, currentTitle, skipTarget);
-                    if(candidates.size() == 0)
+                    if(candidates.size() == 0 && ViewerResumeResolver.shouldUseTargetAsLastResort(target, currentTitle))
                         candidates.add(target);
                     for(Manga candidate : candidates) {
                         int page = ViewerResumeResolver.sameManga(candidate, target) ? startPage : 0;
@@ -301,6 +303,8 @@ public class ViewerWarmupManager {
                             int diskLimit = continueWarmupDiskLimit(visibleWindow);
                             int decodedLimit = continueWarmupDecodedLimit(visibleWindow);
                             preloadLoadedImages(appContext, candidate, page, width, false, p.getReverse(), diskLimit, Priority.IMMEDIATE, decodedLimit);
+                            waitForContinueFirstFrame(appContext, candidate, page, width, false, p.getReverse(),
+                                    visibleResume || immediate);
                             cacheContinueSnapshot(appContext, scheduleKey, candidate);
                             logMetric(visibleResume ? "viewer_resume_visible_warmup_ready" : "viewer_continue_warmup_ready", candidate.getId());
                             return true;
@@ -337,6 +341,29 @@ public class ViewerWarmupManager {
         return snapshot != null && hasImages(snapshot, context);
     }
 
+    public static boolean hasPreparedContinueFirstFrame(Context context, Manga manga, Title title,
+                                                        boolean autoCut, boolean reverse) {
+        if(context == null || manga == null || !manga.isOnline())
+            return false;
+        if(title != null) {
+            manga.setTitle(title);
+            manga.setTitleId(title.getId());
+            List<Manga> episodes = Utils.snapshotEpisodes(title);
+            if(episodes.size() > 0)
+                manga.setEps(episodes);
+        } else {
+            title = manga.getTitle();
+        }
+        int firstPage = manga.useBookmark() && p != null ? p.getViewerBookmark(manga) : 0;
+        if(firstPage < 0)
+            firstPage = 0;
+        Context appContext = context.getApplicationContext();
+        Manga snapshot = continueSnapshotMangaWithPageFallback(appContext, manga, title, firstPage, manga);
+        if(snapshot == null || !hasImages(snapshot, appContext))
+            return false;
+        return hasDecodedFrame(appContext, snapshot, firstPage, viewerWidth(appContext), autoCut, reverse);
+    }
+
     public static Manga prepareClickFirstFrame(Context context, Manga manga, Title title, boolean autoCut, boolean reverse) {
         if(context == null || manga == null)
             return null;
@@ -369,7 +396,9 @@ public class ViewerWarmupManager {
             }
             if(hasImages(warmed, appContext)) {
                 preloadLoadedImages(appContext, warmed, firstPage, width, autoCut, reverse, p.getDataSave() ? 6 : 12, Priority.IMMEDIATE, p.getDataSave() ? 1 : 2);
-                logMetric("viewer_click_continue_url_snapshot", warmed.getId());
+                waitForContinueFirstFrame(appContext, warmed, firstPage, width, autoCut, reverse, true);
+                logMetric(hasDecodedFrame(appContext, warmed, firstPage, width, autoCut, reverse)
+                        ? "viewer_click_continue_snapshot" : "viewer_click_continue_url_snapshot", warmed.getId());
                 return warmed;
             }
         }
@@ -386,7 +415,7 @@ public class ViewerWarmupManager {
                 }
                 boolean skipTarget = ViewerResumeResolver.shouldResolveBeforeDirectFetch(target, currentTitle);
                 List<Manga> candidates = ViewerResumeResolver.candidates(target, currentTitle, skipTarget);
-                if(candidates.size() == 0)
+                if(candidates.size() == 0 && ViewerResumeResolver.shouldUseTargetAsLastResort(target, currentTitle))
                     candidates.add(target);
                 for(Manga candidate : candidates) {
                     if(candidate == null)
@@ -398,6 +427,7 @@ public class ViewerWarmupManager {
                     if(result != LOAD_OK || !hasImages(candidate, appContext))
                         continue;
                     preloadLoadedImages(appContext, candidate, page, width, autoCut, reverse, p.getDataSave() ? 6 : 12, Priority.IMMEDIATE, p.getDataSave() ? 1 : 2);
+                    waitForContinueFirstFrame(appContext, candidate, page, width, autoCut, reverse, true);
                     if(hasDecodedFrame(appContext, candidate, page, width, autoCut, reverse)) {
                         logMetric("viewer_click_ready", candidate.getId());
                         cacheContinueSnapshot(appContext, scheduleKey, candidate);
@@ -501,7 +531,7 @@ public class ViewerWarmupManager {
             if(hasImages(warmed, context)) {
                 preloadLoadedImages(context, warmed, firstPage, width, autoCut, reverse, p.getDataSave() ? 6 : 12, Priority.IMMEDIATE, p.getDataSave() ? 1 : 2);
                 logMetric("viewer_click_immediate_url_snapshot", warmed.getId());
-                return warmed;
+                return null;
             }
         }
         if(hasImages(manga, context) && hasDecodedFrame(context, manga, firstPage, width, autoCut, reverse)) {
@@ -511,7 +541,7 @@ public class ViewerWarmupManager {
         if(hasImages(manga, context)) {
             preloadLoadedImages(context, manga, firstPage, width, autoCut, reverse, p.getDataSave() ? 6 : 12, Priority.IMMEDIATE, p.getDataSave() ? 1 : 2);
             logMetric("viewer_click_immediate_url", manga.getId());
-            return manga;
+            return null;
         }
         return null;
     }
@@ -1149,6 +1179,25 @@ public class ViewerWarmupManager {
 
     private static int continueWarmupDecodedLimit(ViewerPreloadPolicy.Window visibleWindow) {
         return visibleWindow != null ? visibleWindow.decodedLimit : (p.getDataSave() ? 1 : 2);
+    }
+
+    private static void waitForContinueFirstFrame(Context context, Manga manga, int pageIndex, int width,
+                                                  boolean autoCut, boolean reverse, boolean userVisible) {
+        if(!userVisible || context == null || manga == null || !manga.isOnline())
+            return;
+        long startedAt = SystemClock.elapsedRealtime();
+        boolean ready = waitForFirstDecodedFrame(context, manga, pageIndex, width, autoCut, reverse,
+                continueFirstFrameWaitMs(p != null && p.getDataSave()));
+        logMetric(ready ? "continue_first_frame_ready_ms" : "continue_first_frame_pending_ms",
+                SystemClock.elapsedRealtime() - startedAt);
+    }
+
+    static long continueFirstFrameWaitMsForTest(boolean dataSave) {
+        return continueFirstFrameWaitMs(dataSave);
+    }
+
+    private static long continueFirstFrameWaitMs(boolean dataSave) {
+        return dataSave ? 260L : 420L;
     }
 
     private static boolean sourceMatchesCurrentSite(String sourceSite, boolean ntkSite) {

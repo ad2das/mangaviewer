@@ -68,6 +68,7 @@ import ml.melun.mangaview.interfaces.UrlUpdateCallback;
 import ml.melun.mangaview.model.UrlUpdateResult;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.BackgroundPrefetchBudget;
+import ml.melun.mangaview.runtime.ContinueReadinessCoordinator;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.PerfTrace;
 import ml.melun.mangaview.state.UiState;
@@ -378,6 +379,7 @@ public class MainActivity extends AppCompatActivity
         long checkStartedAt = PerfTrace.start("main_check2_ms");
         p.check2();
         PerfTrace.end("main_check2_ms", checkStartedAt);
+        ContinueReadinessCoordinator.primeColdStart(getApplicationContext());
         long setContentStartedAt = PerfTrace.start("main_set_content_view_ms");
         setContentView(R.layout.activity_main);
         PerfTrace.end("main_set_content_view_ms", setContentStartedAt);

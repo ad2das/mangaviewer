@@ -342,6 +342,10 @@ public class Manga {
                 return LOAD_OK;
             String segment = baseMode == MTitle.base_webtoon ? "webtoon" : "manhwa";
             String path = getNtkEpisodePath();
+            if(path.length() == 0 && shouldRejectPathlessNtkFetch()) {
+                logNtkViewerParse("pathless", null, "", 0, 0);
+                return LOAD_ERROR;
+            }
             if(path.length() == 0)
                 path = "/" + segment + "/" + tid + "/" + id;
             CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
@@ -389,6 +393,14 @@ public class Manga {
         restoreBetterEpisodeList(previousEpisodes);
         attachEpisodeSeriesMetadata();
         return LOAD_OK;
+    }
+
+    private boolean shouldRejectPathlessNtkFetch() {
+        if(title == null || !"ntk".equals(title.getSourceSite()))
+            return false;
+        if(name != null && name.trim().length() > 0)
+            return false;
+        return imgs == null || imgs.size() == 0;
     }
 
     private void addNtkDocumentImageCandidates(CustomHttpClient client, Document d, Set<String> seenImages,

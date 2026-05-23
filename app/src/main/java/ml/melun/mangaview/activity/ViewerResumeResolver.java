@@ -16,6 +16,8 @@ public final class ViewerResumeResolver {
     public static boolean shouldResolveBeforeDirectFetch(Manga target, Title title) {
         if(target == null || !target.isOnline() || title == null)
             return false;
+        if(shouldBlockPathlessNtkResume(target, title))
+            return true;
         List<Manga> episodes = Utils.snapshotEpisodes(title);
         if(containsEpisode(episodes, target))
             return false;
@@ -23,6 +25,21 @@ public final class ViewerResumeResolver {
         if(episodeCount <= 0)
             episodeCount = episodes.size();
         return target.getId() > 0 && episodeCount > 0 && target.getId() <= episodeCount;
+    }
+
+    public static boolean shouldUseTargetAsLastResort(Manga target, Title title) {
+        return !shouldBlockPathlessNtkResume(target, title);
+    }
+
+    public static boolean shouldBlockPathlessNtkResume(Manga target, Title title) {
+        if(target == null || !target.isOnline())
+            return false;
+        Title currentTitle = title != null ? title : target.getTitle();
+        if(currentTitle == null || !"ntk".equals(currentTitle.getSourceSite()))
+            return false;
+        if(target.getNtkEpisodePath().length() > 0)
+            return false;
+        return isMinimalResumeTarget(target);
     }
 
     public static List<Manga> candidates(Manga target, Title title, boolean skipTarget) {
@@ -70,6 +87,18 @@ public final class ViewerResumeResolver {
 
     public static boolean sameManga(Manga a, Manga b) {
         return Manga.sameEpisodeIdentity(a, b);
+    }
+
+    private static boolean isMinimalResumeTarget(Manga target) {
+        String name = target.getName();
+        if(name != null && name.trim().length() > 0)
+            return false;
+        try {
+            List<String> images = target.getImgs(null);
+            return images == null || images.size() == 0;
+        } catch (Exception ignored) {
+            return true;
+        }
     }
 
     private static boolean containsEpisode(List<Manga> episodes, Manga target) {

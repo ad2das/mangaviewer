@@ -49,7 +49,6 @@ import java.util.concurrent.Future;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
-import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.MainPageWebtoon;
 import ml.melun.mangaview.mangaview.Manga;
@@ -60,6 +59,7 @@ import ml.melun.mangaview.repository.EpisodeSnapshotCache;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.BackgroundPrefetchBudget;
+import ml.melun.mangaview.runtime.ContinueReadinessCoordinator;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.PerfTrace;
 import ml.melun.mangaview.runtime.PrefetchCoordinator;
@@ -1548,7 +1548,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             Manga manga = resolveContinueManga(item);
             if(manga == null)
                 return;
-            ViewerWarmupManager.warmupContinueImmediate(context, manga, item);
+            ContinueReadinessCoordinator.primeImmediate(context, manga, item);
         }
 
         void warmupContinueAt(RecyclerView recyclerView, float x, float y) {
@@ -1576,7 +1576,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(manga != null) {
                 if(!markContinueOpen(item))
                     return;
-                ViewerWarmupManager.warmupContinueImmediate(context, manga, item);
+                ContinueReadinessCoordinator.primeImmediate(context, manga, item);
                 Utils.openContinueViewer(context, manga, -1);
             } else {
                 listener.clickedTitle(item);
@@ -1753,7 +1753,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         Title item = firstContinueTitle();
         Manga manga = resolveContinueMangaForWarmup(item);
         if(manga != null)
-            ViewerWarmupManager.warmupVisibleContinue(context, manga, item);
+            ContinueReadinessCoordinator.primeVisible(context, manga, item);
     }
 
     private void warmupVisibleContinueItems(List<Title> titles) {
@@ -1777,7 +1777,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 visibleContinueWarmupKeys.add(key);
                 trimVisibleContinueWarmups();
             }
-            ViewerWarmupManager.warmupVisibleContinue(context, manga, item);
+            ContinueReadinessCoordinator.primeVisible(context, manga, item);
             warmed++;
             if(warmed >= limit)
                 return;
@@ -1904,7 +1904,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         ArrayList<Title> pending = new ArrayList<>();
         for(Title title : titles) {
             Manga manga = resolveContinueMangaForWarmup(title);
-            if(manga != null && ViewerWarmupManager.hasPreparedContinueSnapshot(context, manga, title))
+            if(manga != null && ContinueReadinessCoordinator.isFirstFrameReady(context, manga, title))
                 ready.add(title);
             else
                 pending.add(title);

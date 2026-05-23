@@ -276,10 +276,16 @@ public class Utils {
     }
 
     public static void openContinueViewer(Context context, Manga manga, int code, boolean returnToEpisodes) {
-        openViewerPrepared(context, manga, code, returnToEpisodes, true, false,
+        openContinueViewer(context, manga, code, returnToEpisodes, false,
                 manga == null ? null : manga.getTitle(),
-                manga == null || !manga.isOnline() || isMinimalOnlineViewerManga(manga),
-                false, true);
+                manga == null || !manga.isOnline() || isMinimalOnlineViewerManga(manga));
+    }
+
+    public static void openContinueViewer(Context context, Manga manga, int code, boolean returnToEpisodes,
+                                          boolean recent, Title title, boolean includeTitleEpisodes) {
+        openViewerPrepared(context, manga, code, returnToEpisodes, true, recent,
+                title != null ? title : (manga == null ? null : manga.getTitle()),
+                includeTitleEpisodes, false, true);
     }
 
     private static void openViewerPrepared(Context context, Manga manga, int code, boolean returnToEpisodes,
@@ -441,11 +447,26 @@ public class Utils {
                 prepared = ViewerWarmupManager.prepareClickFirstFrame(appContext, manga, title, false, p.getReverse());
             if(prepared == null)
                 prepared = ViewerWarmupManager.usePreparedFirstFrame(appContext, manga, title, false, p.getReverse());
+            if(prepared == null && shouldBlockUnpreparedContinueFallback(manga)) {
+                ViewerWarmupManager.logMetric("viewer_continue_unprepared_blocked", manga.getId());
+                AppDispatchers.runOnMain(() -> showContinuePreparationToast(context, launchToken));
+                return;
+            }
             Manga launchManga = prepared != null ? prepared : manga;
             Title launchTitle = title != null ? title : launchManga.getTitle();
             AppDispatchers.runOnMain(() -> launchPreparedViewer(context, launchManga, code, returnToEpisodes,
                     online, recent, launchTitle, includeTitleEpisodes, launchToken, false));
         });
+    }
+
+    private static void showContinuePreparationToast(Context context, int launchToken) {
+        if(!cancelViewerLaunchToken(context, launchToken))
+            return;
+        Toast.makeText(context, "회차 준비 중입니다. 잠시 후 다시 눌러주세요.", Toast.LENGTH_SHORT).show();
+    }
+
+    private static boolean shouldBlockUnpreparedContinueFallback(Manga manga) {
+        return manga != null && manga.isOnline();
     }
 
     private static boolean shouldLaunchContinueFallback(Context context, Manga manga) {
@@ -458,11 +479,15 @@ public class Utils {
     }
 
     private static boolean shouldLaunchContinueFallback(boolean online, boolean hasLoadedImages) {
-        return !online || hasLoadedImages;
+        return !online;
     }
 
     static boolean shouldLaunchContinueFallbackForTest(boolean online, boolean hasLoadedImages) {
         return shouldLaunchContinueFallback(online, hasLoadedImages);
+    }
+
+    static boolean shouldBlockUnpreparedContinueFallbackForTest(boolean online) {
+        return online;
     }
 
     private static long continueLaunchFallbackMs(Title title) {
@@ -565,6 +590,15 @@ public class Utils {
         }
         viewerLaunchTokens.put(key, ++viewerLaunchSequence);
         viewerLaunchTimes.put(key, now);
+        return true;
+    }
+
+    private static synchronized boolean cancelViewerLaunchToken(Context context, int token) {
+        Context key = launchTokenKey(context);
+        Integer latest = viewerLaunchTokens.get(key);
+        if(latest == null || latest != token)
+            return false;
+        viewerLaunchTokens.put(key, ++viewerLaunchSequence);
         return true;
     }
 

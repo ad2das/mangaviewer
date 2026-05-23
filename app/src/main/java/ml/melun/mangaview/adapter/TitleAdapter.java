@@ -28,11 +28,11 @@ import java.util.Map;
 import java.util.concurrent.Executor;
 
 import ml.melun.mangaview.R;
-import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.ContinueReadinessCoordinator;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.getGlideUrl;
@@ -270,9 +270,9 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                     iterator.remove();
                 }
             }
-            ViewerWarmupManager.warmupVisibleContinue(mainContext, manga, title);
+            ContinueReadinessCoordinator.primeVisible(mainContext, manga, title);
         } else {
-            ViewerWarmupManager.warmupContinueImmediate(mainContext, manga, title);
+            ContinueReadinessCoordinator.primeImmediate(mainContext, manga, title);
         }
         return true;
     }

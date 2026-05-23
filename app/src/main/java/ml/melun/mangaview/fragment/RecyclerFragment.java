@@ -48,7 +48,6 @@ import ml.melun.mangaview.runtime.PerformanceMonitor;
 import static android.app.Activity.RESULT_OK;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.episodeIntent;
-import static ml.melun.mangaview.Utils.openViewerPrepared;
 import static ml.melun.mangaview.Utils.showPopup;
 import static ml.melun.mangaview.Utils.viewerIntent;
 
@@ -584,7 +583,7 @@ public class RecyclerFragment extends Fragment {
         manga.setMode(0);
         if(title != null)
             manga.setTitle(title);
-        openViewerPrepared(getContext(), manga, code, false, true, mode == R.id.nav_recent, title, true);
+        Utils.openContinueViewer(getContext(), manga, code, false, mode == R.id.nav_recent, title, true);
     }
 
     private boolean canLaunchDestination() {

@@ -2668,7 +2668,7 @@ public class CustomHttpClient {
     }
 
     private boolean isNtkWebViewFallbackCandidate(Response response, String path) {
-        if(response == null || !isNtkNavigableDocumentPath(path))
+        if(response == null || !isNtkWebViewFetchPath(path))
             return false;
         int code = response.code();
         String location = response.header("location", "");
@@ -2676,7 +2676,7 @@ public class CustomHttpClient {
             return false;
         if(code == 301 || code == 302 || code == 403 || code == 404 || code >= 500)
             return true;
-        if(code >= 200 && code < 400) {
+        if(code >= 200 && code < 400 && isNtkNavigableDocumentPath(path)) {
             try {
                 String body = response.peekBody(256 * 1024L).string();
                 return looksLikeUnrenderedNtkDocument(path, code, body);
@@ -2795,7 +2795,7 @@ public class CustomHttpClient {
     private static boolean shouldUseNtkWebViewFallback(boolean ntkUrl, boolean missingResponse, String path, FetchMode fetchMode) {
         if(fetchMode != FetchMode.ALLOW_SHARED_WEBVIEW || !ntkUrl || !missingResponse || path == null)
             return false;
-        return isNtkNavigableDocumentPath(path);
+        return isNtkWebViewFetchPath(path);
     }
 
     static boolean isNtkEpisodeDocumentPathForTest(String path) {
@@ -2820,6 +2820,20 @@ public class CustomHttpClient {
 
     private static boolean isNtkNavigableDocumentPath(String path) {
         return isNtkTitleDocumentPath(path) || isNtkEpisodeDocumentPath(path);
+    }
+
+    private static boolean isNtkWebViewFetchPath(String path) {
+        return isNtkNavigableDocumentPath(path)
+                || isNtkApiPath(path)
+                || isNtkSearchPath(path);
+    }
+
+    private static boolean isNtkApiPath(String path) {
+        return path != null && path.startsWith("/api/");
+    }
+
+    private static boolean isNtkSearchPath(String path) {
+        return path != null && (path.equals("/search") || path.startsWith("/search?"));
     }
 
     static boolean shouldUseSharedWebViewFallbackForTest(boolean ntkUrl, boolean missingResponse, String path, FetchMode fetchMode) {

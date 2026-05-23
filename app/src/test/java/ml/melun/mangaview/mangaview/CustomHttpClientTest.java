@@ -110,8 +110,9 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void ntkWebViewFallbackOnlyHandlesPageMisses() {
-        assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/api/manhwa-list"));
+    public void ntkWebViewFallbackCoversPageApiAndSearchMisses() {
+        assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/api/manhwa-list"));
+        assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/search?q=onepiece"));
         assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1"));
         assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1/2"));
         assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(false, true, "/api/manhwa-list"));
@@ -190,6 +191,8 @@ public class CustomHttpClientTest {
     public void sharedWebViewNavigatesWolfEpisodeDocuments() {
         assertTrue(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/cl?toon=10007"));
         assertTrue(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/cv?toon=10007&num=1"));
+        assertFalse(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/api/manhwa-list"));
+        assertFalse(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/search?q=onepiece"));
         assertFalse(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/cm?type1=genre"));
     }
 
