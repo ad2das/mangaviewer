@@ -110,6 +110,7 @@ public class ViewerActivity extends AppCompatActivity {
     boolean captchaChecked = false;
     ImageButton episodeButton;
     AlertDialog episodePickerDialog;
+    MissingEpisodeNavigator.PromptState missingEpisodePromptState = new MissingEpisodeNavigator.PromptState();
     InfiniteScrollCallback infiniteScrollCallback;
     LoadImagesJob loader;
     PrefetchImagesJob nextPrefetcher;
@@ -561,6 +562,9 @@ public class ViewerActivity extends AppCompatActivity {
         Manga source = focusedManga();
         Manga target = nextDirection ? nextEpisodeCandidate(source) : previousEpisodeCandidate(source);
         if(target != null) {
+            if(nextDirection && maybePromptMissingNextEpisode(source, target,
+                    () -> loadManga(target, ViewerLoadPolicy.EXACT_FIRST_PAGE)))
+                return;
             loadManga(target, ViewerLoadPolicy.EXACT_FIRST_PAGE);
             return;
         }
@@ -586,12 +590,45 @@ public class ViewerActivity extends AppCompatActivity {
                     showViewerCaptchaRequired(source);
                     return;
                 }
-                if(resolved != null)
+                if(resolved != null) {
+                    if(nextDirection && maybePromptMissingNextEpisode(source, resolved,
+                            () -> loadManga(resolved, ViewerLoadPolicy.EXACT_FIRST_PAGE)))
+                        return;
                     loadManga(resolved, ViewerLoadPolicy.EXACT_FIRST_PAGE);
-                else
+                } else
                     refreshToolbar(source);
             });
         });
+    }
+
+    private boolean maybePromptMissingNextEpisode(Manga source, Manga target, Runnable skipAction) {
+        return MissingEpisodeNavigator.maybePromptNextEpisode(this, dark, source, target, missingEpisodePromptState,
+                new MissingEpisodeNavigator.Host() {
+                    @Override
+                    public void lockUi(boolean lock) {
+                        ViewerActivity.this.lockUi(lock);
+                    }
+
+                    @Override
+                    public void openAlternateEpisode(Title alternateTitle, Manga episode) {
+                        title = alternateTitle;
+                        if(episode != null && alternateTitle != null) {
+                            episode.setTitle(alternateTitle);
+                            episode.setTitleId(alternateTitle.getId());
+                        }
+                        loadManga(episode, ViewerLoadPolicy.EXACT_FIRST_PAGE);
+                    }
+
+                    @Override
+                    public void showCaptcha(Manga episode) {
+                        showViewerCaptchaRequired(episode == null ? source : episode);
+                    }
+
+                    @Override
+                    public void onPromptCancelled() {
+                        suppressBoundaryLoadsUntilNextScroll();
+                    }
+                }, skipAction);
     }
 
     private Manga focusedManga() {
@@ -2237,6 +2274,8 @@ public class ViewerActivity extends AppCompatActivity {
             ensureEpisodeListThenAttachNext(page.manga, jumpToEpisode);
             return;
         }
+        if(maybePromptMissingNextEpisode(page.manga, target, () -> attachNextEpisode(jumpToEpisode)))
+            return;
         int loadedPosition = stripAdapter.findFirstPagePosition(target);
         if(loadedPosition != RecyclerView.NO_POSITION) {
             if(jumpToEpisode) {
@@ -2362,6 +2401,8 @@ public class ViewerActivity extends AppCompatActivity {
             return;
         Manga target = nextEpisodeCandidate(current);
         if(target == null)
+            return;
+        if(MissingEpisodeNavigator.hasMissingNextEpisodeGap(current, target))
             return;
         if(nextPrefetcher != null
                 && nextPrefetchEpisodeId == target.getId()
@@ -2749,6 +2790,7 @@ public class ViewerActivity extends AppCompatActivity {
         mainHandler.removeCallbacksAndMessages(null);
         if(loader != null)
             loader.cancel();
+        missingEpisodePromptState.dismiss();
         cancelNextPrefetcher();
         releaseStripAdapter();
         ViewerWarmupManager.clearDecodedWork(context);

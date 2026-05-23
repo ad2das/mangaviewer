@@ -82,6 +82,7 @@ public class ViewerActivity3 extends AppCompatActivity {
     CustomSpinnerAdapter spinnerAdapter;
     LoadImages imageLoad;
     boolean startCurrentEpisodeAtFirstPage = false;
+    MissingEpisodeNavigator.PromptState missingEpisodePromptState = new MissingEpisodeNavigator.PromptState();
 
 
     @Override
@@ -296,8 +297,11 @@ public class ViewerActivity3 extends AppCompatActivity {
         });
         next.setOnClickListener(v -> {
             Manga target = nextEpisodeCandidate();
-            if(target != null)
+            if(target != null) {
+                if(maybePromptMissingNextEpisode(manga, target, () -> openEpisode(target)))
+                    return;
                 openEpisode(target);
+            }
         });
         prev.setOnClickListener(v -> {
             Manga target = previousEpisodeCandidate();
@@ -339,6 +343,35 @@ public class ViewerActivity3 extends AppCompatActivity {
             refresh();
         else
             reloadManga();
+    }
+
+    private boolean maybePromptMissingNextEpisode(Manga source, Manga target, Runnable skipAction) {
+        return MissingEpisodeNavigator.maybePromptNextEpisode(this, dark, source, target, missingEpisodePromptState,
+                new MissingEpisodeNavigator.Host() {
+                    @Override
+                    public void lockUi(boolean lock) {
+                        ViewerActivity3.this.lockUi(lock);
+                    }
+
+                    @Override
+                    public void openAlternateEpisode(Title alternateTitle, Manga episode) {
+                        title = alternateTitle;
+                        if(episode != null && alternateTitle != null) {
+                            episode.setTitle(alternateTitle);
+                            episode.setTitleId(alternateTitle.getId());
+                        }
+                        openEpisode(episode);
+                    }
+
+                    @Override
+                    public void showCaptcha(Manga episode) {
+                        showCaptchaPopup(Manga.safeUrl(episode == null ? source : episode), ViewerActivity3.this, RESULT_CAPTCHA, p);
+                    }
+
+                    @Override
+                    public void onPromptCancelled() {
+                    }
+                }, skipAction);
     }
 
     void refresh(){
@@ -687,7 +720,7 @@ public class ViewerActivity3 extends AppCompatActivity {
         if(eps == null || eps.size() == 0 || title == null)
             return;
         Manga nextEpisode = nextEpisodeCandidate();
-        if(nextEpisode != null)
+        if(nextEpisode != null && !MissingEpisodeNavigator.hasMissingNextEpisodeGap(manga, nextEpisode))
             ViewerWarmupManager.warmup(context, nextEpisode, title, 0);
     }
 
@@ -725,6 +758,7 @@ public class ViewerActivity3 extends AppCompatActivity {
             imageLoad.cancel();
             imageLoad = null;
         }
+        missingEpisodePromptState.dismiss();
         if(viewPager != null) {
             viewPager.removeOnPageChangeListener(listener);
             viewPager.setAdapter(null);

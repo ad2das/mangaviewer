@@ -96,6 +96,28 @@ public class ViewerActivityTest {
     }
 
     @Test
+    public void missingEpisodePromptDetectsSkippedNextNumbers() {
+        assertTrue(MissingEpisodeNavigator.shouldPromptMissingNextEpisodeForTest(
+                "서머타임 렌더링 73화", "서머타임 렌더링 76화"));
+    }
+
+    @Test
+    public void missingEpisodePromptAllowsPackedEpisodeRanges() {
+        assertFalse(MissingEpisodeNavigator.shouldPromptMissingNextEpisodeForTest(
+                "서머타임 렌더링 03, 04화", "서머타임 렌더링 05, 06화"));
+        assertFalse(MissingEpisodeNavigator.shouldPromptMissingNextEpisodeForTest(
+                "서머타임 렌더링 05, 06화", "서머타임 렌더링 07화"));
+    }
+
+    @Test
+    public void missingEpisodePromptIgnoresSpecialEpisodes() {
+        assertFalse(MissingEpisodeNavigator.shouldPromptMissingNextEpisodeForTest(
+                "서머타임 렌더링 번외편 3~4화 + 2권 부록", "서머타임 렌더링 05화"));
+        assertFalse(MissingEpisodeNavigator.shouldPromptMissingNextEpisodeForTest(
+                "서머타임 렌더링 36화", "서머타임 렌더링 번외편 5~7화"));
+    }
+
+    @Test
     public void boundaryEpisodeLoadsWaitForIdleScroll() {
         assertTrue(ViewerActivity.shouldCheckBoundaryDuringScrollStateForTest(RecyclerView.SCROLL_STATE_IDLE));
         assertFalse(ViewerActivity.shouldCheckBoundaryDuringScrollStateForTest(RecyclerView.SCROLL_STATE_DRAGGING));
