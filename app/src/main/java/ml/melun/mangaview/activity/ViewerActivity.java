@@ -564,6 +564,8 @@ public class ViewerActivity extends AppCompatActivity {
     private void loadAdjacentEpisode(boolean nextDirection) {
         Manga source = focusedManga();
         Manga target = nextDirection ? nextEpisodeCandidate(source) : previousEpisodeCandidate(source);
+        logViewerEpisode("viewer_adjacent_source", source);
+        logViewerEpisode("viewer_adjacent_target", target);
         if(target != null) {
             if(nextDirection && maybePromptMissingNextEpisode(source, target,
                     () -> loadManga(target, ViewerLoadPolicy.EXACT_FIRST_PAGE)))
@@ -850,6 +852,7 @@ public class ViewerActivity extends AppCompatActivity {
             policy = ViewerLoadPolicy.RESUME;
         if(title != null)
             m.setTitle(title);
+        logViewerEpisode("viewer_load_manga_request", m);
         this.manga = m;
         if(loader != null)
             loader.cancel();
@@ -869,7 +872,7 @@ public class ViewerActivity extends AppCompatActivity {
         if(policy == null)
             policy = ViewerLoadPolicy.RESUME;
         cancelActiveEpisodeLoader();
-        cancelNextPrefetcher();
+        promoteOrCancelNextPrefetcher(m);
         if(m.isOnline()) {
             ViewerLoadPolicy finalPolicy = policy;
             loadManga(m, m1 -> {
@@ -901,6 +904,7 @@ public class ViewerActivity extends AppCompatActivity {
         try {
             if(policy == null)
                 policy = ViewerLoadPolicy.RESUME;
+            logViewerEpisode("viewer_set_manga", m);
             manga = m;
             lockUi(false);
             if(MangaRepository.imageUrls(m, context) == null || MangaRepository.imageUrls(m, context).size()==0) {
@@ -1313,6 +1317,8 @@ public class ViewerActivity extends AppCompatActivity {
                             if(prepared.manga != null)
                                 m = prepared.manga;
                         }
+                        if(result == ViewerWarmupManager.LOAD_EMPTY_IMAGES || (result == LOAD_OK && !hasLoadedImages(m)))
+                            result = retryTransientEmptyFirstFrame(result, firstPage);
                     }
                 } catch (Exception e) {
                     if(!cancelled && !isFinishing())
@@ -1329,7 +1335,36 @@ public class ViewerActivity extends AppCompatActivity {
             return target != null
                     && target.isOnline()
                     && hasLoadedImages(target)
+                    && !needsCanonicalEpisodeBeforeDisplay(target)
                     && !needsResolvedNtkEpisodePath(target);
+        }
+
+        private int retryTransientEmptyFirstFrame(int result, int firstPage) throws Exception {
+            if(m == null || !m.isOnline() || cancelled || cancellation.isCancelled())
+                return result;
+            waitForTransientViewerImages();
+            if(cancelled || cancellation.isCancelled())
+                return result;
+            int retry = ViewerWarmupManager.prepareFirstFrame(context, m, title, firstPage, width, autoCut,
+                    p.getReverse(), cancellation);
+            if(retry == LOAD_OK || hasLoadedImages(m))
+                ViewerWarmupManager.logMetric("viewer_empty_retry_recovered", m.getId());
+            if(retry == ViewerWarmupManager.LOAD_EMPTY_IMAGES && hasLoadedImages(m))
+                return LOAD_OK;
+            return retry;
+        }
+
+        private void waitForTransientViewerImages() {
+            long deadline = SystemClock.elapsedRealtime() + transientEmptyFirstFrameRetryDelayMs();
+            while(!cancelled && !cancellation.isCancelled() && !hasLoadedImages(m)
+                    && SystemClock.elapsedRealtime() < deadline) {
+                try {
+                    Thread.sleep(50L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
         }
 
         private void displayLoadedImagesEarly() {
@@ -1429,6 +1464,7 @@ public class ViewerActivity extends AppCompatActivity {
         MangaRepository.Cancellation cancellation = MangaRepository.cancellation();
         AppDispatchers.TaskHandle handle;
         volatile boolean cancelled = false;
+        volatile boolean promotedToForeground = false;
         long startedAtMs;
 
         PrefetchImagesJob(Manga target) {
@@ -1467,8 +1503,15 @@ public class ViewerActivity extends AppCompatActivity {
             preloadFirstPages(target);
             ViewerWarmupManager.logMetric("viewer_next_episode_ready_ms", android.os.SystemClock.elapsedRealtime() - startedAtMs);
             int attachThreshold = p.getDataSave() ? DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD : NEXT_EPISODE_ATTACH_THRESHOLD;
-            if(stripAdapter != null && manager != null && manager.findLastVisibleItemPosition() >= manager.getItemCount() - attachThreshold)
+            if(!promotedToForeground
+                    && stripAdapter != null
+                    && manager != null
+                    && manager.findLastVisibleItemPosition() >= manager.getItemCount() - attachThreshold)
                 attachNextEpisode(false);
+        }
+
+        void promoteToForeground() {
+            promotedToForeground = true;
         }
 
         void cancel() {
@@ -2498,11 +2541,19 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private static long initialNextEpisodePrefetchDelayMs() {
-        return 1800L;
+        return 350L;
     }
 
     static long initialNextEpisodePrefetchDelayMsForTest() {
         return initialNextEpisodePrefetchDelayMs();
+    }
+
+    private static long transientEmptyFirstFrameRetryDelayMs() {
+        return 650L;
+    }
+
+    static long transientEmptyFirstFrameRetryDelayMsForTest() {
+        return transientEmptyFirstFrameRetryDelayMs();
     }
 
     private void cancelNextPrefetcher() {
@@ -2510,6 +2561,18 @@ public class ViewerActivity extends AppCompatActivity {
             nextPrefetcher.cancel();
         nextPrefetchEpisodeId = -1;
         nextPrefetchBaseMode = -1;
+    }
+
+    private void promoteOrCancelNextPrefetcher(Manga target) {
+        if(target != null
+                && nextPrefetcher != null
+                && nextPrefetchEpisodeId == target.getId()
+                && nextPrefetchBaseMode == target.getBaseMode()
+                && sameManga(nextPrefetcher.target, target)) {
+            nextPrefetcher.promoteToForeground();
+            return;
+        }
+        cancelNextPrefetcher();
     }
 
     private void cancelNextPrefetcher(Manga target) {
@@ -2528,6 +2591,40 @@ public class ViewerActivity extends AppCompatActivity {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    private boolean needsCanonicalEpisodeBeforeDisplay(Manga target) {
+        if(target == null
+                || !target.isOnline()
+                || Manga.visibleEpisodeNumberKey(target.getName()).length() == 0)
+            return false;
+        Manga canonical = findCanonicalEpisode(target);
+        if(isNtkEpisode(target))
+            return !target.hasExplicitNtkEpisodePath()
+                    || (canonical != null && !sameExactViewerEpisode(canonical, target));
+        if(!isWfwfEpisode(target))
+            return false;
+        return canonical != null && !sameExactViewerEpisode(canonical, target);
+    }
+
+    private boolean sameExactViewerEpisode(Manga canonical, Manga target) {
+        if(canonical == target)
+            return true;
+        if(canonical == null || target == null)
+            return false;
+        String canonicalNumber = Manga.visibleEpisodeNumberKey(canonical.getName());
+        String targetNumber = Manga.visibleEpisodeNumberKey(target.getName());
+        if(canonical.getId() != target.getId())
+            return false;
+        if(canonicalNumber.length() > 0 && targetNumber.length() > 0 && !canonicalNumber.equals(targetNumber))
+            return false;
+        if(isNtkEpisode(target)) {
+            String canonicalPath = canonical.getNtkEpisodePath();
+            String targetPath = target.getNtkEpisodePath();
+            if(canonicalPath != null && canonicalPath.length() > 0 && targetPath != null && targetPath.length() > 0)
+                return canonicalPath.equals(targetPath);
+        }
+        return true;
     }
 
     private boolean hasViewerContent() {
@@ -2558,10 +2655,7 @@ public class ViewerActivity extends AppCompatActivity {
         if(hasLoadedImages)
             return false;
         String source = sourceSite == null ? "" : sourceSite.trim();
-        return ntkPreference
-                || ntkClient
-                || "ntk".equalsIgnoreCase(source)
-                || "wfwf".equalsIgnoreCase(source);
+        return (ntkPreference || ntkClient) && source.length() == 0;
     }
 
     static int viewerItemViewCacheSizeForTest(String sourceSite, boolean dataSave) {
@@ -2578,7 +2672,7 @@ public class ViewerActivity extends AppCompatActivity {
     private static int viewerItemViewCacheSize(String sourceSite, boolean dataSave) {
         if(dataSave)
             return 8;
-        return "wfwf".equalsIgnoreCase(sourceSite == null ? "" : sourceSite.trim()) ? 8 : 18;
+        return "wfwf".equalsIgnoreCase(sourceSite == null ? "" : sourceSite.trim()) ? 14 : 20;
     }
 
     private boolean needsFullEpisodeList(Title currentTitle, Manga target) {
@@ -2982,6 +3076,19 @@ public class ViewerActivity extends AppCompatActivity {
         if(target != null && target.getTitle() != null && "ntk".equals(target.getTitle().getSourceSite()))
             return true;
         return p != null && p.isNtkSite();
+    }
+
+    private void logViewerEpisode(String event, Manga target) {
+        if(!Log.isLoggable(TAG, Log.DEBUG))
+            return;
+        Log.d(TAG, event
+                + " id=" + (target == null ? -1 : target.getId())
+                + ",name=" + safeMangaName(target)
+                + ",titleId=" + (target == null ? -1 : target.getTitleId())
+                + ",source=" + safeSourceSite(target)
+                + ",ntkPath=" + (target == null ? "" : target.getNtkEpisodePath())
+                + ",explicitNtkPath=" + (target != null && target.hasExplicitNtkEpisodePath())
+                + ",images=" + safeImageCount(target));
     }
 
     private boolean isWfwfEpisode(Manga target) {

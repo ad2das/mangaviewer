@@ -101,6 +101,10 @@ public class Manga {
         return title == null ? "" : matchingNtkEpisodePath(title.getEps());
     }
 
+    public boolean hasExplicitNtkEpisodePath() {
+        return ntkEpisodePath != null && ntkEpisodePath.trim().length() > 0;
+    }
+
     public void setNtkEpisodePath(String ntkEpisodePath) {
         this.ntkEpisodePath = ntkEpisodePath == null ? "" : ntkEpisodePath.trim();
     }

@@ -3,6 +3,7 @@ package ml.melun.mangaview.mangaview;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.util.Log;
 import android.webkit.CookieManager;
 
 import com.google.gson.Gson;
@@ -56,6 +57,7 @@ import ml.melun.mangaview.runtime.PerfTrace;
 
 import static ml.melun.mangaview.MainApplication.p;
 public class CustomHttpClient {
+    private static final String TAG = "ViewerPerf";
     public static final String DEFAULT_COMIC_URL = "https://wfwf450.com/cm";
     public static final String WEBTOON_URL = "https://wfwf450.com";
     public static final String NTK_COMIC_URL = "https://sbxh2.com/manhwa";
@@ -857,6 +859,7 @@ public class CustomHttpClient {
     private long wfwfDomainLastForcedRetry = 0;
     private long wfwfDomainLastCanceledLog = 0;
     private long ntkDomainLastCheck = 0;
+    private String ntkDomainLastCheckedRoot = "";
     private Context context;
     public String agent = "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36";
 
@@ -1692,6 +1695,7 @@ public class CustomHttpClient {
 
     private boolean ensureNtkDomainIfNeeded(boolean force) {
         long now = System.currentTimeMillis();
+        String currentRoot = WfwfDomainResolver.toRoot(getWebtoonUrl());
         DomainResolveState activeResolve = null;
         synchronized (wfwfDomainLock) {
             if(ntkDomainResolveState != null)
@@ -1700,11 +1704,28 @@ public class CustomHttpClient {
         if(activeResolve != null)
             return waitForWfwfDomainResolve(activeResolve);
         synchronized (wfwfDomainLock) {
-            if(!force && ntkDomainLastCheck > 0 && now - ntkDomainLastCheck < NTK_DOMAIN_CHECK_INTERVAL_MS)
+            if(shouldSkipRecentNtkDomainCheck(force, currentRoot, ntkDomainLastCheckedRoot, ntkDomainLastCheck, now))
                 return false;
             ntkDomainLastCheck = now;
+            ntkDomainLastCheckedRoot = currentRoot;
         }
         return ensureNtkDomain();
+    }
+
+    private static boolean shouldSkipRecentNtkDomainCheck(boolean force, String currentRoot,
+                                                          String lastCheckedRoot, long lastCheck, long now) {
+        if(force || lastCheck <= 0)
+            return false;
+        String current = NtkDomainResolver.normalizeRoot(currentRoot);
+        String last = NtkDomainResolver.normalizeRoot(lastCheckedRoot);
+        if(current == null || last == null || !current.equals(last))
+            return false;
+        return now - lastCheck < NTK_DOMAIN_CHECK_INTERVAL_MS;
+    }
+
+    static boolean shouldSkipRecentNtkDomainCheckForTest(boolean force, String currentRoot,
+                                                         String lastCheckedRoot, long lastCheck, long now) {
+        return shouldSkipRecentNtkDomainCheck(force, currentRoot, lastCheckedRoot, lastCheck, now);
     }
 
     private boolean ensureNtkDomain() {
@@ -1733,7 +1754,7 @@ public class CustomHttpClient {
                 headers.put("Referer", NtkDomainResolver.CHANNEL_URL);
                 List<String> resolvedRoots = NtkDomainResolver.resolveCandidates(client, headers, currentRequestGroup.get());
                 String reachable = reachableNtkRoot(currentRoot, resolvedRoots, headers);
-                if(reachable != null && isNtkUrl(reachable) && !reachable.equals(currentRoot)) {
+                if(shouldApplyResolvedNtkRoot(currentRoot, reachable, resolvedRoots)) {
                     p.setNtkSitePreset(reachable);
                     resetCookie();
                     clearPageCache();
@@ -1755,6 +1776,10 @@ public class CustomHttpClient {
     }
 
     private String reachableNtkRoot(String currentRoot, List<String> resolvedRoots, Map<String, String> headers) {
+        String trustedResolved = firstTrustedResolvedNtkRoot(resolvedRoots);
+        String normalizedCurrent = NtkDomainResolver.normalizeRoot(currentRoot);
+        if(trustedResolved != null && !trustedResolved.equals(normalizedCurrent))
+            return trustedResolved;
         ArrayList<String> candidates = new ArrayList<>();
         if(resolvedRoots != null)
             for(String root : resolvedRoots)
@@ -1766,6 +1791,45 @@ public class CustomHttpClient {
             if(canReachNtkRoot(candidate, headers))
                 return candidate;
         return resolvedRoots == null || resolvedRoots.isEmpty() ? null : NtkDomainResolver.normalizeRoot(resolvedRoots.get(0));
+    }
+
+    private static String firstTrustedResolvedNtkRoot(List<String> resolvedRoots) {
+        if(resolvedRoots == null)
+            return null;
+        for(String root : resolvedRoots) {
+            String normalized = NtkDomainResolver.normalizeRoot(root);
+            if(normalized != null && normalized.length() > 0)
+                return normalized;
+        }
+        return null;
+    }
+
+    private static boolean shouldApplyResolvedNtkRoot(String currentRoot, String resolvedRoot, List<String> trustedRoots) {
+        String normalized = NtkDomainResolver.normalizeRoot(resolvedRoot);
+        String current = NtkDomainResolver.normalizeRoot(currentRoot);
+        if(normalized == null || normalized.length() == 0 || normalized.equals(current))
+            return false;
+        return isNtkUrlForTest(normalized) || containsTrustedResolvedNtkRoot(trustedRoots, normalized);
+    }
+
+    private static boolean containsTrustedResolvedNtkRoot(List<String> trustedRoots, String root) {
+        String normalizedRoot = NtkDomainResolver.normalizeRoot(root);
+        if(normalizedRoot == null || normalizedRoot.length() == 0 || trustedRoots == null)
+            return false;
+        for(String candidate : trustedRoots) {
+            String normalizedCandidate = NtkDomainResolver.normalizeRoot(candidate);
+            if(normalizedRoot.equals(normalizedCandidate))
+                return true;
+        }
+        return false;
+    }
+
+    static String firstTrustedResolvedNtkRootForTest(List<String> resolvedRoots) {
+        return firstTrustedResolvedNtkRoot(resolvedRoots);
+    }
+
+    static boolean shouldApplyResolvedNtkRootForTest(String currentRoot, String resolvedRoot, List<String> trustedRoots) {
+        return shouldApplyResolvedNtkRoot(currentRoot, resolvedRoot, trustedRoots);
     }
 
     private void addNtkRootCandidate(List<String> candidates, String root) {
@@ -1941,8 +2005,9 @@ public class CustomHttpClient {
 
     private PageResponse loadPageFromNetworkWithDomainRetry(String normalized, long now, CachedPage staleCached) throws Exception {
         Exception lastError = null;
-        boolean wolfDocument = !isNtk() && isWolfEpisodeDocumentPath(normalized);
-        int attempts = pageNetworkAttempts(isNtk(), normalized);
+        boolean ntk = isNtk();
+        boolean wolfDocument = !ntk && isWolfEpisodeDocumentPath(normalized);
+        int attempts = pageNetworkAttempts(ntk, normalized);
         for(int attempt = 0; attempt < attempts; attempt++) {
             try {
                 return loadPageFromNetwork(normalized, now, staleCached);
@@ -1950,7 +2015,7 @@ public class CustomHttpClient {
                 lastError = error;
                 if(isInterruptedRequest(error))
                     throw error;
-                if(isNtk())
+                if(ntk)
                     throw error;
                 if(attempt == 0 && shouldForceResolveWfwfOnRetry(normalized, wolfDocument)) {
                     boolean changed = ensureWfwfDomainForRetry();
@@ -2381,11 +2446,13 @@ public class CustomHttpClient {
         boolean wolfWebViewFallbackAllowed = allowsWolfWebViewFallback();
         Response response = get(baseUrl + url, headers, fastNtkPageDirect);
         if(ntkBaseUrl && shouldRetryWithResolvedDomain(response)) {
+            boolean appliedRedirectRoot = applyNtkRedirectRoot(response, baseUrl);
             if(response != null) {
                 rememberCloudflareChallengeIfPresent(response, baseUrl, url);
                 response.close();
             }
-            ensureWfwfDomainForRetry();
+            if(!appliedRedirectRoot)
+                ensureWfwfDomainForRetry();
             baseUrl = getBaseUrl(url);
             ntkBaseUrl = isNtkUrl(baseUrl);
             headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
@@ -2436,6 +2503,51 @@ public class CustomHttpClient {
         return response;
     }
 
+    private boolean applyNtkRedirectRoot(Response response, String currentBaseUrl) {
+        if(response == null || !isNtk())
+            return false;
+        int code = response.code();
+        if(code != 301 && code != 302)
+            return false;
+        String redirectedRoot = ntkRedirectRoot(response.header("location", ""));
+        if(redirectedRoot == null || redirectedRoot.length() == 0)
+            return false;
+        String currentRoot = WfwfDomainResolver.toRoot(currentBaseUrl == null ? getWebtoonUrl() : currentBaseUrl);
+        if(!shouldApplyResolvedNtkRoot(currentRoot, redirectedRoot, Arrays.asList(redirectedRoot)))
+            return false;
+        p.setNtkSitePreset(redirectedRoot);
+        resetCookie();
+        clearPageCache();
+        if(Log.isLoggable(TAG, Log.DEBUG))
+            Log.d(TAG, "ntk_redirect_root_applied root=" + redirectedRoot + ",from=" + currentRoot);
+        return true;
+    }
+
+    static String ntkRedirectRootForTest(String location) {
+        return ntkRedirectRoot(location);
+    }
+
+    private static String ntkRedirectRoot(String location) {
+        if(location == null || location.trim().length() == 0)
+            return null;
+        String value = location.trim();
+        String lower = value.toLowerCase(Locale.ROOT);
+        if(lower.contains("t.me/") || lower.startsWith("/"))
+            return null;
+        HttpUrl url = HttpUrl.parse(value);
+        if(url == null)
+            return null;
+        String scheme = url.scheme();
+        String host = url.host();
+        if(scheme == null || host == null || host.length() == 0)
+            return null;
+        int port = url.port();
+        String root = scheme + "://" + host;
+        if(("http".equals(scheme) && port != 80) || ("https".equals(scheme) && port != 443))
+            root += ":" + port;
+        return NtkDomainResolver.normalizeRoot(root);
+    }
+
     private void rememberCloudflareChallengeIfPresent(Response response, String baseUrl, String path) {
         if(response == null)
             return;
@@ -2455,7 +2567,7 @@ public class CustomHttpClient {
     }
 
     private boolean isNtkWebViewFallbackCandidate(Response response, String path) {
-        if(response == null || path == null || !(path.startsWith("/webtoon/") || path.startsWith("/manhwa/")))
+        if(response == null || !isNtkNavigableDocumentPath(path))
             return false;
         int code = response.code();
         String location = response.header("location", "");
@@ -2573,7 +2685,31 @@ public class CustomHttpClient {
     private static boolean shouldUseNtkWebViewFallback(boolean ntkUrl, boolean missingResponse, String path, FetchMode fetchMode) {
         if(fetchMode != FetchMode.ALLOW_SHARED_WEBVIEW || !ntkUrl || !missingResponse || path == null)
             return false;
-        return path.startsWith("/webtoon/") || path.startsWith("/manhwa/");
+        return isNtkNavigableDocumentPath(path);
+    }
+
+    static boolean isNtkEpisodeDocumentPathForTest(String path) {
+        return isNtkEpisodeDocumentPath(path);
+    }
+
+    private static boolean isNtkEpisodeDocumentPath(String path) {
+        if(path == null)
+            return false;
+        return path.matches("^/(?:webtoon|manhwa)/[^/?#]+/[^/?#]+.*");
+    }
+
+    static boolean isNtkTitleDocumentPathForTest(String path) {
+        return isNtkTitleDocumentPath(path);
+    }
+
+    private static boolean isNtkTitleDocumentPath(String path) {
+        if(path == null)
+            return false;
+        return path.matches("^/(?:webtoon|manhwa)/[^/?#]+/?$");
+    }
+
+    private static boolean isNtkNavigableDocumentPath(String path) {
+        return isNtkTitleDocumentPath(path) || isNtkEpisodeDocumentPath(path);
     }
 
     static boolean shouldUseSharedWebViewFallbackForTest(boolean ntkUrl, boolean missingResponse, String path, FetchMode fetchMode) {

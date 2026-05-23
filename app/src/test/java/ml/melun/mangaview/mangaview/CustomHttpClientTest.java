@@ -12,6 +12,7 @@ import okhttp3.Protocol;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class CustomHttpClientTest {
@@ -112,6 +113,7 @@ public class CustomHttpClientTest {
     public void ntkWebViewFallbackOnlyHandlesPageMisses() {
         assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/api/manhwa-list"));
         assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1"));
+        assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1/2"));
         assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(false, true, "/api/manhwa-list"));
         assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, false, "/api/manhwa-list"));
         assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/_next/static/app.js"));
@@ -119,11 +121,11 @@ public class CustomHttpClientTest {
 
     @Test
     public void ntkWebViewFallbackRequiresSharedWebViewMode() {
-        assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1",
+        assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1/2",
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-        assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1",
+        assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1/2",
                 CustomHttpClient.FetchMode.DIRECT_ONLY));
-        assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1",
+        assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1/2",
                 CustomHttpClient.FetchMode.CACHE_ONLY));
     }
 
@@ -266,6 +268,27 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkEpisodeDocumentDetectionRequiresConcreteEpisodePath() {
+        assertFalse(CustomHttpClient.isNtkEpisodeDocumentPathForTest("/manhwa/1"));
+        assertTrue(CustomHttpClient.isNtkEpisodeDocumentPathForTest("/manhwa/1/2"));
+        assertTrue(CustomHttpClient.isNtkEpisodeDocumentPathForTest("/webtoon/abc/ep-1"));
+        assertFalse(CustomHttpClient.isNtkEpisodeDocumentPathForTest("/api/manhwa-list"));
+        assertTrue(CustomHttpClient.isNtkTitleDocumentPathForTest("/manhwa/1"));
+        assertTrue(CustomHttpClient.isNtkTitleDocumentPathForTest("/webtoon/abc"));
+        assertFalse(CustomHttpClient.isNtkTitleDocumentPathForTest("/manhwa/1/2"));
+    }
+
+    @Test
+    public void ntkRedirectRootAcceptsUnusualOfficialRedirectHost() {
+        assertEquals("https://nicelink53.com",
+                CustomHttpClient.ntkRedirectRootForTest("https://nicelink53.com"));
+        assertEquals("https://nicelink53.com",
+                CustomHttpClient.ntkRedirectRootForTest("https://nicelink53.com/manhwa/7843"));
+        assertNull(CustomHttpClient.ntkRedirectRootForTest("https://t.me/something"));
+        assertNull(CustomHttpClient.ntkRedirectRootForTest("/manhwa/7843"));
+    }
+
+    @Test
     public void ntkPageDiskCacheAllowsColdStartStaleEntries() {
         long now = 7L * 24L * 60L * 60L * 1000L;
 
@@ -345,6 +368,32 @@ public class CustomHttpClientTest {
         assertTrue(CustomHttpClient.isNtkUrlForTest("https://newto03.com/manhwa"));
         assertTrue(CustomHttpClient.isNtkUrlForTest("https://toonflix.app/manhwa"));
         assertFalse(CustomHttpClient.isNtkUrlForTest("https://example.com/manhwa"));
+    }
+
+    @Test
+    public void ntkDomainResolverTrustsOfficialRootBeforeProbe() {
+        List<String> officialRoots = Arrays.asList("https://sbxh2.com/");
+        List<String> unusualRoots = Arrays.asList("https://odd-address.example/");
+
+        assertEquals("https://sbxh2.com", CustomHttpClient.firstTrustedResolvedNtkRootForTest(officialRoots));
+        assertTrue(CustomHttpClient.shouldApplyResolvedNtkRootForTest(
+                "https://sbxh1.com", "https://sbxh2.com", officialRoots));
+        assertTrue(CustomHttpClient.shouldApplyResolvedNtkRootForTest(
+                "https://sbxh1.com", "https://odd-address.example", unusualRoots));
+        assertFalse(CustomHttpClient.shouldApplyResolvedNtkRootForTest(
+                "https://sbxh2.com", "https://sbxh2.com", officialRoots));
+    }
+
+    @Test
+    public void ntkDomainThrottleDoesNotHidePresetRootChanges() {
+        long now = 10_000L;
+
+        assertTrue(CustomHttpClient.shouldSkipRecentNtkDomainCheckForTest(
+                false, "https://sbxh1.com", "https://sbxh1.com", now - 1_000L, now));
+        assertFalse(CustomHttpClient.shouldSkipRecentNtkDomainCheckForTest(
+                false, "https://sbxh2.com", "https://sbxh1.com", now - 1_000L, now));
+        assertFalse(CustomHttpClient.shouldSkipRecentNtkDomainCheckForTest(
+                true, "https://sbxh1.com", "https://sbxh1.com", now - 1_000L, now));
     }
 
     @Test

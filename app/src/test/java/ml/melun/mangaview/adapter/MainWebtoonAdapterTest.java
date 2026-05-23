@@ -82,9 +82,9 @@ public class MainWebtoonAdapterTest {
 
     @Test
     public void visibleContinueWarmupKeepsHomeDecodePressureLow() {
-        assertEquals(1, HomeContinueWarmupPolicy.visibleContinueWarmupLimitForTest(false));
+        assertEquals(2, HomeContinueWarmupPolicy.visibleContinueWarmupLimitForTest(false));
         assertEquals(1, HomeContinueWarmupPolicy.visibleContinueWarmupLimitForTest(true));
-        assertEquals(1800L, HomeContinueWarmupPolicy.visibleHomeWarmupDelayMsForTest(false));
-        assertEquals(2400L, HomeContinueWarmupPolicy.visibleHomeWarmupDelayMsForTest(true));
+        assertEquals(650L, HomeContinueWarmupPolicy.visibleHomeWarmupDelayMsForTest(false));
+        assertEquals(1200L, HomeContinueWarmupPolicy.visibleHomeWarmupDelayMsForTest(true));
     }
 }

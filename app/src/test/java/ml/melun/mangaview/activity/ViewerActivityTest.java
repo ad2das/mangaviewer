@@ -33,10 +33,10 @@ public class ViewerActivityTest {
     }
 
     @Test
-    public void ntkBackgroundNextEpisodeFetchSkipsWhenImagesAreMissing() {
-        assertTrue(ViewerActivity.shouldSkipBackgroundNextEpisodeFetchForTest("ntk", true, true, false));
+    public void ntkBackgroundNextEpisodeFetchSkipsOnlyWhenSourceIsUnknown() {
+        assertFalse(ViewerActivity.shouldSkipBackgroundNextEpisodeFetchForTest("ntk", true, true, false));
         assertTrue(ViewerActivity.shouldSkipBackgroundNextEpisodeFetchForTest(null, true, false, false));
-        assertTrue(ViewerActivity.shouldSkipBackgroundNextEpisodeFetchForTest("ntk", false, false, false));
+        assertFalse(ViewerActivity.shouldSkipBackgroundNextEpisodeFetchForTest("ntk", false, false, false));
     }
 
     @Test
@@ -46,14 +46,14 @@ public class ViewerActivityTest {
     }
 
     @Test
-    public void wfwfBackgroundNextEpisodeFetchSkipsWhenImagesAreMissing() {
-        assertTrue(ViewerActivity.shouldSkipBackgroundNextEpisodeFetchForTest("wfwf", false, false, false));
+    public void wfwfBackgroundNextEpisodeFetchWarmsMissingImages() {
+        assertFalse(ViewerActivity.shouldSkipBackgroundNextEpisodeFetchForTest("wfwf", false, false, false));
     }
 
     @Test
-    public void wfwfViewerKeepsFewerCachedRowsWithoutDataSaver() {
-        assertEquals(8, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", false));
-        assertEquals(18, ViewerActivity.viewerItemViewCacheSizeForTest("ntk", false));
+    public void wfwfViewerKeepsExtraRowsReadyWithoutDataSaver() {
+        assertEquals(14, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", false));
+        assertEquals(20, ViewerActivity.viewerItemViewCacheSizeForTest("ntk", false));
         assertEquals(8, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", true));
     }
 
@@ -91,8 +91,15 @@ public class ViewerActivityTest {
     }
 
     @Test
-    public void nextEpisodePrefetchWaitsUntilInitialFrameSettles() {
-        assertTrue(ViewerActivity.initialNextEpisodePrefetchDelayMsForTest() >= 1000L);
+    public void nextEpisodePrefetchStartsSoonAfterInitialFrameSettles() {
+        assertTrue(ViewerActivity.initialNextEpisodePrefetchDelayMsForTest() >= 250L);
+        assertTrue(ViewerActivity.initialNextEpisodePrefetchDelayMsForTest() <= 500L);
+    }
+
+    @Test
+    public void transientEmptyViewerRetryStaysShort() {
+        assertTrue(ViewerActivity.transientEmptyFirstFrameRetryDelayMsForTest() >= 400L);
+        assertTrue(ViewerActivity.transientEmptyFirstFrameRetryDelayMsForTest() <= 800L);
     }
 
     @Test

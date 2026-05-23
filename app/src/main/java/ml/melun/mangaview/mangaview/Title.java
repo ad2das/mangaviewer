@@ -183,10 +183,25 @@ public class Title extends MTitle {
         try {
             String segment = ntkSegment();
             String titlePath = ntkTitlePath(segment);
+            if(allowPathRefresh) {
+                refreshNtkTitlePathFromSearch(client, segment, titlePath);
+                titlePath = ntkTitlePath(segment);
+            }
             String titleKey = ntkTitleKey(segment);
-            CustomHttpClient.PageResponse page = client.mgetCachedPage(titlePath, PAGE_CACHE_TTL_MS);
+            CustomHttpClient.PageResponse page;
+            try {
+                page = client.mgetCachedPage(titlePath, PAGE_CACHE_TTL_MS);
+            } catch(Exception e) {
+                if(allowPathRefresh && refreshNtkTitlePathFromApi(client, segment, titlePath))
+                    return fetchNtkEps(client, false);
+                if(isNtkLoadBlocked(e))
+                    return LOAD_CAPTCHA;
+                throw e;
+            }
             if(client.isCloudflareChallengeResponse(page.code, page.body) || looksLikeNtkErrorPage(page.body)) {
                 logNtkEpisodeParse("challenge_or_error", page, segment, 0, 0);
+                if(allowPathRefresh && refreshNtkTitlePathFromApi(client, segment, titlePath))
+                    return fetchNtkEps(client, false);
                 return LOAD_CAPTCHA;
             }
             if(page.code >= 400 || looksLikeNtkMissingPage(page.body)) {
@@ -820,7 +835,8 @@ public class Title extends MTitle {
 
     private boolean refreshNtkTitlePathFromSearch(CustomHttpClient client, String segment, String currentPath) {
         try {
-            String searchPath = "/search?q=" + ntkEncodeQuery(name.trim());
+            String searchPath = "/search?q=" + ntkEncodeQuery(name.trim())
+                    + "&kind=" + ("webtoon".equals(segment) ? "webtoon" : "manhwa");
             CustomHttpClient.PageResponse page = client.mgetCachedPage(searchPath, PAGE_CACHE_TTL_MS);
             if(client.isCloudflareChallengeResponse(page.code, page.body) || page.code >= 400)
                 return false;
@@ -836,8 +852,13 @@ public class Title extends MTitle {
 
     private boolean applyNtkTitlePathRefresh(String segment, String sourceWorkId, String currentPath) {
         String refreshedPath = ntkApiTitlePath(segment, sourceWorkId);
-        if(refreshedPath.length() == 0 || refreshedPath.equals(currentPath))
+        if(refreshedPath.length() == 0)
             return false;
+        if(refreshedPath.equals(currentPath)) {
+            setSourceSite("ntk");
+            Log.d(TAG, "ntk_episode_path_refresh_retry path=" + refreshedPath + ",name=" + name);
+            return true;
+        }
         int refreshedId = parsePositiveInt(sourceWorkId);
         if(refreshedId > 0)
             id = refreshedId;
@@ -885,6 +906,11 @@ public class Title extends MTitle {
 
     static String ntkSearchTitlePathForTest(String html, String segment, String expectedTitle) {
         return findNtkSearchTitlePath(Jsoup.parse(html == null ? "" : html), segment, expectedTitle);
+    }
+
+    static boolean shouldRetrySameNtkTitlePathRefreshForTest(String segment, String sourceWorkId, String currentPath) {
+        String refreshedPath = ntkApiTitlePath(segment, sourceWorkId);
+        return refreshedPath.length() > 0 && refreshedPath.equals(currentPath);
     }
 
     static List<Manga> parseNtkEpisodesForTest(String html, String segment, String titleKey, int baseMode) {

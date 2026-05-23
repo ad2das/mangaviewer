@@ -69,9 +69,9 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private static final int DATA_SAVE_PRELOAD_AHEAD_COUNT = 5;
     private static final int INITIAL_PRELOAD_AHEAD_COUNT = 8;
     private static final int PRELOAD_TRACK_LIMIT = 500;
-    private static final int DECODED_PRELOAD_ACTIVE_LIMIT = 3;
+    private static final int DECODED_PRELOAD_ACTIVE_LIMIT = 4;
     private static final int IMAGE_LOAD_RETRY_LIMIT = 3;
-    private static final long SCROLL_IDLE_PRELOAD_DELAY_MS = 80L;
+    private static final long SCROLL_IDLE_PRELOAD_DELAY_MS = 60L;
     private static final long SCROLL_IDLE_HEIGHT_CORRECTION_DELAY_MS = 180L;
     private static final String PAYLOAD_HEIGHT = "height";
     ViewerActivity.InfiniteScrollCallback callback;

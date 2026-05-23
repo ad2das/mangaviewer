@@ -89,6 +89,12 @@ public class TitleTest {
     }
 
     @Test
+    public void ntkTitlePathRefreshRetriesWhenSearchFindsSamePath() {
+        assertTrue(Title.shouldRetrySameNtkTitlePathRefreshForTest(
+                "manhwa", "/manhwa/7843", "/manhwa/7843"));
+    }
+
+    @Test
     public void ntkTitleMissingPageIgnoresNextErrorTokensWhenEpisodesExist() {
         assertFalse(Title.looksLikeNtkMissingPageForTest(
                 "<html><body><script>self.__next_f.push([\"$\",\"__next_error__\"])</script>"

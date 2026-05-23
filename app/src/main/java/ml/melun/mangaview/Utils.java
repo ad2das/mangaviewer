@@ -725,7 +725,7 @@ public class Utils {
         copy.addThumb(source.getThumb());
         copy.setMode(source.getMode());
         copy.setTitleId(source.getTitleId());
-        copy.setNtkEpisodePath(source.getNtkEpisodePath());
+        copy.setNtkEpisodePath(source.hasExplicitNtkEpisodePath() ? source.getNtkEpisodePath() : "");
         copy.setOfflinePath(source.getOfflinePath());
         if(includeImages) {
             try {

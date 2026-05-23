@@ -1,9 +1,13 @@
 package ml.melun.mangaview.mangaview;
 
+import com.google.gson.Gson;
+
 import org.junit.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+
+import ml.melun.mangaview.Utils;
 
 import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
 import static org.junit.Assert.assertEquals;
@@ -248,6 +252,11 @@ public class MangaEpisodeNavigationTest {
         legacyVisibleNinety.setEps(episodes);
 
         assertEquals("/manhwa/7843/1665286", legacyVisibleNinety.getNtkEpisodePath());
+        assertFalse(legacyVisibleNinety.hasExplicitNtkEpisodePath());
+        assertTrue(actualNinety.hasExplicitNtkEpisodePath());
+        Manga viewerCopy = new Gson().fromJson(Utils.toViewerMangaJson(legacyVisibleNinety, title), Manga.class);
+        assertFalse(viewerCopy.hasExplicitNtkEpisodePath());
+        assertEquals("/manhwa/7843/1665286", viewerCopy.getNtkEpisodePath());
         assertTrue(Manga.sameEpisodeIdentity(actualNinety, legacyVisibleNinety));
         assertFalse(Manga.sameEpisodeIdentity(actualEightySeven, legacyVisibleNinety));
         assertEquals("서머타임 렌더링 91화", legacyVisibleNinety.nextEp().getName());

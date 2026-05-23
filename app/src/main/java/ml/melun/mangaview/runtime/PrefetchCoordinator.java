@@ -155,7 +155,7 @@ public final class PrefetchCoordinator {
         if(dataSave)
             return 1;
         if(ntkSite)
-            return 1;
+            return aggressiveAllowed ? 2 : 1;
         return aggressiveAllowed ? 2 : 1;
     }
 

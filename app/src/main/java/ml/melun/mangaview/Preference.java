@@ -772,11 +772,7 @@ public class Preference {
             host = host.toLowerCase(Locale.ROOT);
             if(host.startsWith("www."))
                 host = host.substring(4);
-            String defaultHost = URI.create(normalizeHttpUrl(NTK_WEBTOON_URL, "")).getHost();
-            if(defaultHost != null && defaultHost.startsWith("www."))
-                defaultHost = defaultHost.substring(4);
-            return "ntk01.com".equals(host)
-                    || ("sbxh1.com".equals(host) && !"sbxh1.com".equals(defaultHost));
+            return "ntk01.com".equals(host);
         } catch (Exception e) {
             return false;
         }

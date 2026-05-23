@@ -212,6 +212,6 @@ public class ViewerWarmupManagerTest {
 
     @Test
     public void decodedWarmupActiveLimitStaysConservative() {
-        assertTrue(ViewerWarmupManager.decodedTargetActiveSoftLimitForTest() <= 5);
+        assertTrue(ViewerWarmupManager.decodedTargetActiveSoftLimitForTest() <= 6);
     }
 }
