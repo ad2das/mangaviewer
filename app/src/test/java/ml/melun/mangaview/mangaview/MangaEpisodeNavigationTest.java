@@ -206,6 +206,30 @@ public class MangaEpisodeNavigationTest {
     }
 
     @Test
+    public void ntkPathlessVisibleEpisodeResolvesByVisibleNumberBeforeNextNavigation() {
+        Title title = new Title("서머타임 렌더링", "", "", new ArrayList<>(), "", 7843, MTitle.base_comic);
+        title.setSourceSite("ntk");
+        Manga actualNinetyOne = ntkEpisode(title, 95, "서머타임 렌더링 91화", "/manhwa/7843/1666521");
+        Manga actualNinety = ntkEpisode(title, 94, "서머타임 렌더링 90화", "/manhwa/7843/1665286");
+        Manga actualEightySeven = ntkEpisode(title, 91, "서머타임 렌더링 87화", "/manhwa/7843/1660630");
+        List<Manga> episodes = new ArrayList<>();
+        episodes.add(actualNinetyOne);
+        episodes.add(actualNinety);
+        episodes.add(actualEightySeven);
+        title.setEps(episodes);
+
+        Manga legacyVisibleNinety = new Manga(90, "서머타임 렌더링 90화", "", MTitle.base_comic);
+        legacyVisibleNinety.setTitle(title);
+        legacyVisibleNinety.setTitleId(title.getId());
+        legacyVisibleNinety.setEps(episodes);
+
+        assertEquals("/manhwa/7843/1665286", legacyVisibleNinety.getNtkEpisodePath());
+        assertTrue(Manga.sameEpisodeIdentity(actualNinety, legacyVisibleNinety));
+        assertFalse(Manga.sameEpisodeIdentity(actualEightySeven, legacyVisibleNinety));
+        assertEquals("서머타임 렌더링 91화", legacyVisibleNinety.nextEp().getName());
+    }
+
+    @Test
     public void cleanViewerEpisodeNameRemovesToolbarProgressPrefix() {
         assertEquals("서머타임 렌더링 92화", Manga.cleanViewerEpisodeName("(97/144) 서머타임 렌더링 92화"));
         assertEquals("서머타임 렌더링 02화", Manga.cleanViewerEpisodeName("서머타임 렌더링 02화"));
@@ -237,5 +261,13 @@ public class MangaEpisodeNavigationTest {
         }
         title.setEps(episodes);
         return title;
+    }
+
+    private Manga ntkEpisode(Title title, int id, String name, String path) {
+        Manga episode = new Manga(id, name, "", MTitle.base_comic);
+        episode.setTitle(title);
+        episode.setTitleId(title.getId());
+        episode.setNtkEpisodePath(path);
+        return episode;
     }
 }

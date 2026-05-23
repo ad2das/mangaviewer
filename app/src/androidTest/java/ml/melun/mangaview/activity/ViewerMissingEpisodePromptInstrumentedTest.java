@@ -111,6 +111,51 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
         }
     }
 
+    @Test
+    public void ntkSummertimeNextFromPathless90Opens91Not87() {
+        Title title = fetchNtkSummertimeRendering();
+        ArrayList<Manga> episodes = Utils.snapshotEpisodes(title);
+        Manga actual90 = findEpisode(episodes, 90);
+        Manga actual91 = findEpisode(episodes, 91);
+        Manga actual87 = findEpisode(episodes, 87);
+
+        assertNotNull("Expected NTK Summertime Rendering 90화", actual90);
+        assertNotNull("Expected NTK Summertime Rendering 91화", actual91);
+        assertNotNull("Expected NTK Summertime Rendering 87화", actual87);
+        assertFalse("NTK 90화 and 87화 should be different source paths",
+                actual90.getNtkEpisodePath().equals(actual87.getNtkEpisodePath()));
+
+        actual90.setImgs(Collections.singletonList("https://example.com/ntk-summertime-90.jpg"));
+        actual91.setImgs(Collections.singletonList("https://example.com/ntk-summertime-91.jpg"));
+
+        Manga legacyVisible90 = new Manga(90, "서머타임 렌더링 90화", "", MTitle.base_comic);
+        legacyVisible90.setTitle(title);
+        legacyVisible90.setTitleId(title.getId());
+        legacyVisible90.setEps(episodes);
+        legacyVisible90.setImgs(Collections.singletonList("https://example.com/legacy-ntk-summertime-90.jpg"));
+
+        assertEquals("Pathless legacy 90화 should resolve to actual NTK 90화 path before opening",
+                actual90.getNtkEpisodePath(), legacyVisible90.getNtkEpisodePath());
+
+        Activity activity = InstrumentationRegistry.getInstrumentation().startActivitySync(viewerIntent(legacyVisible90, title));
+        try {
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            assertTrue("Expected viewer to start on NTK 90화",
+                    waitForToolbarTitle(activity, "90화", 10000));
+
+            View next = waitForEnabledView(activity, R.id.toolbar_next, 10000);
+            assertNotNull("Expected NTK 90화 next button to be enabled", next);
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(next::performClick);
+
+            assertTrue("Expected NTK next from 90화 to open 91화",
+                    waitForToolbarTitle(activity, "91화", 60000));
+            assertFalse("NTK next from 90화 must not land on 87화",
+                    toolbarTitle(activity).contains("87화"));
+        } finally {
+            activity.finish();
+        }
+    }
+
     private Title fetchWfwfSummertimeRendering() {
         MainApplication.p.setSitePreset("https://wfwf453.com/cm", "https://wfwf453.com");
         MainApplication.p.setBaseMode(MTitle.base_comic);

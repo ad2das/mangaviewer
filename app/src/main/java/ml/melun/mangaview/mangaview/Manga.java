@@ -108,6 +108,7 @@ public class Manga {
     private String matchingNtkEpisodePath(List<Manga> episodes) {
         if(episodes == null || episodes.size() == 0)
             return "";
+        String currentEpisodeNumber = episodeNumberKey(name);
         List<Manga> snapshot;
         try {
             snapshot = new ArrayList<>(episodes);
@@ -115,10 +116,18 @@ public class Manga {
             return "";
         }
         for(Manga episode : snapshot) {
-            if(episode == null || episode == this || episode.getId() != id || !sameSeriesEpisode(episode))
+            if(episode == null || episode == this || !sameSeriesEpisode(episode))
                 continue;
             String path = episode.ntkEpisodePath == null ? "" : episode.ntkEpisodePath.trim();
-            if(path.length() > 0)
+            if(path.length() == 0)
+                continue;
+            String episodeNumber = episodeNumberKey(episode.getName());
+            if(currentEpisodeNumber.length() > 0 && episodeNumber.length() > 0) {
+                if(currentEpisodeNumber.equals(episodeNumber))
+                    return path;
+                continue;
+            }
+            if(episode.getId() == id)
                 return path;
         }
         return "";
@@ -1415,18 +1424,16 @@ public class Manga {
     public static boolean sameEpisodeIdentity(Manga first, Manga second) {
         if(first == null || second == null)
             return false;
-        if(first.getId() != second.getId() || first.getBaseMode() != second.getBaseMode())
+        if(first.getBaseMode() != second.getBaseMode())
             return false;
         int firstTitleId = resolvedTitleId(first);
         int secondTitleId = resolvedTitleId(second);
         if(firstTitleId > 0 && secondTitleId > 0 && firstTitleId != secondTitleId)
             return false;
-        if(usesNtkPathDisambiguation(first, second)) {
-            String firstPath = ntkEpisodePathKey(first);
-            String secondPath = ntkEpisodePathKey(second);
-            if(firstPath.length() > 0 && secondPath.length() > 0 && !firstPath.equals(secondPath))
-                return false;
-        }
+        if(usesNtkIdentity(first, second))
+            return sameNtkEpisodeIdentity(first, second);
+        if(first.getId() != second.getId())
+            return false;
         if(usesEpisodeNameDisambiguation(first, second)) {
             String firstName = episodeNameKey(first.getName());
             String secondName = episodeNameKey(second.getName());
@@ -1434,6 +1441,22 @@ public class Manga {
                 return false;
         }
         return true;
+    }
+
+    private static boolean sameNtkEpisodeIdentity(Manga first, Manga second) {
+        String firstPath = ntkEpisodePathKey(first);
+        String secondPath = ntkEpisodePathKey(second);
+        if(firstPath.length() > 0 && secondPath.length() > 0)
+            return firstPath.equals(secondPath);
+        String firstNumber = episodeNumberKey(first.getName());
+        String secondNumber = episodeNumberKey(second.getName());
+        if(firstNumber.length() > 0 && secondNumber.length() > 0)
+            return firstNumber.equals(secondNumber);
+        if(first.getId() != second.getId())
+            return false;
+        String firstName = episodeNameKey(first.getName());
+        String secondName = episodeNameKey(second.getName());
+        return firstName.length() == 0 || secondName.length() == 0 || firstName.equals(secondName);
     }
 
     public static String episodeIdentityKey(Manga manga) {
@@ -1459,10 +1482,10 @@ public class Manga {
     }
 
     private static boolean usesEpisodeNameDisambiguation(Manga first, Manga second) {
-        return isWfwfEpisode(first) || isWfwfEpisode(second) || isNtkEpisode(first) || isNtkEpisode(second);
+        return isWfwfEpisode(first) || isWfwfEpisode(second);
     }
 
-    private static boolean usesNtkPathDisambiguation(Manga first, Manga second) {
+    private static boolean usesNtkIdentity(Manga first, Manga second) {
         return isNtkEpisode(first) || isNtkEpisode(second);
     }
 
@@ -1492,13 +1515,24 @@ public class Manga {
             return "";
         String value = name.trim().toLowerCase(Locale.ROOT)
                 .replaceFirst("^\\(\\s*\\d+\\s*/\\s*\\d+\\s*\\)\\s*", "");
+        String episodeNumbers = episodeNumberKey(value);
+        if(episodeNumbers.length() > 0)
+            return episodeNumbers;
+        return value.replaceAll("\\s+", "");
+    }
+
+    private static String episodeNumberKey(String name) {
+        if(name == null)
+            return "";
+        String value = name.trim().toLowerCase(Locale.ROOT)
+                .replaceFirst("^\\(\\s*\\d+\\s*/\\s*\\d+\\s*\\)\\s*", "");
         Matcher matcher = Pattern.compile("(\\d+(?:\\s*,\\s*\\d+)*)\\s*화").matcher(value);
         String episodeNumbers = "";
         while(matcher.find())
             episodeNumbers = matcher.group(1);
         if(episodeNumbers.length() > 0)
             return normalizeEpisodeNumbers(episodeNumbers);
-        return value.replaceAll("\\s+", "");
+        return "";
     }
 
     private static String normalizeEpisodeNumbers(String value) {
