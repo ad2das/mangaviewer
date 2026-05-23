@@ -73,6 +73,8 @@ import ml.melun.mangaview.interfaces.StringCallback;
 import ml.melun.mangaview.repository.DownloadRepository;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.PreparedViewerLaunch;
+import ml.melun.mangaview.runtime.ViewerPreparationCoordinator;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
@@ -355,30 +357,22 @@ public class Utils {
         int width = context instanceof Activity
                 ? getScreenWidth(((Activity) context).getWindowManager().getDefaultDisplay())
                 : context.getResources().getDisplayMetrics().widthPixels;
-        AppDispatchers.main().postDelayed(() -> launchPreparedViewer(context, manga, code, returnToEpisodes,
-                        online, recent, title, includeTitleEpisodes, launchToken, true),
-                exactLaunchFallbackMs(title));
         AppDispatchers.submitNavigation(() -> {
-            Manga prepared = ViewerWarmupManager.usePreparedExactFirstFrame(appContext, manga, title, false, p.getReverse(), 0);
-            if(prepared == null) {
-                try {
-                    int result = ViewerWarmupManager.prepareFirstFrameDirectOnly(appContext, manga, title, 0, width,
-                            false, p.getReverse(), MangaRepository.cancellation());
-                    if(result == Title.LOAD_OK) {
-                        ViewerWarmupManager.waitForFirstDecodedFrame(appContext, manga, 0, width,
-                                false, p.getReverse(), exactFirstFrameWaitMs(title));
-                        prepared = ViewerWarmupManager.usePreparedExactFirstFrame(appContext, manga, title, false, p.getReverse(), 0);
-                    } else if(shouldAllowExactForegroundFallback(title)) {
-                        prepared = ViewerWarmupManager.prepareClickFirstFrame(appContext, manga, title, false, p.getReverse());
-                    }
-                } catch(Exception e) {
-                    ml.melun.mangaview.report.CrashReporter.record(e);
-                }
+            PreparedViewerLaunch prepared = ViewerPreparationCoordinator.prepareExact(appContext, manga, title, 0,
+                    width, false, p.getReverse(), MangaRepository.cancellation(), exactFirstFrameWaitMs(title),
+                    shouldAllowExactForegroundFallback(title));
+            if(!prepared.canLaunch()) {
+                ViewerWarmupManager.logMetric("viewer_exact_unprepared_blocked", manga == null ? -1 : manga.getId());
+                AppDispatchers.runOnMain(() -> showViewerPreparationIssue(context, launchToken, prepared, manga));
+                return;
             }
-            Manga launchManga = prepared != null ? prepared : manga;
-            Title launchTitle = title != null ? title : launchManga.getTitle();
+            Manga launchManga = prepared.getManga();
+            Title launchTitle = title != null ? title : prepared.getTitle();
+            if(launchTitle == null && launchManga != null)
+                launchTitle = launchManga.getTitle();
+            final Title finalLaunchTitle = launchTitle;
             AppDispatchers.runOnMain(() -> launchPreparedViewer(context, launchManga, code, returnToEpisodes,
-                    online, recent, launchTitle, includeTitleEpisodes, launchToken, true));
+                    online, recent, finalLaunchTitle, includeTitleEpisodes, launchToken, true));
         });
     }
 
@@ -389,10 +383,6 @@ public class Utils {
 
     static long exactFirstFrameWaitMsForTest(String sourceSite, boolean ntkSite) {
         return exactFirstFrameWaitMs(sourceSite, ntkSite);
-    }
-
-    static long exactLaunchFallbackMsForTest(String sourceSite, boolean ntkSite) {
-        return exactLaunchFallbackMs(sourceSite, ntkSite);
     }
 
     static boolean shouldAllowExactForegroundFallbackForTest(String sourceSite, boolean ntkSite) {
@@ -415,15 +405,6 @@ public class Utils {
         return 350L;
     }
 
-    private static long exactLaunchFallbackMs(Title title) {
-        String source = title == null ? "" : title.getSourceSite();
-        return exactLaunchFallbackMs(source, p != null && p.isNtkSite());
-    }
-
-    private static long exactLaunchFallbackMs(String sourceSite, boolean ntkSite) {
-        return exactFirstFrameWaitMs(sourceSite, ntkSite);
-    }
-
     private static boolean shouldAllowExactForegroundFallback(String sourceSite, boolean ntkSite) {
         String source = sourceSite == null ? "" : sourceSite.trim().toLowerCase(Locale.ROOT);
         if("ntk".equals(source))
@@ -442,26 +423,31 @@ public class Utils {
                             online, recent, title, includeTitleEpisodes, launchToken, false),
                     continueLaunchFallbackMs(title));
         AppDispatchers.submitNavigation(() -> {
-            Manga prepared = ViewerWarmupManager.usePreparedFirstFrame(appContext, manga, title, false, p.getReverse());
-            if(prepared == null)
-                prepared = ViewerWarmupManager.prepareClickFirstFrame(appContext, manga, title, false, p.getReverse());
-            if(prepared == null)
-                prepared = ViewerWarmupManager.usePreparedFirstFrame(appContext, manga, title, false, p.getReverse());
-            if(prepared == null && shouldBlockUnpreparedContinueFallback(manga)) {
+            PreparedViewerLaunch prepared = ViewerPreparationCoordinator.prepareContinue(appContext, manga, title,
+                    false, p.getReverse(), MangaRepository.cancellation());
+            if(!prepared.canLaunch() && shouldBlockUnpreparedContinueFallback(manga)) {
                 ViewerWarmupManager.logMetric("viewer_continue_unprepared_blocked", manga.getId());
-                AppDispatchers.runOnMain(() -> showContinuePreparationToast(context, launchToken));
+                AppDispatchers.runOnMain(() -> showViewerPreparationIssue(context, launchToken, prepared, manga));
                 return;
             }
-            Manga launchManga = prepared != null ? prepared : manga;
-            Title launchTitle = title != null ? title : launchManga.getTitle();
+            Manga launchManga = prepared.canLaunch() ? prepared.getManga() : manga;
+            Title launchTitle = title != null ? title : prepared.getTitle();
+            if(launchTitle == null && launchManga != null)
+                launchTitle = launchManga.getTitle();
+            final Title finalLaunchTitle = launchTitle;
             AppDispatchers.runOnMain(() -> launchPreparedViewer(context, launchManga, code, returnToEpisodes,
-                    online, recent, launchTitle, includeTitleEpisodes, launchToken, false));
+                    online, recent, finalLaunchTitle, includeTitleEpisodes, launchToken, false));
         });
     }
 
-    private static void showContinuePreparationToast(Context context, int launchToken) {
+    private static void showViewerPreparationIssue(Context context, int launchToken,
+                                                   PreparedViewerLaunch prepared, Manga manga) {
         if(!cancelViewerLaunchToken(context, launchToken))
             return;
+        if(prepared != null && prepared.isCaptcha()) {
+            showCaptchaPopup(Manga.safeUrl(manga), context, REQUEST_CAPTCHA, p);
+            return;
+        }
         Toast.makeText(context, "회차 준비 중입니다. 잠시 후 다시 눌러주세요.", Toast.LENGTH_SHORT).show();
     }
 

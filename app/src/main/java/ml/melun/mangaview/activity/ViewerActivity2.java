@@ -62,6 +62,8 @@ import ml.melun.mangaview.model.PageItem;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
+import ml.melun.mangaview.runtime.PreparedViewerLaunch;
+import ml.melun.mangaview.runtime.ViewerPreparationCoordinator;
 import ml.melun.mangaview.ui.CustomSpinner;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -985,8 +987,9 @@ public class ViewerActivity2 extends AppCompatActivity {
                 if(!startAtFirstPage && allowResumeFallback && ViewerResumeResolver.shouldResolveBeforeDirectFetch(manga, title)) {
                     res = prepareFirstAvailableManga(firstPage, true, cancellation);
                 } else {
-                    res = ViewerWarmupManager.prepareFirstFrame(context, manga, title, firstPage, swidth, false, reverse, cancellation);
-                    if(!startAtFirstPage && allowResumeFallback && (res == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !hasLoadedImages()))
+                    res = ViewerWarmupManager.prepareFirstFrameReady(context, manga, title, firstPage, swidth,
+                            false, reverse, cancellation, initialFirstFrameWaitMs());
+                    if(!startAtFirstPage && allowResumeFallback && (isBlockingLoadFailure(res) || !hasLoadedImages()))
                         res = prepareFirstAvailableManga(firstPage, false, cancellation);
                 }
                 if(title == null)
@@ -1010,7 +1013,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                 return;
             }
 
-            if(res == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !hasLoadedImages()) {
+            if(isBlockingLoadFailure(res) || !hasLoadedImages()) {
                 showViewerImagesUnavailable();
                 return;
             }
@@ -1045,27 +1048,30 @@ public class ViewerActivity2 extends AppCompatActivity {
     }
 
     private int prepareFirstAvailableManga(int firstPage, boolean skipTarget, MangaRepository.Cancellation cancellation) throws Exception {
-        int lastResult = ViewerWarmupManager.LOAD_EMPTY_IMAGES;
         Title currentTitle = title != null ? title : manga == null ? null : manga.getTitle();
-        for(Manga candidate : ViewerResumeResolver.candidates(manga, currentTitle, skipTarget)) {
-            int page = ViewerResumeResolver.sameManga(candidate, manga) ? firstPage : 0;
-            int result = ViewerWarmupManager.prepareFirstFrame(context, candidate, currentTitle, page, swidth, false, reverse, cancellation);
-            if(result == LOAD_CAPTCHA)
-                return result;
-            lastResult = result;
-            List<String> images = MangaRepository.imageUrls(candidate, context);
-            if(result == 0 && images != null && images.size() > 0) {
-                if(!ViewerResumeResolver.sameManga(candidate, manga))
-                    ViewerWarmupManager.logMetric("viewer_resume_episode_fallback", candidate.getId());
-                manga = candidate;
-                id = candidate.getId();
-                name = candidate.getName();
-                if(candidate.getTitle() != null)
-                    title = candidate.getTitle();
-                return 0;
-            }
+        PreparedViewerLaunch prepared = ViewerPreparationCoordinator.prepareFirstReadyCandidate(context, manga,
+                currentTitle, firstPage, swidth, false, reverse, cancellation, skipTarget, initialFirstFrameWaitMs());
+        if(prepared.canLaunch()) {
+            Manga candidate = prepared.getManga();
+            manga = candidate;
+            id = candidate.getId();
+            name = candidate.getName();
+            if(prepared.getTitle() != null)
+                title = prepared.getTitle();
+            else if(candidate.getTitle() != null)
+                title = candidate.getTitle();
+            return 0;
         }
-        return lastResult;
+        return prepared.getResultCode();
+    }
+
+    private boolean isBlockingLoadFailure(int result) {
+        return result == ViewerWarmupManager.LOAD_EMPTY_IMAGES
+                || result == ViewerWarmupManager.LOAD_FIRST_FRAME_PENDING;
+    }
+
+    private long initialFirstFrameWaitMs() {
+        return ViewerPreparationCoordinator.continueClickWaitMs(p != null && p.getDataSave());
     }
 
     private boolean isActiveImageRequest(int generation, int mangaId, int bookmark) {

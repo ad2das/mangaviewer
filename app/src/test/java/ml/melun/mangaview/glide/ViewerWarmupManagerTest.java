@@ -178,8 +178,8 @@ public class ViewerWarmupManagerTest {
 
     @Test
     public void continueWarmupWaitsBrieflyForFirstDecodedFrame() {
-        assertEquals(420L, ViewerWarmupManager.continueFirstFrameWaitMsForTest(false));
-        assertEquals(260L, ViewerWarmupManager.continueFirstFrameWaitMsForTest(true));
+        assertEquals(1800L, ViewerWarmupManager.continueFirstFrameWaitMsForTest(false));
+        assertEquals(1200L, ViewerWarmupManager.continueFirstFrameWaitMsForTest(true));
     }
 
     @Test

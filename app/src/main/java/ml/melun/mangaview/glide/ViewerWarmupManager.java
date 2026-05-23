@@ -53,6 +53,7 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_OK;
 
 public class ViewerWarmupManager {
     public static final int LOAD_EMPTY_IMAGES = -2;
+    public static final int LOAD_FIRST_FRAME_PENDING = -3;
     private static final String TAG = "ViewerPerf";
     private static final int ACTIVE_LIMIT = 36;
     private static final int DECODED_TARGET_LIMIT = 48;
@@ -365,6 +366,11 @@ public class ViewerWarmupManager {
     }
 
     public static Manga prepareClickFirstFrame(Context context, Manga manga, Title title, boolean autoCut, boolean reverse) {
+        return prepareClickFirstFrame(context, manga, title, autoCut, reverse, MangaRepository.cancellation());
+    }
+
+    public static Manga prepareClickFirstFrame(Context context, Manga manga, Title title, boolean autoCut,
+                                               boolean reverse, MangaRepository.Cancellation cancellation) {
         if(context == null || manga == null)
             return null;
         if(!manga.isOnline())
@@ -379,7 +385,7 @@ public class ViewerWarmupManager {
             title = manga.getTitle();
         }
         if(!sourceMatchesCurrentSite(title))
-            return manga;
+            return null;
         Context appContext = context.getApplicationContext();
         int width = viewerWidth(context);
         int firstPage = manga.useBookmark() ? p.getViewerBookmark(manga) : 0;
@@ -397,9 +403,11 @@ public class ViewerWarmupManager {
             if(hasImages(warmed, appContext)) {
                 preloadLoadedImages(appContext, warmed, firstPage, width, autoCut, reverse, p.getDataSave() ? 6 : 12, Priority.IMMEDIATE, p.getDataSave() ? 1 : 2);
                 waitForContinueFirstFrame(appContext, warmed, firstPage, width, autoCut, reverse, true);
-                logMetric(hasDecodedFrame(appContext, warmed, firstPage, width, autoCut, reverse)
-                        ? "viewer_click_continue_snapshot" : "viewer_click_continue_url_snapshot", warmed.getId());
-                return warmed;
+                if(hasDecodedFrame(appContext, warmed, firstPage, width, autoCut, reverse)) {
+                    logMetric("viewer_click_continue_snapshot", warmed.getId());
+                    return warmed;
+                }
+                logMetric("viewer_click_continue_pending_snapshot", warmed.getId());
             }
         }
         Title clickTitle = title;
@@ -423,7 +431,8 @@ public class ViewerWarmupManager {
                     if(currentTitle != null)
                         attachTitle(currentTitle, candidate);
                     int page = ViewerResumeResolver.sameManga(candidate, target) ? clickFirstPage : 0;
-                    int result = prepareFirstFrame(appContext, candidate, currentTitle, page, width, autoCut, reverse, MangaRepository.cancellation());
+                    int result = prepareFirstFrame(appContext, candidate, currentTitle, page, width, autoCut, reverse,
+                            cancellation == null ? MangaRepository.cancellation() : cancellation);
                     if(result != LOAD_OK || !hasImages(candidate, appContext))
                         continue;
                     preloadLoadedImages(appContext, candidate, page, width, autoCut, reverse, p.getDataSave() ? 6 : 12, Priority.IMMEDIATE, p.getDataSave() ? 1 : 2);
@@ -433,9 +442,8 @@ public class ViewerWarmupManager {
                         cacheContinueSnapshot(appContext, scheduleKey, candidate);
                         return candidate;
                     } else {
-                        logMetric("viewer_click_url_ready", candidate.getId());
+                        logMetric("viewer_click_first_frame_pending", candidate.getId());
                         cacheContinueSnapshot(appContext, scheduleKey, candidate);
-                        return candidate;
                     }
                 }
                 return null;
@@ -645,6 +653,30 @@ public class ViewerWarmupManager {
     public static int prepareFirstFrameDirectOnly(Context context, Manga manga, Title title, int pageIndex, int width,
                                                   boolean autoCut, boolean reverse, MangaRepository.Cancellation cancellation) throws Exception {
         return runDirectOnly(() -> prepareFirstFrame(context, manga, title, pageIndex, width, autoCut, reverse, cancellation));
+    }
+
+    public static int prepareFirstFrameReady(Context context, Manga manga, Title title, int pageIndex, int width,
+                                             boolean autoCut, boolean reverse, MangaRepository.Cancellation cancellation,
+                                             long waitMs) throws Exception {
+        int result = prepareFirstFrame(context, manga, title, pageIndex, width, autoCut, reverse, cancellation);
+        if(result != LOAD_OK)
+            return result;
+        if(!hasImages(manga, context))
+            return LOAD_EMPTY_IMAGES;
+        int normalizedPage = normalizePageIndex(manga, context, pageIndex);
+        if(hasDecodedFrame(context, manga, normalizedPage, width, autoCut, reverse))
+            return LOAD_OK;
+        if(waitMs > 0L && waitForFirstDecodedFrame(context, manga, normalizedPage, width, autoCut, reverse, waitMs))
+            return LOAD_OK;
+        logMetric("viewer_first_frame_pending", manga == null ? -1 : manga.getId());
+        return LOAD_FIRST_FRAME_PENDING;
+    }
+
+    public static boolean hasDecodedFirstFrame(Context context, Manga manga, int pageIndex, int width,
+                                               boolean autoCut, boolean reverse) {
+        if(context == null || manga == null || !manga.isOnline())
+            return false;
+        return hasDecodedFrame(context, manga, normalizePageIndex(manga, context, pageIndex), width, autoCut, reverse);
     }
 
     static boolean shouldRetryInitialViewerFetchForTest(int result, boolean hasImages, boolean cancelled) {
@@ -1197,7 +1229,7 @@ public class ViewerWarmupManager {
     }
 
     private static long continueFirstFrameWaitMs(boolean dataSave) {
-        return dataSave ? 260L : 420L;
+        return dataSave ? 1200L : 1800L;
     }
 
     private static boolean sourceMatchesCurrentSite(String sourceSite, boolean ntkSite) {

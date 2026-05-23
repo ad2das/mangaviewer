@@ -63,7 +63,9 @@ import ml.melun.mangaview.repository.CachePolicy;
 import ml.melun.mangaview.repository.EpisodeSnapshotCache;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.PreparedViewerLaunch;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
+import ml.melun.mangaview.runtime.ViewerPreparationCoordinator;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.MainApplication.getHttpClient;
@@ -1310,9 +1312,10 @@ public class ViewerActivity extends AppCompatActivity {
                             ViewerWarmupManager.preloadLoadedImages(context, m, firstPage, width, autoCut,
                                     p.getReverse(), p.getDataSave() ? 3 : 6, Priority.IMMEDIATE, 1);
                         } else if(result == LOAD_OK) {
-                            result = ViewerWarmupManager.prepareFirstFrame(context, m, title, firstPage, width, autoCut, p.getReverse(), cancellation);
+                            result = ViewerWarmupManager.prepareFirstFrameReady(context, m, title, firstPage, width,
+                                    autoCut, p.getReverse(), cancellation, initialFirstFrameWaitMs());
                         }
-                        if(allowsResumeFallback(policy) && (result == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !hasLoadedImages(m))) {
+                        if(allowsResumeFallback(policy) && (isBlockingLoadFailure(result) || !hasLoadedImages(m))) {
                             result = ensureEpisodeListLoaded(m);
                             PreparedManga prepared = result == LOAD_OK
                                     ? prepareFirstAvailableManga(m, firstPage, cancellation)
@@ -1321,7 +1324,7 @@ public class ViewerActivity extends AppCompatActivity {
                             if(prepared.manga != null)
                                 m = prepared.manga;
                         }
-                        if(result == ViewerWarmupManager.LOAD_EMPTY_IMAGES || (result == LOAD_OK && !hasLoadedImages(m)))
+                        if(isBlockingLoadFailure(result) || (result == LOAD_OK && !hasLoadedImages(m)))
                             result = retryTransientEmptyFirstFrame(result, firstPage);
                     }
                 } catch (Exception e) {
@@ -1349,11 +1352,12 @@ public class ViewerActivity extends AppCompatActivity {
             waitForTransientViewerImages();
             if(cancelled || cancellation.isCancelled())
                 return result;
-            int retry = ViewerWarmupManager.prepareFirstFrame(context, m, title, firstPage, width, autoCut,
-                    p.getReverse(), cancellation);
+            int retry = ViewerWarmupManager.prepareFirstFrameReady(context, m, title, firstPage, width, autoCut,
+                    p.getReverse(), cancellation, initialFirstFrameWaitMs());
             if(retry == LOAD_OK || hasLoadedImages(m))
                 ViewerWarmupManager.logMetric("viewer_empty_retry_recovered", m.getId());
-            if(retry == ViewerWarmupManager.LOAD_EMPTY_IMAGES && hasLoadedImages(m))
+            if(isBlockingLoadFailure(retry) && hasLoadedImages(m)
+                    && ViewerWarmupManager.hasDecodedFirstFrame(context, m, firstPage, width, autoCut, p.getReverse()))
                 return LOAD_OK;
             return retry;
         }
@@ -1428,7 +1432,7 @@ public class ViewerActivity extends AppCompatActivity {
                 showViewerCaptchaRequired(m);
                 return;
             }
-            if(result == ViewerWarmupManager.LOAD_EMPTY_IMAGES || !loadedImages) {
+            if(isBlockingLoadFailure(result) || !loadedImages) {
                 if(shouldSuppressBoundaryLoadError(lockui, hasViewerContent())) {
                     ViewerWarmupManager.logMetric("viewer_boundary_empty_suppressed", m == null ? -1 : m.getId());
                     if(callback != null)
@@ -1588,23 +1592,11 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private PreparedManga prepareFirstAvailableManga(Manga target, int firstPage, MangaRepository.Cancellation cancellation) throws Exception {
-        int lastResult = ViewerWarmupManager.LOAD_EMPTY_IMAGES;
         Title currentTitle = title != null ? title : target == null ? null : target.getTitle();
-        for(Manga candidate : ViewerResumeResolver.candidates(target, currentTitle, shouldResolveResumeBeforeDirectFetch(target))) {
-            if(candidate == null)
-                continue;
-            int page = ViewerResumeResolver.sameManga(candidate, target) ? firstPage : 0;
-            int result = ViewerWarmupManager.prepareFirstFrame(context, candidate, title, page, width, autoCut, p.getReverse(), cancellation);
-            if(result == LOAD_CAPTCHA)
-                return new PreparedManga(null, result);
-            lastResult = result;
-            if(result == LOAD_OK && hasLoadedImages(candidate)) {
-                if(!ViewerResumeResolver.sameManga(candidate, target))
-                    ViewerWarmupManager.logMetric("viewer_resume_episode_fallback", candidate.getId());
-                return new PreparedManga(candidate, LOAD_OK);
-            }
-        }
-        return new PreparedManga(null, lastResult);
+        PreparedViewerLaunch prepared = ViewerPreparationCoordinator.prepareFirstReadyCandidate(context, target,
+                currentTitle, firstPage, width, autoCut, p.getReverse(), cancellation,
+                shouldResolveResumeBeforeDirectFetch(target), initialFirstFrameWaitMs());
+        return new PreparedManga(prepared.getManga(), prepared.canLaunch() ? LOAD_OK : prepared.getResultCode());
     }
 
     private List<Manga> resumeCandidates(Manga target, boolean skipTarget) {
@@ -2679,6 +2671,15 @@ public class ViewerActivity extends AppCompatActivity {
 
     private static boolean shouldRecoverEmptyLoadResult(int result, boolean hasLoadedImages) {
         return result == ViewerWarmupManager.LOAD_EMPTY_IMAGES && hasLoadedImages;
+    }
+
+    private static boolean isBlockingLoadFailure(int result) {
+        return result == ViewerWarmupManager.LOAD_EMPTY_IMAGES
+                || result == ViewerWarmupManager.LOAD_FIRST_FRAME_PENDING;
+    }
+
+    private long initialFirstFrameWaitMs() {
+        return ViewerPreparationCoordinator.continueClickWaitMs(p != null && p.getDataSave());
     }
 
     static boolean shouldSkipBackgroundNextEpisodeFetchForTest(String sourceSite, boolean ntkPreference, boolean ntkClient, boolean hasLoadedImages) {

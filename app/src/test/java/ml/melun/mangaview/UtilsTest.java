@@ -158,13 +158,6 @@ public class UtilsTest {
     }
 
     @Test
-    public void exactViewerLaunchFallsBackQuicklyWhenPreparationIsSlow() {
-        assertEquals(450L, Utils.exactLaunchFallbackMsForTest("wfwf", false));
-        assertEquals(450L, Utils.exactLaunchFallbackMsForTest("", false));
-        assertEquals(350L, Utils.exactLaunchFallbackMsForTest("ntk", true));
-    }
-
-    @Test
     public void continueViewerLaunchHasShortFallbackWhenPreparationIsSlow() {
         assertEquals(220L, Utils.continueLaunchFallbackMsForTest("wfwf", false));
         assertEquals(220L, Utils.continueLaunchFallbackMsForTest("", false));

@@ -19,7 +19,7 @@ import static ml.melun.mangaview.MainApplication.p;
 public final class ContinueReadinessCoordinator {
     private static final int COLD_START_LIMIT = 3;
     private static final int DATA_SAVE_COLD_START_LIMIT = 2;
-    private static final long SUBMIT_DEDUPE_MS = 500L;
+    private static final long SUBMIT_DEDUPE_MS = 2000L;
     private static final int SUBMITTED_LIMIT = 160;
     private static final Map<String, Long> submitted = new LinkedHashMap<>(64, 0.75f, true);
     private static volatile boolean coldStartPrimed = false;
@@ -164,6 +164,10 @@ public final class ContinueReadinessCoordinator {
 
     static int coldStartLimitForTest(boolean dataSave) {
         return coldStartLimit(dataSave);
+    }
+
+    static long submitDedupeMsForTest() {
+        return SUBMIT_DEDUPE_MS;
     }
 
     private static int coldStartLimit(boolean dataSave) {

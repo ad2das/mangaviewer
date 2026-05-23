@@ -12,6 +12,11 @@ public class ContinueReadinessCoordinatorTest {
     }
 
     @Test
+    public void repeatedVisibleAndTouchWarmupsShareShortDedupeWindow() {
+        assertEquals(2000L, ContinueReadinessCoordinator.submitDedupeMsForTest());
+    }
+
+    @Test
     public void readinessStatePrefersFirstFrameOverUrlSnapshots() {
         assertEquals(ContinueReadinessCoordinator.State.FIRST_FRAME_READY,
                 ContinueReadinessCoordinator.stateForTest(true, true, true, false));
