@@ -33,6 +33,7 @@ public final class ViewerPagePipeline {
     private static final int PREPARED_LIMIT = 192;
     private static final int IN_FLIGHT_LIMIT = 96;
     private static final int CANCELLATION_LIMIT = 96;
+    private static final int PAGE_BUCKET_SIZE = 8;
 
     private final Context context;
     private final Title title;
@@ -80,17 +81,19 @@ public final class ViewerPagePipeline {
     }
 
     public void prepareCurrentWindow(Manga target, int pageIndex) {
-        prepareEpisode(target, pageIndex, forwardUrlWindow(dataSave), forwardDiskWindow(dataSave),
+        prepareEpisode(target, pageIndex, forwardUrlWindow(dataSave), initialDiskWindow(dataSave),
                 forwardDecodedWindow(dataSave), Priority.IMMEDIATE);
     }
 
     public void prepareScrollWindow(Manga target, int pageIndex, int direction, boolean busy) {
+        if(hasPreparedImages(target) && busy)
+            return;
         if(busy && dataSave)
             prepareEpisode(target, pageIndex, 4, 0, 0, Priority.HIGH);
         else if(busy)
             prepareEpisode(target, pageIndex, 8, 0, 0, Priority.HIGH);
         else
-            prepareEpisode(target, pageIndex, forwardUrlWindow(dataSave), forwardDiskWindow(dataSave),
+            prepareEpisode(target, pageIndex, forwardUrlWindow(dataSave), scrollDiskWindow(dataSave),
                     idleDecodedWindow(dataSave), Priority.IMMEDIATE);
     }
 
@@ -123,6 +126,8 @@ public final class ViewerPagePipeline {
         int normalizedUrlLimit = Math.max(1, urlLimit);
         int normalizedDiskLimit = Math.max(0, diskLimit);
         int normalizedDecodedLimit = Math.max(0, Math.min(decodedLimit, normalizedDiskLimit));
+        if(hasPreparedImages(target) && normalizedDiskLimit == 0 && normalizedDecodedLimit == 0)
+            return;
         int strength = requestStrength(normalizedUrlLimit, normalizedDiskLimit, normalizedDecodedLimit, priority);
         String key = requestKey(target, normalizedPage);
         String flightKey = key + ":" + normalizedUrlLimit + ":" + normalizedDiskLimit + ":" + normalizedDecodedLimit;
@@ -224,7 +229,11 @@ public final class ViewerPagePipeline {
     }
 
     private String requestKey(Manga manga, int pageIndex) {
-        return episodeKey(manga, title) + ":" + Math.max(0, pageIndex);
+        return episodeKey(manga, title) + ":" + pageBucket(pageIndex);
+    }
+
+    private static int pageBucket(int pageIndex) {
+        return Math.max(0, pageIndex) / PAGE_BUCKET_SIZE;
     }
 
     private static String episodeKey(Manga manga, Title title) {
@@ -256,12 +265,24 @@ public final class ViewerPagePipeline {
         return !inFlight && (preparedStrength == null || preparedStrength < requestedStrength);
     }
 
+    static int pageBucketForTest(int pageIndex) {
+        return pageBucket(pageIndex);
+    }
+
     public static int forwardUrlWindow(boolean dataSave) {
         return dataSave ? 6 : 24;
     }
 
+    public static int initialDiskWindow(boolean dataSave) {
+        return 0;
+    }
+
+    public static int scrollDiskWindow(boolean dataSave) {
+        return dataSave ? 1 : 3;
+    }
+
     public static int forwardDiskWindow(boolean dataSave) {
-        return dataSave ? 4 : 10;
+        return dataSave ? 2 : 4;
     }
 
     public static int forwardDecodedWindow(boolean dataSave) {
@@ -273,7 +294,7 @@ public final class ViewerPagePipeline {
     }
 
     public static int boundaryDecodedWindow(boolean dataSave) {
-        return dataSave ? 1 : 2;
+        return 0;
     }
 
     public static int futureDiskWindow(boolean dataSave) {

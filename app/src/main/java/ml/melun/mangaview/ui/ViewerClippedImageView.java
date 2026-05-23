@@ -17,6 +17,7 @@ public class ViewerClippedImageView extends AppCompatImageView {
     private final Rect srcRect = new Rect();
     private final Rect dstRect = new Rect();
     private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG);
+    private Bitmap viewerBitmap;
 
     public ViewerClippedImageView(Context context) {
         super(context);
@@ -32,6 +33,11 @@ public class ViewerClippedImageView extends AppCompatImageView {
 
     @Override
     protected void onDraw(Canvas canvas) {
+        Bitmap directBitmap = viewerBitmap;
+        if(directBitmap != null && !directBitmap.isRecycled()) {
+            drawClippedBitmap(canvas, directBitmap, getAlpha() >= 1f ? 255 : Math.round(getAlpha() * 255));
+            return;
+        }
         Drawable drawable = getDrawable();
         if(!(drawable instanceof BitmapDrawable) || getScaleType() != ScaleType.FIT_CENTER) {
             super.onDraw(canvas);
@@ -40,6 +46,29 @@ public class ViewerClippedImageView extends AppCompatImageView {
         Bitmap bitmap = ((BitmapDrawable) drawable).getBitmap();
         if(bitmap == null || bitmap.isRecycled() || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0)
             return;
+        drawClippedBitmap(canvas, bitmap, drawable.getAlpha());
+    }
+
+    public void setViewerBitmap(@Nullable Bitmap bitmap) {
+        if(viewerBitmap == bitmap)
+            return;
+        viewerBitmap = bitmap;
+        super.setImageDrawable(null);
+        invalidate();
+    }
+
+    @Override
+    public void setImageDrawable(@Nullable Drawable drawable) {
+        viewerBitmap = null;
+        super.setImageDrawable(drawable);
+    }
+
+    @Override
+    public void setImageBitmap(Bitmap bm) {
+        setViewerBitmap(bm);
+    }
+
+    private void drawClippedBitmap(Canvas canvas, Bitmap bitmap, int alpha) {
         if(!canvas.getClipBounds(clipRect)) {
             super.onDraw(canvas);
             return;
@@ -49,8 +78,8 @@ public class ViewerClippedImageView extends AppCompatImageView {
                 clipRect, srcRect, dstRect)) {
             return;
         }
-        bitmapPaint.setAlpha(drawable.getAlpha());
-        bitmapPaint.setColorFilter(drawable.getColorFilter());
+        bitmapPaint.setAlpha(alpha);
+        bitmapPaint.setColorFilter(null);
         canvas.drawBitmap(bitmap, srcRect, dstRect, bitmapPaint);
     }
 

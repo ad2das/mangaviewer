@@ -16,6 +16,7 @@ import android.util.LruCache;
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.Priority;
 import com.bumptech.glide.RequestManager;
+import com.bumptech.glide.load.DecodeFormat;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy;
 import com.bumptech.glide.request.RequestOptions;
@@ -71,7 +72,7 @@ public class ViewerWarmupManager {
     private static final long CONTINUE_WARMUP_DEBOUNCE_MS = 800L;
     private static final long PAGE_PRELOAD_DEDUPE_MS = 1500L;
     private static final int PAGE_PRELOAD_DEDUPE_LIMIT = 256;
-    private static final long VIEWER_DISK_CACHE_MIN_USABLE_BYTES = 768L * 1024L * 1024L;
+    private static final long VIEWER_DISK_CACHE_MIN_USABLE_BYTES = 128L * 1024L * 1024L;
     private static final Gson GSON = new Gson();
     private static final Map<String, WarmupState> activeWarmups = new HashMap<>();
     private static final LinkedHashMap<String, WarmupSnapshot> snapshots = new LinkedHashMap<>(SNAPSHOT_LIMIT, 0.75f, true);
@@ -404,8 +405,8 @@ public class ViewerWarmupManager {
                             if(visibleResume && isVisibleContinueWarmupSuppressed())
                                 return false;
                             int diskLimit = continueWarmupDiskLimit(visibleWindow);
-                            int decodedLimit = continueWarmupDecodedLimit(visibleWindow);
-                            preloadLoadedImages(appContext, candidate, page, width, false, p.getReverse(), diskLimit, Priority.IMMEDIATE, decodedLimit);
+                            preloadLoadedImages(appContext, candidate, page, width, false, p.getReverse(), diskLimit,
+                                    Priority.IMMEDIATE, visibleResume || immediate ? 1 : 0);
                             waitForContinueFirstFrame(appContext, candidate, page, width, false, p.getReverse(),
                                     visibleResume || immediate);
                             logMetric(visibleResume ? "viewer_resume_visible_warmup_ready" : "viewer_continue_warmup_ready", candidate.getId());
@@ -507,13 +508,12 @@ public class ViewerWarmupManager {
                 return warmed;
             }
             if(hasImages(warmed, appContext)) {
-                preloadLoadedImages(appContext, warmed, firstPage, width, autoCut, reverse, p.getDataSave() ? 6 : 12, Priority.IMMEDIATE, p.getDataSave() ? 1 : 2);
-                waitForContinueFirstFrame(appContext, warmed, firstPage, width, autoCut, reverse, true);
-                if(hasDecodedFrame(appContext, warmed, firstPage, width, autoCut, reverse)) {
-                    logMetric("viewer_click_continue_snapshot", warmed.getId());
-                    return warmed;
-                }
-                logMetric("viewer_click_continue_pending_snapshot", warmed.getId());
+                preloadLoadedImages(appContext, warmed, firstPage, width, autoCut, reverse,
+                        p.getDataSave() ? 6 : 12, Priority.IMMEDIATE, 1);
+                waitForFirstDecodedFrame(appContext, warmed, firstPage, width, autoCut, reverse,
+                        userSelectedFirstFrameWaitMs(p != null && p.getDataSave()));
+                logMetric("viewer_click_immediate_url_snapshot", warmed.getId());
+                return warmed;
             }
         }
         Title clickTitle = title;
@@ -541,16 +541,13 @@ public class ViewerWarmupManager {
                             cancellation == null ? MangaRepository.cancellation() : cancellation);
                     if(result != LOAD_OK || !hasImages(candidate, appContext))
                         continue;
-                    preloadLoadedImages(appContext, candidate, page, width, autoCut, reverse, p.getDataSave() ? 6 : 12, Priority.IMMEDIATE, p.getDataSave() ? 1 : 2);
-                    waitForContinueFirstFrame(appContext, candidate, page, width, autoCut, reverse, true);
-                    if(hasDecodedFrame(appContext, candidate, page, width, autoCut, reverse)) {
-                        logMetric("viewer_click_ready", candidate.getId());
-                        cacheContinueSnapshot(appContext, scheduleKey, candidate);
-                        return candidate;
-                    } else {
-                        logMetric("viewer_click_first_frame_pending", candidate.getId());
-                        cacheContinueSnapshot(appContext, scheduleKey, candidate);
-                    }
+                    preloadLoadedImages(appContext, candidate, page, width, autoCut, reverse,
+                            p.getDataSave() ? 6 : 12, Priority.IMMEDIATE, 1);
+                    waitForFirstDecodedFrame(appContext, candidate, page, width, autoCut, reverse,
+                            userSelectedFirstFrameWaitMs(p != null && p.getDataSave()));
+                    logMetric("viewer_click_ready_urls", candidate.getId());
+                    cacheContinueSnapshot(appContext, scheduleKey, candidate);
+                    return candidate;
                 }
                 return null;
             };
@@ -668,7 +665,8 @@ public class ViewerWarmupManager {
                 return warmed;
             }
             if(hasImages(warmed, context)) {
-                preloadLoadedImages(context, warmed, firstPage, width, autoCut, reverse, p.getDataSave() ? 6 : 12, Priority.IMMEDIATE, p.getDataSave() ? 1 : 2);
+                preloadLoadedImages(context, warmed, firstPage, width, autoCut, reverse,
+                        p.getDataSave() ? 6 : 12, Priority.IMMEDIATE, 1);
                 logMetric("viewer_click_immediate_url_snapshot", warmed.getId());
                 return null;
             }
@@ -678,7 +676,8 @@ public class ViewerWarmupManager {
             return manga;
         }
         if(hasImages(manga, context)) {
-            preloadLoadedImages(context, manga, firstPage, width, autoCut, reverse, p.getDataSave() ? 6 : 12, Priority.IMMEDIATE, p.getDataSave() ? 1 : 2);
+            preloadLoadedImages(context, manga, firstPage, width, autoCut, reverse,
+                    p.getDataSave() ? 6 : 12, Priority.IMMEDIATE, 1);
             logMetric("viewer_click_immediate_url", manga.getId());
             return null;
         }
@@ -778,7 +777,7 @@ public class ViewerWarmupManager {
             } else if(!allowDecodedPreload) {
                 preloadLoadedImages(context, manga, normalizedPage, width, autoCut, reverse, p.getDataSave() ? 2 : 4, Priority.HIGH, 0);
             } else {
-                preloadWindow(context, manga, normalizedPage, width, autoCut, reverse, new ViewerPreloadPolicy.Window(1, 1, 1, 1));
+                preloadWindow(context, manga, normalizedPage, width, autoCut, reverse, new ViewerPreloadPolicy.Window(0, 1, 1, 1));
                 if(allowBlockingDecode && !getHttpClient().isDirectOnlyFetchMode())
                     waitForDecodedFrameReady(context, manga, normalizedPage, width, autoCut, reverse, 220L);
                 preloadWindowDeferred(context, manga, normalizedPage, width, autoCut, reverse, ViewerPreloadPolicy.firstFrameWindow(p.getDataSave()));
@@ -928,7 +927,7 @@ public class ViewerWarmupManager {
     }
 
     public static void preloadLoadedImages(Context context, Manga manga, int pageIndex, int width, boolean autoCut, boolean reverse, int limit, Priority priority) {
-        preloadLoadedImages(context, manga, pageIndex, width, autoCut, reverse, limit, priority, p.getDataSave() ? 1 : 2);
+        preloadLoadedImages(context, manga, pageIndex, width, autoCut, reverse, limit, priority, 0);
     }
 
     public static void preloadLoadedImages(Context context, Manga manga, int pageIndex, int width, boolean autoCut,
@@ -1001,7 +1000,6 @@ public class ViewerWarmupManager {
         requestManager
                 .downloadOnly()
                 .priority(priority)
-                .diskCacheStrategy(DiskCacheStrategy.DATA)
                 .load(model)
                 .preload();
     }
@@ -1015,6 +1013,7 @@ public class ViewerWarmupManager {
     private static RequestOptions viewerOptions(Context context, PageItem page, boolean autoCut, boolean reverse, int width) {
         RequestOptions options = new RequestOptions()
                 .diskCacheStrategy(viewerDiskCacheStrategy(context, false))
+                .format(DecodeFormat.PREFER_RGB_565)
                 .downsample(DownsampleStrategy.AT_MOST)
                 .override(Math.max(width, 1), Target.SIZE_ORIGINAL);
         if(page != null)
@@ -1035,7 +1034,7 @@ public class ViewerWarmupManager {
     }
 
     private static DiskCacheStrategy viewerDiskCacheStrategyForState(boolean scrollBusy, long usableBytes) {
-        if(scrollBusy || usableBytes < VIEWER_DISK_CACHE_MIN_USABLE_BYTES)
+        if(usableBytes < VIEWER_DISK_CACHE_MIN_USABLE_BYTES)
             return DiskCacheStrategy.NONE;
         return DiskCacheStrategy.RESOURCE;
     }
@@ -1420,7 +1419,7 @@ public class ViewerWarmupManager {
     }
 
     private static int continueWarmupDecodedLimit(ViewerPreloadPolicy.Window visibleWindow) {
-        return visibleWindow != null ? visibleWindow.decodedLimit : (p.getDataSave() ? 1 : 2);
+        return 1;
     }
 
     private static void waitForContinueFirstFrame(Context context, Manga manga, int pageIndex, int width,

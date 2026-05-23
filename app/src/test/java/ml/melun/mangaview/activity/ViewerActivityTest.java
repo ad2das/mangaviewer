@@ -64,10 +64,10 @@ public class ViewerActivityTest {
 
     @Test
     public void wfwfViewerKeepsExtraRowsReadyWithoutDataSaver() {
-        assertEquals(36, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", false));
-        assertEquals(40, ViewerActivity.viewerItemViewCacheSizeForTest("ntk", false));
-        assertEquals(12, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", true));
-        assertEquals(12, ViewerActivity.viewerInitialPrefetchItemCountForTest(false));
+        assertEquals(8, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", false));
+        assertEquals(8, ViewerActivity.viewerItemViewCacheSizeForTest("ntk", false));
+        assertEquals(4, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", true));
+        assertEquals(2, ViewerActivity.viewerInitialPrefetchItemCountForTest(false));
     }
 
     @Test
@@ -108,7 +108,7 @@ public class ViewerActivityTest {
     public void nextEpisodePrefetchWaitsForViewerPipeline() {
         assertTrue(ViewerActivity.initialNextEpisodePrefetchDelayMsForTest() >=
                 ViewerActivity.viewerPipelineStartDelayMsForTest());
-        assertTrue(ViewerActivity.initialNextEpisodePrefetchDelayMsForTest() <= 320L);
+        assertTrue(ViewerActivity.initialNextEpisodePrefetchDelayMsForTest() <= 900L);
     }
 
     @Test
@@ -211,8 +211,20 @@ public class ViewerActivityTest {
 
     @Test
     public void viewerPipelineStartsAfterInitialLayoutCanDraw() {
-        assertTrue(ViewerActivity.viewerPipelineStartDelayMsForTest() >= 120L);
-        assertTrue(ViewerActivity.viewerPipelineStartDelayMsForTest() <= 240L);
+        assertTrue(ViewerActivity.viewerPipelineStartDelayMsForTest() >= 500L);
+        assertTrue(ViewerActivity.viewerPipelineStartDelayMsForTest() <= 800L);
+    }
+
+    @Test
+    public void automaticNextAppendDefersColdImageBindsPastFlingSettle() {
+        assertTrue(ViewerActivity.autoAppendImageBindDeferMsForTest() >= 1000L);
+    }
+
+    @Test
+    public void automaticNextAppendWaitsAfterFastFling() {
+        assertFalse(ViewerActivity.shouldAllowAutomaticNextAttachForTest(5000L, 1000L, 12000L));
+        assertTrue(ViewerActivity.shouldAllowAutomaticNextAttachForTest(13001L, 1000L, 12000L));
+        assertTrue(ViewerActivity.shouldAllowAutomaticNextAttachForTest(1000L, 0L, 12000L));
     }
 
     @Test

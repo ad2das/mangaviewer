@@ -12,6 +12,7 @@ public class Decoder {
     int id=0;
     int view_cnt;
     int cx=5, cy=5;
+    private static final int MAX_DISPLAY_BITMAP_BYTES = 2000000;
 
     public int getCnt(){
         return view_cnt;
@@ -56,7 +57,7 @@ public class Decoder {
     }
 
     public Bitmap decode(Bitmap input){
-        input = downSample(input, 100000000);
+        input = downSample(input, MAX_DISPLAY_BITMAP_BYTES);
         if(view_cnt==0) return input;
         int[][] order = new int[cx*cy][2];
         for (int i = 0; i < cx*cy; i++) {
@@ -69,7 +70,7 @@ public class Decoder {
             return a[1] != b[1] ? a[1] - b[1] : a[0] - b[0];
         });
         //create new bitmap
-        Bitmap output = Bitmap.createBitmap(input.getWidth(), input.getHeight(), Bitmap.Config.ARGB_8888);
+        Bitmap output = Bitmap.createBitmap(input.getWidth(), input.getHeight(), displayConfig(input));
 
         Canvas canvas = new Canvas(output);
 
@@ -103,6 +104,11 @@ public class Decoder {
         if(cells <= 0)
             return Math.max(1, size);
         return Math.max(1, size / cells);
+    }
+
+    private static Bitmap.Config displayConfig(Bitmap bitmap) {
+        Bitmap.Config config = bitmap == null ? null : bitmap.getConfig();
+        return config == Bitmap.Config.RGB_565 ? Bitmap.Config.RGB_565 : Bitmap.Config.ARGB_8888;
     }
 
     private int newRandom(int index){

@@ -12,10 +12,12 @@ public class ViewerPagePipelineTest {
     @Test
     public void performancePresetWarmsBeyondOneFastFling() {
         assertEquals(24, ViewerPagePipeline.forwardUrlWindow(false));
-        assertEquals(10, ViewerPagePipeline.forwardDiskWindow(false));
+        assertEquals(0, ViewerPagePipeline.initialDiskWindow(false));
+        assertEquals(3, ViewerPagePipeline.scrollDiskWindow(false));
+        assertEquals(4, ViewerPagePipeline.forwardDiskWindow(false));
         assertEquals(0, ViewerPagePipeline.forwardDecodedWindow(false));
         assertEquals(0, ViewerPagePipeline.idleDecodedWindow(false));
-        assertEquals(2, ViewerPagePipeline.boundaryDecodedWindow(false));
+        assertEquals(0, ViewerPagePipeline.boundaryDecodedWindow(false));
         assertEquals(0, ViewerPagePipeline.futureDiskWindow(false));
         assertEquals(0, ViewerPagePipeline.futureDecodedWindow(false));
         assertEquals(3, ViewerPagePipeline.nextEpisodeDepth(false));
@@ -25,10 +27,12 @@ public class ViewerPagePipelineTest {
     @Test
     public void dataSaverKeepsPipelineConservative() {
         assertEquals(6, ViewerPagePipeline.forwardUrlWindow(true));
-        assertEquals(4, ViewerPagePipeline.forwardDiskWindow(true));
+        assertEquals(0, ViewerPagePipeline.initialDiskWindow(true));
+        assertEquals(1, ViewerPagePipeline.scrollDiskWindow(true));
+        assertEquals(2, ViewerPagePipeline.forwardDiskWindow(true));
         assertEquals(0, ViewerPagePipeline.forwardDecodedWindow(true));
         assertEquals(0, ViewerPagePipeline.idleDecodedWindow(true));
-        assertEquals(1, ViewerPagePipeline.boundaryDecodedWindow(true));
+        assertEquals(0, ViewerPagePipeline.boundaryDecodedWindow(true));
         assertEquals(0, ViewerPagePipeline.futureDiskWindow(true));
         assertEquals(0, ViewerPagePipeline.futureDecodedWindow(true));
         assertEquals(1, ViewerPagePipeline.nextEpisodeDepth(true));
@@ -44,5 +48,12 @@ public class ViewerPagePipelineTest {
         assertTrue(ViewerPagePipeline.shouldScheduleRequestForTest(weak, strong, false));
         assertFalse(ViewerPagePipeline.shouldScheduleRequestForTest(strong, weak, false));
         assertFalse(ViewerPagePipeline.shouldScheduleRequestForTest(weak, strong, true));
+    }
+
+    @Test
+    public void adjacentPagesShareWarmupBuckets() {
+        assertEquals(0, ViewerPagePipeline.pageBucketForTest(0));
+        assertEquals(0, ViewerPagePipeline.pageBucketForTest(7));
+        assertEquals(1, ViewerPagePipeline.pageBucketForTest(8));
     }
 }
