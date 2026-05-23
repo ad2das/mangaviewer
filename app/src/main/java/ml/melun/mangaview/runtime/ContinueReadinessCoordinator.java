@@ -17,8 +17,8 @@ import ml.melun.mangaview.mangaview.Title;
 import static ml.melun.mangaview.MainApplication.p;
 
 public final class ContinueReadinessCoordinator {
-    private static final int COLD_START_LIMIT = 1;
-    private static final int DATA_SAVE_COLD_START_LIMIT = 1;
+    private static final int COLD_START_LIMIT = 0;
+    private static final int DATA_SAVE_COLD_START_LIMIT = 0;
     private static final long SUBMIT_DEDUPE_MS = 2000L;
     private static final int SUBMITTED_LIMIT = 160;
     private static final Map<String, Long> submitted = new LinkedHashMap<>(64, 0.75f, true);
@@ -65,7 +65,8 @@ public final class ContinueReadinessCoordinator {
     }
 
     public static void primeVisible(Context context, Manga manga, Title title) {
-        prime(context, manga, title, true, false);
+        if(manga != null)
+            ViewerWarmupManager.logMetric("continue_visible_prime_skipped", manga.getId());
     }
 
     public static void primeImmediate(Context context, Manga manga, Title title) {
@@ -185,7 +186,7 @@ public final class ContinueReadinessCoordinator {
     }
 
     private static int coldStartLimit(boolean dataSave) {
-        return dataSave ? DATA_SAVE_COLD_START_LIMIT : Math.max(COLD_START_LIMIT, 2);
+        return dataSave ? DATA_SAVE_COLD_START_LIMIT : COLD_START_LIMIT;
     }
 
     static State stateForTest(boolean firstFrame, boolean images, boolean episodes, boolean failed) {

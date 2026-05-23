@@ -1758,6 +1758,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if(titles == null || titles.size() == 0 || context == null)
             return;
         int limit = HomeContinueWarmupPolicy.visibleContinueWarmupLimit(save);
+        if(limit <= 0)
+            return;
         int warmed = 0;
         for(Title item : titles) {
             if(item == null || item.getId() <= 0)

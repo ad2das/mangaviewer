@@ -3256,12 +3256,12 @@ public class ViewerActivity extends AppCompatActivity {
 
     private static int viewerItemViewCacheSize(String sourceSite, boolean dataSave) {
         if(dataSave)
-            return 10;
-        return 12;
+            return 3;
+        return 4;
     }
 
     private static int viewerInitialPrefetchItemCount(boolean dataSave) {
-        return dataSave ? 3 : 8;
+        return dataSave ? 1 : 2;
     }
 
     private boolean needsFullEpisodeList(Title currentTitle, Manga target) {

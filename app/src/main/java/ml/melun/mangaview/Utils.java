@@ -318,7 +318,6 @@ public class Utils {
             int firstPage = manga.useBookmark() && p != null ? p.getViewerBookmark(manga) : 0;
             Manga preparedImages = ViewerWarmupManager.usePreparedContinueImages(context, manga, launchTitle, firstPage);
             if(preparedImages != null) {
-                ViewerWarmupManager.warmupUserSelectedContinue(context, preparedImages, launchTitle);
                 launchPreparedViewer(context, preparedImages, code, returnToEpisodes, online, recent,
                         launchTitle != null ? launchTitle : preparedImages.getTitle(), includeTitleEpisodes,
                         launchToken, false);

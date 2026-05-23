@@ -96,7 +96,7 @@ public class StripAdapterTest {
     public void preloadBudgetsCoverOneFastFling() {
         assertTrue(StripAdapter.preloadAheadCountForTest() >= 24);
         assertTrue(StripAdapter.initialPreloadAheadCountForTest() >= 24);
-        assertTrue(StripAdapter.decodedPreloadActiveLimitForTest() >= 16);
+        assertTrue(StripAdapter.decodedPreloadActiveLimitForTest() <= 2);
         assertTrue(StripAdapter.scrollIdlePreloadDelayMsForTest() <= 100L);
         assertTrue(StripAdapter.scrollIdleHeightCorrectionDelayMsForTest()
                 >= StripAdapter.scrollIdlePreloadDelayMsForTest());
@@ -121,9 +121,9 @@ public class StripAdapterTest {
     }
 
     @Test
-    public void fastFlingBindPathCanReadTransformedCache() {
-        assertEquals(DiskCacheStrategy.ALL, StripAdapter.viewerDiskCacheStrategyForTest(true));
-        assertEquals(DiskCacheStrategy.ALL, StripAdapter.viewerDiskCacheStrategyForTest(false));
+    public void fastFlingBindPathAvoidsWritingTransformedResources() {
+        assertEquals(DiskCacheStrategy.DATA, StripAdapter.viewerDiskCacheStrategyForTest(true));
+        assertEquals(DiskCacheStrategy.DATA, StripAdapter.viewerDiskCacheStrategyForTest(false));
     }
 
     @Test

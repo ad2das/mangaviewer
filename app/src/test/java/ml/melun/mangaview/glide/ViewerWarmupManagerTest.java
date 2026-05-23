@@ -183,15 +183,15 @@ public class ViewerWarmupManagerTest {
     }
 
     @Test
-    public void viewerRequestsCacheTransformedResourcesForColdReentry() {
-        assertSame(DiskCacheStrategy.ALL, ViewerWarmupManager.viewerDiskCacheStrategyForTest());
+    public void viewerRequestsReuseSourceDataWithoutCachingTransforms() {
+        assertSame(DiskCacheStrategy.DATA, ViewerWarmupManager.viewerDiskCacheStrategyForTest());
     }
 
     @Test
     public void viewerKeepsDiskCacheReadableWhileScrollingUnlessStorageIsLow() {
-        assertSame(DiskCacheStrategy.ALL, ViewerWarmupManager.viewerDiskCacheStrategyForTest(true, Long.MAX_VALUE));
+        assertSame(DiskCacheStrategy.DATA, ViewerWarmupManager.viewerDiskCacheStrategyForTest(true, Long.MAX_VALUE));
         assertSame(DiskCacheStrategy.NONE, ViewerWarmupManager.viewerDiskCacheStrategyForTest(false, 64L * 1024L * 1024L));
-        assertSame(DiskCacheStrategy.ALL, ViewerWarmupManager.viewerDiskCacheStrategyForTest(false, 256L * 1024L * 1024L));
+        assertSame(DiskCacheStrategy.DATA, ViewerWarmupManager.viewerDiskCacheStrategyForTest(false, 256L * 1024L * 1024L));
     }
 
     @Test
@@ -241,7 +241,6 @@ public class ViewerWarmupManagerTest {
 
     @Test
     public void decodedWarmupActiveLimitAvoidsMainThreadCompletionStorms() {
-        assertTrue(ViewerWarmupManager.decodedTargetActiveSoftLimitForTest() >= 2);
-        assertTrue(ViewerWarmupManager.decodedTargetActiveSoftLimitForTest() <= 4);
+        assertEquals(1, ViewerWarmupManager.decodedTargetActiveSoftLimitForTest());
     }
 }

@@ -72,7 +72,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private static final int DATA_SAVE_PRELOAD_AHEAD_COUNT = 5;
     private static final int INITIAL_PRELOAD_AHEAD_COUNT = 24;
     private static final int PRELOAD_TRACK_LIMIT = 500;
-    private static final int DECODED_PRELOAD_ACTIVE_LIMIT = 16;
+    private static final int DECODED_PRELOAD_ACTIVE_LIMIT = 2;
     private static final int IMAGE_LOAD_RETRY_LIMIT = 3;
     private static final int SCROLL_BUSY_PRELOAD_MIN_DISTANCE = 4;
     private static final long SCROLL_BUSY_PRELOAD_MIN_INTERVAL_MS = 180L;
@@ -1108,7 +1108,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private static DiskCacheStrategy viewerDiskCacheStrategy(boolean scrollBusy) {
-        return DiskCacheStrategy.ALL;
+        return DiskCacheStrategy.DATA;
     }
 
     private Object getImageModel(PageItem item) {
@@ -1280,10 +1280,10 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             Object next = items.get(position);
             if(next instanceof PageItem) {
                 int tier = ViewerPreloadPolicy.tierForOffset(window, preloaded);
-                if(tier == ViewerPreloadPolicy.TIER_DECODED)
+                if(tier == ViewerPreloadPolicy.TIER_DECODED && preloaded == 0 && !scrollBusy)
                     preloadPageIntoDecodedCache((PageItem) next, Priority.IMMEDIATE, generation);
                 else
-                    preloadPage((PageItem) next, priorityForTier(tier));
+                    preloadPageSourceOnly((PageItem) next, priorityForTier(tier));
                 preloaded++;
             }
             position += direction;
@@ -1338,36 +1338,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private void preloadPage(PageItem page, Priority priority) {
-        if(!canStartGlideRequest())
-            return;
-        String key = preloadKey(page);
-        if(key.length() == 0)
-            return;
-        if(!preloadedImages.add(key))
-            return;
-        trimPreloadTracker();
-        try {
-            Glide.with(mainContext)
-                    .asBitmap()
-                    .priority(priority)
-                    .apply(viewerImageOptions(page))
-                    .load(getImageModel(page))
-                    .listener(new RequestListener<Bitmap>() {
-                        @Override
-                        public boolean onLoadFailed(@Nullable GlideException e, Object model, Target<Bitmap> target, boolean isFirstResource) {
-                            preloadedImages.remove(key);
-                            return false;
-                        }
-
-                        @Override
-                        public boolean onResourceReady(Bitmap resource, Object model, Target<Bitmap> target, DataSource dataSource, boolean isFirstResource) {
-                            return false;
-                        }
-                    })
-                    .preload();
-        } catch (IllegalArgumentException e) {
-            preloadedImages.remove(key);
-        }
+        preloadPageSourceOnly(page, priority);
     }
 
     private void preloadPageSourceOnly(PageItem page, Priority priority) {
@@ -1452,7 +1423,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private void preloadPageIntoDecodedCache(PageItem page, Priority priority, long generation) {
         if(!canStartGlideRequest())
             return;
-        int activeLimit = scrollBusy ? (p.getDataSave() ? 1 : 2) : DECODED_PRELOAD_ACTIVE_LIMIT;
+        int activeLimit = scrollBusy ? 0 : (p.getDataSave() ? 1 : DECODED_PRELOAD_ACTIVE_LIMIT);
         if(activeLimit <= 0 || decodedPreloadTargets.size() >= activeLimit) {
             preloadPage(page, priority == Priority.IMMEDIATE ? Priority.IMMEDIATE : Priority.HIGH);
             return;
@@ -1507,7 +1478,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             Glide.with(mainContext)
                     .asBitmap()
                     .priority(priority)
-                    .apply(viewerImageOptions(page))
+                    .apply(viewerPreviewOptions(page))
                     .load(getImageModel(page))
                     .into(target);
         } catch (IllegalArgumentException e) {
