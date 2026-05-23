@@ -10,6 +10,7 @@ import java.util.List;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 
+import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -93,6 +94,34 @@ public class EpisodeActivityTest {
         assertTrue(json.contains("/webtoon/42/1"));
         assertNull(snapshot.get(0).getTitle());
         assertTrue(snapshot.get(0).getEps() == null || snapshot.get(0).getEps().isEmpty());
+    }
+
+    @Test
+    public void episodeScreenNormalizesVisibleEpisodeOrderBeforeRendering() {
+        List<Manga> episodes = new ArrayList<>();
+        episodes.add(new Manga(25, "서머타임 렌더링 23화", "", base_comic));
+        episodes.add(new Manga(24, "서머타임 렌더링 24화", "", base_comic));
+        episodes.add(new Manga(23, "서머타임 렌더링 22화", "", base_comic));
+
+        ArrayList<Manga> normalized = EpisodeActivity.normalizeEpisodeSnapshotForTest(episodes);
+
+        assertEquals("서머타임 렌더링 24화", normalized.get(0).getName());
+        assertEquals("서머타임 렌더링 23화", normalized.get(1).getName());
+        assertEquals("서머타임 렌더링 22화", normalized.get(2).getName());
+    }
+
+    @Test
+    public void episodeCacheSnapshotUsesVisibleEpisodeOrder() {
+        List<Manga> episodes = new ArrayList<>();
+        episodes.add(new Manga(25, "서머타임 렌더링 23화", "", base_comic));
+        episodes.add(new Manga(24, "서머타임 렌더링 24화", "", base_comic));
+        episodes.add(new Manga(23, "서머타임 렌더링 22화", "", base_comic));
+
+        ArrayList<Manga> snapshot = EpisodeActivity.episodeCacheSnapshotForTest(episodes);
+
+        assertEquals("서머타임 렌더링 24화", snapshot.get(0).getName());
+        assertEquals("서머타임 렌더링 23화", snapshot.get(1).getName());
+        assertEquals("서머타임 렌더링 22화", snapshot.get(2).getName());
     }
 
     @Test

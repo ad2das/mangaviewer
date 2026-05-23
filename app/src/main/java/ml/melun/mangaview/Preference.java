@@ -182,6 +182,7 @@ public class Preference {
             defUrl = normalizeComicUrl(sharedPref.getString("defUrl", DEFAULT_COMIC_URL), ntkResolvedRoot);
             url = normalizeComicUrl(sharedPref.getString("url", DEFAULT_COMIC_URL), ntkResolvedRoot);
             webtoonUrl = normalizeWebtoonUrl(sharedPref.getString("webtoonUrl", WEBTOON_URL), ntkResolvedRoot);
+            migrateStaleNtkPresetIfNeeded();
             wfwfResolvedRoot = normalizeWfwfRoot(sharedPref.getString("wfwfResolvedRoot", webtoonUrl));
             if(wfwfResolvedRoot.length() == 0)
                 wfwfResolvedRoot = WEBTOON_URL;
@@ -438,6 +439,11 @@ public class Preference {
             String root = ntkRoot(normalized);
             if(root.length() == 0)
                 root = normalizeNtkRoot(ntkRootFallback);
+            boolean legacyRoot = isLegacyNtkRedirectRoot(root);
+            if(legacyRoot)
+                root = normalizeNtkRoot(ntkRootFallback);
+            if(legacyRoot)
+                return root + "/manhwa";
             if(normalized.endsWith("/cm") || normalized.endsWith("/manhwa") || normalized.equals(root))
                 return root + "/manhwa";
         }
@@ -462,6 +468,11 @@ public class Preference {
             String root = ntkRoot(normalized);
             if(root.length() == 0)
                 root = normalizeNtkRoot(ntkRootFallback);
+            boolean legacyRoot = isLegacyNtkRedirectRoot(root);
+            if(legacyRoot)
+                root = normalizeNtkRoot(ntkRootFallback);
+            if(legacyRoot)
+                return root;
             if(normalized.endsWith("/cm") || normalized.endsWith("/manhwa"))
                 return root;
             if(normalized.equals(root))
@@ -497,6 +508,24 @@ public class Preference {
         ntkResolvedRoot = NTK_WEBTOON_URL;
         autoUrl = false;
         return true;
+    }
+
+    private void migrateStaleNtkPresetIfNeeded() {
+        if(!isNtkLikeUrl(defUrl) && !isNtkLikeUrl(url) && !isNtkLikeUrl(webtoonUrl))
+            return;
+        boolean staleActiveUrl = isLegacyNtkRedirectRoot(defUrl)
+                || isLegacyNtkRedirectRoot(url)
+                || isLegacyNtkRedirectRoot(webtoonUrl);
+        if(!staleActiveUrl) {
+            if(isLegacyNtkRedirectRoot(ntkResolvedRoot))
+                ntkResolvedRoot = normalizeNtkRoot(webtoonUrl);
+            return;
+        }
+        String root = normalizeNtkRoot(NTK_WEBTOON_URL);
+        ntkResolvedRoot = root;
+        defUrl = root + "/manhwa";
+        url = defUrl;
+        webtoonUrl = root;
     }
 
     private void writeSiteSettings() {
@@ -710,7 +739,11 @@ public class Preference {
             host = host.toLowerCase(Locale.ROOT);
             if(host.startsWith("www."))
                 host = host.substring(4);
-            return "ntk01.com".equals(host);
+            String defaultHost = URI.create(normalizeHttpUrl(NTK_WEBTOON_URL, "")).getHost();
+            if(defaultHost != null && defaultHost.startsWith("www."))
+                defaultHost = defaultHost.substring(4);
+            return "ntk01.com".equals(host)
+                    || ("sbxh1.com".equals(host) && !"sbxh1.com".equals(defaultHost));
         } catch (Exception e) {
             return false;
         }

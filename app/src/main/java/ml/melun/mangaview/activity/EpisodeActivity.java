@@ -703,8 +703,8 @@ public class EpisodeActivity extends AppCompatActivity {
             handleLoadErrorWithCacheFallback();
             return;
         }
-        List<Manga> loadedEpisodes = result.getEpisodes();
-        if(loadedEpisodes == null || loadedEpisodes.size()==0){
+        ArrayList<Manga> loadedEpisodes = normalizeEpisodeSnapshot(result.getEpisodes(), title);
+        if(loadedEpisodes.size()==0){
             if(this.episodes == null || this.episodes.size() == 0) {
                 ntkLoadTimeoutHandled = true;
                 cancelNtkEpisodeLoadWatchdog();
@@ -718,7 +718,7 @@ public class EpisodeActivity extends AppCompatActivity {
             ntkLoadTimeoutHandled = true;
             mergeFreshEpisodeMetadata(episodes, loadedEpisodes);
             attachLoadedEpisodesToTitle(episodes);
-            saveEpisodeCache(loadedEpisodes);
+            saveEpisodeCache(episodes);
             hideProgress();
             loaded = true;
             invalidateOptionsMenu();
@@ -908,7 +908,9 @@ public class EpisodeActivity extends AppCompatActivity {
             return false;
         if(hasRenderedEpisodes())
             return false;
-        episodes = cached.episodes;
+        episodes = normalizeEpisodeSnapshot(cached.episodes, title);
+        if(episodes.size() == 0)
+            return false;
         attachLoadedEpisodesToTitle(episodes);
         episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
         afterLoad();
@@ -1147,6 +1149,21 @@ public class EpisodeActivity extends AppCompatActivity {
         title.setEps(loadedEpisodes);
     }
 
+    private static ArrayList<Manga> normalizeEpisodeSnapshot(List<Manga> loadedEpisodes, Title title) {
+        ArrayList<Manga> normalized = Title.orderedEpisodeSnapshot(loadedEpisodes);
+        if(normalized == null)
+            normalized = new ArrayList<>();
+        if(title == null)
+            return normalized;
+        for(Manga episode : normalized) {
+            if(episode == null)
+                continue;
+            episode.setTitle(title);
+            episode.setTitleId(title.getId());
+        }
+        return normalized;
+    }
+
     private void hideProgress() {
         // Loading indicators are intentionally not shown on the episode screen.
     }
@@ -1169,7 +1186,10 @@ public class EpisodeActivity extends AppCompatActivity {
         ArrayList<Manga> snapshot = new ArrayList<>();
         if(episodes == null)
             return snapshot;
-        for(Manga episode : episodes) {
+        ArrayList<Manga> orderedEpisodes = Title.orderedEpisodeSnapshot(episodes);
+        if(orderedEpisodes == null)
+            return snapshot;
+        for(Manga episode : orderedEpisodes) {
             if(episode == null)
                 continue;
             Manga copy = new Manga(episode.getId(), episode.getName(), episode.getDate(), episode.getBaseMode());
@@ -1270,6 +1290,10 @@ public class EpisodeActivity extends AppCompatActivity {
         return episodeCacheSnapshot(episodes);
     }
 
+    static ArrayList<Manga> normalizeEpisodeSnapshotForTest(List<Manga> episodes) {
+        return normalizeEpisodeSnapshot(episodes, null);
+    }
+
     static Title parseIntentTitleForTest(String json) {
         return parseIntentTitle(json);
     }
@@ -1353,7 +1377,7 @@ public class EpisodeActivity extends AppCompatActivity {
             AppDispatchers.runOnMain(() -> {
                 if(!isUiAlive())
                     return;
-                episodes = offlineEpisodes.episodes;
+                episodes = normalizeEpisodeSnapshot(offlineEpisodes.episodes, title);
                 attachLoadedEpisodesToTitle(episodes);
                 mode = offlineEpisodes.mode;
                 episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);

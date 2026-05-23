@@ -58,10 +58,11 @@ import static ml.melun.mangaview.MainApplication.p;
 public class CustomHttpClient {
     public static final String DEFAULT_COMIC_URL = "https://wfwf450.com/cm";
     public static final String WEBTOON_URL = "https://wfwf450.com";
-    public static final String NTK_COMIC_URL = "https://sbxh1.com/manhwa";
-    public static final String NTK_WEBTOON_URL = "https://sbxh1.com";
+    public static final String NTK_COMIC_URL = "https://sbxh2.com/manhwa";
+    public static final String NTK_WEBTOON_URL = "https://sbxh2.com";
     public static final String NTK_REACHABLE_FALLBACK_URL = "https://ntk01.com";
-    private static final String NTK_HOST = "sbxh1.com";
+    private static final String NTK_HOST = "sbxh2.com";
+    private static final String PREVIOUS_NTK_HOST = "sbxh1.com";
     private static final String LEGACY_NTK_HOST = "ntk01.com";
     private static final long WFWF_DOMAIN_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L;
     private static final long WFWF_DOMAIN_FORCE_RETRY_INTERVAL_MS = 5 * 1000L;
@@ -587,10 +588,16 @@ public class CustomHttpClient {
 
     private static boolean isNtkDnsProtectedHost(String hostname) {
         String normalized = normalizeDnsHost(hostname);
-        return normalized.equals(NTK_HOST)
-                || normalized.endsWith("." + NTK_HOST)
+        return isNtkProtectedHostSuffix(normalized, NTK_HOST)
+                || isNtkProtectedHostSuffix(normalized, PREVIOUS_NTK_HOST)
+                || normalized.matches("(?:[a-z0-9-]+\\.)?sbxh\\d+\\.com")
+                || normalized.matches("(?:[a-z0-9-]+\\.)?newto(?:ki)?\\d*\\.com")
                 || normalized.equals(LEGACY_NTK_HOST)
                 || normalized.endsWith("." + LEGACY_NTK_HOST);
+    }
+
+    private static boolean isNtkProtectedHostSuffix(String normalized, String host) {
+        return normalized.equals(host) || normalized.endsWith("." + host);
     }
 
     private static String normalizeDnsHost(String hostname) {
@@ -807,10 +814,11 @@ public class CustomHttpClient {
             return "OK: app route can reach NTK.";
         if(lower.contains("ntk_api_direct: code=403") || lower.contains("challenge=true"))
             return "Cloudflare challenge/cookie issue. Open NTK captcha once.";
-        if(lower.contains("system_dns_") && lower.contains("system_dns_sbxh1.com: fail")
-                && lower.contains("app_dns_sbxh1.com: ok"))
+        String currentNtkHost = NTK_HOST.toLowerCase(Locale.ROOT);
+        if(lower.contains("system_dns_") && lower.contains("system_dns_" + currentNtkHost + ": fail")
+                && lower.contains("app_dns_" + currentNtkHost + ": ok"))
             return "Carrier DNS appears blocked, app DNS bypass is working.";
-        if(lower.contains("ntk_api_direct: fail") && lower.contains("app_dns_sbxh1.com: ok"))
+        if(lower.contains("ntk_api_direct: fail") && lower.contains("app_dns_" + currentNtkHost + ": ok"))
             return "DNS bypass works, but route/TLS/SNI may still be blocked by the mobile network.";
         return "Check DNS/API lines above.";
     }
@@ -1093,11 +1101,15 @@ public class CustomHttpClient {
                 manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/");
                 manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=" + NTK_HOST);
                 manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=." + NTK_HOST);
+                manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=" + PREVIOUS_NTK_HOST);
+                manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=." + PREVIOUS_NTK_HOST);
                 manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=" + LEGACY_NTK_HOST);
                 manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=." + LEGACY_NTK_HOST);
                 manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/");
                 manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=" + NTK_HOST);
                 manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=." + NTK_HOST);
+                manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=" + PREVIOUS_NTK_HOST);
+                manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=." + PREVIOUS_NTK_HOST);
                 manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=" + LEGACY_NTK_HOST);
                 manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=." + LEGACY_NTK_HOST);
             }
@@ -1352,13 +1364,13 @@ public class CustomHttpClient {
             appendSystemDnsDiagnostic(report, rootHost);
             appendAppDnsDiagnostic(report, rootHost);
             appendDohDiagnostic(report, rootHost);
-            if(ntkSite && !"sbxh1.com".equalsIgnoreCase(rootHost)) {
-                appendAppDnsDiagnostic(report, "sbxh1.com");
-                appendDohDiagnostic(report, "sbxh1.com");
+            if(ntkSite && !NTK_HOST.equalsIgnoreCase(rootHost)) {
+                appendAppDnsDiagnostic(report, NTK_HOST);
+                appendDohDiagnostic(report, NTK_HOST);
             }
             if(ntkSite) {
                 appendProxyDiagnostic(report, rootHost);
-                appendProxyDiagnostic(report, "img.sbxh1.com");
+                appendProxyDiagnostic(report, "img." + NTK_HOST);
             } else {
                 appendAppDnsDiagnostic(report, "i1.imgcloud18.com");
                 appendDohDiagnostic(report, "i1.imgcloud18.com");

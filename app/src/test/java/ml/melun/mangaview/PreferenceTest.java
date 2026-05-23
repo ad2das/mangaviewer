@@ -15,23 +15,23 @@ import ml.melun.mangaview.mangaview.MTitle;
 public class PreferenceTest {
     @Test
     public void siteUrlNormalizationPreservesNtkPreset() {
-        assertEquals("https://ntk01.com/manhwa", Preference.normalizeComicUrlForTest("https://ntk01.com"));
-        assertEquals("https://ntk01.com/manhwa", Preference.normalizeComicUrlForTest("https://ntk01.com/cm"));
-        assertEquals("https://ntk01.com/manhwa", Preference.normalizeComicUrlForTest("https://ntk01.com/manhwa"));
+        assertEquals(NTK_COMIC_URL, Preference.normalizeComicUrlForTest("https://ntk01.com"));
+        assertEquals(NTK_COMIC_URL, Preference.normalizeComicUrlForTest("https://ntk01.com/cm"));
+        assertEquals(NTK_COMIC_URL, Preference.normalizeComicUrlForTest("https://ntk01.com/manhwa"));
         assertEquals(NTK_COMIC_URL, Preference.normalizeComicUrlForTest("https://sbxh1.com"));
         assertEquals(NTK_COMIC_URL, Preference.normalizeComicUrlForTest("https://sbxh1.com/cm"));
         assertEquals(NTK_COMIC_URL, Preference.normalizeComicUrlForTest(NTK_COMIC_URL));
-        assertEquals("https://ntk01.com", Preference.normalizeWebtoonUrlForTest("https://ntk01.com"));
-        assertEquals("https://ntk01.com", Preference.normalizeWebtoonUrlForTest("https://ntk01.com/manhwa"));
+        assertEquals(NTK_WEBTOON_URL, Preference.normalizeWebtoonUrlForTest("https://ntk01.com"));
+        assertEquals(NTK_WEBTOON_URL, Preference.normalizeWebtoonUrlForTest("https://ntk01.com/manhwa"));
         assertEquals(NTK_WEBTOON_URL, Preference.normalizeWebtoonUrlForTest("https://sbxh1.com/manhwa"));
         assertEquals(NTK_WEBTOON_URL, Preference.normalizeWebtoonUrlForTest(NTK_WEBTOON_URL));
     }
 
     @Test
     public void siteUrlNormalizationKeepsDynamicNtkHost() {
-        assertEquals("https://sbxh2.com/manhwa", Preference.normalizeComicUrlForTest("https://sbxh2.com"));
-        assertEquals("https://sbxh2.com/manhwa", Preference.normalizeComicUrlForTest("https://sbxh2.com/cm"));
-        assertEquals("https://sbxh2.com", Preference.normalizeWebtoonUrlForTest("https://sbxh2.com/manhwa"));
+        assertEquals("https://sbxh3.com/manhwa", Preference.normalizeComicUrlForTest("https://sbxh3.com"));
+        assertEquals("https://sbxh3.com/manhwa", Preference.normalizeComicUrlForTest("https://sbxh3.com/cm"));
+        assertEquals("https://sbxh3.com", Preference.normalizeWebtoonUrlForTest("https://sbxh3.com/manhwa"));
         assertEquals("https://newto03.com/manhwa", Preference.normalizeComicUrlForTest("https://newto03.com"));
         assertEquals("https://newto03.com", Preference.normalizeWebtoonUrlForTest("https://newto03.com/manhwa"));
     }
