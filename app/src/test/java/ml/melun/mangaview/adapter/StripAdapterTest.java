@@ -51,6 +51,12 @@ public class StripAdapterTest {
     }
 
     @Test
+    public void decodedBitmapCacheRejectsSingleHugeEntries() {
+        assertTrue(StripAdapter.shouldCacheDecodedBitmapForTest(2 * 1024, 16 * 1024));
+        assertFalse(StripAdapter.shouldCacheDecodedBitmapForTest(8 * 1024, 16 * 1024));
+    }
+
+    @Test
     public void displayBitmapRejectsMissingBitmap() {
         assertFalse(StripAdapter.isDisplayBitmapUsableForTest(null));
     }
@@ -96,11 +102,12 @@ public class StripAdapterTest {
     public void preloadBudgetsCoverOneFastFling() {
         assertTrue(StripAdapter.preloadAheadCountForTest() >= 24);
         assertTrue(StripAdapter.initialPreloadAheadCountForTest() >= 24);
-        assertTrue(StripAdapter.decodedPreloadActiveLimitForTest() <= 2);
-        assertTrue(StripAdapter.scrollIdlePreloadDelayMsForTest() <= 100L);
+        assertTrue(StripAdapter.decodedPreloadActiveLimitForTest() >= 2);
+        assertTrue(StripAdapter.scrollIdlePreloadDelayMsForTest() >= 600L);
         assertTrue(StripAdapter.scrollIdleHeightCorrectionDelayMsForTest()
                 >= StripAdapter.scrollIdlePreloadDelayMsForTest());
-        assertTrue(StripAdapter.previewWidthForTest(1080) >= 360);
+        assertTrue(StripAdapter.previewWidthForTest(1080) >= 480);
+        assertEquals(480, StripAdapter.previewWidthForTest(1080));
         assertTrue(StripAdapter.previewWidthForTest(1080) < 1080);
     }
 
@@ -110,8 +117,8 @@ public class StripAdapterTest {
         assertFalse(StripAdapter.shouldRunBusyPreloadForTest(10, 11, 20L));
         assertFalse(StripAdapter.shouldRunBusyPreloadForTest(10, 12, 20L));
         assertTrue(StripAdapter.shouldRunBusyPreloadForTest(10, 14, 20L));
-        assertFalse(StripAdapter.shouldRunBusyPreloadForTest(10, 11, 120L));
-        assertTrue(StripAdapter.shouldRunBusyPreloadForTest(10, 11, 180L));
+        assertFalse(StripAdapter.shouldRunBusyPreloadForTest(10, 11, 80L));
+        assertTrue(StripAdapter.shouldRunBusyPreloadForTest(10, 11, 120L));
     }
 
     @Test
@@ -127,8 +134,8 @@ public class StripAdapterTest {
     }
 
     @Test
-    public void fastFlingBindsFullQualityWithThumbnailFallback() {
-        assertFalse(StripAdapter.shouldUsePreviewOnlyBindForTest(true, false));
+    public void fastFlingBindsPreviewOnlyUntilScrollSettles() {
+        assertTrue(StripAdapter.shouldUsePreviewOnlyBindForTest(true, false));
         assertFalse(StripAdapter.shouldUsePreviewOnlyBindForTest(false, false));
         assertFalse(StripAdapter.shouldUsePreviewOnlyBindForTest(true, true));
     }

@@ -57,8 +57,8 @@ public class ViewerWarmupManager {
     public static final int LOAD_FIRST_FRAME_PENDING = -3;
     private static final String TAG = "ViewerPerf";
     private static final int ACTIVE_LIMIT = 36;
-    private static final int DECODED_TARGET_LIMIT = 24;
-    private static final int DECODED_TARGET_ACTIVE_SOFT_LIMIT = 1;
+    private static final int DECODED_TARGET_LIMIT = 12;
+    private static final int DECODED_TARGET_ACTIVE_SOFT_LIMIT = 2;
     private static final long FIRST_PAGE_BLOCKING_DECODE_TIMEOUT_MS = 650L;
     private static final long OTHER_PAGE_BLOCKING_DECODE_TIMEOUT_MS = 250L;
     private static final int SNAPSHOT_LIMIT = 64;
@@ -896,7 +896,12 @@ public class ViewerWarmupManager {
     }
 
     public static Bitmap getDecodedBitmap(PageItem page, boolean autoCut, boolean reverse, int width) {
-        String key = decodedPageKey(page, autoCut, reverse, width);
+        Bitmap full = getDecodedBitmap(page, autoCut, reverse, width, false);
+        return full != null ? full : getDecodedBitmap(page, autoCut, reverse, width, true);
+    }
+
+    public static Bitmap getDecodedBitmap(PageItem page, boolean autoCut, boolean reverse, int width, boolean preview) {
+        String key = decodedPageKey(page, autoCut, reverse, preview ? decodedWarmupWidth(width) : width);
         if(key.length() == 0)
             return null;
         synchronized (ViewerWarmupManager.class) {
@@ -1026,7 +1031,7 @@ public class ViewerWarmupManager {
 
     private static int decodedWarmupWidth(int width) {
         int normalized = Math.max(1, width);
-        return Math.min(normalized, Math.max(360, normalized / 3));
+        return Math.min(normalized, Math.max(480, (normalized * 4) / 9));
     }
 
     static DiskCacheStrategy viewerDiskCacheStrategyForTest() {
@@ -1063,7 +1068,7 @@ public class ViewerWarmupManager {
         RequestManager requestManager = glideRequestManager(context);
         if(requestManager == null)
             return;
-        String key = decodedPageKey(page, autoCut, reverse, width);
+        String key = decodedPageKey(page, autoCut, reverse, decodedWarmupWidth(width));
         if(key.length() == 0)
             return;
         synchronized (ViewerWarmupManager.class) {
@@ -1126,7 +1131,7 @@ public class ViewerWarmupManager {
     }
 
     private static boolean markPagePreload(PageItem page, boolean autoCut, boolean reverse, int width, long now) {
-        String key = decodedPageKey(page, autoCut, reverse, width);
+        String key = decodedPageKey(page, autoCut, reverse, decodedWarmupWidth(width));
         if(key.length() == 0)
             return false;
         return markPagePreload(key, now);
@@ -1245,7 +1250,7 @@ public class ViewerWarmupManager {
                                            boolean autoCut, boolean reverse, int width, boolean firstPage) {
         if(page == null || page.manga == null || !isUsablePageImage(page.img))
             return false;
-        String key = decodedPageKey(page, autoCut, reverse, width);
+        String key = decodedPageKey(page, autoCut, reverse, decodedWarmupWidth(width));
         if(key.length() == 0)
             return false;
         synchronized (ViewerWarmupManager.class) {
@@ -1942,9 +1947,9 @@ public class ViewerWarmupManager {
     private static int decodedCacheSizeKb() {
         int maxMemoryKb = (int)(Runtime.getRuntime().maxMemory() / 1024);
         boolean dataSave = p != null && p.getDataSave();
-        int targetKb = maxMemoryKb / (dataSave ? 32 : 16);
-        int minKb = dataSave ? 2 * 1024 : 4 * 1024;
-        int maxKb = dataSave ? 8 * 1024 : 16 * 1024;
+        int targetKb = maxMemoryKb / (dataSave ? 40 : 24);
+        int minKb = dataSave ? 2 * 1024 : 3 * 1024;
+        int maxKb = dataSave ? 4 * 1024 : 8 * 1024;
         return Math.max(minKb, Math.min(targetKb, maxKb));
     }
 
@@ -1954,7 +1959,20 @@ public class ViewerWarmupManager {
         Bitmap displayBitmap = copyBitmapForDisplay(bitmap);
         if(displayBitmap == null)
             return;
-        decodedBitmapCache.put(key, new CachedBitmap(displayBitmap, bitmapSizeKb(displayBitmap)));
+        int sizeKb = bitmapSizeKb(displayBitmap);
+        if(!shouldCacheDecodedBitmap(sizeKb, decodedBitmapCache.maxSize()))
+            return;
+        decodedBitmapCache.put(key, new CachedBitmap(displayBitmap, sizeKb));
+    }
+
+    private static boolean shouldCacheDecodedBitmap(int bitmapSizeKb, int cacheSizeKb) {
+        int normalizedCacheSizeKb = Math.max(1, cacheSizeKb);
+        int maxEntryKb = Math.max(1024, normalizedCacheSizeKb / 3);
+        return bitmapSizeKb > 0 && bitmapSizeKb <= maxEntryKb;
+    }
+
+    static boolean shouldCacheDecodedBitmapForTest(int bitmapSizeKb, int cacheSizeKb) {
+        return shouldCacheDecodedBitmap(bitmapSizeKb, cacheSizeKb);
     }
 
     private static Bitmap copyBitmapForDisplay(Bitmap bitmap) {

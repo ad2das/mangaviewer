@@ -4,8 +4,7 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Rect;
 
-import static ml.melun.mangaview.Utils.getSample;
-
+import com.bumptech.glide.load.engine.bitmap_recycle.BitmapPool;
 
 public class Decoder {
     int __seed=0;
@@ -33,8 +32,15 @@ public class Decoder {
     }
 
     public Bitmap decode(Bitmap input, int width){
-        input = getSample(input,width);
+        input = getSampleBitmap(input, width, null);
         return decode(input);
+    }
+    public Bitmap decode(Bitmap input, int width, BitmapPool pool){
+        BitmapCandidate sampled = getSampleCandidate(input, width, pool);
+        Bitmap output = decode(sampled.bitmap, pool);
+        if(sampled.owned && output != sampled.bitmap)
+            putBitmap(pool, sampled.bitmap);
+        return output;
     }
     public Bitmap downSample(final Bitmap input, int maxBytes) {
         if(input.getByteCount() > maxBytes) {
@@ -43,8 +49,22 @@ public class Decoder {
         }
         return input;
     }
+    public Bitmap downSample(final Bitmap input, int maxBytes, BitmapPool pool) {
+        if(input.getByteCount() > maxBytes) {
+            Float ratio = (maxBytes*1.0f/input.getByteCount());
+            return downSize(input, ratio, pool);
+        }
+        return input;
+    }
     public Bitmap downSize(final Bitmap input, Float ratio) {
         Bitmap bitmap = Bitmap.createScaledBitmap(input, scaledDimension(input.getWidth(), ratio), scaledDimension(input.getHeight(), ratio), true);
+        return bitmap;
+    }
+    public Bitmap downSize(final Bitmap input, Float ratio, BitmapPool pool) {
+        int width = scaledDimension(input.getWidth(), ratio);
+        int height = scaledDimension(input.getHeight(), ratio);
+        Bitmap bitmap = obtainBitmap(pool, width, height, displayConfig(input));
+        new Canvas(bitmap).drawBitmap(input, null, new Rect(0, 0, width, height), null);
         return bitmap;
     }
 
@@ -58,6 +78,18 @@ public class Decoder {
 
     public Bitmap decode(Bitmap input){
         input = downSample(input, MAX_DISPLAY_BITMAP_BYTES);
+        return decodeDownsampled(input, null);
+    }
+
+    public Bitmap decode(Bitmap input, BitmapPool pool){
+        BitmapCandidate downsampled = downSampleCandidate(input, MAX_DISPLAY_BITMAP_BYTES, pool);
+        Bitmap output = decodeDownsampled(downsampled.bitmap, pool);
+        if(downsampled.owned && output != downsampled.bitmap)
+            putBitmap(pool, downsampled.bitmap);
+        return output;
+    }
+
+    private Bitmap decodeDownsampled(Bitmap input, BitmapPool pool) {
         if(view_cnt==0) return input;
         int[][] order = new int[cx*cy][2];
         for (int i = 0; i < cx*cy; i++) {
@@ -70,7 +102,7 @@ public class Decoder {
             return a[1] != b[1] ? a[1] - b[1] : a[0] - b[0];
         });
         //create new bitmap
-        Bitmap output = Bitmap.createBitmap(input.getWidth(), input.getHeight(), displayConfig(input));
+        Bitmap output = obtainBitmap(pool, input.getWidth(), input.getHeight(), displayConfig(input));
 
         Canvas canvas = new Canvas(output);
 
@@ -91,6 +123,49 @@ public class Decoder {
         return output;
     }
 
+    private static Bitmap getSampleBitmap(Bitmap input, int width, BitmapPool pool) {
+        width = sampleWidth(input.getWidth(), width);
+        if(input.getWidth() <= width)
+            return input;
+        int height = sampleHeight(input.getWidth(), input.getHeight(), width);
+        Bitmap bitmap = obtainBitmap(pool, width, height, displayConfig(input));
+        new Canvas(bitmap).drawBitmap(input, null, new Rect(0, 0, width, height), null);
+        return bitmap;
+    }
+
+    private static BitmapCandidate getSampleCandidate(Bitmap input, int width, BitmapPool pool) {
+        width = sampleWidth(input.getWidth(), width);
+        if(input.getWidth() <= width)
+            return new BitmapCandidate(input, false);
+        int height = sampleHeight(input.getWidth(), input.getHeight(), width);
+        Bitmap bitmap = obtainBitmap(pool, width, height, displayConfig(input));
+        new Canvas(bitmap).drawBitmap(input, null, new Rect(0, 0, width, height), null);
+        return new BitmapCandidate(bitmap, pool != null);
+    }
+
+    private BitmapCandidate downSampleCandidate(final Bitmap input, int maxBytes, BitmapPool pool) {
+        if(input.getByteCount() > maxBytes) {
+            Float ratio = (maxBytes*1.0f/input.getByteCount());
+            return new BitmapCandidate(downSize(input, ratio, pool), pool != null);
+        }
+        return new BitmapCandidate(input, false);
+    }
+
+    private static int sampleWidth(int inputWidth, int requestedWidth) {
+        if(inputWidth <= 0)
+            return 1;
+        if(requestedWidth <= 0)
+            return 1;
+        return Math.max(1, Math.min(inputWidth, requestedWidth));
+    }
+
+    private static int sampleHeight(int inputWidth, int inputHeight, int targetWidth) {
+        if(inputWidth <= 0 || inputHeight <= 0)
+            return 1;
+        float ratio = (float) inputHeight / (float) inputWidth;
+        return Math.max(1, Math.round(ratio * Math.max(1, targetWidth)));
+    }
+
     private int _random(int index){
         double x = Math.sin(__seed+index) * 10000;
         return (int) Math.floor((x - Math.floor(x)) * 100000);
@@ -109,6 +184,28 @@ public class Decoder {
     private static Bitmap.Config displayConfig(Bitmap bitmap) {
         Bitmap.Config config = bitmap == null ? null : bitmap.getConfig();
         return config == Bitmap.Config.RGB_565 ? Bitmap.Config.RGB_565 : Bitmap.Config.ARGB_8888;
+    }
+
+    private static Bitmap obtainBitmap(BitmapPool pool, int width, int height, Bitmap.Config config) {
+        if(pool != null)
+            return pool.get(Math.max(1, width), Math.max(1, height), config);
+        return Bitmap.createBitmap(Math.max(1, width), Math.max(1, height), config);
+    }
+
+    private static void putBitmap(BitmapPool pool, Bitmap bitmap) {
+        if(pool == null || bitmap == null || bitmap.isRecycled())
+            return;
+        pool.put(bitmap);
+    }
+
+    private static class BitmapCandidate {
+        final Bitmap bitmap;
+        final boolean owned;
+
+        BitmapCandidate(Bitmap bitmap, boolean owned) {
+            this.bitmap = bitmap;
+            this.owned = owned;
+        }
     }
 
     private int newRandom(int index){

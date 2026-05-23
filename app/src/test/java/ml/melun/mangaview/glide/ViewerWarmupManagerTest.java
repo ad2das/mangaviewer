@@ -240,7 +240,13 @@ public class ViewerWarmupManagerTest {
     }
 
     @Test
-    public void decodedWarmupActiveLimitAvoidsMainThreadCompletionStorms() {
-        assertEquals(1, ViewerWarmupManager.decodedTargetActiveSoftLimitForTest());
+    public void decodedWarmupActiveLimitKeepsSeveralPreviewFramesReady() {
+        assertEquals(2, ViewerWarmupManager.decodedTargetActiveSoftLimitForTest());
+    }
+
+    @Test
+    public void decodedWarmupCacheRejectsSingleHugeEntries() {
+        assertTrue(ViewerWarmupManager.shouldCacheDecodedBitmapForTest(2 * 1024, 16 * 1024));
+        assertFalse(ViewerWarmupManager.shouldCacheDecodedBitmapForTest(8 * 1024, 16 * 1024));
     }
 }

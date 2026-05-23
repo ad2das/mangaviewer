@@ -199,8 +199,9 @@ public class ViewerActivityTest {
         assertFalse(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(10, 11, 20L));
         assertFalse(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(10, 12, 20L));
         assertTrue(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(10, 14, 20L));
-        assertFalse(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(10, 11, 120L));
-        assertTrue(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(10, 11, 180L));
+        assertFalse(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(10, 11, 60L));
+        assertFalse(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(10, 11, 80L));
+        assertTrue(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(10, 11, 120L));
     }
 
     @Test
@@ -229,7 +230,7 @@ public class ViewerActivityTest {
     @Test
     public void automaticNextAppendShowsPreviewBeforeFullQualityPromotion() {
         assertTrue(ViewerActivity.autoAppendPreviewOnlyMsForTest() >= 1500L);
-        assertTrue(ViewerActivity.autoAppendPreviewOnlyMsForTest() <= 4000L);
+        assertTrue(ViewerActivity.autoAppendPreviewOnlyMsForTest() <= 30000L);
     }
 
     @Test

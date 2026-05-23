@@ -86,10 +86,9 @@ public final class ViewerPagePipeline {
     }
 
     public void prepareScrollWindow(Manga target, int pageIndex, int direction, boolean busy) {
-        if(busy && dataSave)
-            prepareEpisode(target, pageIndex, 8, 0, 0, Priority.HIGH);
-        else if(busy)
-            prepareEpisode(target, pageIndex, 12, 0, 0, Priority.HIGH);
+        if(busy)
+            prepareEpisode(target, pageIndex, busyUrlWindow(dataSave), busyDiskWindow(dataSave),
+                    busyDecodedWindow(dataSave), Priority.HIGH);
         else
             prepareEpisode(target, pageIndex, forwardUrlWindow(dataSave), scrollDiskWindow(dataSave),
                     idleDecodedWindow(dataSave), Priority.IMMEDIATE);
@@ -268,39 +267,47 @@ public final class ViewerPagePipeline {
     }
 
     public static int forwardUrlWindow(boolean dataSave) {
-        return dataSave ? 12 : 36;
+        return dataSave ? 16 : 48;
     }
 
     public static int initialDiskWindow(boolean dataSave) {
-        return dataSave ? 3 : 6;
+        return dataSave ? 4 : 10;
     }
 
     public static int scrollDiskWindow(boolean dataSave) {
-        return dataSave ? 2 : 4;
+        return dataSave ? 4 : 12;
+    }
+
+    public static int busyUrlWindow(boolean dataSave) {
+        return dataSave ? 10 : 24;
     }
 
     public static int busyDiskWindow(boolean dataSave) {
-        return 0;
+        return dataSave ? 3 : 8;
+    }
+
+    public static int busyDecodedWindow(boolean dataSave) {
+        return dataSave ? 1 : 2;
     }
 
     public static int forwardDiskWindow(boolean dataSave) {
-        return dataSave ? 2 : 4;
+        return dataSave ? 3 : 8;
     }
 
     public static int forwardDecodedWindow(boolean dataSave) {
-        return 0;
+        return dataSave ? 1 : 2;
     }
 
     public static int idleDecodedWindow(boolean dataSave) {
-        return 0;
+        return dataSave ? 1 : 3;
     }
 
     public static int boundaryDecodedWindow(boolean dataSave) {
-        return 0;
+        return dataSave ? 1 : 2;
     }
 
     public static int futureDiskWindow(boolean dataSave) {
-        return 0;
+        return dataSave ? 0 : 4;
     }
 
     public static int futureDecodedWindow(boolean dataSave) {

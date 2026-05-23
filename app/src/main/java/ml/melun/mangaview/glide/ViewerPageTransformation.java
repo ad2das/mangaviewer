@@ -42,7 +42,7 @@ public class ViewerPageTransformation extends BitmapTransformation {
 
     @Override
     protected Bitmap transform(@NonNull BitmapPool pool, @NonNull Bitmap toTransform, int outWidth, int outHeight) {
-        Bitmap decoded = new Decoder(seed, mangaId).decode(toTransform, viewerWidth);
+        Bitmap decoded = new Decoder(seed, mangaId).decode(toTransform, viewerWidth, pool);
         if(!autoCut)
             return decoded;
 

@@ -18,6 +18,7 @@ public class ViewerClippedImageView extends AppCompatImageView {
     private final Rect dstRect = new Rect();
     private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG);
     private Bitmap viewerBitmap;
+    private boolean fastBitmapDraw;
 
     public ViewerClippedImageView(Context context) {
         super(context);
@@ -50,16 +51,29 @@ public class ViewerClippedImageView extends AppCompatImageView {
     }
 
     public void setViewerBitmap(@Nullable Bitmap bitmap) {
-        if(viewerBitmap == bitmap)
+        setViewerBitmap(bitmap, false);
+    }
+
+    public void setViewerBitmap(@Nullable Bitmap bitmap, boolean fastDraw) {
+        if(viewerBitmap == bitmap && fastBitmapDraw == fastDraw)
             return;
+        fastBitmapDraw = fastDraw;
         viewerBitmap = bitmap;
         super.setImageDrawable(null);
+        invalidate();
+    }
+
+    public void setFastBitmapDraw(boolean fastDraw) {
+        if(fastBitmapDraw == fastDraw)
+            return;
+        fastBitmapDraw = fastDraw;
         invalidate();
     }
 
     @Override
     public void setImageDrawable(@Nullable Drawable drawable) {
         viewerBitmap = null;
+        fastBitmapDraw = false;
         super.setImageDrawable(drawable);
     }
 
@@ -80,6 +94,9 @@ public class ViewerClippedImageView extends AppCompatImageView {
         }
         bitmapPaint.setAlpha(alpha);
         bitmapPaint.setColorFilter(null);
+        bitmapPaint.setAntiAlias(!fastBitmapDraw);
+        bitmapPaint.setFilterBitmap(!fastBitmapDraw);
+        bitmapPaint.setDither(!fastBitmapDraw);
         canvas.drawBitmap(bitmap, srcRect, dstRect, bitmapPaint);
     }
 

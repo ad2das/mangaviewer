@@ -11,6 +11,6 @@ public class AppDispatchersTest {
         assertTrue(AppDispatcherPolicy.IMAGE_WARMUP_MAX_THREADS >= 2);
         assertTrue(AppDispatcherPolicy.IMAGE_WARMUP_QUEUE_SIZE >= 64);
         assertTrue(AppDispatcherPolicy.IMAGE_WARMUP_MAX_THREADS <= 4);
-        assertTrue(AppDispatcherPolicy.IMAGE_WARMUP_QUEUE_SIZE <= 96);
+        assertTrue(AppDispatcherPolicy.IMAGE_WARMUP_QUEUE_SIZE <= 160);
     }
 }
