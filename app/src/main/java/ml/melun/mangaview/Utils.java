@@ -287,7 +287,7 @@ public class Utils {
                                           boolean recent, Title title, boolean includeTitleEpisodes) {
         openViewerPrepared(context, manga, code, returnToEpisodes, true, recent,
                 title != null ? title : (manga == null ? null : manga.getTitle()),
-                includeTitleEpisodes, false, true);
+                includeTitleEpisodes, false, false);
     }
 
     private static void openViewerPrepared(Context context, Manga manga, int code, boolean returnToEpisodes,
@@ -331,8 +331,7 @@ public class Utils {
             launchWhenFirstFrameReady(context, manga, code, returnToEpisodes, online, recent,
                     launchTitle, includeTitleEpisodes, launchToken);
             return;
-        } else
-            ViewerWarmupManager.warmupContinueImmediate(context, manga, launchTitle);
+        }
         launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken, exactEpisode);
     }
 

@@ -54,6 +54,7 @@ import ml.melun.mangaview.mangaview.MainPageWebtoon;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Ranking;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.repository.CacheFileStore;
 import ml.melun.mangaview.repository.EpisodeSnapshotCache;
 import ml.melun.mangaview.repository.MangaRepository;
@@ -1514,7 +1515,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     if(!continueStyle || item == null)
                         return false;
                     if(event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                        warmupContinueViewer(item);
+                        ViewerWarmupManager.logMetric("home_continue_card_touch_warmup_skipped", item.getId());
                     }
                     return false;
                 });
@@ -1542,19 +1543,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return "ntk".equals(source) ? "ntk" : "wfwf";
         }
 
-        private void warmupContinueViewer(Title item) {
-            if(item == null)
-                return;
-            Manga manga = resolveContinueManga(item);
-            if(manga == null)
-                return;
-            ContinueReadinessCoordinator.primeImmediate(context, manga, item);
-        }
-
         void warmupContinueAt(RecyclerView recyclerView, float x, float y) {
-            if(style != STYLE_CONTINUE)
-                return;
-            warmupContinueViewer(continueItemAt(recyclerView, x, y));
+            if(style == STYLE_CONTINUE) {
+                Title item = continueItemAt(recyclerView, x, y);
+                if(item != null)
+                    ViewerWarmupManager.logMetric("home_continue_touch_warmup_skipped", item.getId());
+            }
         }
 
         private Title continueItemAt(RecyclerView recyclerView, float x, float y) {

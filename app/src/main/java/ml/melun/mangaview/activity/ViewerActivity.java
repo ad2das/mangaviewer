@@ -146,7 +146,7 @@ public class ViewerActivity extends AppCompatActivity {
     private static final long SCROLL_BOOKMARK_SAVE_DELAY_MS = 350L;
     private static final long BOUNDARY_LOAD_IDLE_DELAY_MS = 64L;
     private static final long AUTO_APPEND_PREVIEW_ONLY_MS = 2600L;
-    private static final long INITIAL_BACKGROUND_WORK_GUARD_MS = 280L;
+    private static final long INITIAL_BACKGROUND_WORK_GUARD_MS = 1500L;
     private static final int BUSY_SCROLL_ANCHOR_MIN_ITEM_DELTA = 4;
     private static final long BUSY_SCROLL_ANCHOR_MIN_INTERVAL_MS = 180L;
     private boolean scrollBookmarkSavePending = false;
@@ -2093,8 +2093,6 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private long remainingInitialBackgroundGuardMs() {
-        if(userInteractedAfterViewerOpen)
-            return 0L;
         return Math.max(0L, initialBackgroundWorkGuardUntilMs - android.os.SystemClock.uptimeMillis());
     }
 
@@ -2117,7 +2115,7 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private static boolean shouldHoldInitialBackgroundWork(boolean userInteracted, long nowMs, long guardUntilMs) {
-        return !userInteracted && nowMs < guardUntilMs;
+        return nowMs < guardUntilMs;
     }
 
     static long initialBackgroundWorkGuardMsForTest() {

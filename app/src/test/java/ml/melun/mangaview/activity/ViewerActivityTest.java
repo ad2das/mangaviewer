@@ -232,11 +232,11 @@ public class ViewerActivityTest {
     }
 
     @Test
-    public void initialViewerGuardOnlyCoversTheFirstDrawBurst() {
-        assertTrue(ViewerActivity.initialBackgroundWorkGuardMsForTest() >= 200L);
-        assertTrue(ViewerActivity.initialBackgroundWorkGuardMsForTest() <= 400L);
+    public void initialViewerGuardKeepsBackgroundWorkOutOfImmediateFling() {
+        assertTrue(ViewerActivity.initialBackgroundWorkGuardMsForTest() >= 1200L);
+        assertTrue(ViewerActivity.initialBackgroundWorkGuardMsForTest() <= 2000L);
         assertTrue(ViewerActivity.shouldHoldInitialBackgroundWorkForTest(false, 100L, 200L));
-        assertFalse(ViewerActivity.shouldHoldInitialBackgroundWorkForTest(true, 100L, 200L));
+        assertTrue(ViewerActivity.shouldHoldInitialBackgroundWorkForTest(true, 100L, 200L));
         assertFalse(ViewerActivity.shouldHoldInitialBackgroundWorkForTest(false, 200L, 200L));
     }
 
