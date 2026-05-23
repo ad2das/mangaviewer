@@ -202,6 +202,15 @@ final class MissingEpisodeNavigator {
         if(episode == null)
             return AlternateEpisodeResult.error("다른 소스에서 누락된 다음화를 찾지 못했습니다.");
         attachTitle(alternateTitle, episode);
+        episode.setEps(episodes);
+        startedAt = System.currentTimeMillis();
+        int viewerResult = MangaRepository.fetchViewerInitial(episode, MangaRepository.cancellation());
+        if(viewerResult == LOAD_CAPTCHA)
+            return AlternateEpisodeResult.captcha(alternateTitle, episode);
+        if(getHttpClient().hasCloudflareChallengeSince(startedAt))
+            return AlternateEpisodeResult.captcha(alternateTitle, episode);
+        if(viewerResult != LOAD_OK || MangaRepository.imageUrls(episode, null).size() == 0)
+            return AlternateEpisodeResult.error("다른 소스의 회차 이미지를 불러오지 못했습니다.");
         return AlternateEpisodeResult.success(alternateTitle, episode);
     }
 

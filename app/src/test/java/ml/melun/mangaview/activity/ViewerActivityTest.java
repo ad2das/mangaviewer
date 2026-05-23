@@ -118,6 +118,13 @@ public class ViewerActivityTest {
     }
 
     @Test
+    public void missingEpisodeBoundaryPromptWaitsForExplicitBottomJump() {
+        assertFalse(ViewerActivity.shouldPromptMissingEpisodeAtBoundaryForTest(false, true));
+        assertTrue(ViewerActivity.shouldPromptMissingEpisodeAtBoundaryForTest(true, true));
+        assertFalse(ViewerActivity.shouldPromptMissingEpisodeAtBoundaryForTest(true, false));
+    }
+
+    @Test
     public void boundaryEpisodeLoadsWaitForIdleScroll() {
         assertTrue(ViewerActivity.shouldCheckBoundaryDuringScrollStateForTest(RecyclerView.SCROLL_STATE_IDLE));
         assertFalse(ViewerActivity.shouldCheckBoundaryDuringScrollStateForTest(RecyclerView.SCROLL_STATE_DRAGGING));

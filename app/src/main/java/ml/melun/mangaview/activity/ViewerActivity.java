@@ -606,6 +606,14 @@ public class ViewerActivity extends AppCompatActivity {
                 missingEpisodeHost(), skipAction);
     }
 
+    private static boolean shouldPromptMissingEpisodeAtBoundary(boolean jumpToEpisode, boolean missingGap) {
+        return jumpToEpisode && missingGap;
+    }
+
+    static boolean shouldPromptMissingEpisodeAtBoundaryForTest(boolean jumpToEpisode, boolean missingGap) {
+        return shouldPromptMissingEpisodeAtBoundary(jumpToEpisode, missingGap);
+    }
+
     private MissingEpisodeNavigator.Host missingEpisodeHost() {
         return new MissingEpisodeNavigator.Host() {
             @Override
@@ -2009,8 +2017,12 @@ public class ViewerActivity extends AppCompatActivity {
         // them just because the viewer opens at the top can move resume backward.
         if(last != RecyclerView.NO_POSITION && last >= total - attachThreshold)
             attachNextEpisode(false);
-        if(last != RecyclerView.NO_POSITION && last >= total - 2)
+        if(last != RecyclerView.NO_POSITION && isAtViewerBottom())
             attachNextEpisode(true);
+    }
+
+    private boolean isAtViewerBottom() {
+        return strip != null && !strip.canScrollVertically(1);
     }
 
     private void loadEpisodeAtBoundaryIfNeededThrottled() {
@@ -2290,6 +2302,9 @@ public class ViewerActivity extends AppCompatActivity {
             ensureEpisodeListThenAttachNext(page.manga, jumpToEpisode);
             return;
         }
+        boolean missingGap = MissingEpisodeNavigator.hasMissingNextEpisodeGap(page.manga, target);
+        if(missingGap && !shouldPromptMissingEpisodeAtBoundary(jumpToEpisode, true))
+            return;
         if(maybePromptMissingNextEpisode(page.manga, target, () -> attachNextEpisode(jumpToEpisode)))
             return;
         int loadedPosition = stripAdapter.findFirstPagePosition(target);
