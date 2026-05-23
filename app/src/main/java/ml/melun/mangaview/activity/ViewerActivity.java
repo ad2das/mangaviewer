@@ -603,32 +603,36 @@ public class ViewerActivity extends AppCompatActivity {
 
     private boolean maybePromptMissingNextEpisode(Manga source, Manga target, Runnable skipAction) {
         return MissingEpisodeNavigator.maybePromptNextEpisode(this, dark, source, target, missingEpisodePromptState,
-                new MissingEpisodeNavigator.Host() {
-                    @Override
-                    public void lockUi(boolean lock) {
-                        ViewerActivity.this.lockUi(lock);
-                    }
+                missingEpisodeHost(), skipAction);
+    }
 
-                    @Override
-                    public void openAlternateEpisode(Title alternateTitle, Manga episode) {
-                        title = alternateTitle;
-                        if(episode != null && alternateTitle != null) {
-                            episode.setTitle(alternateTitle);
-                            episode.setTitleId(alternateTitle.getId());
-                        }
-                        loadManga(episode, ViewerLoadPolicy.EXACT_FIRST_PAGE);
-                    }
+    private MissingEpisodeNavigator.Host missingEpisodeHost() {
+        return new MissingEpisodeNavigator.Host() {
+            @Override
+            public void lockUi(boolean lock) {
+                ViewerActivity.this.lockUi(lock);
+            }
 
-                    @Override
-                    public void showCaptcha(Manga episode) {
-                        showViewerCaptchaRequired(episode == null ? source : episode);
-                    }
+            @Override
+            public void openAlternateEpisode(Title alternateTitle, Manga episode) {
+                title = alternateTitle;
+                if(episode != null && alternateTitle != null) {
+                    episode.setTitle(alternateTitle);
+                    episode.setTitleId(alternateTitle.getId());
+                }
+                loadManga(episode, ViewerLoadPolicy.EXACT_FIRST_PAGE);
+            }
 
-                    @Override
-                    public void onPromptCancelled() {
-                        suppressBoundaryLoadsUntilNextScroll();
-                    }
-                }, skipAction);
+            @Override
+            public void showCaptcha(Manga episode) {
+                showCaptchaPopup(episode == null ? null : Manga.safeUrl(episode), ViewerActivity.this, RESULT_CAPTCHA, p);
+            }
+
+            @Override
+            public void onPromptCancelled() {
+                suppressBoundaryLoadsUntilNextScroll();
+            }
+        };
     }
 
     private Manga focusedManga() {
@@ -2772,6 +2776,8 @@ public class ViewerActivity extends AppCompatActivity {
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (resultCode == RESULT_CAPTCHA) {
+            if(MissingEpisodeNavigator.retryPendingAfterCaptcha(this, missingEpisodePromptState, missingEpisodeHost()))
+                return;
             AppDispatchers.runUserAction(() -> {
                 getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
                 getHttpClient().syncCookiesFromWebView(p.getUrl(), true);

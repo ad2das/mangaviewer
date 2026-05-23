@@ -21,6 +21,7 @@ import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
 
+import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.mangaview.MTitle.base_auto;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
@@ -44,6 +45,7 @@ final class MissingEpisodeNavigator {
 
     static final class PromptState {
         private AlertDialog dialog;
+        private PendingSwitch pendingSwitch;
         private final Set<String> acknowledged = new HashSet<>();
 
         void dismiss() {
@@ -52,6 +54,14 @@ final class MissingEpisodeNavigator {
                 dialog = null;
             }
         }
+    }
+
+    static boolean retryPendingAfterCaptcha(AppCompatActivity activity, PromptState state, Host host) {
+        if(activity == null || state == null || host == null || state.pendingSwitch == null)
+            return false;
+        PendingSwitch pending = state.pendingSwitch;
+        openAlternateEpisode(activity, pending.source, pending.gap, pending.alternateSource, state, host);
+        return true;
     }
 
     static boolean maybePromptNextEpisode(AppCompatActivity activity, boolean dark, Manga source, Manga target,
@@ -74,7 +84,8 @@ final class MissingEpisodeNavigator {
                 .setMessage("다음화가 누락되어있는데 " + sourceLabel(alternateSource) + "에서 마저 볼까요?")
                 .setPositiveButton(sourceLabel(alternateSource) + "에서 보기", (d, which) -> {
                     state.acknowledged.add(key);
-                    openAlternateEpisode(activity, source, gap, alternateSource, host);
+                    state.pendingSwitch = new PendingSwitch(source, gap, alternateSource);
+                    openAlternateEpisode(activity, source, gap, alternateSource, state, host);
                 })
                 .setNegativeButton("그냥 다음화", (d, which) -> {
                     state.acknowledged.add(key);
@@ -109,7 +120,7 @@ final class MissingEpisodeNavigator {
     }
 
     private static void openAlternateEpisode(AppCompatActivity activity, Manga source, MissingEpisodeGap gap,
-                                             String alternateSource, Host host) {
+                                             String alternateSource, PromptState state, Host host) {
         host.lockUi(true);
         AppDispatchers.submitUserAction(() -> {
             SavedSiteConfig saved = SavedSiteConfig.capture();
@@ -119,12 +130,16 @@ final class MissingEpisodeNavigator {
                 result = findAlternateEpisode(source, gap, alternateSource);
                 if(result == null)
                     result = AlternateEpisodeResult.error("다른 소스에서 누락된 다음화를 찾지 못했습니다.");
-                if(!result.success)
+                if(!result.success && !result.captcha)
                     saved.restore();
             } catch (Exception e) {
-                saved.restore();
                 ml.melun.mangaview.report.CrashReporter.record(e);
-                result = AlternateEpisodeResult.error("다른 소스에서 누락된 다음화를 찾지 못했습니다.");
+                if(getHttpClient().hasRecentCloudflareChallenge())
+                    result = AlternateEpisodeResult.captcha(null, null);
+                else {
+                    saved.restore();
+                    result = AlternateEpisodeResult.error("다른 소스에서 누락된 다음화를 찾지 못했습니다.");
+                }
             }
             AlternateEpisodeResult finalResult = result;
             AppDispatchers.runOnMain(() -> {
@@ -135,6 +150,8 @@ final class MissingEpisodeNavigator {
                     host.showCaptcha(finalResult.episode);
                     return;
                 }
+                if(state != null)
+                    state.pendingSwitch = null;
                 if(finalResult.success) {
                     host.openAlternateEpisode(finalResult.title, finalResult.episode);
                     return;
@@ -150,18 +167,27 @@ final class MissingEpisodeNavigator {
         if(query.length() == 0)
             return AlternateEpisodeResult.error("다른 소스에서 검색할 제목을 찾지 못했습니다.");
 
+        long startedAt = System.currentTimeMillis();
         Search search = MangaRepository.createSearch(query, 0, searchBaseMode(source, sourceTitle));
         int searchResult = MangaRepository.search(search, MangaRepository.cancellation());
+        if(getHttpClient().hasCloudflareChallengeSince(startedAt))
+            return AlternateEpisodeResult.captcha(null, null);
         if(searchResult != LOAD_OK)
             return AlternateEpisodeResult.error("다른 소스 검색에 실패했습니다.");
 
         Title alternateTitle = bestMatchingTitle(search.getResult(), query, alternateSource);
-        if(alternateTitle == null)
+        if(alternateTitle == null) {
+            if(getHttpClient().hasCloudflareChallengeSince(startedAt))
+                return AlternateEpisodeResult.captcha(null, null);
             return AlternateEpisodeResult.error("다른 소스에서 같은 작품을 찾지 못했습니다.");
+        }
         alternateTitle.setSourceSite(alternateSource);
 
+        startedAt = System.currentTimeMillis();
         int episodeResult = MangaRepository.fetchEpisodesForeground(alternateTitle);
         if(episodeResult == LOAD_CAPTCHA)
+            return AlternateEpisodeResult.captcha(alternateTitle, null);
+        if(getHttpClient().hasCloudflareChallengeSince(startedAt))
             return AlternateEpisodeResult.captcha(alternateTitle, null);
         if(episodeResult != LOAD_OK)
             return AlternateEpisodeResult.error("다른 소스의 회차 목록을 불러오지 못했습니다.");
@@ -385,6 +411,18 @@ final class MissingEpisodeNavigator {
         MissingEpisodeGap(EpisodeNumberRange source, EpisodeNumberRange target) {
             this.source = source;
             this.target = target;
+        }
+    }
+
+    private static final class PendingSwitch {
+        final Manga source;
+        final MissingEpisodeGap gap;
+        final String alternateSource;
+
+        PendingSwitch(Manga source, MissingEpisodeGap gap, String alternateSource) {
+            this.source = source;
+            this.gap = gap;
+            this.alternateSource = alternateSource;
         }
     }
 

@@ -5,6 +5,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.SystemClock;
 import android.view.View;
+import android.widget.TextView;
 
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -63,6 +64,13 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
                     device.wait(Until.findObject(By.text("회차 누락")), 5000));
             assertNotNull("Expected missing episode dialog to offer NTK",
                     device.wait(Until.findObject(By.textContains("NTK에서 마저 볼까요")), 5000));
+
+            UiObject2 ntkButton = device.wait(Until.findObject(By.text("NTK에서 보기")), 5000);
+            assertNotNull("Expected NTK continue button", ntkButton);
+            ntkButton.click();
+
+            assertTrue("Expected viewer to continue on NTK missing 75화",
+                    waitForToolbarTitle(activity, "75화", 60000));
         } finally {
             activity.finish();
         }
@@ -135,5 +143,20 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
             SystemClock.sleep(250);
         }
         return null;
+    }
+
+    private static boolean waitForToolbarTitle(Activity activity, String expectedText, long timeoutMs) {
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+        while(SystemClock.elapsedRealtime() < deadline) {
+            final String[] text = new String[1];
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+                TextView title = activity.findViewById(R.id.toolbar_title);
+                text[0] = title == null || title.getText() == null ? "" : title.getText().toString();
+            });
+            if(text[0] != null && text[0].contains(expectedText))
+                return true;
+            SystemClock.sleep(500);
+        }
+        return false;
     }
 }
