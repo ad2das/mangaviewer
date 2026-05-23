@@ -508,10 +508,10 @@ public class Utils {
     private static long continueLaunchFallbackMs(String sourceSite, boolean ntkSite) {
         String source = sourceSite == null ? "" : sourceSite.trim().toLowerCase(Locale.ROOT);
         if("ntk".equals(source))
-            return 180L;
+            return 420L;
         if("wfwf".equals(source))
-            return 220L;
-        return ntkSite ? 180L : 220L;
+            return 520L;
+        return ntkSite ? 420L : 520L;
     }
 
     private static void switchToTitleSourceSite(Title title) {

@@ -184,14 +184,14 @@ public class ViewerWarmupManagerTest {
 
     @Test
     public void viewerRequestsCacheTransformedResourcesForColdReentry() {
-        assertSame(DiskCacheStrategy.RESOURCE, ViewerWarmupManager.viewerDiskCacheStrategyForTest());
+        assertSame(DiskCacheStrategy.ALL, ViewerWarmupManager.viewerDiskCacheStrategyForTest());
     }
 
     @Test
     public void viewerKeepsDiskCacheReadableWhileScrollingUnlessStorageIsLow() {
-        assertSame(DiskCacheStrategy.RESOURCE, ViewerWarmupManager.viewerDiskCacheStrategyForTest(true, Long.MAX_VALUE));
+        assertSame(DiskCacheStrategy.ALL, ViewerWarmupManager.viewerDiskCacheStrategyForTest(true, Long.MAX_VALUE));
         assertSame(DiskCacheStrategy.NONE, ViewerWarmupManager.viewerDiskCacheStrategyForTest(false, 64L * 1024L * 1024L));
-        assertSame(DiskCacheStrategy.RESOURCE, ViewerWarmupManager.viewerDiskCacheStrategyForTest(false, 256L * 1024L * 1024L));
+        assertSame(DiskCacheStrategy.ALL, ViewerWarmupManager.viewerDiskCacheStrategyForTest(false, 256L * 1024L * 1024L));
     }
 
     @Test

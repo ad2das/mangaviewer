@@ -12,13 +12,13 @@ public class ViewerPagePipelineTest {
     @Test
     public void performancePresetWarmsBeyondOneFastFling() {
         assertEquals(24, ViewerPagePipeline.forwardUrlWindow(false));
-        assertEquals(0, ViewerPagePipeline.initialDiskWindow(false));
-        assertEquals(3, ViewerPagePipeline.scrollDiskWindow(false));
-        assertEquals(4, ViewerPagePipeline.forwardDiskWindow(false));
+        assertEquals(6, ViewerPagePipeline.initialDiskWindow(false));
+        assertEquals(6, ViewerPagePipeline.scrollDiskWindow(false));
+        assertEquals(8, ViewerPagePipeline.forwardDiskWindow(false));
         assertEquals(0, ViewerPagePipeline.forwardDecodedWindow(false));
         assertEquals(0, ViewerPagePipeline.idleDecodedWindow(false));
         assertEquals(0, ViewerPagePipeline.boundaryDecodedWindow(false));
-        assertEquals(0, ViewerPagePipeline.futureDiskWindow(false));
+        assertEquals(4, ViewerPagePipeline.futureDiskWindow(false));
         assertEquals(0, ViewerPagePipeline.futureDecodedWindow(false));
         assertEquals(3, ViewerPagePipeline.nextEpisodeDepth(false));
         assertEquals(0, ViewerPagePipeline.previousEpisodeDepth(false));
@@ -27,13 +27,13 @@ public class ViewerPagePipelineTest {
     @Test
     public void dataSaverKeepsPipelineConservative() {
         assertEquals(6, ViewerPagePipeline.forwardUrlWindow(true));
-        assertEquals(0, ViewerPagePipeline.initialDiskWindow(true));
-        assertEquals(1, ViewerPagePipeline.scrollDiskWindow(true));
-        assertEquals(2, ViewerPagePipeline.forwardDiskWindow(true));
+        assertEquals(2, ViewerPagePipeline.initialDiskWindow(true));
+        assertEquals(2, ViewerPagePipeline.scrollDiskWindow(true));
+        assertEquals(3, ViewerPagePipeline.forwardDiskWindow(true));
         assertEquals(0, ViewerPagePipeline.forwardDecodedWindow(true));
         assertEquals(0, ViewerPagePipeline.idleDecodedWindow(true));
         assertEquals(0, ViewerPagePipeline.boundaryDecodedWindow(true));
-        assertEquals(0, ViewerPagePipeline.futureDiskWindow(true));
+        assertEquals(1, ViewerPagePipeline.futureDiskWindow(true));
         assertEquals(0, ViewerPagePipeline.futureDecodedWindow(true));
         assertEquals(1, ViewerPagePipeline.nextEpisodeDepth(true));
         assertEquals(0, ViewerPagePipeline.previousEpisodeDepth(true));

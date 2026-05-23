@@ -13,9 +13,9 @@ import ml.melun.mangaview.adapter.StripAdapter;
 import ml.melun.mangaview.model.PageItem;
 
 public class StripLayoutManager extends NpaLinearLayoutManager {
-    private static final int EXTRA_LAYOUT_AHEAD_SCREENS = 1;
+    private static final int EXTRA_LAYOUT_AHEAD_SCREENS = 0;
     private static final int EXTRA_LAYOUT_BEHIND_SCREENS = 0;
-    private static final int EXTRA_LAYOUT_IDLE_SCREENS = 1;
+    private static final int EXTRA_LAYOUT_IDLE_SCREENS = 0;
     private static final int EXTRA_LAYOUT_BUSY_AHEAD_SCREENS = 0;
     private static final int EXTRA_LAYOUT_BUSY_BEHIND_SCREENS = 0;
     StripAdapter adapter;

@@ -100,8 +100,8 @@ public class StripAdapterTest {
         assertTrue(StripAdapter.scrollIdlePreloadDelayMsForTest() <= 100L);
         assertTrue(StripAdapter.scrollIdleHeightCorrectionDelayMsForTest()
                 >= StripAdapter.scrollIdlePreloadDelayMsForTest());
-        assertTrue(StripAdapter.scrollIdleImageBindDelayMsForTest()
-                >= StripAdapter.scrollIdlePreloadDelayMsForTest());
+        assertTrue(StripAdapter.previewWidthForTest(1080) >= 360);
+        assertTrue(StripAdapter.previewWidthForTest(1080) < 1080);
     }
 
     @Test
@@ -122,14 +122,14 @@ public class StripAdapterTest {
 
     @Test
     public void fastFlingBindPathCanReadTransformedCache() {
-        assertEquals(DiskCacheStrategy.RESOURCE, StripAdapter.viewerDiskCacheStrategyForTest(true));
-        assertEquals(DiskCacheStrategy.RESOURCE, StripAdapter.viewerDiskCacheStrategyForTest(false));
+        assertEquals(DiskCacheStrategy.ALL, StripAdapter.viewerDiskCacheStrategyForTest(true));
+        assertEquals(DiskCacheStrategy.ALL, StripAdapter.viewerDiskCacheStrategyForTest(false));
     }
 
     @Test
-    public void fastFlingDefersOnlyUncachedColdImageBinds() {
-        assertTrue(StripAdapter.shouldDeferColdImageBindForTest(true, false));
-        assertFalse(StripAdapter.shouldDeferColdImageBindForTest(true, true));
-        assertFalse(StripAdapter.shouldDeferColdImageBindForTest(false, false));
+    public void fastFlingUsesInstantPreviewInsteadOfColdBindDeferral() {
+        assertTrue(StripAdapter.shouldUsePreviewOnlyBindForTest(true, false));
+        assertTrue(StripAdapter.shouldUsePreviewOnlyBindForTest(false, false));
+        assertFalse(StripAdapter.shouldUsePreviewOnlyBindForTest(true, true));
     }
 }

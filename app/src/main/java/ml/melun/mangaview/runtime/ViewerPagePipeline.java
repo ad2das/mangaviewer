@@ -274,15 +274,15 @@ public final class ViewerPagePipeline {
     }
 
     public static int initialDiskWindow(boolean dataSave) {
-        return 0;
+        return dataSave ? 2 : 6;
     }
 
     public static int scrollDiskWindow(boolean dataSave) {
-        return dataSave ? 1 : 3;
+        return dataSave ? 2 : 6;
     }
 
     public static int forwardDiskWindow(boolean dataSave) {
-        return dataSave ? 2 : 4;
+        return dataSave ? 3 : 8;
     }
 
     public static int forwardDecodedWindow(boolean dataSave) {
@@ -298,7 +298,7 @@ public final class ViewerPagePipeline {
     }
 
     public static int futureDiskWindow(boolean dataSave) {
-        return 0;
+        return dataSave ? 1 : 4;
     }
 
     public static int futureDecodedWindow(boolean dataSave) {

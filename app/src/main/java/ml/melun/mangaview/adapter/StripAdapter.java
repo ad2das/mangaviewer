@@ -20,6 +20,7 @@ import android.widget.TextView;
 
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.Priority;
+import com.bumptech.glide.RequestBuilder;
 import com.bumptech.glide.load.DecodeFormat;
 import com.bumptech.glide.load.DataSource;
 import com.bumptech.glide.load.engine.GlideException;
@@ -76,8 +77,13 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private static final long SCROLL_BUSY_PRELOAD_MIN_INTERVAL_MS = 180L;
     private static final long SCROLL_IDLE_PRELOAD_DELAY_MS = 60L;
     private static final long SCROLL_IDLE_HEIGHT_CORRECTION_DELAY_MS = 180L;
-    private static final long SCROLL_IDLE_IMAGE_BIND_DELAY_MS = 180L;
-    private static final int DEFERRED_IMAGE_REBIND_BATCH = 1;
+    private static final int PREVIEW_MIN_WIDTH = 360;
+    private static final int PREVIEW_WIDTH_NUMERATOR = 1;
+    private static final int PREVIEW_WIDTH_DENOMINATOR = 3;
+    private static final int PREVIEW_FULL_REBIND_BATCH = 4;
+    private static final int PREVIEW_FULL_REBIND_RADIUS = 14;
+    private static final long PREVIEW_FULL_REBIND_DELAY_MS = 160L;
+    private static final boolean AUTO_PROMOTE_PREVIEW_FULL_QUALITY = false;
     private static final boolean RENDER_ONLY_PRELOADS = true;
     private static final String PAYLOAD_HEIGHT = "height";
     ViewerActivity.InfiniteScrollCallback callback;
@@ -91,9 +97,10 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private final Map<String, CustomTarget<Bitmap>> decodedPreloadTargets = new HashMap<>();
     private final Map<String, Integer> pageHeights = new HashMap<>();
     private final Map<String, Integer> failedImageRetries = new HashMap<>();
-    private final Map<String, Long> deferredEpisodeLoadsUntil = new HashMap<>();
+    private final Map<String, Long> previewEpisodesUntil = new HashMap<>();
     private final Set<String> pendingHeightCorrections = new LinkedHashSet<>();
-    private final Set<String> deferredImageLoads = new LinkedHashSet<>();
+    private final Set<String> previewOnlyImageLoads = new LinkedHashSet<>();
+    private final Set<String> fullQualityPromotionKeys = new LinkedHashSet<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private int lastPreloadAnchorPosition = RecyclerView.NO_POSITION;
     private int pendingPreloadPosition = RecyclerView.NO_POSITION;
@@ -107,7 +114,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private long idlePreloadReadyAtMs = 0L;
     private boolean pendingPreloadScheduled = false;
     private boolean pendingHeightCorrectionScheduled = false;
-    private boolean deferredImageLoadScheduled = false;
+    private boolean previewFullRebindScheduled = false;
     private boolean scrollBusy = false;
     private boolean released = false;
     private boolean firstVisibleLogged = false;
@@ -125,13 +132,13 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         setScrollBusyState(scrollBusy);
     }
 
-    public void deferImageLoads(Manga manga, long durationMs) {
+    public void preferPreviewImages(Manga manga, long durationMs) {
         if(manga == null || durationMs <= 0L)
             return;
         String key = PageItem.episodeKey(manga);
         if(key.length() == 0)
             return;
-        deferredEpisodeLoadsUntil.put(key, android.os.SystemClock.uptimeMillis() + durationMs);
+        previewEpisodesUntil.put(key, android.os.SystemClock.uptimeMillis() + durationMs);
     }
 
     private void setScrollBusyState(boolean scrollBusy) {
@@ -146,7 +153,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         }
         if(!scrollBusy) {
             schedulePendingHeightCorrections();
-            scheduleDeferredImageLoadFlush(0L);
+            if(AUTO_PROMOTE_PREVIEW_FULL_QUALITY)
+                schedulePreviewFullRebind(0L);
             if(!RENDER_ONLY_PRELOADS && pendingPreloadPosition != RecyclerView.NO_POSITION)
                 schedulePreloadAroundScrollPosition(pendingPreloadPosition);
         }
@@ -516,8 +524,9 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         preloadedImages.clear();
         decodedBitmapCache.evictAll();
         clearPageHeightState();
-        deferredEpisodeLoadsUntil.clear();
-        deferredImageLoads.clear();
+        previewOnlyImageLoads.clear();
+        fullQualityPromotionKeys.clear();
+        previewEpisodesUntil.clear();
         decoders.clear();
         clearDecodedPreloadTargets();
         clearCurrentPage();
@@ -530,9 +539,10 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         pendingPreloadPosition = RecyclerView.NO_POSITION;
         pendingPreloadScheduled = false;
         pendingHeightCorrectionScheduled = false;
-        deferredImageLoadScheduled = false;
-        deferredEpisodeLoadsUntil.clear();
-        deferredImageLoads.clear();
+        previewFullRebindScheduled = false;
+        previewOnlyImageLoads.clear();
+        fullQualityPromotionKeys.clear();
+        previewEpisodesUntil.clear();
         mainHandler.removeCallbacksAndMessages(null);
         clearDecodedPageState();
     }
@@ -600,7 +610,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         PageItem item = ((PageItem)items.get(pos));
         Object url = getImageModel(item);
         String pageKey = pageBindKey(item);
-        if(!pageKey.equals(holder.boundPageKey))
+        boolean samePageRebind = pageKey.equals(holder.boundPageKey);
+        if(!samePageRebind)
             clearImageTarget(holder);
         int bindGeneration = ++holder.bindGeneration;
         holder.boundPageKey = pageKey;
@@ -627,7 +638,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(warmupCached != null && !warmupCached.isRecycled() && isHolderStillBound(holder, item, pageKey)) {
             logNextPageCacheHitOnce(item);
             failedImageRetries.remove(pageKey);
-            deferredImageLoads.remove(pageKey);
+            previewOnlyImageLoads.remove(pageKey);
             if(!isDisplayBitmapUsable(warmupCached)) {
                 handleImageLoadFailed(holder, item, pageKey, bindGeneration);
                 return;
@@ -639,101 +650,12 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             return;
         }
         cancelDecodedPreload(cacheKey);
-        clearFrameBitmap(holder);
+        if(!samePageRebind)
+            clearFrameBitmap(holder);
         holder.refresh.setVisibility(View.GONE);
-        long deferredBindDelayMs = coldImageBindDeferralMs(item, scrollBusy, false);
-        if(deferredBindDelayMs >= 0L) {
-            deferColdImageBind(pageKey);
-            scheduleDeferredImageLoadFlush(deferredBindDelayMs);
-            return;
-        }
-        deferredImageLoads.remove(pageKey);
-        if (autoCut) {
-            long bindStart = android.os.SystemClock.elapsedRealtime();
-            CustomTarget<Bitmap> imageTarget = new CustomTarget<Bitmap>() {
-                @Override
-                public void onResourceReady(@NonNull Bitmap bitmap, Transition<? super Bitmap> transition) {
-                    if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
-                        return;
-                    failedImageRetries.remove(pageKey);
-                    if(!isDisplayBitmapUsable(bitmap)) {
-                        handleImageLoadFailed(holder, item, pageKey, bindGeneration);
-                        return;
-                    }
-                    bindBitmap(holder, item, pageKey, bitmap);
-                    holder.refresh.setVisibility(View.GONE);
-                    if(item.index == 0)
-                        ViewerWarmupManager.logMetric("viewer_first_bind_ms", android.os.SystemClock.elapsedRealtime() - bindStart);
-                    markDisplayedAndPreload(holder, item, pageKey);
-                }
-
-                @Override
-                public void onLoadCleared(@Nullable Drawable placeholder) {
-                    if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
-                        return;
-                    applyKnownHeight(holder, item, pageKey);
-                    clearFrameBitmap(holder);
-                    holder.refresh.setVisibility(View.GONE);
-                }
-
-                @Override
-                public void onLoadFailed(@Nullable Drawable errorDrawable) {
-                    if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
-                        return;
-                    handleImageLoadFailed(holder, item, pageKey, bindGeneration);
-                }
-            };
-            holder.imageTarget = imageTarget;
-            //set image to holder view
-            Glide.with(holder.frame)
-                    .asBitmap()
-                    .priority(Priority.IMMEDIATE)
-                    .apply(viewerImageOptions(item))
-                    .load(url)
-                    .into(imageTarget);
-        } else {
-            long bindStart = android.os.SystemClock.elapsedRealtime();
-            CustomTarget<Bitmap> imageTarget = new CustomTarget<Bitmap>() {
-                @Override
-                public void onResourceReady(@NonNull Bitmap resource, @Nullable Transition<? super Bitmap> transition) {
-                    if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
-                        return;
-                    failedImageRetries.remove(pageKey);
-                    if(!isDisplayBitmapUsable(resource)) {
-                        handleImageLoadFailed(holder, item, pageKey, bindGeneration);
-                        return;
-                    }
-                    bindBitmap(holder, item, pageKey, resource);
-                    holder.refresh.setVisibility(View.GONE);
-                    if(item.index == 0)
-                        ViewerWarmupManager.logMetric("viewer_first_bind_ms", android.os.SystemClock.elapsedRealtime() - bindStart);
-                    markDisplayedAndPreload(holder, item, pageKey);
-                }
-
-                @Override
-                public void onLoadCleared(@Nullable Drawable placeholder) {
-                    if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
-                        return;
-                    applyKnownHeight(holder, item, pageKey);
-                    clearFrameBitmap(holder);
-                    holder.refresh.setVisibility(View.GONE);
-                }
-
-                @Override
-                public void onLoadFailed(@Nullable Drawable errorDrawable) {
-                    if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
-                        return;
-                    handleImageLoadFailed(holder, item, pageKey, bindGeneration);
-                }
-            };
-            holder.imageTarget = imageTarget;
-            Glide.with(holder.frame)
-                    .asBitmap()
-                    .priority(Priority.IMMEDIATE)
-                    .apply(viewerImageOptions(item))
-                    .load(url)
-                    .into(imageTarget);
-        }
+        boolean forceFullQuality = fullQualityPromotionKeys.remove(pageKey);
+        boolean previewOnly = shouldUsePreviewOnlyBind(scrollBusy, forceFullQuality);
+        startBitmapBind(holder, item, url, pageKey, bindGeneration, previewOnly);
     }
 
     private void handleImageLoadFailed(ImgViewHolder holder, PageItem item, String pageKey, int bindGeneration) {
@@ -779,54 +701,96 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         return 1200L;
     }
 
+    private void startBitmapBind(ImgViewHolder holder, PageItem item, Object url, String pageKey,
+                                 int bindGeneration, boolean previewOnly) {
+        if(previewOnly)
+            previewOnlyImageLoads.add(pageKey);
+        else
+            previewOnlyImageLoads.remove(pageKey);
+        long bindStart = android.os.SystemClock.elapsedRealtime();
+        final boolean[] resourceDelivered = { false };
+        CustomTarget<Bitmap> imageTarget = new CustomTarget<Bitmap>() {
+            @Override
+            public void onResourceReady(@NonNull Bitmap resource, @Nullable Transition<? super Bitmap> transition) {
+                if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
+                    return;
+                failedImageRetries.remove(pageKey);
+                if(!isDisplayBitmapUsable(resource)) {
+                    handleImageLoadFailed(holder, item, pageKey, bindGeneration);
+                    return;
+                }
+                resourceDelivered[0] = true;
+                bindBitmap(holder, item, pageKey, resource);
+                holder.refresh.setVisibility(View.GONE);
+                if(item.index == 0)
+                    ViewerWarmupManager.logMetric("viewer_first_bind_ms", android.os.SystemClock.elapsedRealtime() - bindStart);
+                markDisplayedAndPreload(holder, item, pageKey);
+            }
+
+            @Override
+            public void onLoadCleared(@Nullable Drawable placeholder) {
+                if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
+                    return;
+                applyKnownHeight(holder, item, pageKey);
+                clearFrameBitmap(holder);
+                holder.refresh.setVisibility(View.GONE);
+            }
+
+            @Override
+            public void onLoadFailed(@Nullable Drawable errorDrawable) {
+                if(!isActiveHolder(holder, item, this, pageKey, bindGeneration))
+                    return;
+                if(previewOnly)
+                    previewOnlyImageLoads.remove(pageKey);
+                if(resourceDelivered[0]) {
+                    holder.refresh.setVisibility(View.GONE);
+                    scheduleImageRetry(holder, item, pageKey, bindGeneration);
+                    return;
+                }
+                handleImageLoadFailed(holder, item, pageKey, bindGeneration);
+            }
+        };
+        holder.imageTarget = imageTarget;
+        try {
+            RequestBuilder<Bitmap> request = Glide.with(holder.frame)
+                    .asBitmap()
+                    .priority(previewOnly ? Priority.IMMEDIATE : Priority.HIGH)
+                    .apply(previewOnly ? viewerPreviewOptions(item) : viewerImageOptions(item))
+                    .load(url);
+            if(!previewOnly) {
+                request = request.thumbnail(Glide.with(holder.frame)
+                        .asBitmap()
+                        .priority(Priority.IMMEDIATE)
+                        .apply(viewerPreviewOptions(item))
+                        .load(url));
+            }
+            request.into(imageTarget);
+            if(previewOnly && !scrollBusy && AUTO_PROMOTE_PREVIEW_FULL_QUALITY)
+                schedulePreviewFullRebind(previewFullRebindDelayMs(item));
+        } catch (IllegalArgumentException e) {
+            if(previewOnly)
+                previewOnlyImageLoads.remove(pageKey);
+            handleImageLoadFailed(holder, item, pageKey, bindGeneration);
+        }
+    }
+
+    private static boolean shouldUsePreviewOnlyBind(boolean scrollBusy, boolean forceFullQuality) {
+        return !forceFullQuality;
+    }
+
+    static boolean shouldUsePreviewOnlyBindForTest(boolean scrollBusy, boolean forceFullQuality) {
+        return shouldUsePreviewOnlyBind(scrollBusy, forceFullQuality);
+    }
+
     private void bindBitmap(ImgViewHolder holder, PageItem item, String pageKey, Bitmap bitmap) {
         if(!isDisplayBitmapUsable(bitmap)) {
             clearFrameBitmap(holder);
             return;
         }
-        deferredImageLoads.remove(pageKey);
         boolean hadKnownHeight = hasKnownPageHeight(pageKey);
         rememberPageHeight(pageKey, bitmap);
         applyPageHeight(holder, null, pageKey, !scrollBusy || hadKnownHeight);
         holder.frame.setViewerBitmap(bitmap);
-    }
-
-    private void deferColdImageBind(String pageKey) {
-        if(pageKey == null || pageKey.length() == 0)
-            return;
-        deferredImageLoads.add(pageKey);
-    }
-
-    static boolean shouldDeferColdImageBindForTest(boolean scrollBusy, boolean hasDecodedBitmap) {
-        return shouldDeferColdImageBind(scrollBusy, hasDecodedBitmap);
-    }
-
-    private static boolean shouldDeferColdImageBind(boolean scrollBusy, boolean hasDecodedBitmap) {
-        return scrollBusy && !hasDecodedBitmap;
-    }
-
-    private long coldImageBindDeferralMs(PageItem item, boolean scrollBusy, boolean hasDecodedBitmap) {
-        if(hasDecodedBitmap)
-            return -1L;
-        if(scrollBusy)
-            return Long.MAX_VALUE;
-        long remainingMs = deferredEpisodeImageLoadRemainingMs(item);
-        return remainingMs > 0L ? remainingMs : -1L;
-    }
-
-    private long deferredEpisodeImageLoadRemainingMs(PageItem item) {
-        if(item == null || item.manga == null)
-            return 0L;
-        String episodeKey = PageItem.episodeKey(item.manga);
-        Long untilMs = deferredEpisodeLoadsUntil.get(episodeKey);
-        if(untilMs == null)
-            return 0L;
-        long remainingMs = untilMs - android.os.SystemClock.uptimeMillis();
-        if(remainingMs <= 0L) {
-            deferredEpisodeLoadsUntil.remove(episodeKey);
-            return 0L;
-        }
-        return remainingMs;
     }
 
     private void clearFrameBitmap(ImgViewHolder holder) {
@@ -989,40 +953,86 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         return notified;
     }
 
-    private void scheduleDeferredImageLoadFlush(long extraDelayMs) {
-        if(released || scrollBusy || deferredImageLoads.isEmpty() || deferredImageLoadScheduled)
+    private void schedulePreviewFullRebind(long extraDelayMs) {
+        if(released || scrollBusy || previewOnlyImageLoads.isEmpty() || previewFullRebindScheduled)
             return;
-        deferredImageLoadScheduled = true;
+        previewFullRebindScheduled = true;
         mainHandler.postDelayed(() -> {
-            deferredImageLoadScheduled = false;
-            flushDeferredImageLoads();
-        }, Math.max(scrollIdleImageBindDelayMs(), Math.max(0L, extraDelayMs)));
+            previewFullRebindScheduled = false;
+            flushPreviewFullRebinds();
+        }, Math.max(PREVIEW_FULL_REBIND_DELAY_MS, Math.max(0L, extraDelayMs)));
     }
 
-    private void flushDeferredImageLoads() {
-        if(released || scrollBusy || deferredImageLoads.isEmpty() || items == null)
+    private void flushPreviewFullRebinds() {
+        if(released || scrollBusy || previewOnlyImageLoads.isEmpty() || items == null)
             return;
+        Set<String> keys = new LinkedHashSet<>(previewOnlyImageLoads);
+        int anchor = lastPreloadAnchorPosition != RecyclerView.NO_POSITION
+                ? lastPreloadAnchorPosition
+                : Math.max(0, Math.min(pendingPreloadPosition, items.size() - 1));
+        int start = Math.max(0, anchor - PREVIEW_FULL_REBIND_RADIUS);
+        int end = Math.min(items.size() - 1, anchor + PREVIEW_FULL_REBIND_RADIUS);
+        int notified = notifyPreviewFullRebindsInRange(keys, start, end, PREVIEW_FULL_REBIND_BATCH);
+        if(notified > 0 && hasPreviewOnlyImageNearAnchor(anchor))
+            schedulePreviewFullRebind(PREVIEW_FULL_REBIND_DELAY_MS);
+    }
+
+    private int notifyPreviewFullRebindsInRange(Set<String> keys, int start, int end, int limit) {
         int notified = 0;
-        for(int i = 0; i < items.size() && notified < DEFERRED_IMAGE_REBIND_BATCH; i++) {
+        for(int i = start; i <= end && notified < limit; i++) {
             Object item = items.get(i);
             if(!(item instanceof PageItem))
                 continue;
-            String key = pageBindKey((PageItem) item);
-            if(!deferredImageLoads.remove(key))
+            PageItem page = (PageItem) item;
+            if(isEpisodePreviewActive(page))
                 continue;
+            String key = pageBindKey(page);
+            if(!keys.contains(key))
+                continue;
+            previewOnlyImageLoads.remove(key);
+            fullQualityPromotionKeys.add(key);
             notifyItemChanged(i);
             notified++;
         }
-        if(!deferredImageLoads.isEmpty())
-            scheduleDeferredImageLoadFlush(0L);
+        return notified;
     }
 
-    static long scrollIdleImageBindDelayMsForTest() {
-        return scrollIdleImageBindDelayMs();
+    private boolean hasPreviewOnlyImageNearAnchor(int anchor) {
+        if(items == null || previewOnlyImageLoads.isEmpty())
+            return false;
+        int normalizedAnchor = Math.max(0, Math.min(anchor, items.size() - 1));
+        int start = Math.max(0, normalizedAnchor - PREVIEW_FULL_REBIND_RADIUS);
+        int end = Math.min(items.size() - 1, normalizedAnchor + PREVIEW_FULL_REBIND_RADIUS);
+        for(int i = start; i <= end; i++) {
+            Object item = items.get(i);
+            if(item instanceof PageItem && previewOnlyImageLoads.contains(pageBindKey((PageItem) item)))
+                return true;
+        }
+        return false;
     }
 
-    private static long scrollIdleImageBindDelayMs() {
-        return SCROLL_IDLE_IMAGE_BIND_DELAY_MS;
+    private long previewFullRebindDelayMs(PageItem item) {
+        long remaining = previewEpisodeRemainingMs(item);
+        return Math.max(PREVIEW_FULL_REBIND_DELAY_MS, remaining);
+    }
+
+    private boolean isEpisodePreviewActive(PageItem item) {
+        return previewEpisodeRemainingMs(item) > 0L;
+    }
+
+    private long previewEpisodeRemainingMs(PageItem item) {
+        if(item == null || item.manga == null)
+            return 0L;
+        String episodeKey = PageItem.episodeKey(item.manga);
+        Long untilMs = previewEpisodesUntil.get(episodeKey);
+        if(untilMs == null)
+            return 0L;
+        long remainingMs = untilMs - android.os.SystemClock.uptimeMillis();
+        if(remainingMs <= 0L) {
+            previewEpisodesUntil.remove(episodeKey);
+            return 0L;
+        }
+        return remainingMs;
     }
 
     private void clearPageHeightState() {
@@ -1058,10 +1068,34 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 .diskCacheStrategy(ViewerWarmupManager.viewerDiskCacheStrategy(mainContext, scrollBusy))
                 .format(DecodeFormat.PREFER_RGB_565)
                 .downsample(DownsampleStrategy.AT_MOST)
+                .dontAnimate()
                 .override(Math.max(width, 1), Target.SIZE_ORIGINAL);
         if(item != null)
             options = options.transform(new ViewerPageTransformation(item, autoCut, reverse, width));
         return options;
+    }
+
+    private RequestOptions viewerPreviewOptions(PageItem item) {
+        int previewWidth = previewWidth(width);
+        RequestOptions options = new RequestOptions()
+                .diskCacheStrategy(ViewerWarmupManager.viewerDiskCacheStrategy(mainContext, scrollBusy))
+                .format(DecodeFormat.PREFER_RGB_565)
+                .downsample(DownsampleStrategy.AT_MOST)
+                .dontAnimate()
+                .override(previewWidth, Target.SIZE_ORIGINAL);
+        if(item != null)
+            options = options.transform(new ViewerPageTransformation(item, autoCut, reverse, previewWidth));
+        return options;
+    }
+
+    static int previewWidthForTest(int viewerWidth) {
+        return previewWidth(viewerWidth);
+    }
+
+    private static int previewWidth(int viewerWidth) {
+        int width = Math.max(1, viewerWidth);
+        int scaled = (width * PREVIEW_WIDTH_NUMERATOR) / PREVIEW_WIDTH_DENOMINATOR;
+        return Math.min(width, Math.max(PREVIEW_MIN_WIDTH, scaled));
     }
 
     static DiskCacheStrategy viewerDiskCacheStrategyForTest(boolean scrollBusy) {
@@ -1069,7 +1103,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private static DiskCacheStrategy viewerDiskCacheStrategy(boolean scrollBusy) {
-        return DiskCacheStrategy.RESOURCE;
+        return DiskCacheStrategy.ALL;
     }
 
     private Object getImageModel(PageItem item) {
@@ -1469,8 +1503,9 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private void clearDecodedPageState() {
         preloadedImages.clear();
         failedImageRetries.clear();
-        deferredEpisodeLoadsUntil.clear();
-        deferredImageLoads.clear();
+        previewOnlyImageLoads.clear();
+        fullQualityPromotionKeys.clear();
+        previewEpisodesUntil.clear();
         decodedBitmapCache.evictAll();
         clearPageHeightState();
         decoders.clear();
@@ -1491,8 +1526,9 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         preloadedImages.retainAll(activePreloadKeys);
         displayedImages.retainAll(activePageKeys);
         failedImageRetries.keySet().retainAll(activePageKeys);
-        deferredImageLoads.retainAll(activePageKeys);
-        deferredEpisodeLoadsUntil.keySet().retainAll(activeEpisodeKeys());
+        previewOnlyImageLoads.retainAll(activePageKeys);
+        fullQualityPromotionKeys.retainAll(activePageKeys);
+        previewEpisodesUntil.keySet().retainAll(activeEpisodeKeys());
         pageHeights.keySet().retainAll(activePageKeys);
         pendingHeightCorrections.retainAll(activePageKeys);
         recomputePageHeightAggregate();

@@ -64,10 +64,10 @@ public class ViewerActivityTest {
 
     @Test
     public void wfwfViewerKeepsExtraRowsReadyWithoutDataSaver() {
-        assertEquals(8, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", false));
-        assertEquals(8, ViewerActivity.viewerItemViewCacheSizeForTest("ntk", false));
-        assertEquals(4, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", true));
-        assertEquals(2, ViewerActivity.viewerInitialPrefetchItemCountForTest(false));
+        assertEquals(12, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", false));
+        assertEquals(12, ViewerActivity.viewerItemViewCacheSizeForTest("ntk", false));
+        assertEquals(6, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", true));
+        assertEquals(4, ViewerActivity.viewerInitialPrefetchItemCountForTest(false));
     }
 
     @Test
@@ -211,20 +211,23 @@ public class ViewerActivityTest {
 
     @Test
     public void viewerPipelineStartsAfterInitialLayoutCanDraw() {
-        assertTrue(ViewerActivity.viewerPipelineStartDelayMsForTest() >= 500L);
-        assertTrue(ViewerActivity.viewerPipelineStartDelayMsForTest() <= 800L);
+        assertTrue(ViewerActivity.viewerPipelineStartDelayMsForTest() >= 250L);
+        assertTrue(ViewerActivity.viewerPipelineStartDelayMsForTest() <= 400L);
     }
 
     @Test
-    public void automaticNextAppendDefersColdImageBindsPastFlingSettle() {
-        assertTrue(ViewerActivity.autoAppendImageBindDeferMsForTest() >= 1000L);
+    public void automaticNextAppendShowsPreviewBeforeFullQualityPromotion() {
+        assertTrue(ViewerActivity.autoAppendPreviewOnlyMsForTest() >= 1500L);
+        assertTrue(ViewerActivity.autoAppendPreviewOnlyMsForTest() <= 4000L);
     }
 
     @Test
-    public void automaticNextAppendWaitsAfterFastFling() {
-        assertFalse(ViewerActivity.shouldAllowAutomaticNextAttachForTest(5000L, 1000L, 12000L));
-        assertTrue(ViewerActivity.shouldAllowAutomaticNextAttachForTest(13001L, 1000L, 12000L));
-        assertTrue(ViewerActivity.shouldAllowAutomaticNextAttachForTest(1000L, 0L, 12000L));
+    public void initialViewerGuardDefersBackgroundWorkUntilFirstDrawSettles() {
+        assertTrue(ViewerActivity.initialBackgroundWorkGuardMsForTest() >= 1000L);
+        assertTrue(ViewerActivity.initialBackgroundWorkGuardMsForTest() <= 1800L);
+        assertTrue(ViewerActivity.shouldHoldInitialBackgroundWorkForTest(false, 100L, 200L));
+        assertFalse(ViewerActivity.shouldHoldInitialBackgroundWorkForTest(true, 100L, 200L));
+        assertFalse(ViewerActivity.shouldHoldInitialBackgroundWorkForTest(false, 200L, 200L));
     }
 
     @Test

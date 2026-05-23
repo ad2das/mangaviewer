@@ -138,18 +138,17 @@ public class ViewerActivity extends AppCompatActivity {
     long suppressBoundaryLoadUntilMs = 0L;
     boolean suppressBoundaryLoadUntilUserScroll = false;
     private static final int INITIAL_PRELOAD_AHEAD_COUNT = 24;
-    private static final int NEXT_EPISODE_ATTACH_THRESHOLD = 2;
-    private static final int DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD = 2;
+    private static final int NEXT_EPISODE_ATTACH_THRESHOLD = 22;
+    private static final int DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD = 12;
     private static final int NEXT_EPISODE_PREFETCH_CHAIN_DEPTH = 6;
     private static final int DATA_SAVE_NEXT_EPISODE_PREFETCH_CHAIN_DEPTH = 1;
     private static final int PREVIOUS_EPISODE_PULL_THRESHOLD_DP = 36;
     private static final long SCROLL_BOOKMARK_SAVE_DELAY_MS = 350L;
     private static final long BOUNDARY_LOAD_IDLE_DELAY_MS = 64L;
-    private static final long AUTO_APPEND_IMAGE_BIND_DEFER_MS = 1400L;
+    private static final long AUTO_APPEND_PREVIEW_ONLY_MS = 2600L;
+    private static final long INITIAL_BACKGROUND_WORK_GUARD_MS = 1400L;
     private static final int BUSY_SCROLL_ANCHOR_MIN_ITEM_DELTA = 4;
     private static final long BUSY_SCROLL_ANCHOR_MIN_INTERVAL_MS = 180L;
-    private static final int FAST_SCROLL_DY_THRESHOLD = 96;
-    private static final long AUTO_ATTACH_FAST_SCROLL_COOLDOWN_MS = 12000L;
     private boolean scrollBookmarkSavePending = false;
     final Runnable delayedScrollBookmarkSave = () -> {
         scrollBookmarkSavePending = false;
@@ -168,9 +167,10 @@ public class ViewerActivity extends AppCompatActivity {
     private final Runnable clearInitialToolbarGuard = this::clearInitialToolbarGuard;
     private final Runnable syncToolbarToFocusedPage = () -> syncToolbarToFocusedPage(null);
     private int lastViewerScrollDirection = 1;
-    private long lastFastViewerScrollAtMs = 0L;
     private int lastBusyScrollAnchorPosition = RecyclerView.NO_POSITION;
     private long lastBusyScrollAnchorAtMs = 0L;
+    private long initialBackgroundWorkGuardUntilMs = 0L;
+    private boolean userInteractedAfterViewerOpen = false;
     float topPullStartY = 0;
     boolean topPullTriggered = false;
     boolean topPullEligible = false;
@@ -376,6 +376,7 @@ public class ViewerActivity extends AppCompatActivity {
                         hideToolbarImmediately();
                     }
                     if(newState == RecyclerView.SCROLL_STATE_DRAGGING) {
+                        markViewerUserInteraction();
                         userDraggedAfterViewerPositionPrepared = true;
                         markUserScrolledAfterInitialResume();
                     }
@@ -397,15 +398,15 @@ public class ViewerActivity extends AppCompatActivity {
                     super.onScrolled(recyclerView, dx, dy);
                     if(dy != 0)
                         lastViewerScrollDirection = dy < 0 ? -1 : 1;
-                    if(Math.abs(dy) >= FAST_SCROLL_DY_THRESHOLD)
-                        lastFastViewerScrollAtMs = android.os.SystemClock.uptimeMillis();
                     if(dy != 0 && manager != null)
                         manager.setScrollDirection(dy);
                     if(dy != 0 && initialToolbarGuardActive)
                         clearInitialToolbarGuard();
                     int scrollState = recyclerView.getScrollState();
-                    if(dy != 0 && scrollState != RecyclerView.SCROLL_STATE_IDLE)
+                    if(dy != 0 && scrollState != RecyclerView.SCROLL_STATE_IDLE) {
+                        markViewerUserInteraction();
                         suppressBoundaryLoadUntilUserScroll = false;
+                    }
                     dispatchScrollAnchorToAdapter(scrollState != RecyclerView.SCROLL_STATE_IDLE);
                     if(scrollState != RecyclerView.SCROLL_STATE_IDLE) {
                         cancelDelayedBoundaryLoad();
@@ -970,6 +971,7 @@ public class ViewerActivity extends AppCompatActivity {
             }
             releaseStripAdapter();
             beginInitialToolbarGuard(m);
+            beginInitialBackgroundWorkGuard();
             stripAdapter = new StripAdapter(context, m, autoCut, width,title, infiniteScrollCallback);
 
             refreshAdapter();
@@ -1597,9 +1599,9 @@ public class ViewerActivity extends AppCompatActivity {
             if(!promotedToForeground
                     && stripAdapter != null
                     && manager != null
+                    && !shouldHoldInitialBackgroundWork()
                     && shouldAttachNextEpisodeAtPosition(manager.findFirstVisibleItemPosition(),
-                    manager.findLastVisibleItemPosition(), manager.getItemCount(), nextEpisodeAttachThreshold())
-                    && shouldAllowAutomaticNextAttach())
+                    manager.findLastVisibleItemPosition(), manager.getItemCount(), nextEpisodeAttachThreshold()))
                 attachNextEpisode(false);
         }
 
@@ -2057,6 +2059,62 @@ public class ViewerActivity extends AppCompatActivity {
         mainHandler.postDelayed(clearInitialToolbarGuard, 1200);
     }
 
+    private void beginInitialBackgroundWorkGuard() {
+        userInteractedAfterViewerOpen = false;
+        initialBackgroundWorkGuardUntilMs = android.os.SystemClock.uptimeMillis() + initialBackgroundWorkGuardMs();
+        mainHandler.postDelayed(() -> {
+            if(!isUiAlive())
+                return;
+            if(strip != null && strip.getScrollState() == RecyclerView.SCROLL_STATE_IDLE)
+                scheduleBoundaryLoadAfterIdle();
+        }, initialBackgroundWorkGuardMs() + 16L);
+    }
+
+    private void markViewerUserInteraction() {
+        userInteractedAfterViewerOpen = true;
+    }
+
+    private boolean shouldHoldInitialBackgroundWork() {
+        return shouldHoldInitialBackgroundWork(userInteractedAfterViewerOpen,
+                android.os.SystemClock.uptimeMillis(), initialBackgroundWorkGuardUntilMs);
+    }
+
+    private long remainingInitialBackgroundGuardMs() {
+        if(userInteractedAfterViewerOpen)
+            return 0L;
+        return Math.max(0L, initialBackgroundWorkGuardUntilMs - android.os.SystemClock.uptimeMillis());
+    }
+
+    private void scheduleAfterInitialBackgroundGuard(Runnable runnable) {
+        if(runnable == null)
+            return;
+        long delayMs = remainingInitialBackgroundGuardMs();
+        if(delayMs <= 0L) {
+            runnable.run();
+            return;
+        }
+        mainHandler.postDelayed(() -> {
+            if(isUiAlive())
+                runnable.run();
+        }, delayMs + 16L);
+    }
+
+    static boolean shouldHoldInitialBackgroundWorkForTest(boolean userInteracted, long nowMs, long guardUntilMs) {
+        return shouldHoldInitialBackgroundWork(userInteracted, nowMs, guardUntilMs);
+    }
+
+    private static boolean shouldHoldInitialBackgroundWork(boolean userInteracted, long nowMs, long guardUntilMs) {
+        return !userInteracted && nowMs < guardUntilMs;
+    }
+
+    static long initialBackgroundWorkGuardMsForTest() {
+        return initialBackgroundWorkGuardMs();
+    }
+
+    private static long initialBackgroundWorkGuardMs() {
+        return INITIAL_BACKGROUND_WORK_GUARD_MS;
+    }
+
     private boolean shouldIgnoreInitialToolbarUpdate(Manga candidate) {
         return initialToolbarGuardActive
                 && initialToolbarGuardManga != null
@@ -2257,17 +2315,21 @@ public class ViewerActivity extends AppCompatActivity {
         strip.postDelayed(() -> {
             if(!isUiAlive() || manga == null || !sameManga(manga, target))
                 return;
+            if(shouldHoldInitialBackgroundWork()) {
+                scheduleViewerPagePipelineStart(target, finalPolicy);
+                return;
+            }
             if(strip != null && strip.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
                 scheduleViewerPagePipelineStart(target, finalPolicy);
                 return;
             }
             if(isUiAlive() && manga != null && sameManga(manga, target))
                 startViewerPagePipeline(target, finalPolicy);
-        }, viewerPipelineStartDelayMs());
+        }, Math.max(viewerPipelineStartDelayMs(), remainingInitialBackgroundGuardMs()));
     }
 
     private static long viewerPipelineStartDelayMs() {
-        return 650L;
+        return 320L;
     }
 
     static long viewerPipelineStartDelayMsForTest() {
@@ -2332,7 +2394,8 @@ public class ViewerActivity extends AppCompatActivity {
     private void prepareViewerPipelineForPage(PageItem page, boolean busy) {
         if(pagePipeline == null || page == null || page.manga == null)
             return;
-        busy = busy || isRecentFastViewerScroll();
+        if(shouldHoldInitialBackgroundWork())
+            return;
         pagePipeline.prepareScrollWindow(page.manga, page.index, lastViewerScrollDirection, busy);
         if(busy)
             return;
@@ -2379,13 +2442,13 @@ public class ViewerActivity extends AppCompatActivity {
         return strip != null && strip.getScrollState() != RecyclerView.SCROLL_STATE_IDLE;
     }
 
-    private boolean isRecentFastViewerScroll() {
-        return !shouldAllowAutomaticNextAttach();
-    }
-
     private void onViewerPipelineEpisodePrepared(Manga episode) {
         if(!isUiAlive() || episode == null)
             return;
+        if(shouldHoldInitialBackgroundWork()) {
+            scheduleAfterInitialBackgroundGuard(() -> onViewerPipelineEpisodePrepared(episode));
+            return;
+        }
         if(pendingNextPipelineTarget != null && sameManga(pendingNextPipelineTarget, episode)) {
             appendPreparedNextEpisode(episode, nextEpisodeBoundaryJumpPending);
             return;
@@ -2398,8 +2461,7 @@ public class ViewerActivity extends AppCompatActivity {
             return;
         if(stripAdapter != null && manager != null
                 && shouldAttachNextEpisodeAtPosition(manager.findFirstVisibleItemPosition(),
-                manager.findLastVisibleItemPosition(), manager.getItemCount(), nextEpisodeAttachThreshold())
-                && shouldAllowAutomaticNextAttach())
+                manager.findLastVisibleItemPosition(), manager.getItemCount(), nextEpisodeAttachThreshold()))
             appendPreparedNextEpisode(episode, false);
     }
 
@@ -2411,6 +2473,10 @@ public class ViewerActivity extends AppCompatActivity {
     private void loadEpisodeAtBoundaryIfNeeded() {
         if(strip == null || manager == null || stripAdapter == null || manager.getItemCount() == 0)
             return;
+        if(shouldHoldInitialBackgroundWork()) {
+            scheduleAfterInitialBackgroundGuard(this::loadEpisodeAtBoundaryIfNeeded);
+            return;
+        }
         if(suppressBoundaryLoadUntilUserScroll)
             return;
         if(android.os.SystemClock.uptimeMillis() < suppressBoundaryLoadUntilMs)
@@ -2420,11 +2486,9 @@ public class ViewerActivity extends AppCompatActivity {
         int total = manager.getItemCount();
         // Previous episodes are loaded by the explicit top-pull gesture. Loading
         // them just because the viewer opens at the top can move resume backward.
-        if(shouldAttachNextEpisodeAtPosition(first, last, total, nextEpisodeAttachThreshold())
-                && shouldAllowAutomaticNextAttach())
+        if(shouldAttachNextEpisodeAtPosition(first, last, total, nextEpisodeAttachThreshold()))
             attachNextEpisode(false);
-        if(shouldTreatAsViewerBottom(first, last, total) && isAtViewerBottom()
-                && shouldAllowAutomaticNextAttach())
+        if(shouldTreatAsViewerBottom(first, last, total) && isAtViewerBottom())
             attachNextEpisode(true);
     }
 
@@ -2466,19 +2530,6 @@ public class ViewerActivity extends AppCompatActivity {
             return false;
         return !isInitialFullSpanLayout(firstVisible, lastVisible, itemCount,
                 effectiveNextEpisodeAttachThreshold(itemCount, NEXT_EPISODE_ATTACH_THRESHOLD));
-    }
-
-    private boolean shouldAllowAutomaticNextAttach() {
-        return shouldAllowAutomaticNextAttach(android.os.SystemClock.uptimeMillis(), lastFastViewerScrollAtMs,
-                AUTO_ATTACH_FAST_SCROLL_COOLDOWN_MS);
-    }
-
-    static boolean shouldAllowAutomaticNextAttachForTest(long nowMs, long lastFastScrollAtMs, long cooldownMs) {
-        return shouldAllowAutomaticNextAttach(nowMs, lastFastScrollAtMs, cooldownMs);
-    }
-
-    private static boolean shouldAllowAutomaticNextAttach(long nowMs, long lastFastScrollAtMs, long cooldownMs) {
-        return lastFastScrollAtMs <= 0L || nowMs - lastFastScrollAtMs > Math.max(0L, cooldownMs);
     }
 
     private static boolean isInitialFullSpanLayout(int firstVisible, int lastVisible, int itemCount, int threshold) {
@@ -2801,7 +2852,7 @@ public class ViewerActivity extends AppCompatActivity {
         nextEpisodeBoundaryLoading = true;
         appendMangaWhenIdle(target, ViewerActivity.this::isNextTargetStillExpected, () ->
                 finishNextEpisodeBoundaryLoad(target, jumpToEpisode || nextEpisodeBoundaryJumpPending),
-                jumpToEpisode ? 0L : autoAppendImageBindDeferMs());
+                jumpToEpisode ? 0L : autoAppendPreviewOnlyMs());
         return true;
     }
 
@@ -2983,9 +3034,9 @@ public class ViewerActivity extends AppCompatActivity {
             preloadFirstPages(target);
             scheduleChainedNextEpisodePrefetch(target, Math.max(0, chainDepth - 1));
             if(stripAdapter != null && manager != null
+                    && !shouldHoldInitialBackgroundWork()
                     && shouldAttachNextEpisodeAtPosition(manager.findFirstVisibleItemPosition(),
-                    manager.findLastVisibleItemPosition(), manager.getItemCount(), nextEpisodeAttachThreshold())
-                    && shouldAllowAutomaticNextAttach())
+                    manager.findLastVisibleItemPosition(), manager.getItemCount(), nextEpisodeAttachThreshold()))
                 attachNextEpisode(false);
             return;
         }
@@ -3192,12 +3243,12 @@ public class ViewerActivity extends AppCompatActivity {
 
     private static int viewerItemViewCacheSize(String sourceSite, boolean dataSave) {
         if(dataSave)
-            return 4;
-        return 8;
+            return 6;
+        return 12;
     }
 
     private static int viewerInitialPrefetchItemCount(boolean dataSave) {
-        return dataSave ? 1 : 2;
+        return dataSave ? 2 : 4;
     }
 
     private boolean needsFullEpisodeList(Title currentTitle, Manga target) {
@@ -3366,7 +3417,7 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private void appendMangaWhenIdle(Manga target, EpisodeExpectation expectation, Runnable afterAppend,
-                                     long deferImageLoadsMs) {
+                                     long previewOnlyMs) {
         if(target == null || strip == null)
             return;
         strip.post(() -> {
@@ -3379,8 +3430,8 @@ public class ViewerActivity extends AppCompatActivity {
                     return;
                 }
                 if(!stripAdapter.hasMangaLoaded(target)) {
-                    if(deferImageLoadsMs > 0L)
-                        stripAdapter.deferImageLoads(target, deferImageLoadsMs);
+                    if(previewOnlyMs > 0L)
+                        stripAdapter.preferPreviewImages(target, previewOnlyMs);
                     stripAdapter.appendManga(target);
                 }
                 if(!stripAdapter.hasMangaLoaded(target)) {
@@ -3419,12 +3470,12 @@ public class ViewerActivity extends AppCompatActivity {
         });
     }
 
-    static long autoAppendImageBindDeferMsForTest() {
-        return autoAppendImageBindDeferMs();
+    static long autoAppendPreviewOnlyMsForTest() {
+        return autoAppendPreviewOnlyMs();
     }
 
-    private static long autoAppendImageBindDeferMs() {
-        return AUTO_APPEND_IMAGE_BIND_DEFER_MS;
+    private static long autoAppendPreviewOnlyMs() {
+        return AUTO_APPEND_PREVIEW_ONLY_MS;
     }
 
     private void runStripMutationWhenReady(Runnable mutation, int attempts) {

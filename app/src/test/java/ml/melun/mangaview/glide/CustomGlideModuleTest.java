@@ -14,9 +14,9 @@ public class CustomGlideModuleTest {
     }
 
     @Test
-    public void viewerDiskCacheStaysUnderAndroidLowStoragePurgeQuota() {
+    public void viewerDiskCacheKeepsEnoughPagesForColdContinue() {
         long size = CustomGlideModule.viewerDiskCacheSizeBytesForTest();
-        assertTrue(size >= 16L * 1024L * 1024L);
-        assertTrue(size <= 32L * 1024L * 1024L);
+        assertTrue(size >= 128L * 1024L * 1024L);
+        assertTrue(size <= 256L * 1024L * 1024L);
     }
 }

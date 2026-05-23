@@ -181,7 +181,7 @@ public class ViewerWarmupManager {
         if(!shouldScheduleContinueWarmup(scheduleKey))
             return;
         prioritizeUserSelectedContinue();
-        AppDispatchers.submitUserAction(() -> {
+        AppDispatchers.submitIo(() -> {
             Manga prepared = prepareClickFirstFrame(appContext, manga, warmupTitle, false,
                     p != null && p.getReverse(), MangaRepository.cancellation());
             if(prepared != null)
@@ -1015,6 +1015,7 @@ public class ViewerWarmupManager {
                 .diskCacheStrategy(viewerDiskCacheStrategy(context, false))
                 .format(DecodeFormat.PREFER_RGB_565)
                 .downsample(DownsampleStrategy.AT_MOST)
+                .dontAnimate()
                 .override(Math.max(width, 1), Target.SIZE_ORIGINAL);
         if(page != null)
             options = options.transform(new ViewerPageTransformation(page, autoCut, reverse, width));
@@ -1036,7 +1037,7 @@ public class ViewerWarmupManager {
     private static DiskCacheStrategy viewerDiskCacheStrategyForState(boolean scrollBusy, long usableBytes) {
         if(usableBytes < VIEWER_DISK_CACHE_MIN_USABLE_BYTES)
             return DiskCacheStrategy.NONE;
-        return DiskCacheStrategy.RESOURCE;
+        return DiskCacheStrategy.ALL;
     }
 
     private static long viewerUsableCacheBytes(Context context) {

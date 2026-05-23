@@ -53,6 +53,6 @@ public class CustomGlideModule extends AppGlideModule {
     }
 
     private static long viewerDiskCacheSizeBytes() {
-        return 24L * 1024L * 1024L;
+        return 192L * 1024L * 1024L;
     }
 }
