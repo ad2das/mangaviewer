@@ -322,7 +322,8 @@ public class ViewerWarmupManager {
         if(firstPage < 0)
             firstPage = 0;
         String scheduleKey = continueWarmupKey(manga, title, firstPage);
-        Manga warmed = continueSnapshotManga(appContext, scheduleKey, manga);
+        Manga warmed = continueSnapshotMangaWithAliases(appContext, scheduleKey,
+                pathlessContinueWarmupKey(manga, title, firstPage), manga);
         if(warmed != null) {
             if(title != null)
                 attachTitle(title, warmed);
@@ -382,6 +383,38 @@ public class ViewerWarmupManager {
         return null;
     }
 
+    public static void cacheLoadedContinueSnapshot(Context context, Manga requested, Manga loaded,
+                                                   Title title, int requestedPage, int loadedPage) {
+        if(context == null || loaded == null || !loaded.isOnline() || !hasImages(loaded, context))
+            return;
+        Context appContext = context.getApplicationContext();
+        Title snapshotTitle = title != null ? title : loaded.getTitle();
+        if(snapshotTitle != null) {
+            loaded.setTitle(snapshotTitle);
+            loaded.setTitleId(snapshotTitle.getId());
+            if(requested != null) {
+                requested.setTitle(snapshotTitle);
+                requested.setTitleId(snapshotTitle.getId());
+            }
+        }
+        ArrayList<String> cachedKeys = new ArrayList<>();
+        cacheContinueSnapshotAlias(appContext, cachedKeys, continueWarmupKey(loaded, snapshotTitle, loadedPage), loaded);
+        cacheContinueSnapshotAlias(appContext, cachedKeys, pathlessContinueWarmupKey(loaded, snapshotTitle, loadedPage), loaded);
+        cacheContinueSnapshotAlias(appContext, cachedKeys, continueWarmupKey(loaded, snapshotTitle, 0), loaded);
+        cacheContinueSnapshotAlias(appContext, cachedKeys, pathlessContinueWarmupKey(loaded, snapshotTitle, 0), loaded);
+        if(requested != null) {
+            cacheContinueSnapshotAlias(appContext, cachedKeys, continueWarmupKey(requested, snapshotTitle, requestedPage), loaded);
+            cacheContinueSnapshotAlias(appContext, cachedKeys, pathlessContinueWarmupKey(requested, snapshotTitle, requestedPage), loaded);
+            cacheContinueSnapshotAlias(appContext, cachedKeys, continueWarmupKey(requested, snapshotTitle, 0), loaded);
+            cacheContinueSnapshotAlias(appContext, cachedKeys, pathlessContinueWarmupKey(requested, snapshotTitle, 0), loaded);
+            if(Math.max(0, requestedPage) != Math.max(0, loadedPage)) {
+                cacheContinueSnapshotAlias(appContext, cachedKeys, continueWarmupKey(requested, snapshotTitle, loadedPage), loaded);
+                cacheContinueSnapshotAlias(appContext, cachedKeys, pathlessContinueWarmupKey(requested, snapshotTitle, loadedPage), loaded);
+            }
+        }
+        logMetric("viewer_loaded_continue_snapshot_cached", loaded.getId());
+    }
+
     public static Manga usePreparedFirstFrame(Context context, Manga manga, Title title, boolean autoCut, boolean reverse) {
         int firstPage = manga != null && manga.useBookmark() ? p.getViewerBookmark(manga) : 0;
         return usePreparedFirstFrame(context, manga, title, autoCut, reverse, firstPage);
@@ -414,7 +447,10 @@ public class ViewerWarmupManager {
         if(firstPage < 0)
             firstPage = 0;
         String continueKey = continueWarmupKey(manga, title, firstPage);
-        Manga warmed = continueSnapshotManga(context, continueKey, manga);
+        Manga warmed = exactEpisode
+                ? continueSnapshotManga(context, continueKey, manga)
+                : continueSnapshotMangaWithAliases(context, continueKey,
+                        pathlessContinueWarmupKey(manga, title, firstPage), manga);
         if(exactEpisode && warmed != null && !samePreparedEpisode(warmed, manga)) {
             invalidateContinueSnapshot(context, continueKey);
             warmed = null;
@@ -1265,6 +1301,18 @@ public class ViewerWarmupManager {
         writeDiskSnapshot(context, CONTINUE_SNAPSHOT_PREFIX, key, snapshot);
     }
 
+    private static void cacheContinueSnapshotAlias(Context context, List<String> cachedKeys, String key, Manga manga) {
+        if(key == null || key.length() == 0)
+            return;
+        if(cachedKeys != null) {
+            for(String cachedKey : cachedKeys)
+                if(key.equals(cachedKey))
+                    return;
+            cachedKeys.add(key);
+        }
+        cacheContinueSnapshot(context, key, manga);
+    }
+
     private static Manga continueSnapshotManga(Context context, String key, Manga fallback) {
         WarmupSnapshot snapshot;
         synchronized (ViewerWarmupManager.class) {
@@ -1292,6 +1340,15 @@ public class ViewerWarmupManager {
             }
         }
         return snapshot.toManga(fallback);
+    }
+
+    private static Manga continueSnapshotMangaWithAliases(Context context, String key, String aliasKey, Manga fallback) {
+        Manga manga = continueSnapshotManga(context, key, fallback);
+        if(manga != null)
+            return manga;
+        if(aliasKey == null || aliasKey.equals(key))
+            return null;
+        return continueSnapshotManga(context, aliasKey, fallback);
     }
 
     private static Manga continueSnapshotMangaFromMemory(String key, Manga fallback) {
@@ -1405,6 +1462,20 @@ public class ViewerWarmupManager {
 
     static String continueWarmupKeyForTest(Manga manga, Title title, int startPage) {
         return continueWarmupKey(manga, title, startPage);
+    }
+
+    private static String pathlessContinueWarmupKey(Manga manga, Title title, int startPage) {
+        int titleId = title == null ? manga.getTitleId() : title.getId();
+        String source = title == null ? "" : safeKeyPart(title.getSourceSite());
+        return source + ":"
+                + ":" + manga.getBaseMode()
+                + ":" + titleId
+                + ":" + manga.getId()
+                + ":" + Math.max(0, startPage);
+    }
+
+    static String pathlessContinueWarmupKeyForTest(Manga manga, Title title, int startPage) {
+        return pathlessContinueWarmupKey(manga, title, startPage);
     }
 
     private static boolean shouldSkipNtkWarmup() {

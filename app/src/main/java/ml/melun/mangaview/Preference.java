@@ -772,7 +772,7 @@ public class Preference {
             host = host.toLowerCase(Locale.ROOT);
             if(host.startsWith("www."))
                 host = host.substring(4);
-            return "ntk01.com".equals(host);
+            return "ntk01.com".equals(host) || "sbxh1.com".equals(host);
         } catch (Exception e) {
             return false;
         }

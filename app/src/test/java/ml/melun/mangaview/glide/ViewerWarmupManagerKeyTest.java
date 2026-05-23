@@ -8,6 +8,7 @@ import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
 
 public class ViewerWarmupManagerKeyTest {
@@ -29,6 +30,19 @@ public class ViewerWarmupManagerKeyTest {
         assertNotEquals(
                 ViewerWarmupManager.continueWarmupKeyForTest(first, first.getTitle(), 0),
                 ViewerWarmupManager.continueWarmupKeyForTest(second, second.getTitle(), 0));
+    }
+
+    @Test
+    public void pathlessContinueKeyMatchesMinimalNtkResume() {
+        Manga loaded = manga("ntk", "/manhwa/8605/first-path");
+        Manga minimalResume = manga("ntk", "");
+
+        assertNotEquals(
+                ViewerWarmupManager.continueWarmupKeyForTest(loaded, loaded.getTitle(), 0),
+                ViewerWarmupManager.pathlessContinueWarmupKeyForTest(loaded, loaded.getTitle(), 0));
+        assertEquals(
+                ViewerWarmupManager.pathlessContinueWarmupKeyForTest(loaded, loaded.getTitle(), 0),
+                ViewerWarmupManager.continueWarmupKeyForTest(minimalResume, minimalResume.getTitle(), 0));
     }
 
     private static Manga manga(String sourceSite, String path) {

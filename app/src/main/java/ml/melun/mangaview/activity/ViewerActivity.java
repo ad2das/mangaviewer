@@ -1244,6 +1244,8 @@ public class ViewerActivity extends AppCompatActivity {
         boolean lockui;
         LoadMangaCallback callback;
         Manga m;
+        Manga requestedManga;
+        int requestedStartPage;
         ViewerLoadPolicy policy;
         MangaRepository.Cancellation cancellation = MangaRepository.cancellation();
         AppDispatchers.TaskHandle handle;
@@ -1257,6 +1259,8 @@ public class ViewerActivity extends AppCompatActivity {
             this.m = m;
             this.callback = callback;
             this.policy = policy == null ? ViewerLoadPolicy.RESUME : policy;
+            this.requestedManga = snapshotRequestedManga(m);
+            this.requestedStartPage = initialPageIndex(this.requestedManga == null ? m : this.requestedManga, this.policy);
         }
 
         void start() {
@@ -1377,6 +1381,7 @@ public class ViewerActivity extends AppCompatActivity {
                 title = m.getTitle();
             resetOnBackPressed();
             preloadImmediateDisplayImages(m, policy);
+            cacheLoadedContinueSnapshot();
             ViewerWarmupManager.logMetric("viewer_open_to_set_manga_ms", SystemClock.elapsedRealtime() - startedAtMs);
             callback.post(m);
             hydrateEpisodeListAfterFirstFrame(m);
@@ -1439,9 +1444,19 @@ public class ViewerActivity extends AppCompatActivity {
             if (title == null)
                 title = m.getTitle();
             resetOnBackPressed();
+            cacheLoadedContinueSnapshot();
             callback.post(m);
             if(lockui)
                 hydrateEpisodeListAfterFirstFrame(m);
+        }
+
+        private void cacheLoadedContinueSnapshot() {
+            if(m == null || !m.isOnline() || !hasLoadedImages(m))
+                return;
+            Title currentTitle = title != null ? title : m.getTitle();
+            int loadedPage = initialPageIndex(m, policy);
+            ViewerWarmupManager.cacheLoadedContinueSnapshot(context, requestedManga, m, currentTitle,
+                    requestedStartPage, loadedPage);
         }
 
         void cancel() {
@@ -1501,6 +1516,7 @@ public class ViewerActivity extends AppCompatActivity {
             if(cancelled || isFinishing() || result == LOAD_CAPTCHA || !hasLoadedImages(target))
                 return;
             preloadFirstPages(target);
+            ViewerWarmupManager.cacheLoadedContinueSnapshot(context, target, target, title, 0, 0);
             ViewerWarmupManager.logMetric("viewer_next_episode_ready_ms", android.os.SystemClock.elapsedRealtime() - startedAtMs);
             int attachThreshold = p.getDataSave() ? DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD : NEXT_EPISODE_ATTACH_THRESHOLD;
             if(!promotedToForeground
@@ -1706,6 +1722,23 @@ public class ViewerActivity extends AppCompatActivity {
     private static class CachedEpisodes {
         long savedAt;
         ArrayList<Manga> episodes;
+    }
+
+    private Manga snapshotRequestedManga(Manga source) {
+        if(source == null)
+            return null;
+        Manga copy = new Manga(source.getId(), source.getName(), source.getDate(), source.getBaseMode());
+        copy.setMode(source.getMode());
+        copy.setTitleId(source.getTitleId());
+        if(source.hasExplicitNtkEpisodePath())
+            copy.setNtkEpisodePath(source.getNtkEpisodePath());
+        Title sourceTitle = source.getTitle();
+        if(sourceTitle != null) {
+            Title titleCopy = new Title(sourceTitle.minimize());
+            copy.setTitle(titleCopy);
+            copy.setTitleId(titleCopy.getId());
+        }
+        return copy;
     }
 
     private void hydrateEpisodeListAfterFirstFrame(Manga target) {
