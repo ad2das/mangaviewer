@@ -139,7 +139,13 @@ public class ViewerActivity extends AppCompatActivity {
     private static final int PREVIOUS_EPISODE_PULL_THRESHOLD_DP = 36;
     private static final long SCROLL_BOOKMARK_SAVE_DELAY_MS = 350L;
     private static final long BOUNDARY_LOAD_IDLE_DELAY_MS = 450L;
-    final Runnable delayedScrollBookmarkSave = this::saveCurrentScrollBookmark;
+    private static final int BUSY_SCROLL_ANCHOR_MIN_ITEM_DELTA = 2;
+    private static final long BUSY_SCROLL_ANCHOR_MIN_INTERVAL_MS = 96L;
+    private boolean scrollBookmarkSavePending = false;
+    final Runnable delayedScrollBookmarkSave = () -> {
+        scrollBookmarkSavePending = false;
+        saveCurrentScrollBookmark();
+    };
     final Runnable delayedBoundaryLoad = this::loadEpisodeAtBoundaryIfNeeded;
     private PageItem pendingInitialResumePage;
     private int pendingInitialResumeOffset;
@@ -153,6 +159,8 @@ public class ViewerActivity extends AppCompatActivity {
     private final Runnable clearInitialToolbarGuard = this::clearInitialToolbarGuard;
     private final Runnable syncToolbarToFocusedPage = () -> syncToolbarToFocusedPage(null);
     private int lastViewerScrollDirection = 1;
+    private int lastBusyScrollAnchorPosition = RecyclerView.NO_POSITION;
+    private long lastBusyScrollAnchorAtMs = 0L;
     float topPullStartY = 0;
     boolean topPullTriggered = false;
     boolean topPullEligible = false;
@@ -346,7 +354,7 @@ public class ViewerActivity extends AppCompatActivity {
                     super.onScrollStateChanged(recyclerView, newState);
                     PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
                     if(stripAdapter != null) {
-                        stripAdapter.setScrollBusy(newState != RecyclerView.SCROLL_STATE_IDLE);
+                        stripAdapter.setScrollState(newState);
                         dispatchScrollAnchorToAdapter(newState != RecyclerView.SCROLL_STATE_IDLE);
                     }
                     if(strip.getLayoutManager().getItemCount()>0 && newState == RecyclerView.SCROLL_STATE_DRAGGING && toolbarshow) {
@@ -361,6 +369,7 @@ public class ViewerActivity extends AppCompatActivity {
                     else
                         cancelDelayedBoundaryLoad();
                     if(newState == RecyclerView.SCROLL_STATE_IDLE) {
+                        scrollBookmarkSavePending = false;
                         mainHandler.removeCallbacks(delayedScrollBookmarkSave);
                         saveCurrentScrollBookmark();
                     }
@@ -373,13 +382,16 @@ public class ViewerActivity extends AppCompatActivity {
                     super.onScrolled(recyclerView, dx, dy);
                     if(dy != 0)
                         lastViewerScrollDirection = dy < 0 ? -1 : 1;
-                    if(dy != 0)
+                    if(dy != 0 && initialToolbarGuardActive)
                         clearInitialToolbarGuard();
-                    if(dy != 0 && recyclerView.getScrollState() != RecyclerView.SCROLL_STATE_IDLE)
+                    int scrollState = recyclerView.getScrollState();
+                    if(dy != 0 && scrollState != RecyclerView.SCROLL_STATE_IDLE)
                         suppressBoundaryLoadUntilUserScroll = false;
-                    dispatchScrollAnchorToAdapter(recyclerView.getScrollState() != RecyclerView.SCROLL_STATE_IDLE);
-                    if(recyclerView.getScrollState() != RecyclerView.SCROLL_STATE_IDLE)
+                    dispatchScrollAnchorToAdapter(scrollState != RecyclerView.SCROLL_STATE_IDLE);
+                    if(scrollState != RecyclerView.SCROLL_STATE_IDLE) {
                         cancelDelayedBoundaryLoad();
+                        return;
+                    }
                     loadEpisodeAtBoundaryIfNeededThrottled();
                     scheduleScrollBookmarkSave();
                 }
@@ -1821,8 +1833,21 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private void scheduleScrollBookmarkSave() {
+        if(strip != null && !shouldScheduleScrollBookmarkSave(strip.getScrollState()))
+            return;
+        if(scrollBookmarkSavePending)
+            return;
+        scrollBookmarkSavePending = true;
         mainHandler.removeCallbacks(delayedScrollBookmarkSave);
         mainHandler.postDelayed(delayedScrollBookmarkSave, SCROLL_BOOKMARK_SAVE_DELAY_MS);
+    }
+
+    static boolean shouldScheduleScrollBookmarkSaveForTest(int scrollState) {
+        return shouldScheduleScrollBookmarkSave(scrollState);
+    }
+
+    private static boolean shouldScheduleScrollBookmarkSave(int scrollState) {
+        return scrollState == RecyclerView.SCROLL_STATE_IDLE;
     }
 
     private void prepareInitialViewerPosition(Manga target, ViewerLoadPolicy policy) {
@@ -2069,8 +2094,33 @@ public class ViewerActivity extends AppCompatActivity {
                 : manager.findFirstVisibleItemPosition();
         if(anchor == RecyclerView.NO_POSITION)
             anchor = manager.findFirstVisibleItemPosition();
-        if(anchor != RecyclerView.NO_POSITION)
-            stripAdapter.onScrollAnchor(anchor, lastViewerScrollDirection, busy);
+        if(anchor == RecyclerView.NO_POSITION)
+            return;
+        if(busy) {
+            long now = android.os.SystemClock.uptimeMillis();
+            if(!shouldDispatchBusyScrollAnchor(lastBusyScrollAnchorPosition, anchor, now - lastBusyScrollAnchorAtMs))
+                return;
+            lastBusyScrollAnchorPosition = anchor;
+            lastBusyScrollAnchorAtMs = now;
+        } else {
+            lastBusyScrollAnchorPosition = RecyclerView.NO_POSITION;
+            lastBusyScrollAnchorAtMs = 0L;
+        }
+        stripAdapter.onScrollAnchor(anchor, lastViewerScrollDirection, busy);
+    }
+
+    static boolean shouldDispatchBusyScrollAnchorForTest(int previousPosition, int nextPosition, long elapsedMs) {
+        return shouldDispatchBusyScrollAnchor(previousPosition, nextPosition, elapsedMs);
+    }
+
+    private static boolean shouldDispatchBusyScrollAnchor(int previousPosition, int nextPosition, long elapsedMs) {
+        if(nextPosition == RecyclerView.NO_POSITION)
+            return false;
+        if(previousPosition == RecyclerView.NO_POSITION)
+            return true;
+        if(Math.abs(nextPosition - previousPosition) >= BUSY_SCROLL_ANCHOR_MIN_ITEM_DELTA)
+            return true;
+        return elapsedMs >= BUSY_SCROLL_ANCHOR_MIN_INTERVAL_MS;
     }
 
     public void refreshAdapter(){

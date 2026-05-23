@@ -152,6 +152,21 @@ public class ViewerActivityTest {
     }
 
     @Test
+    public void busyScrollAnchorDispatchIsThrottledWithoutCappingFling() {
+        assertTrue(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(RecyclerView.NO_POSITION, 10, 0L));
+        assertFalse(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(10, 11, 20L));
+        assertTrue(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(10, 12, 20L));
+        assertTrue(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(10, 11, 120L));
+    }
+
+    @Test
+    public void bookmarkSaveWaitsForIdleScroll() {
+        assertTrue(ViewerActivity.shouldScheduleScrollBookmarkSaveForTest(RecyclerView.SCROLL_STATE_IDLE));
+        assertFalse(ViewerActivity.shouldScheduleScrollBookmarkSaveForTest(RecyclerView.SCROLL_STATE_DRAGGING));
+        assertFalse(ViewerActivity.shouldScheduleScrollBookmarkSaveForTest(RecyclerView.SCROLL_STATE_SETTLING));
+    }
+
+    @Test
     public void failedBoundaryEpisodeLoadsBackOffBeforeRetry() {
         assertTrue(ViewerActivity.boundaryLoadFailureCooldownMsForTest() >= 1000L);
     }

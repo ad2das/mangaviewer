@@ -54,6 +54,13 @@ public class StripAdapterTest {
     }
 
     @Test
+    public void bitmapDisplayDefersOnlyDuringFastFlingPhase() {
+        assertTrue(StripAdapter.shouldDeferBitmapBindForTest(true, true));
+        assertFalse(StripAdapter.shouldDeferBitmapBindForTest(false, true));
+        assertFalse(StripAdapter.shouldDeferBitmapBindForTest(true, false));
+    }
+
+    @Test
     public void transientImageFailuresRetryThreeTimesOnlyForActivePages() {
         assertTrue(StripAdapter.shouldRetryImageLoadForTest(false, "page", 0));
         assertTrue(StripAdapter.shouldRetryImageLoadForTest(false, "page", 1));
