@@ -167,9 +167,15 @@ if (-not $NoUpload) {
     gh release view $ReleaseTag --repo $Repo *> $null
     if ($LASTEXITCODE -ne 0) {
         Write-Step "Creating release $ReleaseTag"
-        gh release create $ReleaseTag --repo $Repo --target $TargetBranch --title "Main Latest" --notes "Latest main branch debug APK." --latest
+        $createOutput = gh release create $ReleaseTag --repo $Repo --target $TargetBranch --title "Main Latest" --notes "Latest main branch debug APK." --latest 2>&1
         if ($LASTEXITCODE -ne 0) {
-            throw "gh release create failed"
+            $createText = $createOutput | Out-String
+            if ($createText -match 'already exists') {
+                Write-Host "Release $ReleaseTag already exists; reusing it."
+            } else {
+                Write-Host $createText
+                throw "gh release create failed"
+            }
         }
     }
 
