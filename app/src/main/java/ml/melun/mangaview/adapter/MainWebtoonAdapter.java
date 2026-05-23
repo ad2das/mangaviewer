@@ -530,7 +530,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         List<Title> heroTitles = titlesWithThumbnails(seedTitles, 5);
         if(HOME_HERO_ENABLED && heroTitles.size() > 0)
             result.add(new HeroRow(heroTitles));
-        List<Title> continueTitles = recentTitles;
+        List<Title> continueTitles = prioritizeReadyContinueTitles(recentTitles);
         if(continueTitles.size() > 0)
             result.add(new HomeSection("이어보기", "전체보기", "", continueTitles, STYLE_CONTINUE));
         SectionPick popular = findSection(sections, "인기순");
@@ -1895,6 +1895,24 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             return title;
         }
         return null;
+    }
+
+    private List<Title> prioritizeReadyContinueTitles(List<Title> titles) {
+        if(titles == null || titles.size() <= 1 || context == null)
+            return titles == null ? new ArrayList<>() : titles;
+        ArrayList<Title> ready = new ArrayList<>();
+        ArrayList<Title> pending = new ArrayList<>();
+        for(Title title : titles) {
+            Manga manga = resolveContinueMangaForWarmup(title);
+            if(manga != null && ViewerWarmupManager.hasPreparedContinueSnapshot(context, manga, title))
+                ready.add(title);
+            else
+                pending.add(title);
+        }
+        if(ready.size() == 0)
+            return titles;
+        ready.addAll(pending);
+        return ready;
     }
 
     private List<Manga> snapshotEpisodes(Title item) {

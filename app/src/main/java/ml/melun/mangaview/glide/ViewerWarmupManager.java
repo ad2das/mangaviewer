@@ -263,7 +263,7 @@ public class ViewerWarmupManager {
         if(visibleResume)
             logMetric("viewer_resume_visible_warmup_scheduled", manga.getId());
         String warmupSource = title == null ? null : title.getSourceSite();
-        ViewerPreloadPolicy.Window visibleWindow = visibleResume
+        ViewerPreloadPolicy.Window visibleWindow = (visibleResume || immediate)
                 ? ViewerPreloadPolicy.immediateDisplayWindow(p.getDataSave())
                 : null;
         Runnable warmupWork = () -> {
@@ -312,10 +312,29 @@ public class ViewerWarmupManager {
                 ml.melun.mangaview.report.CrashReporter.record(e);
             }
         };
-        if(visibleResume)
+        if(visibleResume || immediate)
             AppDispatchers.submitIo(warmupWork);
         else
             AppDispatchers.submitImageWarmup(warmupWork);
+    }
+
+    public static boolean hasPreparedContinueSnapshot(Context context, Manga manga, Title title) {
+        if(context == null || manga == null || !manga.isOnline())
+            return false;
+        if(title != null) {
+            manga.setTitle(title);
+            manga.setTitleId(title.getId());
+            List<Manga> episodes = Utils.snapshotEpisodes(title);
+            if(episodes.size() > 0)
+                manga.setEps(episodes);
+        } else {
+            title = manga.getTitle();
+        }
+        int firstPage = manga.useBookmark() && p != null ? p.getViewerBookmark(manga) : 0;
+        if(firstPage < 0)
+            firstPage = 0;
+        Manga snapshot = continueSnapshotMangaWithPageFallback(context.getApplicationContext(), manga, title, firstPage, manga);
+        return snapshot != null && hasImages(snapshot, context);
     }
 
     public static Manga prepareClickFirstFrame(Context context, Manga manga, Title title, boolean autoCut, boolean reverse) {
