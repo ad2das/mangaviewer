@@ -99,4 +99,12 @@ public class StripAdapterTest {
         assertTrue(StripAdapter.scrollIdleHeightCorrectionDelayMsForTest()
                 >= StripAdapter.scrollIdlePreloadDelayMsForTest());
     }
+
+    @Test
+    public void busyScrollPreloadIsThrottledDuringFastFling() {
+        assertTrue(StripAdapter.shouldRunBusyPreloadForTest(-1, 10, 0L));
+        assertFalse(StripAdapter.shouldRunBusyPreloadForTest(10, 11, 20L));
+        assertTrue(StripAdapter.shouldRunBusyPreloadForTest(10, 12, 20L));
+        assertTrue(StripAdapter.shouldRunBusyPreloadForTest(10, 11, 120L));
+    }
 }

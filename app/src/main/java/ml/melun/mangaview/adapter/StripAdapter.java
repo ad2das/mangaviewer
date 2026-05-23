@@ -71,6 +71,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private static final int PRELOAD_TRACK_LIMIT = 500;
     private static final int DECODED_PRELOAD_ACTIVE_LIMIT = 6;
     private static final int IMAGE_LOAD_RETRY_LIMIT = 3;
+    private static final int SCROLL_BUSY_PRELOAD_MIN_DISTANCE = 2;
+    private static final long SCROLL_BUSY_PRELOAD_MIN_INTERVAL_MS = 96L;
     private static final long SCROLL_IDLE_PRELOAD_DELAY_MS = 60L;
     private static final long SCROLL_IDLE_HEIGHT_CORRECTION_DELAY_MS = 180L;
     private static final String PAYLOAD_HEIGHT = "height";
@@ -91,9 +93,11 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private int pendingPreloadPosition = RecyclerView.NO_POSITION;
     private int pendingPreloadDirection = 1;
     private int lastScrollDirection = 1;
+    private int lastBusyPreloadPosition = RecyclerView.NO_POSITION;
     private long pageHeightTotal = 0L;
     private int pageHeightSampleCount = 0;
     private long preloadGeneration = 0L;
+    private long lastBusyPreloadAtMs = 0L;
     private long idlePreloadReadyAtMs = 0L;
     private boolean pendingPreloadScheduled = false;
     private boolean pendingHeightCorrectionScheduled = false;
@@ -112,6 +116,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         this.scrollBusy = scrollBusy;
         if(changed && !scrollBusy) {
             idlePreloadReadyAtMs = android.os.SystemClock.uptimeMillis() + scrollIdlePreloadDelayMs();
+            lastBusyPreloadPosition = RecyclerView.NO_POSITION;
+            lastBusyPreloadAtMs = 0L;
         }
         if(!scrollBusy) {
             schedulePendingHeightCorrections();
@@ -134,7 +140,12 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(anchorChanged)
             preloadGeneration++;
         if(busy) {
-            preloadDirectionalWindow(adapterPosition, normalizedDirection, ViewerPreloadPolicy.scrollBusyWindow(p.getDataSave()), preloadGeneration);
+            long now = android.os.SystemClock.uptimeMillis();
+            if(shouldRunBusyPreload(lastBusyPreloadPosition, adapterPosition, now - lastBusyPreloadAtMs)) {
+                lastBusyPreloadPosition = adapterPosition;
+                lastBusyPreloadAtMs = now;
+                preloadDirectionalWindow(adapterPosition, normalizedDirection, ViewerPreloadPolicy.scrollBusyWindow(p.getDataSave()), preloadGeneration);
+            }
             return;
         }
         if(!busy && !isIdlePreloadReady()) {
@@ -560,7 +571,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         holder.boundPageKey = pageKey;
         holder.bindStartedAtMs = android.os.SystemClock.elapsedRealtime();
         applyKnownHeight(holder, item, pageKey);
-        preloadAheadFromBindPosition(pos);
+        if(!scrollBusy)
+            preloadAheadFromBindPosition(pos);
         String cacheKey = decodedCacheKey(item);
         CachedBitmap cached = decodedBitmapCache.get(cacheKey);
         if(cached != null && cached.isUsable() && isHolderStillBound(holder, item, pageKey)) {
@@ -906,7 +918,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             ViewerWarmupManager.logMetric("viewer_first_visible_ms", android.os.SystemClock.elapsedRealtime() - holder.bindStartedAtMs);
         }
         int layoutPos = holder.getAdapterPosition();
-        if(layoutPos != RecyclerView.NO_POSITION)
+        if(layoutPos != RecyclerView.NO_POSITION && !scrollBusy)
             schedulePreloadAroundScrollPosition(layoutPos);
     }
 
@@ -1186,6 +1198,20 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
     static long scrollIdleHeightCorrectionDelayMsForTest() {
         return scrollIdleHeightCorrectionDelayMs();
+    }
+
+    static boolean shouldRunBusyPreloadForTest(int previousPosition, int nextPosition, long elapsedMs) {
+        return shouldRunBusyPreload(previousPosition, nextPosition, elapsedMs);
+    }
+
+    private static boolean shouldRunBusyPreload(int previousPosition, int nextPosition, long elapsedMs) {
+        if(nextPosition == RecyclerView.NO_POSITION)
+            return false;
+        if(previousPosition == RecyclerView.NO_POSITION)
+            return true;
+        if(Math.abs(nextPosition - previousPosition) >= SCROLL_BUSY_PRELOAD_MIN_DISTANCE)
+            return true;
+        return elapsedMs >= SCROLL_BUSY_PRELOAD_MIN_INTERVAL_MS;
     }
 
     private void preloadPageIntoDecodedCache(PageItem page, Priority priority, long generation) {
@@ -1513,7 +1539,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             if(!isAttachableImagePage(pi))
                 return;
             current = pi;
-            if(displayedImages.contains(pageBindKey(pi)))
+            if(!scrollBusy && displayedImages.contains(pageBindKey(pi)))
                 preloadAroundScrollPosition(layoutPos);
             if(needUpdate || currentMangaId != pi.manga.getId()){
                 needUpdate = false;

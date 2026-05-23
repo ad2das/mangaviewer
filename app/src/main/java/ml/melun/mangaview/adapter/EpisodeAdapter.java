@@ -89,11 +89,19 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         if(manga == null)
             return RecyclerView.NO_ID;
         if(manga.getId() >= 0)
-            return Manga.episodeIdentityKey(manga).hashCode();
+            return fastEpisodeStableId(manga);
         String key = manga.getOfflinePath();
         if(key == null || key.length() == 0)
             key = manga.getName();
         return (((long) manga.getBaseMode()) << 32) ^ (key == null ? position : key.hashCode());
+    }
+
+    private long fastEpisodeStableId(Manga manga) {
+        long titleId = manga.getTitleId() > 0 ? manga.getTitleId() : (title == null ? 0 : title.getId());
+        long stable = (((long) manga.getBaseMode() & 0xffffL) << 48)
+                ^ ((titleId & 0xffffL) << 32)
+                ^ (manga.getId() & 0xffffffffL);
+        return stable == RecyclerView.NO_ID ? Long.MIN_VALUE : stable;
     }
 
     @Override

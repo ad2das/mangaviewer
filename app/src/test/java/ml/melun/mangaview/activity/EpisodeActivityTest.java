@@ -52,21 +52,23 @@ public class EpisodeActivityTest {
     }
 
     @Test
-    public void visibleEpisodeWarmupStartsSoonAfterContent() {
-        assertTrue(EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest() <= 300L);
-        assertTrue(EpisodeActivity.visibleEpisodeWarmupIdleDelayMsForTest() <= 250L);
+    public void visibleEpisodeWarmupWaitsUntilEpisodeListSettles() {
+        assertTrue(EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest() >= 600L);
+        assertTrue(EpisodeActivity.visibleEpisodeWarmupIdleDelayMsForTest() >= 300L);
     }
 
     @Test
     public void ntkVisibleEpisodeWarmupWaitsForFirstFrameWarmup() {
-        assertEquals(260L, EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(false));
-        assertTrue(EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(true) >= 650L);
+        assertEquals(620L, EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(false));
+        assertTrue(EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(true) >= 900L);
+        assertTrue(EpisodeActivity.initialViewerTargetWarmupDelayMsForTest(false) < EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(false));
     }
 
     @Test
     public void diskEpisodeCacheLoadsOnlyAfterMemoryMiss() {
         assertFalse(EpisodeActivity.shouldLoadDiskEpisodeCacheAsyncForTest(true));
         assertTrue(EpisodeActivity.shouldLoadDiskEpisodeCacheAsyncForTest(false));
+        assertTrue(EpisodeActivity.episodeRefreshAfterCacheProbeMsForTest() <= 200L);
     }
 
     @Test

@@ -45,8 +45,8 @@ public final class ViewerPreloadPolicy {
 
     public static Window scrollBusyWindow(boolean dataSave) {
         return dataSave
-                ? new Window(0, 1, 3, 3)
-                : new Window(0, 3, 6, 6);
+                ? new Window(0, 1, 1, 1)
+                : new Window(0, 1, 2, 2);
     }
 
     public static Window nextEpisodeWindow(boolean dataSave) {

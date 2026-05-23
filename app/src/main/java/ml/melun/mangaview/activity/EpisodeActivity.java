@@ -78,9 +78,11 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_ERROR;
 public class EpisodeActivity extends AppCompatActivity {
     private static final long DESTINATION_LAUNCH_DEBOUNCE_MS = 1500L;
     private static final long VIEWER_PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
-    private static final long VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS = 220L;
-    private static final long INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 260L;
-    private static final long NTK_INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 700L;
+    private static final long VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS = 360L;
+    private static final long EPISODE_REFRESH_AFTER_CACHE_PROBE_MS = 160L;
+    private static final long INITIAL_VIEWER_TARGET_WARMUP_DELAY_MS = 520L;
+    private static final long INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 620L;
+    private static final long NTK_INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 950L;
     private static final long MAX_EPISODE_CACHE_FILE_BYTES = 2 * 1024 * 1024L;
     private static final int MEMORY_CACHE_MAIN_THREAD_PARSE_MAX_CHARS = 16 * 1024;
     private static final int VISIBLE_EPISODE_WARMUP_AHEAD = 2;
@@ -113,8 +115,19 @@ public class EpisodeActivity extends AppCompatActivity {
     boolean compatibleCacheLookupInFlight = false;
     boolean pendingLoadErrorAfterCacheLookup = false;
     Runnable ntkEpisodeLoadWatchdogRunnable;
+    Runnable episodeRefreshRunnable;
     String originalTitleName = "";
     final Set<Integer> requestedVisibleWarmups = new HashSet<>();
+    final Runnable initialEpisodeWarmupRunnable = () -> {
+        if(!isUiAlive())
+            return;
+        if(episodeList != null && episodeList.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
+            scheduleInitialEpisodeWarmups(VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS);
+            return;
+        }
+        warmupInitialViewerTargets();
+        scheduleVisibleEpisodeWarmup(initialVisibleEpisodeWarmupDelayMs());
+    };
     final Runnable visibleEpisodeWarmupRunnable = () -> {
         visibleEpisodeWarmupScheduled = false;
         if(!isUiAlive())
@@ -336,8 +349,10 @@ public class EpisodeActivity extends AppCompatActivity {
             episodeViewModel = new ViewModelProvider(this).get(EpisodeViewModel.class);
             episodeViewModel.state().observe(this, this::renderEpisodeState);
             if(shouldRefreshEpisodesAfterCache(renderedCachedEpisodes)) {
-                episodeViewModel.loadEpisodes(title, !renderedCachedEpisodes);
-                scheduleNtkEpisodeLoadWatchdog();
+                if(renderedCachedEpisodes)
+                    startEpisodeRefresh(false);
+                else
+                    scheduleEpisodeRefreshAfterCacheProbe();
             }
         }else{
             loadOfflineEpisodesAsync();
@@ -463,9 +478,8 @@ public class EpisodeActivity extends AppCompatActivity {
             i.putExtra("mode",2);
             startActivity(i);
         });
-        warmupInitialViewerTargets();
-        scheduleVisibleEpisodeWarmup(initialVisibleEpisodeWarmupDelayMs());
         markFirstContent();
+        scheduleInitialEpisodeWarmups(initialViewerTargetWarmupDelayMs());
     }
 
     private void warmupInitialViewerTargets() {
@@ -473,6 +487,39 @@ public class EpisodeActivity extends AppCompatActivity {
             return;
         PrefetchCoordinator.prefetchEpisodeList(context, title, episodes, bookmarkIndex, mode);
         warmupLikelyNtkViewerPage();
+    }
+
+    private void scheduleEpisodeRefreshAfterCacheProbe() {
+        if(episodeList == null)
+            return;
+        cancelEpisodeRefresh();
+        episodeRefreshRunnable = () -> startEpisodeRefresh(true);
+        episodeList.postDelayed(episodeRefreshRunnable, episodeRefreshAfterCacheProbeMsForTest());
+    }
+
+    private void startEpisodeRefresh(boolean showLoading) {
+        if(!isUiAlive() || episodeViewModel == null || title == null)
+            return;
+        cancelEpisodeRefresh();
+        episodeViewModel.loadEpisodes(title, showLoading);
+        scheduleNtkEpisodeLoadWatchdog();
+    }
+
+    private void cancelEpisodeRefresh() {
+        if(episodeList != null && episodeRefreshRunnable != null)
+            episodeList.removeCallbacks(episodeRefreshRunnable);
+        episodeRefreshRunnable = null;
+    }
+
+    private void scheduleInitialEpisodeWarmups(long delayMs) {
+        if(!online || episodeList == null || episodes == null || episodes.size() == 0)
+            return;
+        episodeList.removeCallbacks(initialEpisodeWarmupRunnable);
+        episodeList.postDelayed(initialEpisodeWarmupRunnable, Math.max(0L, delayMs));
+    }
+
+    private long initialViewerTargetWarmupDelayMs() {
+        return initialViewerTargetWarmupDelayMsForTest(p.isNtkSite() || getHttpClient().isNtk());
     }
 
     private long initialVisibleEpisodeWarmupDelayMs() {
@@ -541,6 +588,14 @@ public class EpisodeActivity extends AppCompatActivity {
 
     static long initialVisibleEpisodeWarmupDelayMsForTest() {
         return INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS;
+    }
+
+    static long episodeRefreshAfterCacheProbeMsForTest() {
+        return EPISODE_REFRESH_AFTER_CACHE_PROBE_MS;
+    }
+
+    static long initialViewerTargetWarmupDelayMsForTest(boolean ntkSite) {
+        return ntkSite ? NTK_INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS : INITIAL_VIEWER_TARGET_WARMUP_DELAY_MS;
     }
 
     static long initialVisibleEpisodeWarmupDelayMsForTest(boolean ntkSite) {
@@ -1387,6 +1442,9 @@ public class EpisodeActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         destroyed = true;
+        cancelEpisodeRefresh();
+        if(episodeList != null)
+            episodeList.removeCallbacks(initialEpisodeWarmupRunnable);
         cancelVisibleEpisodeWarmup();
         cancelNtkEpisodeLoadWatchdog();
         if(episodeViewModel != null && !isChangingConfigurations())

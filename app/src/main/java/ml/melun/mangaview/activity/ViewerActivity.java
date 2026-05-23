@@ -63,6 +63,7 @@ import ml.melun.mangaview.repository.CachePolicy;
 import ml.melun.mangaview.repository.EpisodeSnapshotCache;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import ml.melun.mangaview.runtime.PerfTrace;
 import ml.melun.mangaview.runtime.PreparedViewerLaunch;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.ViewerPreparationCoordinator;
@@ -79,6 +80,7 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_OK;
 
 public class ViewerActivity extends AppCompatActivity {
     private static final String TAG = "ViewerPerf";
+    private static final long EPISODE_PICKER_REFRESH_DELAY_MS = 180L;
     public static final String EXTRA_EXACT_EPISODE = "ml.melun.mangaview.EXTRA_EXACT_EPISODE";
     public static final String EXTRA_START_AT_FIRST_PAGE = "ml.melun.mangaview.EXTRA_START_AT_FIRST_PAGE";
     public static final String EXTRA_RETURN_EPISODE_SOURCE_SWITCHED = "ml.melun.mangaview.EXTRA_RETURN_EPISODE_SOURCE_SWITCHED";
@@ -453,14 +455,20 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private void showEpisodePicker() {
+        long pickerStartedAt = PerfTrace.start("viewer_episode_picker_open_ms");
         Manga current = focusedManga();
         List<Manga> data = episodeListFor(current);
-        if(data == null || data.size() == 0)
+        if(data == null || data.size() == 0) {
+            PerfTrace.end("viewer_episode_picker_open_ms", pickerStartedAt);
             return;
+        }
         int selected = findEpisodeIndex(data, current);
         RecyclerView episodeList = new RecyclerView(context);
         int maxHeight = Math.min(dp(520), getResources().getDisplayMetrics().heightPixels - dp(160));
         episodeList.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxHeight));
+        episodeList.setHasFixedSize(true);
+        episodeList.setItemViewCacheSize(24);
+        episodeList.setOverScrollMode(View.OVER_SCROLL_NEVER);
         episodeList.setClipToPadding(false);
         episodeList.setPadding(0, dp(4), 0, dp(4));
         LinearLayoutManager pickerManager = new LinearLayoutManager(context);
@@ -488,7 +496,9 @@ public class ViewerActivity extends AppCompatActivity {
                 episodePickerDialog = null;
         });
         episodePickerDialog.show();
-        loadFullEpisodeListForPicker(adapter, episodeList, pickerManager);
+        PerfTrace.end("viewer_episode_picker_open_ms", pickerStartedAt);
+        episodeList.postDelayed(() -> loadFullEpisodeListForPicker(adapter, episodeList, pickerManager),
+                EPISODE_PICKER_REFRESH_DELAY_MS);
     }
 
     private List<Manga> currentEpisodeList() {
@@ -498,13 +508,13 @@ public class ViewerActivity extends AppCompatActivity {
     private List<Manga> episodeListFor(Manga current) {
         List<Manga> data = null;
         if(current != null)
-            data = largerEpisodeList(data, Utils.snapshotEpisodes(current));
+            data = largerEpisodeList(data, current.getEps());
         data = largerEpisodeList(data, eps);
         Title currentTitle = title != null ? title : (current == null ? null : current.getTitle());
         if(currentTitle != null)
             currentTitle.ensureProgressEpisodes(current);
         if(currentTitle != null)
-            data = largerEpisodeList(data, Utils.snapshotEpisodes(currentTitle));
+            data = largerEpisodeList(data, currentTitle.getEps());
         return data;
     }
 
@@ -669,8 +679,9 @@ public class ViewerActivity extends AppCompatActivity {
         if(currentTitle == null || manga == null || !manga.isOnline())
             return;
         List<Manga> current = currentEpisodeList();
-        List<Manga> existingEpisodes = Utils.snapshotEpisodes(currentTitle);
-        if(existingEpisodes.size() >= (current == null ? 0 : current.size()) && existingEpisodes.size() > 3)
+        List<Manga> existingEpisodes = currentTitle.getEps();
+        int existingSize = existingEpisodes == null ? 0 : existingEpisodes.size();
+        if(existingSize >= (current == null ? 0 : current.size()) && existingSize > 3)
             return;
         AppDispatchers.submitIo(() -> {
             try {
@@ -808,17 +819,7 @@ public class ViewerActivity extends AppCompatActivity {
             Manga item = data == null || position < 0 || position >= data.size() ? null : data.get(position);
             if(item == null)
                 return RecyclerView.NO_ID;
-            long id = stableEpisodeId(Manga.episodeIdentityKey(item));
-            return id == RecyclerView.NO_ID ? Long.MIN_VALUE : id;
-        }
-
-        private long stableEpisodeId(String key) {
-            long hash = 1125899906842597L;
-            if(key == null)
-                return hash;
-            for(int i = 0; i < key.length(); i++)
-                hash = 31L * hash + key.charAt(i);
-            return hash;
+            return fastEpisodeStableId(item, position);
         }
 
         class EpisodeHolder extends RecyclerView.ViewHolder {
@@ -833,6 +834,29 @@ public class ViewerActivity extends AppCompatActivity {
 
     private interface EpisodeClickListener {
         void onClick(Manga manga);
+    }
+
+    static long fastEpisodeStableIdForTest(Manga item, int position) {
+        return fastEpisodeStableId(item, position);
+    }
+
+    private static long fastEpisodeStableId(Manga item, int position) {
+        if(item == null)
+            return RecyclerView.NO_ID;
+        long titleId = item.getTitleId() > 0 ? item.getTitleId() : 0;
+        long id = item.getId();
+        if(id >= 0) {
+            long stable = (((long) item.getBaseMode() & 0xffffL) << 48)
+                    ^ ((titleId & 0xffffL) << 32)
+                    ^ (id & 0xffffffffL);
+            return stable == RecyclerView.NO_ID ? Long.MIN_VALUE : stable;
+        }
+        String fallback = (item.getNtkEpisodePath() == null ? "" : item.getNtkEpisodePath())
+                + ":" + (item.getName() == null ? "" : item.getName()) + ":" + position;
+        long hash = 1125899906842597L;
+        for(int i = 0; i < fallback.length(); i++)
+            hash = 31L * hash + fallback.charAt(i);
+        return hash == RecyclerView.NO_ID ? Long.MIN_VALUE : hash;
     }
 
     private static boolean isValidEpisodePickerPosition(List<?> data, int position) {

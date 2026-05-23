@@ -8,6 +8,7 @@ import java.util.Arrays;
 import java.util.Collections;
 
 import ml.melun.mangaview.glide.ViewerWarmupManager;
+import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.model.PageItem;
 
 import static org.junit.Assert.assertEquals;
@@ -30,6 +31,17 @@ public class ViewerActivityTest {
     @Test
     public void validEpisodePickerPositionAcceptsExistingRow() {
         assertTrue(ViewerActivity.isValidEpisodePickerPositionForTest(Arrays.asList("a", "b"), 1));
+    }
+
+    @Test
+    public void episodePickerStableIdAvoidsNameParsingForKnownIds() {
+        Manga first = new Manga(91, "서머타임 렌더링 91화", "", 0);
+        first.setTitleId(7843);
+        Manga second = new Manga(91, "서머타임 렌더링 87화", "", 0);
+        second.setTitleId(7843);
+
+        assertEquals(ViewerActivity.fastEpisodeStableIdForTest(first, 0),
+                ViewerActivity.fastEpisodeStableIdForTest(second, 1));
     }
 
     @Test

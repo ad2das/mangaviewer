@@ -28,7 +28,7 @@
 
     </com.google.android.material.appbar.AppBarLayout>
 
-    <androidx.recyclerview.widget.RecyclerView
+    <ml.melun.mangaview.ui.CappedFlingRecyclerView
         android:id="@+id/EpisodeList"
         android:clipToPadding="false"
         android:paddingTop="8dp"
@@ -41,7 +41,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/episode_toolbar">
 
-    </androidx.recyclerview.widget.RecyclerView>
+    </ml.melun.mangaview.ui.CappedFlingRecyclerView>
 
     <androidx.appcompat.widget.LinearLayoutCompat
         android:id="@+id/fab_container"

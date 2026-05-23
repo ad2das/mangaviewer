@@ -5,9 +5,8 @@ import android.util.AttributeSet;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-import androidx.recyclerview.widget.RecyclerView;
 
-public class ViewerRecyclerView extends RecyclerView {
+public class ViewerRecyclerView extends CappedFlingRecyclerView {
     public ViewerRecyclerView(@NonNull Context context) {
         super(context);
     }

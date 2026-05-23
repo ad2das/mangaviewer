@@ -110,9 +110,9 @@ public class ViewerPreloadPolicyTest {
         ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.scrollBusyWindow(false);
 
         assertEquals(0, window.decodedLimit);
-        assertEquals(3, window.immediateLimit);
-        assertEquals(6, window.highLimit);
-        assertEquals(6, window.totalLimit);
+        assertEquals(1, window.immediateLimit);
+        assertEquals(2, window.highLimit);
+        assertEquals(2, window.totalLimit);
     }
 
     @Test
