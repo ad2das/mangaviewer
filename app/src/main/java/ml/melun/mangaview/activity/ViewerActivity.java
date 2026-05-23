@@ -79,6 +79,8 @@ public class ViewerActivity extends AppCompatActivity {
     private static final String TAG = "ViewerPerf";
     public static final String EXTRA_EXACT_EPISODE = "ml.melun.mangaview.EXTRA_EXACT_EPISODE";
     public static final String EXTRA_START_AT_FIRST_PAGE = "ml.melun.mangaview.EXTRA_START_AT_FIRST_PAGE";
+    public static final String EXTRA_RETURN_EPISODE_SOURCE_SWITCHED = "ml.melun.mangaview.EXTRA_RETURN_EPISODE_SOURCE_SWITCHED";
+    public static final String EXTRA_RETURN_EPISODE_TITLE = "ml.melun.mangaview.EXTRA_RETURN_EPISODE_TITLE";
 
     private enum ViewerLoadPolicy {
         RESUME,
@@ -107,6 +109,7 @@ public class ViewerActivity extends AppCompatActivity {
     ImageButton saveBtn;
     int width=0;
     Intent intent;
+    String returnEpisodeTitleJson;
     boolean captchaChecked = false;
     ImageButton episodeButton;
     AlertDialog episodePickerDialog;
@@ -628,6 +631,7 @@ public class ViewerActivity extends AppCompatActivity {
                     episode.setTitle(alternateTitle);
                     episode.setTitleId(alternateTitle.getId());
                 }
+                markReturnEpisodeListTitle(alternateTitle);
                 loadManga(episode, ViewerLoadPolicy.EXACT_FIRST_PAGE);
             }
 
@@ -1934,7 +1938,34 @@ public class ViewerActivity extends AppCompatActivity {
         this.manga = m;
         result = new Intent();
         result.putExtra("id", m.getId());
+        addReturnEpisodeListResult(result, returnEpisodeTitleJson);
         setResult(RESULT_OK, result);
+    }
+
+    private void markReturnEpisodeListTitle(Title targetTitle) {
+        returnEpisodeTitleJson = returnEpisodeListTitleJson(targetTitle);
+        if(result != null) {
+            addReturnEpisodeListResult(result, returnEpisodeTitleJson);
+            setResult(RESULT_OK, result);
+        }
+    }
+
+    static String returnEpisodeListTitleJson(Title targetTitle) {
+        if(targetTitle == null)
+            return null;
+        try {
+            return Utils.toViewerTitleJson(targetTitle, true);
+        } catch(Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return null;
+        }
+    }
+
+    static void addReturnEpisodeListResult(Intent target, String titleJson) {
+        if(target == null || titleJson == null || titleJson.trim().length() == 0)
+            return;
+        target.putExtra(EXTRA_RETURN_EPISODE_SOURCE_SWITCHED, true);
+        target.putExtra(EXTRA_RETURN_EPISODE_TITLE, titleJson);
     }
 
     private void dispatchScrollAnchorToAdapter(boolean busy) {

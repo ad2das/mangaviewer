@@ -197,6 +197,13 @@ public class EpisodeActivity extends AppCompatActivity {
         if(resultCode== RESULT_OK){
             if(data == null)
                 return;
+            String switchedTitleJson = data.getStringExtra(ViewerActivity.EXTRA_RETURN_EPISODE_TITLE);
+            if(shouldSwitchEpisodeListForViewerResult(
+                    data.getBooleanExtra(ViewerActivity.EXTRA_RETURN_EPISODE_SOURCE_SWITCHED, false),
+                    switchedTitleJson)) {
+                restartWithViewerResultTitle(switchedTitleJson);
+                return;
+            }
             int newid = data.getIntExtra("id", -1);
             if(newid>0 && newid!=bookmarkId){
                 bookmarkId = newid;
@@ -230,6 +237,22 @@ public class EpisodeActivity extends AppCompatActivity {
             startActivity(restartIntent);
             overridePendingTransition(0, 0);
         }
+    }
+
+    private void restartWithViewerResultTitle(String titleJson) {
+        Intent restartIntent = new Intent(this, EpisodeActivity.class);
+        restartIntent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        Intent currentIntent = getIntent();
+        if(currentIntent != null) {
+            if(currentIntent.getExtras() != null)
+                restartIntent.putExtras(new Bundle(currentIntent.getExtras()));
+            restartIntent.setData(currentIntent.getData());
+        }
+        restartIntent.putExtra("title", titleJson);
+        restartIntent.putExtra("online", true);
+        finish();
+        startActivity(restartIntent);
+        overridePendingTransition(0, 0);
     }
 
     @Override
@@ -1298,6 +1321,10 @@ public class EpisodeActivity extends AppCompatActivity {
         return parseIntentTitle(json);
     }
 
+    static boolean shouldSwitchEpisodeListForViewerResultForTest(boolean sourceSwitched, String titleJson) {
+        return shouldSwitchEpisodeListForViewerResult(sourceSwitched, titleJson);
+    }
+
     private static Title parseIntentTitle(String json) {
         if(json == null || json.trim().length() == 0)
             return null;
@@ -1306,6 +1333,10 @@ public class EpisodeActivity extends AppCompatActivity {
         } catch(Exception e) {
             return null;
         }
+    }
+
+    private static boolean shouldSwitchEpisodeListForViewerResult(boolean sourceSwitched, String titleJson) {
+        return sourceSwitched && parseIntentTitle(titleJson) != null;
     }
 
     @Override

@@ -133,6 +133,18 @@ public class EpisodeActivityTest {
     }
 
     @Test
+    public void viewerSourceSwitchResultRequiresValidReplacementTitle() {
+        Title title = new Title("서머타임 렌더링", "", "", null, "", 7843, base_comic);
+        title.setSourceSite("ntk");
+        String titleJson = new Gson().toJson(title);
+
+        assertTrue(EpisodeActivity.shouldSwitchEpisodeListForViewerResultForTest(true, titleJson));
+        assertFalse(EpisodeActivity.shouldSwitchEpisodeListForViewerResultForTest(false, titleJson));
+        assertFalse(EpisodeActivity.shouldSwitchEpisodeListForViewerResultForTest(true, "{name:broken"));
+        assertFalse(EpisodeActivity.shouldSwitchEpisodeListForViewerResultForTest(true, ""));
+    }
+
+    @Test
     public void sameEpisodeIdentityListAllowsSkippingDuplicateRefreshRender() {
         List<Manga> cached = new ArrayList<>();
         Manga cachedFirst = new Manga(1, "1", "", base_webtoon);

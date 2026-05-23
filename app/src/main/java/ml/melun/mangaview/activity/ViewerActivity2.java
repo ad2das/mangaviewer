@@ -99,6 +99,7 @@ public class ViewerActivity2 extends AppCompatActivity {
     AlertDialog.Builder alert;
     int swidth = 0;
     Intent intent;
+    String returnEpisodeTitleJson;
     boolean captchaChecked = false;
     ImageButton toolbar_toggleBtn;
     CustomSpinner spinner;
@@ -414,6 +415,7 @@ public class ViewerActivity2 extends AppCompatActivity {
                     episode.setTitle(alternateTitle);
                     episode.setTitleId(alternateTitle.getId());
                 }
+                markReturnEpisodeListTitle(alternateTitle);
                 openEpisode(episode);
             }
 
@@ -1177,7 +1179,16 @@ public class ViewerActivity2 extends AppCompatActivity {
     public void updateIntent(){
         result = new Intent();
         result.putExtra("id", id);
+        ViewerActivity.addReturnEpisodeListResult(result, returnEpisodeTitleJson);
         setResult(RESULT_OK, result);
+    }
+
+    private void markReturnEpisodeListTitle(Title targetTitle) {
+        returnEpisodeTitleJson = ViewerActivity.returnEpisodeListTitleJson(targetTitle);
+        if(result != null) {
+            ViewerActivity.addReturnEpisodeListResult(result, returnEpisodeTitleJson);
+            setResult(RESULT_OK, result);
+        }
     }
 
     public void loadManga(Manga m){

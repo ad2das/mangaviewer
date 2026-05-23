@@ -66,6 +66,7 @@ public class ViewerActivity3 extends AppCompatActivity {
     ImageButton saveBtn;
     int width;
     Intent intent;
+    String returnEpisodeTitleJson;
     Title title;
     String name;
     boolean captchaChecked = false;
@@ -364,6 +365,7 @@ public class ViewerActivity3 extends AppCompatActivity {
                     episode.setTitle(alternateTitle);
                     episode.setTitleId(alternateTitle.getId());
                 }
+                markReturnEpisodeListTitle(alternateTitle);
                 openEpisode(episode);
             }
 
@@ -641,7 +643,16 @@ public class ViewerActivity3 extends AppCompatActivity {
     public void updateIntent(){
         result = new Intent();
         result.putExtra("id", id);
+        ViewerActivity.addReturnEpisodeListResult(result, returnEpisodeTitleJson);
         setResult(RESULT_OK, result);
+    }
+
+    private void markReturnEpisodeListTitle(Title targetTitle) {
+        returnEpisodeTitleJson = ViewerActivity.returnEpisodeListTitleJson(targetTitle);
+        if(result != null) {
+            ViewerActivity.addReturnEpisodeListResult(result, returnEpisodeTitleJson);
+            setResult(RESULT_OK, result);
+        }
     }
 
     public void refreshAdapter(){

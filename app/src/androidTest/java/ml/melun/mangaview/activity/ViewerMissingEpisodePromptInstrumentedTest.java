@@ -7,18 +7,23 @@ import android.os.SystemClock;
 import android.view.View;
 import android.widget.TextView;
 
+import androidx.test.core.app.ActivityScenario;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import androidx.test.uiautomator.By;
+import androidx.test.uiautomator.BySelector;
 import androidx.test.uiautomator.UiDevice;
 import androidx.test.uiautomator.UiObject2;
 import androidx.test.uiautomator.Until;
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry;
+import androidx.test.runner.lifecycle.Stage;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.regex.Pattern;
@@ -40,6 +45,8 @@ import static org.junit.Assert.assertTrue;
 
 @RunWith(AndroidJUnit4.class)
 public class ViewerMissingEpisodePromptInstrumentedTest {
+    private static final String PACKAGE_NAME = "ml.melun.mangaview";
+
     @Test
     public void wfwfSummertimeRenderingPromptsFrom74To80() {
         Title title = fetchWfwfSummertimeRendering();
@@ -119,6 +126,48 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
                     toolbarTitle(activity).contains("71화"));
         } finally {
             activity.finish();
+        }
+    }
+
+    @Test
+    public void wfwfContinueToNtkBackReturnsToNtkEpisodeList() {
+        Title title = fetchWfwfSummertimeRendering();
+        ArrayList<Manga> episodes = Utils.snapshotEpisodes(title);
+        Manga episode74 = findEpisode(episodes, 74);
+
+        assertNotNull("Expected WFWF Summertime Rendering 74화", episode74);
+        episode74.setImgs(Collections.singletonList("https://example.com/wfwf-summertime-74.jpg"));
+
+        ActivityScenario<EpisodeActivity> scenario = ActivityScenario.launch(episodeIntent(title));
+        try {
+            scenario.onActivity(activity ->
+                    activity.startActivityForResult(viewerIntent(activity, episode74, title, false), 0));
+
+            UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+            assertTrue("Expected viewer to start on WFWF 74화",
+                    waitForUiToolbarTitle(device, "74화", 10000));
+
+            UiObject2 next = waitForEnabledObject(device, By.res(PACKAGE_NAME, "toolbar_next"), 10000);
+            assertNotNull("Expected WFWF 74화 next button to be enabled", next);
+            next.click();
+
+            assertNotNull("Expected missing episode dialog title",
+                    device.wait(Until.findObject(By.text("회차 누락")), 5000));
+            UiObject2 ntkButton = device.wait(Until.findObject(By.text("NTK에서 보기")), 5000);
+            assertNotNull("Expected NTK continue button", ntkButton);
+            ntkButton.click();
+
+            assertTrue("Expected viewer to continue on NTK missing 75화",
+                    waitForUiToolbarTitle(device, "75화", 60000));
+            device.pressBack();
+
+            assertNotNull("Expected back from switched viewer to show an episode list",
+                    device.wait(Until.findObject(By.res(PACKAGE_NAME, "EpisodeList")), 60000));
+            assertTrue("Expected returned episode list to use NTK, not the original WFWF title",
+                    waitForCurrentEpisodeActivitySource("ntk", 10000));
+        } finally {
+            scenario.close();
+            finishResumedActivities();
         }
     }
 
@@ -243,12 +292,26 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
 
     private Intent viewerIntent(Manga episode, Title title) {
         Context context = ApplicationProvider.getApplicationContext();
+        return viewerIntent(context, episode, title, true);
+    }
+
+    private Intent viewerIntent(Context context, Manga episode, Title title, boolean newTask) {
         Intent intent = new Intent(context, ViewerActivity.class);
         intent.putExtra("online", true);
         intent.putExtra("title", Utils.toViewerTitleJson(title, true));
         intent.putExtra("manga", Utils.toViewerMangaJson(episode, title));
         intent.putExtra(ViewerActivity.EXTRA_EXACT_EPISODE, true);
         intent.putExtra(ViewerActivity.EXTRA_START_AT_FIRST_PAGE, true);
+        if(newTask)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        return intent;
+    }
+
+    private Intent episodeIntent(Title title) {
+        Context context = ApplicationProvider.getApplicationContext();
+        Intent intent = new Intent(context, EpisodeActivity.class);
+        intent.putExtra("online", true);
+        intent.putExtra("title", Utils.toViewerTitleJson(title, true));
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         return intent;
     }
@@ -346,5 +409,59 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
             text[0] = title == null || title.getText() == null ? "" : title.getText().toString();
         });
         return text[0] == null ? "" : text[0];
+    }
+
+    private static UiObject2 waitForEnabledObject(UiDevice device, BySelector selector, long timeoutMs) {
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+        while(SystemClock.elapsedRealtime() < deadline) {
+            UiObject2 object = device.findObject(selector);
+            if(object != null && object.isEnabled())
+                return object;
+            SystemClock.sleep(250);
+        }
+        return null;
+    }
+
+    private static boolean waitForUiToolbarTitle(UiDevice device, String expectedText, long timeoutMs) {
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+        while(SystemClock.elapsedRealtime() < deadline) {
+            UiObject2 title = device.findObject(By.res(PACKAGE_NAME, "toolbar_title"));
+            String text = title == null ? "" : title.getText();
+            if(text != null && text.contains(expectedText))
+                return true;
+            SystemClock.sleep(500);
+        }
+        return false;
+    }
+
+    private static boolean waitForCurrentEpisodeActivitySource(String expectedSource, long timeoutMs) {
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+        while(SystemClock.elapsedRealtime() < deadline) {
+            final String[] source = new String[1];
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+                Collection<Activity> activities = ActivityLifecycleMonitorRegistry.getInstance()
+                        .getActivitiesInStage(Stage.RESUMED);
+                for(Activity activity : activities) {
+                    if(activity instanceof EpisodeActivity) {
+                        Title title = ((EpisodeActivity) activity).title;
+                        source[0] = title == null ? null : title.getSourceSite();
+                        return;
+                    }
+                }
+            });
+            if(expectedSource.equals(source[0]))
+                return true;
+            SystemClock.sleep(250);
+        }
+        return false;
+    }
+
+    private static void finishResumedActivities() {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            Collection<Activity> activities = ActivityLifecycleMonitorRegistry.getInstance()
+                    .getActivitiesInStage(Stage.RESUMED);
+            for(Activity activity : activities)
+                activity.finish();
+        });
     }
 }
