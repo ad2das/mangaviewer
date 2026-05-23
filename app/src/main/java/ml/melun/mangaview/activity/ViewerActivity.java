@@ -331,6 +331,7 @@ public class ViewerActivity extends AppCompatActivity {
             strip = this.findViewById(R.id.strip);
             manager = new StripLayoutManager(this);
             manager.setOrientation(LinearLayoutManager.VERTICAL);
+            manager.setInitialPrefetchItemCount(viewerInitialPrefetchItemCount(p.getDataSave()));
             strip.setItemViewCacheSize(viewerItemViewCacheSize(manga, p.getDataSave()));
             strip.setHasFixedSize(true);
             strip.setLayoutManager(manager);
@@ -348,6 +349,8 @@ public class ViewerActivity extends AppCompatActivity {
             }
             
             loadManga(manga, initialLoadPolicy);
+            if(initialLoadPolicy == ViewerLoadPolicy.RESUME)
+                strip.post(this::hideToolbarImmediately);
             strip.setOnScrollListener(new RecyclerView.OnScrollListener() {
                 @Override
                 public void onScrollStateChanged(RecyclerView recyclerView, int newState) {
@@ -382,6 +385,8 @@ public class ViewerActivity extends AppCompatActivity {
                     super.onScrolled(recyclerView, dx, dy);
                     if(dy != 0)
                         lastViewerScrollDirection = dy < 0 ? -1 : 1;
+                    if(dy != 0 && manager != null)
+                        manager.setScrollDirection(dy);
                     if(dy != 0 && initialToolbarGuardActive)
                         clearInitialToolbarGuard();
                     int scrollState = recyclerView.getScrollState();
@@ -2771,6 +2776,10 @@ public class ViewerActivity extends AppCompatActivity {
         return viewerItemViewCacheSize(sourceSite, dataSave);
     }
 
+    static int viewerInitialPrefetchItemCountForTest(boolean dataSave) {
+        return viewerInitialPrefetchItemCount(dataSave);
+    }
+
     private static int viewerItemViewCacheSize(Manga manga, boolean dataSave) {
         String sourceSite = "";
         if(manga != null && manga.getTitle() != null)
@@ -2780,8 +2789,12 @@ public class ViewerActivity extends AppCompatActivity {
 
     private static int viewerItemViewCacheSize(String sourceSite, boolean dataSave) {
         if(dataSave)
-            return 8;
-        return "wfwf".equalsIgnoreCase(sourceSite == null ? "" : sourceSite.trim()) ? 18 : 22;
+            return 12;
+        return "wfwf".equalsIgnoreCase(sourceSite == null ? "" : sourceSite.trim()) ? 28 : 32;
+    }
+
+    private static int viewerInitialPrefetchItemCount(boolean dataSave) {
+        return dataSave ? 4 : 8;
     }
 
     private boolean needsFullEpisodeList(Title currentTitle, Manga target) {

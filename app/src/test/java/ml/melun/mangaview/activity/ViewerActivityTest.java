@@ -64,9 +64,10 @@ public class ViewerActivityTest {
 
     @Test
     public void wfwfViewerKeepsExtraRowsReadyWithoutDataSaver() {
-        assertEquals(18, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", false));
-        assertEquals(22, ViewerActivity.viewerItemViewCacheSizeForTest("ntk", false));
-        assertEquals(8, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", true));
+        assertEquals(28, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", false));
+        assertEquals(32, ViewerActivity.viewerItemViewCacheSizeForTest("ntk", false));
+        assertEquals(12, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", true));
+        assertEquals(8, ViewerActivity.viewerInitialPrefetchItemCountForTest(false));
     }
 
     @Test
