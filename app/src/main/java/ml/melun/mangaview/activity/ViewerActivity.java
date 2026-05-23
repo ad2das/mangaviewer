@@ -792,9 +792,17 @@ public class ViewerActivity extends AppCompatActivity {
             Manga item = data == null || position < 0 || position >= data.size() ? null : data.get(position);
             if(item == null)
                 return RecyclerView.NO_ID;
-            return (((long)item.getBaseMode()) << 48)
-                    ^ (((long)item.getTitleId() & 0xffffL) << 32)
-                    ^ (item.getId() & 0xffffffffL);
+            long id = stableEpisodeId(Manga.episodeIdentityKey(item));
+            return id == RecyclerView.NO_ID ? Long.MIN_VALUE : id;
+        }
+
+        private long stableEpisodeId(String key) {
+            long hash = 1125899906842597L;
+            if(key == null)
+                return hash;
+            for(int i = 0; i < key.length(); i++)
+                hash = 31L * hash + key.charAt(i);
+            return hash;
         }
 
         class EpisodeHolder extends RecyclerView.ViewHolder {

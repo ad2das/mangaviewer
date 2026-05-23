@@ -137,6 +137,19 @@ public class TitleTest {
     }
 
     @Test
+    public void ntkProgressEpisodesDoNotGeneratePathlessPlaceholders() {
+        Title title = new Title("서머타임 렌더링", "", "", null, "", 7843, MTitle.base_comic);
+        title.setSourceSite("ntk");
+        title.setReadingProgress(79, 79, 143);
+        Manga current = new Manga(79, "75화", "", MTitle.base_comic);
+        current.setTitle(title);
+        current.setTitleId(title.getId());
+
+        assertFalse(title.ensureProgressEpisodes(current));
+        assertEquals(0, title.getEpsCount());
+    }
+
+    @Test
     public void legacyEpisodeParserKeepsRowsWithMissingDetails() {
         List<Manga> episodes = Title.parseLegacyEpisodesForTest(
                 "<ul class=\"list-body\">"

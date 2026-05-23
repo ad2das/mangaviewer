@@ -175,6 +175,37 @@ public class MangaEpisodeNavigationTest {
     }
 
     @Test
+    public void ntkNavigationDisambiguatesEpisodeNumbersFromInternalIds() {
+        Title title = new Title("서머타임 렌더링", "", "", new ArrayList<>(), "", 7843, MTitle.base_comic);
+        title.setSourceSite("ntk");
+        Manga actualNinetyOne = new Manga(95, "서머타임 렌더링 91화", "", MTitle.base_comic);
+        actualNinetyOne.setNtkEpisodePath("/manhwa/7843/1666521");
+        actualNinetyOne.setTitle(title);
+        Manga pathlessGeneratedNinetyFive = new Manga(95, "95화", "", MTitle.base_comic);
+        pathlessGeneratedNinetyFive.setTitle(title);
+        Manga sameNinetyOne = new Manga(95, "91화", "", MTitle.base_comic);
+        sameNinetyOne.setNtkEpisodePath("/manhwa/7843/1666521");
+        sameNinetyOne.setTitle(title);
+
+        assertFalse(Manga.sameEpisodeIdentity(actualNinetyOne, pathlessGeneratedNinetyFive));
+        assertTrue(Manga.sameEpisodeIdentity(actualNinetyOne, sameNinetyOne));
+    }
+
+    @Test
+    public void ntkNavigationRequiresMatchingEpisodePathWhenAvailable() {
+        Title title = new Title("서머타임 렌더링", "", "", new ArrayList<>(), "", 7843, MTitle.base_comic);
+        title.setSourceSite("ntk");
+        Manga ninetyOne = new Manga(95, "91화", "", MTitle.base_comic);
+        ninetyOne.setNtkEpisodePath("/manhwa/7843/1666521");
+        ninetyOne.setTitle(title);
+        Manga otherPath = new Manga(95, "91화", "", MTitle.base_comic);
+        otherPath.setNtkEpisodePath("/manhwa/7843/1660630");
+        otherPath.setTitle(title);
+
+        assertFalse(Manga.sameEpisodeIdentity(ninetyOne, otherPath));
+    }
+
+    @Test
     public void cleanViewerEpisodeNameRemovesToolbarProgressPrefix() {
         assertEquals("서머타임 렌더링 92화", Manga.cleanViewerEpisodeName("(97/144) 서머타임 렌더링 92화"));
         assertEquals("서머타임 렌더링 02화", Manga.cleanViewerEpisodeName("서머타임 렌더링 02화"));

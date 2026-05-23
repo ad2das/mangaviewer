@@ -1421,7 +1421,13 @@ public class Manga {
         int secondTitleId = resolvedTitleId(second);
         if(firstTitleId > 0 && secondTitleId > 0 && firstTitleId != secondTitleId)
             return false;
-        if(usesWfwfNameDisambiguation(first, second)) {
+        if(usesNtkPathDisambiguation(first, second)) {
+            String firstPath = ntkEpisodePathKey(first);
+            String secondPath = ntkEpisodePathKey(second);
+            if(firstPath.length() > 0 && secondPath.length() > 0 && !firstPath.equals(secondPath))
+                return false;
+        }
+        if(usesEpisodeNameDisambiguation(first, second)) {
             String firstName = episodeNameKey(first.getName());
             String secondName = episodeNameKey(second.getName());
             if(firstName.length() > 0 && secondName.length() > 0 && !firstName.equals(secondName))
@@ -1441,16 +1447,38 @@ public class Manga {
             String nameKey = episodeNameKey(manga.getName());
             if(nameKey.length() > 0)
                 key += ":" + nameKey;
+        } else if(isNtkEpisode(manga)) {
+            String pathKey = ntkEpisodePathKey(manga);
+            if(pathKey.length() > 0)
+                key += ":" + pathKey;
+            String nameKey = episodeNameKey(manga.getName());
+            if(nameKey.length() > 0)
+                key += ":" + nameKey;
         }
         return key;
     }
 
-    private static boolean usesWfwfNameDisambiguation(Manga first, Manga second) {
-        return isWfwfEpisode(first) || isWfwfEpisode(second);
+    private static boolean usesEpisodeNameDisambiguation(Manga first, Manga second) {
+        return isWfwfEpisode(first) || isWfwfEpisode(second) || isNtkEpisode(first) || isNtkEpisode(second);
+    }
+
+    private static boolean usesNtkPathDisambiguation(Manga first, Manga second) {
+        return isNtkEpisode(first) || isNtkEpisode(second);
     }
 
     private static boolean isWfwfEpisode(Manga manga) {
         return "wfwf".equals(mangaSourceSite(manga));
+    }
+
+    private static boolean isNtkEpisode(Manga manga) {
+        return "ntk".equals(mangaSourceSite(manga));
+    }
+
+    private static String ntkEpisodePathKey(Manga manga) {
+        if(manga == null)
+            return "";
+        String path = manga.getNtkEpisodePath();
+        return path == null ? "" : path.trim();
     }
 
     private static String mangaSourceSite(Manga manga) {

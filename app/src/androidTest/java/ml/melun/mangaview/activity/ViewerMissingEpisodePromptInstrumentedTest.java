@@ -26,6 +26,7 @@ import java.util.regex.Pattern;
 import ml.melun.mangaview.MainApplication;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
+import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
@@ -33,6 +34,7 @@ import ml.melun.mangaview.repository.MangaRepository;
 
 import static ml.melun.mangaview.mangaview.Title.LOAD_OK;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
@@ -76,6 +78,39 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
         }
     }
 
+    @Test
+    public void ntkSummertimePickerKeepsVisibleEpisodeMappedToNtkPath() {
+        Title title = fetchNtkSummertimeRendering();
+        ArrayList<Manga> episodes = Utils.snapshotEpisodes(title);
+        Manga episode75 = findEpisode(episodes, 75);
+        Manga episode91 = findEpisode(episodes, 91);
+
+        assertNotNull("Expected NTK Summertime Rendering 75화", episode75);
+        assertNotNull("Expected NTK Summertime Rendering 91화", episode91);
+        assertTrue("Expected NTK 91화 to have a concrete source episode path",
+                episode91.getNtkEpisodePath().contains("/manhwa/7843/"));
+        assertFalse("NTK 91화 must not fall back to visible episode-number URL",
+                episode91.getNtkEpisodePath().endsWith("/91"));
+
+        episode75.setImgs(Collections.singletonList("https://example.com/ntk-summertime-75.jpg"));
+        Activity activity = InstrumentationRegistry.getInstrumentation().startActivitySync(viewerIntent(episode75, title));
+        try {
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            assertTrue("Expected viewer picker backing list to keep actual NTK paths",
+                    waitForViewerEpisodePath(activity, "91화", episode91.getNtkEpisodePath(), 10000));
+            Manga pickerEpisode91 = viewerEpisode(activity, 91);
+            assertNotNull("Expected viewer picker backing list to include 91화", pickerEpisode91);
+
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> ((ViewerActivity) activity).loadManga(pickerEpisode91));
+            assertTrue("Expected picker-selected NTK 91화 to open as 91화",
+                    waitForToolbarTitle(activity, "91화", 60000));
+            assertFalse("NTK 91화 selection must not land on 87화",
+                    toolbarTitle(activity).contains("87화"));
+        } finally {
+            activity.finish();
+        }
+    }
+
     private Title fetchWfwfSummertimeRendering() {
         MainApplication.p.setSitePreset("https://wfwf453.com/cm", "https://wfwf453.com");
         MainApplication.p.setBaseMode(MTitle.base_comic);
@@ -92,6 +127,26 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
 
         int result = MangaRepository.fetchEpisodesForeground(title);
         assertEquals("Expected WFWF Summertime Rendering episodes to load", LOAD_OK, result);
+        return title;
+    }
+
+    private Title fetchNtkSummertimeRendering() {
+        MainApplication.p.setNtkSitePreset(CustomHttpClient.NTK_WEBTOON_URL);
+        MainApplication.p.setBaseMode(MTitle.base_comic);
+
+        Title title = new Title(
+                "서머타임 렌더링",
+                "",
+                "",
+                Collections.singletonList("미스터리"),
+                "",
+                7843,
+                MTitle.base_comic);
+        title.setSourceSite("ntk");
+        title.setPath("/manhwa/7843");
+
+        int result = MangaRepository.fetchEpisodesForeground(title);
+        assertEquals("Expected NTK Summertime Rendering episodes to load", LOAD_OK, result);
         return title;
     }
 
@@ -145,18 +200,60 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
         return null;
     }
 
+    private static boolean waitForViewerEpisodePath(Activity activity, String episodeName, String expectedPath, long timeoutMs) {
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+        while(SystemClock.elapsedRealtime() < deadline) {
+            Manga episode = viewerEpisode(activity, episodeName);
+            if(episode != null && expectedPath.equals(episode.getNtkEpisodePath()))
+                return true;
+            SystemClock.sleep(250);
+        }
+        return false;
+    }
+
+    private static Manga viewerEpisode(Activity activity, int episodeNumber) {
+        final Manga[] result = new Manga[1];
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            if(activity instanceof ViewerActivity)
+                result[0] = findEpisode(((ViewerActivity) activity).eps, episodeNumber);
+        });
+        return result[0];
+    }
+
+    private static Manga viewerEpisode(Activity activity, String episodeName) {
+        final Manga[] result = new Manga[1];
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            if(!(activity instanceof ViewerActivity))
+                return;
+            List<Manga> episodes = ((ViewerActivity) activity).eps;
+            if(episodes == null)
+                return;
+            for(Manga episode : episodes)
+                if(episode != null && episode.getName() != null && episode.getName().contains(episodeName)) {
+                    result[0] = episode;
+                    return;
+                }
+        });
+        return result[0];
+    }
+
     private static boolean waitForToolbarTitle(Activity activity, String expectedText, long timeoutMs) {
         long deadline = SystemClock.elapsedRealtime() + timeoutMs;
         while(SystemClock.elapsedRealtime() < deadline) {
-            final String[] text = new String[1];
-            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
-                TextView title = activity.findViewById(R.id.toolbar_title);
-                text[0] = title == null || title.getText() == null ? "" : title.getText().toString();
-            });
+            String[] text = {toolbarTitle(activity)};
             if(text[0] != null && text[0].contains(expectedText))
                 return true;
             SystemClock.sleep(500);
         }
         return false;
+    }
+
+    private static String toolbarTitle(Activity activity) {
+        final String[] text = new String[1];
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            TextView title = activity.findViewById(R.id.toolbar_title);
+            text[0] = title == null || title.getText() == null ? "" : title.getText().toString();
+        });
+        return text[0] == null ? "" : text[0];
     }
 }
