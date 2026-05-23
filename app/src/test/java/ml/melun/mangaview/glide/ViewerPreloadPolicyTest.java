@@ -67,13 +67,13 @@ public class ViewerPreloadPolicyTest {
     }
 
     @Test
-    public void immediateDisplayWindowUsesSourcePriorityBeforeAdapterBind() {
+    public void immediateDisplayWindowOnlyPrimesTheFirstViewport() {
         ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.immediateDisplayWindow(false);
 
         assertEquals(1, window.decodedLimit);
-        assertEquals(4, window.immediateLimit);
-        assertEquals(8, window.highLimit);
-        assertEquals(12, window.totalLimit);
+        assertEquals(2, window.immediateLimit);
+        assertEquals(3, window.highLimit);
+        assertEquals(4, window.totalLimit);
     }
 
     @Test
@@ -81,9 +81,9 @@ public class ViewerPreloadPolicyTest {
         ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.immediateDisplayWindow(true);
 
         assertEquals(1, window.decodedLimit);
-        assertEquals(3, window.immediateLimit);
-        assertEquals(6, window.highLimit);
-        assertEquals(8, window.totalLimit);
+        assertEquals(2, window.immediateLimit);
+        assertEquals(2, window.highLimit);
+        assertEquals(3, window.totalLimit);
     }
 
     @Test

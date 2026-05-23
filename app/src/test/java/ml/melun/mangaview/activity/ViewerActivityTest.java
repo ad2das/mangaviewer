@@ -190,6 +190,7 @@ public class ViewerActivityTest {
         assertFalse(ViewerActivity.shouldCheckBoundaryDuringScrollStateForTest(RecyclerView.SCROLL_STATE_DRAGGING));
         assertFalse(ViewerActivity.shouldCheckBoundaryDuringScrollStateForTest(RecyclerView.SCROLL_STATE_SETTLING));
         assertTrue(ViewerActivity.boundaryLoadIdleDelayMsForTest() >= ViewerActivity.initialViewerPreloadDelayMsForTest());
+        assertTrue(ViewerActivity.boundaryLoadIdleDelayMsForTest() >= 300L);
     }
 
     @Test
@@ -233,8 +234,8 @@ public class ViewerActivityTest {
 
     @Test
     public void initialViewerGuardKeepsBackgroundWorkOutOfImmediateFling() {
-        assertTrue(ViewerActivity.initialBackgroundWorkGuardMsForTest() >= 1200L);
-        assertTrue(ViewerActivity.initialBackgroundWorkGuardMsForTest() <= 2000L);
+        assertTrue(ViewerActivity.initialBackgroundWorkGuardMsForTest() >= 3500L);
+        assertTrue(ViewerActivity.initialBackgroundWorkGuardMsForTest() <= 5000L);
         assertTrue(ViewerActivity.shouldHoldInitialBackgroundWorkForTest(false, 100L, 200L));
         assertTrue(ViewerActivity.shouldHoldInitialBackgroundWorkForTest(true, 100L, 200L));
         assertFalse(ViewerActivity.shouldHoldInitialBackgroundWorkForTest(false, 200L, 200L));

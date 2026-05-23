@@ -777,7 +777,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private static boolean shouldUsePreviewOnlyBind(boolean scrollBusy, boolean forceFullQuality) {
-        return !forceFullQuality;
+        return false;
     }
 
     static boolean shouldUsePreviewOnlyBindForTest(boolean scrollBusy, boolean forceFullQuality) {

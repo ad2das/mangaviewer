@@ -29,8 +29,8 @@ public final class ViewerPreloadPolicy {
 
     public static Window immediateDisplayWindow(boolean dataSave) {
         return dataSave
-                ? new Window(1, 3, 6, 8)
-                : new Window(1, 4, 8, 12);
+                ? new Window(1, 2, 2, 3)
+                : new Window(1, 2, 3, 4);
     }
 
     public static Window initialScrollWindow(boolean dataSave) {

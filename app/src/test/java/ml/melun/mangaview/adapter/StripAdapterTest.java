@@ -127,9 +127,9 @@ public class StripAdapterTest {
     }
 
     @Test
-    public void fastFlingUsesInstantPreviewInsteadOfColdBindDeferral() {
-        assertTrue(StripAdapter.shouldUsePreviewOnlyBindForTest(true, false));
-        assertTrue(StripAdapter.shouldUsePreviewOnlyBindForTest(false, false));
+    public void fastFlingBindsFullQualityWithThumbnailFallback() {
+        assertFalse(StripAdapter.shouldUsePreviewOnlyBindForTest(true, false));
+        assertFalse(StripAdapter.shouldUsePreviewOnlyBindForTest(false, false));
         assertFalse(StripAdapter.shouldUsePreviewOnlyBindForTest(true, true));
     }
 }

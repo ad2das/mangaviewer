@@ -144,9 +144,9 @@ public class ViewerActivity extends AppCompatActivity {
     private static final int DATA_SAVE_NEXT_EPISODE_PREFETCH_CHAIN_DEPTH = 1;
     private static final int PREVIOUS_EPISODE_PULL_THRESHOLD_DP = 36;
     private static final long SCROLL_BOOKMARK_SAVE_DELAY_MS = 350L;
-    private static final long BOUNDARY_LOAD_IDLE_DELAY_MS = 64L;
+    private static final long BOUNDARY_LOAD_IDLE_DELAY_MS = 320L;
     private static final long AUTO_APPEND_PREVIEW_ONLY_MS = 2600L;
-    private static final long INITIAL_BACKGROUND_WORK_GUARD_MS = 1500L;
+    private static final long INITIAL_BACKGROUND_WORK_GUARD_MS = 4000L;
     private static final int BUSY_SCROLL_ANCHOR_MIN_ITEM_DELTA = 4;
     private static final long BUSY_SCROLL_ANCHOR_MIN_INTERVAL_MS = 180L;
     private boolean scrollBookmarkSavePending = false;
@@ -1466,10 +1466,10 @@ public class ViewerActivity extends AppCompatActivity {
             if(title == null)
                 title = m.getTitle();
             resetOnBackPressed();
-            preloadImmediateDisplayImages(m, policy);
             cacheLoadedContinueSnapshot();
             ViewerWarmupManager.logMetric("viewer_open_to_set_manga_ms", SystemClock.elapsedRealtime() - startedAtMs);
             callback.post(m);
+            mainHandler.post(() -> preloadImmediateDisplayImages(m, policy));
             hydrateEpisodeListAfterFirstFrame(m);
         }
 
