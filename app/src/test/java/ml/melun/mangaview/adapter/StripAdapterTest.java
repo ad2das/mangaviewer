@@ -115,9 +115,9 @@ public class StripAdapterTest {
     }
 
     @Test
-    public void stripAdapterDoesNotStartHeavyPreloadFromRenderPath() {
-        assertFalse(StripAdapter.startsPreloadFromBindForTest());
-        assertFalse(StripAdapter.startsPreloadFromScrollAnchorForTest());
+    public void stripAdapterStartsAheadPreloadOutsideVisibleDecodeWork() {
+        assertTrue(StripAdapter.startsPreloadFromBindForTest());
+        assertTrue(StripAdapter.startsPreloadFromScrollAnchorForTest());
     }
 
     @Test

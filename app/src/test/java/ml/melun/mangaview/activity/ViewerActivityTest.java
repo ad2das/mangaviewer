@@ -66,8 +66,8 @@ public class ViewerActivityTest {
     public void wfwfViewerKeepsExtraRowsReadyWithoutDataSaver() {
         assertEquals(12, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", false));
         assertEquals(12, ViewerActivity.viewerItemViewCacheSizeForTest("ntk", false));
-        assertEquals(6, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", true));
-        assertEquals(4, ViewerActivity.viewerInitialPrefetchItemCountForTest(false));
+        assertEquals(10, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", true));
+        assertEquals(8, ViewerActivity.viewerInitialPrefetchItemCountForTest(false));
     }
 
     @Test
@@ -220,9 +220,9 @@ public class ViewerActivityTest {
     }
 
     @Test
-    public void viewerPipelineStartsAfterInitialLayoutCanDraw() {
-        assertTrue(ViewerActivity.viewerPipelineStartDelayMsForTest() >= 250L);
-        assertTrue(ViewerActivity.viewerPipelineStartDelayMsForTest() <= 400L);
+    public void viewerPipelineStartsBeforeFirstFlingCanOutrunIt() {
+        assertTrue(ViewerActivity.viewerPipelineStartDelayMsForTest() >= 24L);
+        assertTrue(ViewerActivity.viewerPipelineStartDelayMsForTest() <= 80L);
     }
 
     @Test
@@ -232,9 +232,9 @@ public class ViewerActivityTest {
     }
 
     @Test
-    public void initialViewerGuardDefersBackgroundWorkUntilFirstDrawSettles() {
-        assertTrue(ViewerActivity.initialBackgroundWorkGuardMsForTest() >= 1000L);
-        assertTrue(ViewerActivity.initialBackgroundWorkGuardMsForTest() <= 1800L);
+    public void initialViewerGuardOnlyCoversTheFirstDrawBurst() {
+        assertTrue(ViewerActivity.initialBackgroundWorkGuardMsForTest() >= 200L);
+        assertTrue(ViewerActivity.initialBackgroundWorkGuardMsForTest() <= 400L);
         assertTrue(ViewerActivity.shouldHoldInitialBackgroundWorkForTest(false, 100L, 200L));
         assertFalse(ViewerActivity.shouldHoldInitialBackgroundWorkForTest(true, 100L, 200L));
         assertFalse(ViewerActivity.shouldHoldInitialBackgroundWorkForTest(false, 200L, 200L));

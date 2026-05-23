@@ -11,26 +11,26 @@ public final class ViewerPreloadPolicy {
 
     public static Window firstFrameWindow(boolean dataSave) {
         return dataSave
-                ? new Window(0, 2, 6, 6)
-                : new Window(0, 3, 6, 8);
+                ? new Window(1, 3, 6, 8)
+                : new Window(1, 4, 8, 12);
     }
 
     public static Window episodeListWarmupWindow(boolean dataSave) {
         return dataSave
                 ? new Window(0, 1, 2, 2)
-                : new Window(0, 3, 6, 6);
+                : new Window(0, 4, 8, 10);
     }
 
     public static Window episodeEntryWarmupWindow(boolean dataSave) {
         return dataSave
                 ? new Window(0, 1, 2, 2)
-                : new Window(0, 2, 4, 6);
+                : new Window(1, 3, 6, 8);
     }
 
     public static Window immediateDisplayWindow(boolean dataSave) {
         return dataSave
-                ? new Window(0, 1, 2, 2)
-                : new Window(0, 3, 6, 8);
+                ? new Window(1, 3, 6, 8)
+                : new Window(1, 4, 8, 12);
     }
 
     public static Window initialScrollWindow(boolean dataSave) {
@@ -39,20 +39,20 @@ public final class ViewerPreloadPolicy {
 
     public static Window scrollAheadWindow(boolean dataSave) {
         return dataSave
-                ? new Window(0, 2, 6, 6)
-                : new Window(0, 2, 5, 8);
+                ? new Window(0, 3, 6, 8)
+                : new Window(0, 6, 14, 24);
     }
 
     public static Window scrollBusyWindow(boolean dataSave) {
         return dataSave
-                ? new Window(0, 1, 1, 1)
-                : new Window(0, 1, 2, 2);
+                ? new Window(0, 3, 6, 8)
+                : new Window(0, 4, 10, 16);
     }
 
     public static Window nextEpisodeWindow(boolean dataSave) {
         return dataSave
-                ? new Window(0, 2, 6, 6)
-                : new Window(0, 2, 4, 6);
+                ? new Window(0, 3, 6, 8)
+                : new Window(0, 6, 14, 20);
     }
 
     public static int tierForOffset(Window window, int offset) {

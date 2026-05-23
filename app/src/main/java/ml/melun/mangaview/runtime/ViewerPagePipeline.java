@@ -86,12 +86,11 @@ public final class ViewerPagePipeline {
     }
 
     public void prepareScrollWindow(Manga target, int pageIndex, int direction, boolean busy) {
-        if(hasPreparedImages(target) && busy)
-            return;
         if(busy && dataSave)
-            prepareEpisode(target, pageIndex, 4, 0, 0, Priority.HIGH);
+            prepareEpisode(target, pageIndex, 12, 8, 0, Priority.HIGH);
         else if(busy)
-            prepareEpisode(target, pageIndex, 8, 0, 0, Priority.HIGH);
+            prepareEpisode(target, pageIndex, forwardUrlWindow(false), busyDiskWindow(false),
+                    0, Priority.HIGH);
         else
             prepareEpisode(target, pageIndex, forwardUrlWindow(dataSave), scrollDiskWindow(dataSave),
                     idleDecodedWindow(dataSave), Priority.IMMEDIATE);
@@ -270,19 +269,23 @@ public final class ViewerPagePipeline {
     }
 
     public static int forwardUrlWindow(boolean dataSave) {
-        return dataSave ? 6 : 24;
+        return dataSave ? 12 : 36;
     }
 
     public static int initialDiskWindow(boolean dataSave) {
-        return dataSave ? 2 : 6;
+        return dataSave ? 6 : 18;
     }
 
     public static int scrollDiskWindow(boolean dataSave) {
-        return dataSave ? 2 : 6;
+        return dataSave ? 6 : 18;
+    }
+
+    public static int busyDiskWindow(boolean dataSave) {
+        return dataSave ? 4 : 18;
     }
 
     public static int forwardDiskWindow(boolean dataSave) {
-        return dataSave ? 3 : 8;
+        return dataSave ? 8 : 18;
     }
 
     public static int forwardDecodedWindow(boolean dataSave) {
@@ -298,7 +301,7 @@ public final class ViewerPagePipeline {
     }
 
     public static int futureDiskWindow(boolean dataSave) {
-        return dataSave ? 1 : 4;
+        return dataSave ? 3 : 12;
     }
 
     public static int futureDecodedWindow(boolean dataSave) {

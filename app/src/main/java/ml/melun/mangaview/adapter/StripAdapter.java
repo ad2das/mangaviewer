@@ -33,6 +33,7 @@ import com.bumptech.glide.request.target.Target;
 import com.bumptech.glide.request.transition.Transition;
 
 import java.util.ArrayList;
+import java.io.File;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
@@ -84,7 +85,7 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     private static final int PREVIEW_FULL_REBIND_RADIUS = 14;
     private static final long PREVIEW_FULL_REBIND_DELAY_MS = 160L;
     private static final boolean AUTO_PROMOTE_PREVIEW_FULL_QUALITY = false;
-    private static final boolean RENDER_ONLY_PRELOADS = true;
+    private static final boolean RENDER_ONLY_PRELOADS = false;
     private static final String PAYLOAD_HEIGHT = "height";
     ViewerActivity.InfiniteScrollCallback callback;
     Title title;
@@ -180,7 +181,8 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                     preloadGeneration++;
                 lastBusyPreloadPosition = adapterPosition;
                 lastBusyPreloadAtMs = now;
-                preloadDirectionalWindow(adapterPosition, normalizedDirection, ViewerPreloadPolicy.scrollBusyWindow(p.getDataSave()), preloadGeneration);
+                preloadSourceDirectionalWindow(adapterPosition, normalizedDirection,
+                        ViewerPreloadPolicy.scrollBusyWindow(p.getDataSave()), preloadGeneration);
             }
             return;
         }
@@ -1049,6 +1051,9 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         trimDisplayedTracker();
         if(mainContext instanceof ViewerActivity)
             ((ViewerActivity) mainContext).onViewerPageDisplayed(item);
+        int position = holder.getAdapterPosition();
+        if(!RENDER_ONLY_PRELOADS && !scrollBusy && position != RecyclerView.NO_POSITION)
+            preloadAheadFromBindPosition(position);
         if(shouldLogFirstVisible(firstVisibleLogged)) {
             firstVisibleLogged = true;
             ViewerWarmupManager.logMetric("viewer_first_visible_ms", android.os.SystemClock.elapsedRealtime() - holder.bindStartedAtMs);
@@ -1206,6 +1211,10 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         ViewerPreloadPolicy.Window window = scrollBusy
                 ? ViewerPreloadPolicy.scrollBusyWindow(p.getDataSave())
                 : ViewerPreloadPolicy.scrollAheadWindow(p.getDataSave());
+        if(scrollBusy) {
+            preloadSourceDirectionalWindow(adapterPosition + direction, direction, window, preloadGeneration);
+            return;
+        }
         preloadDirectionalWindow(adapterPosition + direction, direction, window, preloadGeneration);
     }
 
@@ -1281,6 +1290,25 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         }
     }
 
+    private void preloadSourceDirectionalWindow(int adapterPosition, int direction,
+                                                ViewerPreloadPolicy.Window window, long generation) {
+        if(items == null || window == null || direction == 0 || !canStartGlideRequest())
+            return;
+        int preloaded = 0;
+        int position = adapterPosition;
+        while(position >= 0 && position < items.size() && preloaded < window.totalLimit) {
+            if(generation != preloadGeneration)
+                return;
+            Object next = items.get(position);
+            if(next instanceof PageItem) {
+                int tier = ViewerPreloadPolicy.tierForOffset(window, preloaded);
+                preloadPageSourceOnly((PageItem) next, priorityForTier(tier));
+                preloaded++;
+            }
+            position += direction;
+        }
+    }
+
     private ViewerPreloadPolicy.Window clampWindow(ViewerPreloadPolicy.Window policy, int totalLimit) {
         int limit = Math.max(1, Math.min(policy.totalLimit, Math.max(1, totalLimit)));
         return new ViewerPreloadPolicy.Window(
@@ -1333,6 +1361,39 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
 
                         @Override
                         public boolean onResourceReady(Bitmap resource, Object model, Target<Bitmap> target, DataSource dataSource, boolean isFirstResource) {
+                            return false;
+                        }
+                    })
+                    .preload();
+        } catch (IllegalArgumentException e) {
+            preloadedImages.remove(key);
+        }
+    }
+
+    private void preloadPageSourceOnly(PageItem page, Priority priority) {
+        if(!canStartGlideRequest())
+            return;
+        String pageKey = preloadKey(page);
+        if(pageKey.length() == 0)
+            return;
+        String key = sourcePreloadRequestKey(pageKey);
+        if(!preloadedImages.add(key))
+            return;
+        trimPreloadTracker();
+        try {
+            Glide.with(mainContext)
+                    .downloadOnly()
+                    .priority(priority)
+                    .load(getImageModel(page))
+                    .listener(new RequestListener<File>() {
+                        @Override
+                        public boolean onLoadFailed(@Nullable GlideException e, Object model, Target<File> target, boolean isFirstResource) {
+                            preloadedImages.remove(key);
+                            return false;
+                        }
+
+                        @Override
+                        public boolean onResourceReady(File resource, Object model, Target<File> target, DataSource dataSource, boolean isFirstResource) {
                             return false;
                         }
                     })
@@ -1573,12 +1634,17 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 continue;
             preloadKeys.add(pageKey);
             preloadKeys.add(decodedPreloadRequestKey(pageKey));
+            preloadKeys.add(sourcePreloadRequestKey(pageKey));
         }
         return preloadKeys;
     }
 
     private static String decodedPreloadRequestKey(String pageKey) {
         return "decoded:" + pageKey;
+    }
+
+    private static String sourcePreloadRequestKey(String pageKey) {
+        return "source:" + pageKey;
     }
 
     private void cancelDecodedPreload(String pageKey) {

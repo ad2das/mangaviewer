@@ -1022,6 +1022,11 @@ public class ViewerWarmupManager {
         return options;
     }
 
+    private static int decodedWarmupWidth(int width) {
+        int normalized = Math.max(1, width);
+        return Math.min(normalized, Math.max(360, normalized / 3));
+    }
+
     static DiskCacheStrategy viewerDiskCacheStrategyForTest() {
         return viewerDiskCacheStrategyForState(false, Long.MAX_VALUE);
     }
@@ -1101,10 +1106,11 @@ public class ViewerWarmupManager {
             decodedTargets.put(key, target);
             trimDecodedTargets();
         }
+        RequestOptions decodedOptions = viewerOptions(context, page, autoCut, reverse, decodedWarmupWidth(width));
         requestManager
                 .asBitmap()
                 .priority(priority)
-                .apply(options)
+                .apply(decodedOptions)
                 .load(Utils.getGlideUrl(page.img, page.manga.getBaseMode()))
                 .into(target);
     }
@@ -1254,11 +1260,12 @@ public class ViewerWarmupManager {
         RequestManager requestManager = glideRequestManager(context);
         if(requestManager == null)
             return false;
+        RequestOptions decodedOptions = viewerOptions(context, page, autoCut, reverse, decodedWarmupWidth(width));
         try {
             target = requestManager
                     .asBitmap()
                     .priority(Priority.IMMEDIATE)
-                    .apply(options)
+                    .apply(decodedOptions)
                     .load(Utils.getGlideUrl(page.img, page.manga.getBaseMode()))
                     .submit();
             Bitmap bitmap = target.get(timeoutMs, TimeUnit.MILLISECONDS);

@@ -146,7 +146,7 @@ public class ViewerActivity extends AppCompatActivity {
     private static final long SCROLL_BOOKMARK_SAVE_DELAY_MS = 350L;
     private static final long BOUNDARY_LOAD_IDLE_DELAY_MS = 64L;
     private static final long AUTO_APPEND_PREVIEW_ONLY_MS = 2600L;
-    private static final long INITIAL_BACKGROUND_WORK_GUARD_MS = 1400L;
+    private static final long INITIAL_BACKGROUND_WORK_GUARD_MS = 280L;
     private static final int BUSY_SCROLL_ANCHOR_MIN_ITEM_DELTA = 4;
     private static final long BUSY_SCROLL_ANCHOR_MIN_INTERVAL_MS = 180L;
     private boolean scrollBookmarkSavePending = false;
@@ -2342,7 +2342,7 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private static long viewerPipelineStartDelayMs() {
-        return 320L;
+        return 48L;
     }
 
     static long viewerPipelineStartDelayMsForTest() {
@@ -3256,12 +3256,12 @@ public class ViewerActivity extends AppCompatActivity {
 
     private static int viewerItemViewCacheSize(String sourceSite, boolean dataSave) {
         if(dataSave)
-            return 6;
+            return 10;
         return 12;
     }
 
     private static int viewerInitialPrefetchItemCount(boolean dataSave) {
-        return dataSave ? 2 : 4;
+        return dataSave ? 3 : 8;
     }
 
     private boolean needsFullEpisodeList(Title currentTitle, Manga target) {
