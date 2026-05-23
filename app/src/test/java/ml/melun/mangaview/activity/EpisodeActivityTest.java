@@ -46,22 +46,22 @@ public class EpisodeActivityTest {
     @Test
     public void visibleEpisodeWarmupLimitWarmsTapTargetsWhenDataSaverIsOff() {
         assertEquals(1, EpisodeActivity.visibleEpisodeWarmupLimitForTest(true, false));
-        assertEquals(1, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, false));
-        assertEquals(1, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, true));
-        assertEquals(1, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, true, true));
+        assertEquals(3, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, false));
+        assertEquals(4, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, true));
+        assertEquals(3, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, true, true));
     }
 
     @Test
-    public void visibleEpisodeWarmupWaitsUntilEpisodeListSettles() {
-        assertTrue(EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest() >= 600L);
+    public void visibleEpisodeWarmupStartsRightAfterEpisodeListSettles() {
+        assertTrue(EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest() <= 100L);
         assertTrue(EpisodeActivity.visibleEpisodeWarmupIdleDelayMsForTest() >= 300L);
     }
 
     @Test
-    public void ntkVisibleEpisodeWarmupWaitsForFirstFrameWarmup() {
-        assertEquals(620L, EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(false));
-        assertTrue(EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(true) >= 900L);
-        assertTrue(EpisodeActivity.initialViewerTargetWarmupDelayMsForTest(false) < EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(false));
+    public void ntkVisibleEpisodeWarmupStartsWithoutLongColdDelay() {
+        assertEquals(80L, EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(false));
+        assertTrue(EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(true) <= 120L);
+        assertTrue(EpisodeActivity.initialViewerTargetWarmupDelayMsForTest(false) <= EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(false));
     }
 
     @Test

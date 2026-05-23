@@ -60,6 +60,12 @@ public class PreferenceTest {
     }
 
     @Test
+    public void forcedWfwfPresetKeepsRememberedResolvedRoot() {
+        assertEquals("https://wfwf454.com",
+                Preference.resolvedWfwfRootForTest("https://wfwf454.com", NTK_WEBTOON_URL, NTK_COMIC_URL, NTK_COMIC_URL));
+    }
+
+    @Test
     public void ntkRecentProgressShrinksStaleEpisodeCountFromRelease() {
         MTitle title = new MTitle("성순 엑스터시", 36716, "", "", null, "13화", MTitle.base_comic);
         title.setSourceSite("ntk");

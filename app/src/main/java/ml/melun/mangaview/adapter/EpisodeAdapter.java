@@ -11,6 +11,7 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.util.TypedValue;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
@@ -345,6 +346,18 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
                 }
                 mClickListener.onItemClick(position - 1, m);
             });
+            itemView.setOnTouchListener((v, event) -> {
+                if(event != null && event.getActionMasked() == MotionEvent.ACTION_DOWN
+                        && mClickListener != null) {
+                    int position = getAdapterPosition();
+                    if(position != RecyclerView.NO_POSITION && isValidEpisodePosition(mData, position)) {
+                        Manga m = mData.get(position - 1);
+                        if(m != null)
+                            mClickListener.onItemPress(position - 1, m);
+                    }
+                }
+                return false;
+            });
             action.setOnClickListener(v -> {
                 int position = getAdapterPosition();
                 if(position == RecyclerView.NO_POSITION || mClickListener == null || !isValidEpisodePosition(mData, position))
@@ -570,6 +583,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     // parent activity will implement this method to respond to click events
     public interface ItemClickListener {
         void onItemClick(int position, Manga m);
+        void onItemPress(int position, Manga m);
         void onStarClick();
         void onFirstClick();
         void onAuthorClick();

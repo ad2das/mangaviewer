@@ -225,7 +225,7 @@ public class Preference {
         rememberWfwfRoot(webtoonUrl);
     }
 
-    private String trimTrailingSlashLocal(String value) {
+    private static String trimTrailingSlashLocal(String value) {
         if(value == null)
             return "";
         String trimmed = value.trim();
@@ -433,6 +433,10 @@ public class Preference {
         return needsWfwfSitePreset(defUrl, url, webtoonUrl);
     }
 
+    static String resolvedWfwfRootForTest(String rememberedRoot, String webtoonUrl, String defUrl, String url) {
+        return resolvedWfwfRoot(rememberedRoot, webtoonUrl, defUrl, url);
+    }
+
     private static String normalizeComicUrl(String sourceUrl) {
         return normalizeComicUrl(sourceUrl, NTK_WEBTOON_URL);
     }
@@ -514,9 +518,11 @@ public class Preference {
     private boolean normalizeToWfwfSitePresetIfNeeded() {
         if(!needsWfwfSitePreset(defUrl, url, webtoonUrl))
             return false;
-        defUrl = DEFAULT_COMIC_URL;
-        url = DEFAULT_COMIC_URL;
-        webtoonUrl = WEBTOON_URL;
+        String root = resolvedWfwfRoot(wfwfResolvedRoot, webtoonUrl, defUrl, url);
+        wfwfResolvedRoot = root;
+        defUrl = root + "/cm";
+        url = defUrl;
+        webtoonUrl = root;
         ntkResolvedRoot = NTK_WEBTOON_URL;
         autoUrl = false;
         return true;
@@ -544,6 +550,8 @@ public class Preference {
         prefsEditor.putString("defUrl", defUrl)
                 .putString("url", url)
                 .putString("webtoonUrl", webtoonUrl)
+                .putString("wfwfResolvedRoot", wfwfResolvedRoot)
+                .putString("ntkResolvedRoot", ntkResolvedRoot)
                 .putBoolean("autoUrl", autoUrl)
                 .apply();
     }
@@ -712,6 +720,15 @@ public class Preference {
         return webtoonUrl;
     }
 
+    public String getWfwfResolvedRoot() {
+        return resolvedWfwfRoot(wfwfResolvedRoot, webtoonUrl, defUrl, url);
+    }
+
+    public String getNtkResolvedRoot() {
+        String root = normalizeNtkRoot(ntkResolvedRoot);
+        return root.length() == 0 ? NTK_WEBTOON_URL : root;
+    }
+
     public void setWebtoonUrl(String webtoonUrl) {
         this.webtoonUrl = normalizeWebtoonUrl(webtoonUrl, ntkResolvedRoot);
         rememberWfwfRoot(this.webtoonUrl);
@@ -800,7 +817,7 @@ public class Preference {
         wfwfResolvedRoot = root;
     }
 
-    private String normalizeWfwfRoot(String candidateUrl) {
+    private static String normalizeWfwfRoot(String candidateUrl) {
         String root = trimTrailingSlashLocal(candidateUrl);
         if(root.length() == 0 || isNtkLikeUrl(root) || !isWfwfLikeUrl(root))
             return "";
@@ -809,6 +826,20 @@ public class Preference {
         if(root.endsWith("/manhwa"))
             root = root.substring(0, root.length() - 7);
         return root;
+    }
+
+    private static String resolvedWfwfRoot(String rememberedRoot, String webtoonUrl, String defUrl, String url) {
+        String root = normalizeWfwfRoot(rememberedRoot);
+        if(root.length() > 0)
+            return root;
+        root = normalizeWfwfRoot(webtoonUrl);
+        if(root.length() > 0)
+            return root;
+        root = normalizeWfwfRoot(defUrl);
+        if(root.length() > 0)
+            return root;
+        root = normalizeWfwfRoot(url);
+        return root.length() == 0 ? WEBTOON_URL : root;
     }
 
     public int getStartTab() {

@@ -68,7 +68,10 @@ public final class PerformanceMonitor {
     public static void phase(String phase) {
         if(current == null)
             return;
-        current.phase = safe(phase, "idle");
+        String nextPhase = safe(phase, "idle");
+        if(!nextPhase.equals(current.phase))
+            current.report("phase_change");
+        current.phase = nextPhase;
         current.reportIfDue();
     }
 

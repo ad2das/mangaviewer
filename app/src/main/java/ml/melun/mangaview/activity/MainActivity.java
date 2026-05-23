@@ -126,6 +126,7 @@ public class MainActivity extends AppCompatActivity
     StartupViewModel startupViewModel;
     UrlUpdateCallback pendingUrlUpdateCallback;
     private boolean ntkCaptchaCheckScheduled = false;
+    private boolean resumed = false;
     private long lastNtkCaptchaCheckAt = 0L;
     private final List<BroadcastReceiver> internalReceivers = new ArrayList<>();
     private static final int FIRST_TIME_ACTIVITY = 9;
@@ -379,7 +380,7 @@ public class MainActivity extends AppCompatActivity
         long checkStartedAt = PerfTrace.start("main_check2_ms");
         p.check2();
         PerfTrace.end("main_check2_ms", checkStartedAt);
-        ContinueReadinessCoordinator.primeColdStart(getApplicationContext());
+        refreshStartupDomainThenPrimeContinues();
         long setContentStartedAt = PerfTrace.start("main_set_content_view_ms");
         setContentView(R.layout.activity_main);
         PerfTrace.end("main_set_content_view_ms", setContentStartedAt);
@@ -551,6 +552,10 @@ public class MainActivity extends AppCompatActivity
         return 20_000L;
     }
 
+    static long startupWfwfDomainRefreshDelayMsForTest() {
+        return 8_000L;
+    }
+
     static long ntkCaptchaCheckMinIntervalMsForTest() {
         return 10_000L;
     }
@@ -564,6 +569,7 @@ public class MainActivity extends AppCompatActivity
     @Override
     protected void onResume() {
         super.onResume();
+        resumed = true;
         PerformanceMonitor.resume();
         AppUpdateManager.resumePendingInstall(this);
         invalidateOptionsMenu();
@@ -572,6 +578,7 @@ public class MainActivity extends AppCompatActivity
 
     @Override
     protected void onPause() {
+        resumed = false;
         PerformanceMonitor.pause();
         if(fragments[0] instanceof MainMain)
             ((MainMain) fragments[0]).cancelHomeFetches();
@@ -627,6 +634,45 @@ public class MainActivity extends AppCompatActivity
             boolean changed = getHttpClient().resolveNtkDomainNow();
             if(changed)
                 AppDispatchers.runOnMain(this::invalidateOptionsMenu);
+        });
+    }
+
+    private void refreshWfwfDomainIfNeeded() {
+        if(p == null || p.isNtkSite())
+            return;
+        AppDispatchers.runUserAction(() -> {
+            boolean changed = getHttpClient().resolveWfwfDomainNow();
+            if(changed)
+                AppDispatchers.runOnMain(() -> {
+                    invalidateOptionsMenu();
+                    if(fragments[0] instanceof MainMain) {
+                        UrlUpdateCallback callback = ((MainMain) fragments[0]).getCallback();
+                        if(callback != null)
+                            callback.callback(true);
+                    }
+                });
+        });
+    }
+
+    private void refreshStartupDomainThenPrimeContinues() {
+        Context appContext = getApplicationContext();
+        if(p == null) {
+            ContinueReadinessCoordinator.primeColdStart(appContext);
+            return;
+        }
+        if(!p.isNtkSite()) {
+            ContinueReadinessCoordinator.primeColdStart(appContext);
+            AppDispatchers.main().postDelayed(() -> {
+                if(resumed && p != null && !p.isNtkSite())
+                    refreshWfwfDomainIfNeeded();
+            }, startupWfwfDomainRefreshDelayMsForTest());
+            return;
+        }
+        AppDispatchers.runUserAction(() -> {
+            boolean changed = getHttpClient().resolveNtkDomainNow();
+            if(changed)
+                AppDispatchers.runOnMain(this::invalidateOptionsMenu);
+            ContinueReadinessCoordinator.primeColdStart(appContext);
         });
     }
 

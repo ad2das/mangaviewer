@@ -133,14 +133,16 @@ public class ViewerActivity extends AppCompatActivity {
     long lastBoundaryCheckMs = 0L;
     long suppressBoundaryLoadUntilMs = 0L;
     boolean suppressBoundaryLoadUntilUserScroll = false;
-    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 8;
+    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 24;
     private static final int NEXT_EPISODE_ATTACH_THRESHOLD = 22;
     private static final int DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD = 12;
+    private static final int NEXT_EPISODE_PREFETCH_CHAIN_DEPTH = 3;
+    private static final int DATA_SAVE_NEXT_EPISODE_PREFETCH_CHAIN_DEPTH = 1;
     private static final int PREVIOUS_EPISODE_PULL_THRESHOLD_DP = 36;
     private static final long SCROLL_BOOKMARK_SAVE_DELAY_MS = 350L;
     private static final long BOUNDARY_LOAD_IDLE_DELAY_MS = 450L;
-    private static final int BUSY_SCROLL_ANCHOR_MIN_ITEM_DELTA = 2;
-    private static final long BUSY_SCROLL_ANCHOR_MIN_INTERVAL_MS = 96L;
+    private static final int BUSY_SCROLL_ANCHOR_MIN_ITEM_DELTA = 4;
+    private static final long BUSY_SCROLL_ANCHOR_MIN_INTERVAL_MS = 180L;
     private boolean scrollBookmarkSavePending = false;
     final Runnable delayedScrollBookmarkSave = () -> {
         scrollBookmarkSavePending = false;
@@ -1353,8 +1355,11 @@ public class ViewerActivity extends AppCompatActivity {
                             ViewerWarmupManager.preloadLoadedImages(context, m, firstPage, width, autoCut,
                                     p.getReverse(), p.getDataSave() ? 3 : 6, Priority.IMMEDIATE, 1);
                         } else if(result == LOAD_OK) {
-                            result = ViewerWarmupManager.prepareFirstFrameReady(context, m, title, firstPage, width,
-                                    autoCut, p.getReverse(), cancellation, initialFirstFrameWaitMs());
+                            result = isExactLoadPolicy(policy)
+                                    ? ViewerWarmupManager.prepareFirstFrameBackgroundDirectOnly(context, m, title, firstPage,
+                                    width, autoCut, p.getReverse(), cancellation)
+                                    : ViewerWarmupManager.prepareFirstFrameReady(context, m, title, firstPage, width,
+                                    autoCut, p.getReverse(), cancellation, initialFirstFrameWaitMs(policy));
                         }
                         if(allowsResumeFallback(policy) && (isBlockingLoadFailure(result) || !hasLoadedImages(m))) {
                             result = ensureEpisodeListLoaded(m);
@@ -1393,8 +1398,15 @@ public class ViewerActivity extends AppCompatActivity {
             waitForTransientViewerImages();
             if(cancelled || cancellation.isCancelled())
                 return result;
+            Manga preparedImages = ViewerWarmupManager.usePreparedContinueImages(context, m, title, firstPage);
+            if(preparedImages != null && hasLoadedImages(preparedImages)) {
+                m = preparedImages;
+                preloadImmediateDisplayImages(m, policy);
+                ViewerWarmupManager.logMetric("viewer_empty_retry_snapshot_recovered", m.getId());
+                return LOAD_OK;
+            }
             int retry = ViewerWarmupManager.prepareFirstFrameReady(context, m, title, firstPage, width, autoCut,
-                    p.getReverse(), cancellation, initialFirstFrameWaitMs());
+                    p.getReverse(), cancellation, initialFirstFrameWaitMs(policy));
             if(retry == LOAD_OK || hasLoadedImages(m))
                 ViewerWarmupManager.logMetric("viewer_empty_retry_recovered", m.getId());
             if(isBlockingLoadFailure(retry) && hasLoadedImages(m)
@@ -1406,6 +1418,7 @@ public class ViewerActivity extends AppCompatActivity {
         private void waitForTransientViewerImages() {
             long deadline = SystemClock.elapsedRealtime() + transientEmptyFirstFrameRetryDelayMs();
             while(!cancelled && !cancellation.isCancelled() && !hasLoadedImages(m)
+                    && !ViewerWarmupManager.hasPreparedContinueSnapshot(context, m, title)
                     && SystemClock.elapsedRealtime() < deadline) {
                 try {
                     Thread.sleep(50L);
@@ -1528,8 +1541,11 @@ public class ViewerActivity extends AppCompatActivity {
         volatile boolean promotedToForeground = false;
         long startedAtMs;
 
-        PrefetchImagesJob(Manga target) {
+        int remainingChainDepth;
+
+        PrefetchImagesJob(Manga target, int remainingChainDepth) {
             this.target = target;
+            this.remainingChainDepth = Math.max(0, remainingChainDepth);
         }
 
         void start() {
@@ -1564,6 +1580,7 @@ public class ViewerActivity extends AppCompatActivity {
             preloadFirstPages(target);
             ViewerWarmupManager.cacheLoadedContinueSnapshot(context, target, target, title, 0, 0);
             ViewerWarmupManager.logMetric("viewer_next_episode_ready_ms", android.os.SystemClock.elapsedRealtime() - startedAtMs);
+            scheduleChainedNextEpisodePrefetch(target, remainingChainDepth);
             int attachThreshold = p.getDataSave() ? DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD : NEXT_EPISODE_ATTACH_THRESHOLD;
             if(!promotedToForeground
                     && stripAdapter != null
@@ -2607,6 +2624,10 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private void prefetchNextEpisode(Manga current) {
+        prefetchNextEpisode(current, nextEpisodePrefetchChainDepth(p.getDataSave()));
+    }
+
+    private void prefetchNextEpisode(Manga current, int chainDepth) {
         if(current == null || !current.isOnline())
             return;
         Manga target = nextEpisodeCandidate(current);
@@ -2631,8 +2652,21 @@ public class ViewerActivity extends AppCompatActivity {
             nextPrefetcher.cancel();
         nextPrefetchEpisodeId = target.getId();
         nextPrefetchBaseMode = target.getBaseMode();
-        nextPrefetcher = new PrefetchImagesJob(target);
+        nextPrefetcher = new PrefetchImagesJob(target, Math.max(0, chainDepth));
         nextPrefetcher.start();
+    }
+
+    private void scheduleChainedNextEpisodePrefetch(Manga prepared, int remainingDepth) {
+        if(remainingDepth <= 0 || prepared == null || !prepared.isOnline())
+            return;
+        Manga next = nextEpisodeCandidate(prepared);
+        if(next == null || MissingEpisodeNavigator.hasMissingNextEpisodeGap(prepared, next))
+            return;
+        mainHandler.postDelayed(() -> {
+            if(!isUiAlive() || nextPrefetcher != null)
+                return;
+            prefetchNextEpisode(prepared, remainingDepth - 1);
+        }, nextEpisodeChainPrefetchDelayMs());
     }
 
     private void scheduleNextEpisodePrefetch(Manga target) {
@@ -2646,11 +2680,23 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private static long initialNextEpisodePrefetchDelayMs() {
-        return 350L;
+        return 0L;
     }
 
     static long initialNextEpisodePrefetchDelayMsForTest() {
         return initialNextEpisodePrefetchDelayMs();
+    }
+
+    private static long nextEpisodeChainPrefetchDelayMs() {
+        return 80L;
+    }
+
+    static int nextEpisodePrefetchChainDepthForTest(boolean dataSave) {
+        return nextEpisodePrefetchChainDepth(dataSave);
+    }
+
+    private static int nextEpisodePrefetchChainDepth(boolean dataSave) {
+        return dataSave ? DATA_SAVE_NEXT_EPISODE_PREFETCH_CHAIN_DEPTH : NEXT_EPISODE_PREFETCH_CHAIN_DEPTH;
     }
 
     private static long transientEmptyFirstFrameRetryDelayMs() {
@@ -2749,7 +2795,9 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private static boolean shouldRecoverEmptyLoadResult(int result, boolean hasLoadedImages) {
-        return result == ViewerWarmupManager.LOAD_EMPTY_IMAGES && hasLoadedImages;
+        return hasLoadedImages
+                && (result == ViewerWarmupManager.LOAD_EMPTY_IMAGES
+                || result == ViewerWarmupManager.LOAD_FIRST_FRAME_PENDING);
     }
 
     private static boolean isBlockingLoadFailure(int result) {
@@ -2758,7 +2806,17 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private long initialFirstFrameWaitMs() {
-        return ViewerPreparationCoordinator.continueClickWaitMs(p != null && p.getDataSave());
+        return initialFirstFrameWaitMs(ViewerLoadPolicy.RESUME);
+    }
+
+    private long initialFirstFrameWaitMs(ViewerLoadPolicy policy) {
+        if(isExactLoadPolicy(policy))
+            return p != null && p.getDataSave() ? 120L : 180L;
+        return p != null && p.getDataSave() ? 180L : 260L;
+    }
+
+    private static boolean isExactLoadPolicy(ViewerLoadPolicy policy) {
+        return policy == ViewerLoadPolicy.EXACT || policy == ViewerLoadPolicy.EXACT_FIRST_PAGE;
     }
 
     static boolean shouldSkipBackgroundNextEpisodeFetchForTest(String sourceSite, boolean ntkPreference, boolean ntkClient, boolean hasLoadedImages) {
@@ -2790,11 +2848,11 @@ public class ViewerActivity extends AppCompatActivity {
     private static int viewerItemViewCacheSize(String sourceSite, boolean dataSave) {
         if(dataSave)
             return 12;
-        return "wfwf".equalsIgnoreCase(sourceSite == null ? "" : sourceSite.trim()) ? 28 : 32;
+        return "wfwf".equalsIgnoreCase(sourceSite == null ? "" : sourceSite.trim()) ? 36 : 40;
     }
 
     private static int viewerInitialPrefetchItemCount(boolean dataSave) {
-        return dataSave ? 4 : 8;
+        return dataSave ? 4 : 12;
     }
 
     private boolean needsFullEpisodeList(Title currentTitle, Manga target) {
@@ -2802,11 +2860,22 @@ public class ViewerActivity extends AppCompatActivity {
         List<Manga> targetEpisodes = target == null ? null : Utils.snapshotEpisodes(target);
         int titleCount = titleEpisodes == null ? 0 : titleEpisodes.size();
         int targetCount = targetEpisodes == null ? 0 : targetEpisodes.size();
+        if(canFetchWfwfProgressEpisodeDirectly(target))
+            return false;
         if(needsConcreteWfwfEpisodeList(currentTitle, target))
             return true;
         if(needsResolvedNtkEpisodePath(target))
             return true;
         return !containsEpisode(titleEpisodes, target) || Math.max(titleCount, targetCount) <= 3;
+    }
+
+    private boolean canFetchWfwfProgressEpisodeDirectly(Manga target) {
+        return target != null
+                && target.isOnline()
+                && isWfwfEpisode(target)
+                && target.getTitleId() > 0
+                && target.getId() > 0
+                && Manga.visibleEpisodeNumberKey(target.getName()).length() == 0;
     }
 
     private boolean needsConcreteWfwfEpisodeList(Title currentTitle, Manga target) {
@@ -2999,9 +3068,9 @@ public class ViewerActivity extends AppCompatActivity {
     private void runStripMutationWhenReady(Runnable mutation, int attempts) {
         if(strip == null || isFinishing())
             return;
-        if(strip.isComputingLayout()) {
-            if(attempts < 20)
-                strip.postDelayed(() -> runStripMutationWhenReady(mutation, attempts + 1), 50);
+        if(strip.isComputingLayout() || strip.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
+            if(attempts < 40)
+                strip.postDelayed(() -> runStripMutationWhenReady(mutation, attempts + 1), 32);
             return;
         }
         mutation.run();

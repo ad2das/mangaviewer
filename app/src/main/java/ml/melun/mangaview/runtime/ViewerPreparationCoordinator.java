@@ -115,9 +115,11 @@ public final class ViewerPreparationCoordinator {
             if(result == LOAD_CAPTCHA)
                 return PreparedViewerLaunch.failed(PreparedViewerLaunch.Status.CAPTCHA, result);
             lastResult = result;
-            if(result == LOAD_OK) {
+            if(result == LOAD_OK || shouldLaunchLoadedCandidate(result, candidate, context)) {
                 if(!ViewerResumeResolver.sameManga(candidate, target))
                     ViewerWarmupManager.logMetric("viewer_resume_episode_fallback", candidate.getId());
+                if(result == ViewerWarmupManager.LOAD_FIRST_FRAME_PENDING)
+                    ViewerWarmupManager.logMetric("viewer_resume_pending_urls_ready", candidate.getId());
                 return PreparedViewerLaunch.ready(candidate, currentTitle != null ? currentTitle : candidate.getTitle());
             }
         }
@@ -180,5 +182,20 @@ public final class ViewerPreparationCoordinator {
                 manga.setEps(episodes);
         }
         return currentTitle;
+    }
+
+    private static boolean hasLoadedImages(Manga manga, Context context) {
+        try {
+            List<String> images = MangaRepository.imageUrls(manga, context);
+            return images != null && images.size() > 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static boolean shouldLaunchLoadedCandidate(int result, Manga manga, Context context) {
+        return (result == ViewerWarmupManager.LOAD_FIRST_FRAME_PENDING
+                || result == ViewerWarmupManager.LOAD_EMPTY_IMAGES)
+                && hasLoadedImages(manga, context);
     }
 }

@@ -7,8 +7,8 @@ import static org.junit.Assert.assertEquals;
 public class ContinueReadinessCoordinatorTest {
     @Test
     public void coldStartPrimesMultipleVisibleContinuesWhenDataSaveIsOff() {
-        assertEquals(3, ContinueReadinessCoordinator.coldStartLimitForTest(false));
-        assertEquals(2, ContinueReadinessCoordinator.coldStartLimitForTest(true));
+        assertEquals(1, ContinueReadinessCoordinator.coldStartLimitForTest(false));
+        assertEquals(1, ContinueReadinessCoordinator.coldStartLimitForTest(true));
     }
 
     @Test

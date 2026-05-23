@@ -1576,7 +1576,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(manga != null) {
                 if(!markContinueOpen(item))
                     return;
-                ContinueReadinessCoordinator.primeImmediate(context, manga, item);
                 Utils.openContinueViewer(context, manga, -1);
             } else {
                 listener.clickedTitle(item);
@@ -1764,6 +1763,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         for(Title item : titles) {
             if(item == null || item.getId() <= 0)
                 continue;
+            if(!sourceMatchesCurrentSite(item))
+                continue;
             Manga manga = resolveContinueMangaForWarmup(item);
             if(manga == null)
                 continue;
@@ -1782,6 +1783,16 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(warmed >= limit)
                 return;
         }
+    }
+
+    private boolean sourceMatchesCurrentSite(Title item) {
+        if(p == null || item == null)
+            return true;
+        String source = item.getSourceSite();
+        if(source == null || source.length() == 0)
+            source = p.resolveSourceSite(item);
+        boolean ntk = "ntk".equals(source);
+        return p.isNtkSite() == ntk;
     }
 
     private void trimVisibleContinueWarmups() {

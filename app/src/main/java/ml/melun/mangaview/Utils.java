@@ -314,15 +314,21 @@ public class Utils {
                     launchTitle != null ? launchTitle : immediate.getTitle(), includeTitleEpisodes, launchToken, exactEpisode);
             return;
         }
-        if(exactEpisode) {
-            if(shouldWaitForExactFirstFrame(launchTitle)) {
-                launchExactWhenFirstFrameReady(context, manga, code, returnToEpisodes, online, recent,
-                        launchTitle, includeTitleEpisodes, launchToken);
+        if(!exactEpisode) {
+            int firstPage = manga.useBookmark() && p != null ? p.getViewerBookmark(manga) : 0;
+            Manga preparedImages = ViewerWarmupManager.usePreparedContinueImages(context, manga, launchTitle, firstPage);
+            if(preparedImages != null) {
+                ViewerWarmupManager.warmupUserSelectedContinue(context, preparedImages, launchTitle);
+                launchPreparedViewer(context, preparedImages, code, returnToEpisodes, online, recent,
+                        launchTitle != null ? launchTitle : preparedImages.getTitle(), includeTitleEpisodes,
+                        launchToken, false);
                 return;
             }
-            if(ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunch(launchTitle))
-                ViewerWarmupManager.warmup(context, manga, launchTitle, 0);
+        }
+        if(exactEpisode) {
+            ViewerWarmupManager.warmupUserSelectedEpisode(context, manga, launchTitle, 0);
         } else if(waitForFirstFrame) {
+            ViewerWarmupManager.prioritizeUserSelectedContinue();
             launchWhenFirstFrameReady(context, manga, code, returnToEpisodes, online, recent,
                     launchTitle, includeTitleEpisodes, launchToken);
             return;
@@ -436,7 +442,7 @@ public class Utils {
             AppDispatchers.main().postDelayed(() -> launchPreparedViewer(context, manga, code, returnToEpisodes,
                             online, recent, title, includeTitleEpisodes, launchToken, false),
                     continueLaunchFallbackMs(title));
-        AppDispatchers.submitNavigation(() -> {
+        AppDispatchers.submitUserAction(() -> {
             PreparedViewerLaunch prepared = ViewerPreparationCoordinator.prepareContinue(appContext, manga, title,
                     false, p.getReverse(), MangaRepository.cancellation());
             if(!prepared.canLaunch() && shouldBlockUnpreparedContinueFallback(manga)) {

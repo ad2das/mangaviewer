@@ -80,9 +80,9 @@ public class EpisodeActivity extends AppCompatActivity {
     private static final long VIEWER_PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final long VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS = 360L;
     private static final long EPISODE_REFRESH_AFTER_CACHE_PROBE_MS = 160L;
-    private static final long INITIAL_VIEWER_TARGET_WARMUP_DELAY_MS = 520L;
-    private static final long INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 620L;
-    private static final long NTK_INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 950L;
+    private static final long INITIAL_VIEWER_TARGET_WARMUP_DELAY_MS = 0L;
+    private static final long INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 80L;
+    private static final long NTK_INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 100L;
     private static final long MAX_EPISODE_CACHE_FILE_BYTES = 2 * 1024 * 1024L;
     private static final int MEMORY_CACHE_MAIN_THREAD_PARSE_MAX_CHARS = 16 * 1024;
     private static final int VISIBLE_EPISODE_WARMUP_AHEAD = 2;
@@ -434,6 +434,10 @@ public class EpisodeActivity extends AppCompatActivity {
                 openViewer(selected,0, true);
             }
             @Override
+            public void onItemPress(int position, Manga selected) {
+                warmupUserSelectedEpisode(selected);
+            }
+            @Override
             public void onStarClick(){
                 toggleFavorite();
             }
@@ -578,8 +582,8 @@ public class EpisodeActivity extends AppCompatActivity {
         if(dataSave)
             return 1;
         if(ntkSite)
-            return 1;
-        return 1;
+            return aggressiveAllowed ? 3 : 2;
+        return aggressiveAllowed ? 4 : 3;
     }
 
     static long visibleEpisodeWarmupIdleDelayMsForTest() {
@@ -604,6 +608,12 @@ public class EpisodeActivity extends AppCompatActivity {
 
     private void warmupLikelyNtkViewerPage() {
         Manga target = quickReadEpisode();
+        if(target == null)
+            return;
+        target.setMode(mode);
+        target.setTitle(title);
+        target.setTitleId(title == null ? target.getTitleId() : title.getId());
+        ViewerWarmupManager.warmupUserSelectedEpisode(context, target, title, 0);
         if(!shouldDirectWarmupNtkViewerPageForTest(p.isNtkSite(), getHttpClient().isNtk(), target == null ? null : target.getNtkEpisodePath()))
             return;
         String path = target.getNtkEpisodePath();
@@ -1351,9 +1361,20 @@ public class EpisodeActivity extends AppCompatActivity {
         manga.setMode(mode);
         manga.setTitle(title);
         manga.setTitleId(title == null ? manga.getTitleId() : title.getId());
+        if(exactEpisode)
+            warmupUserSelectedEpisode(manga);
         if(!exactEpisode && getHttpClient().isNtk())
             ViewerWarmupManager.warmup(context, manga, title);
         openViewerPrepared(context, manga, code, false, online, true, title, !manga.isOnline(), exactEpisode);
+    }
+
+    private void warmupUserSelectedEpisode(Manga manga) {
+        if(!online || manga == null || title == null)
+            return;
+        manga.setMode(mode);
+        manga.setTitle(title);
+        manga.setTitleId(title.getId());
+        ViewerWarmupManager.warmupUserSelectedEpisode(context, manga, title, 0);
     }
 
     private boolean shouldRefreshEpisodesAfterCache(boolean renderedCachedEpisodes) {

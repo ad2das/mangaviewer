@@ -64,10 +64,10 @@ public class ViewerActivityTest {
 
     @Test
     public void wfwfViewerKeepsExtraRowsReadyWithoutDataSaver() {
-        assertEquals(28, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", false));
-        assertEquals(32, ViewerActivity.viewerItemViewCacheSizeForTest("ntk", false));
+        assertEquals(36, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", false));
+        assertEquals(40, ViewerActivity.viewerItemViewCacheSizeForTest("ntk", false));
         assertEquals(12, ViewerActivity.viewerItemViewCacheSizeForTest("wfwf", true));
-        assertEquals(8, ViewerActivity.viewerInitialPrefetchItemCountForTest(false));
+        assertEquals(12, ViewerActivity.viewerInitialPrefetchItemCountForTest(false));
     }
 
     @Test
@@ -80,6 +80,7 @@ public class ViewerActivityTest {
     @Test
     public void emptyLoadResultIsRecoveredWhenImagesArrivedBeforeFinish() {
         assertTrue(ViewerActivity.shouldRecoverEmptyLoadResultForTest(ViewerWarmupManager.LOAD_EMPTY_IMAGES, true));
+        assertTrue(ViewerActivity.shouldRecoverEmptyLoadResultForTest(ViewerWarmupManager.LOAD_FIRST_FRAME_PENDING, true));
         assertFalse(ViewerActivity.shouldRecoverEmptyLoadResultForTest(ViewerWarmupManager.LOAD_EMPTY_IMAGES, false));
         assertFalse(ViewerActivity.shouldRecoverEmptyLoadResultForTest(0, true));
     }
@@ -100,13 +101,18 @@ public class ViewerActivityTest {
 
     @Test
     public void initialViewerPreloadBudgetStaysConservative() {
-        assertTrue(ViewerActivity.initialPreloadAheadCountForTest() <= 12);
+        assertTrue(ViewerActivity.initialPreloadAheadCountForTest() >= 24);
     }
 
     @Test
-    public void nextEpisodePrefetchStartsSoonAfterInitialFrameSettles() {
-        assertTrue(ViewerActivity.initialNextEpisodePrefetchDelayMsForTest() >= 250L);
-        assertTrue(ViewerActivity.initialNextEpisodePrefetchDelayMsForTest() <= 500L);
+    public void nextEpisodePrefetchStartsImmediatelyForFastFling() {
+        assertEquals(0L, ViewerActivity.initialNextEpisodePrefetchDelayMsForTest());
+    }
+
+    @Test
+    public void nextEpisodePrefetchChainsAcrossShortChapters() {
+        assertTrue(ViewerActivity.nextEpisodePrefetchChainDepthForTest(false) >= 3);
+        assertTrue(ViewerActivity.nextEpisodePrefetchChainDepthForTest(true) >= 1);
     }
 
     @Test
@@ -156,8 +162,10 @@ public class ViewerActivityTest {
     public void busyScrollAnchorDispatchIsThrottledWithoutCappingFling() {
         assertTrue(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(RecyclerView.NO_POSITION, 10, 0L));
         assertFalse(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(10, 11, 20L));
-        assertTrue(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(10, 12, 20L));
-        assertTrue(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(10, 11, 120L));
+        assertFalse(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(10, 12, 20L));
+        assertTrue(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(10, 14, 20L));
+        assertFalse(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(10, 11, 120L));
+        assertTrue(ViewerActivity.shouldDispatchBusyScrollAnchorForTest(10, 11, 180L));
     }
 
     @Test

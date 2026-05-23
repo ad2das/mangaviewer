@@ -17,8 +17,8 @@ import ml.melun.mangaview.mangaview.Title;
 import static ml.melun.mangaview.MainApplication.p;
 
 public final class ContinueReadinessCoordinator {
-    private static final int COLD_START_LIMIT = 3;
-    private static final int DATA_SAVE_COLD_START_LIMIT = 2;
+    private static final int COLD_START_LIMIT = 1;
+    private static final int DATA_SAVE_COLD_START_LIMIT = 1;
     private static final long SUBMIT_DEDUPE_MS = 2000L;
     private static final int SUBMITTED_LIMIT = 160;
     private static final Map<String, Long> submitted = new LinkedHashMap<>(64, 0.75f, true);
@@ -55,6 +55,8 @@ public final class ContinueReadinessCoordinator {
             Manga manga = resumeManga(title);
             if(manga == null)
                 continue;
+            if(!sourceMatchesCurrentSite(title))
+                continue;
             primeVisible(context, manga, title);
             primed++;
             if(primed >= limit)
@@ -65,11 +67,11 @@ public final class ContinueReadinessCoordinator {
     }
 
     public static void primeVisible(Context context, Manga manga, Title title) {
-        prime(context, manga, title, true);
+        prime(context, manga, title, true, false);
     }
 
     public static void primeImmediate(Context context, Manga manga, Title title) {
-        prime(context, manga, title, false);
+        prime(context, manga, title, false, true);
     }
 
     public static boolean isFirstFrameReady(Context context, Manga manga, Title title) {
@@ -89,7 +91,7 @@ public final class ContinueReadinessCoordinator {
         return State.UNSEEN;
     }
 
-    private static void prime(Context context, Manga manga, Title title, boolean visible) {
+    private static void prime(Context context, Manga manga, Title title, boolean visible, boolean force) {
         if(context == null || manga == null || !manga.isOnline())
             return;
         if(title != null) {
@@ -109,10 +111,14 @@ public final class ContinueReadinessCoordinator {
             return;
         }
         String key = submitKey(manga, title);
-        if(!markSubmitted(key, SystemClock.uptimeMillis()))
+        if(!force && !markSubmitted(key, SystemClock.uptimeMillis()))
             return;
+        if(force)
+            markSubmitted(key, SystemClock.uptimeMillis());
         if(visible)
             ViewerWarmupManager.warmupVisibleContinue(context, manga, title);
+        else if(force)
+            ViewerWarmupManager.warmupUserSelectedContinue(context, manga, title);
         else
             ViewerWarmupManager.warmupContinueImmediate(context, manga, title);
     }
@@ -160,6 +166,16 @@ public final class ContinueReadinessCoordinator {
         if(page < 0)
             page = 0;
         return source + ":" + manga.getBaseMode() + ":" + titleId + ":" + manga.getId() + ":" + page;
+    }
+
+    private static boolean sourceMatchesCurrentSite(Title title) {
+        if(p == null)
+            return true;
+        String source = title == null ? "" : title.getSourceSite();
+        if(source == null || source.length() == 0)
+            return true;
+        boolean ntk = "ntk".equals(source.trim().toLowerCase(Locale.ROOT));
+        return p.isNtkSite() == ntk;
     }
 
     static int coldStartLimitForTest(boolean dataSave) {

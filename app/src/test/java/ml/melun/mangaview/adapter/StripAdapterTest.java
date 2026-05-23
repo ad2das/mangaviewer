@@ -91,10 +91,10 @@ public class StripAdapterTest {
     }
 
     @Test
-    public void preloadBudgetsStayConservative() {
-        assertTrue(StripAdapter.preloadAheadCountForTest() <= 12);
-        assertTrue(StripAdapter.initialPreloadAheadCountForTest() <= 12);
-        assertTrue(StripAdapter.decodedPreloadActiveLimitForTest() <= 6);
+    public void preloadBudgetsCoverOneFastFling() {
+        assertTrue(StripAdapter.preloadAheadCountForTest() >= 24);
+        assertTrue(StripAdapter.initialPreloadAheadCountForTest() >= 24);
+        assertTrue(StripAdapter.decodedPreloadActiveLimitForTest() >= 16);
         assertTrue(StripAdapter.scrollIdlePreloadDelayMsForTest() <= 100L);
         assertTrue(StripAdapter.scrollIdleHeightCorrectionDelayMsForTest()
                 >= StripAdapter.scrollIdlePreloadDelayMsForTest());
@@ -104,7 +104,9 @@ public class StripAdapterTest {
     public void busyScrollPreloadIsThrottledDuringFastFling() {
         assertTrue(StripAdapter.shouldRunBusyPreloadForTest(-1, 10, 0L));
         assertFalse(StripAdapter.shouldRunBusyPreloadForTest(10, 11, 20L));
-        assertTrue(StripAdapter.shouldRunBusyPreloadForTest(10, 12, 20L));
-        assertTrue(StripAdapter.shouldRunBusyPreloadForTest(10, 11, 120L));
+        assertFalse(StripAdapter.shouldRunBusyPreloadForTest(10, 12, 20L));
+        assertTrue(StripAdapter.shouldRunBusyPreloadForTest(10, 14, 20L));
+        assertFalse(StripAdapter.shouldRunBusyPreloadForTest(10, 11, 120L));
+        assertTrue(StripAdapter.shouldRunBusyPreloadForTest(10, 11, 180L));
     }
 }

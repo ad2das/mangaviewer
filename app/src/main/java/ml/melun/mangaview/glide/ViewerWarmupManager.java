@@ -56,8 +56,8 @@ public class ViewerWarmupManager {
     public static final int LOAD_FIRST_FRAME_PENDING = -3;
     private static final String TAG = "ViewerPerf";
     private static final int ACTIVE_LIMIT = 36;
-    private static final int DECODED_TARGET_LIMIT = 48;
-    private static final int DECODED_TARGET_ACTIVE_SOFT_LIMIT = 6;
+    private static final int DECODED_TARGET_LIMIT = 72;
+    private static final int DECODED_TARGET_ACTIVE_SOFT_LIMIT = 16;
     private static final long FIRST_PAGE_BLOCKING_DECODE_TIMEOUT_MS = 650L;
     private static final long OTHER_PAGE_BLOCKING_DECODE_TIMEOUT_MS = 250L;
     private static final int SNAPSHOT_LIMIT = 64;
@@ -78,6 +78,7 @@ public class ViewerWarmupManager {
     private static final LinkedHashMap<String, Long> recentContinueWarmups = new LinkedHashMap<>(SNAPSHOT_LIMIT, 0.75f, true);
     private static final LinkedHashMap<String, Long> recentPagePreloads = new LinkedHashMap<>(PAGE_PRELOAD_DEDUPE_LIMIT, 0.75f, true);
     private static final Map<String, CustomTarget<Bitmap>> decodedTargets = new HashMap<>();
+    private static final List<AppDispatchers.TaskHandle> visibleContinueWarmupHandles = new ArrayList<>();
     private static volatile long suppressVisibleContinueWarmupsUntilMs = 0L;
     private static volatile boolean suppressVisibleContinueWarmupsWhileViewerActive = false;
     private static final LruCache<String, CachedBitmap> decodedBitmapCache = new LruCache<String, CachedBitmap>(decodedCacheSizeKb()) {
@@ -111,6 +112,87 @@ public class ViewerWarmupManager {
 
     public static void warmupEntry(Context context, Manga manga, Title title, int pageIndex) {
         warmup(context, manga, title, pageIndex, ViewerPreloadPolicy.episodeEntryWarmupWindow(p.getDataSave()));
+    }
+
+    public static void warmupUserSelectedEpisode(Context context, Manga manga, Title title, int pageIndex) {
+        if(context == null || manga == null || !manga.isOnline())
+            return;
+        if(shouldSkipOnlineWarmup(!hasNetworkConnection(context), manga.isOnline()))
+            return;
+        if(title != null) {
+            manga.setTitle(title);
+            manga.setTitleId(title.getId());
+        } else {
+            title = manga.getTitle();
+        }
+        if(!sourceMatchesCurrentSite(title))
+            return;
+        Context appContext = context.getApplicationContext();
+        Title warmupTitle = title;
+        int width = viewerWidth(context);
+        int startPage = Math.max(0, pageIndex);
+        String warmupSource = warmupTitle == null ? null : warmupTitle.getSourceSite();
+        String snapshotKey = episodeKey(manga, warmupTitle);
+        String continueKey = continueWarmupKey(manga, warmupTitle, startPage);
+        boolean dataSave = p != null && p.getDataSave();
+        boolean reverse = p != null && p.getReverse();
+        ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.immediateDisplayWindow(dataSave);
+        AppDispatchers.submitUserAction(() -> {
+            try {
+                runDirectOnlyWarmup(warmupSource, () -> {
+                    int result = prepareFirstFrame(appContext, manga, warmupTitle, startPage, width, false,
+                            reverse, MangaRepository.cancellation(), false);
+                    if(result == LOAD_OK && hasImages(manga, appContext)) {
+                        cacheSnapshot(appContext, snapshotKey, manga);
+                        cacheContinueSnapshot(appContext, continueKey, manga);
+                        preloadLoadedImages(appContext, manga, startPage, width, false, reverse,
+                                window.totalLimit, Priority.IMMEDIATE, window.decodedLimit);
+                        waitForFirstDecodedFrame(appContext, manga, startPage, width, false, reverse,
+                                userSelectedFirstFrameWaitMs(dataSave));
+                        logMetric("viewer_user_selected_warmup_ready", manga.getId());
+                    }
+                    return result;
+                });
+            } catch (Exception e) {
+                ml.melun.mangaview.report.CrashReporter.record(e);
+            }
+        });
+    }
+
+    public static void warmupUserSelectedContinue(Context context, Manga manga, Title title) {
+        if(context == null || manga == null || !manga.isOnline())
+            return;
+        if(title != null) {
+            manga.setTitle(title);
+            manga.setTitleId(title.getId());
+        } else {
+            title = manga.getTitle();
+        }
+        if(!shouldWarmupContinueForSite(title, true))
+            return;
+        Context appContext = context.getApplicationContext();
+        Title warmupTitle = title;
+        int firstPage = manga.useBookmark() && p != null ? p.getViewerBookmark(manga) : 0;
+        if(firstPage < 0)
+            firstPage = 0;
+        String scheduleKey = "user:" + continueWarmupKey(manga, warmupTitle, firstPage);
+        if(!shouldScheduleContinueWarmup(scheduleKey))
+            return;
+        prioritizeUserSelectedContinue();
+        AppDispatchers.submitUserAction(() -> {
+            Manga prepared = prepareClickFirstFrame(appContext, manga, warmupTitle, false,
+                    p != null && p.getReverse(), MangaRepository.cancellation());
+            if(prepared != null)
+                logMetric("viewer_user_continue_warmup_ready", prepared.getId());
+        });
+    }
+
+    static long userSelectedFirstFrameWaitMsForTest(boolean dataSave) {
+        return userSelectedFirstFrameWaitMs(dataSave);
+    }
+
+    private static long userSelectedFirstFrameWaitMs(boolean dataSave) {
+        return dataSave ? 260L : 420L;
     }
 
     private static void warmup(Context context, Manga manga, Title title, int pageIndex, ViewerPreloadPolicy.Window window) {
@@ -199,6 +281,11 @@ public class ViewerWarmupManager {
         suppressVisibleContinueWarmupsWhileViewerActive = active;
     }
 
+    public static void prioritizeUserSelectedContinue() {
+        suppressVisibleContinueWarmups(10_000L);
+        logMetric("viewer_user_continue_priority", 1);
+    }
+
     public static void warmupSavedContinues(Context context, int limit) {
         if(context == null || p == null)
             return;
@@ -269,27 +356,36 @@ public class ViewerWarmupManager {
                 : null;
         Runnable warmupWork = () -> {
             try {
-                if(visibleResume && shouldSuppressVisibleContinueWarmup(SystemClock.uptimeMillis(),
-                        suppressVisibleContinueWarmupsUntilMs, suppressVisibleContinueWarmupsWhileViewerActive))
+                if(visibleResume && isVisibleContinueWarmupSuppressed())
                     return;
                 Manga snapshot = continueSnapshotMangaWithPageFallback(appContext, manga, warmupTitle, startPage, manga);
                 if(snapshot != null && hasImages(snapshot, appContext)) {
                     if(warmupTitle != null)
                         attachTitle(warmupTitle, snapshot);
+                    cacheContinueSnapshot(appContext, scheduleKey, snapshot);
+                    if(visibleResume && isVisibleContinueWarmupSuppressed())
+                        return;
                     preloadLoadedImages(appContext, snapshot, startPage, width, false, p.getReverse(),
                             continueWarmupDiskLimit(visibleWindow), Priority.IMMEDIATE,
                             continueWarmupDecodedLimit(visibleWindow));
                     waitForContinueFirstFrame(appContext, snapshot, startPage, width, false, p.getReverse(),
                             visibleResume || immediate);
-                    cacheContinueSnapshot(appContext, scheduleKey, snapshot);
                     logMetric(visibleResume ? "viewer_resume_visible_warmup_ready" : "viewer_continue_warmup_ready", snapshot.getId());
                     return;
                 }
+                if(visibleResume && isVisibleContinueWarmupSuppressed())
+                    return;
                 runDirectOnlyWarmup(warmupSource, () -> {
+                    if(visibleResume && isVisibleContinueWarmupSuppressed())
+                        return false;
                     Manga target = manga;
                     Title currentTitle = warmupTitle != null ? warmupTitle : target.getTitle();
                     if(currentTitle != null && Utils.snapshotEpisodes(currentTitle).size() <= 1) {
+                        if(visibleResume && isVisibleContinueWarmupSuppressed())
+                            return false;
                         int result = MangaRepository.fetchEpisodes(currentTitle);
+                        if(visibleResume && isVisibleContinueWarmupSuppressed())
+                            return false;
                         if(result == LOAD_OK)
                             attachTitle(currentTitle, target);
                     }
@@ -298,15 +394,21 @@ public class ViewerWarmupManager {
                     if(candidates.size() == 0 && ViewerResumeResolver.shouldUseTargetAsLastResort(target, currentTitle))
                         candidates.add(target);
                     for(Manga candidate : candidates) {
+                        if(visibleResume && isVisibleContinueWarmupSuppressed())
+                            return false;
                         int page = ViewerResumeResolver.sameManga(candidate, target) ? startPage : 0;
                         int result = prepareFirstFrame(appContext, candidate, currentTitle, page, width, false, p.getReverse(), MangaRepository.cancellation(), false);
+                        if(visibleResume && isVisibleContinueWarmupSuppressed())
+                            return false;
                         if(result == LOAD_OK && hasImages(candidate, appContext)) {
+                            cacheContinueSnapshot(appContext, scheduleKey, candidate);
+                            if(visibleResume && isVisibleContinueWarmupSuppressed())
+                                return false;
                             int diskLimit = continueWarmupDiskLimit(visibleWindow);
                             int decodedLimit = continueWarmupDecodedLimit(visibleWindow);
                             preloadLoadedImages(appContext, candidate, page, width, false, p.getReverse(), diskLimit, Priority.IMMEDIATE, decodedLimit);
                             waitForContinueFirstFrame(appContext, candidate, page, width, false, p.getReverse(),
                                     visibleResume || immediate);
-                            cacheContinueSnapshot(appContext, scheduleKey, candidate);
                             logMetric(visibleResume ? "viewer_resume_visible_warmup_ready" : "viewer_continue_warmup_ready", candidate.getId());
                             return true;
                         }
@@ -314,12 +416,17 @@ public class ViewerWarmupManager {
                     return false;
                 });
             } catch (Exception e) {
-                ml.melun.mangaview.report.CrashReporter.record(e);
+                if(!visibleResume || !isVisibleContinueWarmupSuppressed())
+                    ml.melun.mangaview.report.CrashReporter.record(e);
+            } finally {
+                pruneVisibleContinueWarmupHandles();
             }
         };
-        if(visibleResume || immediate)
-            AppDispatchers.submitIo(warmupWork);
-        else
+        if(visibleResume || immediate) {
+            AppDispatchers.TaskHandle handle = AppDispatchers.submitIo(warmupWork);
+            if(visibleResume)
+                trackVisibleContinueWarmup(handle);
+        } else
             AppDispatchers.submitImageWarmup(warmupWork);
     }
 
@@ -501,6 +608,31 @@ public class ViewerWarmupManager {
 
     public static Manga usePreparedFirstFrame(Context context, Manga manga, Title title, boolean autoCut, boolean reverse, int firstPage) {
         return usePreparedFirstFrame(context, manga, title, autoCut, reverse, firstPage, false);
+    }
+
+    public static Manga usePreparedContinueImages(Context context, Manga manga, Title title, int firstPage) {
+        if(context == null || manga == null)
+            return null;
+        if(!manga.isOnline())
+            return manga;
+        if(title != null) {
+            manga.setTitle(title);
+            manga.setTitleId(title.getId());
+            List<Manga> episodes = Utils.snapshotEpisodes(title);
+            if(episodes.size() > 0)
+                manga.setEps(episodes);
+        } else {
+            title = manga.getTitle();
+        }
+        if(firstPage < 0)
+            firstPage = 0;
+        Manga warmed = continueSnapshotMangaWithPageFallback(context, manga, title, firstPage, manga);
+        if(warmed != null && hasImages(warmed, context)) {
+            if(title != null)
+                attachTitle(title, warmed);
+            return warmed;
+        }
+        return hasImages(manga, context) ? manga : null;
     }
 
     private static Manga usePreparedFirstFrame(Context context, Manga manga, Title title, boolean autoCut, boolean reverse,
@@ -1000,6 +1132,48 @@ public class ViewerWarmupManager {
         return viewerActive || now < suppressUntil;
     }
 
+    private static boolean isVisibleContinueWarmupSuppressed() {
+        return shouldSuppressVisibleContinueWarmup(SystemClock.uptimeMillis(),
+                suppressVisibleContinueWarmupsUntilMs,
+                suppressVisibleContinueWarmupsWhileViewerActive);
+    }
+
+    private static void trackVisibleContinueWarmup(AppDispatchers.TaskHandle handle) {
+        if(handle == null)
+            return;
+        synchronized (visibleContinueWarmupHandles) {
+            pruneVisibleContinueWarmupHandlesLocked();
+            visibleContinueWarmupHandles.add(handle);
+        }
+        if(suppressVisibleContinueWarmupsWhileViewerActive)
+            cancelVisibleContinueWarmups();
+    }
+
+    private static void cancelVisibleContinueWarmups() {
+        synchronized (visibleContinueWarmupHandles) {
+            for(AppDispatchers.TaskHandle handle : visibleContinueWarmupHandles) {
+                if(handle != null && !handle.isDone())
+                    handle.cancel();
+            }
+            visibleContinueWarmupHandles.clear();
+        }
+    }
+
+    private static void pruneVisibleContinueWarmupHandles() {
+        synchronized (visibleContinueWarmupHandles) {
+            pruneVisibleContinueWarmupHandlesLocked();
+        }
+    }
+
+    private static void pruneVisibleContinueWarmupHandlesLocked() {
+        Iterator<AppDispatchers.TaskHandle> iterator = visibleContinueWarmupHandles.iterator();
+        while(iterator.hasNext()) {
+            AppDispatchers.TaskHandle handle = iterator.next();
+            if(handle == null || handle.isDone())
+                iterator.remove();
+        }
+    }
+
     private static boolean decodeFirstPagesBlocking(Context context, Manga manga, int pageIndex, int width, boolean autoCut, boolean reverse) {
         List<String> images = manga == null ? null : manga.getImgs(context);
         if(context == null || manga == null || images == null || images.size() == 0)
@@ -1310,10 +1484,14 @@ public class ViewerWarmupManager {
 
     private static String[] sourceSitePresetForWarmup(String sourceSite) {
         String normalized = sourceSite == null ? "" : sourceSite.trim().toLowerCase(Locale.ROOT);
-        if("ntk".equals(normalized))
-            return new String[]{CustomHttpClient.NTK_COMIC_URL, CustomHttpClient.NTK_WEBTOON_URL};
-        if("wfwf".equals(normalized))
-            return new String[]{CustomHttpClient.DEFAULT_COMIC_URL, CustomHttpClient.WEBTOON_URL};
+        if("ntk".equals(normalized)) {
+            String root = p == null ? CustomHttpClient.NTK_WEBTOON_URL : p.getNtkResolvedRoot();
+            return new String[]{root + "/manhwa", root};
+        }
+        if("wfwf".equals(normalized)) {
+            String root = p == null ? CustomHttpClient.WEBTOON_URL : p.getWfwfResolvedRoot();
+            return new String[]{root + "/cm", root};
+        }
         return null;
     }
 
