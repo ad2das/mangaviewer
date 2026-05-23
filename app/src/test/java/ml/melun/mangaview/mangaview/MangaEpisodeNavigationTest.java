@@ -203,6 +203,32 @@ public class MangaEpisodeNavigationTest {
     }
 
     @Test
+    public void wfwfHyphenPartEpisodeKeepsIdentityAndSequentialNextEpisode() {
+        Title title = new Title("마왕의 딸은 너무 착해!!", "", "", new ArrayList<>(), "", 10001, MTitle.base_comic);
+        title.setSourceSite("wfwf");
+        Manga elevenTwo = wfwfEpisode(title, 20, "마왕의 딸은 너무 착해!! 11-2화");
+        Manga second = wfwfEpisode(title, 2, "마왕의 딸은 너무 착해!! 2화");
+        Manga first = wfwfEpisode(title, 1, "마왕의 딸은 너무 착해!! 1화");
+        Manga special = wfwfEpisode(title, 19, "마왕의 딸은 너무 착해!! 번외편");
+        List<Manga> episodes = new ArrayList<>();
+        episodes.add(elevenTwo);
+        episodes.add(first);
+        episodes.add(special);
+        episodes.add(second);
+        title.setEps(episodes);
+
+        Manga visibleElevenTwo = new Manga(112, "(12/30) 마왕의 딸은 너무 착해!! 11-2화", "", MTitle.base_comic);
+        visibleElevenTwo.setTitle(title);
+        visibleElevenTwo.setTitleId(title.getId());
+
+        assertEquals("11-2", Manga.visibleEpisodeNumberKey(elevenTwo.getName()));
+        assertTrue(Manga.sameEpisodeIdentity(elevenTwo, visibleElevenTwo));
+        assertFalse(Manga.sameEpisodeIdentity(elevenTwo, second));
+        assertEquals("마왕의 딸은 너무 착해!! 2화", first.nextEp().getName());
+        assertEquals("마왕의 딸은 너무 착해!! 1화", second.prevEp().getName());
+    }
+
+    @Test
     public void ntkNavigationDisambiguatesEpisodeNumbersFromInternalIds() {
         Title title = new Title("서머타임 렌더링", "", "", new ArrayList<>(), "", 7843, MTitle.base_comic);
         title.setSourceSite("ntk");

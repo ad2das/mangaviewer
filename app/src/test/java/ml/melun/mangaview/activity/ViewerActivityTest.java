@@ -130,6 +130,16 @@ public class ViewerActivityTest {
     }
 
     @Test
+    public void missingEpisodePromptTreatsHyphenPartAsSameChapterNotRange() {
+        assertTrue(MissingEpisodeNavigator.shouldPromptMissingNextEpisodeForTest(
+                "마왕의 딸은 너무 착해!! 1화", "마왕의 딸은 너무 착해!! 11-2화"));
+        assertFalse(MissingEpisodeNavigator.shouldPromptMissingNextEpisodeForTest(
+                "마왕의 딸은 너무 착해!! 11-1화", "마왕의 딸은 너무 착해!! 11-2화"));
+        assertFalse(MissingEpisodeNavigator.shouldPromptMissingNextEpisodeForTest(
+                "마왕의 딸은 너무 착해!! 11-2화", "마왕의 딸은 너무 착해!! 12화"));
+    }
+
+    @Test
     public void missingEpisodePromptAllowsPackedEpisodeRanges() {
         assertFalse(MissingEpisodeNavigator.shouldPromptMissingNextEpisodeForTest(
                 "서머타임 렌더링 03, 04화", "서머타임 렌더링 05, 06화"));

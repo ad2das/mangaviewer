@@ -268,19 +268,47 @@ final class MissingEpisodeNavigator {
         Matcher episodeMatcher = EPISODE_BLOCK_PATTERN.matcher(title);
         EpisodeNumberRange result = null;
         while(episodeMatcher.find()) {
-            Matcher numberMatcher = EPISODE_NUMBER_PATTERN.matcher(episodeMatcher.group(1));
-            while(numberMatcher.find()) {
-                try {
-                    double number = Double.parseDouble(numberMatcher.group());
-                    if(result == null)
-                        result = new EpisodeNumberRange(number, number);
-                    else
-                        result = new EpisodeNumberRange(Math.min(result.min, number), Math.max(result.max, number));
-                } catch (NumberFormatException ignored) {
-                }
-            }
+            EpisodeNumberRange block = episodeNumberRangeFromBlock(episodeMatcher.group(1));
+            if(block == null)
+                continue;
+            if(result == null)
+                result = block;
+            else
+                result = new EpisodeNumberRange(Math.min(result.min, block.min), Math.max(result.max, block.max));
         }
         return result;
+    }
+
+    private static EpisodeNumberRange episodeNumberRangeFromBlock(String block) {
+        ArrayList<Double> numbers = new ArrayList<>();
+        Matcher numberMatcher = EPISODE_NUMBER_PATTERN.matcher(block == null ? "" : block);
+        while(numberMatcher.find()) {
+            try {
+                numbers.add(Double.parseDouble(numberMatcher.group()));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        if(numbers.size() == 0)
+            return null;
+        if(numbers.size() == 2 && isHyphenPartEpisode(block, numbers.get(0), numbers.get(1))) {
+            double value = numbers.get(0) + Math.min(numbers.get(1), 9999.0d) / 10000.0d;
+            return new EpisodeNumberRange(value, value);
+        }
+        double min = Double.MAX_VALUE;
+        double max = -Double.MAX_VALUE;
+        for(Double number : numbers) {
+            min = Math.min(min, number);
+            max = Math.max(max, number);
+        }
+        return new EpisodeNumberRange(min, max);
+    }
+
+    private static boolean isHyphenPartEpisode(String value, double first, double second) {
+        if(value == null || !value.contains("-"))
+            return false;
+        if(first != Math.floor(first) || second != Math.floor(second))
+            return false;
+        return first > 0 && second > 0 && second < first;
     }
 
     private static String alternateSource(Manga source) {

@@ -48,6 +48,65 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
     private static final String PACKAGE_NAME = "ml.melun.mangaview";
 
     @Test
+    public void wfwfDemonDaughterNextFrom1Opens2BeforeHyphenPartEpisode() {
+        Title title = new Title(
+                "마왕의 딸은 너무 착해!!",
+                "",
+                "",
+                Collections.singletonList("판타지"),
+                "",
+                10001,
+                MTitle.base_comic);
+        title.setSourceSite("wfwf");
+        Manga episodeElevenTwo = new Manga(20, "마왕의 딸은 너무 착해!! 11-2화", "", MTitle.base_comic);
+        episodeElevenTwo.setTitle(title);
+        episodeElevenTwo.setTitleId(title.getId());
+        Manga episodeTwo = new Manga(2, "마왕의 딸은 너무 착해!! 2화", "", MTitle.base_comic);
+        episodeTwo.setTitle(title);
+        episodeTwo.setTitleId(title.getId());
+        episodeTwo.setImgs(Collections.singletonList("https://example.com/demon-daughter-2.jpg"));
+        Manga episodeOne = new Manga(1, "마왕의 딸은 너무 착해!! 1화", "", MTitle.base_comic);
+        episodeOne.setTitle(title);
+        episodeOne.setTitleId(title.getId());
+        episodeOne.setImgs(Collections.singletonList("https://example.com/demon-daughter-1.jpg"));
+        Manga special = new Manga(19, "마왕의 딸은 너무 착해!! 번외편", "", MTitle.base_comic);
+        special.setTitle(title);
+        special.setTitleId(title.getId());
+        ArrayList<Manga> episodes = new ArrayList<>();
+        episodes.add(episodeElevenTwo);
+        episodes.add(episodeOne);
+        episodes.add(special);
+        episodes.add(episodeTwo);
+        title.setEps(episodes);
+        episodeOne.setEps(episodes);
+
+        assertEquals("마왕의 딸은 너무 착해!! 2화", episodeOne.nextEp().getName());
+
+        Activity activity = InstrumentationRegistry.getInstrumentation().startActivitySync(viewerIntent(episodeOne, title));
+        try {
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            assertTrue("Expected viewer to start on WFWF 1화",
+                    waitForToolbarTitle(activity, "1화", 10000));
+
+            UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+            assertTrue("Expected viewer backing list to include WFWF 2화",
+                    setViewerEpisodeImages(activity, 2, Collections.singletonList("https://example.com/demon-daughter-2.jpg")));
+            View next = waitForEnabledView(activity, R.id.toolbar_next, 10000);
+            assertNotNull("Expected WFWF 1화 next button to be enabled", next);
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(next::performClick);
+
+            assertTrue("Expected WFWF next from 1화 to open 2화",
+                    waitForToolbarTitle(activity, "2화", 10000));
+            assertFalse("WFWF next from 1화 must not land on 11-2화 while 2화 exists",
+                    toolbarTitle(activity).contains("11-2화"));
+            assertTrue("Expected no missing episode dialog while 2화 exists",
+                    device.wait(Until.findObject(By.text("회차 누락")), 1000) == null);
+        } finally {
+            activity.finish();
+        }
+    }
+
+    @Test
     public void wfwfSummertimeRenderingPromptsFrom74To80() {
         Title title = fetchWfwfSummertimeRendering();
         ArrayList<Manga> episodes = Utils.snapshotEpisodes(title);
@@ -368,10 +427,44 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
     private static Manga viewerEpisode(Activity activity, int episodeNumber) {
         final Manga[] result = new Manga[1];
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
-            if(activity instanceof ViewerActivity)
-                result[0] = findEpisode(((ViewerActivity) activity).eps, episodeNumber);
+            if(!(activity instanceof ViewerActivity))
+                return;
+            ViewerActivity viewer = (ViewerActivity) activity;
+            result[0] = findEpisode(viewer.eps, episodeNumber);
+            if(result[0] == null && viewer.manga != null)
+                result[0] = findEpisode(viewer.manga.getEps(), episodeNumber);
+            if(result[0] == null && viewer.title != null)
+                result[0] = findEpisode(viewer.title.getEps(), episodeNumber);
         });
         return result[0];
+    }
+
+    private static boolean setViewerEpisodeImages(Activity activity, int episodeNumber, List<String> images) {
+        final boolean[] found = {false};
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            if(!(activity instanceof ViewerActivity))
+                return;
+            ViewerActivity viewer = (ViewerActivity) activity;
+            found[0] |= setEpisodeImages(viewer.eps, episodeNumber, images);
+            if(viewer.manga != null)
+                found[0] |= setEpisodeImages(viewer.manga.getEps(), episodeNumber, images);
+            if(viewer.title != null)
+                found[0] |= setEpisodeImages(viewer.title.getEps(), episodeNumber, images);
+        });
+        return found[0];
+    }
+
+    private static boolean setEpisodeImages(List<Manga> episodes, int episodeNumber, List<String> images) {
+        if(episodes == null)
+            return false;
+        boolean found = false;
+        for(Manga episode : episodes) {
+            if(episode != null && matchesEpisodeNumber(episode.getName(), episodeNumber)) {
+                episode.setImgs(images);
+                found = true;
+            }
+        }
+        return found;
     }
 
     private static Manga viewerEpisode(Activity activity, String episodeName) {

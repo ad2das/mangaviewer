@@ -762,15 +762,38 @@ public class Title extends MTitle {
                 .matcher(title);
         double result = -1;
         while(episodeMatcher.find()) {
-            Matcher numberMatcher = Pattern.compile("\\d+(?:\\.\\d+)?").matcher(episodeMatcher.group(1));
-            while(numberMatcher.find()) {
-                try {
-                    result = Math.max(result, Double.parseDouble(numberMatcher.group()));
-                } catch (NumberFormatException ignored) {
-                }
-            }
+            double number = visibleEpisodeNumberBlockValue(episodeMatcher.group(1));
+            if(number >= 0)
+                result = Math.max(result, number);
         }
         return result;
+    }
+
+    private static double visibleEpisodeNumberBlockValue(String block) {
+        ArrayList<Double> numbers = new ArrayList<>();
+        Matcher numberMatcher = Pattern.compile("\\d+(?:\\.\\d+)?").matcher(block == null ? "" : block);
+        while(numberMatcher.find()) {
+            try {
+                numbers.add(Double.parseDouble(numberMatcher.group()));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        if(numbers.size() == 0)
+            return -1;
+        if(numbers.size() == 2 && isHyphenPartEpisode(block, numbers.get(0), numbers.get(1)))
+            return numbers.get(0) + Math.min(numbers.get(1), 9999.0d) / 10000.0d;
+        double result = -1;
+        for(Double number : numbers)
+            result = Math.max(result, number);
+        return result;
+    }
+
+    private static boolean isHyphenPartEpisode(String value, double first, double second) {
+        if(value == null || !value.contains("-"))
+            return false;
+        if(first != Math.floor(first) || second != Math.floor(second))
+            return false;
+        return first > 0 && second > 0 && second < first;
     }
 
     private static class EpisodeOrder {

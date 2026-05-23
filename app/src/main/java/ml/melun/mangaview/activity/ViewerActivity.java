@@ -556,10 +556,17 @@ public class ViewerActivity extends AppCompatActivity {
         Manga candidate;
         List<Manga> data = episodeListFor(current);
         int index = findEpisodeIndex(data, current);
+        Manga adjacent = null;
         for(int i = index - 1; i >= 0; i--) {
             candidate = prepareEpisodeCandidate(Utils.safeGet(data, i), current);
-            if(candidate != null && !sameManga(candidate, current))
-                return candidate;
+            if(candidate != null && !sameManga(candidate, current)) {
+                adjacent = candidate;
+                break;
+            }
+        }
+        candidate = prepareEpisodeCandidate(Manga.preferCloserVisibleEpisode(data, current, adjacent, true), current);
+        if(candidate != null && !sameManga(candidate, current)) {
+            return candidate;
         }
         candidate = current.nextEp();
         if(candidate != null) {
@@ -576,12 +583,18 @@ public class ViewerActivity extends AppCompatActivity {
         Manga candidate;
         List<Manga> data = episodeListFor(current);
         int index = findEpisodeIndex(data, current);
+        Manga adjacent = null;
         if(data != null && index >= 0)
             for(int i = index + 1; i < data.size(); i++) {
                 candidate = prepareEpisodeCandidate(Utils.safeGet(data, i), current);
-                if(candidate != null && !sameManga(candidate, current))
-                    return candidate;
+                if(candidate != null && !sameManga(candidate, current)) {
+                    adjacent = candidate;
+                    break;
+                }
             }
+        candidate = prepareEpisodeCandidate(Manga.preferCloserVisibleEpisode(data, current, adjacent, false), current);
+        if(candidate != null && !sameManga(candidate, current))
+            return candidate;
         candidate = current.prevEp();
         if(candidate != null) {
             candidate = prepareEpisodeCandidate(candidate, current);

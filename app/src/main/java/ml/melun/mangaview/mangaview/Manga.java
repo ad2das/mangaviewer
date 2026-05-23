@@ -1406,11 +1406,15 @@ public class Manga {
             } else {
                 int index = findEpisodeIndex(episodes);
                 if (index < 0) return null;
+                Manga adjacent = null;
                 for (int i = index - 1; i >= 0; i--) {
                     Manga episode = episodes.get(i);
-                    if (sameSeriesEpisode(episode) && episode.getId() != id) return episode;
+                    if (sameSeriesEpisode(episode) && !sameEpisodeIdentity(this, episode)) {
+                        adjacent = episode;
+                        break;
+                    }
                 }
-                return null;
+                return preferCloserVisibleEpisode(episodes, this, adjacent, true);
             }
         } else {
             return sameSeriesEpisode(nextEp) ? nextEp : null;
@@ -1425,11 +1429,15 @@ public class Manga {
             } else {
                 int index = findEpisodeIndex(episodes);
                 if (index < 0) return null;
+                Manga adjacent = null;
                 for (int i = index + 1; i < episodes.size(); i++) {
                     Manga episode = episodes.get(i);
-                    if (sameSeriesEpisode(episode) && episode.getId() != id) return episode;
+                    if (sameSeriesEpisode(episode) && !sameEpisodeIdentity(this, episode)) {
+                        adjacent = episode;
+                        break;
+                    }
                 }
-                return null;
+                return preferCloserVisibleEpisode(episodes, this, adjacent, false);
             }
         } else {
             return sameSeriesEpisode(prevEp) ? prevEp : null;
@@ -1633,7 +1641,7 @@ public class Manga {
                 || compact.contains("후기")
                 || compact.contains("프롤로그"))
             return "";
-        Matcher matcher = Pattern.compile("(\\d+(?:\\s*,\\s*\\d+)*)\\s*화").matcher(value);
+        Matcher matcher = Pattern.compile("(\\d+(?:\\.\\d+)?(?:\\s*[,~～\\-]\\s*\\d+(?:\\.\\d+)?)*)\\s*화").matcher(value);
         String episodeNumbers = "";
         while(matcher.find())
             episodeNumbers = matcher.group(1);
@@ -1646,18 +1654,156 @@ public class Manga {
         return episodeNumberKey(name);
     }
 
-    private static String normalizeEpisodeNumbers(String value) {
-        String[] parts = value.split(",");
-        StringBuilder key = new StringBuilder();
-        for(String part : parts) {
-            String number = part.trim().replaceFirst("^0+(?=\\d)", "");
-            if(number.length() == 0)
+    public static Manga preferCloserVisibleEpisode(List<Manga> episodes, Manga current, Manga fallback, boolean next) {
+        Manga visible = closestVisibleEpisode(episodes, current, next);
+        if(visible == null)
+            return fallback;
+        if(fallback == null)
+            return visible;
+        EpisodeNumberRange currentRange = visibleEpisodeNumberRange(current == null ? null : current.getName());
+        EpisodeNumberRange visibleRange = visibleEpisodeNumberRange(visible.getName());
+        EpisodeNumberRange fallbackRange = visibleEpisodeNumberRange(fallback.getName());
+        if(currentRange == null || visibleRange == null || fallbackRange == null)
+            return fallback;
+        if(next)
+            return visibleRange.min + EPISODE_RANGE_EPSILON < fallbackRange.min ? visible : fallback;
+        return visibleRange.max > fallbackRange.max + EPISODE_RANGE_EPSILON ? visible : fallback;
+    }
+
+    private static Manga closestVisibleEpisode(List<Manga> episodes, Manga current, boolean next) {
+        if(episodes == null || current == null)
+            return null;
+        EpisodeNumberRange currentRange = visibleEpisodeNumberRange(current.getName());
+        if(currentRange == null)
+            return null;
+        Manga best = null;
+        EpisodeNumberRange bestRange = null;
+        List<Manga> snapshot;
+        try {
+            snapshot = new ArrayList<>(episodes);
+        } catch (RuntimeException e) {
+            return null;
+        }
+        for(Manga episode : snapshot) {
+            if(episode == null || episode == current || !current.sameSeriesEpisode(episode)
+                    || sameEpisodeIdentity(current, episode))
                 continue;
+            EpisodeNumberRange range = visibleEpisodeNumberRange(episode.getName());
+            if(range == null)
+                continue;
+            if(next) {
+                if(range.min <= currentRange.max + EPISODE_RANGE_EPSILON)
+                    continue;
+                if(best == null || range.min < bestRange.min - EPISODE_RANGE_EPSILON
+                        || (Math.abs(range.min - bestRange.min) <= EPISODE_RANGE_EPSILON && range.max < bestRange.max)) {
+                    best = episode;
+                    bestRange = range;
+                }
+            } else {
+                if(range.max >= currentRange.min - EPISODE_RANGE_EPSILON)
+                    continue;
+                if(best == null || range.max > bestRange.max + EPISODE_RANGE_EPSILON
+                        || (Math.abs(range.max - bestRange.max) <= EPISODE_RANGE_EPSILON && range.min > bestRange.min)) {
+                    best = episode;
+                    bestRange = range;
+                }
+            }
+        }
+        return best;
+    }
+
+    private static EpisodeNumberRange visibleEpisodeNumberRange(String name) {
+        String key = episodeNumberKey(name);
+        if(key.length() == 0)
+            return null;
+        try {
+            if(key.contains("-")) {
+                String[] parts = key.split("-", 2);
+                double major = Double.parseDouble(parts[0]);
+                double part = Double.parseDouble(parts[1]);
+                double value = major + Math.min(part, 9999.0d) / 10000.0d;
+                return new EpisodeNumberRange(value, value);
+            }
+            String[] parts = key.split(",");
+            double min = Double.MAX_VALUE;
+            double max = -Double.MAX_VALUE;
+            for(String part : parts) {
+                if(part == null || part.length() == 0)
+                    continue;
+                double value = Double.parseDouble(part);
+                min = Math.min(min, value);
+                max = Math.max(max, value);
+            }
+            return min == Double.MAX_VALUE ? null : new EpisodeNumberRange(min, max);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static final double EPISODE_RANGE_EPSILON = 0.0001d;
+
+    private static class EpisodeNumberRange {
+        final double min;
+        final double max;
+
+        EpisodeNumberRange(double min, double max) {
+            this.min = min;
+            this.max = max;
+        }
+    }
+
+    private static String normalizeEpisodeNumbers(String value) {
+        if(value == null)
+            return "";
+        ArrayList<String> numbers = new ArrayList<>();
+        Matcher matcher = Pattern.compile("\\d+(?:\\.\\d+)?").matcher(value);
+        while(matcher.find()) {
+            String number = normalizeEpisodeNumberToken(matcher.group());
+            if(number.length() > 0)
+                numbers.add(number);
+        }
+        if(numbers.size() == 0)
+            return "";
+        if(numbers.size() == 2 && isHyphenPartEpisode(value, numbers.get(0), numbers.get(1)))
+            return numbers.get(0) + "-" + numbers.get(1);
+        StringBuilder key = new StringBuilder();
+        for(String number : numbers) {
             if(key.length() > 0)
                 key.append(',');
             key.append(number);
         }
         return key.toString();
+    }
+
+    private static String normalizeEpisodeNumberToken(String value) {
+        if(value == null)
+            return "";
+        String number = value.trim();
+        if(number.length() == 0)
+            return "";
+        int dot = number.indexOf('.');
+        String integer = dot >= 0 ? number.substring(0, dot) : number;
+        integer = integer.replaceFirst("^0+(?=\\d)", "");
+        if(integer.length() == 0)
+            integer = "0";
+        if(dot < 0)
+            return integer;
+        String decimal = number.substring(dot + 1).replaceFirst("0+$", "");
+        return decimal.length() == 0 ? integer : integer + "." + decimal;
+    }
+
+    private static boolean isHyphenPartEpisode(String value, String first, String second) {
+        if(value == null || !value.contains("-") || first == null || second == null)
+            return false;
+        if(first.contains(".") || second.contains("."))
+            return false;
+        try {
+            int firstNumber = Integer.parseInt(first);
+            int secondNumber = Integer.parseInt(second);
+            return firstNumber > 0 && secondNumber > 0 && secondNumber < firstNumber;
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 
     public static String cleanViewerEpisodeName(String name) {
