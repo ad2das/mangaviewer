@@ -175,6 +175,30 @@ public class MangaEpisodeNavigationTest {
     }
 
     @Test
+    public void wfwfPathlessVisibleEpisodeResolvesBeforeNextNavigation() {
+        Title title = new Title("서머타임 렌더링", "", "", new ArrayList<>(), "", 10017, MTitle.base_comic);
+        title.setSourceSite("wfwf");
+        Manga actualEighty = wfwfEpisode(title, 85, "서머타임 렌더링 80화");
+        Manga actualSeventyFour = wfwfEpisode(title, 84, "서머타임 렌더링 74화");
+        Manga actualSeventyOne = wfwfEpisode(title, 75, "서머타임 렌더링 71화");
+        List<Manga> episodes = new ArrayList<>();
+        episodes.add(actualEighty);
+        episodes.add(actualSeventyFour);
+        episodes.add(actualSeventyOne);
+        title.setEps(episodes);
+
+        Manga legacyVisibleSeventyFour = new Manga(74, "서머타임 렌더링 74화", "", MTitle.base_comic);
+        legacyVisibleSeventyFour.setTitle(title);
+        legacyVisibleSeventyFour.setTitleId(title.getId());
+        legacyVisibleSeventyFour.setEps(episodes);
+
+        assertEquals("/cv?toon=10017&num=84", legacyVisibleSeventyFour.getUrl());
+        assertTrue(Manga.sameEpisodeIdentity(actualSeventyFour, legacyVisibleSeventyFour));
+        assertFalse(Manga.sameEpisodeIdentity(actualSeventyOne, legacyVisibleSeventyFour));
+        assertEquals("서머타임 렌더링 80화", legacyVisibleSeventyFour.nextEp().getName());
+    }
+
+    @Test
     public void ntkNavigationDisambiguatesEpisodeNumbersFromInternalIds() {
         Title title = new Title("서머타임 렌더링", "", "", new ArrayList<>(), "", 7843, MTitle.base_comic);
         title.setSourceSite("ntk");
@@ -268,6 +292,13 @@ public class MangaEpisodeNavigationTest {
         episode.setTitle(title);
         episode.setTitleId(title.getId());
         episode.setNtkEpisodePath(path);
+        return episode;
+    }
+
+    private Manga wfwfEpisode(Title title, int id, String name) {
+        Manga episode = new Manga(id, name, "2020-07-19", MTitle.base_comic);
+        episode.setTitle(title);
+        episode.setTitleId(title.getId());
         return episode;
     }
 }

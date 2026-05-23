@@ -1022,7 +1022,7 @@ public class Title extends MTitle {
         int currentEpisodeId = current == null ? bookmark : current.getId();
         if(count <= 1 || currentEpisodeId <= 0 || currentEpisodeId > count)
             return false;
-        if("ntk".equals(getSourceSite()))
+        if("ntk".equals(getSourceSite()) || "wfwf".equals(getSourceSite()))
             return false;
         if(eps != null && eps.size() >= count)
             return false;

@@ -79,6 +79,50 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
     }
 
     @Test
+    public void wfwfSummertimePathless74PromptsBefore80Not71() {
+        Title title = fetchWfwfSummertimeRendering();
+        ArrayList<Manga> episodes = Utils.snapshotEpisodes(title);
+        Manga actual74 = findEpisode(episodes, 74);
+        Manga actual71 = findEpisode(episodes, 71);
+
+        assertNotNull("Expected WFWF Summertime Rendering 74화", actual74);
+        assertNotNull("Expected WFWF Summertime Rendering 71화", actual71);
+        assertTrue("Expected WFWF 74화 to use a shifted source id",
+                actual74.getId() != 74);
+
+        actual74.setImgs(Collections.singletonList("https://example.com/wfwf-summertime-74.jpg"));
+        Manga legacyVisible74 = new Manga(74, "서머타임 렌더링 74화", "", MTitle.base_comic);
+        legacyVisible74.setTitle(title);
+        legacyVisible74.setTitleId(title.getId());
+        legacyVisible74.setEps(episodes);
+        legacyVisible74.setImgs(Collections.singletonList("https://example.com/legacy-wfwf-summertime-74.jpg"));
+
+        assertEquals("Pathless WFWF 74화 should resolve to the actual source id before opening",
+                actual74.getUrl(), legacyVisible74.getUrl());
+
+        Activity activity = InstrumentationRegistry.getInstrumentation().startActivitySync(viewerIntent(legacyVisible74, title));
+        try {
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            assertTrue("Expected viewer to start on WFWF 74화",
+                    waitForToolbarTitle(activity, "74화", 10000));
+
+            UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+            View next = waitForEnabledView(activity, R.id.toolbar_next, 10000);
+            assertNotNull("Expected WFWF 74화 next button to be enabled", next);
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(next::performClick);
+
+            assertNotNull("Expected missing episode dialog instead of jumping to 71화",
+                    device.wait(Until.findObject(By.text("회차 누락")), 5000));
+            assertNotNull("Expected missing episode dialog to offer NTK after 74화",
+                    device.wait(Until.findObject(By.textContains("NTK에서 마저 볼까요")), 5000));
+            assertFalse("WFWF next from pathless 74화 must not land on 71화",
+                    toolbarTitle(activity).contains("71화"));
+        } finally {
+            activity.finish();
+        }
+    }
+
+    @Test
     public void ntkSummertimePickerKeepsVisibleEpisodeMappedToNtkPath() {
         Title title = fetchNtkSummertimeRendering();
         ArrayList<Manga> episodes = Utils.snapshotEpisodes(title);
@@ -93,6 +137,7 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
                 episode91.getNtkEpisodePath().endsWith("/91"));
 
         episode75.setImgs(Collections.singletonList("https://example.com/ntk-summertime-75.jpg"));
+        episode91.setImgs(Collections.singletonList("https://example.com/ntk-summertime-91.jpg"));
         Activity activity = InstrumentationRegistry.getInstrumentation().startActivitySync(viewerIntent(episode75, title));
         try {
             InstrumentationRegistry.getInstrumentation().waitForIdleSync();
@@ -100,6 +145,7 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
                     waitForViewerEpisodePath(activity, "91화", episode91.getNtkEpisodePath(), 10000));
             Manga pickerEpisode91 = viewerEpisode(activity, 91);
             assertNotNull("Expected viewer picker backing list to include 91화", pickerEpisode91);
+            pickerEpisode91.setImgs(Collections.singletonList("https://example.com/ntk-summertime-91.jpg"));
 
             InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> ((ViewerActivity) activity).loadManga(pickerEpisode91));
             assertTrue("Expected picker-selected NTK 91화 to open as 91화",

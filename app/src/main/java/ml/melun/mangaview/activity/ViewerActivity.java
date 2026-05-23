@@ -1268,6 +1268,10 @@ public class ViewerActivity extends AppCompatActivity {
                 try {
                     if(m.isOnline()) {
                         result = prepareEpisodeIdentity(m);
+                        if(result == LOAD_OK && needsConcreteWfwfEpisodeList(title != null ? title : m.getTitle(), m))
+                            result = ensureEpisodeListLoaded(m);
+                        if(result == LOAD_OK)
+                            m = resolvedEpisode(m);
                         if(result == LOAD_OK && needsResolvedNtkEpisodePath(m)) {
                             result = ensureEpisodeListLoaded(m);
                             if(result == LOAD_OK)
@@ -2536,9 +2540,44 @@ public class ViewerActivity extends AppCompatActivity {
         List<Manga> targetEpisodes = target == null ? null : Utils.snapshotEpisodes(target);
         int titleCount = titleEpisodes == null ? 0 : titleEpisodes.size();
         int targetCount = targetEpisodes == null ? 0 : targetEpisodes.size();
+        if(needsConcreteWfwfEpisodeList(currentTitle, target))
+            return true;
         if(needsResolvedNtkEpisodePath(target))
             return true;
         return !containsEpisode(titleEpisodes, target) || Math.max(titleCount, targetCount) <= 3;
+    }
+
+    private boolean needsConcreteWfwfEpisodeList(Title currentTitle, Manga target) {
+        if(target == null
+                || !target.isOnline()
+                || !isWfwfEpisode(target)
+                || target.getTitleId() <= 0
+                || Manga.visibleEpisodeNumberKey(target.getName()).length() == 0)
+            return false;
+        List<Manga> titleEpisodes = currentTitle == null ? null : Utils.snapshotEpisodes(currentTitle);
+        List<Manga> targetEpisodes = Utils.snapshotEpisodes(target);
+        return !hasConcreteWfwfEpisodes(titleEpisodes) && !hasConcreteWfwfEpisodes(targetEpisodes);
+    }
+
+    private boolean hasConcreteWfwfEpisodes(List<Manga> episodes) {
+        if(episodes == null || episodes.size() == 0)
+            return false;
+        for(Manga episode : episodes) {
+            if(episode == null)
+                continue;
+            String date = episode.getDate();
+            if(date != null && date.trim().length() > 0)
+                return true;
+            String episodeNumber = Manga.visibleEpisodeNumberKey(episode.getName());
+            if(episodeNumber.matches("\\d+")) {
+                try {
+                    if(Integer.parseInt(episodeNumber) != episode.getId())
+                        return true;
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        return false;
     }
 
     private boolean needsResolvedNtkEpisodePath(Manga target) {
@@ -2561,10 +2600,31 @@ public class ViewerActivity extends AppCompatActivity {
         List<Manga> episodes = currentTitle == null ? null : Utils.snapshotEpisodes(currentTitle);
         if(episodes == null)
             return null;
+        Manga exact = findExactCanonicalEpisode(episodes, target);
+        if(exact != null)
+            return exact;
         for(Manga episode : episodes) {
             if(sameManga(episode, target)
                     && (!isNtkEpisode(target) || episode.getNtkEpisodePath().length() > 0))
                 return episode;
+        }
+        return null;
+    }
+
+    private Manga findExactCanonicalEpisode(List<Manga> episodes, Manga target) {
+        if(episodes == null || target == null)
+            return null;
+        for(Manga episode : episodes)
+            if(episode == target)
+                return episode;
+        for(Manga episode : episodes) {
+            if(episode == null || episode.getId() != target.getId() || episode.getBaseMode() != target.getBaseMode())
+                continue;
+            String episodeNumber = Manga.visibleEpisodeNumberKey(episode.getName());
+            String targetNumber = Manga.visibleEpisodeNumberKey(target.getName());
+            if(episodeNumber.length() > 0 && targetNumber.length() > 0 && !episodeNumber.equals(targetNumber))
+                continue;
+            return episode;
         }
         return null;
     }
@@ -2876,6 +2936,10 @@ public class ViewerActivity extends AppCompatActivity {
         if(target != null && target.getTitle() != null && "ntk".equals(target.getTitle().getSourceSite()))
             return true;
         return p != null && p.isNtkSite();
+    }
+
+    private boolean isWfwfEpisode(Manga target) {
+        return target != null && target.getTitle() != null && "wfwf".equals(target.getTitle().getSourceSite());
     }
 
     private void showViewerCaptchaRequired(Manga target) {

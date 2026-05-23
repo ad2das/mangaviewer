@@ -150,6 +150,19 @@ public class TitleTest {
     }
 
     @Test
+    public void wfwfProgressEpisodesDoNotGeneratePathlessPlaceholders() {
+        Title title = new Title("서머타임 렌더링", "", "", null, "", 10017, MTitle.base_comic);
+        title.setSourceSite("wfwf");
+        title.setReadingProgress(74, 74, 205);
+        Manga current = new Manga(74, "서머타임 렌더링 74화", "", MTitle.base_comic);
+        current.setTitle(title);
+        current.setTitleId(title.getId());
+
+        assertFalse(title.ensureProgressEpisodes(current));
+        assertEquals(0, title.getEpsCount());
+    }
+
+    @Test
     public void legacyEpisodeParserKeepsRowsWithMissingDetails() {
         List<Manga> episodes = Title.parseLegacyEpisodesForTest(
                 "<ul class=\"list-body\">"
