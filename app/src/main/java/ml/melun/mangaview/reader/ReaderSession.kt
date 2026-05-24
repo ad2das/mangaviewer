@@ -542,8 +542,10 @@ class ReaderSession(
                 }
                 current.title = currentTitle
                 current.titleId = currentTitle.id
-                var appended = 0
-                while (!cancelled.get() && appended < PRIME_FORWARD_EPISODES) {
+                val primedRefs = ArrayList<PageRef>()
+                val cardOffsets = ArrayList<Int>()
+                var checked = 0
+                while (!cancelled.get() && checked < PRIME_FORWARD_EPISODES) {
                     val target = current.nextEp() ?: break
                     target.title = currentTitle
                     target.titleId = currentTitle.id
@@ -556,11 +558,13 @@ class ReaderSession(
                         }
                         val urls = MangaRepository.imageUrls(target, appContext)
                         if (urls.isNullOrEmpty()) break
-                        appendResolvedEpisode(target, urls, ReaderSurfaceView.DIRECTION_NEXT, warm = false)
-                        appended++
+                        cardOffsets.add(primedRefs.size)
+                        primedRefs.addAll(pageRefsForEpisode(target, urls, ReaderSurfaceView.DIRECTION_NEXT))
                     }
+                    checked++
                     current = target
                 }
+                appendPrimedForwardRefs(primedRefs, cardOffsets)
             } catch (e: Exception) {
                 if (!cancelled.get()) ml.melun.mangaview.report.CrashReporter.record(e)
             } finally {
@@ -569,12 +573,40 @@ class ReaderSession(
         }
     }
 
-    private fun appendResolvedEpisode(target: Manga, urls: List<String>, direction: Int, warm: Boolean = true) {
+    private fun pageRefsForEpisode(target: Manga, urls: List<String>, direction: Int): List<PageRef> {
         val episodeName = target.name ?: title?.name ?: "회차"
         val transitionTitle = if (direction < 0) "이전 회차: $episodeName" else "다음 회차: $episodeName"
-        val refs = ArrayList<PageRef>(urls.size + 1)
-        refs.add(PageRef(target, null, transitionTitle))
-        refs.addAll(urls.map { PageRef(target, it) })
+        return ArrayList<PageRef>(urls.size + 1).apply {
+            add(PageRef(target, null, transitionTitle))
+            addAll(urls.map { PageRef(target, it) })
+        }
+    }
+
+    private fun appendPrimedForwardRefs(refs: List<PageRef>, cardOffsets: List<Int>) {
+        if (cancelled.get() || refs.isEmpty()) return
+        val startIndex: Int
+        val total: Int
+        synchronized(pagesLock) {
+            startIndex = pages.size
+            refs.forEachIndexed { offset, page -> page.pageIndex = startIndex + offset }
+            pages.addAll(refs)
+            total = pages.size
+        }
+        main.post {
+            if (!cancelled.get()) {
+                listener.onPagesAppended(total)
+                for (offset in cardOffsets) {
+                    refs.getOrNull(offset)?.transitionTitle?.let { title ->
+                        listener.onPageCard(startIndex + offset, title)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun appendResolvedEpisode(target: Manga, urls: List<String>, direction: Int, warm: Boolean = true) {
+        val refs = pageRefsForEpisode(target, urls, direction)
+        val transitionTitle = refs.first().transitionTitle ?: ""
         val inserted = refs.size
         val total: Int
         if (direction < 0) {
@@ -1399,7 +1431,7 @@ class ReaderSession(
     private companion object {
         private const val PREPARED_FALLBACK_MS = 1500L
         private const val PREPARED_BITMAP_RELEASE_DELAY_MS = 3000L
-        private const val PRIME_FORWARD_EPISODES = 9
+        private const val PRIME_FORWARD_EPISODES = 40
         private const val BOUNDARY_DECODE_AHEAD_PAGES = 4
         private const val BOUNDARY_BYTE_AHEAD_PAGES = 16
         private const val BOUNDARY_BUSY_DECODE_AHEAD_PAGES = 0
