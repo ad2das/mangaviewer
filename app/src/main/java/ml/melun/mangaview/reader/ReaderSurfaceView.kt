@@ -29,6 +29,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     interface WindowListener {
         fun onWindowChanged(firstPage: Int, lastPage: Int, anchorPage: Int, busy: Boolean)
         fun onNearEnd(anchorPage: Int)
+        fun onTap()
     }
 
     private data class Page(
@@ -86,6 +87,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var renderRequested = false
     private var frameScheduled = false
     private var lastY = 0f
+    private var downY = 0f
     private var dragging = false
     private var scrollOffset = 0f
     private var listener: WindowListener? = null
@@ -231,6 +233,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 val request = synchronized(stateLock) {
                     scroller.forceFinished(true)
                     lastY = event.y
+                    downY = event.y
                     dragging = false
                     setBusyLocked(true)
                 }
@@ -261,6 +264,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 val tracker = velocityTracker
                 var velocityY = 0
+                var tap = false
                 if (tracker != null) {
                     tracker.addMovement(event)
                     tracker.computeCurrentVelocity(1000, maxVelocity.toFloat())
@@ -271,8 +275,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 }
                 velocityTracker = null
                 val request = synchronized(stateLock) {
+                    val wasTap = !dragging && abs(event.y - downY) <= touchSlop
+                    tap = wasTap
                     dragging = false
-                    if (abs(velocityY) > minVelocity) {
+                    if (wasTap) {
+                        null
+                    } else if (abs(velocityY) > minVelocity) {
                         scroller.fling(
                             0,
                             scrollOffset.toInt(),
@@ -292,6 +300,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     }
                 }
                 dispatchWindowRequest(request)
+                if (tap) listener?.onTap()
                 requestRender()
                 return true
             }
