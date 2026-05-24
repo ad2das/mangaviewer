@@ -51,7 +51,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val bitmap: Bitmap?,
         val loading: Boolean,
         val cardText: String?,
-        val pageWidth: Float,
         val top: Float,
         val pageHeight: Float
     )
@@ -582,8 +581,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             return
         }
         if (bitmap != null && !bitmap.isRecycled) {
-            val drawWidth = item.pageWidth.coerceIn(1f, state.width.toFloat())
-            val left = ((state.width - drawWidth) / 2f).coerceAtLeast(0f)
             val visibleTop = max(0f, item.top)
             val visibleBottom = min(state.height.toFloat(), item.top + item.pageHeight)
             if (visibleBottom <= visibleTop) return
@@ -594,15 +591,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 .toInt()
                 .coerceIn(sourceTop + 1, bitmap.height)
             src.set(0, sourceTop, bitmap.width, sourceBottom)
-            dst.set(left, visibleTop, left + drawWidth, visibleBottom)
+            dst.set(0f, visibleTop, state.width.toFloat(), visibleBottom)
             paint.isFilterBitmap = !state.busy
             canvas.drawBitmap(bitmap, src, dst, paint)
             return
         }
         paint.color = Color.rgb(18, 18, 18)
-        val drawWidth = item.pageWidth.coerceIn(1f, state.width.toFloat())
-        val left = ((state.width - drawWidth) / 2f).coerceAtLeast(0f)
-        dst.set(left, max(0f, item.top), left + drawWidth, min(state.height.toFloat(), item.top + item.pageHeight))
+        dst.set(0f, max(0f, item.top), state.width.toFloat(), min(state.height.toFloat(), item.top + item.pageHeight))
         canvas.drawRect(dst, paint)
         canvas.drawText(
             if (item.loading) "불러오는 중" else "대기 중",
@@ -625,7 +620,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val pageHeight = pageDrawHeightLocked(page)
             val bottom = top + pageHeight
             if (bottom >= 0f && top <= viewHeight) {
-                items.add(DrawItem(page.bitmap, page.loading, page.cardText, pageDrawWidthLocked(page), top, pageHeight))
+                items.add(DrawItem(page.bitmap, page.loading, page.cardText, top, pageHeight))
             }
             if (top > viewHeight) break
             index++
@@ -774,15 +769,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun pageDrawHeightLocked(page: Page): Float {
         val viewWidth = width
         if (viewWidth <= 0) return 1f
-        if (page.width > 0 && page.height > 0) return max(1f, pageDrawWidthLocked(page) * (page.height / page.width.toFloat()))
+        if (page.width > 0 && page.height > 0) return max(1f, viewWidth * (page.height / page.width.toFloat()))
         return max(height * 1.4f, viewWidth * 1.35f)
-    }
-
-    private fun pageDrawWidthLocked(page: Page): Float {
-        val viewWidth = width
-        if (viewWidth <= 0) return 1f
-        if (page.width > 0) return min(viewWidth.toFloat(), page.width.toFloat())
-        return viewWidth.toFloat()
     }
 
     private fun rebuildLayoutLocked() {
