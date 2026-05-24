@@ -272,6 +272,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             hideBoundaryStatus()
             pageCount = count
             currentPage += insertedCount
+            if (pendingInitialRestorePage >= 0) pendingInitialRestorePage += insertedCount
             renderView.prependPageCount(count, insertedCount)
             updateCurrentEpisode(currentPage)
         }
@@ -528,6 +529,17 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         currentPage = 0
         lastDisplayedPageText = ""
         pendingBoundaryStatus = false
+        pendingInitialRestorePage = -1
+        pendingInitialRestoreOffset = 0
+        pendingProgressInfo = null
+        pendingProgressOffset = 0
+        progressSaveArmed = false
+        progressMovedInGesture = false
+        progressHandler.removeCallbacks(saveProgressRunnable)
+        lastSavedEpisodeId = -1
+        lastSavedPage = -1
+        lastSavedOffset = Int.MIN_VALUE
+        lastSavedSide = Int.MIN_VALUE
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         status.visibility = TextView.VISIBLE
         status.text = displayEpisodeTitle(manga, title)

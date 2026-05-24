@@ -245,6 +245,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             materializeLayoutDeltasLocked()
             val oldFirstTop = pageTopOrElseLocked(0, 0f)
             repeat(insertedCount) { pages.add(0, Page()) }
+            if (lockedRestorePage >= 0) lockedRestorePage += insertedCount
             layoutDirty = true
             rebuildLayoutLocked()
             val shiftedFirstTop = pageTopOrElseLocked(insertedCount, 0f)
