@@ -45,6 +45,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var toolbarDownRawX = 0f
     private var toolbarDownRawY = 0f
     private var toolbarForwardingScroll = false
+    private var lastSavedEpisodeId = -1
+    private var lastSavedPage = -1
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -279,9 +281,25 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 "${info.localPage} / ${info.totalPages}"
             }
             updateAdjacentButtons()
+            saveReadingProgress(info)
             return
         }
         updatePageLabel()
+    }
+
+    private fun saveReadingProgress(info: ReaderSession.PageInfo) {
+        if (info.transitionCard || !info.manga.useBookmark()) return
+        val title = currentTitle ?: info.manga.title ?: return
+        info.manga.title = title
+        info.manga.titleId = title.id
+        title.eps?.let { info.manga.setEps(it) }
+        val zeroBasedPage = (info.localPage - 1).coerceAtLeast(0)
+        if (lastSavedEpisodeId == info.manga.id && lastSavedPage == zeroBasedPage) return
+        lastSavedEpisodeId = info.manga.id
+        lastSavedPage = zeroBasedPage
+        p?.addRecent(title)
+        p?.setBookmark(title, info.manga.id)
+        p?.setViewerBookmark(info.manga, zeroBasedPage)
     }
 
     private fun installToolbarTouchForwarder(vararg views: View) {
