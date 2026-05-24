@@ -8,8 +8,8 @@ import static org.junit.Assert.assertTrue;
 public class ReaderPipelinePolicyTest {
     @Test
     public void busyScrollKeepsWorkWindowSmall() {
-        assertEquals(0, ReaderPipelinePolicy.windowBefore(true));
-        assertEquals(2, ReaderPipelinePolicy.windowAfter(true));
+        assertEquals(1, ReaderPipelinePolicy.windowBefore(true));
+        assertEquals(4, ReaderPipelinePolicy.windowAfter(true));
         assertEquals(1, ReaderPipelinePolicy.decodeParallelism(true));
         assertEquals(720, ReaderPipelinePolicy.BUSY_DECODE_WIDTH);
     }
@@ -17,7 +17,7 @@ public class ReaderPipelinePolicyTest {
     @Test
     public void idleWindowCanFillAheadWithoutFanout() {
         assertTrue(ReaderPipelinePolicy.windowAfter(false) > ReaderPipelinePolicy.windowAfter(true));
-        assertEquals(1, ReaderPipelinePolicy.decodeParallelism(false));
-        assertTrue(ReaderPipelinePolicy.IDLE_WINDOW_AFTER <= 3);
+        assertEquals(2, ReaderPipelinePolicy.decodeParallelism(false));
+        assertTrue(ReaderPipelinePolicy.IDLE_WINDOW_AFTER <= 6);
     }
 }

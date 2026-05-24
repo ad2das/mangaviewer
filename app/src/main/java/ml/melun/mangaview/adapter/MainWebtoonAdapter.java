@@ -2830,17 +2830,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     private void scheduleThumbnailPreload(List<Ranking<?>> sections) {
         if(anchorRecycler != null)
-            anchorRecycler.postDelayed(() -> {
+            anchorRecycler.post(() -> {
                 if(anchorRecycler == null || anchorRecycler.getScrollState() == RecyclerView.SCROLL_STATE_SETTLING)
                     return;
-                if(BackgroundPrefetchBudget.isNonCriticalPrefetchSuppressed()) {
-                    scheduleThumbnailPreload(sections);
-                    return;
-                }
                 preloadThumbnails(sections);
-            }, Math.max(HomeContinueWarmupPolicy.visibleHomeWarmupDelayMs(save),
-                    BackgroundPrefetchBudget.nonCriticalPrefetchDelayMs()));
-        else if(!BackgroundPrefetchBudget.isNonCriticalPrefetchSuppressed())
+            });
+        else
             preloadThumbnails(sections);
     }
 

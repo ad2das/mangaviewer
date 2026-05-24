@@ -25,8 +25,8 @@ object ReaderWarmupCoordinator {
         LAUNCH_WINDOW
     }
 
-    private const val LAUNCH_WINDOW_DECODE_PAGES = 2
-    private const val LAUNCH_WINDOW_BYTE_PAGES = 8
+    private const val LAUNCH_WINDOW_DECODE_PAGES = 4
+    private const val LAUNCH_WINDOW_BYTE_PAGES = 16
     private val inFlight = ConcurrentHashMap<String, AtomicBoolean>()
     private val entryLocks = ConcurrentHashMap<String, Any>()
 

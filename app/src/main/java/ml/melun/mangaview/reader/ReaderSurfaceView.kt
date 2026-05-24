@@ -30,7 +30,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
 ) : View(context, attrs) {
     interface WindowListener {
         fun onWindowChanged(firstPage: Int, lastPage: Int, anchorPage: Int, busy: Boolean)
-        fun onNearEnd(anchorPage: Int)
+        fun onNearBoundary(direction: Int, anchorPage: Int)
         fun onBoundaryReached(direction: Int, anchorPage: Int)
         fun onTap()
     }
@@ -66,6 +66,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val lastPage: Int,
         val anchorPage: Int,
         val busy: Boolean,
+        val nearStart: Boolean,
         val nearEnd: Boolean
     )
 
@@ -777,10 +778,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
         lastRequestedBusy = busy
         val first = max(0, anchor - ReaderPipelinePolicy.windowBefore(busy))
         val last = min(pages.lastIndex, anchor + ReaderPipelinePolicy.windowAfter(busy))
+        val boundaryPx = height * NEAR_BOUNDARY_SCREENFULS
+        val nearStart = scrollOffset <= boundaryPx ||
+            anchor <= NEAR_BOUNDARY_PAGE_THRESHOLD
         val remainingPx = contentHeight - (scrollOffset + height)
-        val nearEnd = remainingPx <= height * NEAR_END_SCREENFULS ||
-            anchor >= pages.size - NEAR_END_PAGE_THRESHOLD
-        return WindowRequest(first, last, anchor, busy, nearEnd)
+        val nearEnd = remainingPx <= boundaryPx ||
+            anchor >= pages.size - NEAR_BOUNDARY_PAGE_THRESHOLD
+        return WindowRequest(first, last, anchor, busy, nearStart, nearEnd)
     }
 
     private fun dispatchWindowRequest(request: WindowRequest?) {
@@ -799,7 +803,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             } ?: return@post
             val currentListener = listener ?: return@post
             currentListener.onWindowChanged(latest.firstPage, latest.lastPage, latest.anchorPage, latest.busy)
-            if (latest.nearEnd) currentListener.onNearEnd(latest.anchorPage)
+            if (latest.nearStart) currentListener.onNearBoundary(DIRECTION_PREVIOUS, latest.anchorPage)
+            if (latest.nearEnd) currentListener.onNearBoundary(DIRECTION_NEXT, latest.anchorPage)
         }
     }
 
@@ -1069,8 +1074,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val DEFAULT_PAGE_GAP_PX = 0
         private const val TRANSITION_CARD_WIDTH_RATIO = 0.58f
         private const val TRANSITION_CARD_PAGE_HEIGHT_RATIO = 0.14f
-        private const val NEAR_END_SCREENFULS = 5
-        private const val NEAR_END_PAGE_THRESHOLD = 8
+        private const val NEAR_BOUNDARY_SCREENFULS = 10
+        private const val NEAR_BOUNDARY_PAGE_THRESHOLD = 16
         private const val BOUNDARY_EPSILON_PX = 2f
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f

@@ -50,7 +50,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     TypedValue outValue;
     private int bookmark = -1;
     private static final Object PAYLOAD_SELECTION = "selection";
-    private static final long HEADER_THUMBNAIL_DELAY_MS = 180L;
+    private static final long HEADER_THUMBNAIL_DELAY_MS = 0L;
     private static final long TAG_BIND_DELAY_MS = 220L;
     //title is in index 0
     Title title;
@@ -211,6 +211,10 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         String key = String.valueOf(source);
         if(ThumbnailBindPolicy.shouldSkipDeferredBind(view.getTag(), key))
             return;
+        if(delayMs <= 0L) {
+            bindThumbnail(view, source, width, height, placeholderWhenEmpty);
+            return;
+        }
         String pendingKey = ThumbnailBindPolicy.pendingKey(key);
         if(ThumbnailBindPolicy.shouldClearBeforeDeferredBind(view.getTag(), clearImmediately))
             safeGlideClear(view);

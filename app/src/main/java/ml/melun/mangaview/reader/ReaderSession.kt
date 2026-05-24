@@ -141,7 +141,8 @@ class ReaderSession(
     private val firstBitmapLogged = AtomicBoolean(false)
     private val windowGeneration = AtomicInteger(0)
     private val nextLoading = AtomicBoolean(false)
-    private val adjacentAppendLoading = AtomicBoolean(false)
+    private val previousAppendLoading = AtomicBoolean(false)
+    private val nextAppendLoading = AtomicBoolean(false)
     private val repositoryLoading = AtomicBoolean(false)
     private val windowLock = Object()
     private var lastWindowAnchor = -1
@@ -293,6 +294,7 @@ class ReaderSession(
         main.post { if (!cancelled.get()) listener.onPageLoading(index) }
         try {
             val page = pageRef(index) ?: return
+            prefetchImageFile(index, page)
             val result = decodePageWithLease(index, page, targetWidth)
             if (cancelled.get() || pageRef(index) != page) {
                 recycleDecodeResult(result)
@@ -443,8 +445,13 @@ class ReaderSession(
         }
     }
 
+    fun prepareAdjacentEpisode(anchor: Int, direction: Int) {
+        appendAdjacentEpisode(anchor, direction, silentMissing = true)
+    }
+
     fun appendAdjacentEpisode(anchor: Int, direction: Int, silentMissing: Boolean = false) {
-        if (cancelled.get() || adjacentAppendLoading.getAndSet(true)) return
+        val loadingFlag = if (direction < 0) previousAppendLoading else nextAppendLoading
+        if (cancelled.get() || loadingFlag.getAndSet(true)) return
         network.execute {
             try {
                 val anchorManga = pageRef(anchor)?.manga ?: manga
@@ -493,7 +500,7 @@ class ReaderSession(
             } catch (e: Exception) {
                 if (!cancelled.get()) ml.melun.mangaview.report.CrashReporter.record(e)
             } finally {
-                adjacentAppendLoading.set(false)
+                loadingFlag.set(false)
             }
         }
     }
@@ -518,6 +525,7 @@ class ReaderSession(
                     listener.onPageCard(0, transitionTitle)
                 }
             }
+            warmPrependedEpisode(inserted)
         } else {
             val cardIndex: Int
             synchronized(pagesLock) {
@@ -539,9 +547,29 @@ class ReaderSession(
         if (cancelled.get() || cardIndex < 0 || total <= cardIndex) return
         val generation = windowGeneration.get()
         requestPage(cardIndex, busy = false, anchor = false, generation = generation)
-        val last = minOf(total - 1, cardIndex + PREWARM_APPENDED_PAGES)
+        val last = minOf(total - 1, cardIndex + BOUNDARY_DECODE_AHEAD_PAGES)
         for (index in (cardIndex + 1)..last) {
             requestPage(index, busy = false, anchor = false, generation = generation)
+        }
+        val byteLast = minOf(total - 1, cardIndex + BOUNDARY_BYTE_AHEAD_PAGES)
+        for (index in (last + 1)..byteLast) {
+            val page = pageRef(index) ?: continue
+            network.execute { prefetchImageFile(index, page) }
+        }
+    }
+
+    private fun warmPrependedEpisode(inserted: Int) {
+        if (cancelled.get() || inserted <= 0) return
+        val generation = windowGeneration.get()
+        requestPage(0, busy = false, anchor = false, generation = generation)
+        val firstDecoded = max(1, inserted - BOUNDARY_DECODE_AHEAD_PAGES)
+        for (index in (inserted - 1) downTo firstDecoded) {
+            requestPage(index, busy = false, anchor = false, generation = generation)
+        }
+        val firstByte = max(1, inserted - BOUNDARY_BYTE_AHEAD_PAGES)
+        for (index in (firstDecoded - 1) downTo firstByte) {
+            val page = pageRef(index) ?: continue
+            network.execute { prefetchImageFile(index, page) }
         }
     }
 
@@ -629,6 +657,7 @@ class ReaderSession(
                     return@execute
                 }
                 val originalPage = page
+                prefetchImageFile(index, originalPage)
                 try {
                     decodeExecutor.execute {
                     val gate = if (busy) busyDecodeGate else idleDecodeGate
@@ -722,6 +751,15 @@ class ReaderSession(
     private fun leaseImageFile(index: Int, page: PageRef): ReaderImageCache.FileLease {
         val image = page.image ?: throw java.io.IOException("Missing image for page $index")
         return ReaderImageCache.leaseFile(appContext, page.manga, image)
+    }
+
+    private fun prefetchImageFile(index: Int, page: PageRef) {
+        val image = page.image ?: return
+        if (page.manga.isOnline) {
+            ReaderImageCache.getOrFetchFile(appContext, page.manga, image)
+        } else {
+            File(image)
+        }
     }
 
     private fun decodePageWithLease(index: Int, page: PageRef, targetWidth: Int): PageDecodeResult {
@@ -1161,7 +1199,8 @@ class ReaderSession(
     private companion object {
         private const val PREPARED_FALLBACK_MS = 1500L
         private const val PREPARED_BITMAP_RELEASE_DELAY_MS = 3000L
-        private const val PREWARM_APPENDED_PAGES = 1
+        private const val BOUNDARY_DECODE_AHEAD_PAGES = 4
+        private const val BOUNDARY_BYTE_AHEAD_PAGES = 16
         private const val ACTIVE_BITMAP_BYTES = 64L * 1024L * 1024L
         private const val TILE_PAGE_MAX_BYTES = 24L * 1024L * 1024L
         private const val REPLACED_BITMAP_RECYCLE_DELAY_MS = 750L

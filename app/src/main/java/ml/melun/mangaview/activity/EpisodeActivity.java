@@ -79,14 +79,14 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_ERROR;
 public class EpisodeActivity extends AppCompatActivity {
     private static final long DESTINATION_LAUNCH_DEBOUNCE_MS = 1500L;
     private static final long VIEWER_PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
-    private static final long VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS = 360L;
+    private static final long VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS = 80L;
     private static final long EPISODE_REFRESH_AFTER_CACHE_PROBE_MS = 160L;
     private static final long INITIAL_VIEWER_TARGET_WARMUP_DELAY_MS = 0L;
-    private static final long INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 800L;
-    private static final long NTK_INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 800L;
+    private static final long INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 0L;
+    private static final long NTK_INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 0L;
     private static final long MAX_EPISODE_CACHE_FILE_BYTES = 2 * 1024 * 1024L;
     private static final int MEMORY_CACHE_MAIN_THREAD_PARSE_MAX_CHARS = 256 * 1024;
-    private static final int VISIBLE_EPISODE_WARMUP_AHEAD = 1;
+    private static final int VISIBLE_EPISODE_WARMUP_AHEAD = 3;
     //global variables
     Title title;
     EpisodeAdapter episodeAdapter;
@@ -586,8 +586,8 @@ public class EpisodeActivity extends AppCompatActivity {
         if(dataSave)
             return 1;
         if(ntkSite)
-            return aggressiveAllowed ? 3 : 2;
-        return aggressiveAllowed ? 3 : 2;
+            return aggressiveAllowed ? 5 : 4;
+        return aggressiveAllowed ? 5 : 4;
     }
 
     static long visibleEpisodeWarmupIdleDelayMsForTest() {
@@ -877,8 +877,6 @@ public class EpisodeActivity extends AppCompatActivity {
     private boolean showCachedEpisodesFromMemory() {
         try {
             String json = CacheFileStore.readMemory(episodeCacheKey());
-            if(json == null || json.length() == 0)
-                json = CacheFileStore.read(getApplicationContext(), episodeCacheKey());
             if(json == null || json.length() == 0)
                 return false;
             if(shouldParseMemoryCacheOnMain(json.length()))

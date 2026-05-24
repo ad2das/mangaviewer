@@ -46,21 +46,21 @@ public class EpisodeActivityTest {
     @Test
     public void visibleEpisodeWarmupLimitWarmsTapTargetsWhenDataSaverIsOff() {
         assertEquals(1, EpisodeActivity.visibleEpisodeWarmupLimitForTest(true, false));
-        assertEquals(2, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, false));
-        assertEquals(3, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, true));
-        assertEquals(3, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, true, true));
+        assertEquals(4, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, false));
+        assertEquals(5, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, true));
+        assertEquals(5, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, true, true));
     }
 
     @Test
     public void visibleEpisodeWarmupStartsRightAfterEpisodeListSettles() {
-        assertTrue(EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest() >= 800L);
-        assertTrue(EpisodeActivity.visibleEpisodeWarmupIdleDelayMsForTest() >= 300L);
+        assertEquals(0L, EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest());
+        assertTrue(EpisodeActivity.visibleEpisodeWarmupIdleDelayMsForTest() <= 100L);
     }
 
     @Test
     public void ntkVisibleEpisodeWarmupStartsWithoutLongColdDelay() {
-        assertEquals(800L, EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(false));
-        assertEquals(800L, EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(true));
+        assertEquals(0L, EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(false));
+        assertEquals(0L, EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(true));
         assertTrue(EpisodeActivity.initialViewerTargetWarmupDelayMsForTest(false) <= EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(false));
     }
 

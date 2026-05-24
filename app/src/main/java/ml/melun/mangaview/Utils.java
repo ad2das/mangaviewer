@@ -520,7 +520,11 @@ public class Utils {
         Title launchTitle = title != null ? title : manga.getTitle();
         String preparedKey = null;
         try {
-            preparedKey = ReaderWarmupCoordinator.openKey(appContext, manga, launchTitle, width, exactEpisode);
+            preparedKey = ReaderWarmupCoordinator.readyKey(appContext, manga, launchTitle, width, exactEpisode);
+            if(preparedKey == null)
+                preparedKey = ReaderLaunchPreparer.prepareFirstFrame(appContext, manga, launchTitle, width, exactEpisode);
+            if(preparedKey == null)
+                preparedKey = ReaderWarmupCoordinator.openKey(appContext, manga, launchTitle, width, exactEpisode);
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
