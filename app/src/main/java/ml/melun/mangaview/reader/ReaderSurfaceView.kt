@@ -9,6 +9,7 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.util.AttributeSet
 import android.view.Choreographer
@@ -36,12 +37,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var bitmap: Bitmap? = null,
         var width: Int = 0,
         var height: Int = 0,
-        var loading: Boolean = false
+        var loading: Boolean = false,
+        var cardText: String? = null
     )
 
     private data class DrawItem(
         val bitmap: Bitmap?,
         val loading: Boolean,
+        val cardText: String?,
         val top: Float,
         val pageHeight: Float
     )
@@ -77,9 +80,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private val minVelocity = ViewConfiguration.get(context).scaledMinimumFlingVelocity
     private val maxVelocity = ViewConfiguration.get(context).scaledMaximumFlingVelocity
     private val gapPx = 2
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private var velocityTracker: VelocityTracker? = null
-    private var renderThread: Thread? = null
+    private var renderThread: HandlerThread? = null
     private var renderHandler: Handler? = null
     private var renderChoreographer: Choreographer? = null
     private var renderRunning = false
@@ -94,6 +98,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var lastAnchor = -1
     private var lastBusy = false
     private var lastRequestedBusy = false
+    private var layoutDirty = true
+    private var pageTops = FloatArrayList(0)
+    private var contentHeight = 0f
 
     init {
         holder.addCallback(this)
@@ -110,6 +117,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             repeat(max(0, count)) { pages.add(Page()) }
             scrollOffset = 0f
             lastAnchor = -1
+            layoutDirty = true
             renderRequested = true
             scheduleFrameLocked()
             stateLock.notifyAll()
@@ -122,6 +130,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val request = synchronized(stateLock) {
             if (count <= pages.size) return
             repeat(count - pages.size) { pages.add(Page()) }
+            layoutDirty = true
             renderRequested = true
             scheduleFrameLocked()
             stateLock.notifyAll()
@@ -132,7 +141,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     fun setPageLoading(index: Int) {
         synchronized(stateLock) {
-            pages.getOrNull(index)?.loading = true
+            pages.getOrNull(index)?.let {
+                if (it.cardText == null) it.loading = true
+            }
             renderRequested = true
             scheduleFrameLocked()
             stateLock.notifyAll()
@@ -142,10 +153,50 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun setPageBitmap(index: Int, bitmap: Bitmap) {
         val request = synchronized(stateLock) {
             val page = pages.getOrNull(index) ?: return
+            rebuildLayoutLocked()
+            val oldHeight = pageDrawHeightLocked(page)
+            val oldTop = pageTops.getOrElse(index, 0f)
             page.bitmap = bitmap
             page.width = max(1, bitmap.width)
             page.height = max(1, bitmap.height)
             page.loading = false
+            page.cardText = null
+            val newHeight = pageDrawHeightLocked(page)
+            if (oldTop + oldHeight <= scrollOffset) scrollOffset += newHeight - oldHeight
+            layoutDirty = true
+            clampScrollLocked()
+            renderRequested = true
+            scheduleFrameLocked()
+            stateLock.notifyAll()
+            windowRequestLocked(lastBusy)
+        }
+        dispatchWindowRequest(request)
+    }
+
+    fun clearPageBitmap(index: Int) {
+        synchronized(stateLock) {
+            val page = pages.getOrNull(index) ?: return
+            page.bitmap = null
+            page.width = 0
+            page.height = 0
+            page.loading = false
+            page.cardText = null
+            layoutDirty = true
+            renderRequested = true
+            scheduleFrameLocked()
+            stateLock.notifyAll()
+        }
+    }
+
+    fun setPageCard(index: Int, title: String) {
+        val request = synchronized(stateLock) {
+            val page = pages.getOrNull(index) ?: return
+            page.bitmap = null
+            page.width = width
+            page.height = max(1, (height * 0.38f).toInt())
+            page.loading = false
+            page.cardText = title
+            layoutDirty = true
             clampScrollLocked()
             renderRequested = true
             scheduleFrameLocked()
@@ -158,9 +209,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun scrollToPage(index: Int) {
         val request = synchronized(stateLock) {
             val target = index.coerceIn(0, pages.lastIndex)
-            var top = 0f
-            for (i in 0 until target) top += pageDrawHeightLocked(pages[i]) + gapPx
-            scrollOffset = top
+            rebuildLayoutLocked()
+            scrollOffset = pageTops.getOrElse(target, 0f)
             clampScrollLocked()
             lastAnchor = -1
             renderRequested = true
@@ -176,9 +226,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             surfaceReady = true
             renderRunning = true
             renderRequested = true
-            if (renderThread?.isAlive != true) {
-                renderThread = Thread(this::renderThreadLoop, "ReaderSurfaceRenderer").also { it.start() }
-            }
+            ensureRenderThreadLocked()
             scheduleFrameLocked()
             stateLock.notifyAll()
         }
@@ -200,16 +248,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val thread = synchronized(stateLock) {
             surfaceReady = false
             renderRunning = false
-            stopRenderLooperLocked()
+            stopRenderThreadLocked()
             stateLock.notifyAll()
             renderThread
-        }
-        if (thread != null && thread !== Thread.currentThread()) {
-            try {
-                thread.join(500L)
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-            }
         }
     }
 
@@ -217,7 +258,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         synchronized(stateLock) {
             surfaceReady = false
             renderRunning = false
-            stopRenderLooperLocked()
+            stopRenderThreadLocked()
             stateLock.notifyAll()
         }
         super.onDetachedFromWindow()
@@ -247,7 +288,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     val dy = lastY - event.y
                     if (!dragging && abs(dy) > touchSlop) dragging = true
                     if (dragging) {
-                        scrollOffset += dy
+                        scrollOffset += dy * DRAG_SCROLL_MULTIPLIER
                         clampScrollLocked()
                         lastY = event.y
                         renderRequested = true
@@ -281,11 +322,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     if (wasTap) {
                         null
                     } else if (abs(velocityY) > minVelocity) {
+                        val maxFlingVelocity = maxVelocity * FLING_SCROLL_MULTIPLIER
+                        val flingVelocity = (velocityY * FLING_SCROLL_MULTIPLIER)
+                            .coerceIn(-maxFlingVelocity, maxFlingVelocity)
+                            .toInt()
+                        scrollOffset += flingVelocity * FLING_IMMEDIATE_SECONDS
+                        clampScrollLocked()
                         scroller.fling(
                             0,
                             scrollOffset.toInt(),
                             0,
-                            velocityY,
+                            flingVelocity,
                             0,
                             0,
                             0,
@@ -300,7 +347,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     }
                 }
                 dispatchWindowRequest(request)
-                if (tap) listener?.onTap()
+                if (tap) mainHandler.post { listener?.onTap() }
                 requestRender()
                 return true
             }
@@ -310,23 +357,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private val frameCallback = Choreographer.FrameCallback {
         renderFrame()
-    }
-
-    private fun renderThreadLoop() {
-        Looper.prepare()
-        synchronized(stateLock) {
-            renderHandler = Handler(Looper.myLooper()!!)
-            renderChoreographer = Choreographer.getInstance()
-            scheduleFrameLocked()
-            stateLock.notifyAll()
-        }
-        Looper.loop()
-        synchronized(stateLock) {
-            renderHandler = null
-            renderChoreographer = null
-            frameScheduled = false
-            renderThread = null
-        }
     }
 
     private fun renderFrame() {
@@ -380,6 +410,21 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun drawItem(canvas: Canvas, state: DrawState, item: DrawItem) {
         val bitmap = item.bitmap
+        val cardText = item.cardText
+        if (cardText != null) {
+            paint.color = Color.rgb(12, 12, 12)
+            dst.set(0f, max(0f, item.top), state.width.toFloat(), min(state.height.toFloat(), item.top + item.pageHeight))
+            canvas.drawRect(dst, paint)
+            textPaint.textSize = 30f
+            textPaint.color = Color.rgb(170, 170, 170)
+            canvas.drawText("다음 회차", state.width / 2f, item.top + item.pageHeight / 2f - 34f, textPaint)
+            textPaint.textSize = 42f
+            textPaint.color = Color.WHITE
+            canvas.drawText(cardText, state.width / 2f, item.top + item.pageHeight / 2f + 30f, textPaint)
+            textPaint.textSize = 34f
+            textPaint.color = Color.rgb(190, 190, 190)
+            return
+        }
         if (bitmap != null && !bitmap.isRecycled) {
             val visibleTop = max(0f, item.top)
             val visibleBottom = min(state.height.toFloat(), item.top + item.pageHeight)
@@ -411,16 +456,19 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val viewWidth = max(1, width)
         val viewHeight = max(1, height)
         if (pages.isEmpty()) return DrawState(viewWidth, viewHeight, lastBusy, true, emptyList())
+        rebuildLayoutLocked()
         val items = ArrayList<DrawItem>()
-        var top = -scrollOffset
-        for (page in pages) {
+        var index = firstVisiblePageLocked(scrollOffset)
+        while (index < pages.size) {
+            val page = pages[index]
+            val top = pageTops[index] - scrollOffset
             val pageHeight = pageDrawHeightLocked(page)
             val bottom = top + pageHeight
             if (bottom >= 0f && top <= viewHeight) {
-                items.add(DrawItem(page.bitmap, page.loading, top, pageHeight))
+                items.add(DrawItem(page.bitmap, page.loading, page.cardText, top, pageHeight))
             }
-            top = bottom + gapPx
             if (top > viewHeight) break
+            index++
         }
         return DrawState(viewWidth, viewHeight, lastBusy, false, items)
     }
@@ -459,15 +507,37 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
-    private fun stopRenderLooperLocked() {
-        val handler = renderHandler ?: return
-        handler.post {
-            Choreographer.getInstance().removeFrameCallback(frameCallback)
-            Looper.myLooper()?.quitSafely()
+    private fun ensureRenderThreadLocked() {
+        if (renderThread?.isAlive == true && renderHandler != null) return
+        val thread = HandlerThread("ReaderSurfaceRenderer")
+        thread.start()
+        renderThread = thread
+        renderHandler = Handler(thread.looper)
+        renderHandler?.post {
+            synchronized(stateLock) {
+                if (!renderRunning || !surfaceReady || renderThread !== thread) {
+                    thread.quitSafely()
+                    return@post
+                }
+                renderChoreographer = Choreographer.getInstance()
+                scheduleFrameLocked()
+                stateLock.notifyAll()
+            }
         }
+    }
+
+    private fun stopRenderThreadLocked() {
+        val handler = renderHandler
+        val thread = renderThread
         renderHandler = null
         renderChoreographer = null
+        renderThread = null
         frameScheduled = false
+        if (handler == null || thread == null) return
+        handler.post {
+            Choreographer.getInstance().removeFrameCallback(frameCallback)
+            thread.quitSafely()
+        }
     }
 
     private fun windowRequestLocked(busy: Boolean): WindowRequest? {
@@ -483,20 +553,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun dispatchWindowRequest(request: WindowRequest?) {
         if (request == null) return
-        val currentListener = listener ?: return
-        currentListener.onWindowChanged(request.firstPage, request.lastPage, request.anchorPage, request.busy)
-        if (request.nearEnd) currentListener.onNearEnd(request.anchorPage)
+        mainHandler.post {
+            val currentListener = listener ?: return@post
+            currentListener.onWindowChanged(request.firstPage, request.lastPage, request.anchorPage, request.busy)
+            if (request.nearEnd) currentListener.onNearEnd(request.anchorPage)
+        }
     }
 
     private fun anchorPageLocked(): Int {
-        var top = 0f
+        rebuildLayoutLocked()
         val probe = scrollOffset + height * 0.35f
-        for (i in pages.indices) {
-            val bottom = top + pageDrawHeightLocked(pages[i]) + gapPx
-            if (probe <= bottom) return i
-            top = bottom
-        }
-        return pages.lastIndex
+        return firstVisiblePageLocked(probe).coerceIn(0, pages.lastIndex)
     }
 
     private fun clampScrollLocked() {
@@ -504,10 +571,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun totalHeightLocked(): Float {
-        if (pages.isEmpty()) return 0f
-        var total = 0f
-        for (page in pages) total += pageDrawHeightLocked(page) + gapPx
-        return max(0f, total - gapPx)
+        rebuildLayoutLocked()
+        return contentHeight
     }
 
     private fun pageDrawHeightLocked(page: Page): Float {
@@ -515,5 +580,60 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (viewWidth <= 0) return 1f
         if (page.width > 0 && page.height > 0) return max(1f, viewWidth * (page.height / page.width.toFloat()))
         return max(height * 1.4f, viewWidth * 1.35f)
+    }
+
+    private fun rebuildLayoutLocked() {
+        if (!layoutDirty && pageTops.size == pages.size) return
+        if (pageTops.size != pages.size) pageTops = FloatArrayList(pages.size)
+        var top = 0f
+        for (i in pages.indices) {
+            pageTops[i] = top
+            top += pageDrawHeightLocked(pages[i]) + gapPx
+        }
+        contentHeight = max(0f, top - gapPx)
+        layoutDirty = false
+    }
+
+    private fun firstVisiblePageLocked(position: Float): Int {
+        if (pages.isEmpty()) return 0
+        rebuildLayoutLocked()
+        var low = 0
+        var high = pages.lastIndex
+        var result = pages.lastIndex
+        while (low <= high) {
+            val mid = (low + high) ushr 1
+            val bottom = pageTops[mid] + pageDrawHeightLocked(pages[mid]) + gapPx
+            if (position <= bottom) {
+                result = mid
+                high = mid - 1
+            } else {
+                low = mid + 1
+            }
+        }
+        return result
+    }
+
+    private class FloatArrayList(size: Int) {
+        private var values = FloatArray(max(1, size))
+        var size: Int = size
+            private set
+
+        operator fun get(index: Int): Float = values[index]
+
+        operator fun set(index: Int, value: Float) {
+            if (index >= values.size) values = values.copyOf(max(index + 1, values.size * 2))
+            values[index] = value
+            if (index >= size) size = index + 1
+        }
+
+        fun getOrElse(index: Int, fallback: Float): Float {
+            return if (index in 0 until size) values[index] else fallback
+        }
+    }
+
+    private companion object {
+        private const val DRAG_SCROLL_MULTIPLIER = 1.25f
+        private const val FLING_SCROLL_MULTIPLIER = 3.5f
+        private const val FLING_IMMEDIATE_SECONDS = 0.45f
     }
 }

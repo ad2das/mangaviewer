@@ -5,8 +5,10 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Bundle
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.ViewGroup
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
@@ -21,6 +23,7 @@ import ml.melun.mangaview.mangaview.Title
 import ml.melun.mangaview.reader.ReaderLaunchPreparer
 import ml.melun.mangaview.reader.ReaderSession
 import ml.melun.mangaview.reader.ReaderSurfaceView
+import kotlin.math.abs
 
 class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.WindowListener {
     private lateinit var renderView: ReaderSurfaceView
@@ -38,9 +41,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var currentPage = 0
     private var currentManga: Manga? = null
     private var currentTitle: Title? = null
+    private var toolbarTouchSlop = 0
+    private var toolbarDownRawX = 0f
+    private var toolbarDownRawY = 0f
+    private var toolbarForwardingScroll = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        toolbarTouchSlop = ViewConfiguration.get(this).scaledTouchSlop
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.decorView.systemUiVisibility = (
             View.SYSTEM_UI_FLAG_FULLSCREEN
@@ -114,6 +122,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             60.dp(),
             Gravity.BOTTOM
         ))
+        installToolbarTouchForwarder(topBar, bottomBar, backButton, prevButton, nextButton, titleView, pageView)
         setContentView(root)
         val title = Gson().fromJson<Title?>(intent.getStringExtra("title"), object : TypeToken<Title?>() {}.type)
         val manga = Gson().fromJson<Manga?>(intent.getStringExtra("manga"), object : TypeToken<Manga?>() {}.type)
@@ -126,6 +135,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (title != null) {
             manga.title = title
             manga.titleId = title.id
+            title.eps?.let { manga.setEps(it) }
         }
         titleView.text = manga.name ?: title?.name ?: ""
         updateAdjacentButtons()
@@ -155,23 +165,23 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     override fun onPagesReady(count: Int) {
         pagesReady = true
         pageCount = count
-        updatePageLabel()
         renderView.setPageCount(count)
+        updateCurrentEpisode(currentPage)
     }
 
     override fun onPagesAppended(count: Int) {
         if (pagesReady) {
             pageCount = count
-            updatePageLabel()
             renderView.appendPageCount(count)
+            updateCurrentEpisode(currentPage)
         }
     }
 
     override fun onInitialPage(index: Int) {
         if (pagesReady) {
             currentPage = index
-            updatePageLabel()
             renderView.scrollToPage(index)
+            updateCurrentEpisode(index)
         }
     }
 
@@ -186,6 +196,17 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
     }
 
+    override fun onPageCard(index: Int, title: String) {
+        if (pagesReady) {
+            status.visibility = TextView.GONE
+            renderView.setPageCard(index, title)
+        }
+    }
+
+    override fun onPageCleared(index: Int) {
+        if (pagesReady) renderView.clearPageBitmap(index)
+    }
+
     override fun onMessage(message: String) {
         status.visibility = TextView.VISIBLE
         status.text = message
@@ -193,7 +214,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onWindowChanged(firstPage: Int, lastPage: Int, anchorPage: Int, busy: Boolean) {
         currentPage = anchorPage
-        updatePageLabel()
+        updateCurrentEpisode(anchorPage)
         session?.requestWindow(firstPage, lastPage, anchorPage, busy)
     }
 
@@ -202,21 +223,24 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     override fun onTap() {
-        toolbarVisible = !toolbarVisible
-        val visibility = if (toolbarVisible) View.VISIBLE else View.GONE
-        topBar.visibility = visibility
-        bottomBar.visibility = visibility
+        setToolbarVisible(!toolbarVisible)
     }
 
     private fun openAdjacent(next: Boolean) {
         val source = currentManga ?: return
+        val title = currentTitle ?: source.title
+        if (title != null) {
+            source.title = title
+            source.titleId = title.id
+            title.eps?.let { source.setEps(it) }
+        }
         val target = if (next) source.nextEp() else source.prevEp()
         if (target == null) return
-        val title = currentTitle ?: source.title
         target.mode = source.mode
         if (title != null) {
             target.title = title
             target.titleId = title.id
+            title.eps?.let { target.setEps(it) }
         }
         session?.cancel()
         session = null
@@ -228,6 +252,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun updateAdjacentButtons() {
         val manga = currentManga
+        val title = currentTitle ?: manga?.title
+        if (manga != null && title != null) {
+            manga.title = title
+            manga.titleId = title.id
+            title.eps?.let { manga.setEps(it) }
+        }
         prevButton.isEnabled = manga?.prevEp() != null
         nextButton.isEnabled = manga?.nextEp() != null
         prevButton.alpha = if (prevButton.isEnabled) 1f else 0.35f
@@ -236,6 +266,88 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun updatePageLabel() {
         pageView.text = if (pageCount > 0) "${currentPage + 1} / $pageCount" else "- / -"
+    }
+
+    private fun updateCurrentEpisode(anchorPage: Int) {
+        val info = session?.pageInfo(anchorPage)
+        if (info != null) {
+            currentManga = info.manga
+            titleView.text = info.title
+            pageView.text = if (info.transitionCard) {
+                "회차 전환"
+            } else {
+                "${info.localPage} / ${info.totalPages}"
+            }
+            updateAdjacentButtons()
+            return
+        }
+        updatePageLabel()
+    }
+
+    private fun installToolbarTouchForwarder(vararg views: View) {
+        for (view in views) {
+            view.setOnTouchListener { source, event -> handleToolbarTouch(source, event) }
+        }
+    }
+
+    private fun handleToolbarTouch(source: View, event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                toolbarDownRawX = event.rawX
+                toolbarDownRawY = event.rawY
+                toolbarForwardingScroll = false
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!toolbarForwardingScroll &&
+                    abs(event.rawY - toolbarDownRawY) > toolbarTouchSlop &&
+                    abs(event.rawY - toolbarDownRawY) >= abs(event.rawX - toolbarDownRawX)
+                ) {
+                    toolbarForwardingScroll = true
+                    setToolbarVisible(false)
+                    forwardToolbarTouch(MotionEvent.ACTION_DOWN, toolbarDownRawX, toolbarDownRawY, event.downTime, event.eventTime)
+                }
+                if (toolbarForwardingScroll) {
+                    forwardToolbarTouch(MotionEvent.ACTION_MOVE, event.rawX, event.rawY, event.downTime, event.eventTime)
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (toolbarForwardingScroll) {
+                    forwardToolbarTouch(event.actionMasked, event.rawX, event.rawY, event.downTime, event.eventTime)
+                    toolbarForwardingScroll = false
+                    return true
+                }
+                if (event.actionMasked == MotionEvent.ACTION_UP) source.performClick()
+                return true
+            }
+        }
+        return true
+    }
+
+    private fun forwardToolbarTouch(action: Int, rawX: Float, rawY: Float, downTime: Long, eventTime: Long) {
+        val location = IntArray(2)
+        renderView.getLocationOnScreen(location)
+        val forwarded = MotionEvent.obtain(
+            downTime,
+            eventTime,
+            action,
+            rawX - location[0],
+            rawY - location[1],
+            0
+        )
+        try {
+            renderView.dispatchTouchEvent(forwarded)
+        } finally {
+            forwarded.recycle()
+        }
+    }
+
+    private fun setToolbarVisible(visible: Boolean) {
+        toolbarVisible = visible
+        val visibility = if (visible) View.VISIBLE else View.GONE
+        topBar.visibility = visibility
+        bottomBar.visibility = visibility
     }
 
     private fun Int.dp(): Int = (this * resources.displayMetrics.density + 0.5f).toInt()

@@ -7,6 +7,7 @@ import java.util.LinkedHashMap
 
 object ReaderPreparedStore {
     private const val MAX_ENTRIES = 24
+    private const val MAX_BITMAP_BYTES = 48 * 1024 * 1024
 
     enum class Status {
         PENDING,
@@ -83,6 +84,7 @@ object ReaderPreparedStore {
                 }
                 callbacks = listeners.toList()
             }
+            trimBitmapBudget()
             for (listener in callbacks) listener.onBitmapReady(index, bitmap)
         }
 
@@ -104,6 +106,18 @@ object ReaderPreparedStore {
                 bitmaps = LinkedHashMap(bitmapMap),
                 status = currentStatus
             )
+        }
+
+        internal fun bitmapBytes(): Int = synchronized(lock) {
+            bitmapMap.values.sumOf { bitmapBytes(it).toLong() }.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        }
+
+        internal fun trimOldestBitmap(): Boolean = synchronized(lock) {
+            val iterator = bitmapMap.entries.iterator()
+            if (!iterator.hasNext()) return false
+            iterator.next()
+            iterator.remove()
+            true
         }
     }
 
@@ -148,6 +162,35 @@ object ReaderPreparedStore {
             if (!iterator.hasNext()) return
             iterator.next()
             iterator.remove()
+        }
+        trimBitmapBudgetLocked()
+    }
+
+    @Synchronized
+    private fun trimBitmapBudget() {
+        trimBitmapBudgetLocked()
+    }
+
+    private fun trimBitmapBudgetLocked() {
+        while (totalBitmapBytesLocked() > MAX_BITMAP_BYTES) {
+            var trimmed = false
+            val iterator = entries.values.iterator()
+            while (iterator.hasNext() && totalBitmapBytesLocked() > MAX_BITMAP_BYTES) {
+                trimmed = iterator.next().trimOldestBitmap() || trimmed
+            }
+            if (!trimmed) return
+        }
+    }
+
+    private fun totalBitmapBytesLocked(): Int {
+        return entries.values.sumOf { it.bitmapBytes().toLong() }.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    }
+
+    private fun bitmapBytes(bitmap: Bitmap): Int {
+        return try {
+            bitmap.allocationByteCount
+        } catch (_: Exception) {
+            bitmap.byteCount
         }
     }
 }

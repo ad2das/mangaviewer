@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
-import ml.melun.mangaview.MainApplication.getHttpClient
 import ml.melun.mangaview.MainApplication.p
 import ml.melun.mangaview.Utils
 import ml.melun.mangaview.mangaview.Decoder
@@ -12,17 +11,16 @@ import ml.melun.mangaview.mangaview.Manga
 import ml.melun.mangaview.mangaview.Title
 import ml.melun.mangaview.repository.MangaRepository
 import ml.melun.mangaview.runtime.AppDispatchers
-import okhttp3.Request
 import java.io.File
-import java.io.FileOutputStream
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
 object ReaderWarmupCoordinator {
     private const val VISIBLE_WINDOW_PAGES = 12
     private const val IMMEDIATE_WINDOW_PAGES = 16
-    private val inFlight = ConcurrentHashMap.newKeySet<String>()
+    private val inFlight = ConcurrentHashMap<String, AtomicBoolean>()
 
     @JvmStatic
     fun openKey(
@@ -53,7 +51,7 @@ object ReaderWarmupCoordinator {
         val key = stableKey(manga, launchTitle, startPage, width, exactEpisode)
         val entry = ReaderPreparedStore.get(key) ?: return null
         val snapshot = entry.snapshot()
-        return if (!snapshot.images.isNullOrEmpty() || snapshot.bitmaps.isNotEmpty()) key else null
+        return if (!snapshot.images.isNullOrEmpty()) key else null
     }
 
     @JvmStatic
@@ -89,7 +87,7 @@ object ReaderWarmupCoordinator {
         exactEpisode: Boolean
     ): String? {
         val entry = createEntry(context, manga, title, viewerWidth, exactEpisode) ?: return null
-        prepareEntry(context.applicationContext, entry, exactEpisode, true)
+        prepareEntry(context.applicationContext, entry, exactEpisode, AtomicBoolean(true))
         return entry.key
     }
 
@@ -121,13 +119,17 @@ object ReaderWarmupCoordinator {
         ) {
             return
         }
-        val flightKey = entry.key + if (immediate) ":immediate" else ":visible"
-        if (!inFlight.add(flightKey)) return
+        val immediateFlag = AtomicBoolean(immediate)
+        val existing = inFlight.putIfAbsent(entry.key, immediateFlag)
+        if (existing != null) {
+            if (immediate) existing.set(true)
+            return
+        }
         val task = Runnable {
             try {
-                prepareEntry(appContext, entry, exactEpisode, immediate)
+                prepareEntry(appContext, entry, exactEpisode, immediateFlag)
             } finally {
-                inFlight.remove(flightKey)
+                inFlight.remove(entry.key, immediateFlag)
             }
         }
         if (immediate) AppDispatchers.submitUserAction(task) else AppDispatchers.submitImageWarmup(task)
@@ -137,7 +139,7 @@ object ReaderWarmupCoordinator {
         appContext: Context,
         entry: ReaderPreparedStore.Entry,
         exactEpisode: Boolean,
-        immediate: Boolean
+        immediate: AtomicBoolean
     ) {
         try {
             val manga = entry.manga
@@ -160,10 +162,16 @@ object ReaderWarmupCoordinator {
             val startPage = entry.requestedStartPage.coerceIn(0, urls.lastIndex)
             entry.setImages(urls, startPage)
             val width = max(1, entry.requestedWidth)
-            val order = decodeOrder(startPage, urls.size, if (immediate) IMMEDIATE_WINDOW_PAGES else VISIBLE_WINDOW_PAGES)
-            for ((position, index) in order.withIndex()) {
+            val decoded = HashSet<Int>()
+            while (true) {
+                val limit = if (immediate.get()) IMMEDIATE_WINDOW_PAGES else VISIBLE_WINDOW_PAGES
+                val order = decodeOrder(startPage, urls.size, limit).filterNot { decoded.contains(it) }
+                if (order.isEmpty()) break
+                val index = order.first()
+                decoded.add(index)
                 val bitmap = decodePage(appContext, manga, urls[index], width)
-                entry.putBitmap(index, bitmap, index == startPage, position == order.lastIndex)
+                val complete = decoded.size >= minOf(urls.size, limit)
+                entry.putBitmap(index, bitmap, index == startPage, complete)
             }
         } catch (e: Exception) {
             ml.melun.mangaview.report.CrashReporter.record(e)
@@ -220,7 +228,7 @@ object ReaderWarmupCoordinator {
     }
 
     private fun decodePage(context: Context, manga: Manga, image: String, width: Int): Bitmap {
-        val source = if (manga.isOnline) onlineImageFile(context, manga, image) else null
+        val source = if (manga.isOnline) ReaderImageCache.getOrFetchFile(context, manga, image) else null
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         if (source != null) {
             BitmapFactory.decodeFile(source.absolutePath, bounds)
@@ -250,21 +258,6 @@ object ReaderWarmupCoordinator {
             }
         }
         return BitmapFactory.decodeFile(image, options)
-    }
-
-    private fun onlineImageFile(context: Context, manga: Manga, image: String): File {
-        val dir = File(context.cacheDir, "reader_warmup").apply { mkdirs() }
-        val file = File(dir, "${System.nanoTime()}_${image.hashCode()}.img")
-        val requestBuilder = Request.Builder().url(Utils.viewerImageRequestUrl(image, manga.baseMode))
-        for (entry in Utils.viewerImageRequestHeaders(image, manga.baseMode).entries) {
-            requestBuilder.addHeader(entry.key, entry.value)
-        }
-        getHttpClient().imageClient.newCall(requestBuilder.build()).execute().use { response ->
-            if (!response.isSuccessful) throw java.io.IOException("Image request failed: ${response.code}")
-            val body = response.body ?: throw java.io.IOException("Empty image body")
-            FileOutputStream(file).use { out -> body.byteStream().copyTo(out) }
-        }
-        return file
     }
 
     private fun sampleSize(sourceWidth: Int, targetWidth: Int): Int {

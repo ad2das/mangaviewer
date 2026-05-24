@@ -18,6 +18,6 @@ public class ReaderPipelinePolicyTest {
     public void idleWindowCanFillAheadWithoutFanout() {
         assertTrue(ReaderPipelinePolicy.windowAfter(false) > ReaderPipelinePolicy.windowAfter(true));
         assertEquals(2, ReaderPipelinePolicy.decodeParallelism(false));
-        assertEquals(1080, ReaderPipelinePolicy.IDLE_DECODE_WIDTH);
+        assertEquals(1440, ReaderPipelinePolicy.IDLE_DECODE_WIDTH);
     }
 }

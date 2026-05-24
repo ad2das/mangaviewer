@@ -73,7 +73,9 @@ public final class PrefetchCoordinator {
             manga.setTitle(title);
             manga.setTitleId(title.getId());
             if(index == resumeIndex)
-                ReaderWarmupCoordinator.primeVisible(appContext, manga, title);
+                ReaderWarmupCoordinator.primeImmediate(appContext, manga, title);
+            else if(index == entryIndex)
+                ReaderWarmupCoordinator.primeExactImmediate(appContext, manga, title);
             else
                 ReaderWarmupCoordinator.primeExactVisible(appContext, manga, title);
             if(lightOnly)
@@ -158,7 +160,9 @@ public final class PrefetchCoordinator {
     }
 
     static int episodePrefetchLimitForTest(boolean dataSave, boolean aggressiveAllowed, boolean ntkSite) {
-        return 1;
+        if(dataSave)
+            return 1;
+        return aggressiveAllowed ? 3 : 2;
     }
 
     public static List<Integer> visibleEpisodeTargets(List<Manga> episodes, int firstAdapterPosition,
