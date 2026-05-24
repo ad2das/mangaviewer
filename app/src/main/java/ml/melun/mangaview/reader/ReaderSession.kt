@@ -16,6 +16,7 @@ import ml.melun.mangaview.mangaview.Decoder
 import ml.melun.mangaview.mangaview.Manga
 import ml.melun.mangaview.mangaview.Title
 import ml.melun.mangaview.repository.MangaRepository
+import ml.melun.mangaview.runtime.MainThreadStallMonitor
 import java.io.File
 import java.util.LinkedHashMap
 import java.util.concurrent.ConcurrentHashMap
@@ -1075,37 +1076,40 @@ class ReaderSession(
     }
 
     private fun drainDecodeDeliveries() {
-        deliveryDrainPosted.set(false)
-        if (cancelled.get()) {
-            recycleQueuedDeliveries()
-            return
-        }
-        val busy = viewportBusy.get()
-        if (busy) {
-            if (deliveryQueue.isNotEmpty() && deliveryDrainPosted.compareAndSet(false, true)) {
-                main.postDelayed(deliveryDrainRunnable, BUSY_DELIVERY_DRAIN_DELAY_MS)
+        MainThreadStallMonitor.trace("reader_drain_decode_deliveries") {
+            deliveryDrainPosted.set(false)
+            if (cancelled.get()) {
+                recycleQueuedDeliveries()
+                return@trace
             }
-            return
-        }
-        val delayMs = deliveryDrainDelayMs()
-        if (delayMs > 0L) {
-            if (deliveryQueue.isNotEmpty() && deliveryDrainPosted.compareAndSet(false, true)) {
-                main.postDelayed(deliveryDrainRunnable, delayMs)
+            val busy = viewportBusy.get()
+            if (busy) {
+                discardBusyStaleDeliveries()
+                if (deliveryQueue.isNotEmpty() && deliveryDrainPosted.compareAndSet(false, true)) {
+                    main.postDelayed(deliveryDrainRunnable, BUSY_DELIVERY_DRAIN_DELAY_MS)
+                }
+                return@trace
             }
-            return
-        }
-        val maxDeliveries = IDLE_DELIVERY_DRAIN_LIMIT
-        var deliveredCount = 0
-        while (deliveredCount < maxDeliveries) {
-            val delivery = deliveryQueue.poll() ?: break
-            deliverDecodeResultOnMain(delivery, busy)
-            deliveredCount++
-        }
-        if (deliveryQueue.isNotEmpty() && deliveryDrainPosted.compareAndSet(false, true)) {
-            if (viewportBusy.get()) {
-                main.postDelayed(deliveryDrainRunnable, BUSY_DELIVERY_DRAIN_DELAY_MS)
-            } else {
-                main.postDelayed(deliveryDrainRunnable, IDLE_DELIVERY_FRAME_DELAY_MS)
+            val delayMs = deliveryDrainDelayMs()
+            if (delayMs > 0L) {
+                if (deliveryQueue.isNotEmpty() && deliveryDrainPosted.compareAndSet(false, true)) {
+                    main.postDelayed(deliveryDrainRunnable, delayMs)
+                }
+                return@trace
+            }
+            val maxDeliveries = IDLE_DELIVERY_DRAIN_LIMIT
+            var deliveredCount = 0
+            while (deliveredCount < maxDeliveries) {
+                val delivery = deliveryQueue.poll() ?: break
+                deliverDecodeResultOnMain(delivery, busy)
+                deliveredCount++
+            }
+            if (deliveryQueue.isNotEmpty() && deliveryDrainPosted.compareAndSet(false, true)) {
+                if (viewportBusy.get()) {
+                    main.postDelayed(deliveryDrainRunnable, BUSY_DELIVERY_DRAIN_DELAY_MS)
+                } else {
+                    main.postDelayed(deliveryDrainRunnable, IDLE_DELIVERY_FRAME_DELAY_MS)
+                }
             }
         }
     }
@@ -1439,10 +1443,10 @@ class ReaderSession(
         private const val BOUNDARY_BUSY_BYTE_AHEAD_PAGES = 0
         private const val BUSY_DELIVERY_DISCARD_LIMIT = 16
         private const val BUSY_DELIVERY_RETAIN_LIMIT = 4
-        private const val IDLE_DELIVERY_DRAIN_LIMIT = 2
+        private const val IDLE_DELIVERY_DRAIN_LIMIT = 1
         private const val BUSY_DELIVERY_DRAIN_DELAY_MS = 50L
-        private const val IDLE_DELIVERY_RESUME_DELAY_MS = 450L
-        private const val IDLE_DELIVERY_FRAME_DELAY_MS = 16L
+        private const val IDLE_DELIVERY_RESUME_DELAY_MS = 96L
+        private const val IDLE_DELIVERY_FRAME_DELAY_MS = 24L
         private const val ACTIVE_BITMAP_BYTES = 64L * 1024L * 1024L
         private const val TILE_PAGE_MAX_BYTES = 24L * 1024L * 1024L
         private const val REPLACED_BITMAP_RECYCLE_DELAY_MS = 750L
