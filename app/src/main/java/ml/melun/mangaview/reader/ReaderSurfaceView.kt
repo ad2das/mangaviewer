@@ -35,6 +35,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     interface WindowListener {
         fun onWindowChanged(firstPage: Int, lastPage: Int, anchorPage: Int, busy: Boolean)
         fun onNearEnd(anchorPage: Int)
+        fun onBoundaryReached(direction: Int, anchorPage: Int)
         fun onTap()
     }
 
@@ -50,6 +51,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val bitmap: Bitmap?,
         val loading: Boolean,
         val cardText: String?,
+        val pageWidth: Float,
         val top: Float,
         val pageHeight: Float
     )
@@ -68,6 +70,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val anchorPage: Int,
         val busy: Boolean,
         val nearEnd: Boolean
+    )
+
+    private data class BoundaryRequest(
+        val direction: Int,
+        val anchorPage: Int
     )
 
     private data class DrawTiming(
@@ -102,7 +109,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val minVelocity = ViewConfiguration.get(context).scaledMinimumFlingVelocity
     private val maxVelocity = ViewConfiguration.get(context).scaledMaximumFlingVelocity
-    private val gapPx = 2
+    private var pageGapPx = DEFAULT_PAGE_GAP_PX
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var velocityTracker: VelocityTracker? = null
@@ -144,6 +151,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var pendingHistorySamples = 0
     private var pendingWindowRequest: WindowRequest? = null
     private var windowDispatchPosted = false
+    private var boundaryArmedDirection = 0
 
     init {
         holder.addCallback(this)
@@ -154,11 +162,28 @@ class ReaderSurfaceView @JvmOverloads constructor(
         this.listener = listener
     }
 
+    fun setPageGapPx(gapPx: Int) {
+        var request: WindowRequest? = null
+        synchronized(stateLock) {
+            val next = max(0, gapPx)
+            if (pageGapPx == next) return
+            pageGapPx = next
+            layoutDirty = true
+            clampScrollLocked()
+            renderRequested = true
+            scheduleFrameLocked()
+            stateLock.notifyAll()
+            request = windowRequestLocked(lastBusy)
+        }
+        dispatchWindowRequest(request)
+    }
+
     fun setPageCount(count: Int) {
         val request = synchronized(stateLock) {
             pages.clear()
             repeat(max(0, count)) { pages.add(Page()) }
             scrollOffset = 0f
+            boundaryArmedDirection = 0
             lastAnchor = -1
             layoutDirty = true
             renderRequested = true
@@ -352,6 +377,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     downY = event.y
                     pointerDown = true
                     dragging = false
+                    boundaryArmedDirection = 0
                     setBusyLocked(true)
                 }
                 dispatchWindowRequest(request)
@@ -366,6 +392,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     if (!dragging && abs(dy) > touchSlop) dragging = true
                     if (dragging) {
                         val busyRequest = setBusyLocked(true)
+                        val direction = directionForDelta(dy)
+                        if (direction != 0) boundaryArmedDirection = direction
                         scrollOffset += dy * DRAG_SCROLL_MULTIPLIER
                         clampScrollLocked()
                         lastY = event.y
@@ -393,18 +421,21 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     tracker.recycle()
                 }
                 velocityTracker = null
-                val request = synchronized(stateLock) {
+                val result = synchronized(stateLock) {
                     noteInputLocked(event)
-                    val wasTap = !dragging && abs(event.y - downY) <= touchSlop
+                    val wasReleased = event.actionMasked == MotionEvent.ACTION_UP
+                    val wasTap = wasReleased && !dragging && abs(event.y - downY) <= touchSlop
                     tap = wasTap
                     pointerDown = false
                     dragging = false
                     if (wasTap) {
-                        setBusyLocked(false)
-                    } else if (abs(velocityY) > minVelocity) {
+                        boundaryArmedDirection = 0
+                        setBusyLocked(false) to null
+                    } else if (wasReleased && abs(velocityY) > minVelocity) {
                         val flingVelocity = (velocityY * FLING_SCROLL_MULTIPLIER)
                             .coerceIn(-maxVelocity.toFloat(), maxVelocity.toFloat())
                             .toInt()
+                        boundaryArmedDirection = directionForDelta(flingVelocity.toFloat())
                         val busyRequest = setBusyLocked(true)
                         scroller.fling(
                             0,
@@ -419,12 +450,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         renderRequested = true
                         scheduleFrameLocked()
                         stateLock.notifyAll()
-                        busyRequest ?: windowRequestLocked(true)
+                        (busyRequest ?: windowRequestLocked(true)) to null
                     } else {
-                        setBusyLocked(false)
+                        val request = setBusyLocked(false)
+                        val boundary = if (wasReleased) boundaryRequestLocked() else null
+                        if (!wasReleased) boundaryArmedDirection = 0
+                        request to boundary
                     }
                 }
-                dispatchWindowRequest(request)
+                dispatchWindowRequest(result.first)
+                dispatchBoundaryRequest(result.second)
                 if (tap) mainHandler.post { listener?.onTap() }
                 requestRender()
                 return true
@@ -443,6 +478,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             frameScheduled = false
             if (!renderRunning || !surfaceReady) return
             var request: WindowRequest? = null
+            var boundary: BoundaryRequest? = null
             val scrolling = try {
                 scroller.computeScrollOffset()
             } catch (_: ArrayIndexOutOfBoundsException) {
@@ -455,20 +491,23 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 renderRequested = true
                 request = windowRequestLocked(true)
             }
+            val wasBusy = lastBusy
             val busyNow = pointerDown || dragging || scrolling || !scroller.isFinished
             if (busyNow != lastBusy) {
                 request = setBusyLocked(busyNow) ?: request
             } else if (busyNow) {
                 request = windowRequestLocked(true) ?: request
             }
+            if (wasBusy && !busyNow) boundary = boundaryRequestLocked()
             val state = buildDrawStateLocked(busyNow)
             renderRequested = false
             if (busyNow) scheduleFrameLocked()
-            request to state
+            Triple(request, boundary, state)
         }
         dispatchWindowRequest(requestAndState.first)
-        val timing = drawState(frameTimeNanos, callbackStartNs, requestAndState.second)
-        recordFrameStats(timing, requestAndState.second.busy)
+        dispatchBoundaryRequest(requestAndState.second)
+        val timing = drawState(frameTimeNanos, callbackStartNs, requestAndState.third)
+        recordFrameStats(timing, requestAndState.third.busy)
     }
 
     private fun drawState(frameTimeNs: Long, callbackStartNs: Long, state: DrawState): DrawTiming {
@@ -543,6 +582,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             return
         }
         if (bitmap != null && !bitmap.isRecycled) {
+            val drawWidth = item.pageWidth.coerceIn(1f, state.width.toFloat())
+            val left = ((state.width - drawWidth) / 2f).coerceAtLeast(0f)
             val visibleTop = max(0f, item.top)
             val visibleBottom = min(state.height.toFloat(), item.top + item.pageHeight)
             if (visibleBottom <= visibleTop) return
@@ -553,13 +594,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 .toInt()
                 .coerceIn(sourceTop + 1, bitmap.height)
             src.set(0, sourceTop, bitmap.width, sourceBottom)
-            dst.set(0f, visibleTop, state.width.toFloat(), visibleBottom)
+            dst.set(left, visibleTop, left + drawWidth, visibleBottom)
             paint.isFilterBitmap = !state.busy
             canvas.drawBitmap(bitmap, src, dst, paint)
             return
         }
         paint.color = Color.rgb(18, 18, 18)
-        dst.set(0f, max(0f, item.top), state.width.toFloat(), min(state.height.toFloat(), item.top + item.pageHeight))
+        val drawWidth = item.pageWidth.coerceIn(1f, state.width.toFloat())
+        val left = ((state.width - drawWidth) / 2f).coerceAtLeast(0f)
+        dst.set(left, max(0f, item.top), left + drawWidth, min(state.height.toFloat(), item.top + item.pageHeight))
         canvas.drawRect(dst, paint)
         canvas.drawText(
             if (item.loading) "불러오는 중" else "대기 중",
@@ -582,7 +625,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val pageHeight = pageDrawHeightLocked(page)
             val bottom = top + pageHeight
             if (bottom >= 0f && top <= viewHeight) {
-                items.add(DrawItem(page.bitmap, page.loading, page.cardText, top, pageHeight))
+                items.add(DrawItem(page.bitmap, page.loading, page.cardText, pageDrawWidthLocked(page), top, pageHeight))
             }
             if (top > viewHeight) break
             index++
@@ -692,6 +735,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
+    private fun dispatchBoundaryRequest(request: BoundaryRequest?) {
+        if (request == null) return
+        mainHandler.post {
+            listener?.onBoundaryReached(request.direction, request.anchorPage)
+        }
+    }
+
     private fun anchorPageLocked(): Int {
         rebuildLayoutLocked()
         val probe = scrollOffset + height * 0.35f
@@ -702,6 +752,20 @@ class ReaderSurfaceView @JvmOverloads constructor(
         scrollOffset = scrollOffset.coerceIn(0f, max(0f, totalHeightLocked() - height))
     }
 
+    private fun boundaryRequestLocked(): BoundaryRequest? {
+        val direction = boundaryArmedDirection
+        boundaryArmedDirection = 0
+        if (direction == 0 || pages.isEmpty() || width <= 0 || height <= 0) return null
+        val maxScroll = max(0f, totalHeightLocked() - height)
+        val atStart = scrollOffset <= BOUNDARY_EPSILON_PX
+        val atEnd = scrollOffset >= maxScroll - BOUNDARY_EPSILON_PX
+        return when {
+            direction == DIRECTION_PREVIOUS && atStart -> BoundaryRequest(direction, anchorPageLocked())
+            direction == DIRECTION_NEXT && atEnd -> BoundaryRequest(direction, anchorPageLocked())
+            else -> null
+        }
+    }
+
     private fun totalHeightLocked(): Float {
         rebuildLayoutLocked()
         return contentHeight
@@ -710,8 +774,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun pageDrawHeightLocked(page: Page): Float {
         val viewWidth = width
         if (viewWidth <= 0) return 1f
-        if (page.width > 0 && page.height > 0) return max(1f, viewWidth * (page.height / page.width.toFloat()))
+        if (page.width > 0 && page.height > 0) return max(1f, pageDrawWidthLocked(page) * (page.height / page.width.toFloat()))
         return max(height * 1.4f, viewWidth * 1.35f)
+    }
+
+    private fun pageDrawWidthLocked(page: Page): Float {
+        val viewWidth = width
+        if (viewWidth <= 0) return 1f
+        if (page.width > 0) return min(viewWidth.toFloat(), page.width.toFloat())
+        return viewWidth.toFloat()
     }
 
     private fun rebuildLayoutLocked() {
@@ -720,9 +791,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var top = 0f
         for (i in pages.indices) {
             pageTops[i] = top
-            top += pageDrawHeightLocked(pages[i]) + gapPx
+            top += pageDrawHeightLocked(pages[i]) + pageGapPx
         }
-        contentHeight = max(0f, top - gapPx)
+        contentHeight = max(0f, top - pageGapPx)
         layoutDirty = false
     }
 
@@ -734,7 +805,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var result = pages.lastIndex
         while (low <= high) {
             val mid = (low + high) ushr 1
-            val bottom = pageTops[mid] + pageDrawHeightLocked(pages[mid]) + gapPx
+            val bottom = pageTops[mid] + pageDrawHeightLocked(pages[mid]) + pageGapPx
             if (position <= bottom) {
                 result = mid
                 high = mid - 1
@@ -743,6 +814,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
         }
         return result
+    }
+
+    private fun directionForDelta(delta: Float): Int {
+        return when {
+            delta > 0f -> DIRECTION_NEXT
+            delta < 0f -> DIRECTION_PREVIOUS
+            else -> 0
+        }
     }
 
     private fun isNearVisibleLocked(index: Int, extraPages: Int): Boolean {
@@ -917,11 +996,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
-    private companion object {
+    companion object {
+        const val DIRECTION_PREVIOUS = -1
+        const val DIRECTION_NEXT = 1
+
         private const val TAG = "ReaderSurfaceStats"
         private const val DEFAULT_FRAME_BUDGET_MS = 16.67f
         private const val MISSED_VSYNC_FACTOR = 1.5f
         private const val MIN_FRAME_SAMPLES = 8
+        private const val DEFAULT_PAGE_GAP_PX = 2
+        private const val BOUNDARY_EPSILON_PX = 2f
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
     }

@@ -20,10 +20,13 @@ import com.google.gson.reflect.TypeToken
 import ml.melun.mangaview.MainApplication.p
 import ml.melun.mangaview.Utils
 import ml.melun.mangaview.mangaview.Manga
+import ml.melun.mangaview.mangaview.MTitle
 import ml.melun.mangaview.mangaview.Title
 import ml.melun.mangaview.reader.ReaderLaunchPreparer
 import ml.melun.mangaview.reader.ReaderSession
 import ml.melun.mangaview.reader.ReaderSurfaceView
+import ml.melun.mangaview.repository.MangaRepository
+import ml.melun.mangaview.runtime.AppDispatchers
 import kotlin.math.abs
 
 class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.WindowListener {
@@ -50,7 +53,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var lastSavedPage = -1
     private var lastBusyUiUpdateMs = 0L
     private var pendingAnchorAfterBusy = -1
+    private var adjacentNavigationInFlight = false
+    private var episodeListFetchAttempted = false
     private var destroyed = false
+
+    private data class AdjacentResolution(
+        val target: Manga?,
+        val title: Title?,
+        val result: Int,
+        val fetchedEpisodes: Boolean
+    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -138,6 +150,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
         currentManga = manga
         currentTitle = title
+        renderView.setPageGapPx(pageGapForBaseMode(manga.baseMode))
         if (title != null) {
             manga.title = title
             manga.titleId = title.id
@@ -245,26 +258,63 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         session?.prepareNextEpisode(anchorPage)
     }
 
+    override fun onBoundaryReached(direction: Int, anchorPage: Int) {
+        if (destroyed || isFinishing) return
+        session?.pageInfo(anchorPage)?.let {
+            if (!it.transitionCard) currentManga = it.manga
+        }
+        openAdjacent(direction == ReaderSurfaceView.DIRECTION_NEXT)
+    }
+
     override fun onTap() {
         setToolbarVisible(!toolbarVisible)
     }
 
     private fun openAdjacent(next: Boolean) {
         val source = currentManga ?: return
-        val title = currentTitle ?: source.title
-        if (title != null) {
-            source.title = title
-            source.titleId = title.id
-            title.eps?.let { source.setEps(it) }
+        if (adjacentNavigationInFlight) return
+        val immediate = resolveAdjacent(source, next, false)
+        if (immediate.target != null) {
+            launchAdjacent(source, immediate.target, immediate.title)
+            return
         }
-        val target = if (next) source.nextEp() else source.prevEp()
-        if (target == null) return
+        if (!canFetchMissingAdjacent(source, immediate.title, immediate.target)) {
+            updateAdjacentButtons()
+            return
+        }
+        adjacentNavigationInFlight = true
+        updateAdjacentButtons()
+        status.visibility = TextView.VISIBLE
+        status.text = "회차 확인 중"
+        AppDispatchers.submitUserAction {
+            val resolved = resolveAdjacent(source, next, true)
+            runOnUiThread {
+                finishAdjacentResolution(source, resolved)
+            }
+        }
+    }
+
+    private fun finishAdjacentResolution(source: Manga, resolved: AdjacentResolution) {
+        adjacentNavigationInFlight = false
+        if (destroyed || isFinishing) return
+        if (resolved.fetchedEpisodes) episodeListFetchAttempted = true
+        currentTitle = resolved.title ?: currentTitle
+        if (resolved.target != null) {
+            launchAdjacent(source, resolved.target, resolved.title)
+            return
+        }
+        if (resolved.result == Title.LOAD_CAPTCHA) {
+            status.visibility = TextView.VISIBLE
+            status.text = "캡차 확인이 필요합니다"
+        } else if (pagesReady) {
+            status.visibility = TextView.GONE
+        }
+        updateAdjacentButtons()
+    }
+
+    private fun launchAdjacent(source: Manga, target: Manga, title: Title?) {
         target.mode = source.mode
-        if (title != null) {
-            target.title = title
-            target.titleId = title.id
-            title.eps?.let { target.setEps(it) }
-        }
+        attachEpisodeList(title, target)
         session?.cancel()
         session = null
         Utils.openViewerPrepared(this, target, 0, intent.getBooleanExtra("returnToEpisodes", false),
@@ -276,15 +326,95 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun updateAdjacentButtons() {
         val manga = currentManga
         val title = currentTitle ?: manga?.title
-        if (manga != null && title != null) {
-            manga.title = title
-            manga.titleId = title.id
-            title.eps?.let { manga.setEps(it) }
+        if (manga != null) attachEpisodeList(title, manga)
+        if (adjacentNavigationInFlight) {
+            setAdjacentButtonState(false, false)
+            return
         }
-        prevButton.isEnabled = manga?.prevEp() != null
-        nextButton.isEnabled = manga?.nextEp() != null
+        val previous = if (manga == null) null else adjacentEpisode(manga, false)
+        val next = if (manga == null) null else adjacentEpisode(manga, true)
+        prevButton.isEnabled = shouldEnableAdjacentButton(
+            previous != null,
+            canFetchMissingAdjacent(manga, title, previous)
+        )
+        nextButton.isEnabled = shouldEnableAdjacentButton(
+            next != null,
+            canFetchMissingAdjacent(manga, title, next)
+        )
         prevButton.alpha = if (prevButton.isEnabled) 1f else 0.35f
         nextButton.alpha = if (nextButton.isEnabled) 1f else 0.35f
+    }
+
+    private fun setAdjacentButtonState(previous: Boolean, next: Boolean) {
+        prevButton.isEnabled = previous
+        nextButton.isEnabled = next
+        prevButton.alpha = if (previous) 1f else 0.35f
+        nextButton.alpha = if (next) 1f else 0.35f
+    }
+
+    private fun resolveAdjacent(source: Manga, next: Boolean, fetchEpisodes: Boolean): AdjacentResolution {
+        val title = currentTitle ?: source.title
+        restoreTitleEpisodes(title, source)
+        attachEpisodeList(title, source)
+        var target = adjacentEpisode(source, next)
+        var result = Title.LOAD_OK
+        var fetchedEpisodes = false
+        if (target == null && fetchEpisodes && source.isOnline && title != null) {
+            result = MangaRepository.fetchEpisodesForeground(title, MangaRepository.cancellation())
+            if (result == Title.LOAD_OK) {
+                fetchedEpisodes = true
+                restoreTitleEpisodes(title, source)
+                attachEpisodeList(title, source)
+                target = adjacentEpisode(source, next)
+            }
+        }
+        if (target != null) {
+            target.mode = source.mode
+            attachEpisodeList(title, target)
+        }
+        return AdjacentResolution(target, title, result, fetchedEpisodes)
+    }
+
+    private fun adjacentEpisode(manga: Manga, next: Boolean): Manga? {
+        return if (next) manga.nextEp() else manga.prevEp()
+    }
+
+    private fun canFetchMissingAdjacent(manga: Manga?, title: Title?, target: Manga?): Boolean {
+        return target == null && !episodeListFetchAttempted && manga?.isOnline == true && title != null
+    }
+
+    private fun restoreTitleEpisodes(title: Title?, target: Manga?) {
+        if (title == null || target == null) return
+        val targetEpisodes = Utils.snapshotEpisodes(target)
+        val titleEpisodes = Utils.snapshotEpisodes(title)
+        if (targetEpisodes.size > 1 && !containsEpisode(titleEpisodes, target) && titleEpisodes.size < targetEpisodes.size) {
+            title.setEps(targetEpisodes)
+        }
+        title.ensureProgressEpisodes(target)
+    }
+
+    private fun attachEpisodeList(title: Title?, target: Manga?) {
+        if (title == null || target == null) return
+        title.ensureProgressEpisodes(target)
+        val episodes = Utils.snapshotEpisodes(title)
+        for (episode in episodes) {
+            episode?.let {
+                it.title = title
+                it.titleId = title.id
+            }
+        }
+        target.title = title
+        target.titleId = title.id
+        if (episodes.isNotEmpty() && containsEpisode(episodes, target)) {
+            val targetEpisodes = Utils.snapshotEpisodes(target)
+            if (targetEpisodes.isEmpty() || episodes.size >= targetEpisodes.size) target.setEps(episodes)
+        }
+        currentTitle = title
+    }
+
+    private fun containsEpisode(episodes: List<Manga>?, target: Manga?): Boolean {
+        if (episodes == null || target == null) return false
+        return episodes.any { Manga.sameEpisodeIdentity(it, target) }
     }
 
     private fun updatePageLabel() {
@@ -391,7 +521,25 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun Int.dp(): Int = (this * resources.displayMetrics.density + 0.5f).toInt()
 
-    private companion object {
+    companion object {
         private const val BUSY_UI_UPDATE_INTERVAL_MS = 250L
+        private const val DEFAULT_PAGE_GAP_PX = 2
+        private const val WEBTOON_PAGE_GAP_PX = 0
+
+        @JvmStatic
+        fun pageGapForBaseModeForTest(baseMode: Int): Int = pageGapForBaseMode(baseMode)
+
+        @JvmStatic
+        fun shouldEnableAdjacentButtonForTest(hasAdjacent: Boolean, canFetchMissingAdjacent: Boolean): Boolean {
+            return shouldEnableAdjacentButton(hasAdjacent, canFetchMissingAdjacent)
+        }
+
+        private fun pageGapForBaseMode(baseMode: Int): Int {
+            return if (baseMode == MTitle.base_webtoon) WEBTOON_PAGE_GAP_PX else DEFAULT_PAGE_GAP_PX
+        }
+
+        private fun shouldEnableAdjacentButton(hasAdjacent: Boolean, canFetchMissingAdjacent: Boolean): Boolean {
+            return hasAdjacent || canFetchMissingAdjacent
+        }
     }
 }

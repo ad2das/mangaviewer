@@ -327,7 +327,7 @@ class ReaderSession(
                 }
                 anchorManga.title = currentTitle
                 anchorManga.titleId = currentTitle.id
-                val next = anchorManga.prevEp() ?: return@execute
+                val next = anchorManga.nextEp() ?: return@execute
                 next.title = currentTitle
                 next.titleId = currentTitle.id
                 if (episodes.isNotEmpty()) next.setEps(episodes)
@@ -337,21 +337,6 @@ class ReaderSession(
                 }
                 val nextUrls = MangaRepository.imageUrls(next, appContext)
                 if (nextUrls.isNullOrEmpty()) return@execute
-                val start = pages.size
-                pages.add(PageRef(next, null, next.name ?: "다음 회차"))
-                pages.addAll(nextUrls.map { PageRef(next, it) })
-                main.post {
-                    if (!cancelled.get()) {
-                        listener.onPagesAppended(pages.size)
-                        requestWindow(
-                            max(start, anchor),
-                            minOf(pages.lastIndex, start + ReaderPipelinePolicy.INITIAL_WINDOW_AFTER),
-                            start,
-                            false,
-                            false
-                        )
-                    }
-                }
             } catch (e: Exception) {
                 if (!cancelled.get()) ml.melun.mangaview.report.CrashReporter.record(e)
             } finally {
