@@ -70,6 +70,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var episodeListFetchAttempted = false
     private var destroyed = false
     private var progressSaveArmed = false
+    private var pendingInitialRestorePage = -1
+    private var pendingInitialRestoreOffset = 0
     private val progressHandler = Handler(Looper.getMainLooper())
     private val statusHandler = Handler(Looper.getMainLooper())
     private var pendingProgressInfo: ReaderSession.PageInfo? = null
@@ -278,9 +280,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (pagesReady) {
             currentPage = index
             val initialManga = session?.pageInfo(index)?.manga ?: currentManga
-            val offset = p?.getViewerBookmarkOffset(initialManga) ?: 0
-            renderView.scrollToPage(index, offset)
-            updateCurrentEpisode(index, offset, saveProgress = false)
+            pendingInitialRestorePage = index
+            pendingInitialRestoreOffset = p?.getViewerBookmarkOffset(initialManga) ?: 0
+            renderView.scrollToPage(index, 0)
+            updateCurrentEpisode(index, pendingInitialRestoreOffset, saveProgress = false)
+            applyPendingInitialRestoreIfReady()
         }
     }
 
@@ -289,7 +293,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     override fun onPageBoundsReady(index: Int, width: Int, height: Int) {
-        if (pagesReady) renderView.setPageBounds(index, width, height)
+        if (pagesReady) {
+            renderView.setPageBounds(index, width, height)
+            if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
+        }
     }
 
     override fun onPageReady(index: Int, bitmap: Bitmap) {
@@ -297,6 +304,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             if (pagesReady) {
                 hideBoundaryStatus()
                 renderView.setPageBitmap(index, bitmap)
+                if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
             }
         }
     }
@@ -306,6 +314,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             if (pagesReady) {
                 hideBoundaryStatus()
                 renderView.setPageTiles(index, pageWidth, pageHeight, tiles)
+                if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
             }
         }
     }
@@ -323,8 +332,23 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (pagesReady) renderView.clearPageBitmap(index)
     }
 
+    private fun applyPendingInitialRestoreIfReady() {
+        val page = pendingInitialRestorePage
+        if (page < 0) return
+        val info = session?.pageInfo(page) ?: return
+        if (!info.layoutReady) return
+        val offset = pendingInitialRestoreOffset
+        pendingInitialRestorePage = -1
+        pendingInitialRestoreOffset = 0
+        currentPage = page
+        renderView.scrollToPage(page, offset)
+        updateCurrentEpisode(page, offset, saveProgress = false)
+    }
+
     override fun onMessage(message: String) {
         pendingBoundaryStatus = false
+        pendingInitialRestorePage = -1
+        pendingInitialRestoreOffset = 0
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         status.visibility = TextView.VISIBLE
         status.text = message
