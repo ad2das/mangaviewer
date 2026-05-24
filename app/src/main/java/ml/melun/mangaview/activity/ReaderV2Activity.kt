@@ -2,15 +2,18 @@ package ml.melun.mangaview.activity
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.text.TextUtils
+import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ViewGroup
@@ -29,6 +32,7 @@ import ml.melun.mangaview.mangaview.Manga
 import ml.melun.mangaview.mangaview.MTitle
 import ml.melun.mangaview.mangaview.Title
 import ml.melun.mangaview.reader.ReaderLaunchPreparer
+import ml.melun.mangaview.reader.ReaderWarmupCoordinator
 import ml.melun.mangaview.reader.ReaderSession
 import ml.melun.mangaview.reader.ReaderSurfaceView
 import ml.melun.mangaview.reader.ReaderTile
@@ -56,6 +60,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var currentPage = 0
     private var currentManga: Manga? = null
     private var currentTitle: Title? = null
+    private var resultIntent: Intent? = null
     private var toolbarTouchSlop = 0
     private var toolbarDownRawX = 0f
     private var toolbarDownRawY = 0f
@@ -65,6 +70,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var lastSavedOffset = Int.MIN_VALUE
     private var lastSavedSide = -1
     private var lastDisplayedPageText = ""
+    private var lastDisplayedEpisodeId = -1
+    private var lastDisplayedEpisodeTitle = ""
     private var pendingAnchorAfterBusy = -1
     private var adjacentNavigationInFlight = false
     private var episodeListFetchAttempted = false
@@ -100,7 +107,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val target: Manga?,
         val title: Title?,
         val result: Int,
-        val fetchedEpisodes: Boolean
+        val fetchedEpisodes: Boolean,
+        val preparedKey: String? = null
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -108,11 +116,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         toolbarTouchSlop = ViewConfiguration.get(this).scaledTouchSlop
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.BLACK))
-        window.decorView.systemUiVisibility = (
-            View.SYSTEM_UI_FLAG_FULLSCREEN
-                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-        )
+        window.navigationBarColor = Color.BLACK
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            window.decorView.systemUiVisibility = window.decorView.systemUiVisibility and
+                View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR.inv()
+        }
+        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN
         val root = FrameLayout(this)
         renderView = ReaderSurfaceView(this).also { it.setWindowListener(this) }
         topBar = LinearLayout(this).apply {
@@ -152,7 +164,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
         prevButton = Button(this).apply {
             text = "이전"
-            setOnClickListener { openAdjacent(false) }
+            setOnClickListener {
+                Log.d(TAG, "toolbar_prev_click")
+                openAdjacent(false)
+            }
         }
         episodeButton = Button(this).apply {
             text = "회차"
@@ -160,11 +175,17 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
             background = roundedBackground(0xff2f6df6.toInt(), 0x55ffffff, 8.dp())
-            setOnClickListener { showEpisodePicker() }
+            setOnClickListener {
+                Log.d(TAG, "toolbar_episode_click")
+                showEpisodePicker()
+            }
         }
         nextButton = Button(this).apply {
             text = "다음"
-            setOnClickListener { openAdjacent(true) }
+            setOnClickListener {
+                Log.d(TAG, "toolbar_next_click")
+                openAdjacent(true)
+            }
         }
         autoCutButton = Button(this).apply {
             textSize = 13f
@@ -238,9 +259,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         status.text = displayEpisodeTitle(manga, title)
         root.post {
             if (destroyed || isFinishing) return@post
-            startReaderSession(manga, title, intent.getStringExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY))
+            startReaderSession(
+                manga,
+                title,
+                intent.getStringExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY),
+                intent.getBooleanExtra(ViewerActivity.EXTRA_START_AT_FIRST_PAGE, false)
+            )
         }
-        if (intent.getBooleanExtra("recent", false)) setResult(RESULT_OK)
+        updateResultEpisode(manga)
         if (!manga.isOnline) p?.removeViewerBookmark(manga)
     }
 
@@ -443,23 +469,37 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun openAdjacent(next: Boolean) {
         val source = currentManga ?: return
+        Log.d(TAG, "open_adjacent next=$next sourceId=${source.id} sourceName=${source.name}")
         if (adjacentNavigationInFlight) return
-        val immediate = resolveAdjacent(source, next, false)
-        if (immediate.target != null) {
-            launchAdjacent(source, immediate.target, immediate.title)
-            return
-        }
-        if (!canFetchMissingAdjacent(source, immediate.title, immediate.target)) {
-            updateAdjacentButtons()
-            return
-        }
         adjacentNavigationInFlight = true
-        updateAdjacentButtons()
+        setAdjacentButtonState(false, false)
         status.visibility = TextView.VISIBLE
         status.text = "회차 확인 중"
         AppDispatchers.submitUserAction {
-            val resolved = resolveAdjacent(source, next, true)
+            val resolved = resolveAdjacent(source, next, true).let { resolution ->
+                val target = resolution.target
+                if (target == null) {
+                    resolution
+                } else {
+                    val width = readerWidthPx()
+                    val preparedKey = ReaderWarmupCoordinator.readyKey(
+                        applicationContext,
+                        target,
+                        resolution.title,
+                        width,
+                        true
+                    ) ?: ReaderWarmupCoordinator.openKey(
+                        applicationContext,
+                        target,
+                        resolution.title,
+                        width,
+                        true
+                    )
+                    resolution.copy(preparedKey = preparedKey)
+                }
+            }
             runOnUiThread {
+                Log.d(TAG, "open_adjacent resolved next=$next targetId=${resolved.target?.id} targetName=${resolved.target?.name} result=${resolved.result}")
                 finishAdjacentResolution(source, resolved)
             }
         }
@@ -471,7 +511,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (resolved.fetchedEpisodes) episodeListFetchAttempted = true
         currentTitle = resolved.title ?: currentTitle
         if (resolved.target != null) {
-            launchAdjacent(source, resolved.target, resolved.title)
+            launchAdjacent(source, resolved.target, resolved.title, resolved.preparedKey)
             return
         }
         if (resolved.result == Title.LOAD_CAPTCHA) {
@@ -483,20 +523,37 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         updateAdjacentButtons()
     }
 
-    private fun launchAdjacent(source: Manga, target: Manga, title: Title?) {
+    private fun launchAdjacent(source: Manga, target: Manga, title: Title?, preparedKey: String? = null) {
+        Log.d(TAG, "launch_adjacent sourceId=${source.id} targetId=${target.id} targetName=${target.name}")
+        saveCurrentReadingProgress()
         target.mode = source.mode
         attachEpisodeList(title, target)
-        renderView.stopRenderingAndClearPages()
-        session?.cancel()
-        session = null
-        Utils.openViewerPrepared(this, target, 0, intent.getBooleanExtra("returnToEpisodes", false),
-            true, false, title, title != null, true)
-        finish()
-        overridePendingTransition(0, 0)
+        currentManga = target
+        currentTitle = title ?: target.title ?: currentTitle
+        val displayTitle = fastDisplayEpisodeTitle(target, currentTitle)
+        titleView.text = displayTitle
+        status.text = displayTitle
+        lastDisplayedEpisodeId = target.id
+        lastDisplayedEpisodeTitle = displayTitle
+        updateResultEpisode(target)
+        adjacentNavigationInFlight = false
+        setAdjacentButtonState(false, false)
+        startReaderSession(
+            target,
+            currentTitle,
+            preparedKey,
+            startAtFirstPage = true,
+            clearViewImmediately = false
+        )
+        primeAdjacentLaunchWindow(currentTitle, adjacentEpisode(target, true))
+        statusHandler.postDelayed({
+            if (!destroyed && !isFinishing) updateAdjacentButtons()
+        }, ADJACENT_BUTTON_REFRESH_DELAY_MS)
     }
 
     private fun showEpisodePicker() {
         val source = currentManga ?: return
+        Log.d(TAG, "show_episode_picker sourceId=${source.id} sourceName=${source.name}")
         val title = currentTitle ?: source.title
         restoreTitleEpisodes(title, source)
         attachEpisodeList(title, source)
@@ -507,17 +564,26 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             return
         }
         val labels = episodes.mapIndexed { index, episode ->
-            episode?.name?.takeIf { it.isNotBlank() } ?: "${index + 1}화"
+            episodeDisplayName(episode, episodes, index, title)
         }.toTypedArray()
-        AlertDialog.Builder(this)
+        val currentIndex = episodeIndex(episodes, source)
+        val dialog = AlertDialog.Builder(this)
             .setTitle("회차 선택")
-            .setItems(labels) { dialog, which ->
+            .setSingleChoiceItems(labels, currentIndex) { dialog, which ->
                 dialog.dismiss()
-                val target = episodes.getOrNull(which) ?: return@setItems
-                if (Manga.sameEpisodeIdentity(source, target)) return@setItems
+                val target = episodes.getOrNull(which) ?: return@setSingleChoiceItems
+                if (Manga.sameEpisodeIdentity(source, target)) return@setSingleChoiceItems
                 launchAdjacent(source, target, title)
             }
-            .show()
+            .create()
+        dialog.setOnShowListener {
+            if (currentIndex >= 0) {
+                dialog.listView?.post {
+                    dialog.listView?.setSelectionFromTop(currentIndex, 96.dp())
+                }
+            }
+        }
+        dialog.show()
     }
 
     private fun toggleAutoCut() {
@@ -538,7 +604,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         )
     }
 
-    private fun startReaderSession(manga: Manga, title: Title?, preparedKey: String?) {
+    private fun startReaderSession(
+        manga: Manga,
+        title: Title?,
+        preparedKey: String?,
+        startAtFirstPage: Boolean = false,
+        clearViewImmediately: Boolean = true
+    ) {
         pagesReady = false
         pageCount = 0
         currentPage = 0
@@ -560,16 +632,17 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         status.visibility = TextView.GONE
         status.text = displayEpisodeTitle(manga, title)
-        renderView.setPageCount(0)
+        if (clearViewImmediately) renderView.setPageCount(0)
         session?.cancel()
         session = ReaderSession(
             this,
             manga,
             title,
-            Utils.getScreenWidth(windowManager.defaultDisplay),
+            readerWidthPx(),
             autoCut,
             p?.getReverse() == true,
             if (autoCut) null else preparedKey,
+            startAtFirstPage,
             this
         ).also {
             initialStatusPending = true
@@ -588,6 +661,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
         val previous = if (manga == null) null else adjacentEpisode(manga, false)
         val next = if (manga == null) null else adjacentEpisode(manga, true)
+        primeAdjacentLaunchWindow(title, next)
         prevButton.isEnabled = shouldEnableAdjacentButton(
             previous != null,
             canFetchMissingAdjacent(manga, title, previous)
@@ -605,6 +679,21 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         nextButton.isEnabled = next
         prevButton.alpha = if (previous) 1f else 0.35f
         nextButton.alpha = if (next) 1f else 0.35f
+    }
+
+    private fun primeAdjacentLaunchWindow(title: Title?, target: Manga?) {
+        if (target == null) return
+        ReaderWarmupCoordinator.openKey(
+            applicationContext,
+            target,
+            title ?: target.title,
+            readerWidthPx(),
+            true
+        )
+    }
+
+    private fun readerWidthPx(): Int {
+        return maxOf(1, renderView.width, resources.displayMetrics.widthPixels)
     }
 
     private fun roundedBackground(fill: Int, stroke: Int, radius: Int): GradientDrawable {
@@ -693,9 +782,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             val previousManga = currentManga
             val episodeChanged = previousManga == null || !Manga.sameEpisodeIdentity(previousManga, info.manga)
             currentManga = info.manga
-            val displayTitle = info.title.takeIf { it.isNotBlank() } ?: displayEpisodeTitle(info.manga, currentTitle)
+            updateResultEpisode(info.manga, info.transitionCard)
+            val displayTitle = if (!episodeChanged && lastDisplayedEpisodeId == info.manga.id) {
+                lastDisplayedEpisodeTitle
+            } else {
+                info.title.takeIf { it.isNotBlank() }
+                    ?: displayEpisodeTitle(info.manga, currentTitle).takeIf { it.isNotBlank() }
+                    ?: "회차"
+            }
             if (episodeChanged || titleView.text.toString() != displayTitle) {
                 titleView.text = displayTitle
+                lastDisplayedEpisodeId = info.manga.id
+                lastDisplayedEpisodeTitle = displayTitle
             }
             setPageText(if (info.transitionCard) {
                 "회차 전환"
@@ -766,11 +864,53 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         p?.setViewerBookmark(info.manga, zeroBasedPage, offset, info.side)
     }
 
+    private fun updateResultEpisode(manga: Manga?, transitionCard: Boolean = false) {
+        if (transitionCard || manga == null || manga.id <= 0) return
+        if (!intent.getBooleanExtra("recent", false) && !intent.getBooleanExtra("returnToEpisodes", false)) return
+        val result = resultIntent ?: Intent().also { resultIntent = it }
+        result.putExtra("id", manga.id)
+        setResult(RESULT_OK, result)
+    }
+
     private fun displayEpisodeTitle(manga: Manga?, title: Title?): String {
-        return manga?.name?.takeIf { it.isNotBlank() }
+        val episodes = Utils.snapshotEpisodes(title).ifEmpty { Utils.snapshotEpisodes(manga) }
+        val index = episodeIndex(episodes, manga)
+        return episodeDisplayName(manga, episodes, index, title)
+            .takeIf { it.isNotBlank() }
             ?: title?.name?.takeIf { it.isNotBlank() }
             ?: manga?.title?.name?.takeIf { it.isNotBlank() }
             ?: "회차"
+    }
+
+    private fun fastDisplayEpisodeTitle(manga: Manga?, title: Title?): String {
+        return manga?.name?.trim()?.takeIf { it.isNotBlank() }
+            ?: title?.name?.takeIf { it.isNotBlank() }
+            ?: manga?.title?.name?.takeIf { it.isNotBlank() }
+            ?: "회차"
+    }
+
+    private fun episodeDisplayName(manga: Manga?, episodes: List<Manga?>, index: Int, title: Title?): String {
+        val cleaned = Manga.cleanViewerEpisodeName(manga?.name).takeIf { it.isNotBlank() }
+        if (cleaned != null) return cleaned
+        val matched = episodes.getOrNull(index)
+        val matchedName = Manga.cleanViewerEpisodeName(matched?.name).takeIf { it.isNotBlank() }
+        if (matchedName != null) return matchedName
+        val number = Manga.visibleEpisodeNumberKey(manga?.name).takeIf { it.isNotBlank() }
+        if (number != null) return "${number}화"
+        val matchedNumber = Manga.visibleEpisodeNumberKey(matched?.name).takeIf { it.isNotBlank() }
+        if (matchedNumber != null) return "${matchedNumber}화"
+        return title?.name?.takeIf { it.isNotBlank() }
+            ?: manga?.title?.name?.takeIf { it.isNotBlank() }
+            ?: ""
+    }
+
+    private fun episodeIndex(episodes: List<Manga?>, target: Manga?): Int {
+        if (target == null) return -1
+        for (i in episodes.indices) {
+            val episode = episodes[i]
+            if (episode != null && Manga.sameEpisodeIdentity(episode, target)) return i
+        }
+        return -1
     }
 
     private fun installToolbarTouchForwarder(vararg views: View) {
@@ -855,6 +995,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val BOUNDARY_STATUS_DELAY_MS = 250L
         private const val DEFAULT_PAGE_GAP_PX = 2
         private const val WEBTOON_PAGE_GAP_PX = 0
+        private const val ADJACENT_BUTTON_REFRESH_DELAY_MS = 350L
+        private const val TAG = "ReaderV2"
 
         @JvmStatic
         fun pageGapForBaseModeForTest(baseMode: Int): Int = pageGapForBaseMode(baseMode)

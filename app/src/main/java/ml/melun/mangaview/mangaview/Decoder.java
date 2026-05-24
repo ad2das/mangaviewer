@@ -11,7 +11,7 @@ public class Decoder {
     int id=0;
     int view_cnt;
     int cx=5, cy=5;
-    private static final int MAX_DISPLAY_BITMAP_BYTES = 2000000;
+    private static final int MAX_DISPLAY_BITMAP_BYTES = 64 * 1024 * 1024;
 
     public int getCnt(){
         return view_cnt;

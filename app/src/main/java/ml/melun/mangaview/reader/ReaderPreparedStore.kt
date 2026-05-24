@@ -8,8 +8,8 @@ import java.util.LinkedHashMap
 
 object ReaderPreparedStore {
     private const val MAX_ENTRIES = 24
-    private const val MAX_BITMAP_BYTES = 24L * 1024L * 1024L
-    private const val MAX_PINNED_START_BITMAPS = 1
+    private const val MAX_BITMAP_BYTES = 48L * 1024L * 1024L
+    private const val MAX_PINNED_START_BITMAPS = 3
 
     enum class Status {
         PENDING,

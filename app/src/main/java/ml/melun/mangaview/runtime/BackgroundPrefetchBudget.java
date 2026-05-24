@@ -8,6 +8,7 @@ import android.os.SystemClock;
 public final class BackgroundPrefetchBudget {
     private static final int EPISODE_SNAPSHOT_LIMIT = 2;
     private static final long EPISODE_SNAPSHOT_FAILURE_SUPPRESS_MS = 30000L;
+    private static final long USER_NAVIGATION_SUPPRESS_MS = 4500L;
     private static final Set<String> ACTIVE_EPISODE_SNAPSHOTS = new LinkedHashSet<>();
     private static volatile long suppressNonCriticalUntilMs = 0L;
 
@@ -50,6 +51,10 @@ public final class BackgroundPrefetchBudget {
         suppressNonCriticalPrefetch(EPISODE_SNAPSHOT_FAILURE_SUPPRESS_MS);
     }
 
+    public static void suppressForUserNavigation() {
+        suppressNonCriticalPrefetch(USER_NAVIGATION_SUPPRESS_MS);
+    }
+
     public static long nonCriticalPrefetchDelayMs() {
         return Math.max(0L, suppressNonCriticalUntilMs - nowMs());
     }
@@ -73,5 +78,9 @@ public final class BackgroundPrefetchBudget {
         synchronized (ACTIVE_EPISODE_SNAPSHOTS) {
             return ACTIVE_EPISODE_SNAPSHOTS.size();
         }
+    }
+
+    static long userNavigationSuppressMsForTest() {
+        return USER_NAVIGATION_SUPPRESS_MS;
     }
 }

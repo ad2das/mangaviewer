@@ -35,4 +35,16 @@ public class BackgroundPrefetchBudgetTest {
         assertEquals(0, BackgroundPrefetchBudget.activeEpisodeSnapshotsForTest());
         BackgroundPrefetchBudget.clearEpisodeSnapshotsForTest();
     }
+
+    @Test
+    public void userNavigationSuppressesNonCriticalPrefetchBriefly() {
+        BackgroundPrefetchBudget.clearEpisodeSnapshotsForTest();
+
+        BackgroundPrefetchBudget.suppressForUserNavigation();
+
+        assertTrue(BackgroundPrefetchBudget.userNavigationSuppressMsForTest() >= 3500L);
+        assertTrue(BackgroundPrefetchBudget.isNonCriticalPrefetchSuppressed());
+        assertFalse(BackgroundPrefetchBudget.tryAcquireEpisodeSnapshot("tap"));
+        BackgroundPrefetchBudget.clearEpisodeSnapshotsForTest();
+    }
 }

@@ -74,8 +74,8 @@ public class EpisodeActivityTest {
     @Test
     public void mediumMemoryCacheSnapshotsParseOnMainThreadForInstantEpisodeList() {
         assertTrue(EpisodeActivity.shouldParseMemoryCacheOnMainForTest(16 * 1024));
-        assertTrue(EpisodeActivity.shouldParseMemoryCacheOnMainForTest(256 * 1024));
-        assertFalse(EpisodeActivity.shouldParseMemoryCacheOnMainForTest(256 * 1024 + 1));
+        assertTrue(EpisodeActivity.shouldParseMemoryCacheOnMainForTest(64 * 1024));
+        assertFalse(EpisodeActivity.shouldParseMemoryCacheOnMainForTest(64 * 1024 + 1));
         assertFalse(EpisodeActivity.shouldParseMemoryCacheOnMainForTest(0));
     }
 

@@ -24,7 +24,7 @@ public class ReaderWarmupCoordinatorTest {
 
     @Test
     public void preparedStoreCapsPinnedStartBitmaps() {
-        assertTrue(ReaderPreparedStore.maxPinnedStartBitmapsForTest() <= 3);
-        assertTrue(ReaderPreparedStore.maxBitmapBytesForTest() <= 48L * 1024L * 1024L);
+        assertEquals(3, ReaderPreparedStore.maxPinnedStartBitmapsForTest());
+        assertEquals(48L * 1024L * 1024L, ReaderPreparedStore.maxBitmapBytesForTest());
     }
 }

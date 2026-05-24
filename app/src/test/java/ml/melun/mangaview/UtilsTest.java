@@ -151,7 +151,7 @@ public class UtilsTest {
     public void exactViewerLaunchWaitsForPreparedFirstFrame() {
         assertTrue(Utils.shouldWaitForExactFirstFrameForTest("wfwf", false));
         assertTrue(Utils.shouldWaitForExactFirstFrameForTest("ntk", true));
-        assertFalse(Utils.shouldWaitForExactFirstFrameForTest("ntk", false));
+        assertTrue(Utils.shouldWaitForExactFirstFrameForTest("ntk", false));
         assertTrue(Utils.shouldWaitForExactFirstFrameForTest("", false));
     }
 
@@ -175,6 +175,9 @@ public class UtilsTest {
         assertTrue(Utils.shouldLaunchContinueFallbackForTest(true, false));
         assertTrue(Utils.shouldLaunchContinueFallbackForTest(true, true));
         assertTrue(Utils.shouldLaunchContinueFallbackForTest(false, false));
+        assertFalse(Utils.shouldLaunchContinueFallbackForTest("ntk", true, false, false));
+        assertTrue(Utils.shouldLaunchContinueFallbackForTest("ntk", true, true, false));
+        assertTrue(Utils.shouldLaunchContinueFallbackForTest("ntk", true, false, true));
         assertFalse(Utils.shouldBlockUnpreparedContinueFallbackForTest(true));
         assertFalse(Utils.shouldBlockUnpreparedContinueFallbackForTest(false));
     }
@@ -188,15 +191,15 @@ public class UtilsTest {
     }
 
     @Test
-    public void exactViewerLaunchDoesNotBlockUserSelectedEpisodeWhenPreparationIsPending() {
+    public void exactViewerLaunchRequiresPreparedFirstFrame() {
         PreparedViewerLaunch pending = ViewerPreparationCoordinator.statusForResult(
                 ViewerWarmupManager.LOAD_FIRST_FRAME_PENDING);
         PreparedViewerLaunch empty = ViewerPreparationCoordinator.statusForResult(
                 ViewerWarmupManager.LOAD_EMPTY_IMAGES);
         PreparedViewerLaunch captcha = ViewerPreparationCoordinator.statusForResult(Title.LOAD_CAPTCHA);
 
-        assertTrue(Utils.shouldLaunchExactWithoutPreparedForTest(pending));
-        assertTrue(Utils.shouldLaunchExactWithoutPreparedForTest(empty));
+        assertFalse(Utils.shouldLaunchExactWithoutPreparedForTest(pending));
+        assertFalse(Utils.shouldLaunchExactWithoutPreparedForTest(empty));
         assertFalse(Utils.shouldLaunchExactWithoutPreparedForTest(captcha));
     }
 

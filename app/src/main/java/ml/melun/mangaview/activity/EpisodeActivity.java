@@ -85,7 +85,7 @@ public class EpisodeActivity extends AppCompatActivity {
     private static final long INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 0L;
     private static final long NTK_INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 0L;
     private static final long MAX_EPISODE_CACHE_FILE_BYTES = 2 * 1024 * 1024L;
-    private static final int MEMORY_CACHE_MAIN_THREAD_PARSE_MAX_CHARS = 256 * 1024;
+    private static final int MEMORY_CACHE_MAIN_THREAD_PARSE_MAX_CHARS = 64 * 1024;
     private static final int VISIBLE_EPISODE_WARMUP_AHEAD = 3;
     //global variables
     Title title;

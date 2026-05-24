@@ -3739,7 +3739,6 @@ public class ViewerActivity extends AppCompatActivity {
         missingEpisodePromptState.dismiss();
         cancelNextPrefetcher();
         releaseStripAdapter();
-        ViewerWarmupManager.clearDecodedWork(context);
         super.onDestroy();
     }
 

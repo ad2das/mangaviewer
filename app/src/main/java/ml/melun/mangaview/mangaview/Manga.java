@@ -58,6 +58,9 @@ public class Manga {
             "(?i)(?:(?:https?:)?//" + NTK_IMAGE_HOST_PATTERN + ")?/(?:manhwa|webtoon|comic)/\\d+/[^/?#]+/(?:p)?\\d{1,4}\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$");
     private static final Pattern NTK_CURRENT_CDN_PAGE_IMAGE_PATTERN = Pattern.compile(
             "(?i)(?:https?:)?//(?:www\\.)?pl\\d+\\.com/.*/\\d+/\\d+/[^/?#]+\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$");
+    private static final Pattern VIEWER_EPISODE_PREFIX_PATTERN = Pattern.compile("^\\(\\s*\\d+\\s*/\\s*\\d+\\s*\\)\\s*");
+    private static final Pattern EPISODE_WHITESPACE_PATTERN = Pattern.compile("\\s+");
+    private static final Pattern EPISODE_NUMBER_PATTERN = Pattern.compile("(\\d+(?:\\.\\d+)?(?:\\s*[,~～\\-]\\s*\\d+(?:\\.\\d+)?)*)\\s*화");
 
     int baseMode = base_comic;
     int titleId = -1;
@@ -1619,20 +1622,18 @@ public class Manga {
     private static String episodeNameKey(String name) {
         if(name == null)
             return "";
-        String value = name.trim().toLowerCase(Locale.ROOT)
-                .replaceFirst("^\\(\\s*\\d+\\s*/\\s*\\d+\\s*\\)\\s*", "");
+        String value = VIEWER_EPISODE_PREFIX_PATTERN.matcher(name.trim().toLowerCase(Locale.ROOT)).replaceFirst("");
         String episodeNumbers = episodeNumberKey(value);
         if(episodeNumbers.length() > 0)
             return episodeNumbers;
-        return value.replaceAll("\\s+", "");
+        return EPISODE_WHITESPACE_PATTERN.matcher(value).replaceAll("");
     }
 
     private static String episodeNumberKey(String name) {
         if(name == null)
             return "";
-        String value = name.trim().toLowerCase(Locale.ROOT)
-                .replaceFirst("^\\(\\s*\\d+\\s*/\\s*\\d+\\s*\\)\\s*", "");
-        String compact = value.replaceAll("\\s+", "");
+        String value = VIEWER_EPISODE_PREFIX_PATTERN.matcher(name.trim().toLowerCase(Locale.ROOT)).replaceFirst("");
+        String compact = EPISODE_WHITESPACE_PATTERN.matcher(value).replaceAll("");
         if(compact.contains("번외")
                 || compact.contains("외전")
                 || compact.contains("특별")
@@ -1641,7 +1642,7 @@ public class Manga {
                 || compact.contains("후기")
                 || compact.contains("프롤로그"))
             return "";
-        Matcher matcher = Pattern.compile("(\\d+(?:\\.\\d+)?(?:\\s*[,~～\\-]\\s*\\d+(?:\\.\\d+)?)*)\\s*화").matcher(value);
+        Matcher matcher = EPISODE_NUMBER_PATTERN.matcher(value);
         String episodeNumbers = "";
         while(matcher.find())
             episodeNumbers = matcher.group(1);
@@ -1809,7 +1810,7 @@ public class Manga {
     public static String cleanViewerEpisodeName(String name) {
         if(name == null)
             return "";
-        return name.trim().replaceFirst("^\\(\\s*\\d+\\s*/\\s*\\d+\\s*\\)\\s*", "");
+        return VIEWER_EPISODE_PREFIX_PATTERN.matcher(name.trim()).replaceFirst("");
     }
 
     private static int resolvedTitleId(Manga manga) {

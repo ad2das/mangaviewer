@@ -249,7 +249,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
             layoutDirty = true
             rebuildLayoutLocked()
             val shiftedFirstTop = pageTopOrElseLocked(insertedCount, 0f)
-            scrollOffset += shiftedFirstTop - oldFirstTop
+            if (lockedRestorePage >= 0 && SystemClock.uptimeMillis() <= lockedRestoreUntilMs) {
+                applyLockedRestorePositionLocked()
+            } else {
+                scrollOffset += shiftedFirstTop - oldFirstTop
+            }
             boundaryArmedDirection = 0
             clampScrollLocked()
             renderRequested = true
@@ -704,7 +708,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val cardText = item.cardText
         if (cardText != null) {
             val cardWidth = state.width * TRANSITION_CARD_WIDTH_RATIO
-            val cardHeight = min(item.pageHeight * 0.72f, state.height * 0.11f)
+            val cardHeight = min(item.pageHeight * 0.74f, state.height * 0.17f)
             val centerY = item.top + item.pageHeight / 2f
             val top = max(0f, centerY - cardHeight / 2f)
             val bottom = min(state.height.toFloat(), top + cardHeight)
@@ -716,12 +720,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
             )
             paint.color = Color.rgb(14, 14, 14)
             canvas.drawRoundRect(dst, 8f, 8f, paint)
-            textPaint.textSize = 21f
+            textPaint.textSize = 38f
             textPaint.color = Color.rgb(160, 160, 160)
-            canvas.drawText("회차 전환", state.width / 2f, dst.centerY() - 16f, textPaint)
-            textPaint.textSize = 30f
+            canvas.drawText("회차 전환", state.width / 2f, dst.centerY() - 28f, textPaint)
+            textPaint.textSize = 54f
             textPaint.color = Color.WHITE
-            canvas.drawText(cardText, state.width / 2f, dst.centerY() + 24f, textPaint)
+            canvas.drawText(cardText, state.width / 2f, dst.centerY() + 40f, textPaint)
             textPaint.textSize = 34f
             textPaint.color = Color.rgb(190, 190, 190)
             return
@@ -738,7 +742,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 .coerceIn(sourceTop + 1, bitmap.height)
             src.set(0, sourceTop, bitmap.width, sourceBottom)
             dst.set(0f, visibleTop, state.width.toFloat(), visibleBottom)
-            paint.isFilterBitmap = !state.busy
+            paint.isFilterBitmap = true
             canvas.drawBitmap(bitmap, src, dst, paint)
             return
         }
@@ -755,7 +759,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val visibleTop = max(0f, item.top)
         val visibleBottom = min(state.height.toFloat(), item.top + item.pageHeight)
         if (visibleBottom <= visibleTop) return
-        paint.isFilterBitmap = !state.busy
+        paint.isFilterBitmap = true
         for (tile in item.tiles) {
             val bitmap = tile.bitmap
             if (bitmap.isRecycled || tile.sourceHeight <= 0) continue
@@ -771,7 +775,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 .toInt()
                 .coerceIn(srcTop + 1, bitmap.height)
             src.set(0, srcTop, bitmap.width, srcBottom)
-            dst.set(0f, drawTop, state.width.toFloat(), drawBottom)
+            val dstTop = if (drawTop > visibleTop) drawTop - TILE_SEAM_OVERLAP_PX else drawTop
+            val dstBottom = if (drawBottom < visibleBottom) drawBottom + TILE_SEAM_OVERLAP_PX else drawBottom
+            dst.set(0f, dstTop, state.width.toFloat(), dstBottom)
             canvas.drawBitmap(bitmap, src, dst, paint)
         }
     }
@@ -780,6 +786,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val viewWidth = max(1, width)
         val viewHeight = max(1, height)
         if (pages.isEmpty()) return DrawState(viewWidth, viewHeight, busy, true, 1, emptyList())
+        applyLockedRestorePositionLocked()
+        clampScrollLocked()
         rebuildLayoutLocked()
         val items = ArrayList<DrawItem>()
         var visibleLoading = 0
@@ -1315,8 +1323,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val MISSED_VSYNC_FACTOR = 1.5f
         private const val MIN_FRAME_SAMPLES = 8
         private const val DEFAULT_PAGE_GAP_PX = 0
-        private const val TRANSITION_CARD_WIDTH_RATIO = 0.58f
-        private const val TRANSITION_CARD_PAGE_HEIGHT_RATIO = 0.14f
+        private const val TILE_SEAM_OVERLAP_PX = 1f
+        private const val TRANSITION_CARD_WIDTH_RATIO = 0.82f
+        private const val TRANSITION_CARD_PAGE_HEIGHT_RATIO = 0.20f
         private const val NEAR_BOUNDARY_SCREENFULS = 10
         private const val NEAR_BOUNDARY_PAGE_THRESHOLD = 16
         private const val BUSY_WINDOW_ANCHOR_STEP = 2

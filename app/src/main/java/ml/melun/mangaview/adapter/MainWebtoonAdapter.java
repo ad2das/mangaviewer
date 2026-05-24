@@ -57,6 +57,7 @@ import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.activity.ViewerResumeResolver;
 import ml.melun.mangaview.repository.CacheFileStore;
+import ml.melun.mangaview.repository.CachePolicy;
 import ml.melun.mangaview.repository.EpisodeSnapshotCache;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
@@ -778,6 +779,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         List<Ranking<?>> cached = HOME_SNAPSHOT_MEMORY_CACHE.get(homeCacheKey());
         if(cached == null || cached.size() == 0)
             return false;
+        ViewerWarmupManager.logMetric("home_cache_hit_memory", 1L);
         dataSet = new ArrayList<>(cached);
         List<Object> cachedRows = buildRows(dataSet, false);
         if(!hasDisplayContent(cachedRows))
@@ -837,6 +839,10 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             HomeSnapshot snapshot = new Gson().fromJson(json, new TypeToken<HomeSnapshot>(){}.getType());
             if(snapshot == null || snapshot.sections == null)
                 return null;
+            if(CachePolicy.isFresh(snapshot.savedAt, CachePolicy.HOME_TTL_MS))
+                ViewerWarmupManager.logMetric("home_cache_hit_disk_fresh", 1L);
+            else
+                ViewerWarmupManager.logMetric("home_cache_hit_disk_stale", 1L);
             ArrayList<Ranking<?>> restored = new ArrayList<>();
             for(CachedSection cachedSection : snapshot.sections) {
                 if(cachedSection == null || cachedSection.name == null || cachedSection.titles == null || cachedSection.titles.size() == 0)

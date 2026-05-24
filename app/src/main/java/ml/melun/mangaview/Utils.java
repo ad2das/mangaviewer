@@ -290,7 +290,7 @@ public class Utils {
                                           boolean recent, Title title, boolean includeTitleEpisodes) {
         openViewerPrepared(context, manga, code, returnToEpisodes, true, recent,
                 title != null ? title : (manga == null ? null : manga.getTitle()),
-                includeTitleEpisodes, false, false);
+                includeTitleEpisodes, false, true);
     }
 
     private static void openViewerPrepared(Context context, Manga manga, int code, boolean returnToEpisodes,
@@ -305,25 +305,29 @@ public class Utils {
             manga.setTitle(launchTitle);
             manga.setTitleId(launchTitle.getId());
         }
+        ml.melun.mangaview.runtime.BackgroundPrefetchBudget.suppressForUserNavigation();
+        if(online && manga.isOnline()) {
+            if(exactEpisode && shouldWaitForExactFirstFrame(launchTitle)) {
+                ViewerWarmupManager.logMetric("viewer_exact_prepare_gate", manga.getId());
+                launchExactWhenFirstFrameReady(context, manga, code, returnToEpisodes, online, recent,
+                        launchTitle, includeTitleEpisodes, launchToken);
+                return;
+            }
+            if(waitForFirstFrame || recent) {
+                ViewerWarmupManager.logMetric("viewer_continue_prepare_gate", manga.getId());
+                launchWhenFirstFrameReady(context, manga, code, returnToEpisodes, online, recent,
+                        launchTitle, includeTitleEpisodes, launchToken);
+                return;
+            }
+        }
         launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken, exactEpisode);
     }
 
     private static boolean shouldWaitForExactFirstFrame(Title title) {
-        String source = title == null ? "" : title.getSourceSite();
-        if("wfwf".equals(source))
-            return true;
-        if("ntk".equals(source))
-            return ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunch(title);
-        if(p != null && !p.isNtkSite())
-            return true;
-        return p != null && p.isNtkSite() && ViewerWarmupManager.shouldWarmupExactEpisodeOnLaunch(title);
+        return true;
     }
 
     static boolean shouldWaitForExactFirstFrameForTest(String sourceSite, boolean ntkSite) {
-        if("wfwf".equals(sourceSite))
-            return true;
-        if("ntk".equals(sourceSite))
-            return ntkSite;
         return true;
     }
 
@@ -360,7 +364,7 @@ public class Utils {
     }
 
     private static boolean shouldLaunchExactWithoutPrepared(PreparedViewerLaunch prepared) {
-        return prepared == null || !prepared.isCaptcha();
+        return prepared == null || prepared.getStatus() == PreparedViewerLaunch.Status.OFFLINE;
     }
 
     static boolean shouldLaunchExactWithoutPreparedForTest(PreparedViewerLaunch prepared) {
@@ -448,24 +452,39 @@ public class Utils {
 
     private static boolean shouldLaunchContinueFallback(Context context, Manga manga) {
         boolean hasLoadedImages = false;
+        String source = "";
+        boolean hasNtkEpisodePath = false;
         if(manga != null) {
             List<String> images = MangaRepository.imageUrls(manga, context);
             hasLoadedImages = images != null && images.size() > 0;
             Title title = manga.getTitle();
-            String source = title == null ? "" : title.getSourceSite();
+            source = title == null ? "" : title.getSourceSite();
+            hasNtkEpisodePath = manga.getNtkEpisodePath().length() > 0;
             if(("wfwf".equals(source) || "ntk".equals(source))
                     && title != null && snapshotEpisodes(title).size() == 0 && !hasLoadedImages)
                 return false;
         }
-        return shouldLaunchContinueFallback(manga != null && manga.isOnline(), hasLoadedImages);
+        return shouldLaunchContinueFallback(source, manga != null && manga.isOnline(), hasLoadedImages, hasNtkEpisodePath);
     }
 
     private static boolean shouldLaunchContinueFallback(boolean online, boolean hasLoadedImages) {
+        return shouldLaunchContinueFallback("", online, hasLoadedImages, false);
+    }
+
+    private static boolean shouldLaunchContinueFallback(String sourceSite, boolean online,
+                                                        boolean hasLoadedImages, boolean hasNtkEpisodePath) {
+        if(online && "ntk".equals(sourceSite) && !hasLoadedImages && !hasNtkEpisodePath)
+            return false;
         return true;
     }
 
     static boolean shouldLaunchContinueFallbackForTest(boolean online, boolean hasLoadedImages) {
         return shouldLaunchContinueFallback(online, hasLoadedImages);
+    }
+
+    static boolean shouldLaunchContinueFallbackForTest(String sourceSite, boolean online,
+                                                       boolean hasLoadedImages, boolean hasNtkEpisodePath) {
+        return shouldLaunchContinueFallback(sourceSite, online, hasLoadedImages, hasNtkEpisodePath);
     }
 
     static boolean shouldBlockUnpreparedContinueFallbackForTest(boolean online) {
@@ -526,8 +545,6 @@ public class Utils {
         String preparedKey = null;
         try {
             preparedKey = ReaderWarmupCoordinator.readyKey(appContext, manga, launchTitle, width, exactEpisode);
-            if(preparedKey == null)
-                preparedKey = ReaderLaunchPreparer.prepareFirstFrame(appContext, manga, launchTitle, width, exactEpisode);
             if(preparedKey == null)
                 preparedKey = ReaderWarmupCoordinator.openKey(appContext, manga, launchTitle, width, exactEpisode);
         } catch (Exception e) {

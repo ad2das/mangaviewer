@@ -11,6 +11,7 @@ import ml.melun.mangaview.mangaview.Manga
 import ml.melun.mangaview.mangaview.Title
 import ml.melun.mangaview.repository.MangaRepository
 import ml.melun.mangaview.runtime.AppDispatchers
+import ml.melun.mangaview.runtime.BackgroundPrefetchBudget
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
@@ -57,11 +58,18 @@ object ReaderWarmupCoordinator {
         val width = normalizeWidth(context, viewerWidth)
         val startPage = requestedStartPage(manga, exactEpisode)
         val key = stableKey(manga, launchTitle, startPage, width, exactEpisode)
-        val entry = ReaderPreparedStore.get(key) ?: return null
+        val entry = ReaderPreparedStore.get(key) ?: run {
+            ml.melun.mangaview.glide.ViewerWarmupManager.logMetric("prepared_miss_no_entry", 1L)
+            return null
+        }
         val snapshot = entry.snapshot()
         val startBitmap = snapshot.bitmaps[snapshot.startPage]
         val ready = !snapshot.images.isNullOrEmpty() && startBitmap != null && !startBitmap.isRecycled
         if (ready) ml.melun.mangaview.glide.ViewerWarmupManager.logMetric("prepared_ready_hit", 1L)
+        else ml.melun.mangaview.glide.ViewerWarmupManager.logMetric(
+            "prepared_miss_" + snapshot.status.name.lowercase(Locale.ROOT),
+            1L
+        )
         return if (ready) key else null
     }
 
@@ -75,6 +83,7 @@ object ReaderWarmupCoordinator {
     @JvmStatic
     fun primeImmediate(context: Context?, manga: Manga?, title: Title?) {
         val entry = createEntry(context, manga, title, 0, false, WarmupProfile.LAUNCH_WINDOW) ?: return
+        BackgroundPrefetchBudget.suppressForUserNavigation()
         schedule(context!!.applicationContext, entry, false, WarmupProfile.LAUNCH_WINDOW)
     }
 
@@ -88,6 +97,7 @@ object ReaderWarmupCoordinator {
     @JvmStatic
     fun primeExactImmediate(context: Context?, manga: Manga?, title: Title?) {
         val entry = createEntry(context, manga, title, 0, true, WarmupProfile.LAUNCH_WINDOW) ?: return
+        BackgroundPrefetchBudget.suppressForUserNavigation()
         schedule(context!!.applicationContext, entry, true, WarmupProfile.LAUNCH_WINDOW)
     }
 
@@ -100,8 +110,9 @@ object ReaderWarmupCoordinator {
         exactEpisode: Boolean
     ): String? {
         val entry = createEntry(context, manga, title, viewerWidth, exactEpisode, WarmupProfile.LAUNCH_WINDOW) ?: return null
+        BackgroundPrefetchBudget.suppressForUserNavigation()
         prepareEntry(context.applicationContext, entry, exactEpisode, WarmupProfile.LAUNCH_WINDOW)
-        return entry.key
+        return readyKey(context, manga, title, viewerWidth, exactEpisode)
     }
 
     private fun createEntry(

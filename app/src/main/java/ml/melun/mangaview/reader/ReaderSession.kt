@@ -42,6 +42,7 @@ class ReaderSession(
     private val autoCut: Boolean,
     private val reverse: Boolean,
     preparedKey: String?,
+    private val startAtFirstPage: Boolean = false,
     private val listener: Listener
 ) {
     interface Listener {
@@ -73,6 +74,7 @@ class ReaderSession(
         val manga: Manga,
         val image: String?,
         val transitionTitle: String? = null,
+        val sourceIndex: Int = 0,
         var pageIndex: Int = -1,
         val localPage: Int = 0,
         val totalPages: Int = 0,
@@ -187,6 +189,7 @@ class ReaderSession(
             installImages(images, startPage, false)
             flushEarlyPreparedBitmaps()
             releasePreparedStoreBitmapsSoon()
+            requestPageForeground(startPage)
             requestInitialWindow(startPage, false)
         }
 
@@ -257,6 +260,7 @@ class ReaderSession(
             for (entry in snapshot.bitmaps.entries) deliverPreparedBitmap(entry.key, entry.value)
             flushEarlyPreparedBitmaps()
             releasePreparedStoreBitmapsSoon()
+            requestPageForeground(snapshot.startPage)
             requestInitialWindow(snapshot.startPage, false)
             return true
         }
@@ -269,6 +273,7 @@ class ReaderSession(
     private fun releasePreparedStoreBitmapsSoon() {
         if (preparedStoreKey == null) return
         main.removeCallbacks(clearPreparedBitmapsRunnable)
+        if (!firstBitmapLogged.get()) return
         main.postDelayed(clearPreparedBitmapsRunnable, PREPARED_BITMAP_RELEASE_DELAY_MS)
     }
 
@@ -283,7 +288,7 @@ class ReaderSession(
             }
             pages.addAll(refs)
         }
-        val startPage = displayStartPage(requestedStartPage, requestedStartSide(), refs.size)
+        val startPage = displayStartPage(requestedStartPage, requestedStartSide(), refs)
         main.post {
             if (!cancelled.get()) {
                 listener.onPagesReady(refs.size)
@@ -403,11 +408,14 @@ class ReaderSession(
         if (count <= 0) return
         val requestList: List<Int>
         val generation: Int
+        val safeFirst: Int
+        val safeLast: Int
+        val direction: Int
         synchronized(windowLock) {
-            val safeFirst = first.coerceIn(0, count - 1)
-            val safeLast = last.coerceIn(safeFirst, count - 1)
+            safeFirst = first.coerceIn(0, count - 1)
+            safeLast = last.coerceIn(safeFirst, count - 1)
             generation = windowGeneration.incrementAndGet()
-            val direction = when {
+            direction = when {
                 lastWindowAnchor < 0 -> lastWindowDirection
                 anchor > lastWindowAnchor -> 1
                 anchor < lastWindowAnchor -> -1
@@ -423,7 +431,17 @@ class ReaderSession(
             }
             requestList = windowOrder(safeFirst, safeLast, anchor, direction)
         }
-        if (busy) return
+        if (busy) {
+            val visibleFirst = max(safeFirst, anchor - BUSY_VISIBLE_DECODE_RADIUS)
+            val visibleLast = minOf(safeLast, anchor + BUSY_VISIBLE_DECODE_RADIUS)
+            val visible = windowOrder(visibleFirst, visibleLast, anchor, direction)
+            for (i in visible) requestPage(i, true, i == anchor, generation)
+            for (i in requestList) {
+                if (!visible.contains(i)) pageRef(i)?.let { prefetchBusyPage(i, it, generation) }
+            }
+            trimDecodedWidth(anchor, true)
+            return
+        }
         for (i in requestList) requestPage(i, busy, i == anchor, generation)
         trimDecodedWidth(anchor, busy)
     }
@@ -601,8 +619,13 @@ class ReaderSession(
         val pageRefs = pageRefsForImages(target, urls)
         val totalPages = pageRefs.size
         return ArrayList<PageRef>(pageRefs.size + 1).apply {
-            add(PageRef(target, null, transitionTitle, localPage = 0, totalPages = totalPages))
-            addAll(pageRefs)
+            if (direction < 0) {
+                addAll(pageRefs)
+                add(PageRef(target, null, transitionTitle, localPage = 0, totalPages = totalPages))
+            } else {
+                add(PageRef(target, null, transitionTitle, localPage = 0, totalPages = totalPages))
+                addAll(pageRefs)
+            }
         }
     }
 
@@ -613,25 +636,35 @@ class ReaderSession(
                 PageRef(
                     manga = target,
                     image = url,
+                    sourceIndex = index,
                     pageIndex = index,
                     localPage = index + 1,
                     totalPages = totalPages
                 )
             }
         }
-        val totalPages = urls.size * 2
+        val splitPages = urls.map { url -> shouldAutoSplitImage(target, url) }
+        val totalPages: Int = splitPages.fold(0) { total, split -> total + if (split) 2 else 1 }
         val refs = ArrayList<PageRef>(totalPages)
+        var localPage = 1
         for (index in urls.indices) {
             val url = urls[index]
-            refs.add(PageRef(target, url, localPage = index * 2 + 1, totalPages = totalPages, side = PAGE_SIDE_FIRST))
-            refs.add(PageRef(target, url, localPage = index * 2 + 2, totalPages = totalPages, side = PAGE_SIDE_SECOND))
+            refs.add(PageRef(target, url, sourceIndex = index, localPage = localPage++, totalPages = totalPages, side = PAGE_SIDE_FIRST))
+            if (splitPages[index]) {
+                refs.add(PageRef(target, url, sourceIndex = index, localPage = localPage++, totalPages = totalPages, side = PAGE_SIDE_SECOND))
+            }
         }
         return refs
     }
 
-    private fun displayStartPage(sourcePage: Int, sourceSide: Int, totalPages: Int): Int {
-        val mapped = if (autoCut) sourcePage * 2 + sourceSide.coerceIn(PAGE_SIDE_FIRST, PAGE_SIDE_SECOND) else sourcePage
-        return mapped.coerceIn(0, max(0, totalPages - 1))
+    private fun displayStartPage(sourcePage: Int, sourceSide: Int, refs: List<PageRef>): Int {
+        if (refs.isEmpty()) return 0
+        if (!autoCut) return sourcePage.coerceIn(0, refs.lastIndex)
+        val side = sourceSide.coerceIn(PAGE_SIDE_FIRST, PAGE_SIDE_SECOND)
+        val exact = refs.indexOfFirst { it.sourceIndex == sourcePage && it.side == side }
+        if (exact >= 0) return exact
+        val first = refs.indexOfFirst { it.sourceIndex == sourcePage }
+        return if (first >= 0) first else sourcePage.coerceIn(0, refs.lastIndex)
     }
 
     private fun appendPrimedForwardRefs(refs: List<PageRef>, cardOffsets: List<Int>) {
@@ -658,7 +691,8 @@ class ReaderSession(
 
     private fun appendResolvedEpisode(target: Manga, urls: List<String>, direction: Int, warm: Boolean = true) {
         val refs = pageRefsForEpisode(target, urls, direction)
-        val transitionTitle = refs.first().transitionTitle ?: ""
+        val cardOffset = refs.indexOfFirst { it.transitionTitle != null }
+        val transitionTitle = refs.getOrNull(cardOffset)?.transitionTitle ?: ""
         val inserted = refs.size
         val total: Int
         if (direction < 0) {
@@ -672,7 +706,7 @@ class ReaderSession(
             main.post {
                 if (!cancelled.get()) {
                     listener.onPagesPrepended(total, inserted)
-                    listener.onPageCard(0, transitionTitle)
+                    if (cardOffset >= 0) listener.onPageCard(cardOffset, transitionTitle)
                 }
             }
             if (warm) warmPrependedEpisode(inserted)
@@ -687,7 +721,7 @@ class ReaderSession(
             main.post {
                 if (!cancelled.get()) {
                     listener.onPagesAppended(total)
-                    listener.onPageCard(cardIndex, transitionTitle)
+                    if (cardOffset >= 0) listener.onPageCard(cardIndex + cardOffset, transitionTitle)
                 }
             }
             if (warm) warmAppendedEpisode(cardIndex, total)
@@ -923,8 +957,10 @@ class ReaderSession(
     }
 
     private fun logFirstBitmapIfNeeded(startedAt: Long) {
-        if (firstBitmapLogged.compareAndSet(false, true))
+        if (firstBitmapLogged.compareAndSet(false, true)) {
             ViewerWarmupManager.logMetric("reader_first_bitmap_ms", SystemClock.elapsedRealtime() - startedAt)
+            releasePreparedStoreBitmapsSoon()
+        }
     }
 
     private fun leaseImageFile(index: Int, page: PageRef): ReaderImageCache.FileLease {
@@ -1051,6 +1087,23 @@ class ReaderSession(
         return width / height.toFloat() >= SPREAD_ASPECT_RATIO
     }
 
+    private fun shouldAutoSplitImage(target: Manga, image: String): Boolean {
+        if (!autoCut) return false
+        return try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            if (target.isOnline) {
+                val file = ReaderImageCache.getOrFetchFile(appContext, target, image)
+                BitmapFactory.decodeFile(file.absolutePath, bounds)
+            } else {
+                decodeLocal(image, bounds)
+            }
+            shouldAutoSplit(bounds.outWidth, bounds.outHeight)
+        } catch (e: Exception) {
+            recordIfUnexpected(e)
+            false
+        }
+    }
+
     private fun shouldDecodeTiles(page: PageRef, file: File, bounds: BitmapFactory.Options): Boolean {
         if (page.manga.seed != 0) return false
         if (!file.isFile) return false
@@ -1131,11 +1184,7 @@ class ReaderSession(
 
     private fun sourcePageIndex(page: PageRef): Int {
         if (page.transitionTitle != null) return 0
-        return if (autoCut) {
-            max(0, (page.localPage - 1) / 2)
-        } else {
-            max(0, page.localPage - 1)
-        }
+        return page.sourceIndex.coerceAtLeast(0)
     }
 
     private fun displayEpisodeTitle(pageManga: Manga): String {
@@ -1517,12 +1566,7 @@ class ReaderSession(
     }
 
     private fun targetWidth(busy: Boolean): Int {
-        val width = max(1, viewerWidth)
-        return if (busy) {
-            minOf(width, ReaderPipelinePolicy.BUSY_DECODE_WIDTH)
-        } else {
-            width
-        }
+        return max(1, viewerWidth)
     }
 
     private fun windowOrder(first: Int, last: Int, anchor: Int, direction: Int): List<Int> {
@@ -1562,6 +1606,7 @@ class ReaderSession(
     }
 
     private fun requestedStartPage(): Int {
+        if (startAtFirstPage) return 0
         val page = if (manga.useBookmark() && ml.melun.mangaview.MainApplication.p != null) {
             ml.melun.mangaview.MainApplication.p.getViewerBookmark(manga)
         } else {
@@ -1584,8 +1629,8 @@ class ReaderSession(
     }
 
     private companion object {
-        private const val PREPARED_FALLBACK_MS = 1500L
-        private const val PREPARED_BITMAP_RELEASE_DELAY_MS = 3000L
+        private const val PREPARED_FALLBACK_MS = 250L
+        private const val PREPARED_BITMAP_RELEASE_DELAY_MS = 12000L
         private const val PRIME_FORWARD_EPISODES = 40
         private const val BOUNDARY_DECODE_AHEAD_PAGES = 4
         private const val BOUNDARY_BYTE_AHEAD_PAGES = 16
@@ -1593,6 +1638,7 @@ class ReaderSession(
         private const val BOUNDARY_BUSY_BYTE_AHEAD_PAGES = 12
         private const val BUSY_DELIVERY_DISCARD_LIMIT = 16
         private const val BUSY_DELIVERY_RETAIN_LIMIT = 4
+        private const val BUSY_VISIBLE_DECODE_RADIUS = 1
         private const val BUSY_DELIVERY_DRAIN_LIMIT = 1
         private const val IDLE_DELIVERY_DRAIN_LIMIT = 1
         private const val BUSY_DELIVERY_DRAIN_DELAY_MS = 24L

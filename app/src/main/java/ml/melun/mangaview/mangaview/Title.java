@@ -45,6 +45,9 @@ public class Title extends MTitle {
     public static final int LOAD_ERROR = 2;
     private static final long PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final int MAX_TIMEOUT_RETRIES = 2;
+    private static final Pattern EPISODE_WHITESPACE_PATTERN = Pattern.compile("\\s+");
+    private static final Pattern EPISODE_NUMBER_PATTERN = Pattern.compile("(\\d+(?:\\.\\d+)?(?:\\s*[,~～\\-]\\s*\\d+(?:\\.\\d+)?)*)\\s*화");
+    private static final Pattern EPISODE_BLOCK_NUMBER_PATTERN = Pattern.compile("\\d+(?:\\.\\d+)?");
 
 
     public Title(String n, String t, String a, List<String> tg, String r, int id, int baseMode) {
@@ -749,7 +752,7 @@ public class Title extends MTitle {
     private static double visibleEpisodeNumber(String title) {
         if(title == null)
             return -1;
-        String compact = title.replaceAll("\\s+", "");
+        String compact = EPISODE_WHITESPACE_PATTERN.matcher(title).replaceAll("");
         if(compact.contains("번외")
                 || compact.contains("외전")
                 || compact.contains("특별")
@@ -758,8 +761,7 @@ public class Title extends MTitle {
                 || compact.contains("후기")
                 || compact.contains("프롤로그"))
             return -1;
-        Matcher episodeMatcher = Pattern.compile("(\\d+(?:\\.\\d+)?(?:\\s*[,~～\\-]\\s*\\d+(?:\\.\\d+)?)*)\\s*화")
-                .matcher(title);
+        Matcher episodeMatcher = EPISODE_NUMBER_PATTERN.matcher(title);
         double result = -1;
         while(episodeMatcher.find()) {
             double number = visibleEpisodeNumberBlockValue(episodeMatcher.group(1));
@@ -771,7 +773,7 @@ public class Title extends MTitle {
 
     private static double visibleEpisodeNumberBlockValue(String block) {
         ArrayList<Double> numbers = new ArrayList<>();
-        Matcher numberMatcher = Pattern.compile("\\d+(?:\\.\\d+)?").matcher(block == null ? "" : block);
+        Matcher numberMatcher = EPISODE_BLOCK_NUMBER_PATTERN.matcher(block == null ? "" : block);
         while(numberMatcher.find()) {
             try {
                 numbers.add(Double.parseDouble(numberMatcher.group()));
