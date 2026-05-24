@@ -112,7 +112,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private val dst = RectF()
     private val scroller = OverScroller(context)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
-    private val dragStartSlop = max(1f, touchSlop * 0.5f)
     private val minVelocity = ViewConfiguration.get(context).scaledMinimumFlingVelocity
     private val maxVelocity = ViewConfiguration.get(context).scaledMaximumFlingVelocity
     private var pageGapPx = DEFAULT_PAGE_GAP_PX
@@ -398,9 +397,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 parent?.requestDisallowInterceptTouchEvent(true)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    requestUnbufferedDispatch(event)
+                }
                 velocityTracker?.recycle()
                 velocityTracker = VelocityTracker.obtain().also { it.addMovement(event) }
-                val request = synchronized(stateLock) {
+                synchronized(stateLock) {
                     noteInputLocked(event)
                     scroller.forceFinished(true)
                     lastY = event.y
@@ -408,9 +410,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     pointerDown = true
                     dragging = false
                     boundaryArmedDirection = 0
-                    setBusyLocked(true)
+                    if (!lastBusy) {
+                        lastBusy = true
+                        renderRequested = true
+                    }
                 }
-                dispatchWindowRequest(request)
                 requestRender()
                 return true
             }
@@ -418,16 +422,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 velocityTracker?.addMovement(event)
                 val request = synchronized(stateLock) {
                     noteInputLocked(event)
-                    var dy = lastY - event.y
-                    if (!dragging) {
-                        val totalDy = downY - event.y
-                        if (abs(totalDy) > dragStartSlop) {
-                            dragging = true
-                            lastY = downY - if (totalDy > 0f) dragStartSlop else -dragStartSlop
-                            dy = lastY - event.y
-                        }
-                    }
-                    if (dragging) {
+                    val dy = lastY - event.y
+                    if (dy != 0f) {
+                        dragging = true
                         val busyRequest = setBusyLocked(true)
                         val direction = directionForDelta(dy)
                         if (direction != 0) boundaryArmedDirection = direction
@@ -461,7 +458,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 val result = synchronized(stateLock) {
                     noteInputLocked(event)
                     val wasReleased = event.actionMasked == MotionEvent.ACTION_UP
-                    val wasTap = wasReleased && !dragging && abs(event.y - downY) <= touchSlop
+                    val wasTap = wasReleased && abs(event.y - downY) <= touchSlop
                     tap = wasTap
                     pointerDown = false
                     dragging = false
