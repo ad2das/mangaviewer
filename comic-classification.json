@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-05-23",
+  "updated": "2026-05-24",
   "sourceRoot": "https://wfwf454.com",
   "sources": [
     "source-comic-genre"
@@ -6678,7 +6678,7 @@
       "thumb": "https://i2.imgcloud18.com/10714/0c5cf315.jpg",
       "release": "",
       "inferredTags": [
-        "드라마"
+        "개그"
       ]
     },
     "10715": {
@@ -12800,7 +12800,7 @@
       "thumb": "https://i4.imgcloud18.com/11388/c279f020.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "11389": {
@@ -14056,7 +14056,7 @@
       "thumb": "https://i4.imgcloud18.com/11525/80f23440.jpg",
       "release": "",
       "inferredTags": [
-        "순정"
+        "판타지"
       ]
     },
     "11526": {
@@ -19679,7 +19679,7 @@
       "thumb": "https://i6.imgcloud18.com/12149/3f4da450.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12150": {
@@ -21877,7 +21877,7 @@
       "thumb": "https://i6.imgcloud18.com/12398/d9b43a1b.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12399": {
@@ -21918,7 +21918,7 @@
       "thumb": "https://i6.imgcloud18.com/12403/e597f9f0.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12404": {
@@ -22144,7 +22144,7 @@
       "thumb": "https://i6.imgcloud18.com/12430/aee4b074.jpg",
       "release": "",
       "inferredTags": [
-        "학원"
+        "러브코미디"
       ]
     },
     "12431": {
@@ -22243,7 +22243,7 @@
       "thumb": "https://i6.imgcloud18.com/12441/82af3261.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12442": {
@@ -22251,7 +22251,7 @@
       "thumb": "https://i6.imgcloud18.com/12442/7b2779fd.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12443": {
@@ -22463,7 +22463,7 @@
       "thumb": "https://i6.imgcloud18.com/12466/63393722.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12467": {
@@ -22509,7 +22509,7 @@
       "thumb": "https://i6.imgcloud18.com/12471/8133da97.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12472": {
@@ -23521,7 +23521,7 @@
       "thumb": "https://i0.imgcloud18.com/12586/71f2d602.jpg?v=1",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12587": {
@@ -78257,7 +78257,7 @@
       "thumb": "https://c11cm.net/18667/grp0svhx6y4wnuecurltzljmdam9gvpo5a.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "18668": {
@@ -78507,6 +78507,22 @@
       "inferredTags": [
         "액션",
         "시대"
+      ]
+    },
+    "18743": {
+      "name": "오늘부터 가정부입니다만!",
+      "thumb": "https://c11cm.net/18743/cmir4kmibblhcjtytot77jx7w63x8lpxpx.jpg",
+      "release": "",
+      "sourceTags": [
+        "순정"
+      ]
+    },
+    "18744": {
+      "name": "브르타뉴 신부 이문",
+      "thumb": "https://c11cm.net/18744/sqc2s6mehigrnjvym95u7ol2byem1zxtmr.jpg",
+      "release": "",
+      "sourceTags": [
+        "드라마"
       ]
     }
   }
