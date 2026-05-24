@@ -10,13 +10,14 @@ import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.FutureTask
+import java.util.concurrent.atomic.AtomicInteger
 
 object ReaderImageCache {
     private const val DIR_NAME = "reader_image_cache_v1"
     private const val MAX_CACHE_BYTES = 512L * 1024L * 1024L
     private const val TARGET_CACHE_BYTES = 384L * 1024L * 1024L
     private val flights = ConcurrentHashMap<String, FutureTask<File>>()
-    private val activeReads = ConcurrentHashMap.newKeySet<String>()
+    private val activeReads = ConcurrentHashMap<String, AtomicInteger>()
     private val trimLock = Any()
 
     class FileLease internal constructor(
@@ -24,21 +25,33 @@ object ReaderImageCache {
         private val key: String?
     ) : AutoCloseable {
         override fun close() {
-            if (key != null) activeReads.remove(key)
+            if (key != null) releaseActiveRead(key)
         }
     }
 
     fun leaseFile(context: Context, manga: Manga, image: String): FileLease {
         if (!manga.isOnline) return FileLease(File(image), null)
         val key = key(manga.baseMode, image)
-        activeReads.add(key)
+        retainActiveRead(key)
         return try {
             val file = getOrFetch(context, manga, image)
             file.setLastModified(System.currentTimeMillis())
             FileLease(file, key)
         } catch (t: Throwable) {
-            activeReads.remove(key)
+            releaseActiveRead(key)
             throw t
+        }
+    }
+
+    private fun retainActiveRead(key: String) {
+        activeReads.compute(key) { _, count ->
+            (count ?: AtomicInteger(0)).also { it.incrementAndGet() }
+        }
+    }
+
+    private fun releaseActiveRead(key: String) {
+        activeReads.computeIfPresent(key) { _, count ->
+            if (count.decrementAndGet() <= 0) null else count
         }
     }
 
@@ -148,7 +161,7 @@ object ReaderImageCache {
         for (file in files.sortedBy { it.lastModified() }) {
             if (total <= TARGET_CACHE_BYTES) break
             val key = file.name.removeSuffix(".img")
-            if (activeReads.contains(key)) continue
+            if ((activeReads[key]?.get() ?: 0) > 0) continue
             val length = file.length()
             if (file.delete()) total -= length
         }

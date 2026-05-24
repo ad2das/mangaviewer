@@ -191,7 +191,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingProgressInfo?.let { saveReadingProgressNow(it) }
         pendingProgressInfo = null
         renderView.setWindowListener(null)
-        renderView.clearAllPages()
+        renderView.stopRenderingAndClearPages()
         session?.cancel()
         session = null
         super.onDestroy()
@@ -346,6 +346,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun launchAdjacent(source: Manga, target: Manga, title: Title?) {
         target.mode = source.mode
         attachEpisodeList(title, target)
+        renderView.stopRenderingAndClearPages()
         session?.cancel()
         session = null
         Utils.openViewerPrepared(this, target, 0, intent.getBooleanExtra("returnToEpisodes", false),

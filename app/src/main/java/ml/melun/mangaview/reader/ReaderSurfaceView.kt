@@ -9,17 +9,13 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.os.Build
 import android.os.Handler
-import android.os.HandlerThread
 import android.os.Looper
-import android.os.Process
 import android.os.SystemClock
 import android.os.Trace
 import android.util.AttributeSet
 import android.util.Log
-import android.view.Choreographer
 import android.view.MotionEvent
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.view.View
 import android.view.VelocityTracker
 import android.view.ViewConfiguration
 import android.widget.OverScroller
@@ -31,7 +27,7 @@ import java.util.Locale
 class ReaderSurfaceView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null
-) : SurfaceView(context, attrs), SurfaceHolder.Callback {
+) : View(context, attrs) {
     interface WindowListener {
         fun onWindowChanged(firstPage: Int, lastPage: Int, anchorPage: Int, busy: Boolean)
         fun onNearEnd(anchorPage: Int)
@@ -120,15 +116,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var velocityTracker: VelocityTracker? = null
-    private var renderThread: HandlerThread? = null
-    private var renderHandler: Handler? = null
-    private var renderChoreographer: Choreographer? = null
     private var renderRunning = false
-    private var surfaceReady = false
     private var renderRequested = false
     private var frameScheduled = false
-    private var immediateFrameScheduled = false
-    private var pendingFrameCallback: Choreographer.FrameCallback? = null
     private var frameToken = 0
     private var lastY = 0f
     private var downY = 0f
@@ -165,8 +155,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var boundaryArmedDirection = 0
 
     init {
-        holder.addCallback(this)
         isFocusable = true
+        isClickable = true
     }
 
     fun setWindowListener(listener: WindowListener?) {
@@ -338,6 +328,23 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
+    fun stopRenderingAndClearPages() {
+        val thread = synchronized(stateLock) {
+            renderRunning = false
+            clearInputStateLocked()
+            for (page in pages) {
+                page.bitmap = null
+                page.tiles = emptyList()
+                page.loading = false
+                page.cardText = null
+            }
+            layoutDirty = true
+            val stopped = stopRenderThreadLocked()
+            stateLock.notifyAll()
+            stopped
+        }
+    }
+
     fun setPageBounds(index: Int, pageWidth: Int, pageHeight: Int) {
         val request = synchronized(stateLock) {
             val page = pages.getOrNull(index) ?: return
@@ -398,18 +405,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
         dispatchWindowRequest(request)
     }
 
-    override fun surfaceCreated(holder: SurfaceHolder) {
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
         synchronized(stateLock) {
-            surfaceReady = true
             renderRunning = true
             renderRequested = true
-            ensureRenderThreadLocked()
             scheduleFrameLocked()
             stateLock.notifyAll()
         }
     }
 
-    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+    override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
+        super.onSizeChanged(width, height, oldWidth, oldHeight)
         val request = synchronized(stateLock) {
             clampScrollLocked()
             lastAnchor = -1
@@ -421,19 +428,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         dispatchWindowRequest(request)
     }
 
-    override fun surfaceDestroyed(holder: SurfaceHolder) {
-        synchronized(stateLock) {
-            surfaceReady = false
-            renderRunning = false
-            clearInputStateLocked()
-            stopRenderThreadLocked()
-            stateLock.notifyAll()
-        }
-    }
-
     override fun onDetachedFromWindow() {
         synchronized(stateLock) {
-            surfaceReady = false
             renderRunning = false
             clearInputStateLocked()
             stopRenderThreadLocked()
@@ -552,14 +548,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return true
     }
 
-    private fun renderFrame(frameTimeNanos: Long, token: Int) {
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        renderFrame(System.nanoTime(), canvas)
+    }
+
+    private fun renderFrame(frameTimeNanos: Long, canvas: Canvas) {
         val callbackStartNs = System.nanoTime()
         val work = synchronized(stateLock) {
-            if (token != frameToken) return
             frameScheduled = false
-            immediateFrameScheduled = false
-            pendingFrameCallback = null
-            if (!renderRunning || !surfaceReady) return
+            if (!renderRunning) return
             var request: WindowRequest? = null
             var boundary: BoundaryRequest? = null
             val scrolling = try {
@@ -592,33 +590,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
         dispatchWindowRequest(work.request)
         dispatchBoundaryRequest(work.boundary)
         val state = work.state ?: return
-        val timing = drawState(frameTimeNanos, callbackStartNs, state)
+        val timing = drawState(frameTimeNanos, callbackStartNs, state, canvas)
         if (timing.posted) synchronized(stateLock) { lastPostedFrameEndNs = timing.postEndNs }
         recordFrameStats(timing, state.busy)
     }
 
-    private fun drawState(frameTimeNs: Long, callbackStartNs: Long, state: DrawState): DrawTiming {
-        val lockStartNs = System.nanoTime()
-        val canvas = try {
-            Trace.beginSection("RSV.lockCanvas")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) holder.lockHardwareCanvas() else holder.lockCanvas()
-        } catch (_: RuntimeException) {
-            null
-        } finally {
-            Trace.endSection()
-        } ?: return DrawTiming(
-            frameTimeNs,
-            callbackStartNs,
-            nsToMs(System.nanoTime() - lockStartNs),
-            0f,
-            0f,
-            nsToMs(System.nanoTime() - callbackStartNs),
-            System.nanoTime(),
-            false
-        )
-        val lockEndNs = System.nanoTime()
-        var drawEndNs = lockEndNs
-        var postEndNs = lockEndNs
+    private fun drawState(frameTimeNs: Long, callbackStartNs: Long, state: DrawState, canvas: Canvas): DrawTiming {
+        val drawStartNs = System.nanoTime()
+        var drawEndNs = drawStartNs
         try {
             Trace.beginSection("RSV.draw")
             canvas.drawColor(Color.BLACK)
@@ -630,20 +609,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
         } finally {
             Trace.endSection()
             drawEndNs = System.nanoTime()
-            try {
-                Trace.beginSection("RSV.unlockPost")
-                holder.unlockCanvasAndPost(canvas)
-            } catch (_: RuntimeException) {
-            } finally {
-                Trace.endSection()
-                postEndNs = System.nanoTime()
-            }
         }
+        val postEndNs = System.nanoTime()
         return DrawTiming(
             frameTimeNs = frameTimeNs,
             callbackStartNs = callbackStartNs,
-            lockWaitMs = nsToMs(lockEndNs - lockStartNs),
-            drawMs = nsToMs(drawEndNs - lockEndNs),
+            lockWaitMs = 0f,
+            drawMs = nsToMs(drawEndNs - drawStartNs),
             postMs = nsToMs(postEndNs - drawEndNs),
             totalMs = nsToMs(postEndNs - callbackStartNs),
             postEndNs = postEndNs,
@@ -781,90 +753,20 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun scheduleFrameLocked(preferImmediate: Boolean = false) {
-        if (!renderRunning || !surfaceReady) return
-        val handler = renderHandler
-        val choreographer = renderChoreographer
-        if (handler == null && choreographer == null) return
-        val nowNs = System.nanoTime()
-        val canRenderImmediate = preferImmediate &&
-            handler != null &&
-            !immediateFrameScheduled &&
-            (lastPostedFrameEndNs == 0L || nowNs - lastPostedFrameEndNs >= IMMEDIATE_FRAME_MIN_INTERVAL_NS)
+        if (!renderRunning) return
         if (frameScheduled) {
-            if (canRenderImmediate) {
-                statsCoalescedRequests++
-                frameToken++
-                val token = frameToken
-                immediateFrameScheduled = true
-                handler.post { renderFrame(System.nanoTime(), token) }
-                return
-            }
             statsCoalescedRequests++
             return
         }
         frameToken++
-        val token = frameToken
-        if (canRenderImmediate) {
-            frameScheduled = true
-            immediateFrameScheduled = true
-            handler.post { renderFrame(System.nanoTime(), token) }
-            return
-        }
-        val callback = Choreographer.FrameCallback { frameTimeNanos ->
-            renderFrame(frameTimeNanos, token)
-        }
-        pendingFrameCallback = callback
         frameScheduled = true
-        if (choreographer != null) {
-            choreographer.postFrameCallback(callback)
-        } else if (handler != null) {
-            handler.post {
-                val shouldPost = synchronized(stateLock) {
-                    pendingFrameCallback === callback &&
-                        frameToken == token &&
-                        renderRunning &&
-                        surfaceReady
-                }
-                if (shouldPost) Choreographer.getInstance().postFrameCallback(callback)
-            }
-        }
+        postInvalidateOnAnimation()
     }
 
-    private fun ensureRenderThreadLocked() {
-        if (renderThread?.isAlive == true && renderHandler != null) return
-        val thread = HandlerThread("ReaderSurfaceRenderer", Process.THREAD_PRIORITY_DISPLAY)
-        thread.start()
-        renderThread = thread
-        renderHandler = Handler(thread.looper)
-        renderHandler?.post {
-            synchronized(stateLock) {
-                if (!renderRunning || !surfaceReady || renderThread !== thread) {
-                    thread.quitSafely()
-                    return@post
-                }
-                renderChoreographer = Choreographer.getInstance()
-                scheduleFrameLocked()
-                stateLock.notifyAll()
-            }
-        }
-    }
-
-    private fun stopRenderThreadLocked() {
-        val handler = renderHandler
-        val thread = renderThread
-        renderHandler = null
-        renderChoreographer = null
-        renderThread = null
+    private fun stopRenderThreadLocked(): Thread? {
         frameScheduled = false
-        immediateFrameScheduled = false
         frameToken++
-        val callback = pendingFrameCallback
-        pendingFrameCallback = null
-        if (handler == null || thread == null) return
-        handler.post {
-            callback?.let { Choreographer.getInstance().removeFrameCallback(it) }
-            thread.quitSafely()
-        }
+        return null
     }
 
     private fun windowRequestLocked(busy: Boolean): WindowRequest? {
@@ -1173,5 +1075,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
         private const val IMMEDIATE_FRAME_MIN_INTERVAL_NS = 4_000_000L
+        private const val RENDER_THREAD_STOP_JOIN_MS = 500L
     }
 }
