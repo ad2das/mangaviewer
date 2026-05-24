@@ -199,8 +199,22 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun appendPageCount(count: Int) {
         val request = synchronized(stateLock) {
             if (count <= pages.size) return
+            rebuildLayoutLocked()
+            val oldMaxScroll = max(0f, contentHeight - height).toInt()
+            val shouldExtendActiveFling = !scroller.isFinished &&
+                boundaryArmedDirection == DIRECTION_NEXT &&
+                scroller.finalY >= oldMaxScroll - BOUNDARY_FLING_EXTEND_EPSILON_PX
             repeat(count - pages.size) { pages.add(Page()) }
             layoutDirty = true
+            rebuildLayoutLocked()
+            val newMaxScroll = max(0f, contentHeight - height).toInt()
+            if (shouldExtendActiveFling && newMaxScroll > oldMaxScroll) {
+                val velocity = scroller.currVelocity
+                    .coerceAtLeast(minVelocity.toFloat() * BOUNDARY_FLING_MIN_VELOCITY_MULTIPLIER)
+                    .coerceAtMost(maxVelocity.toFloat())
+                    .toInt()
+                scroller.fling(0, scrollOffset.toInt(), 0, velocity, 0, 0, 0, newMaxScroll)
+            }
             renderRequested = true
             scheduleFrameLocked()
             stateLock.notifyAll()
@@ -1077,6 +1091,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val NEAR_BOUNDARY_SCREENFULS = 10
         private const val NEAR_BOUNDARY_PAGE_THRESHOLD = 16
         private const val BOUNDARY_EPSILON_PX = 2f
+        private const val BOUNDARY_FLING_EXTEND_EPSILON_PX = 4
+        private const val BOUNDARY_FLING_MIN_VELOCITY_MULTIPLIER = 2f
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
         private const val IMMEDIATE_FRAME_MIN_INTERVAL_NS = 4_000_000L

@@ -54,6 +54,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var toolbarForwardingScroll = false
     private var lastSavedEpisodeId = -1
     private var lastSavedPage = -1
+    private var lastDisplayedPageText = ""
     private var lastBusyUiUpdateMs = 0L
     private var pendingAnchorAfterBusy = -1
     private var adjacentNavigationInFlight = false
@@ -450,24 +451,34 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun updatePageLabel() {
-        pageView.text = if (pageCount > 0) "${currentPage + 1} / $pageCount" else "- / -"
+        setPageText(if (pageCount > 0) "${currentPage + 1} / $pageCount" else "- / -")
     }
 
     private fun updateCurrentEpisode(anchorPage: Int) {
         val info = session?.pageInfo(anchorPage)
         if (info != null) {
+            val previousManga = currentManga
+            val episodeChanged = previousManga == null || !Manga.sameEpisodeIdentity(previousManga, info.manga)
             currentManga = info.manga
-            titleView.text = info.title
-            pageView.text = if (info.transitionCard) {
+            if (episodeChanged || titleView.text.toString() != info.title) {
+                titleView.text = info.title
+            }
+            setPageText(if (info.transitionCard) {
                 "회차 전환"
             } else {
                 "${info.localPage} / ${info.totalPages}"
-            }
-            updateAdjacentButtons()
+            })
+            if (episodeChanged) updateAdjacentButtons()
             scheduleSaveReadingProgress(info)
             return
         }
         updatePageLabel()
+    }
+
+    private fun setPageText(text: String) {
+        if (lastDisplayedPageText == text) return
+        lastDisplayedPageText = text
+        pageView.text = text
     }
 
     private fun scheduleSaveReadingProgress(info: ReaderSession.PageInfo) {
