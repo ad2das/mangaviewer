@@ -116,7 +116,7 @@ public class ViewerActivity extends AppCompatActivity {
     Intent intent;
     String returnEpisodeTitleJson;
     boolean captchaChecked = false;
-    ImageButton episodeButton;
+    Button episodeButton;
     AlertDialog episodePickerDialog;
     MissingEpisodeNavigator.PromptState missingEpisodePromptState = new MissingEpisodeNavigator.PromptState();
     InfiniteScrollCallback infiniteScrollCallback;
@@ -1214,7 +1214,7 @@ public class ViewerActivity extends AppCompatActivity {
         if(cut == null)
             return;
         cut.setSelected(autoCut);
-        cut.setText(autoCut ? "분할 켜짐" : "분할 꺼짐");
+        cut.setText(autoCut ? "자동분할 ON" : "자동분할 OFF");
         cut.setContentDescription(autoCut ? "자동분할 켜짐" : "자동분할 꺼짐");
         cut.setBackgroundTintList(null);
         if(dark) {
@@ -1247,8 +1247,11 @@ public class ViewerActivity extends AppCompatActivity {
             bottomContent.setBackgroundColor(surface);
         getWindow().setStatusBarColor(surface);
         getWindow().setNavigationBarColor(Color.BLACK);
-        if(toolbarTitle != null)
+        if(toolbarTitle != null) {
             toolbarTitle.setTextColor(text);
+            toolbarTitle.setBackground(roundedBackground(chip, dark ? R.color.colorDarkDivider : R.color.appDivider, 10));
+            toolbarTitle.setPadding(dp(12), 0, dp(12), 0);
+        }
         if(pageBtn != null) {
             pageBtn.setBackground(roundedBackground(dark ? R.color.colorDarkSurfaceElevated : R.color.appCard,
                     dark ? R.color.colorDarkDivider : R.color.appDivider, 8));
@@ -1260,7 +1263,7 @@ public class ViewerActivity extends AppCompatActivity {
         styleViewerIconButton(saveBtn, chip, R.color.appAccent);
         styleViewerIconButton(prev, R.color.appAccent, dark ? R.color.colorDarkText : R.color.appCard);
         styleViewerIconButton(next, R.color.appAccent, dark ? R.color.colorDarkText : R.color.appCard);
-        styleViewerIconButton(episodeButton, R.color.appAccent, dark ? R.color.colorDarkText : R.color.appCard);
+        styleViewerTextButton(episodeButton, R.color.appAccent, dark ? R.color.colorDarkText : R.color.appCard);
     }
 
     private void styleViewerIconButton(ImageButton button, int fillColorRes, int iconColorRes) {
@@ -1268,6 +1271,13 @@ public class ViewerActivity extends AppCompatActivity {
             return;
         button.setBackground(roundedBackground(fillColorRes, dark ? R.color.colorDarkDivider : R.color.appCard, 8));
         button.setColorFilter(ContextCompat.getColor(this, iconColorRes));
+    }
+
+    private void styleViewerTextButton(Button button, int fillColorRes, int textColorRes) {
+        if(button == null)
+            return;
+        button.setBackground(roundedBackground(fillColorRes, dark ? R.color.colorDarkDivider : R.color.appCard, 8));
+        button.setTextColor(ContextCompat.getColor(this, textColorRes));
     }
 
     private GradientDrawable roundedBackground(int fillColorRes, int strokeColorRes, int radiusDp) {

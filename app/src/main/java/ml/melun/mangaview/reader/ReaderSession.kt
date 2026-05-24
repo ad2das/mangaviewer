@@ -4,6 +4,8 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.BitmapRegionDecoder
+import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Rect
 import android.net.Uri
 import android.os.Handler
@@ -35,6 +37,8 @@ class ReaderSession(
     private val manga: Manga,
     private val title: Title?,
     private val viewerWidth: Int,
+    private val autoCut: Boolean,
+    private val reverse: Boolean,
     preparedKey: String?,
     private val listener: Listener
 ) {
@@ -66,7 +70,8 @@ class ReaderSession(
         val transitionTitle: String? = null,
         var pageIndex: Int = -1,
         val localPage: Int = 0,
-        val totalPages: Int = 0
+        val totalPages: Int = 0,
+        val side: Int = PAGE_SIDE_FIRST
     )
 
     private data class BitmapRelease(
@@ -162,8 +167,8 @@ class ReaderSession(
     private val controlLock = Object()
     private var pendingWindowCommand: WindowCommand? = null
     private var windowCommandPosted = false
-    private val preparedEntry = ReaderPreparedStore.get(preparedKey)
-    private val preparedStoreKey = preparedKey
+    private val preparedEntry = if (autoCut) null else ReaderPreparedStore.get(preparedKey)
+    private val preparedStoreKey = if (autoCut) null else preparedKey
     private val clearPreparedBitmapsRunnable = Runnable {
         val key = preparedStoreKey ?: return@Runnable
         if (!cancelled.get() && ReaderPreparedStore.get(key) === preparedEntry) {
@@ -265,23 +270,18 @@ class ReaderSession(
     private fun installImages(urls: List<String>, requestedStartPage: Int, requestInitialWindow: Boolean) {
         if (cancelled.get() || urls.isEmpty()) return
         if (!pagesInstalled.compareAndSet(false, true)) return
+        val refs = pageRefsForImages(manga, urls)
         synchronized(pagesLock) {
             pages.clear()
-            val totalPages = urls.size
-            pages.addAll(urls.mapIndexed { index, url ->
-                PageRef(
-                    manga = manga,
-                    image = url,
-                    pageIndex = index,
-                    localPage = index + 1,
-                    totalPages = totalPages
-                )
-            })
+            refs.forEachIndexed { index, page ->
+                page.pageIndex = index
+            }
+            pages.addAll(refs)
         }
-        val startPage = requestedStartPage.coerceIn(0, urls.lastIndex)
+        val startPage = displayStartPage(requestedStartPage, refs.size)
         main.post {
             if (!cancelled.get()) {
-                listener.onPagesReady(urls.size)
+                listener.onPagesReady(refs.size)
                 listener.onInitialPage(startPage)
             }
         }
@@ -593,13 +593,40 @@ class ReaderSession(
     private fun pageRefsForEpisode(target: Manga, urls: List<String>, direction: Int): List<PageRef> {
         val episodeName = target.name ?: title?.name ?: "회차"
         val transitionTitle = if (direction < 0) "이전 회차: $episodeName" else "다음 회차: $episodeName"
-        val totalPages = urls.size
-        return ArrayList<PageRef>(urls.size + 1).apply {
+        val pageRefs = pageRefsForImages(target, urls)
+        val totalPages = pageRefs.size
+        return ArrayList<PageRef>(pageRefs.size + 1).apply {
             add(PageRef(target, null, transitionTitle, localPage = 0, totalPages = totalPages))
-            addAll(urls.mapIndexed { index, url ->
-                PageRef(target, url, localPage = index + 1, totalPages = totalPages)
-            })
+            addAll(pageRefs)
         }
+    }
+
+    private fun pageRefsForImages(target: Manga, urls: List<String>): List<PageRef> {
+        if (!autoCut) {
+            val totalPages = urls.size
+            return urls.mapIndexed { index, url ->
+                PageRef(
+                    manga = target,
+                    image = url,
+                    pageIndex = index,
+                    localPage = index + 1,
+                    totalPages = totalPages
+                )
+            }
+        }
+        val totalPages = urls.size * 2
+        val refs = ArrayList<PageRef>(totalPages)
+        for (index in urls.indices) {
+            val url = urls[index]
+            refs.add(PageRef(target, url, localPage = index * 2 + 1, totalPages = totalPages, side = PAGE_SIDE_FIRST))
+            refs.add(PageRef(target, url, localPage = index * 2 + 2, totalPages = totalPages, side = PAGE_SIDE_SECOND))
+        }
+        return refs
+    }
+
+    private fun displayStartPage(sourcePage: Int, totalPages: Int): Int {
+        val mapped = if (autoCut) sourcePage * 2 else sourcePage
+        return mapped.coerceIn(0, max(0, totalPages - 1))
     }
 
     private fun appendPrimedForwardRefs(refs: List<PageRef>, cardOffsets: List<Int>) {
@@ -922,8 +949,9 @@ class ReaderSession(
         } else {
             decodeLocal(page.image ?: "", bounds)
         }
-        postPageBounds(index, bounds.outWidth, bounds.outHeight)
-        if (shouldDecodeTiles(page, file, bounds)) {
+        val displayBounds = displayBounds(bounds.outWidth, bounds.outHeight, page.side)
+        postPageBounds(index, displayBounds.width(), displayBounds.height())
+        if (!autoCut && shouldDecodeTiles(page, file, bounds)) {
             return decodePageTiles(file, bounds, targetWidth)
         }
         val sample = sampleSize(bounds.outWidth, targetWidth)
@@ -937,10 +965,62 @@ class ReaderSession(
             decodeLocal(page.image ?: "", options)
         }
             ?: throw java.io.IOException("Bitmap decode failed")
-        if (!page.manga.isOnline) return PageDecodeResult.Full(raw)
+        if (!page.manga.isOnline) return PageDecodeResult.Full(applyAutoSplit(raw, page.side))
         val decoded = Decoder(page.manga.seed, page.manga.id).decode(raw, targetWidth)
         if (decoded !== raw && !raw.isRecycled) raw.recycle()
-        return PageDecodeResult.Full(decoded)
+        return PageDecodeResult.Full(applyAutoSplit(decoded, page.side))
+    }
+
+    private fun displayBounds(width: Int, height: Int, side: Int): Rect {
+        val safeWidth = max(1, width)
+        val safeHeight = max(1, height)
+        if (!autoCut) return Rect(0, 0, safeWidth, safeHeight)
+        if (shouldAutoSplit(safeWidth, safeHeight)) {
+            val cropWidth = max(1, safeWidth / 2)
+            return Rect(0, 0, cropWidth, safeHeight)
+        }
+        return if (side == PAGE_SIDE_FIRST) {
+            Rect(0, 0, safeWidth, safeHeight)
+        } else {
+            Rect(0, 0, safeWidth, 1)
+        }
+    }
+
+    private fun applyAutoSplit(bitmap: Bitmap, side: Int): Bitmap {
+        if (!autoCut) return bitmap
+        val decodedWidth = bitmap.width
+        val decodedHeight = bitmap.height
+        if (!shouldAutoSplit(decodedWidth, decodedHeight)) {
+            if (side == PAGE_SIDE_FIRST) return bitmap
+            val empty = Bitmap.createBitmap(max(1, decodedWidth), 1, displayConfig(bitmap))
+            empty.eraseColor(Color.TRANSPARENT)
+            if (!bitmap.isRecycled) bitmap.recycle()
+            return empty
+        }
+        val cropWidth = max(1, decodedWidth / 2)
+        val cropX = if (side == PAGE_SIDE_FIRST) {
+            if (reverse) 0 else decodedWidth - cropWidth
+        } else {
+            if (reverse) decodedWidth - cropWidth else 0
+        }
+        val displayBitmap = Bitmap.createBitmap(cropWidth, decodedHeight, displayConfig(bitmap))
+        Canvas(displayBitmap).drawBitmap(
+            bitmap,
+            Rect(cropX, 0, cropX + cropWidth, decodedHeight),
+            Rect(0, 0, cropWidth, decodedHeight),
+            null
+        )
+        if (!bitmap.isRecycled) bitmap.recycle()
+        return displayBitmap
+    }
+
+    private fun displayConfig(bitmap: Bitmap): Bitmap.Config {
+        return if (bitmap.config == Bitmap.Config.RGB_565) Bitmap.Config.RGB_565 else Bitmap.Config.ARGB_8888
+    }
+
+    private fun shouldAutoSplit(width: Int, height: Int): Boolean {
+        if (width <= 0 || height <= 0) return false
+        return width / height.toFloat() >= SPREAD_ASPECT_RATIO
     }
 
     private fun shouldDecodeTiles(page: PageRef, file: File, bounds: BitmapFactory.Options): Boolean {
@@ -1011,11 +1091,18 @@ class ReaderSession(
         val transition = page.transitionTitle != null
         return PageInfo(
             manga = page.manga,
-            title = page.transitionTitle ?: page.manga.name ?: title?.name ?: "",
+            title = page.transitionTitle ?: displayEpisodeTitle(page.manga),
             localPage = if (transition) 0 else max(1, page.localPage),
             totalPages = page.totalPages,
             transitionCard = transition
         )
+    }
+
+    private fun displayEpisodeTitle(pageManga: Manga): String {
+        return pageManga.name?.takeIf { it.isNotBlank() }
+            ?: title?.name?.takeIf { it.isNotBlank() }
+            ?: manga.name?.takeIf { it.isNotBlank() }
+            ?: "회차"
     }
 
     private fun sameEpisode(a: Manga, b: Manga): Boolean {
@@ -1469,6 +1556,9 @@ class ReaderSession(
         private const val TILE_PAGE_ASPECT_RATIO = 3.0f
         private const val TILE_PAGE_MIN_ESTIMATED_BYTES = 12L * 1024L * 1024L
         private const val TILE_SOURCE_HEIGHT = 2048
+        private const val SPREAD_ASPECT_RATIO = 0.90f
+        private const val PAGE_SIDE_FIRST = 0
+        private const val PAGE_SIDE_SECOND = 1
 
         private fun readerThreadFactory(name: String, priority: Int): ThreadFactory {
             val counter = AtomicInteger(1)

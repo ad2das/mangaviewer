@@ -1,12 +1,16 @@
 package ml.melun.mangaview.activity
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ViewGroup
@@ -41,10 +45,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private lateinit var titleView: TextView
     private lateinit var pageView: TextView
     private lateinit var prevButton: Button
+    private lateinit var episodeButton: Button
     private lateinit var nextButton: Button
+    private lateinit var autoCutButton: Button
     private var session: ReaderSession? = null
     private var pagesReady = false
     private var toolbarVisible = false
+    private var autoCut = false
     private var pageCount = 0
     private var currentPage = 0
     private var currentManga: Manga? = null
@@ -109,8 +116,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
         titleView = TextView(this).apply {
             setTextColor(Color.WHITE)
-            textSize = 16f
+            textSize = 18f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
             isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.MARQUEE
+            marqueeRepeatLimit = -1
+            isSelected = true
+            setPadding(12.dp(), 0, 12.dp(), 0)
+            background = roundedBackground(0xff282828.toInt(), 0xff555555.toInt(), 10.dp())
         }
         pageView = TextView(this).apply {
             setTextColor(0xffdddddd.toInt())
@@ -125,10 +139,24 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             text = "이전"
             setOnClickListener { openAdjacent(false) }
         }
+        episodeButton = Button(this).apply {
+            text = "회차"
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            background = roundedBackground(0xff2f6df6.toInt(), 0x55ffffff, 8.dp())
+            setOnClickListener { showEpisodePicker() }
+        }
         nextButton = Button(this).apply {
             text = "다음"
             setOnClickListener { openAdjacent(true) }
         }
+        autoCutButton = Button(this).apply {
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setOnClickListener { toggleAutoCut() }
+        }
+        updateAutoCutButton()
         status = TextView(this).apply {
             text = "로딩 중"
             setTextColor(0xffcccccc.toInt())
@@ -144,21 +172,36 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             FrameLayout.LayoutParams.WRAP_CONTENT
         ))
         topBar.addView(backButton, LinearLayout.LayoutParams(52.dp(), 44.dp()))
-        topBar.addView(titleView, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        topBar.addView(titleView, LinearLayout.LayoutParams(0, 40.dp(), 1f).apply {
+            leftMargin = 8.dp()
+        })
         root.addView(topBar, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             60.dp(),
             Gravity.TOP
         ))
         bottomBar.addView(pageView, LinearLayout.LayoutParams(0, 44.dp(), 1f))
-        bottomBar.addView(prevButton, LinearLayout.LayoutParams(82.dp(), 44.dp()))
-        bottomBar.addView(nextButton, LinearLayout.LayoutParams(82.dp(), 44.dp()))
+        bottomBar.addView(autoCutButton, LinearLayout.LayoutParams(108.dp(), 44.dp()).apply {
+            rightMargin = 8.dp()
+        })
+        bottomBar.addView(prevButton, LinearLayout.LayoutParams(64.dp(), 44.dp()))
+        bottomBar.addView(episodeButton, LinearLayout.LayoutParams(64.dp(), 44.dp()).apply {
+            leftMargin = 6.dp()
+        })
+        bottomBar.addView(nextButton, LinearLayout.LayoutParams(64.dp(), 44.dp()).apply {
+            leftMargin = 6.dp()
+        })
         root.addView(bottomBar, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             60.dp(),
             Gravity.BOTTOM
         ))
-        installToolbarTouchForwarder(topBar, bottomBar, backButton, prevButton, nextButton, titleView, pageView)
+        installToolbarTouchForwarder(
+            topBar,
+            bottomBar,
+            titleView,
+            pageView
+        )
         setContentView(root)
         val title = Gson().fromJson<Title?>(intent.getStringExtra("title"), object : TypeToken<Title?>() {}.type)
         val manga = Gson().fromJson<Manga?>(intent.getStringExtra("manga"), object : TypeToken<Manga?>() {}.type)
@@ -174,21 +217,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             manga.titleId = title.id
             title.eps?.let { manga.setEps(it) }
         }
-        titleView.text = manga.name ?: title?.name ?: ""
+        titleView.text = displayEpisodeTitle(manga, title)
         updateAdjacentButtons()
-        status.text = manga.name ?: "로딩 중"
+        status.text = displayEpisodeTitle(manga, title)
         root.post {
             if (destroyed || isFinishing) return@post
-            session = ReaderSession(
-                this,
-                manga,
-                title,
-                Utils.getScreenWidth(windowManager.defaultDisplay),
-                intent.getStringExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY),
-                this
-            ).also {
-                it.start()
-            }
+            startReaderSession(manga, title, intent.getStringExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY))
         }
         if (intent.getBooleanExtra("recent", false)) setResult(RESULT_OK)
         if (!manga.isOnline) p?.removeViewerBookmark(manga)
@@ -395,6 +429,74 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         overridePendingTransition(0, 0)
     }
 
+    private fun showEpisodePicker() {
+        val source = currentManga ?: return
+        val title = currentTitle ?: source.title
+        restoreTitleEpisodes(title, source)
+        attachEpisodeList(title, source)
+        val episodes = Utils.snapshotEpisodes(title).ifEmpty { Utils.snapshotEpisodes(source) }
+        if (episodes.isEmpty()) {
+            status.visibility = TextView.VISIBLE
+            status.text = "회차 목록이 없습니다"
+            return
+        }
+        val labels = episodes.mapIndexed { index, episode ->
+            episode?.name?.takeIf { it.isNotBlank() } ?: "${index + 1}화"
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("회차 선택")
+            .setItems(labels) { dialog, which ->
+                dialog.dismiss()
+                val target = episodes.getOrNull(which) ?: return@setItems
+                if (Manga.sameEpisodeIdentity(source, target)) return@setItems
+                launchAdjacent(source, target, title)
+            }
+            .show()
+    }
+
+    private fun toggleAutoCut() {
+        val source = currentManga ?: return
+        autoCut = !autoCut
+        updateAutoCutButton()
+        startReaderSession(source, currentTitle ?: source.title, null)
+    }
+
+    private fun updateAutoCutButton() {
+        autoCutButton.text = if (autoCut) "자동분할 ON" else "자동분할 OFF"
+        autoCutButton.contentDescription = if (autoCut) "자동분할 켜짐" else "자동분할 꺼짐"
+        autoCutButton.setTextColor(Color.WHITE)
+        autoCutButton.background = roundedBackground(
+            if (autoCut) 0xff2f6df6.toInt() else 0xff2a2a2a.toInt(),
+            if (autoCut) 0x88ffffff.toInt() else 0xff555555.toInt(),
+            8.dp()
+        )
+    }
+
+    private fun startReaderSession(manga: Manga, title: Title?, preparedKey: String?) {
+        pagesReady = false
+        pageCount = 0
+        currentPage = 0
+        lastDisplayedPageText = ""
+        pendingBoundaryStatus = false
+        statusHandler.removeCallbacks(showBoundaryStatusRunnable)
+        status.visibility = TextView.VISIBLE
+        status.text = displayEpisodeTitle(manga, title)
+        renderView.setPageCount(0)
+        session?.cancel()
+        session = ReaderSession(
+            this,
+            manga,
+            title,
+            Utils.getScreenWidth(windowManager.defaultDisplay),
+            autoCut,
+            p?.getReverse() == true,
+            if (autoCut) null else preparedKey,
+            this
+        ).also {
+            it.start()
+        }
+    }
+
     private fun updateAdjacentButtons() {
         val manga = currentManga
         val title = currentTitle ?: manga?.title
@@ -422,6 +524,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         nextButton.isEnabled = next
         prevButton.alpha = if (previous) 1f else 0.35f
         nextButton.alpha = if (next) 1f else 0.35f
+    }
+
+    private fun roundedBackground(fill: Int, stroke: Int, radius: Int): GradientDrawable {
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColor(fill)
+            cornerRadius = radius.toFloat()
+            setStroke(1.dp(), stroke)
+        }
     }
 
     private fun resolveAdjacent(source: Manga, next: Boolean, fetchEpisodes: Boolean): AdjacentResolution {
@@ -501,8 +612,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             val previousManga = currentManga
             val episodeChanged = previousManga == null || !Manga.sameEpisodeIdentity(previousManga, info.manga)
             currentManga = info.manga
-            if (episodeChanged || titleView.text.toString() != info.title) {
-                titleView.text = info.title
+            val displayTitle = info.title.takeIf { it.isNotBlank() } ?: displayEpisodeTitle(info.manga, currentTitle)
+            if (episodeChanged || titleView.text.toString() != displayTitle) {
+                titleView.text = displayTitle
             }
             setPageText(if (info.transitionCard) {
                 "회차 전환"
@@ -548,6 +660,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         p?.addRecent(title)
         p?.setBookmark(title, info.manga.id)
         p?.setViewerBookmark(info.manga, zeroBasedPage)
+    }
+
+    private fun displayEpisodeTitle(manga: Manga?, title: Title?): String {
+        return manga?.name?.takeIf { it.isNotBlank() }
+            ?: title?.name?.takeIf { it.isNotBlank() }
+            ?: manga?.title?.name?.takeIf { it.isNotBlank() }
+            ?: "회차"
     }
 
     private fun installToolbarTouchForwarder(vararg views: View) {
