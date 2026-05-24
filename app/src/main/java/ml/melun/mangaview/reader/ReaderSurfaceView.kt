@@ -123,6 +123,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var frameToken = 0
     private var lastY = 0f
     private var downY = 0f
+    private var pendingDragY = Float.NaN
+    private var lastVelocitySampleMs = 0L
     private var pointerDown = false
     private var dragging = false
     private var scrollOffset = 0f
@@ -456,9 +458,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 parent?.requestDisallowInterceptTouchEvent(true)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    requestUnbufferedDispatch(event)
-                }
                 velocityTracker?.recycle()
                 velocityTracker = VelocityTracker.obtain().also { it.addMovement(event) }
                 synchronized(stateLock) {
@@ -466,6 +465,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     scroller.forceFinished(true)
                     lastY = event.y
                     downY = event.y
+                    pendingDragY = Float.NaN
+                    lastVelocitySampleMs = event.eventTime
                     pointerDown = true
                     dragging = false
                     boundaryArmedDirection = 0
@@ -478,36 +479,31 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                velocityTracker?.addMovement(event)
+                var sampleVelocity = false
                 val request = synchronized(stateLock) {
-                    noteInputLocked(event)
-                    var moved = false
-                    var busyRequest: WindowRequest? = null
-                    fun applyMove(y: Float) {
-                        val dy = lastY - y
-                        if (dy == 0f) return
-                        moved = true
-                        if (!dragging) dragging = true
-                        busyRequest = setBusyLocked(true) ?: busyRequest
-                        val direction = directionForDelta(dy)
-                        if (direction != 0) boundaryArmedDirection = direction
-                        scrollOffset += dy * DRAG_SCROLL_MULTIPLIER
-                        clampScrollLocked()
-                        lastY = y
+                    val shouldSampleVelocity = event.eventTime - lastVelocitySampleMs >= MOVE_VELOCITY_SAMPLE_MS
+                    if (shouldSampleVelocity) {
+                        lastVelocitySampleMs = event.eventTime
+                        sampleVelocity = true
                     }
-                    for (i in 0 until event.historySize) {
-                        applyMove(event.getHistoricalY(i))
-                    }
-                    applyMove(event.y)
-                    if (moved) {
-                        renderRequested = true
-                        scheduleFrameLocked()
-                        stateLock.notifyAll()
-                        busyRequest
-                    } else {
+                    if (frameScheduled) {
+                        pendingDragY = event.y
                         null
+                    } else {
+                        noteInputLocked(event)
+                        val request = if (applyDragMoveLocked(event.y)) {
+                            renderRequested = true
+                            scheduleFrameLocked()
+                            stateLock.notifyAll()
+                            windowRequestLocked(true)
+                        } else {
+                            null
+                        }
+                        sampleVelocity = true
+                        request
                     }
                 }
+                if (sampleVelocity) velocityTracker?.addMovement(event)
                 dispatchWindowRequest(request)
                 return true
             }
@@ -526,11 +522,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 velocityTracker = null
                 val result = synchronized(stateLock) {
                     noteInputLocked(event)
+                    val pendingMoved = applyPendingDragLocked()
+                    val upMoved = applyDragMoveLocked(event.y)
                     val wasReleased = event.actionMasked == MotionEvent.ACTION_UP
-                    val wasTap = wasReleased && abs(event.y - downY) <= touchSlop
+                    val wasTap = wasReleased && !pendingMoved && !upMoved && !dragging && abs(event.y - downY) <= touchSlop
                     tap = wasTap
                     pointerDown = false
                     dragging = false
+                    pendingDragY = Float.NaN
                     if (wasTap) {
                         boundaryArmedDirection = 0
                         setBusyLocked(false) to null
@@ -583,6 +582,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (!renderRunning) return
             var request: WindowRequest? = null
             var boundary: BoundaryRequest? = null
+            if (applyPendingDragLocked()) {
+                renderRequested = true
+                request = windowRequestLocked(true)
+            }
             val scrolling = try {
                 scroller.computeScrollOffset()
             } catch (_: ArrayIndexOutOfBoundsException) {
@@ -935,6 +938,26 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
+    private fun applyPendingDragLocked(): Boolean {
+        val y = pendingDragY
+        if (y.isNaN()) return false
+        pendingDragY = Float.NaN
+        return applyDragMoveLocked(y)
+    }
+
+    private fun applyDragMoveLocked(y: Float): Boolean {
+        val dy = lastY - y
+        if (dy == 0f) return false
+        if (!dragging) dragging = true
+        setBusyLocked(true)
+        val direction = directionForDelta(dy)
+        if (direction != 0) boundaryArmedDirection = direction
+        scrollOffset += dy * DRAG_SCROLL_MULTIPLIER
+        clampScrollLocked()
+        lastY = y
+        return true
+    }
+
     private fun isNearVisibleLocked(index: Int, extraPages: Int): Boolean {
         if (pages.isEmpty()) return false
         val anchor = anchorPageLocked()
@@ -1125,6 +1148,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val BOUNDARY_FLING_MIN_VELOCITY_MULTIPLIER = 2f
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
+        private const val MOVE_VELOCITY_SAMPLE_MS = 16L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
     }
 }
