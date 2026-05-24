@@ -264,7 +264,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     override fun onNearEnd(anchorPage: Int) {
-        session?.prepareNextEpisode(anchorPage)
+        session?.appendAdjacentEpisode(anchorPage, ReaderSurfaceView.DIRECTION_NEXT)
     }
 
     override fun onBoundaryReached(direction: Int, anchorPage: Int) {

@@ -608,15 +608,25 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val bitmap = item.bitmap
         val cardText = item.cardText
         if (cardText != null) {
-            paint.color = Color.rgb(12, 12, 12)
-            dst.set(0f, max(0f, item.top), state.width.toFloat(), min(state.height.toFloat(), item.top + item.pageHeight))
-            canvas.drawRect(dst, paint)
-            textPaint.textSize = 30f
-            textPaint.color = Color.rgb(170, 170, 170)
-            canvas.drawText("회차 전환", state.width / 2f, item.top + item.pageHeight / 2f - 34f, textPaint)
-            textPaint.textSize = 42f
+            val cardWidth = state.width * TRANSITION_CARD_WIDTH_RATIO
+            val cardHeight = min(item.pageHeight * 0.68f, state.height * 0.18f)
+            val centerY = item.top + item.pageHeight / 2f
+            val top = max(0f, centerY - cardHeight / 2f)
+            val bottom = min(state.height.toFloat(), top + cardHeight)
+            dst.set(
+                (state.width - cardWidth) / 2f,
+                top,
+                (state.width + cardWidth) / 2f,
+                bottom
+            )
+            paint.color = Color.rgb(14, 14, 14)
+            canvas.drawRoundRect(dst, 8f, 8f, paint)
+            textPaint.textSize = 24f
+            textPaint.color = Color.rgb(160, 160, 160)
+            canvas.drawText("회차 전환", state.width / 2f, dst.centerY() - 20f, textPaint)
+            textPaint.textSize = 34f
             textPaint.color = Color.WHITE
-            canvas.drawText(cardText, state.width / 2f, item.top + item.pageHeight / 2f + 30f, textPaint)
+            canvas.drawText(cardText, state.width / 2f, dst.centerY() + 28f, textPaint)
             textPaint.textSize = 34f
             textPaint.color = Color.rgb(190, 190, 190)
             return
@@ -835,6 +845,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun pageDrawHeightLocked(page: Page): Float {
         val viewWidth = width
         if (viewWidth <= 0) return 1f
+        if (page.cardText != null) return max(1f, height * TRANSITION_CARD_PAGE_HEIGHT_RATIO)
         if (page.width > 0 && page.height > 0) return max(1f, viewWidth * (page.height / page.width.toFloat()))
         return max(height * 1.4f, viewWidth * 1.35f)
     }
@@ -1059,6 +1070,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val MISSED_VSYNC_FACTOR = 1.5f
         private const val MIN_FRAME_SAMPLES = 8
         private const val DEFAULT_PAGE_GAP_PX = 0
+        private const val TRANSITION_CARD_WIDTH_RATIO = 0.72f
+        private const val TRANSITION_CARD_PAGE_HEIGHT_RATIO = 0.22f
         private const val BOUNDARY_EPSILON_PX = 2f
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
