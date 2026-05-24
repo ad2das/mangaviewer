@@ -679,9 +679,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         try {
             Trace.beginSection("RSV.draw")
             canvas.drawColor(Color.BLACK)
-            if (state.empty) {
-                canvas.drawText("로딩 중", state.width / 2f, state.height / 2f, textPaint)
-            } else {
+            if (!state.empty) {
                 for (item in state.items) drawItem(canvas, state, item)
             }
         } finally {
@@ -751,12 +749,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         paint.color = Color.rgb(18, 18, 18)
         dst.set(0f, max(0f, item.top), state.width.toFloat(), min(state.height.toFloat(), item.top + item.pageHeight))
         canvas.drawRect(dst, paint)
-        canvas.drawText(
-            if (item.loading) "불러오는 중" else "대기 중",
-            state.width / 2f,
-            item.top + min(item.pageHeight / 2f, state.height / 2f),
-            textPaint
-        )
     }
 
     private fun drawTiles(canvas: Canvas, state: DrawState, item: DrawItem) {

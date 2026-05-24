@@ -78,9 +78,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var pendingProgressInfo: ReaderSession.PageInfo? = null
     private var pendingProgressOffset = 0
     private var pendingBoundaryStatus = false
+    private var initialStatusPending = false
     private val saveProgressRunnable = Runnable {
         saveCurrentReadingProgress()
         pendingProgressInfo = null
+    }
+    private val showInitialStatusRunnable = Runnable {
+        if (initialStatusPending && !pagesReady && !destroyed && !isFinishing) {
+            status.visibility = TextView.VISIBLE
+            status.text = displayEpisodeTitle(currentManga, currentTitle)
+        }
     }
     private val showBoundaryStatusRunnable = Runnable {
         if (pendingBoundaryStatus && pagesReady && !destroyed && !isFinishing) {
@@ -100,6 +107,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         super.onCreate(savedInstanceState)
         toolbarTouchSlop = ViewConfiguration.get(this).scaledTouchSlop
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.BLACK))
         window.decorView.systemUiVisibility = (
             View.SYSTEM_UI_FLAG_FULLSCREEN
                 or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
@@ -169,6 +177,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             setTextColor(0xffcccccc.toInt())
             textSize = 14f
             setPadding(24, 24, 24, 24)
+            visibility = View.GONE
         }
         root.addView(renderView, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
@@ -238,6 +247,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     override fun onDestroy() {
         destroyed = true
         progressHandler.removeCallbacks(saveProgressRunnable)
+        statusHandler.removeCallbacks(showInitialStatusRunnable)
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         saveCurrentReadingProgress()
         pendingProgressInfo = null
@@ -251,6 +261,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPagesReady(count: Int) {
         pagesReady = true
+        initialStatusPending = false
+        statusHandler.removeCallbacks(showInitialStatusRunnable)
+        hideBoundaryStatus()
         pageCount = count
         renderView.setPageCount(count)
         updateCurrentEpisode(currentPage)
@@ -284,7 +297,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             val initialManga = session?.pageInfo(index)?.manga ?: currentManga
             pendingInitialRestorePage = index
             pendingInitialRestoreOffset = p?.getViewerBookmarkOffset(initialManga) ?: 0
-            renderView.scrollToPage(index, 0)
+            renderView.lockRestoredPageOffset(index, pendingInitialRestoreOffset)
             updateCurrentEpisode(index, pendingInitialRestoreOffset, saveProgress = false)
             applyPendingInitialRestoreIfReady()
         }
@@ -349,8 +362,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onMessage(message: String) {
         pendingBoundaryStatus = false
+        initialStatusPending = false
         pendingInitialRestorePage = -1
         pendingInitialRestoreOffset = 0
+        statusHandler.removeCallbacks(showInitialStatusRunnable)
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         status.visibility = TextView.VISIBLE
         status.text = message
@@ -540,8 +555,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         lastSavedPage = -1
         lastSavedOffset = Int.MIN_VALUE
         lastSavedSide = Int.MIN_VALUE
+        initialStatusPending = false
+        statusHandler.removeCallbacks(showInitialStatusRunnable)
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
-        status.visibility = TextView.VISIBLE
+        status.visibility = TextView.GONE
         status.text = displayEpisodeTitle(manga, title)
         renderView.setPageCount(0)
         session?.cancel()
@@ -555,6 +572,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             if (autoCut) null else preparedKey,
             this
         ).also {
+            initialStatusPending = true
+            statusHandler.postDelayed(showInitialStatusRunnable, INITIAL_STATUS_DELAY_MS)
             it.start()
         }
     }
@@ -822,6 +841,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun hideBoundaryStatus() {
         pendingBoundaryStatus = false
+        initialStatusPending = false
+        statusHandler.removeCallbacks(showInitialStatusRunnable)
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         if (status.visibility != TextView.GONE) status.visibility = TextView.GONE
     }
@@ -830,6 +851,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     companion object {
         private const val PROGRESS_SAVE_DEBOUNCE_MS = 1000L
+        private const val INITIAL_STATUS_DELAY_MS = 450L
         private const val BOUNDARY_STATUS_DELAY_MS = 250L
         private const val DEFAULT_PAGE_GAP_PX = 2
         private const val WEBTOON_PAGE_GAP_PX = 0
