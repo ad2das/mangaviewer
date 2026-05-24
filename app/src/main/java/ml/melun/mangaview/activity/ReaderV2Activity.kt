@@ -279,7 +279,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             val initialManga = session?.pageInfo(index)?.manga ?: currentManga
             val offset = p?.getViewerBookmarkOffset(initialManga) ?: 0
             renderView.scrollToPage(index, offset)
-            updateCurrentEpisode(index)
+            updateCurrentEpisode(index, offset, saveProgress = false)
         }
     }
 
@@ -348,7 +348,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             }
             pendingAnchorAfterBusy = -1
             MainThreadStallMonitor.trace("reader_update_current_episode") {
-                updateCurrentEpisode(progressPage, progressOffset)
+                updateCurrentEpisode(progressPage, progressOffset, saveProgress = true)
             }
         }
     }
@@ -616,7 +616,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         setPageText(if (pageCount > 0) "${currentPage + 1} / $pageCount" else "- / -")
     }
 
-    private fun updateCurrentEpisode(anchorPage: Int, anchorOffset: Int = 0) {
+    private fun updateCurrentEpisode(anchorPage: Int, anchorOffset: Int = 0, saveProgress: Boolean = true) {
         val info = MainThreadStallMonitor.traceResult("reader_page_info") {
             session?.pageInfo(anchorPage)
         }
@@ -638,8 +638,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     updateAdjacentButtons()
                 }
             }
-            MainThreadStallMonitor.trace("reader_schedule_progress") {
-                scheduleSaveReadingProgress(info, anchorOffset)
+            if (saveProgress && info.layoutReady) {
+                MainThreadStallMonitor.trace("reader_schedule_progress") {
+                    scheduleSaveReadingProgress(info, anchorOffset)
+                }
             }
             return
         }

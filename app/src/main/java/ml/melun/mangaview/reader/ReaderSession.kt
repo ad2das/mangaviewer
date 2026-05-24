@@ -65,6 +65,7 @@ class ReaderSession(
         val totalPages: Int,
         val sourcePageIndex: Int,
         val side: Int,
+        val layoutReady: Boolean,
         val transitionCard: Boolean
     )
 
@@ -1123,6 +1124,7 @@ class ReaderSession(
             totalPages = page.totalPages,
             sourcePageIndex = sourcePageIndex(page),
             side = page.side,
+            layoutReady = transition || sourceWidths.containsKey(index) || decodedWidths.containsKey(index),
             transitionCard = transition
         )
     }
