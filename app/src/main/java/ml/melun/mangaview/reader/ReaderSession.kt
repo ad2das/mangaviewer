@@ -52,6 +52,12 @@ class ReaderSession(
         val transitionTitle: String? = null
     )
 
+    private data class BitmapRelease(
+        val index: Int,
+        val bitmap: Bitmap?,
+        val clearPage: Boolean
+    )
+
     private val appContext = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private val network = Executors.newFixedThreadPool(ReaderPipelinePolicy.FOREGROUND_NETWORK_PARALLELISM)
@@ -392,36 +398,36 @@ class ReaderSession(
     }
 
     private fun trackDeliveredBitmap(index: Int, bitmap: Bitmap, owned: Boolean) {
-        val cleared = ArrayList<Pair<Int, Bitmap?>>()
+        val cleared = ArrayList<BitmapRelease>()
         synchronized(deliveredBitmaps) {
             val previous = deliveredBitmaps.put(index, bitmap)
             if (previous != null && previous !== bitmap && deliveredOwned.remove(index)) {
-                cleared.add(index to previous)
+                cleared.add(BitmapRelease(index, previous, false))
             }
             if (owned) deliveredOwned.add(index) else deliveredOwned.remove(index)
             trimDeliveredBudgetLocked(cleared)
         }
-        postCleared(cleared)
+        postBitmapReleases(cleared)
     }
 
     private fun evictDeliveredBitmaps(first: Int, last: Int) {
-        val cleared = ArrayList<Pair<Int, Bitmap?>>()
+        val cleared = ArrayList<BitmapRelease>()
         synchronized(deliveredBitmaps) {
             val iterator = deliveredBitmaps.entries.iterator()
             while (iterator.hasNext()) {
                 val entry = iterator.next()
                 if (entry.key < first || entry.key > last) {
                     val owned = deliveredOwned.remove(entry.key)
-                    cleared.add(entry.key to if (owned) entry.value else null)
+                    cleared.add(BitmapRelease(entry.key, if (owned) entry.value else null, true))
                     iterator.remove()
                 }
             }
             trimDeliveredBudgetLocked(cleared)
         }
-        postCleared(cleared)
+        postBitmapReleases(cleared)
     }
 
-    private fun trimDeliveredBudgetLocked(cleared: MutableList<Pair<Int, Bitmap?>>) {
+    private fun trimDeliveredBudgetLocked(cleared: MutableList<BitmapRelease>) {
         while (deliveredBitmapBytesLocked() > ACTIVE_BITMAP_BYTES) {
             val iterator = deliveredBitmaps.entries.iterator()
             var trimmed = false
@@ -429,7 +435,7 @@ class ReaderSession(
                 val entry = iterator.next()
                 if (entry.key in retainedFirstPage..retainedLastPage) continue
                 val owned = deliveredOwned.remove(entry.key)
-                cleared.add(entry.key to if (owned) entry.value else null)
+                cleared.add(BitmapRelease(entry.key, if (owned) entry.value else null, true))
                 iterator.remove()
                 trimmed = true
                 break
@@ -446,13 +452,18 @@ class ReaderSession(
         return total
     }
 
-    private fun postCleared(cleared: List<Pair<Int, Bitmap?>>) {
-        if (cleared.isEmpty()) return
-        for ((index, bitmap) in cleared) {
-            decodedWidths.remove(index)
-            main.post {
-                if (!cancelled.get()) listener.onPageCleared(index)
-                if (bitmap != null && !bitmap.isRecycled) bitmap.recycle()
+    private fun postBitmapReleases(releases: List<BitmapRelease>) {
+        if (releases.isEmpty()) return
+        for (release in releases) {
+            if (release.clearPage) decodedWidths.remove(release.index)
+            val action = Runnable {
+                if (release.clearPage && !cancelled.get()) listener.onPageCleared(release.index)
+                if (release.bitmap != null && !release.bitmap.isRecycled) release.bitmap.recycle()
+            }
+            if (release.clearPage) {
+                main.post(action)
+            } else {
+                main.postDelayed(action, REPLACED_BITMAP_RECYCLE_DELAY_MS)
             }
         }
     }
@@ -537,5 +548,6 @@ class ReaderSession(
     private companion object {
         private const val PREPARED_FALLBACK_MS = 1500L
         private const val ACTIVE_BITMAP_BYTES = 64L * 1024L * 1024L
+        private const val REPLACED_BITMAP_RECYCLE_DELAY_MS = 750L
     }
 }
