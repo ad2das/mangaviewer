@@ -63,7 +63,9 @@ class ReaderSession(
         val manga: Manga,
         val image: String?,
         val transitionTitle: String? = null,
-        var pageIndex: Int = -1
+        var pageIndex: Int = -1,
+        val localPage: Int = 0,
+        val totalPages: Int = 0
     )
 
     private data class BitmapRelease(
@@ -263,7 +265,16 @@ class ReaderSession(
         if (!pagesInstalled.compareAndSet(false, true)) return
         synchronized(pagesLock) {
             pages.clear()
-            pages.addAll(urls.mapIndexed { index, url -> PageRef(manga, url, pageIndex = index) })
+            val totalPages = urls.size
+            pages.addAll(urls.mapIndexed { index, url ->
+                PageRef(
+                    manga = manga,
+                    image = url,
+                    pageIndex = index,
+                    localPage = index + 1,
+                    totalPages = totalPages
+                )
+            })
         }
         val startPage = requestedStartPage.coerceIn(0, urls.lastIndex)
         main.post {
@@ -576,9 +587,12 @@ class ReaderSession(
     private fun pageRefsForEpisode(target: Manga, urls: List<String>, direction: Int): List<PageRef> {
         val episodeName = target.name ?: title?.name ?: "회차"
         val transitionTitle = if (direction < 0) "이전 회차: $episodeName" else "다음 회차: $episodeName"
+        val totalPages = urls.size
         return ArrayList<PageRef>(urls.size + 1).apply {
-            add(PageRef(target, null, transitionTitle))
-            addAll(urls.map { PageRef(target, it) })
+            add(PageRef(target, null, transitionTitle, localPage = 0, totalPages = totalPages))
+            addAll(urls.mapIndexed { index, url ->
+                PageRef(target, url, localPage = index + 1, totalPages = totalPages)
+            })
         }
     }
 
@@ -991,26 +1005,13 @@ class ReaderSession(
     }
 
     fun pageInfo(index: Int): PageInfo? {
-        val snapshot = synchronized(pagesLock) {
-            if (index !in pages.indices) return null
-            pages.toList()
-        }
-        val page = snapshot.getOrNull(index) ?: return null
-        val episodeManga = page.manga
+        val page = synchronized(pagesLock) { pages.getOrNull(index) } ?: return null
         val transition = page.transitionTitle != null
-        var total = 0
-        var local = 0
-        for (i in snapshot.indices) {
-            val candidate = snapshot[i]
-            if (!sameEpisode(candidate.manga, episodeManga) || candidate.image == null) continue
-            total++
-            if (i <= index) local = total
-        }
         return PageInfo(
-            manga = episodeManga,
-            title = page.transitionTitle ?: episodeManga.name ?: title?.name ?: "",
-            localPage = if (transition) 0 else max(1, local),
-            totalPages = total,
+            manga = page.manga,
+            title = page.transitionTitle ?: page.manga.name ?: title?.name ?: "",
+            localPage = if (transition) 0 else max(1, page.localPage),
+            totalPages = page.totalPages,
             transitionCard = transition
         )
     }

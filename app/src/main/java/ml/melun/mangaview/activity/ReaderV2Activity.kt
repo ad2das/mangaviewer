@@ -6,7 +6,6 @@ import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ViewGroup
@@ -28,6 +27,7 @@ import ml.melun.mangaview.reader.ReaderLaunchPreparer
 import ml.melun.mangaview.reader.ReaderSession
 import ml.melun.mangaview.reader.ReaderSurfaceView
 import ml.melun.mangaview.reader.ReaderTile
+import ml.melun.mangaview.runtime.MainThreadStallMonitor
 import ml.melun.mangaview.repository.MangaRepository
 import ml.melun.mangaview.runtime.AppDispatchers
 import kotlin.math.abs
@@ -55,7 +55,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var lastSavedEpisodeId = -1
     private var lastSavedPage = -1
     private var lastDisplayedPageText = ""
-    private var lastBusyUiUpdateMs = 0L
     private var pendingAnchorAfterBusy = -1
     private var adjacentNavigationInFlight = false
     private var episodeListFetchAttempted = false
@@ -216,11 +215,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     override fun onPagesAppended(count: Int) {
-        if (pagesReady) {
-            hideBoundaryStatus()
-            pageCount = count
-            renderView.appendPageCount(count)
-            updateCurrentEpisode(currentPage)
+        MainThreadStallMonitor.trace("reader_on_pages_appended") {
+            if (pagesReady) {
+                hideBoundaryStatus()
+                pageCount = count
+                renderView.appendPageCount(count)
+                updateCurrentEpisode(currentPage)
+            }
         }
     }
 
@@ -251,23 +252,29 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     override fun onPageReady(index: Int, bitmap: Bitmap) {
-        if (pagesReady) {
-            hideBoundaryStatus()
-            renderView.setPageBitmap(index, bitmap)
+        MainThreadStallMonitor.trace("reader_on_page_ready") {
+            if (pagesReady) {
+                hideBoundaryStatus()
+                renderView.setPageBitmap(index, bitmap)
+            }
         }
     }
 
     override fun onPageTilesReady(index: Int, pageWidth: Int, pageHeight: Int, tiles: List<ReaderTile>) {
-        if (pagesReady) {
-            hideBoundaryStatus()
-            renderView.setPageTiles(index, pageWidth, pageHeight, tiles)
+        MainThreadStallMonitor.trace("reader_on_page_tiles_ready") {
+            if (pagesReady) {
+                hideBoundaryStatus()
+                renderView.setPageTiles(index, pageWidth, pageHeight, tiles)
+            }
         }
     }
 
     override fun onPageCard(index: Int, title: String) {
-        if (pagesReady) {
-            hideBoundaryStatus()
-            renderView.setPageCard(index, title)
+        MainThreadStallMonitor.trace("reader_on_page_card") {
+            if (pagesReady) {
+                hideBoundaryStatus()
+                renderView.setPageCard(index, title)
+            }
         }
     }
 
@@ -283,19 +290,20 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     override fun onWindowChanged(firstPage: Int, lastPage: Int, anchorPage: Int, busy: Boolean) {
-        currentPage = anchorPage
-        session?.requestWindowAsync(firstPage, lastPage, anchorPage, busy)
-        if (busy) {
-            pendingAnchorAfterBusy = anchorPage
-            val now = SystemClock.uptimeMillis()
-            if (toolbarVisible && now - lastBusyUiUpdateMs >= BUSY_UI_UPDATE_INTERVAL_MS) {
-                lastBusyUiUpdateMs = now
-                updatePageLabel()
+        MainThreadStallMonitor.trace("reader_on_window_changed") {
+            currentPage = anchorPage
+            MainThreadStallMonitor.trace("reader_request_window_async") {
+                session?.requestWindowAsync(firstPage, lastPage, anchorPage, busy)
             }
-            return
+            if (busy) {
+                pendingAnchorAfterBusy = anchorPage
+                return@trace
+            }
+            pendingAnchorAfterBusy = -1
+            MainThreadStallMonitor.trace("reader_update_current_episode") {
+                updateCurrentEpisode(anchorPage)
+            }
         }
-        pendingAnchorAfterBusy = -1
-        updateCurrentEpisode(anchorPage)
     }
 
     override fun onNearBoundary(direction: Int, anchorPage: Int) {
@@ -470,7 +478,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun updateCurrentEpisode(anchorPage: Int) {
-        val info = session?.pageInfo(anchorPage)
+        val info = MainThreadStallMonitor.traceResult("reader_page_info") {
+            session?.pageInfo(anchorPage)
+        }
         if (info != null) {
             val previousManga = currentManga
             val episodeChanged = previousManga == null || !Manga.sameEpisodeIdentity(previousManga, info.manga)
@@ -483,8 +493,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             } else {
                 "${info.localPage} / ${info.totalPages}"
             })
-            if (episodeChanged) updateAdjacentButtons()
-            scheduleSaveReadingProgress(info)
+            if (episodeChanged) {
+                MainThreadStallMonitor.trace("reader_update_adjacent_buttons") {
+                    updateAdjacentButtons()
+                }
+            }
+            MainThreadStallMonitor.trace("reader_schedule_progress") {
+                scheduleSaveReadingProgress(info)
+            }
             return
         }
         updatePageLabel()
@@ -593,7 +609,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun Int.dp(): Int = (this * resources.displayMetrics.density + 0.5f).toInt()
 
     companion object {
-        private const val BUSY_UI_UPDATE_INTERVAL_MS = 250L
         private const val PROGRESS_SAVE_DEBOUNCE_MS = 1000L
         private const val BOUNDARY_STATUS_DELAY_MS = 250L
         private const val DEFAULT_PAGE_GAP_PX = 2

@@ -798,6 +798,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun windowRequestLocked(busy: Boolean): WindowRequest? {
         if (pages.isEmpty() || width <= 0 || height <= 0) return null
         val anchor = anchorPageLocked()
+        if (busy && lastRequestedBusy) {
+            lastAnchor = anchor
+            return null
+        }
         if (anchor == lastAnchor && busy == lastRequestedBusy) return null
         lastAnchor = anchor
         lastRequestedBusy = busy
