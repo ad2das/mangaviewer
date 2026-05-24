@@ -69,6 +69,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var adjacentNavigationInFlight = false
     private var episodeListFetchAttempted = false
     private var destroyed = false
+    private var progressSaveArmed = false
     private val progressHandler = Handler(Looper.getMainLooper())
     private val statusHandler = Handler(Looper.getMainLooper())
     private var pendingProgressInfo: ReaderSession.PageInfo? = null
@@ -357,6 +358,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val lagMs = SystemClock.uptimeMillis() - ev.eventTime
         if (ev.actionMasked == MotionEvent.ACTION_MOVE || ev.actionMasked == MotionEvent.ACTION_UP) {
             MainThreadStallMonitor.warn("reader_touch_delivery_lag", lagMs)
+        }
+        if (ev.actionMasked == MotionEvent.ACTION_MOVE) {
+            progressSaveArmed = true
         }
         if (ev.actionMasked == MotionEvent.ACTION_DOWN ||
             ev.actionMasked == MotionEvent.ACTION_MOVE ||
@@ -656,6 +660,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun scheduleSaveReadingProgress(info: ReaderSession.PageInfo, offset: Int) {
         if (info.transitionCard || !info.manga.useBookmark()) return
+        if (!progressSaveArmed) return
         pendingProgressInfo = info
         pendingProgressOffset = offset
         progressHandler.removeCallbacks(saveProgressRunnable)
