@@ -22,6 +22,7 @@ import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.google.gson.Gson
@@ -43,6 +44,7 @@ import kotlin.math.abs
 
 class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.WindowListener {
     private lateinit var renderView: ReaderSurfaceView
+    private lateinit var resumeCover: ImageView
     private lateinit var status: TextView
     private lateinit var topBar: LinearLayout
     private lateinit var bottomBar: LinearLayout
@@ -86,6 +88,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var pendingProgressOffset = 0
     private var pendingBoundaryStatus = false
     private var initialStatusPending = false
+    private var resumeCoverBitmap: Bitmap? = null
+    private val resumePageBitmaps = object : LinkedHashMap<Int, Bitmap>(RESUME_COVER_BITMAP_LIMIT, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, Bitmap>?): Boolean {
+            return size > RESUME_COVER_BITMAP_LIMIT
+        }
+    }
     private val saveProgressRunnable = Runnable {
         saveCurrentReadingProgress()
         pendingProgressInfo = null
@@ -100,6 +108,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (pendingBoundaryStatus && pagesReady && !destroyed && !isFinishing) {
             status.visibility = TextView.VISIBLE
             status.text = "회차 연결 중"
+        }
+    }
+    private val hideResumeCoverRunnable = Runnable {
+        if (::resumeCover.isInitialized) {
+            resumeCover.visibility = View.GONE
+            resumeCover.setImageDrawable(null)
         }
     }
 
@@ -204,6 +218,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.MATCH_PARENT
         ))
+        resumeCover = ImageView(this).apply {
+            setBackgroundColor(Color.BLACK)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            visibility = View.GONE
+        }
+        root.addView(resumeCover, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        ))
         root.addView(status, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,
             FrameLayout.LayoutParams.WRAP_CONTENT
@@ -270,14 +293,32 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (!manga.isOnline) p?.removeViewerBookmark(manga)
     }
 
+    override fun onPause() {
+        showResumeCover()
+        saveCurrentReadingProgress()
+        super.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::resumeCover.isInitialized && resumeCover.visibility == View.VISIBLE) {
+            renderView.invalidate()
+            hideResumeCoverSoon(RESUME_COVER_MAX_MS)
+        }
+    }
+
     override fun onDestroy() {
         destroyed = true
         progressHandler.removeCallbacks(saveProgressRunnable)
         statusHandler.removeCallbacks(showInitialStatusRunnable)
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
+        statusHandler.removeCallbacks(hideResumeCoverRunnable)
         saveCurrentReadingProgress()
         pendingProgressInfo = null
         pendingBoundaryStatus = false
+        resumeCoverBitmap = null
+        resumePageBitmaps.clear()
+        if (::resumeCover.isInitialized) resumeCover.setImageDrawable(null)
         renderView.setWindowListener(null)
         renderView.stopRenderingAndClearPages()
         session?.cancel()
@@ -344,7 +385,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         MainThreadStallMonitor.trace("reader_on_page_ready") {
             if (pagesReady) {
                 hideBoundaryStatus()
+                rememberResumeBitmap(index, bitmap)
                 renderView.setPageBitmap(index, bitmap)
+                if (resumeCover.visibility == View.VISIBLE) hideResumeCoverSoon()
                 if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
             }
         }
@@ -355,6 +398,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             if (pagesReady) {
                 hideBoundaryStatus()
                 renderView.setPageTiles(index, pageWidth, pageHeight, tiles)
+                if (resumeCover.visibility == View.VISIBLE) hideResumeCoverSoon()
                 if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
             }
         }
@@ -370,6 +414,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     override fun onPageCleared(index: Int) {
+        resumePageBitmaps.remove(index)
+        if (resumeCoverBitmap?.isRecycled == true) resumeCoverBitmap = null
         if (pagesReady) renderView.clearPageBitmap(index)
     }
 
@@ -384,6 +430,32 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         currentPage = page
         renderView.lockRestoredPageOffset(page, offset)
         updateCurrentEpisode(page, offset, saveProgress = false)
+    }
+
+    private fun rememberResumeBitmap(index: Int, bitmap: Bitmap) {
+        if (bitmap.isRecycled) return
+        resumePageBitmaps[index] = bitmap
+        if (index == currentPage || resumeCoverBitmap == null || resumeCoverBitmap?.isRecycled == true) {
+            resumeCoverBitmap = bitmap
+        }
+    }
+
+    private fun updateResumeBitmapForPage(index: Int) {
+        val bitmap = resumePageBitmaps[index]
+        if (bitmap != null && !bitmap.isRecycled) resumeCoverBitmap = bitmap
+    }
+
+    private fun showResumeCover() {
+        val bitmap = resumeCoverBitmap
+        if (!::resumeCover.isInitialized || bitmap == null || bitmap.isRecycled) return
+        statusHandler.removeCallbacks(hideResumeCoverRunnable)
+        resumeCover.setImageBitmap(bitmap)
+        resumeCover.visibility = View.VISIBLE
+    }
+
+    private fun hideResumeCoverSoon(delayMs: Long = RESUME_COVER_HIDE_MS) {
+        statusHandler.removeCallbacks(hideResumeCoverRunnable)
+        statusHandler.postDelayed(hideResumeCoverRunnable, delayMs)
     }
 
     override fun onMessage(message: String) {
@@ -407,6 +479,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     ) {
         MainThreadStallMonitor.trace("reader_on_window_changed") {
             currentPage = progressPage
+            updateResumeBitmapForPage(progressPage)
             MainThreadStallMonitor.trace("reader_request_window_async") {
                 session?.requestWindowAsync(firstPage, lastPage, anchorPage, busy)
             }
@@ -633,6 +706,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         status.visibility = TextView.GONE
         status.text = displayEpisodeTitle(manga, title)
         if (clearViewImmediately) renderView.setPageCount(0)
+        resumeCoverBitmap = null
+        resumePageBitmaps.clear()
         session?.cancel()
         session = ReaderSession(
             this,
@@ -996,6 +1071,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val DEFAULT_PAGE_GAP_PX = 2
         private const val WEBTOON_PAGE_GAP_PX = 0
         private const val ADJACENT_BUTTON_REFRESH_DELAY_MS = 350L
+        private const val RESUME_COVER_HIDE_MS = 80L
+        private const val RESUME_COVER_MAX_MS = 700L
+        private const val RESUME_COVER_BITMAP_LIMIT = 8
         private const val TAG = "ReaderV2"
 
         @JvmStatic
