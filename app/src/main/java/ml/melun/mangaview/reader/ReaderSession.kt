@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import ml.melun.mangaview.Utils
 import ml.melun.mangaview.mangaview.Decoder
 import ml.melun.mangaview.mangaview.Manga
 import ml.melun.mangaview.mangaview.Title
@@ -252,11 +253,17 @@ class ReaderSession(
                     MangaRepository.fetchEpisodesForeground(currentTitle, MangaRepository.cancellation())
                 }
                 attachTitle()
+                val episodes = Utils.snapshotEpisodes(currentTitle)
+                if (episodes.isNotEmpty()) {
+                    manga.setEps(episodes)
+                    anchorManga.setEps(episodes)
+                }
                 anchorManga.title = currentTitle
                 anchorManga.titleId = currentTitle.id
                 val next = anchorManga.prevEp() ?: return@execute
                 next.title = currentTitle
                 next.titleId = currentTitle.id
+                if (episodes.isNotEmpty()) next.setEps(episodes)
                 if (MangaRepository.imageUrls(next, appContext).isNullOrEmpty()) {
                     val result = MangaRepository.fetchViewerInitial(next, MangaRepository.cancellation())
                     if (result != Title.LOAD_OK) return@execute
