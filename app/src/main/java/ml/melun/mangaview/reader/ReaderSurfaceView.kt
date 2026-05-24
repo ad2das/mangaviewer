@@ -11,6 +11,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.os.Process
+import android.os.Trace
 import android.util.AttributeSet
 import android.util.Log
 import android.view.Choreographer
@@ -23,6 +25,7 @@ import android.widget.OverScroller
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import java.util.Locale
 
 class ReaderSurfaceView @JvmOverloads constructor(
     context: Context,
@@ -66,6 +69,23 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val nearEnd: Boolean
     )
 
+    private data class DrawTiming(
+        val callbackStartNs: Long,
+        val lockWaitMs: Float,
+        val drawMs: Float,
+        val postMs: Float,
+        val totalMs: Float,
+        val postEndNs: Long,
+        val posted: Boolean
+    )
+
+    private data class PendingInput(
+        val oldestNs: Long,
+        val newestNs: Long,
+        val events: Int,
+        val history: Int
+    )
+
     private val stateLock = Object()
     private val pages = ArrayList<Page>()
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
@@ -93,6 +113,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var frameScheduled = false
     private var lastY = 0f
     private var downY = 0f
+    private var pointerDown = false
     private var dragging = false
     private var scrollOffset = 0f
     private var listener: WindowListener? = null
@@ -103,8 +124,22 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var pageTops = FloatArrayList(0)
     private var contentHeight = 0f
     private var statsActive = false
-    private var statsLastFrameNs = 0L
-    private val statsIntervalsMs = ArrayList<Float>(240)
+    private var statsLastCallbackStartNs = 0L
+    private var statsLastPostEndNs = 0L
+    private var statsCoalescedRequests = 0
+    private var statsNoCanvasFrames = 0
+    private val statsCallbackSpacingMs = ArrayList<Float>(240)
+    private val statsPostSpacingMs = ArrayList<Float>(240)
+    private val statsLockWaitMs = ArrayList<Float>(240)
+    private val statsDrawMs = ArrayList<Float>(240)
+    private val statsPostMs = ArrayList<Float>(240)
+    private val statsTotalMs = ArrayList<Float>(240)
+    private val statsInputOldestMs = ArrayList<Float>(240)
+    private val statsInputNewestMs = ArrayList<Float>(240)
+    private var pendingOldestInputNs = 0L
+    private var pendingNewestInputNs = 0L
+    private var pendingInputEvents = 0
+    private var pendingHistorySamples = 0
 
     init {
         holder.addCallback(this)
@@ -274,9 +309,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 velocityTracker?.recycle()
                 velocityTracker = VelocityTracker.obtain().also { it.addMovement(event) }
                 val request = synchronized(stateLock) {
+                    noteInputLocked(event)
                     scroller.forceFinished(true)
                     lastY = event.y
                     downY = event.y
+                    pointerDown = true
                     dragging = false
                     setBusyLocked(true)
                 }
@@ -287,16 +324,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
             MotionEvent.ACTION_MOVE -> {
                 velocityTracker?.addMovement(event)
                 val request = synchronized(stateLock) {
+                    noteInputLocked(event)
                     val dy = lastY - event.y
                     if (!dragging && abs(dy) > touchSlop) dragging = true
                     if (dragging) {
+                        val busyRequest = setBusyLocked(true)
                         scrollOffset += dy * DRAG_SCROLL_MULTIPLIER
                         clampScrollLocked()
                         lastY = event.y
                         renderRequested = true
                         scheduleFrameLocked()
                         stateLock.notifyAll()
-                        windowRequestLocked(true)
+                        busyRequest ?: windowRequestLocked(true)
                     } else {
                         null
                     }
@@ -318,15 +357,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 }
                 velocityTracker = null
                 val request = synchronized(stateLock) {
+                    noteInputLocked(event)
                     val wasTap = !dragging && abs(event.y - downY) <= touchSlop
                     tap = wasTap
+                    pointerDown = false
                     dragging = false
                     if (wasTap) {
-                        null
+                        setBusyLocked(false)
                     } else if (abs(velocityY) > minVelocity) {
                         val flingVelocity = (velocityY * FLING_SCROLL_MULTIPLIER)
                             .coerceIn(-maxVelocity.toFloat(), maxVelocity.toFloat())
                             .toInt()
+                        val busyRequest = setBusyLocked(true)
                         scroller.fling(
                             0,
                             scrollOffset.toInt(),
@@ -340,7 +382,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         renderRequested = true
                         scheduleFrameLocked()
                         stateLock.notifyAll()
-                        windowRequestLocked(true)
+                        busyRequest ?: windowRequestLocked(true)
                     } else {
                         setBusyLocked(false)
                     }
@@ -358,7 +400,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         renderFrame(frameTimeNanos)
     }
 
-    private fun renderFrame(frameTimeNanos: Long) {
+    private fun renderFrame(@Suppress("UNUSED_PARAMETER") frameTimeNanos: Long) {
+        val callbackStartNs = System.nanoTime()
         val requestAndState = synchronized(stateLock) {
             frameScheduled = false
             if (!renderRunning || !surfaceReady) return
@@ -374,38 +417,65 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 clampScrollLocked()
                 renderRequested = true
                 request = windowRequestLocked(true)
-            } else if (lastBusy && !dragging) {
-                request = setBusyLocked(false)
             }
-            val state = buildDrawStateLocked()
-            recordFrameStatsLocked(frameTimeNanos, scrolling || lastBusy || dragging)
+            val busyNow = pointerDown || dragging || scrolling || !scroller.isFinished
+            if (busyNow != lastBusy) {
+                request = setBusyLocked(busyNow) ?: request
+            } else if (busyNow) {
+                request = windowRequestLocked(true) ?: request
+            }
+            val state = buildDrawStateLocked(busyNow)
             renderRequested = false
-            if (!scroller.isFinished || lastBusy || dragging) scheduleFrameLocked()
+            if (busyNow) scheduleFrameLocked()
             request to state
         }
         dispatchWindowRequest(requestAndState.first)
-        drawState(requestAndState.second)
+        val timing = drawState(callbackStartNs, requestAndState.second)
+        recordFrameStats(timing, requestAndState.second.busy)
     }
 
-    private fun drawState(state: DrawState) {
+    private fun drawState(callbackStartNs: Long, state: DrawState): DrawTiming {
+        val lockStartNs = System.nanoTime()
         val canvas = try {
+            Trace.beginSection("RSV.lockCanvas")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) holder.lockHardwareCanvas() else holder.lockCanvas()
         } catch (_: RuntimeException) {
             null
-        } ?: return
+        } finally {
+            Trace.endSection()
+        } ?: return DrawTiming(callbackStartNs, nsToMs(System.nanoTime() - lockStartNs), 0f, 0f, nsToMs(System.nanoTime() - callbackStartNs), System.nanoTime(), false)
+        val lockEndNs = System.nanoTime()
+        var drawEndNs = lockEndNs
+        var postEndNs = lockEndNs
         try {
+            Trace.beginSection("RSV.draw")
             canvas.drawColor(Color.BLACK)
             if (state.empty) {
                 canvas.drawText("로딩 중", state.width / 2f, state.height / 2f, textPaint)
-                return
+            } else {
+                for (item in state.items) drawItem(canvas, state, item)
             }
-            for (item in state.items) drawItem(canvas, state, item)
         } finally {
+            Trace.endSection()
+            drawEndNs = System.nanoTime()
             try {
+                Trace.beginSection("RSV.unlockPost")
                 holder.unlockCanvasAndPost(canvas)
             } catch (_: RuntimeException) {
+            } finally {
+                Trace.endSection()
+                postEndNs = System.nanoTime()
             }
         }
+        return DrawTiming(
+            callbackStartNs = callbackStartNs,
+            lockWaitMs = nsToMs(lockEndNs - lockStartNs),
+            drawMs = nsToMs(drawEndNs - lockEndNs),
+            postMs = nsToMs(postEndNs - drawEndNs),
+            totalMs = nsToMs(postEndNs - callbackStartNs),
+            postEndNs = postEndNs,
+            posted = true
+        )
     }
 
     private fun drawItem(canvas: Canvas, state: DrawState, item: DrawItem) {
@@ -452,10 +522,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         )
     }
 
-    private fun buildDrawStateLocked(): DrawState {
+    private fun buildDrawStateLocked(busy: Boolean = lastBusy): DrawState {
         val viewWidth = max(1, width)
         val viewHeight = max(1, height)
-        if (pages.isEmpty()) return DrawState(viewWidth, viewHeight, lastBusy, true, emptyList())
+        if (pages.isEmpty()) return DrawState(viewWidth, viewHeight, busy, true, emptyList())
         rebuildLayoutLocked()
         val items = ArrayList<DrawItem>()
         var index = firstVisiblePageLocked(scrollOffset)
@@ -470,7 +540,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (top > viewHeight) break
             index++
         }
-        return DrawState(viewWidth, viewHeight, lastBusy, false, items)
+        return DrawState(viewWidth, viewHeight, busy, false, items)
     }
 
     private fun requestRender() {
@@ -493,7 +563,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun scheduleFrameLocked() {
-        if (!renderRunning || !surfaceReady || frameScheduled) return
+        if (!renderRunning || !surfaceReady) return
+        if (frameScheduled) {
+            statsCoalescedRequests++
+            return
+        }
         val choreographer = renderChoreographer
         val handler = renderHandler
         if (choreographer != null) {
@@ -509,7 +583,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun ensureRenderThreadLocked() {
         if (renderThread?.isAlive == true && renderHandler != null) return
-        val thread = HandlerThread("ReaderSurfaceRenderer")
+        val thread = HandlerThread("ReaderSurfaceRenderer", Process.THREAD_PRIORITY_DISPLAY)
         thread.start()
         renderThread = thread
         renderHandler = Handler(thread.looper)
@@ -613,43 +687,117 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return result
     }
 
-    private fun recordFrameStatsLocked(frameTimeNanos: Long, active: Boolean) {
+    private fun noteInputLocked(event: MotionEvent) {
+        val receivedNs = System.nanoTime()
+        if (pendingOldestInputNs == 0L || receivedNs < pendingOldestInputNs) pendingOldestInputNs = receivedNs
+        if (receivedNs > pendingNewestInputNs) pendingNewestInputNs = receivedNs
+        pendingInputEvents++
+        pendingHistorySamples += event.historySize
+    }
+
+    private fun consumePendingInputLocked(): PendingInput? {
+        if (pendingInputEvents <= 0 || pendingOldestInputNs <= 0L) return null
+        val input = PendingInput(
+            oldestNs = pendingOldestInputNs,
+            newestNs = pendingNewestInputNs,
+            events = pendingInputEvents,
+            history = pendingHistorySamples
+        )
+        pendingOldestInputNs = 0L
+        pendingNewestInputNs = 0L
+        pendingInputEvents = 0
+        pendingHistorySamples = 0
+        return input
+    }
+
+    private fun recordFrameStats(timing: DrawTiming, active: Boolean) {
+        val pendingInput = synchronized(stateLock) { consumePendingInputLocked() }
         if (active) {
             if (!statsActive) {
                 statsActive = true
-                statsLastFrameNs = frameTimeNanos
-                statsIntervalsMs.clear()
+                statsLastCallbackStartNs = timing.callbackStartNs
+                statsLastPostEndNs = if (timing.posted) timing.postEndNs else 0L
+                clearStatsSamples()
+                if (!timing.posted) statsNoCanvasFrames++
                 return
             }
-            if (statsLastFrameNs > 0L && frameTimeNanos > statsLastFrameNs) {
-                statsIntervalsMs.add((frameTimeNanos - statsLastFrameNs) / 1_000_000f)
+            if (statsLastCallbackStartNs > 0L && timing.callbackStartNs > statsLastCallbackStartNs) {
+                statsCallbackSpacingMs.add(nsToMs(timing.callbackStartNs - statsLastCallbackStartNs))
             }
-            statsLastFrameNs = frameTimeNanos
+            if (timing.posted && statsLastPostEndNs > 0L && timing.postEndNs > statsLastPostEndNs) {
+                statsPostSpacingMs.add(nsToMs(timing.postEndNs - statsLastPostEndNs))
+            }
+            if (timing.posted) {
+                statsLockWaitMs.add(timing.lockWaitMs)
+                statsDrawMs.add(timing.drawMs)
+                statsPostMs.add(timing.postMs)
+                statsTotalMs.add(timing.totalMs)
+                pendingInput?.let {
+                    statsInputOldestMs.add(nsToMs(timing.postEndNs - it.oldestNs))
+                    statsInputNewestMs.add(nsToMs(timing.postEndNs - it.newestNs))
+                }
+            } else {
+                statsNoCanvasFrames++
+            }
+            statsLastCallbackStartNs = timing.callbackStartNs
+            if (timing.posted) statsLastPostEndNs = timing.postEndNs
             return
         }
         if (!statsActive) return
-        val intervals = ArrayList(statsIntervalsMs)
+        val callbackIntervals = ArrayList(statsCallbackSpacingMs)
+        val postIntervals = ArrayList(statsPostSpacingMs)
+        val lockWait = ArrayList(statsLockWaitMs)
+        val draw = ArrayList(statsDrawMs)
+        val post = ArrayList(statsPostMs)
+        val total = ArrayList(statsTotalMs)
+        val inputOldest = ArrayList(statsInputOldestMs)
+        val inputNewest = ArrayList(statsInputNewestMs)
+        val noCanvas = statsNoCanvasFrames
+        val coalesced = statsCoalescedRequests
         statsActive = false
-        statsLastFrameNs = 0L
-        statsIntervalsMs.clear()
-        if (intervals.isEmpty()) return
-        intervals.sort()
-        val frames = intervals.size + 1
-        val jank = intervals.count { it > FRAME_BUDGET_MS }
-        val p90 = percentile(intervals, 0.90f)
-        val p95 = percentile(intervals, 0.95f)
-        val p99 = percentile(intervals, 0.99f)
-        val max = intervals.last()
-        val jankPercent = jank * 100f / intervals.size
+        statsLastCallbackStartNs = 0L
+        statsLastPostEndNs = 0L
+        clearStatsSamples()
+        if (callbackIntervals.isEmpty() && postIntervals.isEmpty() && total.isEmpty()) return
+        callbackIntervals.sort()
+        postIntervals.sort()
+        lockWait.sort()
+        draw.sort()
+        post.sort()
+        total.sort()
+        inputOldest.sort()
+        inputNewest.sort()
+        val budget = frameBudgetMs()
+        val frameSamples = if (postIntervals.isNotEmpty()) postIntervals else callbackIntervals
+        val overBudget = frameSamples.count { it > budget }
+        val jankThreshold = budget * MISSED_VSYNC_FACTOR
+        val jank = frameSamples.count { it > jankThreshold }
+        val overBudgetPercent = if (frameSamples.isEmpty()) 0f else overBudget * 100f / frameSamples.size
+        val jankPercent = if (frameSamples.isEmpty()) 0f else jank * 100f / frameSamples.size
         Log.i(
             TAG,
-            "surface_jank frames=$frames intervals=${intervals.size} jank=$jank " +
-                "jankPct=${"%.2f".format(java.util.Locale.US, jankPercent)} " +
-                "p90=${"%.2f".format(java.util.Locale.US, p90)} " +
-                "p95=${"%.2f".format(java.util.Locale.US, p95)} " +
-                "p99=${"%.2f".format(java.util.Locale.US, p99)} " +
-                "max=${"%.2f".format(java.util.Locale.US, max)}"
+            "surface_frame_v2 samples=${frameSamples.size} budget=${fmt(budget)} jankThreshold=${fmt(jankThreshold)} " +
+                "overBudget=$overBudget overBudgetPct=${fmt(overBudgetPercent)} jank=$jank jankPct=${fmt(jankPercent)} " +
+                "callbackP95=${fmt(percentile(callbackIntervals, 0.95f))} callbackMax=${fmt(maxOrZero(callbackIntervals))} " +
+                "postP95=${fmt(percentile(postIntervals, 0.95f))} postMax=${fmt(maxOrZero(postIntervals))} " +
+                "lockP95=${fmt(percentile(lockWait, 0.95f))} drawP95=${fmt(percentile(draw, 0.95f))} " +
+                "unlockP95=${fmt(percentile(post, 0.95f))} totalP95=${fmt(percentile(total, 0.95f))} totalMax=${fmt(maxOrZero(total))} " +
+                "inputOldestP95=${fmt(percentile(inputOldest, 0.95f))} inputNewestP95=${fmt(percentile(inputNewest, 0.95f))} " +
+                "noCanvas=$noCanvas coalesced=$coalesced"
         )
+    }
+
+    private fun clearStatsSamples() {
+        statsCallbackSpacingMs.clear()
+        statsPostSpacingMs.clear()
+        statsLockWaitMs.clear()
+        statsDrawMs.clear()
+        statsPostMs.clear()
+        statsTotalMs.clear()
+        statsInputOldestMs.clear()
+        statsInputNewestMs.clear()
+        statsNoCanvasFrames = 0
+        statsCoalescedRequests = 0
     }
 
     private fun percentile(sorted: List<Float>, percentile: Float): Float {
@@ -657,6 +805,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val index = ((sorted.size - 1) * percentile).toInt().coerceIn(0, sorted.lastIndex)
         return sorted[index]
     }
+
+    private fun maxOrZero(sorted: List<Float>): Float = if (sorted.isEmpty()) 0f else sorted.last()
+
+    private fun nsToMs(ns: Long): Float = ns / 1_000_000f
+
+    private fun frameBudgetMs(): Float {
+        val rate = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display?.refreshRate else display?.refreshRate
+        return if (rate != null && rate > 1f) 1000f / rate else DEFAULT_FRAME_BUDGET_MS
+    }
+
+    private fun fmt(value: Float): String = String.format(Locale.US, "%.2f", value)
 
     private class FloatArrayList(size: Int) {
         private var values = FloatArray(max(1, size))
@@ -678,7 +837,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private companion object {
         private const val TAG = "ReaderSurfaceStats"
-        private const val FRAME_BUDGET_MS = 16.67f
+        private const val DEFAULT_FRAME_BUDGET_MS = 16.67f
+        private const val MISSED_VSYNC_FACTOR = 1.5f
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
     }
