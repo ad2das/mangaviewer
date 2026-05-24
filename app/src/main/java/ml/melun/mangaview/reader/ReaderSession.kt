@@ -1019,10 +1019,15 @@ class ReaderSession(
     }
 
     private fun sameEpisode(a: Manga, b: Manga): Boolean {
-        return a.id == b.id &&
+        if (a === b) return true
+        if (a.id == b.id &&
             a.baseMode == b.baseMode &&
             a.titleId == b.titleId &&
             (a.ntkEpisodePath ?: "") == (b.ntkEpisodePath ?: "")
+        ) return true
+        val first = MangaRepository.imageUrls(a, appContext)
+        val second = MangaRepository.imageUrls(b, appContext)
+        return !first.isNullOrEmpty() && first == second
     }
 
     private fun trackDeliveredBitmap(index: Int, bitmap: Bitmap, owned: Boolean) {

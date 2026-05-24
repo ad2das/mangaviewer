@@ -3624,7 +3624,15 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private boolean sameManga(Manga a, Manga b) {
-        return Manga.sameEpisodeIdentity(a, b);
+        return Manga.sameEpisodeIdentity(a, b) || sameImageList(a, b);
+    }
+
+    private boolean sameImageList(Manga a, Manga b) {
+        if(a == null || b == null || a == b)
+            return a == b;
+        List<String> first = MangaRepository.imageUrls(a, context);
+        List<String> second = MangaRepository.imageUrls(b, context);
+        return first != null && second != null && !first.isEmpty() && first.equals(second);
     }
 
     private boolean allowsResumeFallback(ViewerLoadPolicy policy) {
