@@ -71,6 +71,7 @@ import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.IntegerCallback;
 import ml.melun.mangaview.interfaces.StringCallback;
 import ml.melun.mangaview.reader.ReaderLaunchPreparer;
+import ml.melun.mangaview.reader.ReaderWarmupCoordinator;
 import ml.melun.mangaview.repository.DownloadRepository;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
@@ -519,51 +520,42 @@ public class Utils {
                 : context.getResources().getDisplayMetrics().widthPixels;
         Context appContext = context.getApplicationContext();
         Title launchTitle = title != null ? title : manga.getTitle();
-        AppDispatchers.submitUserAction(() -> {
-            String preparedKey;
-            try {
-                preparedKey = ReaderLaunchPreparer.prepareFirstFrame(appContext, manga, launchTitle, width, exactEpisode);
-            } catch (Exception e) {
-                ml.melun.mangaview.report.CrashReporter.record(e);
-                preparedKey = null;
+        String preparedKey = null;
+        try {
+            preparedKey = ReaderWarmupCoordinator.openKey(appContext, manga, launchTitle, width, exactEpisode);
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+        if(!consumeViewerLaunchToken(context, launchToken))
+            return;
+        if(context instanceof Activity && !canUseActivity((Activity) context))
+            return;
+        Intent viewer = viewerIntent(context, manga, false, false, true, false);
+        viewer.putExtra("online", online);
+        if(preparedKey != null)
+            viewer.putExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY, preparedKey);
+        if(exactEpisode) {
+            viewer.putExtra(ViewerActivity.EXTRA_EXACT_EPISODE, true);
+            viewer.putExtra(ViewerActivity.EXTRA_START_AT_FIRST_PAGE, true);
+        }
+        if(returnToEpisodes)
+            viewer.putExtra("returnToEpisodes", true);
+        if(launchTitle != null)
+            viewer.putExtra("title", toViewerTitleJson(launchTitle, includeTitleEpisodes));
+        if(recent)
+            viewer.putExtra("recent", true);
+        viewer.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        try {
+            if(context instanceof Activity) {
+                ((Activity) context).startActivityForResult(viewer, code);
+                ((Activity) context).overridePendingTransition(0, 0);
+            } else {
+                viewer.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(viewer);
             }
-            String finalPreparedKey = preparedKey;
-            AppDispatchers.runOnMain(() -> {
-                if(!consumeViewerLaunchToken(context, launchToken))
-                    return;
-                if(context instanceof Activity && !canUseActivity((Activity) context))
-                    return;
-                if(finalPreparedKey == null) {
-                    Toast.makeText(context, "이미지를 불러오지 못했습니다", Toast.LENGTH_SHORT).show();
-                    return;
-                }
-                Intent viewer = viewerIntent(context, manga, false, false, true, false);
-                viewer.putExtra("online", online);
-                viewer.putExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY, finalPreparedKey);
-                if(exactEpisode) {
-                    viewer.putExtra(ViewerActivity.EXTRA_EXACT_EPISODE, true);
-                    viewer.putExtra(ViewerActivity.EXTRA_START_AT_FIRST_PAGE, true);
-                }
-                if(returnToEpisodes)
-                    viewer.putExtra("returnToEpisodes", true);
-                if(launchTitle != null)
-                    viewer.putExtra("title", toViewerTitleJson(launchTitle, includeTitleEpisodes));
-                if(recent)
-                    viewer.putExtra("recent", true);
-                viewer.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
-                try {
-                    if(context instanceof Activity) {
-                        ((Activity) context).startActivityForResult(viewer, code);
-                        ((Activity) context).overridePendingTransition(0, 0);
-                    } else {
-                        viewer.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                        context.startActivity(viewer);
-                    }
-                } catch(RuntimeException e) {
-                    ml.melun.mangaview.report.CrashReporter.record(e);
-                }
-            });
-        });
+        } catch(RuntimeException e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
     }
 
     private static synchronized int nextViewerLaunchToken(Context context) {

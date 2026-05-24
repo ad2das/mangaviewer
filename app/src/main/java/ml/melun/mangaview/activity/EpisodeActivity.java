@@ -48,6 +48,7 @@ import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.model.EpisodeLoadResult;
+import ml.melun.mangaview.reader.ReaderWarmupCoordinator;
 import ml.melun.mangaview.repository.CacheFileStore;
 import ml.melun.mangaview.repository.CachePolicy;
 import ml.melun.mangaview.repository.EpisodeSnapshotCache;
@@ -434,7 +435,9 @@ public class EpisodeActivity extends AppCompatActivity {
             }
             @Override
             public void onItemPress(int position, Manga selected) {
-                // Keep episode taps responsive; visible-row warmup runs after the screen settles.
+                warmupUserSelectedEpisode(selected);
+                if(selected != null)
+                    ReaderWarmupCoordinator.primeExactImmediate(context, selected, title);
             }
             @Override
             public void onStarClick(){
@@ -615,6 +618,7 @@ public class EpisodeActivity extends AppCompatActivity {
         target.setTitle(title);
         target.setTitleId(title == null ? target.getTitleId() : title.getId());
         ViewerWarmupManager.warmupUserSelectedEpisode(context, target, title, 0);
+        ReaderWarmupCoordinator.primeExactImmediate(context, target, title);
         if(!shouldDirectWarmupNtkViewerPageForTest(p.isNtkSite(), getHttpClient().isNtk(), target == null ? null : target.getNtkEpisodePath()))
             return;
         String path = target.getNtkEpisodePath();

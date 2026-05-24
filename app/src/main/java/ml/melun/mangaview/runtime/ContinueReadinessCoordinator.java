@@ -13,6 +13,7 @@ import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.reader.ReaderWarmupCoordinator;
 
 import static ml.melun.mangaview.MainApplication.p;
 
@@ -113,12 +114,16 @@ public final class ContinueReadinessCoordinator {
             return;
         if(force)
             markSubmitted(key, SystemClock.uptimeMillis());
-        if(visible)
+        if(visible) {
+            ReaderWarmupCoordinator.primeVisible(context, manga, title);
             ViewerWarmupManager.warmupVisibleContinue(context, manga, title);
-        else if(force)
+        } else if(force) {
+            ReaderWarmupCoordinator.primeImmediate(context, manga, title);
             ViewerWarmupManager.warmupUserSelectedContinue(context, manga, title);
-        else
+        } else {
+            ReaderWarmupCoordinator.primeImmediate(context, manga, title);
             ViewerWarmupManager.warmupContinueImmediate(context, manga, title);
+        }
     }
 
     private static Manga resumeManga(Title title) {

@@ -80,7 +80,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPagesReady(count: Int) {
         pagesReady = true
-        status.visibility = TextView.GONE
         renderView.setPageCount(count)
     }
 
@@ -97,7 +96,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     override fun onPageReady(index: Int, bitmap: Bitmap) {
-        if (pagesReady) renderView.setPageBitmap(index, bitmap)
+        if (pagesReady) {
+            status.visibility = TextView.GONE
+            renderView.setPageBitmap(index, bitmap)
+        }
     }
 
     override fun onMessage(message: String) {

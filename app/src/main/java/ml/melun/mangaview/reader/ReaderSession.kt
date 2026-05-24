@@ -51,13 +51,44 @@ class ReaderSession(
     private val decodedWidths = ConcurrentHashMap<Int, Int>()
     private val cacheDir = File(appContext.cacheDir, "reader_v2/${System.nanoTime()}").apply { mkdirs() }
     private val nextLoading = AtomicBoolean(false)
-    private val prepared = ReaderPreparedStore.take(preparedKey)
+    private val repositoryLoading = AtomicBoolean(false)
+    private val preparedEntry = ReaderPreparedStore.get(preparedKey)
+    private val pagesInstalled = AtomicBoolean(false)
+    private val preparedListener = object : ReaderPreparedStore.Listener {
+        override fun onUrlsReady(images: List<String>, startPage: Int) {
+            installImages(images, startPage, true)
+        }
+
+        override fun onBitmapReady(index: Int, bitmap: Bitmap) {
+            deliverPreparedBitmap(index, bitmap)
+        }
+
+        override fun onFailed() {
+            if (!pagesInstalled.get()) loadFromRepository()
+        }
+    }
 
     fun start() {
+        val entry = preparedEntry
+        if (entry != null) {
+            val snapshot = entry.addListener(preparedListener)
+            if (installPreparedSnapshot(snapshot)) return
+            if (snapshot.status != ReaderPreparedStore.Status.FAILED) {
+                main.postDelayed({
+                    if (!cancelled.get() && !pagesInstalled.get()) loadFromRepository()
+                }, PREPARED_FALLBACK_MS)
+                return
+            }
+        }
+        loadFromRepository()
+    }
+
+    private fun loadFromRepository() {
+        if (!repositoryLoading.compareAndSet(false, true)) return
         network.execute {
             try {
                 attachTitle()
-                var urls = prepared?.images ?: MangaRepository.imageUrls(manga, appContext)
+                var urls = MangaRepository.imageUrls(manga, appContext)
                 if (urls.isNullOrEmpty()) {
                     val result = MangaRepository.fetchViewerInitial(manga, MangaRepository.cancellation())
                     if (result != Title.LOAD_OK) {
@@ -70,28 +101,82 @@ class ReaderSession(
                     postMessage("표시할 이미지가 없습니다")
                     return@execute
                 }
-                images.clear()
-                images.addAll(urls)
-                val startPage = prepared?.startPage?.coerceIn(0, urls.lastIndex) ?: 0
-                val preparedBitmaps = prepared?.bitmaps.orEmpty()
-                for (index in preparedBitmaps.keys) decodedWidths[index] = viewerWidth
-                main.post {
-                    if (!cancelled.get()) {
-                        listener.onPagesReady(urls.size)
-                        listener.onInitialPage(startPage)
-                        for (entry in preparedBitmaps.entries) listener.onPageReady(entry.key, entry.value)
-                    }
-                }
-                requestWindow(
-                    max(0, startPage - ReaderPipelinePolicy.INITIAL_WINDOW_BEFORE),
-                    minOf(urls.lastIndex, startPage + ReaderPipelinePolicy.INITIAL_WINDOW_AFTER),
-                    startPage,
-                    false
-                )
+                val startPage = requestedStartPage().coerceIn(0, urls.lastIndex)
+                installImages(urls, startPage, false)
+                requestPageForeground(startPage)
+                requestInitialWindow(startPage, false)
             } catch (e: Exception) {
                 ml.melun.mangaview.report.CrashReporter.record(e)
                 postMessage("이미지를 불러오지 못했습니다")
+            } finally {
+                repositoryLoading.set(false)
             }
+        }
+    }
+
+    private fun installPreparedSnapshot(snapshot: ReaderPreparedStore.Snapshot): Boolean {
+        val urls = snapshot.images
+        if (!urls.isNullOrEmpty()) {
+            installImages(urls, snapshot.startPage, true)
+            for (entry in snapshot.bitmaps.entries) deliverPreparedBitmap(entry.key, entry.value)
+            return true
+        }
+        for (entry in snapshot.bitmaps.entries) deliverPreparedBitmap(entry.key, entry.value)
+        return false
+    }
+
+    private fun installImages(urls: List<String>, requestedStartPage: Int, requestInitialWindow: Boolean) {
+        if (cancelled.get() || urls.isEmpty()) return
+        if (!pagesInstalled.compareAndSet(false, true)) return
+        images.clear()
+        images.addAll(urls)
+        val startPage = requestedStartPage.coerceIn(0, urls.lastIndex)
+        main.post {
+            if (!cancelled.get()) {
+                listener.onPagesReady(urls.size)
+                listener.onInitialPage(startPage)
+            }
+        }
+        if (requestInitialWindow) requestInitialWindow(startPage, false)
+    }
+
+    private fun requestInitialWindow(startPage: Int, busy: Boolean) {
+        val count = images.size
+        if (count <= 0) return
+        requestWindow(
+            max(0, startPage - ReaderPipelinePolicy.INITIAL_WINDOW_BEFORE),
+            minOf(count - 1, startPage + ReaderPipelinePolicy.INITIAL_WINDOW_AFTER),
+            startPage,
+            busy
+        )
+    }
+
+    private fun requestPageForeground(index: Int) {
+        val targetWidth = targetWidth(false)
+        val decodedWidth = decodedWidths[index] ?: 0
+        if (decodedWidth >= targetWidth || !loading.add(index)) return
+        main.post { if (!cancelled.get()) listener.onPageLoading(index) }
+        try {
+            val file = ensureImageFile(index)
+            if (cancelled.get()) return
+            val bitmap = decodePage(index, file, targetWidth)
+            decodedWidths[index] = max(decodedWidths[index] ?: 0, targetWidth)
+            main.post {
+                if (!cancelled.get()) listener.onPageReady(index, bitmap)
+            }
+        } catch (e: Exception) {
+            if (!cancelled.get()) ml.melun.mangaview.report.CrashReporter.record(e)
+        } finally {
+            loading.remove(index)
+        }
+    }
+
+    private fun deliverPreparedBitmap(index: Int, bitmap: Bitmap) {
+        if (cancelled.get() || index < 0 || bitmap.isRecycled) return
+        decodedWidths[index] = max(decodedWidths[index] ?: 0, viewerWidth)
+        loading.remove(index)
+        main.post {
+            if (!cancelled.get()) listener.onPageReady(index, bitmap)
         }
     }
 
@@ -111,6 +196,7 @@ class ReaderSession(
 
     fun cancel() {
         cancelled.set(true)
+        preparedEntry?.removeListener(preparedListener)
         network.shutdownNow()
         decode.shutdownNow()
         try {
@@ -248,7 +334,7 @@ class ReaderSession(
         return if (busy) {
             minOf(viewerWidth, ReaderPipelinePolicy.BUSY_DECODE_WIDTH)
         } else {
-            minOf(max(1, viewerWidth), ReaderPipelinePolicy.IDLE_DECODE_WIDTH)
+            minOf(max(1, viewerWidth), max(viewerWidth, ReaderPipelinePolicy.IDLE_DECODE_WIDTH))
         }
     }
 
@@ -266,7 +352,20 @@ class ReaderSession(
         }
     }
 
+    private fun requestedStartPage(): Int {
+        val page = if (manga.useBookmark() && ml.melun.mangaview.MainApplication.p != null) {
+            ml.melun.mangaview.MainApplication.p.getViewerBookmark(manga)
+        } else {
+            0
+        }
+        return max(0, page)
+    }
+
     private fun postMessage(message: String) {
         main.post { if (!cancelled.get()) listener.onMessage(message) }
+    }
+
+    private companion object {
+        private const val PREPARED_FALLBACK_MS = 1500L
     }
 }
