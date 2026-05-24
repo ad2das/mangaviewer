@@ -329,19 +329,26 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         status.text = message
     }
 
-    override fun onWindowChanged(firstPage: Int, lastPage: Int, anchorPage: Int, anchorOffset: Int, busy: Boolean) {
+    override fun onWindowChanged(
+        firstPage: Int,
+        lastPage: Int,
+        anchorPage: Int,
+        progressPage: Int,
+        progressOffset: Int,
+        busy: Boolean
+    ) {
         MainThreadStallMonitor.trace("reader_on_window_changed") {
-            currentPage = anchorPage
+            currentPage = progressPage
             MainThreadStallMonitor.trace("reader_request_window_async") {
                 session?.requestWindowAsync(firstPage, lastPage, anchorPage, busy)
             }
             if (busy) {
-                pendingAnchorAfterBusy = anchorPage
+                pendingAnchorAfterBusy = progressPage
                 return@trace
             }
             pendingAnchorAfterBusy = -1
             MainThreadStallMonitor.trace("reader_update_current_episode") {
-                updateCurrentEpisode(anchorPage, anchorOffset)
+                updateCurrentEpisode(progressPage, progressOffset)
             }
         }
     }
@@ -662,6 +669,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val title = currentTitle ?: info.manga.title ?: return
         info.manga.title = title
         info.manga.titleId = title.id
+        if (Utils.snapshotEpisodes(title).isEmpty()) {
+            val episodes = Utils.snapshotEpisodes(info.manga)
+            if (episodes.isNotEmpty()) title.setEps(episodes)
+        }
         title.eps?.let { info.manga.setEps(it) }
         val zeroBasedPage = info.sourcePageIndex.coerceAtLeast(0)
         if (

@@ -30,7 +30,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     attrs: AttributeSet? = null
 ) : View(context, attrs) {
     interface WindowListener {
-        fun onWindowChanged(firstPage: Int, lastPage: Int, anchorPage: Int, anchorOffset: Int, busy: Boolean)
+        fun onWindowChanged(firstPage: Int, lastPage: Int, anchorPage: Int, progressPage: Int, progressOffset: Int, busy: Boolean)
         fun onNearBoundary(direction: Int, anchorPage: Int)
         fun onBoundaryReached(direction: Int, anchorPage: Int)
         fun onTap()
@@ -67,7 +67,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val firstPage: Int,
         val lastPage: Int,
         val anchorPage: Int,
-        val anchorOffset: Int,
+        val progressPage: Int,
+        val progressOffset: Int,
         val busy: Boolean,
         val nearStart: Boolean,
         val nearEnd: Boolean
@@ -835,7 +836,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val remainingPx = contentHeight - (scrollOffset + height)
         val nearEnd = remainingPx <= boundaryPx ||
             anchor >= pages.size - NEAR_BOUNDARY_PAGE_THRESHOLD
-        return WindowRequest(first, last, anchor, pageOffsetLocked(anchor), busy, nearStart, nearEnd)
+        val progressPage = firstVisiblePageLocked(scrollOffset + 1f).coerceIn(0, pages.lastIndex)
+        return WindowRequest(first, last, anchor, progressPage, pageOffsetLocked(progressPage), busy, nearStart, nearEnd)
     }
 
     private fun dispatchWindowRequest(request: WindowRequest?) {
@@ -857,7 +859,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 latest.firstPage,
                 latest.lastPage,
                 latest.anchorPage,
-                latest.anchorOffset,
+                latest.progressPage,
+                latest.progressOffset,
                 latest.busy
             )
             if (latest.nearStart) currentListener.onNearBoundary(DIRECTION_PREVIOUS, latest.anchorPage)
