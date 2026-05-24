@@ -809,7 +809,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return DrawState(viewWidth, viewHeight, busy, false, visibleLoading, items)
     }
 
-    private fun requestRender() {
+    fun requestRender() {
         synchronized(stateLock) {
             renderRequested = true
             scheduleFrameLocked(preferImmediate = pointerDown || dragging)
