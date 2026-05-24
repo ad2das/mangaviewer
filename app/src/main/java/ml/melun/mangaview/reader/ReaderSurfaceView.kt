@@ -29,6 +29,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null
 ) : View(context, attrs) {
+    data class ProgressPosition(
+        val page: Int,
+        val offset: Int
+    )
+
     interface WindowListener {
         fun onWindowChanged(firstPage: Int, lastPage: Int, anchorPage: Int, progressPage: Int, progressOffset: Int, busy: Boolean)
         fun onNearBoundary(direction: Int, anchorPage: Int)
@@ -430,6 +435,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
             windowRequestLocked(false)
         }
         dispatchWindowRequest(request)
+    }
+
+    fun currentProgressPosition(): ProgressPosition? {
+        return synchronized(stateLock) {
+            progressPositionLocked()
+        }
     }
 
     override fun onAttachedToWindow() {
@@ -836,8 +847,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val remainingPx = contentHeight - (scrollOffset + height)
         val nearEnd = remainingPx <= boundaryPx ||
             anchor >= pages.size - NEAR_BOUNDARY_PAGE_THRESHOLD
-        val progressPage = firstVisiblePageLocked(scrollOffset + 1f).coerceIn(0, pages.lastIndex)
-        return WindowRequest(first, last, anchor, progressPage, pageOffsetLocked(progressPage), busy, nearStart, nearEnd)
+        val progress = progressPositionLocked() ?: return null
+        return WindowRequest(first, last, anchor, progress.page, progress.offset, busy, nearStart, nearEnd)
     }
 
     private fun dispatchWindowRequest(request: WindowRequest?) {
@@ -885,6 +896,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (index < 0 || index >= pages.size) return 0
         rebuildLayoutLocked()
         return (pageTopOrElseLocked(index, 0f) - scrollOffset).toInt()
+    }
+
+    private fun progressPositionLocked(): ProgressPosition? {
+        if (pages.isEmpty() || width <= 0 || height <= 0) return null
+        rebuildLayoutLocked()
+        var page = firstVisiblePageLocked(scrollOffset + 1f).coerceIn(0, pages.lastIndex)
+        val contentBottom = pageTopLocked(page) + pageDrawHeightLocked(pages[page])
+        if (scrollOffset >= contentBottom && page < pages.lastIndex) {
+            page += 1
+        }
+        return ProgressPosition(page, pageOffsetLocked(page))
     }
 
     private fun clampScrollLocked() {

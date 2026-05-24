@@ -75,7 +75,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var pendingProgressOffset = 0
     private var pendingBoundaryStatus = false
     private val saveProgressRunnable = Runnable {
-        pendingProgressInfo?.let { saveReadingProgressNow(it) }
+        saveCurrentReadingProgress()
         pendingProgressInfo = null
     }
     private val showBoundaryStatusRunnable = Runnable {
@@ -235,7 +235,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         destroyed = true
         progressHandler.removeCallbacks(saveProgressRunnable)
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
-        pendingProgressInfo?.let { saveReadingProgressNow(it) }
+        saveCurrentReadingProgress()
         pendingProgressInfo = null
         pendingBoundaryStatus = false
         renderView.setWindowListener(null)
@@ -662,8 +662,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         progressHandler.postDelayed(saveProgressRunnable, PROGRESS_SAVE_DEBOUNCE_MS)
     }
 
-    private fun saveReadingProgressNow(info: ReaderSession.PageInfo) {
-        saveReadingProgressNow(info, pendingProgressOffset)
+    private fun saveCurrentReadingProgress() {
+        val currentPosition = renderView.currentProgressPosition()
+        val currentInfo = currentPosition?.let { session?.pageInfo(it.page) }
+        val info = currentInfo ?: pendingProgressInfo ?: return
+        if (!info.layoutReady) return
+        saveReadingProgressNow(info, currentPosition?.offset ?: pendingProgressOffset)
     }
 
     private fun saveReadingProgressNow(info: ReaderSession.PageInfo, offset: Int) {
