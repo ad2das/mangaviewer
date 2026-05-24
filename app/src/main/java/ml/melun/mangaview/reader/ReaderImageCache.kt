@@ -15,41 +15,48 @@ object ReaderImageCache {
     private const val DIR_NAME = "reader_image_cache_v1"
     private const val MAX_CACHE_BYTES = 512L * 1024L * 1024L
     private const val TARGET_CACHE_BYTES = 384L * 1024L * 1024L
-    private val flights = ConcurrentHashMap<String, FutureTask<FetchResult>>()
+    private val flights = ConcurrentHashMap<String, FutureTask<File>>()
+    private val activeReads = ConcurrentHashMap.newKeySet<String>()
+    private val trimLock = Any()
 
-    private data class FetchResult(
+    class FileLease internal constructor(
         val file: File,
-        val bytes: ByteArray?
-    )
+        private val key: String?
+    ) : AutoCloseable {
+        override fun close() {
+            if (key != null) activeReads.remove(key)
+        }
+    }
+
+    fun leaseFile(context: Context, manga: Manga, image: String): FileLease {
+        if (!manga.isOnline) return FileLease(File(image), null)
+        val key = key(manga.baseMode, image)
+        activeReads.add(key)
+        return try {
+            val file = getOrFetch(context, manga, image)
+            file.setLastModified(System.currentTimeMillis())
+            FileLease(file, key)
+        } catch (t: Throwable) {
+            activeReads.remove(key)
+            throw t
+        }
+    }
 
     fun getOrFetchFile(context: Context, manga: Manga, image: String): File {
         if (!manga.isOnline) return File(image)
-        return getOrFetch(context, manga, image, false).file
+        return getOrFetch(context, manga, image)
     }
 
-    @Deprecated("Use getOrFetchFile and decode from disk to avoid large byte-array memory spikes.")
-    fun getOrFetchBytes(context: Context, manga: Manga, image: String): ByteArray {
-        if (!manga.isOnline) return getOrFetchFile(context, manga, image).readBytes()
-        val result = getOrFetch(context, manga, image, true)
-        return result.bytes ?: result.file.readBytes()
-    }
-
-    private fun getOrFetch(context: Context, manga: Manga, image: String, wantBytes: Boolean): FetchResult {
+    private fun getOrFetch(context: Context, manga: Manga, image: String): File {
         val appContext = context.applicationContext
         val key = key(manga.baseMode, image)
         val finalFile = File(cacheDir(appContext), "$key.img")
         if (isUsableImage(finalFile)) {
             finalFile.setLastModified(System.currentTimeMillis())
-            return FetchResult(finalFile, if (wantBytes) finalFile.readBytes() else null)
+            return finalFile
         }
         val task = FutureTask {
-            if (wantBytes) {
-                val bytes = downloadBytes(appContext, manga, image)
-                writeAtomically(appContext, finalFile, bytes)
-                FetchResult(finalFile, bytes)
-            } else {
-                FetchResult(downloadAtomically(appContext, manga, image, finalFile), null)
-            }
+            downloadAtomically(appContext, manga, image, finalFile)
         }
         val running = flights.putIfAbsent(key, task) ?: task.also { it.run() }
         return try {
@@ -89,36 +96,12 @@ object ReaderImageCache {
         }
     }
 
-    private fun downloadBytes(context: Context, manga: Manga, image: String): ByteArray {
-        request(context, manga, image).use { response ->
-            if (!response.isSuccessful) throw java.io.IOException("Image request failed: ${response.code}")
-            val body = response.body ?: throw java.io.IOException("Empty image body")
-            val bytes = body.bytes()
-            if (!looksLikeImage(bytes)) throw java.io.IOException("Invalid image bytes")
-            return bytes
-        }
-    }
-
     private fun request(context: Context, manga: Manga, image: String): okhttp3.Response {
         val requestBuilder = Request.Builder().url(Utils.viewerImageRequestUrl(image, manga.baseMode))
         for (entry in Utils.viewerImageRequestHeaders(image, manga.baseMode).entries) {
             requestBuilder.addHeader(entry.key, entry.value)
         }
         return getHttpClient().imageClient.newCall(requestBuilder.build()).execute()
-    }
-
-    private fun writeAtomically(context: Context, finalFile: File, bytes: ByteArray) {
-        val tmp = File(finalFile.parentFile, "${finalFile.name}.part.${System.nanoTime()}")
-        try {
-            FileOutputStream(tmp).use { it.write(bytes) }
-            if (!isUsableImage(tmp)) throw java.io.IOException("Invalid image cache file")
-            replace(tmp, finalFile)
-            finalFile.setLastModified(System.currentTimeMillis())
-            trimCache(context)
-        } catch (t: Throwable) {
-            tmp.delete()
-            throw t
-        }
     }
 
     private fun replace(tmp: File, finalFile: File) {
@@ -155,7 +138,7 @@ object ReaderImageCache {
         return false
     }
 
-    private fun trimCache(context: Context) {
+    private fun trimCache(context: Context) = synchronized(trimLock) {
         val dir = cacheDir(context)
         val files = dir.listFiles()
             ?.filter { it.isFile && it.name.endsWith(".img") }
@@ -164,6 +147,8 @@ object ReaderImageCache {
         if (total <= MAX_CACHE_BYTES) return
         for (file in files.sortedBy { it.lastModified() }) {
             if (total <= TARGET_CACHE_BYTES) break
+            val key = file.name.removeSuffix(".img")
+            if (activeReads.contains(key)) continue
             val length = file.length()
             if (file.delete()) total -= length
         }

@@ -27,6 +27,7 @@ import ml.melun.mangaview.mangaview.Title
 import ml.melun.mangaview.reader.ReaderLaunchPreparer
 import ml.melun.mangaview.reader.ReaderSession
 import ml.melun.mangaview.reader.ReaderSurfaceView
+import ml.melun.mangaview.reader.ReaderTile
 import ml.melun.mangaview.repository.MangaRepository
 import ml.melun.mangaview.runtime.AppDispatchers
 import kotlin.math.abs
@@ -201,7 +202,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pageCount = count
         renderView.setPageCount(count)
         updateCurrentEpisode(currentPage)
-        session?.appendAdjacentEpisode(currentPage, ReaderSurfaceView.DIRECTION_NEXT, true)
     }
 
     override fun onPagesAppended(count: Int) {
@@ -241,6 +241,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (pagesReady) {
             status.visibility = TextView.GONE
             renderView.setPageBitmap(index, bitmap)
+        }
+    }
+
+    override fun onPageTilesReady(index: Int, pageWidth: Int, pageHeight: Int, tiles: List<ReaderTile>) {
+        if (pagesReady) {
+            status.visibility = TextView.GONE
+            renderView.setPageTiles(index, pageWidth, pageHeight, tiles)
         }
     }
 

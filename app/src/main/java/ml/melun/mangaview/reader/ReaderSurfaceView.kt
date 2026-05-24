@@ -41,6 +41,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private data class Page(
         var bitmap: Bitmap? = null,
+        var tiles: List<ReaderTile> = emptyList(),
         var width: Int = 0,
         var height: Int = 0,
         var loading: Boolean = false,
@@ -49,6 +50,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private data class DrawItem(
         val bitmap: Bitmap?,
+        val tiles: List<ReaderTile>,
         val loading: Boolean,
         val cardText: String?,
         val top: Float,
@@ -256,8 +258,38 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTops.getOrElse(index, 0f)
             page.bitmap = bitmap
+            page.tiles = emptyList()
             page.width = max(1, bitmap.width)
             page.height = max(1, bitmap.height)
+            page.loading = false
+            page.cardText = null
+            val newHeight = pageDrawHeightLocked(page)
+            if (oldTop + oldHeight <= scrollOffset) scrollOffset += newHeight - oldHeight
+            val belowVisible = oldTop > scrollOffset + height
+            layoutDirty = true
+            clampScrollLocked()
+            if (!lastBusy || !belowVisible) {
+                renderRequested = true
+                scheduleFrameLocked()
+                stateLock.notifyAll()
+                windowRequestLocked(lastBusy)
+            } else {
+                null
+            }
+        }
+        dispatchWindowRequest(request)
+    }
+
+    fun setPageTiles(index: Int, pageWidth: Int, pageHeight: Int, tiles: List<ReaderTile>) {
+        val request = synchronized(stateLock) {
+            val page = pages.getOrNull(index) ?: return
+            rebuildLayoutLocked()
+            val oldHeight = pageDrawHeightLocked(page)
+            val oldTop = pageTops.getOrElse(index, 0f)
+            page.bitmap = null
+            page.tiles = tiles
+            page.width = max(1, pageWidth)
+            page.height = max(1, pageHeight)
             page.loading = false
             page.cardText = null
             val newHeight = pageDrawHeightLocked(page)
@@ -281,6 +313,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         synchronized(stateLock) {
             val page = pages.getOrNull(index) ?: return
             page.bitmap = null
+            page.tiles = emptyList()
             page.loading = false
             page.cardText = null
             layoutDirty = true
@@ -294,6 +327,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         synchronized(stateLock) {
             for (page in pages) {
                 page.bitmap = null
+                page.tiles = emptyList()
                 page.loading = false
                 page.cardText = null
             }
@@ -307,7 +341,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun setPageBounds(index: Int, pageWidth: Int, pageHeight: Int) {
         val request = synchronized(stateLock) {
             val page = pages.getOrNull(index) ?: return
-            if (page.bitmap != null || page.cardText != null || pageWidth <= 0 || pageHeight <= 0) return
+            if (page.bitmap != null || page.tiles.isNotEmpty() || page.cardText != null || pageWidth <= 0 || pageHeight <= 0) return
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTops.getOrElse(index, 0f)
@@ -334,6 +368,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val request = synchronized(stateLock) {
             val page = pages.getOrNull(index) ?: return
             page.bitmap = null
+            page.tiles = emptyList()
             page.width = width
             page.height = max(1, (height * 0.38f).toInt())
             page.loading = false
@@ -387,12 +422,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
-        val thread = synchronized(stateLock) {
+        synchronized(stateLock) {
             surfaceReady = false
             renderRunning = false
+            clearInputStateLocked()
             stopRenderThreadLocked()
             stateLock.notifyAll()
-            renderThread
         }
     }
 
@@ -400,6 +435,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         synchronized(stateLock) {
             surfaceReady = false
             renderRunning = false
+            clearInputStateLocked()
             stopRenderThreadLocked()
             stateLock.notifyAll()
         }
@@ -658,6 +694,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
             canvas.drawBitmap(bitmap, src, dst, paint)
             return
         }
+        if (item.tiles.isNotEmpty()) {
+            drawTiles(canvas, state, item)
+            return
+        }
         paint.color = Color.rgb(18, 18, 18)
         dst.set(0f, max(0f, item.top), state.width.toFloat(), min(state.height.toFloat(), item.top + item.pageHeight))
         canvas.drawRect(dst, paint)
@@ -667,6 +707,31 @@ class ReaderSurfaceView @JvmOverloads constructor(
             item.top + min(item.pageHeight / 2f, state.height / 2f),
             textPaint
         )
+    }
+
+    private fun drawTiles(canvas: Canvas, state: DrawState, item: DrawItem) {
+        val visibleTop = max(0f, item.top)
+        val visibleBottom = min(state.height.toFloat(), item.top + item.pageHeight)
+        if (visibleBottom <= visibleTop) return
+        paint.isFilterBitmap = !state.busy
+        for (tile in item.tiles) {
+            val bitmap = tile.bitmap
+            if (bitmap.isRecycled || tile.sourceHeight <= 0) continue
+            val tileTop = item.top + item.pageHeight * (tile.sourceTop / tile.sourceHeight.toFloat())
+            val tileBottom = item.top + item.pageHeight * (tile.sourceBottom / tile.sourceHeight.toFloat())
+            val drawTop = max(visibleTop, tileTop)
+            val drawBottom = min(visibleBottom, tileBottom)
+            if (drawBottom <= drawTop || tileBottom <= tileTop) continue
+            val srcTop = ((drawTop - tileTop) / (tileBottom - tileTop) * bitmap.height)
+                .toInt()
+                .coerceIn(0, bitmap.height - 1)
+            val srcBottom = ((drawBottom - tileTop) / (tileBottom - tileTop) * bitmap.height)
+                .toInt()
+                .coerceIn(srcTop + 1, bitmap.height)
+            src.set(0, srcTop, bitmap.width, srcBottom)
+            dst.set(0f, drawTop, state.width.toFloat(), drawBottom)
+            canvas.drawBitmap(bitmap, src, dst, paint)
+        }
     }
 
     private fun buildDrawStateLocked(busy: Boolean = lastBusy): DrawState {
@@ -682,7 +747,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val pageHeight = pageDrawHeightLocked(page)
             val bottom = top + pageHeight
             if (bottom >= 0f && top <= viewHeight) {
-                items.add(DrawItem(page.bitmap, page.loading, page.cardText, top, pageHeight))
+                items.add(DrawItem(page.bitmap, page.tiles, page.loading, page.cardText, top, pageHeight))
             }
             if (top > viewHeight) break
             index++
@@ -699,6 +764,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun isEmpty(): Boolean = synchronized(stateLock) { pages.isEmpty() }
+
+    private fun clearInputStateLocked() {
+        velocityTracker?.recycle()
+        velocityTracker = null
+        pointerDown = false
+        dragging = false
+        scroller.forceFinished(true)
+    }
 
     private fun setBusyLocked(busy: Boolean): WindowRequest? {
         if (lastBusy == busy) return null

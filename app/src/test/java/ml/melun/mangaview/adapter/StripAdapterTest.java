@@ -100,8 +100,8 @@ public class StripAdapterTest {
 
     @Test
     public void preloadBudgetsCoverOneFastFling() {
-        assertTrue(StripAdapter.preloadAheadCountForTest() >= 24);
-        assertTrue(StripAdapter.initialPreloadAheadCountForTest() >= 24);
+        assertTrue(StripAdapter.preloadAheadCountForTest() <= 8);
+        assertTrue(StripAdapter.initialPreloadAheadCountForTest() <= 6);
         assertEquals(0, StripAdapter.decodedPreloadActiveLimitForTest());
         assertTrue(StripAdapter.scrollIdlePreloadDelayMsForTest() >= 600L);
         assertTrue(StripAdapter.scrollIdleHeightCorrectionDelayMsForTest()

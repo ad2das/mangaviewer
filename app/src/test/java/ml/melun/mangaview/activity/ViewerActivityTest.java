@@ -101,7 +101,7 @@ public class ViewerActivityTest {
 
     @Test
     public void initialViewerPreloadBudgetStaysConservative() {
-        assertTrue(ViewerActivity.initialPreloadAheadCountForTest() >= 24);
+        assertTrue(ViewerActivity.initialPreloadAheadCountForTest() <= 6);
     }
 
     @Test

@@ -65,8 +65,6 @@ import java.util.WeakHashMap;
 import ml.melun.mangaview.activity.CaptchaActivity;
 import ml.melun.mangaview.activity.EpisodeActivity;
 import ml.melun.mangaview.activity.ViewerActivity;
-import ml.melun.mangaview.activity.ViewerActivity2;
-import ml.melun.mangaview.activity.ViewerActivity3;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.IntegerCallback;
 import ml.melun.mangaview.interfaces.StringCallback;
