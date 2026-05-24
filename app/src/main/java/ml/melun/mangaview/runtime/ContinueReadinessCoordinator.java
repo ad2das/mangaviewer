@@ -53,6 +53,8 @@ public final class ContinueReadinessCoordinator {
         long startedAt = SystemClock.elapsedRealtime();
         for(MTitle item : recent) {
             Title title = item instanceof Title ? (Title) item : new Title(item);
+            if(shouldSkipNtkContinuePrefetchForTest(title.getSourceSite(), p.isNtkSite()))
+                continue;
             Manga manga = resumeManga(title);
             if(manga == null)
                 continue;
@@ -92,6 +94,10 @@ public final class ContinueReadinessCoordinator {
 
     private static void prime(Context context, Manga manga, Title title, boolean visible, boolean force) {
         if(context == null || manga == null || !manga.isOnline())
+            return;
+        String sourceSite = title != null ? title.getSourceSite()
+                : manga.getTitle() == null ? null : manga.getTitle().getSourceSite();
+        if(shouldSkipNtkContinuePrefetchForTest(sourceSite, p != null && p.isNtkSite()))
             return;
         if(title != null) {
             if(p != null)
@@ -187,6 +193,10 @@ public final class ContinueReadinessCoordinator {
 
     static long submitDedupeMsForTest() {
         return SUBMIT_DEDUPE_MS;
+    }
+
+    public static boolean shouldSkipNtkContinuePrefetchForTest(String sourceSite, boolean ntkPreference) {
+        return ntkPreference && (sourceSite == null || sourceSite.trim().length() == 0);
     }
 
     private static int coldStartLimit(boolean dataSave) {

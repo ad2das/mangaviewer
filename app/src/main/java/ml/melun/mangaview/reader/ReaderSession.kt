@@ -6,7 +6,9 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import ml.melun.mangaview.Utils
+import ml.melun.mangaview.glide.ViewerWarmupManager
 import ml.melun.mangaview.mangaview.Decoder
 import ml.melun.mangaview.mangaview.Manga
 import ml.melun.mangaview.mangaview.Title
@@ -69,10 +71,13 @@ class ReaderSession(
     private val pages = Collections.synchronizedList(ArrayList<PageRef>())
     private val loading = ConcurrentHashMap.newKeySet<Int>()
     private val decodedWidths = ConcurrentHashMap<Int, Int>()
+    private val desiredWidths = ConcurrentHashMap<Int, Int>()
+    private val inFlightWidths = ConcurrentHashMap<Int, Int>()
     private val deliveredBitmaps = LinkedHashMap<Int, Bitmap>(32, 0.75f, true)
     private val deliveredOwned = HashSet<Int>()
     private var retainedFirstPage = 0
     private var retainedLastPage = 0
+    private val firstBitmapLogged = AtomicBoolean(false)
     private val nextLoading = AtomicBoolean(false)
     private val repositoryLoading = AtomicBoolean(false)
     private val preparedEntry = ReaderPreparedStore.get(preparedKey)
@@ -176,8 +181,18 @@ class ReaderSession(
 
     private fun requestPageForeground(index: Int) {
         val targetWidth = targetWidth(false)
+        rememberDesiredWidth(index, targetWidth)
         val decodedWidth = decodedWidths[index] ?: 0
-        if (decodedWidth >= targetWidth || !loading.add(index)) return
+        if (decodedWidth >= targetWidth) return
+        val activeWidth = inFlightWidths[index] ?: 0
+        if (!loading.add(index)) {
+            if (targetWidth > activeWidth)
+                ViewerWarmupManager.logMetric("busy_to_idle_upgrade_pending", targetWidth.toLong())
+            return
+        }
+        inFlightWidths[index] = targetWidth
+        val startedAt = SystemClock.elapsedRealtime()
+        var delivered = false
         main.post { if (!cancelled.get()) listener.onPageLoading(index) }
         try {
             val page = pageRef(index) ?: return
@@ -190,6 +205,8 @@ class ReaderSession(
             if (cancelled.get()) return
             decodedWidths[index] = max(decodedWidths[index] ?: 0, targetWidth)
             trackDeliveredBitmap(index, bitmap, true)
+            delivered = true
+            logFirstBitmapIfNeeded(startedAt)
             main.post {
                 if (!cancelled.get()) listener.onPageReady(index, bitmap)
             }
@@ -197,6 +214,8 @@ class ReaderSession(
             if (!cancelled.get()) ml.melun.mangaview.report.CrashReporter.record(e)
         } finally {
             loading.remove(index)
+            inFlightWidths.remove(index)
+            if (delivered) retryPendingWidthIfNeeded(index)
         }
     }
 
@@ -232,6 +251,7 @@ class ReaderSession(
 
     fun clearOutside(first: Int, last: Int) {
         decodedWidths.keys.removeAll { it < first || it > last }
+        desiredWidths.keys.removeAll { it < first || it > last }
         evictDeliveredBitmaps(first, last)
     }
 
@@ -297,6 +317,8 @@ class ReaderSession(
         val page = pageRef(index) ?: return
         if (page.transitionTitle != null) {
             decodedWidths[index] = Int.MAX_VALUE
+            desiredWidths.remove(index)
+            inFlightWidths.remove(index)
             loading.remove(index)
             main.post {
                 if (!cancelled.get()) listener.onPageCard(index, page.transitionTitle)
@@ -304,9 +326,16 @@ class ReaderSession(
             return
         }
         val targetWidth = targetWidth(busy)
+        rememberDesiredWidth(index, targetWidth)
         val decodedWidth = decodedWidths[index] ?: 0
         if (decodedWidth >= targetWidth) return
-        if (!loading.add(index)) return
+        val activeWidth = inFlightWidths[index] ?: 0
+        if (!loading.add(index)) {
+            if (targetWidth > activeWidth)
+                ViewerWarmupManager.logMetric("busy_to_idle_upgrade_pending", targetWidth.toLong())
+            return
+        }
+        inFlightWidths[index] = targetWidth
         main.post { if (!cancelled.get()) listener.onPageLoading(index) }
         network.execute {
             try {
@@ -314,13 +343,17 @@ class ReaderSession(
                 decode.execute {
                     val gate = if (busy) busyDecodeGate else idleDecodeGate
                     var acquired = false
+                    var delivered = false
                     try {
                         gate.acquire()
                         acquired = true
                         if (cancelled.get()) return@execute
+                        val startedAt = SystemClock.elapsedRealtime()
                         val bitmap = decodePage(index, file, targetWidth)
                         decodedWidths[index] = max(decodedWidths[index] ?: 0, targetWidth)
                         trackDeliveredBitmap(index, bitmap, true)
+                        delivered = true
+                        logFirstBitmapIfNeeded(startedAt)
                         main.post {
                             if (!cancelled.get()) listener.onPageReady(index, bitmap)
                         }
@@ -329,13 +362,49 @@ class ReaderSession(
                     } finally {
                         if (acquired) gate.release()
                         loading.remove(index)
+                        inFlightWidths.remove(index)
+                        if (delivered) retryPendingWidthIfNeeded(index)
                     }
                 }
             } catch (e: Exception) {
                 loading.remove(index)
+                inFlightWidths.remove(index)
                 if (!cancelled.get()) ml.melun.mangaview.report.CrashReporter.record(e)
             }
         }
+    }
+
+    private fun rememberDesiredWidth(index: Int, targetWidth: Int) {
+        while (true) {
+            val current = desiredWidths[index]
+            if (current != null && current >= targetWidth) return
+            if (current == null) {
+                if (desiredWidths.putIfAbsent(index, targetWidth) == null) return
+            } else if (desiredWidths.replace(index, current, targetWidth)) {
+                return
+            }
+        }
+    }
+
+    private fun retryPendingWidthIfNeeded(index: Int) {
+        val wanted = desiredWidths[index] ?: return
+        val have = decodedWidths[index] ?: 0
+        if (wanted <= have) return
+        if (cancelled.get() || !isRetainedPage(index)) {
+            ViewerWarmupManager.logMetric("busy_to_idle_upgrade_miss", wanted.toLong())
+            return
+        }
+        ViewerWarmupManager.logMetric("busy_to_idle_upgrade_retry", wanted.toLong())
+        requestPage(index, false, false)
+    }
+
+    private fun isRetainedPage(index: Int): Boolean = synchronized(deliveredBitmaps) {
+        index in retainedFirstPage..retainedLastPage
+    }
+
+    private fun logFirstBitmapIfNeeded(startedAt: Long) {
+        if (firstBitmapLogged.compareAndSet(false, true))
+            ViewerWarmupManager.logMetric("reader_first_bitmap_ms", SystemClock.elapsedRealtime() - startedAt)
     }
 
     private fun ensureImageFile(index: Int): File {
@@ -474,7 +543,10 @@ class ReaderSession(
     private fun postBitmapReleases(releases: List<BitmapRelease>) {
         if (releases.isEmpty()) return
         for (release in releases) {
-            if (release.clearPage) decodedWidths.remove(release.index)
+            if (release.clearPage) {
+                decodedWidths.remove(release.index)
+                desiredWidths.remove(release.index)
+            }
             val action = Runnable {
                 if (release.clearPage && !cancelled.get()) listener.onPageCleared(release.index)
                 if (release.bitmap != null && !release.bitmap.isRecycled) release.bitmap.recycle()
@@ -542,6 +614,7 @@ class ReaderSession(
         val keepFirst = max(0, anchor - ReaderPipelinePolicy.BUSY_WINDOW_BEFORE)
         val keepLast = anchor + ReaderPipelinePolicy.BUSY_WINDOW_AFTER
         decodedWidths.keys.removeAll { it < keepFirst || it > keepLast }
+        desiredWidths.keys.removeAll { it < keepFirst || it > keepLast }
     }
 
     private fun attachTitle() {

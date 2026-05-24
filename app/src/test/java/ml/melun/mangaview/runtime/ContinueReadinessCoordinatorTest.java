@@ -17,6 +17,14 @@ public class ContinueReadinessCoordinatorTest {
     }
 
     @Test
+    public void ntkColdStartSkipsAmbiguousSource() {
+        assertEquals(true, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest("", true));
+        assertEquals(true, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest(null, true));
+        assertEquals(false, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest("ntk", true));
+        assertEquals(false, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest("", false));
+    }
+
+    @Test
     public void readinessStatePrefersFirstFrameOverUrlSnapshots() {
         assertEquals(ContinueReadinessCoordinator.State.FIRST_FRAME_READY,
                 ContinueReadinessCoordinator.stateForTest(true, true, true, false));

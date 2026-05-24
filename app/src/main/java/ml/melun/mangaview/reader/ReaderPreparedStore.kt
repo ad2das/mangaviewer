@@ -1,13 +1,15 @@
 package ml.melun.mangaview.reader
 
 import android.graphics.Bitmap
+import ml.melun.mangaview.glide.ViewerWarmupManager
 import ml.melun.mangaview.mangaview.Manga
 import ml.melun.mangaview.mangaview.Title
 import java.util.LinkedHashMap
 
 object ReaderPreparedStore {
     private const val MAX_ENTRIES = 24
-    private const val MAX_BITMAP_BYTES = 48 * 1024 * 1024
+    private const val MAX_BITMAP_BYTES = 48L * 1024L * 1024L
+    private const val MAX_PINNED_START_BITMAPS = 3
 
     enum class Status {
         PENDING,
@@ -37,7 +39,8 @@ object ReaderPreparedStore {
         val manga: Manga,
         val title: Title?,
         val requestedStartPage: Int,
-        val requestedWidth: Int
+        val requestedWidth: Int,
+        private var pinStartBitmap: Boolean
     ) {
         private val lock = Any()
         private val listeners = LinkedHashSet<Listener>()
@@ -59,6 +62,13 @@ object ReaderPreparedStore {
             synchronized(lock) {
                 listeners.remove(listener)
             }
+        }
+
+        fun updateStartPin(pin: Boolean) {
+            synchronized(lock) {
+                pinStartBitmap = pinStartBitmap || pin
+            }
+            trimBitmapBudget()
         }
 
         fun setImages(images: List<String>, startPage: Int) {
@@ -108,19 +118,37 @@ object ReaderPreparedStore {
             )
         }
 
-        internal fun bitmapBytes(): Int = synchronized(lock) {
-            bitmapMap.values.sumOf { bitmapBytes(it).toLong() }.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        internal fun bitmapBytes(): Long = synchronized(lock) {
+            bitmapMap.values.sumOf { bitmapBytes(it).toLong() }
         }
 
-        internal fun trimOldestBitmap(): Boolean = synchronized(lock) {
+        internal fun trimOldestBitmap(allowPinnedStart: Boolean): Boolean = synchronized(lock) {
             val iterator = bitmapMap.entries.iterator()
             while (iterator.hasNext()) {
                 val entry = iterator.next()
-                if (entry.key == resolvedStartPage) continue
+                if (entry.key == resolvedStartPage && pinStartBitmap && !allowPinnedStart) continue
                 iterator.remove()
+                if (entry.key == resolvedStartPage) {
+                    pinStartBitmap = false
+                    ViewerWarmupManager.logMetric("prepared_start_evicted", 1L)
+                }
                 return true
             }
             false
+        }
+
+        internal fun hasPinnedStartBitmap(): Boolean = synchronized(lock) {
+            pinStartBitmap && usableBitmapLocked(bitmapMap[resolvedStartPage])
+        }
+
+        internal fun demoteStartPin(): Boolean = synchronized(lock) {
+            if (!pinStartBitmap) return@synchronized false
+            pinStartBitmap = false
+            true
+        }
+
+        private fun usableBitmapLocked(bitmap: Bitmap?): Boolean {
+            return bitmap != null && !bitmap.isRecycled
         }
     }
 
@@ -129,9 +157,18 @@ object ReaderPreparedStore {
     @JvmStatic
     @Synchronized
     fun createOrGet(key: String, manga: Manga, title: Title?, startPage: Int, width: Int): Entry {
+        return createOrGet(key, manga, title, startPage, width, false)
+    }
+
+    @JvmStatic
+    @Synchronized
+    fun createOrGet(key: String, manga: Manga, title: Title?, startPage: Int, width: Int, pinStartBitmap: Boolean): Entry {
         val existing = entries[key]
-        if (existing != null) return existing
-        val entry = Entry(key, manga, title, startPage, width)
+        if (existing != null) {
+            existing.updateStartPin(pinStartBitmap)
+            return existing
+        }
+        val entry = Entry(key, manga, title, startPage, width, pinStartBitmap)
         entries[key] = entry
         trimLocked()
         return entry
@@ -166,6 +203,7 @@ object ReaderPreparedStore {
             iterator.next()
             iterator.remove()
         }
+        enforcePinnedStartLimitLocked()
         trimBitmapBudgetLocked()
     }
 
@@ -175,18 +213,39 @@ object ReaderPreparedStore {
     }
 
     private fun trimBitmapBudgetLocked() {
+        enforcePinnedStartLimitLocked()
         while (totalBitmapBytesLocked() > MAX_BITMAP_BYTES) {
-            var trimmed = false
-            val iterator = entries.values.iterator()
-            while (iterator.hasNext() && totalBitmapBytesLocked() > MAX_BITMAP_BYTES) {
-                trimmed = iterator.next().trimOldestBitmap() || trimmed
-            }
-            if (!trimmed) return
+            if (trimOneBitmapLocked(false)) continue
+            if (trimOneBitmapLocked(true)) continue
+            break
+        }
+        ViewerWarmupManager.logMetric("prepared_bitmap_bytes", totalBitmapBytesLocked())
+    }
+
+    private fun trimOneBitmapLocked(allowPinnedStart: Boolean): Boolean {
+        val iterator = entries.values.iterator()
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
+            if (entry.trimOldestBitmap(allowPinnedStart))
+                return true
+        }
+        return false
+    }
+
+    private fun enforcePinnedStartLimitLocked() {
+        var pinned = entries.values.count { it.hasPinnedStartBitmap() }
+        if (pinned <= MAX_PINNED_START_BITMAPS)
+            return
+        val iterator = entries.values.iterator()
+        while (iterator.hasNext() && pinned > MAX_PINNED_START_BITMAPS) {
+            val entry = iterator.next()
+            if (entry.hasPinnedStartBitmap() && entry.demoteStartPin())
+                pinned--
         }
     }
 
-    private fun totalBitmapBytesLocked(): Int {
-        return entries.values.sumOf { it.bitmapBytes().toLong() }.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    private fun totalBitmapBytesLocked(): Long {
+        return entries.values.sumOf { it.bitmapBytes() }
     }
 
     private fun bitmapBytes(bitmap: Bitmap): Int {
@@ -196,4 +255,10 @@ object ReaderPreparedStore {
             bitmap.byteCount
         }
     }
+
+    @JvmStatic
+    fun maxPinnedStartBitmapsForTest(): Int = MAX_PINNED_START_BITMAPS
+
+    @JvmStatic
+    fun maxBitmapBytesForTest(): Long = MAX_BITMAP_BYTES
 }
