@@ -181,8 +181,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         synchronized(stateLock) {
             val page = pages.getOrNull(index) ?: return
             page.bitmap = null
-            page.width = 0
-            page.height = 0
             page.loading = false
             page.cardText = null
             layoutDirty = true

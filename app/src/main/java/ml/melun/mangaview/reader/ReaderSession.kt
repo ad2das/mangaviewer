@@ -210,14 +210,20 @@ class ReaderSession(
     }
 
     fun requestWindow(first: Int, last: Int, anchor: Int, busy: Boolean) {
+        requestWindow(first, last, anchor, busy, true)
+    }
+
+    private fun requestWindow(first: Int, last: Int, anchor: Int, busy: Boolean, retainWindow: Boolean) {
         if (cancelled.get()) return
         val count = pages.size
         if (count <= 0) return
         val safeFirst = first.coerceIn(0, count - 1)
         val safeLast = last.coerceIn(safeFirst, count - 1)
-        synchronized(deliveredBitmaps) {
-            retainedFirstPage = safeFirst
-            retainedLastPage = safeLast
+        if (retainWindow) {
+            synchronized(deliveredBitmaps) {
+                retainedFirstPage = safeFirst
+                retainedLastPage = safeLast
+            }
         }
         for (i in windowOrder(safeFirst, safeLast, anchor)) requestPage(i, busy, i == anchor)
         trimDecodedWidth(anchor, busy)
@@ -263,7 +269,13 @@ class ReaderSession(
                 main.post {
                     if (!cancelled.get()) {
                         listener.onPagesAppended(pages.size)
-                        requestWindow(max(start, anchor), minOf(pages.lastIndex, start + ReaderPipelinePolicy.INITIAL_WINDOW_AFTER), start, false)
+                        requestWindow(
+                            max(start, anchor),
+                            minOf(pages.lastIndex, start + ReaderPipelinePolicy.INITIAL_WINDOW_AFTER),
+                            start,
+                            false,
+                            false
+                        )
                     }
                 }
             } catch (e: Exception) {
