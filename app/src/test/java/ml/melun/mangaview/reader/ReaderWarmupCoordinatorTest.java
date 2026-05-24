@@ -3,15 +3,14 @@ package ml.melun.mangaview.reader;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-
 public class ReaderWarmupCoordinatorTest {
     @Test
     public void speculativeProfilesAvoidWindowDecode() {
         assertEquals(0, ReaderWarmupCoordinator.decodeLimitForTest(ReaderWarmupCoordinator.WarmupProfile.URL_ONLY));
         assertEquals(0, ReaderWarmupCoordinator.decodeLimitForTest(ReaderWarmupCoordinator.WarmupProfile.FIRST_BYTE));
+        assertEquals(0, ReaderWarmupCoordinator.decodeLimitForTest(ReaderWarmupCoordinator.WarmupProfile.ADJACENT_BYTES));
         assertEquals(1, ReaderWarmupCoordinator.decodeLimitForTest(ReaderWarmupCoordinator.WarmupProfile.FIRST_BITMAP));
-        assertEquals(4, ReaderWarmupCoordinator.decodeLimitForTest(ReaderWarmupCoordinator.WarmupProfile.LAUNCH_WINDOW));
+        assertEquals(1, ReaderWarmupCoordinator.decodeLimitForTest(ReaderWarmupCoordinator.WarmupProfile.LAUNCH_WINDOW));
     }
 
     @Test
@@ -19,12 +18,26 @@ public class ReaderWarmupCoordinatorTest {
         assertEquals(0, ReaderWarmupCoordinator.byteLimitForTest(ReaderWarmupCoordinator.WarmupProfile.URL_ONLY));
         assertEquals(1, ReaderWarmupCoordinator.byteLimitForTest(ReaderWarmupCoordinator.WarmupProfile.FIRST_BYTE));
         assertEquals(1, ReaderWarmupCoordinator.byteLimitForTest(ReaderWarmupCoordinator.WarmupProfile.FIRST_BITMAP));
-        assertEquals(16, ReaderWarmupCoordinator.byteLimitForTest(ReaderWarmupCoordinator.WarmupProfile.LAUNCH_WINDOW));
+        assertEquals(5, ReaderWarmupCoordinator.byteLimitForTest(ReaderWarmupCoordinator.WarmupProfile.ADJACENT_BYTES));
+        assertEquals(10, ReaderWarmupCoordinator.byteLimitForTest(ReaderWarmupCoordinator.WarmupProfile.LAUNCH_WINDOW));
+        assertEquals(8, ReaderWarmupCoordinator.launchByteLimitForTest("ntk"));
+        assertEquals(12, ReaderWarmupCoordinator.launchByteLimitForTest("wfwf"));
+    }
+
+    @Test
+    public void tapAndAdjacentProfilesStayFileOnly() {
+        assertEquals(ReaderWarmupCoordinator.WarmupProfile.FIRST_BYTE, ReaderWarmupCoordinator.tapProfileForTest("ntk"));
+        assertEquals(ReaderWarmupCoordinator.WarmupProfile.FIRST_BYTE, ReaderWarmupCoordinator.tapProfileForTest("wfwf"));
+        assertEquals(3, ReaderWarmupCoordinator.adjacentByteLimitForTest("ntk"));
+        assertEquals(5, ReaderWarmupCoordinator.adjacentByteLimitForTest("wfwf"));
     }
 
     @Test
     public void preparedStoreCapsPinnedStartBitmaps() {
-        assertEquals(3, ReaderPreparedStore.maxPinnedStartBitmapsForTest());
-        assertEquals(48L * 1024L * 1024L, ReaderPreparedStore.maxBitmapBytesForTest());
+        assertEquals(2, ReaderPreparedStore.maxPinnedStartBitmapsForTest());
+        assertEquals(24L * 1024L * 1024L, ReaderPreparedStore.softBitmapBytesForTest(""));
+        assertEquals(32L * 1024L * 1024L, ReaderPreparedStore.hardBitmapBytesForTest(""));
+        assertEquals(16L * 1024L * 1024L, ReaderPreparedStore.softBitmapBytesForTest("ntk"));
+        assertEquals(24L * 1024L * 1024L, ReaderPreparedStore.hardBitmapBytesForTest("ntk"));
     }
 }

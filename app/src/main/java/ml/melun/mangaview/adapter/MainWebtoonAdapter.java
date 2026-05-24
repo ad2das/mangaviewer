@@ -2687,6 +2687,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         private void applyProgress(SectionBatch batch) {
             if(batch == null || cancelled)
                 return;
+            if(BackgroundPrefetchBudget.isNonCriticalPrefetchSuppressed() && hasDisplayContent(rows))
+                return;
             if(siteNtkSnapshot != isNtkSite()) {
                 cancel(true);
                 resetForSiteChange();
@@ -2752,11 +2754,13 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             List<Object> finalRows = buildRows(dataSet, false);
             boolean shouldShowTop = !initialRowsShown && hasHero(finalRows);
             initialRowsShown = true;
-            updateRows(finalRows);
             saveHomeSnapshot(dataSet);
-            if(shouldShowTop)
-                scrollHeroToTop();
-            scheduleContinueProgressBackfill();
+            if(!BackgroundPrefetchBudget.isNonCriticalPrefetchSuppressed() || !hasDisplayContent(rows)) {
+                updateRows(finalRows);
+                if(shouldShowTop)
+                    scrollHeroToTop();
+                scheduleContinueProgressBackfill();
+            }
             notifyFetchFinished(hasRequiredHomeSections(dataSet));
         }
 
@@ -2796,9 +2800,12 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private void scheduleThumbnailPreload(List<Ranking<?>> sections) {
+        if(BackgroundPrefetchBudget.isNonCriticalPrefetchSuppressed())
+            return;
         if(anchorRecycler != null)
             anchorRecycler.post(() -> {
-                if(anchorRecycler == null || anchorRecycler.getScrollState() == RecyclerView.SCROLL_STATE_SETTLING)
+                if(anchorRecycler == null || anchorRecycler.getScrollState() == RecyclerView.SCROLL_STATE_SETTLING
+                        || BackgroundPrefetchBudget.isNonCriticalPrefetchSuppressed())
                     return;
                 preloadThumbnails(sections);
             });

@@ -30,9 +30,9 @@ public class ViewerWarmupManagerTest {
     }
 
     @Test
-    public void usablePageImageRejectsNtkBoardUploadBanners() {
-        assertFalse(ViewerWarmupManager.isUsablePageImageForTest(
-                "https://i.toonflix.app/board_uploads/2026/05/15/ad.png"));
+    public void usablePageImageAcceptsNtkBoardUploadPageUrls() {
+        assertTrue(ViewerWarmupManager.isUsablePageImageForTest(
+                "https://i.toonflix.app/board_uploads/2026/05/15/page001.png"));
     }
 
     @Test
@@ -48,10 +48,10 @@ public class ViewerWarmupManagerTest {
     }
 
     @Test
-    public void usableImageListRejectsOnlyNtkBoardUploadBanners() {
-        assertFalse(ViewerWarmupManager.hasUsableImagesForTest(Arrays.asList(
-                "https://i.toonflix.app/board_uploads/2026/05/15/ad.png",
-                "https://i.toonflix.app/board_uploads/2026/05/15/ad2.png")));
+    public void usableImageListAcceptsOnlyNtkBoardUploadPageUrls() {
+        assertTrue(ViewerWarmupManager.hasUsableImagesForTest(Arrays.asList(
+                "https://i.toonflix.app/board_uploads/2026/05/15/page001.png",
+                "https://i.toonflix.app/board_uploads/2026/05/15/page002.png")));
     }
 
     @Test

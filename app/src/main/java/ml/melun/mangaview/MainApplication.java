@@ -1,7 +1,7 @@
 package ml.melun.mangaview;
 
 import android.content.Context;
-import android.content.pm.ApplicationInfo;
+import android.util.Log;
 
 import androidx.appcompat.app.AppCompatDelegate;
 import androidx.multidex.MultiDexApplication;
@@ -44,7 +44,7 @@ public class MainApplication extends MultiDexApplication {
     public void onCreate() {
         long appStartedAt = PerfTrace.start("app_on_create_ms");
         appContext = this;
-        MainThreadStallMonitor.install((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0);
+        MainThreadStallMonitor.install(Log.isLoggable("MainStall", Log.DEBUG));
         long crashReporterStartedAt = PerfTrace.start("app_crash_reporter_install_ms");
         CrashReporter.install(this);
         PerfTrace.end("app_crash_reporter_install_ms", crashReporterStartedAt);

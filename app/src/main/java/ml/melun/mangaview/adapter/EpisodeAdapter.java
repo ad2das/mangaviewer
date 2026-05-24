@@ -142,7 +142,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             String thumb = this.title.getThumb();
             if(thumb == null)
                 thumb = "";
-            String release = this.title.getRelease();
+            String release = displayRelease();
             h.h_title.setText(titles);
             h.h_author.setText(this.title.getAuthor());
             if(release != null && release.length()>0) h.h_release.setText(release);
@@ -526,10 +526,32 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         if(title.getTags().size() > 0)
             appendInfo(builder, "분류", android.text.TextUtils.join(" / ", title.getTags()));
         appendInfo(builder, "회차", mData == null ? "0개" : mData.size() + "개");
-        String release = title.getRelease();
+        String release = displayRelease();
         if(release != null && release.trim().length() > 0)
             appendInfo(builder, "소개", release.trim());
         return builder.toString();
+    }
+
+    private String displayRelease() {
+        String release = title == null ? "" : title.getRelease();
+        return displayReleaseForNtk(title == null ? "" : title.getSourceSite(), release, mData);
+    }
+
+    static String displayReleaseForNtkForTest(String sourceSite, String release, List<Manga> episodes) {
+        return displayReleaseForNtk(sourceSite, release, episodes);
+    }
+
+    private static String displayReleaseForNtk(String sourceSite, String release, List<Manga> episodes) {
+        if(!"ntk".equals(sourceSite) || episodes == null || episodes.size() == 0)
+            return release;
+        String releaseNumber = Manga.visibleEpisodeNumberKey(release);
+        if(releaseNumber.length() == 0)
+            return release;
+        Manga latest = episodes.get(0);
+        String latestNumber = latest == null ? "" : Manga.visibleEpisodeNumberKey(latest.getName());
+        if(latestNumber.length() == 0 || latestNumber.equals(releaseNumber))
+            return release;
+        return latestNumber + "화";
     }
 
     private void appendInfo(StringBuilder builder, String label, String value) {

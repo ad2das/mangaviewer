@@ -11,6 +11,7 @@ import static ml.melun.mangaview.MainApplication.p;
 
 public final class ViewerResumeResolver {
     private static final int MAX_BROAD_FALLBACKS = 36;
+    private static final int LARGE_NTK_EPISODE_COUNT = 300;
 
     private ViewerResumeResolver() {
     }
@@ -31,6 +32,17 @@ public final class ViewerResumeResolver {
 
     public static boolean shouldUseTargetAsLastResort(Manga target, Title title) {
         return !shouldBlockPathlessNtkResume(target, title);
+    }
+
+    public static Manga concreteNtkResumeCandidate(Manga target, Title title) {
+        if(!shouldBlockPathlessNtkResume(target, title))
+            return target;
+        List<Manga> candidates = candidates(target, title, true);
+        for(Manga candidate : candidates) {
+            if(candidate != null && candidate.getNtkEpisodePath().length() > 0)
+                return candidate;
+        }
+        return null;
     }
 
     public static boolean shouldBlockPathlessNtkResume(Manga target, Title title) {
@@ -63,6 +75,9 @@ public final class ViewerResumeResolver {
         int computedIndex = title.getBookmarkIndex() - 1;
         addEpisodeAt(candidates, episodes, computedIndex, title);
 
+        if(skipTarget)
+            addVisibleNumberCandidate(candidates, episodes, target, title);
+
         if(!skipTarget)
             addCandidate(candidates, target, title);
 
@@ -77,6 +92,9 @@ public final class ViewerResumeResolver {
 
         // Older recent/bookmark records sometimes only contain a stale numeric id.
         // In that case prefer opening a real episode over showing a dead error popup.
+        if(skipTarget && isLargeNtkTitle(title, episodes))
+            return candidates;
+
         int added = 0;
         for(int i = 0; i < episodes.size() && added < MAX_BROAD_FALLBACKS; i++) {
             int before = candidates.size();
@@ -165,6 +183,28 @@ public final class ViewerResumeResolver {
             if(episode != null && episode.getId() == bookmark)
                 return episode;
         return null;
+    }
+
+    private static void addVisibleNumberCandidate(List<Manga> candidates, List<Manga> episodes, Manga target, Title title) {
+        if(episodes == null || target == null || target.getId() <= 0)
+            return;
+        String targetNumber = String.valueOf(target.getId());
+        for(Manga episode : episodes) {
+            if(episode == null)
+                continue;
+            String episodeNumber = Manga.visibleEpisodeNumberKey(episode.getName());
+            if(!targetNumber.equals(episodeNumber))
+                continue;
+            addCandidate(candidates, episode, title);
+            return;
+        }
+    }
+
+    private static boolean isLargeNtkTitle(Title title, List<Manga> episodes) {
+        return title != null
+                && "ntk".equals(title.getSourceSite())
+                && episodes != null
+                && episodes.size() >= LARGE_NTK_EPISODE_COUNT;
     }
 
     private static Manga episodeAt(List<Manga> episodes, int oneBasedIndex) {

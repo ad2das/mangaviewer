@@ -254,6 +254,16 @@ public class MainPageWebtoonTest {
     }
 
     @Test
+    public void ntkApiParserPrefersVisibleEpisodeLabelOverInternalLatestNumber() throws Exception {
+        ArrayList<Title> titles = Search.parseNtkApiTitlesForTest(
+                "{\"works\":[{\"sourceWorkId\":\"2\",\"title\":\"원피스(ONE PIECE)\",\"latestEpisodeNumber\":1293,\"ep\":\"1183화\"}]}",
+                base_comic);
+
+        assertEquals(1, titles.size());
+        assertEquals("1183화", titles.get(0).getRelease());
+    }
+
+    @Test
     public void ntkKeywordApiSearchFiltersUnrelatedWorks() throws Exception {
         String apiBody =
                 "{\"works\":["

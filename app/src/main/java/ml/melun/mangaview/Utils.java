@@ -90,7 +90,7 @@ public class Utils {
     private static final Map<Context, Long> viewerLaunchTimes = new WeakHashMap<>();
     private static final Map<Activity, Long> focusedDestinationLaunchTimes = new WeakHashMap<>();
     private static int viewerLaunchSequence = 0;
-    private static final long VIEWER_LAUNCH_DEBOUNCE_MS = 2200L;
+    private static final long VIEWER_LAUNCH_DEBOUNCE_MS = 450L;
     private static final String MANGA_STATE_V2 = "manga_state_v2";
     private static final String MANGA_ID = "manga_id";
     private static final String MANGA_NAME = "manga_name";
@@ -313,7 +313,7 @@ public class Utils {
                         launchTitle, includeTitleEpisodes, launchToken);
                 return;
             }
-            if(waitForFirstFrame || recent) {
+            if(!exactEpisode && shouldWaitForContinueFirstFrame(waitForFirstFrame, recent)) {
                 ViewerWarmupManager.logMetric("viewer_continue_prepare_gate", manga.getId());
                 launchWhenFirstFrameReady(context, manga, code, returnToEpisodes, online, recent,
                         launchTitle, includeTitleEpisodes, launchToken);
@@ -324,11 +324,24 @@ public class Utils {
     }
 
     private static boolean shouldWaitForExactFirstFrame(Title title) {
-        return true;
+        String source = title == null ? "" : title.getSourceSite();
+        return shouldWaitForExactFirstFrame(source, p != null && p.isNtkSite());
     }
 
     static boolean shouldWaitForExactFirstFrameForTest(String sourceSite, boolean ntkSite) {
-        return true;
+        return shouldWaitForExactFirstFrame(sourceSite, ntkSite);
+    }
+
+    private static boolean shouldWaitForExactFirstFrame(String sourceSite, boolean ntkSite) {
+        return false;
+    }
+
+    private static boolean shouldWaitForContinueFirstFrame(boolean waitForFirstFrame, boolean recent) {
+        return false;
+    }
+
+    static boolean shouldWaitForContinueFirstFrameForTest(boolean waitForFirstFrame, boolean recent) {
+        return shouldWaitForContinueFirstFrame(waitForFirstFrame, recent);
     }
 
     private static void launchExactWhenFirstFrameReady(Context context, Manga manga, int code, boolean returnToEpisodes,
@@ -403,10 +416,10 @@ public class Utils {
     private static boolean shouldAllowExactForegroundFallback(String sourceSite, boolean ntkSite) {
         String source = sourceSite == null ? "" : sourceSite.trim().toLowerCase(Locale.ROOT);
         if("ntk".equals(source))
-            return false;
+            return true;
         if("wfwf".equals(source))
             return true;
-        return !ntkSite;
+        return true;
     }
 
     private static void launchWhenFirstFrameReady(Context context, Manga manga, int code, boolean returnToEpisodes,
@@ -420,7 +433,7 @@ public class Utils {
         AppDispatchers.submitUserAction(() -> {
             PreparedViewerLaunch prepared = ViewerPreparationCoordinator.prepareContinue(appContext, manga, title,
                     false, p.getReverse(), MangaRepository.cancellation());
-            if(!prepared.canLaunch() && prepared.isCaptcha()) {
+            if(!prepared.canLaunch() && shouldBlockUnpreparedContinueLaunch(prepared)) {
                 ViewerWarmupManager.logMetric("viewer_continue_unprepared_blocked", manga.getId());
                 AppDispatchers.runOnMain(() -> showViewerPreparationIssue(context, launchToken, prepared, manga));
                 return;
@@ -444,6 +457,11 @@ public class Utils {
             return;
         }
         Toast.makeText(context, "회차 준비 중입니다. 잠시 후 다시 눌러주세요.", Toast.LENGTH_SHORT).show();
+    }
+
+    private static boolean shouldBlockUnpreparedContinueLaunch(PreparedViewerLaunch prepared) {
+        return prepared != null && (prepared.isCaptcha()
+                || prepared.getStatus() == PreparedViewerLaunch.Status.PATHLESS_NTK);
     }
 
     private static boolean shouldBlockUnpreparedContinueFallback(Manga manga) {

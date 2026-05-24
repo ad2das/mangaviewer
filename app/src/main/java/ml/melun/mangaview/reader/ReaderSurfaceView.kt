@@ -140,6 +140,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var lockedRestorePage = -1
     private var lockedRestoreOffset = 0
     private var lockedRestoreUntilMs = 0L
+    private var initialRenderHoldPage = -1
+    private var initialRenderHoldUntilMs = 0L
+    private var deferInitialEmptyDraw = false
     private var listener: WindowListener? = null
     private var lastAnchor = -1
     private var lastBusy = false
@@ -189,10 +192,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
             pageGapPx = next
             layoutDirty = true
             clampScrollLocked()
-            renderRequested = true
-            scheduleFrameLocked()
+            renderRequested = pages.isNotEmpty()
+            if (renderRequested) scheduleFrameLocked()
             stateLock.notifyAll()
-            request = windowRequestLocked(lastBusy)
+            request = if (renderRequested) windowRequestLocked(lastBusy) else null
         }
         dispatchWindowRequest(request)
     }
@@ -204,9 +207,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
             scrollOffset = 0f
             boundaryArmedDirection = 0
             lastAnchor = -1
+            deferInitialEmptyDraw = count > 0
             layoutDirty = true
-            renderRequested = true
-            scheduleFrameLocked()
+            renderRequested = count <= 0
+            if (renderRequested) scheduleFrameLocked()
             stateLock.notifyAll()
             windowRequestLocked(false)
         }
@@ -269,6 +273,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             pages.getOrNull(index)?.let {
                 if (it.cardText == null) it.loading = true
             }
+            if (shouldSuppressInitialEmptyRenderLocked()) return
             if (!lastBusy || isNearVisibleLocked(index, 1)) {
                 renderRequested = true
                 scheduleFrameLocked()
@@ -289,6 +294,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.height = max(1, bitmap.height)
             page.loading = false
             page.cardText = null
+            deferInitialEmptyDraw = false
             val newHeight = pageDrawHeightLocked(page)
             if (oldTop + oldHeight <= scrollOffset) scrollOffset += newHeight - oldHeight
             val belowVisible = oldTop > scrollOffset + height
@@ -319,6 +325,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.height = max(1, pageHeight)
             page.loading = false
             page.cardText = null
+            deferInitialEmptyDraw = false
             val newHeight = pageDrawHeightLocked(page)
             if (oldTop + oldHeight <= scrollOffset) scrollOffset += newHeight - oldHeight
             val belowVisible = oldTop > scrollOffset + height
@@ -392,6 +399,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val oldTop = pageTopOrElseLocked(index, 0f)
             page.width = pageWidth
             page.height = pageHeight
+            deferInitialEmptyDraw = false
             val newHeight = pageDrawHeightLocked(page)
             if (oldTop + oldHeight <= scrollOffset) scrollOffset += newHeight - oldHeight
             val belowVisible = oldTop > scrollOffset + height
@@ -419,6 +427,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.height = max(1, (height * 0.38f).toInt())
             page.loading = false
             page.cardText = title
+            deferInitialEmptyDraw = false
             layoutDirty = true
             clampScrollLocked()
             renderRequested = true
@@ -457,12 +466,26 @@ class ReaderSurfaceView @JvmOverloads constructor(
             applyLockedRestorePositionLocked()
             clampScrollLocked()
             lastAnchor = -1
-            renderRequested = true
-            scheduleFrameLocked()
+            renderRequested = !shouldSuppressInitialEmptyRenderLocked()
+            if (renderRequested) scheduleFrameLocked()
             stateLock.notifyAll()
-            windowRequestLocked(false)
+            if (renderRequested) windowRequestLocked(false) else null
         }
         dispatchWindowRequest(request)
+    }
+
+    fun holdInitialRestoreRender(index: Int) {
+        synchronized(stateLock) {
+            if (index !in 0 until pages.size) return
+            initialRenderHoldPage = index
+            initialRenderHoldUntilMs = SystemClock.uptimeMillis() + INITIAL_RENDER_HOLD_MS
+            if (pageHasStableLayoutLocked(index)) {
+                renderRequested = true
+                scheduleFrameLocked()
+            }
+            stateLock.notifyAll()
+        }
+        mainHandler.postDelayed({ requestRender() }, INITIAL_RENDER_HOLD_MS + 32L)
     }
 
     fun currentProgressPosition(): ProgressPosition? {
@@ -475,8 +498,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         super.onAttachedToWindow()
         synchronized(stateLock) {
             renderRunning = true
-            renderRequested = true
-            scheduleFrameLocked()
+            renderRequested = pages.isNotEmpty()
+            if (renderRequested) scheduleFrameLocked()
             stateLock.notifyAll()
         }
     }
@@ -486,10 +509,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val request = synchronized(stateLock) {
             clampScrollLocked()
             lastAnchor = -1
-            renderRequested = true
-            scheduleFrameLocked()
+            renderRequested = pages.isNotEmpty()
+            if (renderRequested) scheduleFrameLocked()
             stateLock.notifyAll()
-            windowRequestLocked(lastBusy)
+            if (renderRequested) windowRequestLocked(lastBusy) else null
         }
         dispatchWindowRequest(request)
     }
@@ -659,8 +682,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
             if (wasBusy && !busyNow) boundary = boundaryRequestLocked()
             val animateScroll = dragging || scrolling || !scroller.isFinished
-            val shouldDraw = renderRequested || animateScroll
-            val state = if (shouldDraw) buildDrawStateLocked(busyNow) else null
+            val shouldDraw = (renderRequested || animateScroll) && pages.isNotEmpty()
+            val state = if (shouldDraw && !shouldDeferInitialEmptyDrawLocked()) buildDrawStateLocked(busyNow) else null
+            if (renderRequested && pages.isEmpty()) renderRequested = false
             if (shouldDraw) renderRequested = false
             if (animateScroll) scheduleFrameLocked()
             RenderWork(request, boundary, state)
@@ -789,6 +813,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
         applyLockedRestorePositionLocked()
         clampScrollLocked()
         rebuildLayoutLocked()
+        if (shouldHoldInitialRenderLocked()) {
+            renderRequested = true
+            scheduleFrameLocked()
+            return heldRestoreDrawStateLocked(viewWidth, viewHeight, busy)
+                ?: DrawState(viewWidth, viewHeight, busy, true, 1, emptyList())
+        }
         val items = ArrayList<DrawItem>()
         var visibleLoading = 0
         var index = firstVisiblePageLocked(scrollOffset)
@@ -809,8 +839,71 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return DrawState(viewWidth, viewHeight, busy, false, visibleLoading, items)
     }
 
+    private fun heldRestoreDrawStateLocked(viewWidth: Int, viewHeight: Int, busy: Boolean): DrawState? {
+        val index = initialRenderHoldPage
+        val page = pages.getOrNull(index) ?: return null
+        if (!pageHasStableLayoutLocked(index)) return null
+        val top = if (lockedRestorePage == index) {
+            lockedRestoreOffset.toFloat()
+        } else {
+            pageTopOrElseLocked(index, 0f) - scrollOffset
+        }
+        val pageHeight = pageDrawHeightLocked(page)
+        val item = DrawItem(page.bitmap, page.tiles, false, page.cardText, top, pageHeight)
+        return DrawState(viewWidth, viewHeight, busy, false, 0, listOf(item))
+    }
+
+    private fun shouldHoldInitialRenderLocked(): Boolean {
+        val page = initialRenderHoldPage
+        if (page !in 0 until pages.size) return false
+        val now = SystemClock.uptimeMillis()
+        if (now > initialRenderHoldUntilMs) {
+            clearInitialRenderHoldLocked()
+            return false
+        }
+        val first = max(0, page - INITIAL_RENDER_HOLD_BEFORE)
+        val last = min(pages.lastIndex, page + INITIAL_RENDER_HOLD_AFTER)
+        for (index in first..last) {
+            if (!pageHasStableLayoutLocked(index)) return true
+        }
+        clearInitialRenderHoldLocked()
+        return false
+    }
+
+    private fun clearInitialRenderHoldLocked() {
+        initialRenderHoldPage = -1
+        initialRenderHoldUntilMs = 0L
+    }
+
+    private fun shouldSuppressInitialEmptyRenderLocked(): Boolean {
+        val page = initialRenderHoldPage
+        return page in 0 until pages.size &&
+            SystemClock.uptimeMillis() <= initialRenderHoldUntilMs &&
+            !pageHasStableLayoutLocked(page)
+    }
+
+    private fun shouldDeferInitialEmptyDrawLocked(): Boolean {
+        if (!deferInitialEmptyDraw || pages.isEmpty()) return false
+        for (index in pages.indices) {
+            if (pageHasStableLayoutLocked(index)) {
+                deferInitialEmptyDraw = false
+                return false
+            }
+        }
+        return true
+    }
+
+    private fun pageHasStableLayoutLocked(index: Int): Boolean {
+        val page = pages.getOrNull(index) ?: return false
+        return page.cardText != null ||
+            page.bitmap != null ||
+            page.tiles.isNotEmpty() ||
+            (page.width > 0 && page.height > 0)
+    }
+
     fun requestRender() {
         synchronized(stateLock) {
+            if (pages.isEmpty()) return
             renderRequested = true
             scheduleFrameLocked(preferImmediate = pointerDown || dragging)
             stateLock.notifyAll()
@@ -1336,6 +1429,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
         private const val RESTORE_POSITION_LOCK_MS = 1200L
+        private const val INITIAL_RENDER_HOLD_MS = 700L
+        private const val INITIAL_RENDER_HOLD_BEFORE = 2
+        private const val INITIAL_RENDER_HOLD_AFTER = 2
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
     }

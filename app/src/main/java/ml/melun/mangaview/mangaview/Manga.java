@@ -61,6 +61,7 @@ public class Manga {
     private static final Pattern VIEWER_EPISODE_PREFIX_PATTERN = Pattern.compile("^\\(\\s*\\d+\\s*/\\s*\\d+\\s*\\)\\s*");
     private static final Pattern EPISODE_WHITESPACE_PATTERN = Pattern.compile("\\s+");
     private static final Pattern EPISODE_NUMBER_PATTERN = Pattern.compile("(\\d+(?:\\.\\d+)?(?:\\s*[,~～\\-]\\s*\\d+(?:\\.\\d+)?)*)\\s*화");
+    private static final Pattern EPISODE_BLOCK_NUMBER_PATTERN = Pattern.compile("\\d+(?:\\.\\d+)?");
 
     int baseMode = base_comic;
     int titleId = -1;
@@ -1757,7 +1758,7 @@ public class Manga {
         if(value == null)
             return "";
         ArrayList<String> numbers = new ArrayList<>();
-        Matcher matcher = Pattern.compile("\\d+(?:\\.\\d+)?").matcher(value);
+        Matcher matcher = EPISODE_BLOCK_NUMBER_PATTERN.matcher(value);
         while(matcher.find()) {
             String number = normalizeEpisodeNumberToken(matcher.group());
             if(number.length() > 0)

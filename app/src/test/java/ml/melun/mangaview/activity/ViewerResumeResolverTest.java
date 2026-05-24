@@ -11,6 +11,7 @@ import ml.melun.mangaview.mangaview.Title;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class ViewerResumeResolverTest {
@@ -25,6 +26,7 @@ public class ViewerResumeResolverTest {
         assertTrue(ViewerResumeResolver.shouldResolveBeforeDirectFetch(target, title));
         assertTrue(ViewerResumeResolver.shouldBlockPathlessNtkResume(target, title));
         assertFalse(ViewerResumeResolver.shouldUseTargetAsLastResort(target, title));
+        assertNull(ViewerResumeResolver.concreteNtkResumeCandidate(target, title));
         assertTrue(ViewerResumeResolver.candidates(target, title, true).isEmpty());
     }
 
@@ -75,6 +77,33 @@ public class ViewerResumeResolverTest {
 
         assertFalse(candidates.isEmpty());
         assertTrue(candidates.get(0).getNtkEpisodePath().length() > 0);
+    }
+
+    @Test
+    public void largePathlessNtkResumeUsesVisibleEpisodeNumberBeforeBroadFallback() {
+        Title title = new Title("원피스", "", "", null, "", 2, MTitle.base_comic);
+        title.setSourceSite("ntk");
+        Manga target = new Manga(1293, "", "", MTitle.base_comic);
+        target.setTitle(title);
+        target.setTitleId(title.getId());
+
+        ArrayList<Manga> episodes = new ArrayList<>();
+        for(int i = 1300; i >= 1; i--) {
+            Manga episode = new Manga(i, "원피스 " + i + "화", "", MTitle.base_comic);
+            episode.setTitle(title);
+            episode.setTitleId(title.getId());
+            episode.setNtkEpisodePath("/manhwa/2/" + i);
+            episodes.add(episode);
+        }
+        title.setEps(episodes);
+
+        List<Manga> candidates = ViewerResumeResolver.candidates(target, title,
+                ViewerResumeResolver.shouldResolveBeforeDirectFetch(target, title));
+
+        assertFalse(candidates.isEmpty());
+        assertEquals("/manhwa/2/1293", candidates.get(0).getNtkEpisodePath());
+        assertEquals("/manhwa/2/1293",
+                ViewerResumeResolver.concreteNtkResumeCandidate(target, title).getNtkEpisodePath());
     }
 
     @Test

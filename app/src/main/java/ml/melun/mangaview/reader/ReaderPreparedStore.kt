@@ -5,11 +5,15 @@ import ml.melun.mangaview.glide.ViewerWarmupManager
 import ml.melun.mangaview.mangaview.Manga
 import ml.melun.mangaview.mangaview.Title
 import java.util.LinkedHashMap
+import java.util.Locale
 
 object ReaderPreparedStore {
     private const val MAX_ENTRIES = 24
-    private const val MAX_BITMAP_BYTES = 48L * 1024L * 1024L
-    private const val MAX_PINNED_START_BITMAPS = 3
+    private const val DEFAULT_SOFT_BITMAP_BYTES = 24L * 1024L * 1024L
+    private const val DEFAULT_HARD_BITMAP_BYTES = 32L * 1024L * 1024L
+    private const val NTK_SOFT_BITMAP_BYTES = 16L * 1024L * 1024L
+    private const val NTK_HARD_BITMAP_BYTES = 24L * 1024L * 1024L
+    private const val MAX_PINNED_START_BITMAPS = 2
 
     enum class Status {
         PENDING,
@@ -155,6 +159,14 @@ object ReaderPreparedStore {
             true
         }
 
+        internal fun hasBitmap(): Boolean = synchronized(lock) {
+            bitmapMap.values.any { usableBitmapLocked(it) }
+        }
+
+        internal fun sourceSite(): String {
+            return (title?.sourceSite ?: "").trim().lowercase(Locale.ROOT)
+        }
+
         private fun usableBitmapLocked(bitmap: Bitmap?): Boolean {
             return bitmap != null && !bitmap.isRecycled
         }
@@ -227,7 +239,8 @@ object ReaderPreparedStore {
 
     private fun trimBitmapBudgetLocked() {
         enforcePinnedStartLimitLocked()
-        while (totalBitmapBytesLocked() > MAX_BITMAP_BYTES) {
+        val hardCap = hardBitmapBytesLocked()
+        while (totalBitmapBytesLocked() > hardCap) {
             if (trimOneBitmapLocked(false)) continue
             if (trimOneBitmapLocked(true)) continue
             break
@@ -261,6 +274,13 @@ object ReaderPreparedStore {
         return entries.values.sumOf { it.bitmapBytes() }
     }
 
+    private fun hardBitmapBytesLocked(): Long {
+        return if (entries.values.any { it.hasBitmap() && it.sourceSite() == "ntk" })
+            NTK_HARD_BITMAP_BYTES
+        else
+            DEFAULT_HARD_BITMAP_BYTES
+    }
+
     private fun bitmapBytes(bitmap: Bitmap): Int {
         return try {
             bitmap.allocationByteCount
@@ -273,5 +293,21 @@ object ReaderPreparedStore {
     fun maxPinnedStartBitmapsForTest(): Int = MAX_PINNED_START_BITMAPS
 
     @JvmStatic
-    fun maxBitmapBytesForTest(): Long = MAX_BITMAP_BYTES
+    fun maxBitmapBytesForTest(): Long = DEFAULT_HARD_BITMAP_BYTES
+
+    @JvmStatic
+    fun softBitmapBytesForTest(sourceSite: String?): Long {
+        return if ((sourceSite ?: "").trim().lowercase(Locale.ROOT) == "ntk")
+            NTK_SOFT_BITMAP_BYTES
+        else
+            DEFAULT_SOFT_BITMAP_BYTES
+    }
+
+    @JvmStatic
+    fun hardBitmapBytesForTest(sourceSite: String?): Long {
+        return if ((sourceSite ?: "").trim().lowercase(Locale.ROOT) == "ntk")
+            NTK_HARD_BITMAP_BYTES
+        else
+            DEFAULT_HARD_BITMAP_BYTES
+    }
 }

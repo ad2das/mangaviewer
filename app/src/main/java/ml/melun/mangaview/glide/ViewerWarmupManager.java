@@ -170,6 +170,16 @@ public class ViewerWarmupManager {
         }
         if(!shouldWarmupContinueForSite(title, true))
             return;
+        if(ViewerResumeResolver.shouldBlockPathlessNtkResume(manga, title)) {
+            Manga resolved = ViewerResumeResolver.concreteNtkResumeCandidate(manga, title);
+            if(resolved == null)
+                return;
+            manga = resolved;
+            if(title != null) {
+                manga.setTitle(title);
+                manga.setTitleId(title.getId());
+            }
+        }
         Context appContext = context.getApplicationContext();
         Title warmupTitle = title;
         int firstPage = manga.useBookmark() && p != null ? p.getViewerBookmark(manga) : 0;
@@ -179,8 +189,9 @@ public class ViewerWarmupManager {
         if(!shouldScheduleContinueWarmup(scheduleKey))
             return;
         prioritizeUserSelectedContinue();
+        Manga launchManga = manga;
         AppDispatchers.submitIo(() -> {
-            Manga prepared = prepareClickFirstFrame(appContext, manga, warmupTitle, false,
+            Manga prepared = prepareClickFirstFrame(appContext, launchManga, warmupTitle, false,
                     p != null && p.getReverse(), MangaRepository.cancellation());
             if(prepared != null)
                 logMetric("viewer_user_continue_warmup_ready", prepared.getId());
@@ -1386,16 +1397,7 @@ public class ViewerWarmupManager {
     }
 
     private static boolean isUsablePageImage(String image) {
-        return image != null && image.trim().length() > 0 && !isNtkBoardUploadImage(image);
-    }
-
-    private static boolean isNtkBoardUploadImage(String image) {
-        if(image == null)
-            return false;
-        String lower = image.trim().toLowerCase(Locale.ROOT);
-        return lower.contains("toonflix.app/board_uploads/")
-                || lower.contains("img.toonflix.app/board_uploads/")
-                || lower.contains("/board_uploads/");
+        return image != null && image.trim().length() > 0;
     }
 
     private static boolean hasUsableImages(List<String> images) {

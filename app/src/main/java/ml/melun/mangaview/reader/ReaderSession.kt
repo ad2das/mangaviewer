@@ -186,11 +186,12 @@ class ReaderSession(
     private val pagesInstalled = AtomicBoolean(false)
     private val preparedListener = object : ReaderPreparedStore.Listener {
         override fun onUrlsReady(images: List<String>, startPage: Int) {
-            installImages(images, startPage, false)
+            val resolvedStartPage = resolvePreparedStartPage(startPage)
+            installImages(images, resolvedStartPage, false)
             flushEarlyPreparedBitmaps()
             releasePreparedStoreBitmapsSoon()
-            requestPageForeground(startPage)
-            requestInitialWindow(startPage, false)
+            requestPageForeground(resolvedStartPage)
+            requestInitialWindow(resolvedStartPage, false)
         }
 
         override fun onBitmapReady(index: Int, bitmap: Bitmap) {
@@ -256,12 +257,16 @@ class ReaderSession(
     private fun installPreparedSnapshot(snapshot: ReaderPreparedStore.Snapshot): Boolean {
         val urls = snapshot.images
         if (!urls.isNullOrEmpty()) {
-            installImages(urls, snapshot.startPage, false)
+            val resolvedStartPage = resolvePreparedStartPage(snapshot.startPage)
+            val startPage = installImages(urls, resolvedStartPage, false, notifyInitialPage = false)
             for (entry in snapshot.bitmaps.entries) deliverPreparedBitmap(entry.key, entry.value)
             flushEarlyPreparedBitmaps()
+            main.post {
+                if (!cancelled.get() && startPage >= 0) listener.onInitialPage(startPage)
+            }
             releasePreparedStoreBitmapsSoon()
-            requestPageForeground(snapshot.startPage)
-            requestInitialWindow(snapshot.startPage, false)
+            requestPageForeground(resolvedStartPage)
+            requestInitialWindow(resolvedStartPage, false)
             return true
         }
         for (entry in snapshot.bitmaps.entries) {
@@ -277,9 +282,14 @@ class ReaderSession(
         main.postDelayed(clearPreparedBitmapsRunnable, PREPARED_BITMAP_RELEASE_DELAY_MS)
     }
 
-    private fun installImages(urls: List<String>, requestedStartPage: Int, requestInitialWindow: Boolean) {
-        if (cancelled.get() || urls.isEmpty()) return
-        if (!pagesInstalled.compareAndSet(false, true)) return
+    private fun installImages(
+        urls: List<String>,
+        requestedStartPage: Int,
+        requestInitialWindow: Boolean,
+        notifyInitialPage: Boolean = true
+    ): Int {
+        if (cancelled.get() || urls.isEmpty()) return -1
+        if (!pagesInstalled.compareAndSet(false, true)) return -1
         val refs = pageRefsForImages(manga, urls)
         synchronized(pagesLock) {
             pages.clear()
@@ -292,11 +302,12 @@ class ReaderSession(
         main.post {
             if (!cancelled.get()) {
                 listener.onPagesReady(refs.size)
-                listener.onInitialPage(startPage)
+                if (notifyInitialPage) listener.onInitialPage(startPage)
             }
         }
         primeForwardTimeline()
         if (requestInitialWindow) requestInitialWindow(startPage, false)
+        return startPage
     }
 
     private fun requestInitialWindow(startPage: Int, busy: Boolean) {
@@ -308,6 +319,11 @@ class ReaderSession(
             startPage,
             busy
         )
+    }
+
+    private fun resolvePreparedStartPage(preparedStartPage: Int): Int {
+        val requested = requestedStartPage()
+        return if (!startAtFirstPage && requested > 0 && preparedStartPage <= 0) requested else preparedStartPage
     }
 
     private fun requestPageForeground(index: Int) {
@@ -671,19 +687,27 @@ class ReaderSession(
         if (cancelled.get() || refs.isEmpty()) return
         val startIndex: Int
         val total: Int
+        val appendedCards = ArrayList<Pair<Int, String>>()
         synchronized(pagesLock) {
+            val appendable = appendableNewEpisodeRefsLocked(refs)
+            if (appendable.isEmpty()) return
             startIndex = pages.size
-            refs.forEachIndexed { offset, page -> page.pageIndex = startIndex + offset }
-            pages.addAll(refs)
+            appendable.forEachIndexed { offset, page -> page.pageIndex = startIndex + offset }
+            pages.addAll(appendable)
             total = pages.size
+            for (offset in cardOffsets) {
+                val card = refs.getOrNull(offset) ?: continue
+                val appendedOffset = appendable.indexOf(card)
+                if (appendedOffset >= 0 && card.transitionTitle != null) {
+                    appendedCards.add(Pair(startIndex + appendedOffset, card.transitionTitle))
+                }
+            }
         }
         main.post {
             if (!cancelled.get()) {
                 listener.onPagesAppended(total)
-                for (offset in cardOffsets) {
-                    refs.getOrNull(offset)?.transitionTitle?.let { title ->
-                        listener.onPageCard(startIndex + offset, title)
-                    }
+                for ((index, title) in appendedCards) {
+                    listener.onPageCard(index, title)
                 }
             }
         }
@@ -697,6 +721,7 @@ class ReaderSession(
         val total: Int
         if (direction < 0) {
             synchronized(pagesLock) {
+                if (containsEpisodeLocked(target)) return
                 for (page in pages) page.pageIndex += inserted
                 refs.forEachIndexed { index, page -> page.pageIndex = index }
                 pages.addAll(0, refs)
@@ -713,6 +738,7 @@ class ReaderSession(
         } else {
             val cardIndex: Int
             synchronized(pagesLock) {
+                if (containsEpisodeLocked(target)) return
                 cardIndex = pages.size
                 refs.forEachIndexed { offset, page -> page.pageIndex = cardIndex + offset }
                 pages.addAll(refs)
@@ -765,7 +791,24 @@ class ReaderSession(
     }
 
     private fun hasEpisode(target: Manga): Boolean = synchronized(pagesLock) {
-        pages.any { sameEpisode(it.manga, target) }
+        containsEpisodeLocked(target)
+    }
+
+    private fun containsEpisodeLocked(target: Manga): Boolean {
+        return pages.any { sameEpisode(it.manga, target) }
+    }
+
+    private fun appendableNewEpisodeRefsLocked(refs: List<PageRef>): List<PageRef> {
+        if (refs.isEmpty()) return emptyList()
+        val accepted = ArrayList<PageRef>(refs.size)
+        val acceptedMangas = ArrayList<Manga>()
+        for (ref in refs) {
+            val existing = containsEpisodeLocked(ref.manga)
+            val alreadyAccepted = acceptedMangas.any { sameEpisode(it, ref.manga) }
+            if (!existing && !alreadyAccepted) acceptedMangas.add(ref.manga)
+            if (!existing || alreadyAccepted) accepted.add(ref)
+        }
+        return accepted
     }
 
     private fun shiftPageStateForPrepend(delta: Int) {

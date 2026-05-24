@@ -4,7 +4,12 @@ import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 
+import ml.melun.mangaview.mangaview.MTitle;
+import ml.melun.mangaview.mangaview.Manga;
+
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -38,5 +43,12 @@ public class EpisodeAdapterTest {
     @Test
     public void deferredThumbnailClearKeepsHeaderReplacementClean() {
         assertTrue(EpisodeAdapter.shouldClearThumbnailBeforeDeferredBindForTest("loaded-key", true));
+    }
+
+    @Test
+    public void ntkDisplayReleaseUsesVisibleLatestEpisodeNameWhenApiNumberIsInternal() {
+        List<Manga> episodes = Collections.singletonList(new Manga(1293, "1183화", "26.05.22", MTitle.base_comic));
+
+        assertEquals("1183화", EpisodeAdapter.displayReleaseForNtkForTest("ntk", "1293화", episodes));
     }
 }

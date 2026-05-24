@@ -33,6 +33,14 @@ public final class ViewerPreparationCoordinator {
         if(!manga.isOnline())
             return PreparedViewerLaunch.offline(manga, title != null ? title : manga.getTitle());
         Title launchTitle = attachTitle(manga, title);
+        if(ViewerResumeResolver.shouldBlockPathlessNtkResume(manga, launchTitle)) {
+            Manga resolved = resolveConcreteNtkResume(manga, launchTitle, cancellation);
+            if(resolved == null)
+                return PreparedViewerLaunch.failed(PreparedViewerLaunch.Status.PATHLESS_NTK,
+                        ViewerWarmupManager.LOAD_EMPTY_IMAGES);
+            manga = resolved;
+            launchTitle = attachTitle(manga, launchTitle);
+        }
         if(launchTitle != null && Utils.snapshotEpisodes(launchTitle).size() == 0) {
             int result = MangaRepository.fetchEpisodesForeground(launchTitle, cancellation);
             if(result == LOAD_CAPTCHA)
@@ -58,8 +66,6 @@ public final class ViewerPreparationCoordinator {
                     firstPageForContinue(manga));
         if(prepared != null)
             return PreparedViewerLaunch.ready(prepared, launchTitle != null ? launchTitle : prepared.getTitle());
-        if(ViewerResumeResolver.shouldBlockPathlessNtkResume(manga, launchTitle))
-            return PreparedViewerLaunch.failed(PreparedViewerLaunch.Status.PATHLESS_NTK, ViewerWarmupManager.LOAD_EMPTY_IMAGES);
         return PreparedViewerLaunch.failed(PreparedViewerLaunch.Status.FIRST_FRAME_PENDING,
                 ViewerWarmupManager.LOAD_FIRST_FRAME_PENDING);
     }
@@ -188,6 +194,23 @@ public final class ViewerPreparationCoordinator {
             prepared = ViewerWarmupManager.usePreparedFirstFrame(context, manga, title, autoCut, reverse);
         }
         return prepared;
+    }
+
+    private static Manga resolveConcreteNtkResume(Manga manga, Title title,
+                                                  MangaRepository.Cancellation cancellation) {
+        if(manga == null || title == null)
+            return null;
+        Manga resolved = ViewerResumeResolver.concreteNtkResumeCandidate(manga, title);
+        if(resolved != null && resolved.getNtkEpisodePath().length() > 0)
+            return resolved;
+        int result = MangaRepository.fetchEpisodesForeground(title, cancellation);
+        if(result != LOAD_OK)
+            return null;
+        resolved = ViewerResumeResolver.concreteNtkResumeCandidate(manga, title);
+        if(resolved != null && resolved.getNtkEpisodePath().length() > 0)
+            return resolved;
+        resolved = ViewerResumeResolver.resumeManga(title);
+        return resolved != null && resolved.getNtkEpisodePath().length() > 0 ? resolved : null;
     }
 
     private static Title attachTitle(Manga manga, Title title) {

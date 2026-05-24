@@ -1099,11 +1099,7 @@ public class Search {
                     continue;
                 String thumb = jsonString(work, "thumbnailUrl");
                 ArrayList<String> tags = ntkGenreTags(work);
-                String release = "";
-                if(hasJsonValue(work, "latestEpisodeNumber"))
-                    release = jsonString(work, "latestEpisodeNumber") + "화";
-                else
-                    release = jsonString(work, "ep");
+                String release = ntkReleaseLabel(work);
                 Title title = new Title(name, thumb, "", tags, release, id, baseMode);
                 title.setSourceSite("ntk");
                 String titlePath = ntkApiTitlePath(baseMode, sourceWorkId);
@@ -1148,6 +1144,15 @@ public class Search {
 
     private static boolean hasJsonValue(JsonObject json, String key) {
         return json != null && json.has(key) && json.get(key) != null && !json.get(key).isJsonNull();
+    }
+
+    private static String ntkReleaseLabel(JsonObject work) {
+        String ep = jsonString(work, "ep").trim();
+        if(ep.length() > 0)
+            return ep;
+        if(hasJsonValue(work, "latestEpisodeNumber"))
+            return jsonString(work, "latestEpisodeNumber") + "화";
+        return "";
     }
 
     private static String jsonString(JsonObject json, String key) {

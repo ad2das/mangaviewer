@@ -340,6 +340,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             val initialManga = session?.pageInfo(index)?.manga ?: currentManga
             pendingInitialRestorePage = index
             pendingInitialRestoreOffset = p?.getViewerBookmarkOffset(initialManga) ?: 0
+            renderView.holdInitialRestoreRender(index)
             renderView.lockRestoredPageOffset(index, pendingInitialRestoreOffset)
             updateCurrentEpisode(index, pendingInitialRestoreOffset, saveProgress = false)
             applyPendingInitialRestoreIfReady()
@@ -400,6 +401,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingInitialRestoreOffset = 0
         currentPage = page
         renderView.lockRestoredPageOffset(page, offset)
+        renderView.holdInitialRestoreRender(page)
         updateCurrentEpisode(page, offset, saveProgress = false)
     }
 
@@ -700,12 +702,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun primeAdjacentLaunchWindow(title: Title?, target: Manga?) {
         if (target == null) return
-        ReaderWarmupCoordinator.openKey(
+        ReaderWarmupCoordinator.primeAdjacent(
             applicationContext,
             target,
-            title ?: target.title,
-            readerWidthPx(),
-            true
+            title ?: target.title
         )
     }
 

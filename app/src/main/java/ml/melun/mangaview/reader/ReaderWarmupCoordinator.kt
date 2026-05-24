@@ -23,13 +23,27 @@ object ReaderWarmupCoordinator {
         URL_ONLY,
         FIRST_BYTE,
         FIRST_BITMAP,
+        ADJACENT_BYTES,
         LAUNCH_WINDOW
     }
 
-    private const val LAUNCH_WINDOW_DECODE_PAGES = 4
-    private const val LAUNCH_WINDOW_BYTE_PAGES = 16
+    private const val DEFAULT_LAUNCH_WINDOW_DECODE_PAGES = 1
+    private const val DEFAULT_LAUNCH_WINDOW_BYTE_PAGES = 10
+    private const val NTK_LAUNCH_WINDOW_DECODE_PAGES = 1
+    private const val NTK_LAUNCH_WINDOW_BYTE_PAGES = 8
+    private const val WFWF_LAUNCH_WINDOW_DECODE_PAGES = 1
+    private const val WFWF_LAUNCH_WINDOW_BYTE_PAGES = 12
     private val inFlight = ConcurrentHashMap<String, AtomicBoolean>()
     private val entryLocks = ConcurrentHashMap<String, Any>()
+
+    private data class SourcePreloadProfile(
+        val visibleProfile: WarmupProfile,
+        val exactVisibleProfile: WarmupProfile,
+        val tapProfile: WarmupProfile,
+        val launchDecodePages: Int,
+        val launchBytePages: Int,
+        val adjacentBytePages: Int
+    )
 
     @JvmStatic
     fun openKey(
@@ -39,8 +53,9 @@ object ReaderWarmupCoordinator {
         viewerWidth: Int,
         exactEpisode: Boolean
     ): String? {
-        val entry = createEntry(context, manga, title, viewerWidth, exactEpisode, WarmupProfile.LAUNCH_WINDOW) ?: return null
-        schedule(context!!.applicationContext, entry, exactEpisode, WarmupProfile.LAUNCH_WINDOW)
+        val profile = tapProfile(title ?: manga?.title)
+        val entry = createEntry(context, manga, title, viewerWidth, exactEpisode, profile) ?: return null
+        schedule(context!!.applicationContext, entry, exactEpisode, profile)
         return entry.key
     }
 
@@ -64,8 +79,11 @@ object ReaderWarmupCoordinator {
         }
         val snapshot = entry.snapshot()
         val startBitmap = snapshot.bitmaps[snapshot.startPage]
-        val ready = !snapshot.images.isNullOrEmpty() && startBitmap != null && !startBitmap.isRecycled
-        if (ready) ml.melun.mangaview.glide.ViewerWarmupManager.logMetric("prepared_ready_hit", 1L)
+        val hasImages = !snapshot.images.isNullOrEmpty()
+        val hasStartBitmap = startBitmap != null && !startBitmap.isRecycled
+        val ready = hasImages
+        if (hasStartBitmap) ml.melun.mangaview.glide.ViewerWarmupManager.logMetric("prepared_ready_bitmap_hit", 1L)
+        else if (ready) ml.melun.mangaview.glide.ViewerWarmupManager.logMetric("prepared_ready_urls_hit", 1L)
         else ml.melun.mangaview.glide.ViewerWarmupManager.logMetric(
             "prepared_miss_" + snapshot.status.name.lowercase(Locale.ROOT),
             1L
@@ -75,30 +93,39 @@ object ReaderWarmupCoordinator {
 
     @JvmStatic
     fun primeVisible(context: Context?, manga: Manga?, title: Title?) {
-        val profile = visibleContinueProfile()
+        val profile = visibleContinueProfile(title ?: manga?.title)
         val entry = createEntry(context, manga, title, 0, false, profile) ?: return
         schedule(context!!.applicationContext, entry, false, profile)
     }
 
     @JvmStatic
     fun primeImmediate(context: Context?, manga: Manga?, title: Title?) {
-        val entry = createEntry(context, manga, title, 0, false, WarmupProfile.LAUNCH_WINDOW) ?: return
+        val profile = tapProfile(title ?: manga?.title)
+        val entry = createEntry(context, manga, title, 0, false, profile) ?: return
         BackgroundPrefetchBudget.suppressForUserNavigation()
-        schedule(context!!.applicationContext, entry, false, WarmupProfile.LAUNCH_WINDOW)
+        schedule(context!!.applicationContext, entry, false, profile)
     }
 
     @JvmStatic
     fun primeExactVisible(context: Context?, manga: Manga?, title: Title?) {
-        val profile = exactVisibleProfile()
+        val profile = exactVisibleProfile(title ?: manga?.title)
         val entry = createEntry(context, manga, title, 0, true, profile) ?: return
         schedule(context!!.applicationContext, entry, true, profile)
     }
 
     @JvmStatic
     fun primeExactImmediate(context: Context?, manga: Manga?, title: Title?) {
-        val entry = createEntry(context, manga, title, 0, true, WarmupProfile.LAUNCH_WINDOW) ?: return
+        val profile = tapProfile(title ?: manga?.title)
+        val entry = createEntry(context, manga, title, 0, true, profile) ?: return
         BackgroundPrefetchBudget.suppressForUserNavigation()
-        schedule(context!!.applicationContext, entry, true, WarmupProfile.LAUNCH_WINDOW)
+        schedule(context!!.applicationContext, entry, true, profile)
+    }
+
+    @JvmStatic
+    fun primeAdjacent(context: Context?, manga: Manga?, title: Title?) {
+        val profile = if (p != null && p.getDataSave()) WarmupProfile.FIRST_BYTE else WarmupProfile.ADJACENT_BYTES
+        val entry = createEntry(context, manga, title, 0, true, profile) ?: return
+        schedule(context!!.applicationContext, entry, true, profile)
     }
 
     @JvmStatic
@@ -109,9 +136,10 @@ object ReaderWarmupCoordinator {
         viewerWidth: Int,
         exactEpisode: Boolean
     ): String? {
-        val entry = createEntry(context, manga, title, viewerWidth, exactEpisode, WarmupProfile.LAUNCH_WINDOW) ?: return null
+        val profile = tapProfile(title ?: manga.title)
+        val entry = createEntry(context, manga, title, viewerWidth, exactEpisode, profile) ?: return null
         BackgroundPrefetchBudget.suppressForUserNavigation()
-        prepareEntry(context.applicationContext, entry, exactEpisode, WarmupProfile.LAUNCH_WINDOW)
+        prepareEntry(context.applicationContext, entry, exactEpisode, profile)
         return readyKey(context, manga, title, viewerWidth, exactEpisode)
     }
 
@@ -235,15 +263,21 @@ object ReaderWarmupCoordinator {
                 entry.putBitmap(startPage, bitmap, true, false)
                 return
             }
+            WarmupProfile.ADJACENT_BYTES -> {
+                val byteOrder = decodeOrder(startPage, urls.size, sourceProfile(entry.title ?: manga.title).adjacentBytePages)
+                for (index in byteOrder) fetchImageFile(appContext, manga, urls[index])
+                return
+            }
             WarmupProfile.LAUNCH_WINDOW -> {
-                val decodeOrder = decodeOrder(startPage, urls.size, LAUNCH_WINDOW_DECODE_PAGES)
+                val sourceProfile = sourceProfile(entry.title ?: manga.title)
+                val decodeOrder = decodeOrder(startPage, urls.size, sourceProfile.launchDecodePages)
                 val decoded = HashSet<Int>()
                 for ((position, index) in decodeOrder.withIndex()) {
                     val bitmap = decodePage(appContext, manga, urls[index], width)
                     decoded.add(index)
                     entry.putBitmap(index, bitmap, index == startPage, position == decodeOrder.lastIndex)
                 }
-                val byteOrder = decodeOrder(startPage, urls.size, LAUNCH_WINDOW_BYTE_PAGES)
+                val byteOrder = decodeOrder(startPage, urls.size, sourceProfile.launchBytePages)
                 for (index in byteOrder) {
                     if (!decoded.contains(index)) fetchImageFile(appContext, manga, urls[index])
                 }
@@ -267,16 +301,56 @@ object ReaderWarmupCoordinator {
         return result
     }
 
-    private fun visibleContinueProfile(): WarmupProfile {
-        return if (p != null && p.getDataSave()) WarmupProfile.URL_ONLY else WarmupProfile.FIRST_BITMAP
+    private fun visibleContinueProfile(title: Title?): WarmupProfile {
+        if (p != null && p.getDataSave()) return WarmupProfile.URL_ONLY
+        return sourceProfile(title).visibleProfile
     }
 
-    private fun exactVisibleProfile(): WarmupProfile {
-        return if (p != null && p.getDataSave()) WarmupProfile.URL_ONLY else WarmupProfile.FIRST_BYTE
+    private fun exactVisibleProfile(title: Title?): WarmupProfile {
+        if (p != null && p.getDataSave()) return WarmupProfile.URL_ONLY
+        return sourceProfile(title).exactVisibleProfile
+    }
+
+    private fun tapProfile(title: Title?): WarmupProfile {
+        if (p != null && p.getDataSave()) return WarmupProfile.URL_ONLY
+        return sourceProfile(title).tapProfile
     }
 
     private fun shouldPinStart(profile: WarmupProfile): Boolean {
         return profile == WarmupProfile.FIRST_BITMAP || profile == WarmupProfile.LAUNCH_WINDOW
+    }
+
+    private fun sourceProfile(title: Title?): SourcePreloadProfile {
+        return sourceProfile(title?.sourceSite)
+    }
+
+    private fun sourceProfile(sourceSite: String?): SourcePreloadProfile {
+        return when ((sourceSite ?: "").trim().lowercase(Locale.ROOT)) {
+            "ntk" -> SourcePreloadProfile(
+                visibleProfile = WarmupProfile.URL_ONLY,
+                exactVisibleProfile = WarmupProfile.FIRST_BYTE,
+                tapProfile = WarmupProfile.FIRST_BYTE,
+                launchDecodePages = NTK_LAUNCH_WINDOW_DECODE_PAGES,
+                launchBytePages = NTK_LAUNCH_WINDOW_BYTE_PAGES,
+                adjacentBytePages = 3
+            )
+            "wfwf" -> SourcePreloadProfile(
+                visibleProfile = WarmupProfile.URL_ONLY,
+                exactVisibleProfile = WarmupProfile.FIRST_BYTE,
+                tapProfile = WarmupProfile.FIRST_BYTE,
+                launchDecodePages = WFWF_LAUNCH_WINDOW_DECODE_PAGES,
+                launchBytePages = WFWF_LAUNCH_WINDOW_BYTE_PAGES,
+                adjacentBytePages = 5
+            )
+            else -> SourcePreloadProfile(
+                visibleProfile = WarmupProfile.URL_ONLY,
+                exactVisibleProfile = WarmupProfile.FIRST_BYTE,
+                tapProfile = WarmupProfile.FIRST_BYTE,
+                launchDecodePages = DEFAULT_LAUNCH_WINDOW_DECODE_PAGES,
+                launchBytePages = DEFAULT_LAUNCH_WINDOW_BYTE_PAGES,
+                adjacentBytePages = 5
+            )
+        }
     }
 
     private fun attachTitle(manga: Manga, title: Title?) {
@@ -358,9 +432,9 @@ object ReaderWarmupCoordinator {
     @JvmStatic
     fun decodeLimitForTest(profile: WarmupProfile): Int {
         return when (profile) {
-            WarmupProfile.URL_ONLY, WarmupProfile.FIRST_BYTE -> 0
+            WarmupProfile.URL_ONLY, WarmupProfile.FIRST_BYTE, WarmupProfile.ADJACENT_BYTES -> 0
             WarmupProfile.FIRST_BITMAP -> 1
-            WarmupProfile.LAUNCH_WINDOW -> LAUNCH_WINDOW_DECODE_PAGES
+            WarmupProfile.LAUNCH_WINDOW -> DEFAULT_LAUNCH_WINDOW_DECODE_PAGES
         }
     }
 
@@ -369,7 +443,33 @@ object ReaderWarmupCoordinator {
         return when (profile) {
             WarmupProfile.URL_ONLY -> 0
             WarmupProfile.FIRST_BYTE, WarmupProfile.FIRST_BITMAP -> 1
-            WarmupProfile.LAUNCH_WINDOW -> LAUNCH_WINDOW_BYTE_PAGES
+            WarmupProfile.ADJACENT_BYTES -> 5
+            WarmupProfile.LAUNCH_WINDOW -> DEFAULT_LAUNCH_WINDOW_BYTE_PAGES
         }
+    }
+
+    @JvmStatic
+    fun launchDecodeLimitForTest(sourceSite: String?): Int {
+        return sourceProfile(sourceSite).launchDecodePages
+    }
+
+    @JvmStatic
+    fun launchByteLimitForTest(sourceSite: String?): Int {
+        return sourceProfile(sourceSite).launchBytePages
+    }
+
+    @JvmStatic
+    fun visibleProfileForTest(sourceSite: String?): WarmupProfile {
+        return sourceProfile(sourceSite).visibleProfile
+    }
+
+    @JvmStatic
+    fun tapProfileForTest(sourceSite: String?): WarmupProfile {
+        return sourceProfile(sourceSite).tapProfile
+    }
+
+    @JvmStatic
+    fun adjacentByteLimitForTest(sourceSite: String?): Int {
+        return sourceProfile(sourceSite).adjacentBytePages
     }
 }

@@ -9,6 +9,7 @@ import java.util.Locale;
 import java.util.Map;
 
 import ml.melun.mangaview.Utils;
+import ml.melun.mangaview.activity.ViewerResumeResolver;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
@@ -114,6 +115,17 @@ public final class ContinueReadinessCoordinator {
         if(current == State.FIRST_FRAME_READY) {
             ViewerWarmupManager.logMetric("continue_prime_already_ready", manga.getId());
             return;
+        }
+        if(ViewerResumeResolver.shouldBlockPathlessNtkResume(manga, title)) {
+            Manga resolved = ViewerResumeResolver.concreteNtkResumeCandidate(manga, title);
+            if(resolved == null)
+                return;
+            manga = resolved;
+            manga.setTitle(title);
+            manga.setTitleId(title.getId());
+            List<Manga> episodes = Utils.snapshotEpisodes(title);
+            if(episodes.size() > 0)
+                manga.setEps(episodes);
         }
         String key = submitKey(manga, title);
         if(!force && !markSubmitted(key, SystemClock.uptimeMillis()))

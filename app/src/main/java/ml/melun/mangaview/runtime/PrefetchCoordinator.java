@@ -16,7 +16,6 @@ import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.reader.ReaderWarmupCoordinator;
-import ml.melun.mangaview.repository.MangaRepository;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
@@ -123,11 +122,7 @@ public final class PrefetchCoordinator {
             return;
         if(title != null)
             manga.setTitle(title);
-        ReaderWarmupCoordinator.primeExactVisible(context, manga, title);
-        ViewerWarmupManager.warmup(context, manga, title, 0);
-        List<String> imageUrls = MangaRepository.imageUrls(manga, context);
-        if(imageUrls != null && imageUrls.size() > 0)
-            ViewerWarmupManager.preloadWindow(context, manga, 0, width, autoCut, reverse, ViewerPreloadPolicy.nextEpisodeWindow(p.getDataSave()));
+        ReaderWarmupCoordinator.primeAdjacent(context, manga, title);
     }
 
     private static List<Integer> viewerTargets(List<Manga> episodes, int bookmarkIndex, int limit) {

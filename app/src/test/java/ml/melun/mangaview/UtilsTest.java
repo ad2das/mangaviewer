@@ -148,11 +148,19 @@ public class UtilsTest {
     }
 
     @Test
-    public void exactViewerLaunchWaitsForPreparedFirstFrame() {
-        assertTrue(Utils.shouldWaitForExactFirstFrameForTest("wfwf", false));
-        assertTrue(Utils.shouldWaitForExactFirstFrameForTest("ntk", true));
-        assertTrue(Utils.shouldWaitForExactFirstFrameForTest("ntk", false));
-        assertTrue(Utils.shouldWaitForExactFirstFrameForTest("", false));
+    public void exactViewerLaunchDoesNotGateOnPreparedFirstFrame() {
+        assertFalse(Utils.shouldWaitForExactFirstFrameForTest("wfwf", false));
+        assertFalse(Utils.shouldWaitForExactFirstFrameForTest("ntk", true));
+        assertFalse(Utils.shouldWaitForExactFirstFrameForTest("ntk", false));
+        assertFalse(Utils.shouldWaitForExactFirstFrameForTest("", false));
+        assertFalse(Utils.shouldWaitForExactFirstFrameForTest("", true));
+    }
+
+    @Test
+    public void continueViewerLaunchDoesNotGateOnPreparedFirstFrame() {
+        assertFalse(Utils.shouldWaitForContinueFirstFrameForTest(true, false));
+        assertFalse(Utils.shouldWaitForContinueFirstFrameForTest(false, true));
+        assertFalse(Utils.shouldWaitForContinueFirstFrameForTest(true, true));
     }
 
     @Test
@@ -183,11 +191,11 @@ public class UtilsTest {
     }
 
     @Test
-    public void exactViewerLaunchAllowsForegroundFallbackOnlyForWolf() {
+    public void exactViewerLaunchAllowsForegroundFallbackWhenPreparationMissesFirstFrame() {
         assertTrue(Utils.shouldAllowExactForegroundFallbackForTest("wfwf", false));
         assertTrue(Utils.shouldAllowExactForegroundFallbackForTest("", false));
-        assertFalse(Utils.shouldAllowExactForegroundFallbackForTest("ntk", true));
-        assertFalse(Utils.shouldAllowExactForegroundFallbackForTest("", true));
+        assertTrue(Utils.shouldAllowExactForegroundFallbackForTest("ntk", true));
+        assertTrue(Utils.shouldAllowExactForegroundFallbackForTest("", true));
     }
 
     @Test
@@ -231,8 +239,8 @@ public class UtilsTest {
 
     @Test
     public void viewerLaunchDebounceRejectsRapidDuplicateStarts() {
-        assertFalse(Utils.shouldAllowViewerLaunchForTest(3_000L, 1_000L));
-        assertTrue(Utils.shouldAllowViewerLaunchForTest(3_200L, 1_000L));
+        assertFalse(Utils.shouldAllowViewerLaunchForTest(1_400L, 1_000L));
+        assertTrue(Utils.shouldAllowViewerLaunchForTest(1_450L, 1_000L));
     }
 
     @Test
