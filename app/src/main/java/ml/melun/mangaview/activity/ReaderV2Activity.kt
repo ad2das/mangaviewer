@@ -70,6 +70,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var episodeListFetchAttempted = false
     private var destroyed = false
     private var progressSaveArmed = false
+    private var progressMovedInGesture = false
     private var pendingInitialRestorePage = -1
     private var pendingInitialRestoreOffset = 0
     private val progressHandler = Handler(Looper.getMainLooper())
@@ -385,6 +386,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
         if (ev.actionMasked == MotionEvent.ACTION_MOVE) {
             progressSaveArmed = true
+            progressMovedInGesture = true
+        } else if (ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) {
+            if (progressMovedInGesture) {
+                progressHandler.removeCallbacks(saveProgressRunnable)
+                progressHandler.postDelayed(saveProgressRunnable, PROGRESS_SAVE_DEBOUNCE_MS)
+            }
+            progressMovedInGesture = false
+        } else if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+            progressMovedInGesture = false
         }
         if (ev.actionMasked == MotionEvent.ACTION_DOWN ||
             ev.actionMasked == MotionEvent.ACTION_MOVE ||

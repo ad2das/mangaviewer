@@ -33,6 +33,15 @@ public final class ViewerPreparationCoordinator {
         if(!manga.isOnline())
             return PreparedViewerLaunch.offline(manga, title != null ? title : manga.getTitle());
         Title launchTitle = attachTitle(manga, title);
+        if(launchTitle != null && Utils.snapshotEpisodes(launchTitle).size() == 0) {
+            int result = MangaRepository.fetchEpisodesForeground(launchTitle, cancellation);
+            if(result == LOAD_CAPTCHA)
+                return PreparedViewerLaunch.failed(PreparedViewerLaunch.Status.CAPTCHA, result);
+            Manga resolved = ViewerResumeResolver.resumeManga(launchTitle);
+            if(resolved != null)
+                manga = resolved;
+            launchTitle = attachTitle(manga, launchTitle);
+        }
         Manga prepared = ViewerWarmupManager.usePreparedFirstFrame(context, manga, launchTitle, autoCut, reverse);
         if(prepared == null)
             prepared = ViewerWarmupManager.prepareClickFirstFrame(context, manga, launchTitle, autoCut, reverse, cancellation);

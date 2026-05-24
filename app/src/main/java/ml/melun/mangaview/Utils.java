@@ -451,6 +451,11 @@ public class Utils {
         if(manga != null) {
             List<String> images = MangaRepository.imageUrls(manga, context);
             hasLoadedImages = images != null && images.size() > 0;
+            Title title = manga.getTitle();
+            String source = title == null ? "" : title.getSourceSite();
+            if(("wfwf".equals(source) || "ntk".equals(source))
+                    && title != null && snapshotEpisodes(title).size() == 0 && !hasLoadedImages)
+                return false;
         }
         return shouldLaunchContinueFallback(manga != null && manga.isOnline(), hasLoadedImages);
     }
