@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.util.AttributeSet
+import android.util.Log
 import android.view.Choreographer
 import android.view.MotionEvent
 import android.view.SurfaceHolder
@@ -101,6 +102,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var layoutDirty = true
     private var pageTops = FloatArrayList(0)
     private var contentHeight = 0f
+    private var statsActive = false
+    private var statsLastFrameNs = 0L
+    private val statsIntervalsMs = ArrayList<Float>(240)
 
     init {
         holder.addCallback(this)
@@ -355,11 +359,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return true
     }
 
-    private val frameCallback = Choreographer.FrameCallback {
-        renderFrame()
+    private val frameCallback = Choreographer.FrameCallback { frameTimeNanos ->
+        renderFrame(frameTimeNanos)
     }
 
-    private fun renderFrame() {
+    private fun renderFrame(frameTimeNanos: Long) {
         val requestAndState = synchronized(stateLock) {
             frameScheduled = false
             if (!renderRunning || !surfaceReady) return
@@ -379,6 +383,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 request = setBusyLocked(false)
             }
             val state = buildDrawStateLocked()
+            recordFrameStatsLocked(frameTimeNanos, scrolling || lastBusy || dragging)
             renderRequested = false
             if (!scroller.isFinished || lastBusy || dragging) scheduleFrameLocked()
             request to state
@@ -613,6 +618,51 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return result
     }
 
+    private fun recordFrameStatsLocked(frameTimeNanos: Long, active: Boolean) {
+        if (active) {
+            if (!statsActive) {
+                statsActive = true
+                statsLastFrameNs = frameTimeNanos
+                statsIntervalsMs.clear()
+                return
+            }
+            if (statsLastFrameNs > 0L && frameTimeNanos > statsLastFrameNs) {
+                statsIntervalsMs.add((frameTimeNanos - statsLastFrameNs) / 1_000_000f)
+            }
+            statsLastFrameNs = frameTimeNanos
+            return
+        }
+        if (!statsActive) return
+        val intervals = ArrayList(statsIntervalsMs)
+        statsActive = false
+        statsLastFrameNs = 0L
+        statsIntervalsMs.clear()
+        if (intervals.isEmpty()) return
+        intervals.sort()
+        val frames = intervals.size + 1
+        val jank = intervals.count { it > FRAME_BUDGET_MS }
+        val p90 = percentile(intervals, 0.90f)
+        val p95 = percentile(intervals, 0.95f)
+        val p99 = percentile(intervals, 0.99f)
+        val max = intervals.last()
+        val jankPercent = jank * 100f / intervals.size
+        Log.i(
+            TAG,
+            "surface_jank frames=$frames intervals=${intervals.size} jank=$jank " +
+                "jankPct=${"%.2f".format(java.util.Locale.US, jankPercent)} " +
+                "p90=${"%.2f".format(java.util.Locale.US, p90)} " +
+                "p95=${"%.2f".format(java.util.Locale.US, p95)} " +
+                "p99=${"%.2f".format(java.util.Locale.US, p99)} " +
+                "max=${"%.2f".format(java.util.Locale.US, max)}"
+        )
+    }
+
+    private fun percentile(sorted: List<Float>, percentile: Float): Float {
+        if (sorted.isEmpty()) return 0f
+        val index = ((sorted.size - 1) * percentile).toInt().coerceIn(0, sorted.lastIndex)
+        return sorted[index]
+    }
+
     private class FloatArrayList(size: Int) {
         private var values = FloatArray(max(1, size))
         var size: Int = size
@@ -632,6 +682,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private companion object {
+        private const val TAG = "ReaderSurfaceStats"
+        private const val FRAME_BUDGET_MS = 16.67f
         private const val DRAG_SCROLL_MULTIPLIER = 1.25f
         private const val FLING_SCROLL_MULTIPLIER = 3.5f
         private const val FLING_IMMEDIATE_SECONDS = 0.45f
