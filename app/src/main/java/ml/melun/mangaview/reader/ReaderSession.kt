@@ -20,7 +20,9 @@ import ml.melun.mangaview.mangaview.Title
 import ml.melun.mangaview.repository.MangaRepository
 import ml.melun.mangaview.runtime.MainThreadStallMonitor
 import java.io.File
+import java.io.InterruptedIOException
 import java.util.LinkedHashMap
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
@@ -61,6 +63,8 @@ class ReaderSession(
         val title: String,
         val localPage: Int,
         val totalPages: Int,
+        val sourcePageIndex: Int,
+        val side: Int,
         val transitionCard: Boolean
     )
 
@@ -237,8 +241,8 @@ class ReaderSession(
                 requestPageForeground(startPage)
                 requestInitialWindow(startPage, false)
             } catch (e: Exception) {
-                ml.melun.mangaview.report.CrashReporter.record(e)
-                postMessage("이미지를 불러오지 못했습니다")
+                recordIfUnexpected(e)
+                if (!isExpectedCancellation(e)) postMessage("이미지를 불러오지 못했습니다")
             } finally {
                 repositoryLoading.set(false)
             }
@@ -278,7 +282,7 @@ class ReaderSession(
             }
             pages.addAll(refs)
         }
-        val startPage = displayStartPage(requestedStartPage, refs.size)
+        val startPage = displayStartPage(requestedStartPage, requestedStartSide(), refs.size)
         main.post {
             if (!cancelled.get()) {
                 listener.onPagesReady(refs.size)
@@ -326,7 +330,7 @@ class ReaderSession(
             delivered = true
             postDecodeResult(Delivery(index, page, result, startedAt, targetWidth))
         } catch (e: Exception) {
-            if (!cancelled.get()) ml.melun.mangaview.report.CrashReporter.record(e)
+            recordIfUnexpected(e)
         } finally {
             loading.remove(index)
             inFlightWidths.remove(index)
@@ -474,7 +478,7 @@ class ReaderSession(
                 val nextUrls = MangaRepository.imageUrls(next, appContext)
                 if (nextUrls.isNullOrEmpty()) return@execute
             } catch (e: Exception) {
-                if (!cancelled.get()) ml.melun.mangaview.report.CrashReporter.record(e)
+                recordIfUnexpected(e)
             } finally {
                 nextLoading.set(false)
             }
@@ -534,7 +538,7 @@ class ReaderSession(
                 }
                 appendResolvedEpisode(target, urls, direction)
             } catch (e: Exception) {
-                if (!cancelled.get()) ml.melun.mangaview.report.CrashReporter.record(e)
+                recordIfUnexpected(e)
             } finally {
                 loadingFlag.set(false)
             }
@@ -583,7 +587,7 @@ class ReaderSession(
                 }
                 appendPrimedForwardRefs(primedRefs, cardOffsets)
             } catch (e: Exception) {
-                if (!cancelled.get()) ml.melun.mangaview.report.CrashReporter.record(e)
+                recordIfUnexpected(e)
             } finally {
                 timelinePrimeLoading.set(false)
             }
@@ -624,8 +628,8 @@ class ReaderSession(
         return refs
     }
 
-    private fun displayStartPage(sourcePage: Int, totalPages: Int): Int {
-        val mapped = if (autoCut) sourcePage * 2 else sourcePage
+    private fun displayStartPage(sourcePage: Int, sourceSide: Int, totalPages: Int): Int {
+        val mapped = if (autoCut) sourcePage * 2 + sourceSide.coerceIn(PAGE_SIDE_FIRST, PAGE_SIDE_SECOND) else sourcePage
         return mapped.coerceIn(0, max(0, totalPages - 1))
     }
 
@@ -703,7 +707,7 @@ class ReaderSession(
         val byteLast = minOf(total - 1, cardIndex + byteAhead)
         for (index in (last + 1)..byteLast) {
             val page = pageRef(index) ?: continue
-            network.execute { prefetchImageFile(index, page) }
+            network.execute { prefetchImageFileQuietly(index, page) }
         }
     }
 
@@ -721,7 +725,7 @@ class ReaderSession(
         val firstByte = max(1, inserted - byteAhead)
         for (index in (firstDecoded - 1) downTo firstByte) {
             val page = pageRef(index) ?: continue
-            network.execute { prefetchImageFile(index, page) }
+            network.execute { prefetchImageFileQuietly(index, page) }
         }
     }
 
@@ -832,7 +836,7 @@ class ReaderSession(
                         delivered = true
                         postDecodeResult(Delivery(index, originalPage, result, startedAt, targetWidth))
                     } catch (e: Exception) {
-                        if (!cancelled.get()) ml.melun.mangaview.report.CrashReporter.record(e)
+                        recordIfUnexpected(e)
                     } finally {
                         if (acquired) gate.release()
                         loading.remove(index)
@@ -847,7 +851,7 @@ class ReaderSession(
             } catch (e: Exception) {
                 loading.remove(index)
                 inFlightWidths.remove(index)
-                if (!cancelled.get()) ml.melun.mangaview.report.CrashReporter.record(e)
+                recordIfUnexpected(e)
             }
             }
         } catch (_: RejectedExecutionException) {
@@ -866,7 +870,7 @@ class ReaderSession(
                         prefetchImageFile(index, page)
                     }
                 } catch (e: Exception) {
-                    if (!cancelled.get()) ml.melun.mangaview.report.CrashReporter.record(e)
+                    recordIfUnexpected(e)
                 } finally {
                     loading.remove(index)
                     inFlightWidths.remove(index)
@@ -934,6 +938,29 @@ class ReaderSession(
         } else {
             File(image)
         }
+    }
+
+    private fun prefetchImageFileQuietly(index: Int, page: PageRef) {
+        try {
+            if (!cancelled.get()) prefetchImageFile(index, page)
+        } catch (e: Exception) {
+            recordIfUnexpected(e)
+        }
+    }
+
+    private fun recordIfUnexpected(e: Exception) {
+        if (!cancelled.get() && !isExpectedCancellation(e)) {
+            ml.melun.mangaview.report.CrashReporter.record(e)
+        }
+    }
+
+    private fun isExpectedCancellation(t: Throwable?): Boolean {
+        if (t == null) return false
+        if (cancelled.get()) return true
+        if (t is InterruptedException || t is InterruptedIOException) return true
+        if (t is ExecutionException) return isExpectedCancellation(t.cause)
+        val cause = t.cause
+        return cause != null && cause !== t && isExpectedCancellation(cause)
     }
 
     private fun decodePageWithLease(index: Int, page: PageRef, targetWidth: Int): PageDecodeResult {
@@ -1094,8 +1121,19 @@ class ReaderSession(
             title = page.transitionTitle ?: displayEpisodeTitle(page.manga),
             localPage = if (transition) 0 else max(1, page.localPage),
             totalPages = page.totalPages,
+            sourcePageIndex = sourcePageIndex(page),
+            side = page.side,
             transitionCard = transition
         )
+    }
+
+    private fun sourcePageIndex(page: PageRef): Int {
+        if (page.transitionTitle != null) return 0
+        return if (autoCut) {
+            max(0, (page.localPage - 1) / 2)
+        } else {
+            max(0, page.localPage - 1)
+        }
     }
 
     private fun displayEpisodeTitle(pageManga: Manga): String {
@@ -1528,6 +1566,15 @@ class ReaderSession(
             0
         }
         return max(0, page)
+    }
+
+    private fun requestedStartSide(): Int {
+        if (!autoCut || ml.melun.mangaview.MainApplication.p == null) return PAGE_SIDE_FIRST
+        return if (ml.melun.mangaview.MainApplication.p.getViewerBookmarkSide(manga) == PAGE_SIDE_SECOND) {
+            PAGE_SIDE_SECOND
+        } else {
+            PAGE_SIDE_FIRST
+        }
     }
 
     private fun postMessage(message: String) {

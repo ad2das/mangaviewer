@@ -38,6 +38,7 @@ import ml.melun.mangaview.R;
 import ml.melun.mangaview.Preference;
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.adapter.TitleAdapter;
+import ml.melun.mangaview.activity.ViewerResumeResolver;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
@@ -169,20 +170,14 @@ public class RecyclerFragment extends Fragment {
                 Title title = resolveLatestTitleForResume(titleAdapter.getItem(position));
                 if(title == null)
                     return;
-                int bookmark = resolveLatestBookmark(title, id);
-                if(bookmark <= 0)
+                Manga manga = ViewerResumeResolver.resumeManga(title);
+                if(manga == null)
                     return;
                 if(!canLaunchDestination())
                     return;
                 if(mode == R.id.nav_recent) {
-                    Manga manga = new Manga(bookmark, "", "" , title.getBaseMode());
-                    manga.setTitle(title);
-                    manga.setTitleId(title.getId());
                     openViewer(manga, 2);
                 } else if(mode == R.id.nav_favorite) {
-                    Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
-                    manga.setTitle(title);
-                    manga.setTitleId(title.getId());
                     openViewer(manga, -1);
                 }
             }
@@ -432,21 +427,6 @@ public class RecyclerFragment extends Fragment {
                 return stored;
         }
         return null;
-    }
-
-    private int resolveLatestBookmark(Title title, int fallback) {
-        if(title == null)
-            return fallback;
-        int bookmark = p.getBookmark(title);
-        if(bookmark <= 0)
-            bookmark = title.getBookmark();
-        if(bookmark <= 0)
-            bookmark = title.getBookmarkEpisodeId();
-        if(bookmark <= 0)
-            bookmark = fallback;
-        if(bookmark > 0)
-            title.setBookmark(bookmark);
-        return bookmark;
     }
 
     public void changeMode(int id){

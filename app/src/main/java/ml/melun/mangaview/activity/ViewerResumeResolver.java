@@ -7,6 +7,8 @@ import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 
+import static ml.melun.mangaview.MainApplication.p;
+
 public final class ViewerResumeResolver {
     private static final int MAX_BROAD_FALLBACKS = 36;
 
@@ -85,6 +87,46 @@ public final class ViewerResumeResolver {
         return candidates;
     }
 
+    public static int resolveBookmark(Title title) {
+        if(title == null)
+            return -1;
+        if(p != null)
+            p.ensureSourceSiteForTitle(title);
+        int bookmark = p == null ? -1 : p.getBookmark(title);
+        if(bookmark <= 0)
+            bookmark = title.getBookmark();
+        if(bookmark <= 0)
+            bookmark = title.getBookmarkEpisodeId();
+        if(bookmark <= 0 && p != null)
+            bookmark = p.getStoredProgressBookmark(title);
+        if(bookmark > 0)
+            title.setBookmark(bookmark);
+        return bookmark;
+    }
+
+    public static Manga resumeManga(Title title) {
+        int bookmark = resolveBookmark(title);
+        if(title == null || bookmark <= 0)
+            return null;
+        List<Manga> episodes = Utils.snapshotEpisodes(title);
+        Manga resolved = findEpisodeById(episodes, bookmark);
+        if(resolved == null) {
+            int progressIndex = title.getBookmarkEpisodeIndex();
+            if(progressIndex <= 0)
+                progressIndex = title.getBookmarkIndex();
+            if(progressIndex <= 0 && bookmark <= episodes.size())
+                progressIndex = bookmark;
+            resolved = episodeAt(episodes, progressIndex);
+        }
+        if(resolved == null)
+            resolved = new Manga(bookmark, "", "", title.getBaseMode());
+        resolved.setTitle(title);
+        resolved.setTitleId(title.getId());
+        if(episodes.size() > 0)
+            resolved.setEps(episodes);
+        return resolved;
+    }
+
     public static boolean sameManga(Manga a, Manga b) {
         return Manga.sameEpisodeIdentity(a, b);
     }
@@ -114,6 +156,21 @@ public final class ViewerResumeResolver {
                 return i;
         }
         return -1;
+    }
+
+    private static Manga findEpisodeById(List<Manga> episodes, int bookmark) {
+        if(episodes == null || bookmark <= 0)
+            return null;
+        for(Manga episode : episodes)
+            if(episode != null && episode.getId() == bookmark)
+                return episode;
+        return null;
+    }
+
+    private static Manga episodeAt(List<Manga> episodes, int oneBasedIndex) {
+        if(episodes == null || oneBasedIndex <= 0 || oneBasedIndex > episodes.size())
+            return null;
+        return episodes.get(oneBasedIndex - 1);
     }
 
     private static void addEpisodeAt(List<Manga> candidates, List<Manga> episodes, int index, Title title) {

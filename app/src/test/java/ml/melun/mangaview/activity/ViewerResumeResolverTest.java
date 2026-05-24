@@ -10,6 +10,7 @@ import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 public class ViewerResumeResolverTest {
@@ -74,5 +75,26 @@ public class ViewerResumeResolverTest {
 
         assertFalse(candidates.isEmpty());
         assertTrue(candidates.get(0).getNtkEpisodePath().length() > 0);
+    }
+
+    @Test
+    public void resumeMangaPrefersSavedEpisodeIdOverStaleProgressIndex() {
+        Title title = new Title("마왕의 딸은 너무 착해!!", "", "", null, "", 1001, MTitle.base_webtoon);
+        title.setSourceSite("wfwf");
+        title.setBookmark(24);
+        title.setReadingProgress(24, 2, 30);
+
+        ArrayList<Manga> episodes = new ArrayList<>();
+        for(int i = 30; i >= 1; i--) {
+            Manga episode = new Manga(i, "마왕의 딸은 너무 착해!! " + i + "화", "", MTitle.base_webtoon);
+            episode.setTitle(title);
+            episode.setTitleId(title.getId());
+            episodes.add(episode);
+        }
+        title.setEps(episodes);
+
+        Manga resolved = ViewerResumeResolver.resumeManga(title);
+
+        assertEquals(24, resolved.getId());
     }
 }

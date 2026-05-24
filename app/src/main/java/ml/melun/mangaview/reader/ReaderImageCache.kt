@@ -9,6 +9,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.FutureTask
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -74,6 +75,16 @@ object ReaderImageCache {
         val running = flights.putIfAbsent(key, task) ?: task.also { it.run() }
         return try {
             running.get()
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw java.io.InterruptedIOException("Interrupted while waiting for image cache").apply {
+                initCause(e)
+            }
+        } catch (e: ExecutionException) {
+            val cause = e.cause
+            if (cause is Exception) throw cause
+            if (cause is Error) throw cause
+            throw java.io.IOException("Image cache fetch failed", cause)
         } finally {
             flights.remove(key, running)
         }

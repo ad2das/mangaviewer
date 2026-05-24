@@ -62,6 +62,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var toolbarForwardingScroll = false
     private var lastSavedEpisodeId = -1
     private var lastSavedPage = -1
+    private var lastSavedOffset = Int.MIN_VALUE
+    private var lastSavedSide = -1
     private var lastDisplayedPageText = ""
     private var pendingAnchorAfterBusy = -1
     private var adjacentNavigationInFlight = false
@@ -70,6 +72,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private val progressHandler = Handler(Looper.getMainLooper())
     private val statusHandler = Handler(Looper.getMainLooper())
     private var pendingProgressInfo: ReaderSession.PageInfo? = null
+    private var pendingProgressOffset = 0
     private var pendingBoundaryStatus = false
     private val saveProgressRunnable = Runnable {
         pendingProgressInfo?.let { saveReadingProgressNow(it) }
@@ -273,7 +276,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     override fun onInitialPage(index: Int) {
         if (pagesReady) {
             currentPage = index
-            renderView.scrollToPage(index)
+            val initialManga = session?.pageInfo(index)?.manga ?: currentManga
+            val offset = p?.getViewerBookmarkOffset(initialManga) ?: 0
+            renderView.scrollToPage(index, offset)
             updateCurrentEpisode(index)
         }
     }
@@ -324,7 +329,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         status.text = message
     }
 
-    override fun onWindowChanged(firstPage: Int, lastPage: Int, anchorPage: Int, busy: Boolean) {
+    override fun onWindowChanged(firstPage: Int, lastPage: Int, anchorPage: Int, anchorOffset: Int, busy: Boolean) {
         MainThreadStallMonitor.trace("reader_on_window_changed") {
             currentPage = anchorPage
             MainThreadStallMonitor.trace("reader_request_window_async") {
@@ -336,7 +341,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             }
             pendingAnchorAfterBusy = -1
             MainThreadStallMonitor.trace("reader_update_current_episode") {
-                updateCurrentEpisode(anchorPage)
+                updateCurrentEpisode(anchorPage, anchorOffset)
             }
         }
     }
@@ -604,7 +609,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         setPageText(if (pageCount > 0) "${currentPage + 1} / $pageCount" else "- / -")
     }
 
-    private fun updateCurrentEpisode(anchorPage: Int) {
+    private fun updateCurrentEpisode(anchorPage: Int, anchorOffset: Int = 0) {
         val info = MainThreadStallMonitor.traceResult("reader_page_info") {
             session?.pageInfo(anchorPage)
         }
@@ -627,7 +632,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 }
             }
             MainThreadStallMonitor.trace("reader_schedule_progress") {
-                scheduleSaveReadingProgress(info)
+                scheduleSaveReadingProgress(info, anchorOffset)
             }
             return
         }
@@ -640,26 +645,38 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pageView.text = text
     }
 
-    private fun scheduleSaveReadingProgress(info: ReaderSession.PageInfo) {
+    private fun scheduleSaveReadingProgress(info: ReaderSession.PageInfo, offset: Int) {
         if (info.transitionCard || !info.manga.useBookmark()) return
         pendingProgressInfo = info
+        pendingProgressOffset = offset
         progressHandler.removeCallbacks(saveProgressRunnable)
         progressHandler.postDelayed(saveProgressRunnable, PROGRESS_SAVE_DEBOUNCE_MS)
     }
 
     private fun saveReadingProgressNow(info: ReaderSession.PageInfo) {
+        saveReadingProgressNow(info, pendingProgressOffset)
+    }
+
+    private fun saveReadingProgressNow(info: ReaderSession.PageInfo, offset: Int) {
         if (info.transitionCard || !info.manga.useBookmark()) return
         val title = currentTitle ?: info.manga.title ?: return
         info.manga.title = title
         info.manga.titleId = title.id
         title.eps?.let { info.manga.setEps(it) }
-        val zeroBasedPage = (info.localPage - 1).coerceAtLeast(0)
-        if (lastSavedEpisodeId == info.manga.id && lastSavedPage == zeroBasedPage) return
+        val zeroBasedPage = info.sourcePageIndex.coerceAtLeast(0)
+        if (
+            lastSavedEpisodeId == info.manga.id &&
+            lastSavedPage == zeroBasedPage &&
+            lastSavedOffset == offset &&
+            lastSavedSide == info.side
+        ) return
         lastSavedEpisodeId = info.manga.id
         lastSavedPage = zeroBasedPage
+        lastSavedOffset = offset
+        lastSavedSide = info.side
         p?.addRecent(title)
         p?.setBookmark(title, info.manga.id)
-        p?.setViewerBookmark(info.manga, zeroBasedPage)
+        p?.setViewerBookmark(info.manga, zeroBasedPage, offset, info.side)
     }
 
     private fun displayEpisodeTitle(manga: Manga?, title: Title?): String {

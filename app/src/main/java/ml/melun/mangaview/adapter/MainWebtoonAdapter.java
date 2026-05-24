@@ -55,6 +55,7 @@ import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Ranking;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
+import ml.melun.mangaview.activity.ViewerResumeResolver;
 import ml.melun.mangaview.repository.CacheFileStore;
 import ml.melun.mangaview.repository.EpisodeSnapshotCache;
 import ml.melun.mangaview.repository.MangaRepository;
@@ -1582,47 +1583,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         private Manga resolveContinueManga(Title item) {
-            if(item == null)
-                return null;
-            p.ensureSourceSiteForTitle(item);
-            int bookmark = p.getBookmark(item);
-            if(bookmark <= 0)
-                bookmark = item.getBookmark();
-            if(bookmark <= 0)
-                bookmark = item.getBookmarkEpisodeId();
-            if(bookmark <= 0)
-                return null;
-
-            List<Manga> eps = snapshotEpisodes(item);
-            Manga resolved = findEpisodeById(eps, bookmark);
-            if(resolved == null) {
-                int progressIndex = item.getBookmarkEpisodeIndex();
-                if(progressIndex <= 0 && bookmark > 0 && eps != null && bookmark <= eps.size())
-                    progressIndex = bookmark;
-                resolved = episodeAt(eps, progressIndex);
-            }
-            if(resolved == null)
-                resolved = new Manga(bookmark, "", "", item.getBaseMode());
-            resolved.setTitle(item);
-            resolved.setTitleId(item.getId());
-            if(eps != null && eps.size() > 0)
-                resolved.setEps(eps);
-            return resolved;
-        }
-
-        private Manga findEpisodeById(List<Manga> eps, int bookmark) {
-            if(eps == null)
-                return null;
-            for(Manga episode : eps)
-                if(episode != null && episode.getId() == bookmark)
-                    return episode;
-            return null;
-        }
-
-        private Manga episodeAt(List<Manga> eps, int oneBasedIndex) {
-            if(eps == null || oneBasedIndex <= 0 || oneBasedIndex > eps.size())
-                return null;
-            return eps.get(oneBasedIndex - 1);
+            return ViewerResumeResolver.resumeManga(item);
         }
 
         private int readingProgressPercent(Title item) {
@@ -2849,46 +2810,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private Manga resolveContinueMangaForWarmup(Title item) {
-        if(item == null)
-            return null;
-        p.ensureSourceSiteForTitle(item);
-        int bookmark = p.getBookmark(item);
-        if(bookmark <= 0)
-            bookmark = item.getBookmark();
-        if(bookmark <= 0)
-            bookmark = item.getBookmarkEpisodeId();
-        if(bookmark <= 0)
-            return null;
-        List<Manga> eps = snapshotEpisodes(item);
-        Manga resolved = findEpisodeByIdForWarmup(eps, bookmark);
-        if(resolved == null) {
-            int progressIndex = item.getBookmarkEpisodeIndex();
-            if(progressIndex <= 0 && eps != null && bookmark <= eps.size())
-                progressIndex = bookmark;
-            resolved = episodeAtForWarmup(eps, progressIndex);
-        }
-        if(resolved == null)
-            resolved = new Manga(bookmark, "", "", item.getBaseMode());
-        resolved.setTitle(item);
-        resolved.setTitleId(item.getId());
-        if(eps != null && eps.size() > 0)
-            resolved.setEps(eps);
-        return resolved;
-    }
-
-    private Manga findEpisodeByIdForWarmup(List<Manga> eps, int bookmark) {
-        if(eps == null)
-            return null;
-        for(Manga episode : eps)
-            if(episode != null && episode.getId() == bookmark)
-                return episode;
-        return null;
-    }
-
-    private Manga episodeAtForWarmup(List<Manga> eps, int oneBasedIndex) {
-        if(eps == null || oneBasedIndex <= 0 || oneBasedIndex > eps.size())
-            return null;
-        return eps.get(oneBasedIndex - 1);
+        return ViewerResumeResolver.resumeManga(item);
     }
 
     private void scheduleContinueProgressBackfill() {
