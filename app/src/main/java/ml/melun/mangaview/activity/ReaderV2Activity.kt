@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ViewGroup
@@ -304,6 +305,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 updateCurrentEpisode(anchorPage)
             }
         }
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        val lagMs = SystemClock.uptimeMillis() - ev.eventTime
+        if (ev.actionMasked == MotionEvent.ACTION_MOVE || ev.actionMasked == MotionEvent.ACTION_UP) {
+            MainThreadStallMonitor.warn("reader_touch_delivery_lag", lagMs)
+        }
+        return super.dispatchTouchEvent(ev)
     }
 
     override fun onNearBoundary(direction: Int, anchorPage: Int) {

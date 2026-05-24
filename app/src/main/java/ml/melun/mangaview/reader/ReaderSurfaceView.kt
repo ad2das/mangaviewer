@@ -19,6 +19,7 @@ import android.view.View
 import android.view.VelocityTracker
 import android.view.ViewConfiguration
 import android.widget.OverScroller
+import ml.melun.mangaview.runtime.MainThreadStallMonitor
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -58,6 +59,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val height: Int,
         val busy: Boolean,
         val empty: Boolean,
+        val visibleLoading: Int,
         val items: List<DrawItem>
     )
 
@@ -132,6 +134,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var lastAnchor = -1
     private var lastBusy = false
     private var lastRequestedBusy = false
+    private var lastBusyWindowDispatchMs = 0L
     private var layoutDirty = true
     private var pageTops = FloatArrayList(0)
     private var contentHeight = 0f
@@ -141,6 +144,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var lastPostedFrameEndNs = 0L
     private var statsCoalescedRequests = 0
     private var statsNoCanvasFrames = 0
+    private var lastVisibleLoading = -1
     private val statsCallbackSpacingMs = ArrayList<Float>(240)
     private val statsPostSpacingMs = ArrayList<Float>(240)
     private val statsLockWaitMs = ArrayList<Float>(240)
@@ -617,6 +621,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         dispatchBoundaryRequest(work.boundary)
         val state = work.state ?: return
         val timing = drawState(frameTimeNanos, callbackStartNs, state, canvas)
+        if (lastVisibleLoading != state.visibleLoading) {
+            lastVisibleLoading = state.visibleLoading
+            Log.i(TAG, "reader_visible_loading=${state.visibleLoading} busy=${state.busy} items=${state.items.size}")
+        }
         if (timing.posted) synchronized(stateLock) { lastPostedFrameEndNs = timing.postEndNs }
         recordFrameStats(timing, state.busy)
     }
@@ -735,9 +743,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun buildDrawStateLocked(busy: Boolean = lastBusy): DrawState {
         val viewWidth = max(1, width)
         val viewHeight = max(1, height)
-        if (pages.isEmpty()) return DrawState(viewWidth, viewHeight, busy, true, emptyList())
+        if (pages.isEmpty()) return DrawState(viewWidth, viewHeight, busy, true, 1, emptyList())
         rebuildLayoutLocked()
         val items = ArrayList<DrawItem>()
+        var visibleLoading = 0
         var index = firstVisiblePageLocked(scrollOffset)
         while (index < pages.size) {
             val page = pages[index]
@@ -745,12 +754,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val pageHeight = pageDrawHeightLocked(page)
             val bottom = top + pageHeight
             if (bottom >= 0f && top <= viewHeight) {
+                if (page.loading || (page.bitmap == null && page.tiles.isEmpty() && page.cardText == null)) {
+                    visibleLoading++
+                }
                 items.add(DrawItem(page.bitmap, page.tiles, page.loading, page.cardText, top, pageHeight))
             }
             if (top > viewHeight) break
             index++
         }
-        return DrawState(viewWidth, viewHeight, busy, false, items)
+        return DrawState(viewWidth, viewHeight, busy, false, visibleLoading, items)
     }
 
     private fun requestRender() {
@@ -799,12 +811,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (pages.isEmpty() || width <= 0 || height <= 0) return null
         val anchor = anchorPageLocked()
         if (busy && lastRequestedBusy) {
-            lastAnchor = anchor
-            return null
+            val now = SystemClock.uptimeMillis()
+            val anchorMoved = lastAnchor < 0 || abs(anchor - lastAnchor) >= BUSY_WINDOW_ANCHOR_STEP
+            val intervalElapsed = now - lastBusyWindowDispatchMs >= BUSY_WINDOW_MIN_DISPATCH_MS
+            if (!anchorMoved && !intervalElapsed) return null
         }
         if (anchor == lastAnchor && busy == lastRequestedBusy) return null
         lastAnchor = anchor
         lastRequestedBusy = busy
+        if (busy) lastBusyWindowDispatchMs = SystemClock.uptimeMillis()
         val first = max(0, anchor - ReaderPipelinePolicy.windowBefore(busy))
         val last = min(pages.lastIndex, anchor + ReaderPipelinePolicy.windowAfter(busy))
         val boundaryPx = height * NEAR_BOUNDARY_SCREENFULS
@@ -1013,10 +1028,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 return
             }
             if (statsLastCallbackStartNs > 0L && timing.callbackStartNs > statsLastCallbackStartNs) {
-                statsCallbackSpacingMs.add(nsToMs(timing.callbackStartNs - statsLastCallbackStartNs))
+                val callbackGapMs = nsToMs(timing.callbackStartNs - statsLastCallbackStartNs)
+                statsCallbackSpacingMs.add(callbackGapMs)
+                MainThreadStallMonitor.warn("reader_frame_callback_gap", callbackGapMs)
             }
             if (timing.posted && statsLastPostEndNs > 0L && timing.postEndNs > statsLastPostEndNs) {
-                statsPostSpacingMs.add(nsToMs(timing.postEndNs - statsLastPostEndNs))
+                val postGapMs = nsToMs(timing.postEndNs - statsLastPostEndNs)
+                statsPostSpacingMs.add(postGapMs)
+                MainThreadStallMonitor.warn("reader_frame_post_gap", postGapMs)
             }
             if (timing.posted) {
                 statsLockWaitMs.add(timing.lockWaitMs)
@@ -1147,6 +1166,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val TRANSITION_CARD_PAGE_HEIGHT_RATIO = 0.14f
         private const val NEAR_BOUNDARY_SCREENFULS = 10
         private const val NEAR_BOUNDARY_PAGE_THRESHOLD = 16
+        private const val BUSY_WINDOW_ANCHOR_STEP = 2
+        private const val BUSY_WINDOW_MIN_DISPATCH_MS = 48L
         private const val BOUNDARY_EPSILON_PX = 2f
         private const val BOUNDARY_FLING_EXTEND_EPSILON_PX = 4
         private const val BOUNDARY_FLING_MIN_VELOCITY_MULTIPLIER = 2f

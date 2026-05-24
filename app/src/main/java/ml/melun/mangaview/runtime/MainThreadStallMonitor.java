@@ -5,6 +5,7 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.util.Printer;
 
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class MainThreadStallMonitor {
@@ -40,8 +41,10 @@ public final class MainThreadStallMonitor {
                 if(!x.startsWith("<<<<< Finished") || startedAtMs <= 0)
                     return;
                 long durationMs = SystemClock.uptimeMillis() - startedAtMs;
-                if(durationMs >= DISPATCH_WARN_MS)
+                if(durationMs >= DISPATCH_WARN_MS) {
                     Log.w(TAG, "main_dispatch_ms=" + durationMs + " msg=" + message);
+                    logThreads("main_dispatch_ms=" + durationMs);
+                }
                 startedAtMs = 0L;
                 message = null;
             }
@@ -58,9 +61,45 @@ public final class MainThreadStallMonitor {
             runnable.run();
         } finally {
             long durationMs = SystemClock.uptimeMillis() - startedAtMs;
-            if(durationMs >= SECTION_WARN_MS)
+            if(durationMs >= SECTION_WARN_MS) {
                 Log.w(TAG, "main_section_ms=" + durationMs + " name=" + name);
+                if(durationMs >= DISPATCH_WARN_MS) logThreads("main_section_ms=" + durationMs + " name=" + name);
+            }
         }
+    }
+
+    public static void warn(String name, long durationMs) {
+        if(!enabled || durationMs < DISPATCH_WARN_MS)
+            return;
+        Log.w(TAG, name + "_ms=" + durationMs);
+        logThreads(name + "_ms=" + durationMs);
+    }
+
+    public static void warn(String name, float durationMs) {
+        warn(name, Math.round(durationMs));
+    }
+
+    private static void logThreads(String reason) {
+        StringBuilder builder = new StringBuilder(4096);
+        builder.append("thread_snapshot reason=").append(reason);
+        for(Map.Entry<Thread, StackTraceElement[]> entry : Thread.getAllStackTraces().entrySet()) {
+            Thread thread = entry.getKey();
+            String name = thread.getName();
+            if(thread == Looper.getMainLooper().getThread()
+                    || name.startsWith("Reader")
+                    || name.startsWith("RenderThread")
+                    || name.startsWith("hwui")
+                    || name.startsWith("Finalizer")) {
+                builder.append("\n  thread=").append(name)
+                        .append(" state=").append(thread.getState());
+                StackTraceElement[] stack = entry.getValue();
+                int limit = Math.min(stack.length, 8);
+                for(int i = 0; i < limit; i++) {
+                    builder.append("\n    at ").append(stack[i]);
+                }
+            }
+        }
+        Log.w(TAG, builder.toString());
     }
 
     public interface Supplier<T> {
