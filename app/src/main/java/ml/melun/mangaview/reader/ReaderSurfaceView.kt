@@ -326,12 +326,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     if (wasTap) {
                         null
                     } else if (abs(velocityY) > minVelocity) {
-                        val maxFlingVelocity = maxVelocity * FLING_SCROLL_MULTIPLIER
                         val flingVelocity = (velocityY * FLING_SCROLL_MULTIPLIER)
-                            .coerceIn(-maxFlingVelocity, maxFlingVelocity)
+                            .coerceIn(-maxVelocity.toFloat(), maxVelocity.toFloat())
                             .toInt()
-                        scrollOffset += flingVelocity * FLING_IMMEDIATE_SECONDS
-                        clampScrollLocked()
                         scroller.fling(
                             0,
                             scrollOffset.toInt(),
@@ -684,8 +681,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private companion object {
         private const val TAG = "ReaderSurfaceStats"
         private const val FRAME_BUDGET_MS = 16.67f
-        private const val DRAG_SCROLL_MULTIPLIER = 1.25f
-        private const val FLING_SCROLL_MULTIPLIER = 3.5f
-        private const val FLING_IMMEDIATE_SECONDS = 0.45f
+        private const val DRAG_SCROLL_MULTIPLIER = 1.0f
+        private const val FLING_SCROLL_MULTIPLIER = 1.0f
     }
 }
