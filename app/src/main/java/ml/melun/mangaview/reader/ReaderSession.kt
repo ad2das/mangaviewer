@@ -142,6 +142,7 @@ class ReaderSession(
     private val deliveryDrainPosted = AtomicBoolean(false)
     private val viewportBusy = AtomicBoolean(false)
     private val deliveryResumeAtMs = AtomicLong(0L)
+    private val lastUserInteractionMs = AtomicLong(0L)
     private val earlyPreparedBitmaps = ConcurrentHashMap<Int, Bitmap>()
     private val deliveredBitmaps = LinkedHashMap<Int, Bitmap>(32, 0.75f, true)
     private val deliveredTiles = LinkedHashMap<Int, List<ReaderTile>>(16, 0.75f, true)
@@ -351,6 +352,10 @@ class ReaderSession(
 
     fun requestWindow(first: Int, last: Int, anchor: Int, busy: Boolean) {
         requestWindow(first, last, anchor, busy, true)
+    }
+
+    fun noteUserInteraction() {
+        lastUserInteractionMs.set(SystemClock.uptimeMillis())
     }
 
     fun requestWindowAsync(first: Int, last: Int, anchor: Int, busy: Boolean) {
@@ -756,10 +761,6 @@ class ReaderSession(
         val effectiveTargetWidth = achievableWidth(index, targetWidth)
         val decodedWidth = decodedWidths[index] ?: 0
         if (decodedWidth >= effectiveTargetWidth) return
-        if (busy && !hasDeliveredBitmap(index)) {
-            prefetchBusyPage(index, page, generation)
-            return
-        }
         val activeWidth = inFlightWidths[index] ?: 0
         if (!loading.add(index)) {
             if (targetWidth > activeWidth)
@@ -1085,6 +1086,12 @@ class ReaderSession(
             val busy = viewportBusy.get()
             if (busy) {
                 discardBusyStaleDeliveries()
+                var deliveredCount = 0
+                while (deliveredCount < BUSY_DELIVERY_DRAIN_LIMIT) {
+                    val delivery = deliveryQueue.poll() ?: break
+                    deliverDecodeResultOnMain(delivery, true)
+                    deliveredCount++
+                }
                 if (deliveryQueue.isNotEmpty() && deliveryDrainPosted.compareAndSet(false, true)) {
                     main.postDelayed(deliveryDrainRunnable, BUSY_DELIVERY_DRAIN_DELAY_MS)
                 }
@@ -1117,8 +1124,10 @@ class ReaderSession(
     private fun deliveryDrainDelayMs(): Long {
         if (viewportBusy.get()) return BUSY_DELIVERY_DRAIN_DELAY_MS
         val resumeAt = deliveryResumeAtMs.get()
-        if (resumeAt == Long.MAX_VALUE) return IDLE_DELIVERY_RESUME_DELAY_MS
-        return max(0L, resumeAt - SystemClock.uptimeMillis())
+        val now = SystemClock.uptimeMillis()
+        val idleDelay = if (resumeAt == Long.MAX_VALUE) IDLE_DELIVERY_RESUME_DELAY_MS else max(0L, resumeAt - now)
+        val inputDelay = max(0L, lastUserInteractionMs.get() + INPUT_PRIORITY_QUIET_MS - now)
+        return max(idleDelay, inputDelay)
     }
 
     private fun discardBusyStaleDeliveries() {
@@ -1439,14 +1448,16 @@ class ReaderSession(
         private const val PRIME_FORWARD_EPISODES = 40
         private const val BOUNDARY_DECODE_AHEAD_PAGES = 4
         private const val BOUNDARY_BYTE_AHEAD_PAGES = 16
-        private const val BOUNDARY_BUSY_DECODE_AHEAD_PAGES = 0
-        private const val BOUNDARY_BUSY_BYTE_AHEAD_PAGES = 0
+        private const val BOUNDARY_BUSY_DECODE_AHEAD_PAGES = 4
+        private const val BOUNDARY_BUSY_BYTE_AHEAD_PAGES = 12
         private const val BUSY_DELIVERY_DISCARD_LIMIT = 16
         private const val BUSY_DELIVERY_RETAIN_LIMIT = 4
+        private const val BUSY_DELIVERY_DRAIN_LIMIT = 1
         private const val IDLE_DELIVERY_DRAIN_LIMIT = 1
-        private const val BUSY_DELIVERY_DRAIN_DELAY_MS = 50L
+        private const val BUSY_DELIVERY_DRAIN_DELAY_MS = 24L
         private const val IDLE_DELIVERY_RESUME_DELAY_MS = 96L
         private const val IDLE_DELIVERY_FRAME_DELAY_MS = 24L
+        private const val INPUT_PRIORITY_QUIET_MS = 96L
         private const val ACTIVE_BITMAP_BYTES = 64L * 1024L * 1024L
         private const val TILE_PAGE_MAX_BYTES = 24L * 1024L * 1024L
         private const val REPLACED_BITMAP_RECYCLE_DELAY_MS = 750L

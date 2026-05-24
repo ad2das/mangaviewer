@@ -312,6 +312,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (ev.actionMasked == MotionEvent.ACTION_MOVE || ev.actionMasked == MotionEvent.ACTION_UP) {
             MainThreadStallMonitor.warn("reader_touch_delivery_lag", lagMs)
         }
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN ||
+            ev.actionMasked == MotionEvent.ACTION_MOVE ||
+            ev.actionMasked == MotionEvent.ACTION_UP ||
+            ev.actionMasked == MotionEvent.ACTION_CANCEL
+        ) {
+            session?.noteUserInteraction()
+        }
         return super.dispatchTouchEvent(ev)
     }
 

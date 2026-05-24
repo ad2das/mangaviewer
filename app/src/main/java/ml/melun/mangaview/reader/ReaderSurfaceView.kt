@@ -137,6 +137,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var lastBusyWindowDispatchMs = 0L
     private var layoutDirty = true
     private var pageTops = FloatArrayList(0)
+    private var pageTopDeltas = RangeAddPointQuery(0)
     private var contentHeight = 0f
     private var statsActive = false
     private var statsLastCallbackStartNs = 0L
@@ -231,11 +232,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val request = synchronized(stateLock) {
             if (insertedCount <= 0 || count <= pages.size) return
             rebuildLayoutLocked()
-            val oldFirstTop = pageTops.getOrElse(0, 0f)
+            materializeLayoutDeltasLocked()
+            val oldFirstTop = pageTopOrElseLocked(0, 0f)
             repeat(insertedCount) { pages.add(0, Page()) }
             layoutDirty = true
             rebuildLayoutLocked()
-            val shiftedFirstTop = pageTops.getOrElse(insertedCount, 0f)
+            val shiftedFirstTop = pageTopOrElseLocked(insertedCount, 0f)
             scrollOffset += shiftedFirstTop - oldFirstTop
             boundaryArmedDirection = 0
             clampScrollLocked()
@@ -265,7 +267,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val page = pages.getOrNull(index) ?: return
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
-            val oldTop = pageTops.getOrElse(index, 0f)
+            val oldTop = pageTopOrElseLocked(index, 0f)
             page.bitmap = bitmap
             page.tiles = emptyList()
             page.width = max(1, bitmap.width)
@@ -294,7 +296,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val page = pages.getOrNull(index) ?: return
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
-            val oldTop = pageTops.getOrElse(index, 0f)
+            val oldTop = pageTopOrElseLocked(index, 0f)
             page.bitmap = null
             page.tiles = tiles
             page.width = max(1, pageWidth)
@@ -370,7 +372,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (page.bitmap != null || page.tiles.isNotEmpty() || page.cardText != null || pageWidth <= 0 || pageHeight <= 0) return
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
-            val oldTop = pageTops.getOrElse(index, 0f)
+            val oldTop = pageTopOrElseLocked(index, 0f)
             page.width = pageWidth
             page.height = pageHeight
             val newHeight = pageDrawHeightLocked(page)
@@ -413,7 +415,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val request = synchronized(stateLock) {
             val target = index.coerceIn(0, pages.lastIndex)
             rebuildLayoutLocked()
-            scrollOffset = pageTops.getOrElse(target, 0f)
+            scrollOffset = pageTopOrElseLocked(target, 0f)
             clampScrollLocked()
             lastAnchor = -1
             renderRequested = true
@@ -750,7 +752,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var index = firstVisiblePageLocked(scrollOffset)
         while (index < pages.size) {
             val page = pages[index]
-            val top = pageTops[index] - scrollOffset
+            val top = pageTopLocked(index) - scrollOffset
             val pageHeight = pageDrawHeightLocked(page)
             val bottom = top + pageHeight
             if (bottom >= 0f && top <= viewHeight) {
@@ -897,23 +899,28 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun rebuildLayoutLocked() {
-        if (!layoutDirty && pageTops.size == pages.size) return
+        if (!layoutDirty && pageTops.size == pages.size && pageTopDeltas.size == pages.size) return
         if (pageTops.size != pages.size) pageTops = FloatArrayList(pages.size)
+        if (pageTopDeltas.size != pages.size) pageTopDeltas = RangeAddPointQuery(pages.size)
         var top = 0f
         for (i in pages.indices) {
             pageTops[i] = top
             top += pageDrawHeightLocked(pages[i]) + pageGapPx
         }
         contentHeight = max(0f, top - pageGapPx)
+        pageTopDeltas.clear()
         layoutDirty = false
     }
 
     private fun appendEmptyPagesLocked(additionalCount: Int) {
         if (additionalCount <= 0) return
+        materializeLayoutDeltasLocked()
         var top = if (pages.isEmpty()) 0f else contentHeight + pageGapPx
         repeat(additionalCount) {
             val page = Page()
             pages.add(page)
+            if (pageTops.size != pages.size) pageTops = pageTops.copyWithSize(pages.size)
+            if (pageTopDeltas.size != pages.size) pageTopDeltas = pageTopDeltas.copyWithSize(pages.size)
             pageTops[pages.lastIndex] = top
             top += pageDrawHeightLocked(page) + pageGapPx
         }
@@ -923,9 +930,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun updatePageHeightDeltaLocked(index: Int, delta: Float) {
         if (abs(delta) <= 0.01f) return
-        for (i in index + 1 until pages.size) {
-            pageTops[i] = pageTops[i] + delta
-        }
+        pageTopDeltas.add(index + 1, delta)
         contentHeight = max(0f, contentHeight + delta)
         layoutDirty = false
     }
@@ -938,7 +943,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var result = pages.lastIndex
         while (low <= high) {
             val mid = (low + high) ushr 1
-            val bottom = pageTops[mid] + pageDrawHeightLocked(pages[mid]) + pageGapPx
+            val bottom = pageTopLocked(mid) + pageDrawHeightLocked(pages[mid]) + pageGapPx
             if (position <= bottom) {
                 result = mid
                 high = mid - 1
@@ -947,6 +952,22 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
         }
         return result
+    }
+
+    private fun pageTopLocked(index: Int): Float {
+        return pageTops[index] + pageTopDeltas.get(index)
+    }
+
+    private fun pageTopOrElseLocked(index: Int, fallback: Float): Float {
+        return if (index in 0 until pageTops.size) pageTopLocked(index) else fallback
+    }
+
+    private fun materializeLayoutDeltasLocked() {
+        if (pageTopDeltas.isEmpty()) return
+        for (i in 0 until pageTops.size) {
+            pageTops[i] = pageTopLocked(i)
+        }
+        pageTopDeltas.clear()
     }
 
     private fun directionForDelta(delta: Float): Int {
@@ -1148,8 +1169,65 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (index >= size) size = index + 1
         }
 
+        fun copyWithSize(nextSize: Int): FloatArrayList {
+            val copy = FloatArrayList(0)
+            copy.values = values.copyOf(max(1, nextSize))
+            copy.size = nextSize
+            return copy
+        }
+
         fun getOrElse(index: Int, fallback: Float): Float {
             return if (index in 0 until size) values[index] else fallback
+        }
+    }
+
+    private class RangeAddPointQuery(size: Int) {
+        private var tree = FloatArray(max(2, size + 2))
+        var size: Int = size
+            private set
+        private var dirty = false
+
+        fun add(startIndex: Int, delta: Float) {
+            if (startIndex >= size || abs(delta) <= 0.01f) return
+            addInternal(startIndex + 1, delta)
+            dirty = true
+        }
+
+        fun get(index: Int): Float {
+            if (index !in 0 until size) return 0f
+            var i = index + 1
+            var sum = 0f
+            while (i > 0) {
+                sum += tree[i]
+                i -= i and -i
+            }
+            return sum
+        }
+
+        fun clear() {
+            if (!dirty) return
+            java.util.Arrays.fill(tree, 0f)
+            dirty = false
+        }
+
+        fun isEmpty(): Boolean = !dirty
+
+        fun copyWithSize(nextSize: Int): RangeAddPointQuery {
+            val copy = RangeAddPointQuery(nextSize)
+            val limit = min(size, nextSize)
+            for (i in 0 until limit) {
+                val value = get(i)
+                if (abs(value) > 0.01f) copy.add(i, value)
+            }
+            return copy
+        }
+
+        private fun addInternal(index: Int, delta: Float) {
+            var i = index
+            while (i < tree.size) {
+                tree[i] += delta
+                i += i and -i
+            }
         }
     }
 

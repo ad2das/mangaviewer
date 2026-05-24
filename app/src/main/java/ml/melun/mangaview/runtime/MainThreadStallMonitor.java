@@ -13,6 +13,7 @@ public final class MainThreadStallMonitor {
     private static volatile boolean enabled;
     private static final long DISPATCH_WARN_MS = 24L;
     private static final long SECTION_WARN_MS = 12L;
+    private static final long SNAPSHOT_WARN_MS = 80L;
     private static final int MAX_MESSAGE_LEN = 180;
     private static final AtomicBoolean installed = new AtomicBoolean(false);
 
@@ -43,7 +44,7 @@ public final class MainThreadStallMonitor {
                 long durationMs = SystemClock.uptimeMillis() - startedAtMs;
                 if(durationMs >= DISPATCH_WARN_MS) {
                     Log.w(TAG, "main_dispatch_ms=" + durationMs + " msg=" + message);
-                    logThreads("main_dispatch_ms=" + durationMs);
+                    if(durationMs >= SNAPSHOT_WARN_MS) logThreads("main_dispatch_ms=" + durationMs);
                 }
                 startedAtMs = 0L;
                 message = null;
@@ -63,7 +64,7 @@ public final class MainThreadStallMonitor {
             long durationMs = SystemClock.uptimeMillis() - startedAtMs;
             if(durationMs >= SECTION_WARN_MS) {
                 Log.w(TAG, "main_section_ms=" + durationMs + " name=" + name);
-                if(durationMs >= DISPATCH_WARN_MS) logThreads("main_section_ms=" + durationMs + " name=" + name);
+                if(durationMs >= SNAPSHOT_WARN_MS) logThreads("main_section_ms=" + durationMs + " name=" + name);
             }
         }
     }
@@ -72,7 +73,7 @@ public final class MainThreadStallMonitor {
         if(!enabled || durationMs < DISPATCH_WARN_MS)
             return;
         Log.w(TAG, name + "_ms=" + durationMs);
-        logThreads(name + "_ms=" + durationMs);
+        if(durationMs >= SNAPSHOT_WARN_MS) logThreads(name + "_ms=" + durationMs);
     }
 
     public static void warn(String name, float durationMs) {
