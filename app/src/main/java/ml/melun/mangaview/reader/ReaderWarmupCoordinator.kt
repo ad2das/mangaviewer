@@ -26,8 +26,9 @@ object ReaderWarmupCoordinator {
     }
 
     private const val LAUNCH_WINDOW_DECODE_PAGES = 2
-    private const val LAUNCH_WINDOW_BYTE_PAGES = 5
+    private const val LAUNCH_WINDOW_BYTE_PAGES = 8
     private val inFlight = ConcurrentHashMap<String, AtomicBoolean>()
+    private val entryLocks = ConcurrentHashMap<String, Any>()
 
     @JvmStatic
     fun openKey(
@@ -161,9 +162,20 @@ object ReaderWarmupCoordinator {
         profile: WarmupProfile,
         launchRequested: AtomicBoolean = AtomicBoolean(profile == WarmupProfile.LAUNCH_WINDOW)
     ) {
+        val lock = entryLocks.getOrPut(entry.key) { Any() }
+        synchronized(lock) {
         try {
             val manga = entry.manga
             attachTitle(manga, entry.title)
+            val effectiveProfile = if (launchRequested.get()) WarmupProfile.LAUNCH_WINDOW else profile
+            val status = entry.snapshot().status
+            if (status == ReaderPreparedStore.Status.WINDOW_READY ||
+                status == ReaderPreparedStore.Status.FIRST_BITMAP_READY && effectiveProfile != WarmupProfile.LAUNCH_WINDOW ||
+                status == ReaderPreparedStore.Status.URLS_READY &&
+                (effectiveProfile == WarmupProfile.URL_ONLY || effectiveProfile == WarmupProfile.FIRST_BYTE)
+            ) {
+                return
+            }
             var urls = MangaRepository.imageUrls(manga, appContext)
             if (manga.isOnline && urls.isNullOrEmpty()) {
                 val result = MangaRepository.fetchViewerInitial(manga, MangaRepository.cancellation())
@@ -182,13 +194,13 @@ object ReaderWarmupCoordinator {
             val startPage = entry.requestedStartPage.coerceIn(0, urls.lastIndex)
             entry.setImages(urls, startPage)
             val width = max(1, entry.requestedWidth)
-            val effectiveProfile = if (launchRequested.get()) WarmupProfile.LAUNCH_WINDOW else profile
             warmImagesForProfile(appContext, entry, manga, urls, startPage, width, effectiveProfile)
             if (effectiveProfile != WarmupProfile.LAUNCH_WINDOW && launchRequested.get())
                 warmImagesForProfile(appContext, entry, manga, urls, startPage, width, WarmupProfile.LAUNCH_WINDOW)
         } catch (e: Exception) {
             ml.melun.mangaview.report.CrashReporter.record(e)
             entry.fail()
+        }
         }
     }
 
@@ -213,13 +225,16 @@ object ReaderWarmupCoordinator {
                 return
             }
             WarmupProfile.LAUNCH_WINDOW -> {
-                val order = decodeOrder(startPage, urls.size, LAUNCH_WINDOW_BYTE_PAGES)
-                for (index in order)
-                    fetchImageFile(appContext, manga, urls[index])
                 val decodeOrder = decodeOrder(startPage, urls.size, LAUNCH_WINDOW_DECODE_PAGES)
+                val decoded = HashSet<Int>()
                 for ((position, index) in decodeOrder.withIndex()) {
                     val bitmap = decodePage(appContext, manga, urls[index], width)
+                    decoded.add(index)
                     entry.putBitmap(index, bitmap, index == startPage, position == decodeOrder.lastIndex)
+                }
+                val byteOrder = decodeOrder(startPage, urls.size, LAUNCH_WINDOW_BYTE_PAGES)
+                for (index in byteOrder) {
+                    if (!decoded.contains(index)) fetchImageFile(appContext, manga, urls[index])
                 }
             }
         }

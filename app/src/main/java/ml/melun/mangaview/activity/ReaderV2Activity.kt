@@ -4,6 +4,7 @@ import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ViewGroup
@@ -47,6 +48,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var toolbarForwardingScroll = false
     private var lastSavedEpisodeId = -1
     private var lastSavedPage = -1
+    private var lastBusyUiUpdateMs = 0L
+    private var pendingAnchorAfterBusy = -1
+    private var destroyed = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -143,6 +147,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         updateAdjacentButtons()
         status.text = manga.name ?: "로딩 중"
         root.post {
+            if (destroyed || isFinishing) return@post
             session = ReaderSession(
                 this,
                 manga,
@@ -159,6 +164,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     override fun onDestroy() {
+        destroyed = true
+        renderView.setWindowListener(null)
         session?.cancel()
         session = null
         super.onDestroy()
@@ -191,6 +198,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (pagesReady) renderView.setPageLoading(index)
     }
 
+    override fun onPageBoundsReady(index: Int, width: Int, height: Int) {
+        if (pagesReady) renderView.setPageBounds(index, width, height)
+    }
+
     override fun onPageReady(index: Int, bitmap: Bitmap) {
         if (pagesReady) {
             status.visibility = TextView.GONE
@@ -216,8 +227,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onWindowChanged(firstPage: Int, lastPage: Int, anchorPage: Int, busy: Boolean) {
         currentPage = anchorPage
-        updateCurrentEpisode(anchorPage)
         session?.requestWindow(firstPage, lastPage, anchorPage, busy)
+        if (busy) {
+            pendingAnchorAfterBusy = anchorPage
+            val now = SystemClock.uptimeMillis()
+            if (now - lastBusyUiUpdateMs >= BUSY_UI_UPDATE_INTERVAL_MS) {
+                lastBusyUiUpdateMs = now
+                updatePageLabel()
+            }
+            return
+        }
+        pendingAnchorAfterBusy = -1
+        updateCurrentEpisode(anchorPage)
     }
 
     override fun onNearEnd(anchorPage: Int) {
@@ -323,7 +344,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 ) {
                     toolbarForwardingScroll = true
                     setToolbarVisible(false)
-                    forwardToolbarTouch(MotionEvent.ACTION_DOWN, toolbarDownRawX, toolbarDownRawY, event.downTime, event.eventTime)
+                    forwardToolbarTouch(MotionEvent.ACTION_DOWN, toolbarDownRawX, toolbarDownRawY, event.downTime, event.downTime)
                 }
                 if (toolbarForwardingScroll) {
                     forwardToolbarTouch(MotionEvent.ACTION_MOVE, event.rawX, event.rawY, event.downTime, event.eventTime)
@@ -369,4 +390,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun Int.dp(): Int = (this * resources.displayMetrics.density + 0.5f).toInt()
+
+    private companion object {
+        private const val BUSY_UI_UPDATE_INTERVAL_MS = 250L
+    }
 }

@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.os.Process
+import android.os.SystemClock
 import android.os.Trace
 import android.util.AttributeSet
 import android.util.Log
@@ -70,6 +71,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     )
 
     private data class DrawTiming(
+        val frameTimeNs: Long,
         val callbackStartNs: Long,
         val lockWaitMs: Float,
         val drawMs: Float,
@@ -140,6 +142,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var pendingNewestInputNs = 0L
     private var pendingInputEvents = 0
     private var pendingHistorySamples = 0
+    private var pendingWindowRequest: WindowRequest? = null
+    private var windowDispatchPosted = false
 
     init {
         holder.addCallback(this)
@@ -183,9 +187,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
             pages.getOrNull(index)?.let {
                 if (it.cardText == null) it.loading = true
             }
-            renderRequested = true
-            scheduleFrameLocked()
-            stateLock.notifyAll()
+            if (!lastBusy || isNearVisibleLocked(index, 1)) {
+                renderRequested = true
+                scheduleFrameLocked()
+                stateLock.notifyAll()
+            }
         }
     }
 
@@ -202,12 +208,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.cardText = null
             val newHeight = pageDrawHeightLocked(page)
             if (oldTop + oldHeight <= scrollOffset) scrollOffset += newHeight - oldHeight
+            val belowVisible = oldTop > scrollOffset + height
             layoutDirty = true
             clampScrollLocked()
-            renderRequested = true
-            scheduleFrameLocked()
-            stateLock.notifyAll()
-            windowRequestLocked(lastBusy)
+            if (!lastBusy || !belowVisible) {
+                renderRequested = true
+                scheduleFrameLocked()
+                stateLock.notifyAll()
+                windowRequestLocked(lastBusy)
+            } else {
+                null
+            }
         }
         dispatchWindowRequest(request)
     }
@@ -223,6 +234,32 @@ class ReaderSurfaceView @JvmOverloads constructor(
             scheduleFrameLocked()
             stateLock.notifyAll()
         }
+    }
+
+    fun setPageBounds(index: Int, pageWidth: Int, pageHeight: Int) {
+        val request = synchronized(stateLock) {
+            val page = pages.getOrNull(index) ?: return
+            if (page.bitmap != null || page.cardText != null || pageWidth <= 0 || pageHeight <= 0) return
+            rebuildLayoutLocked()
+            val oldHeight = pageDrawHeightLocked(page)
+            val oldTop = pageTops.getOrElse(index, 0f)
+            page.width = pageWidth
+            page.height = pageHeight
+            val newHeight = pageDrawHeightLocked(page)
+            if (oldTop + oldHeight <= scrollOffset) scrollOffset += newHeight - oldHeight
+            val belowVisible = oldTop > scrollOffset + height
+            layoutDirty = true
+            clampScrollLocked()
+            if (!lastBusy || !belowVisible) {
+                renderRequested = true
+                scheduleFrameLocked()
+                stateLock.notifyAll()
+                windowRequestLocked(lastBusy)
+            } else {
+                null
+            }
+        }
+        dispatchWindowRequest(request)
     }
 
     fun setPageCard(index: Int, title: String) {
@@ -400,7 +437,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         renderFrame(frameTimeNanos)
     }
 
-    private fun renderFrame(@Suppress("UNUSED_PARAMETER") frameTimeNanos: Long) {
+    private fun renderFrame(frameTimeNanos: Long) {
         val callbackStartNs = System.nanoTime()
         val requestAndState = synchronized(stateLock) {
             frameScheduled = false
@@ -430,11 +467,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
             request to state
         }
         dispatchWindowRequest(requestAndState.first)
-        val timing = drawState(callbackStartNs, requestAndState.second)
+        val timing = drawState(frameTimeNanos, callbackStartNs, requestAndState.second)
         recordFrameStats(timing, requestAndState.second.busy)
     }
 
-    private fun drawState(callbackStartNs: Long, state: DrawState): DrawTiming {
+    private fun drawState(frameTimeNs: Long, callbackStartNs: Long, state: DrawState): DrawTiming {
         val lockStartNs = System.nanoTime()
         val canvas = try {
             Trace.beginSection("RSV.lockCanvas")
@@ -443,7 +480,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
             null
         } finally {
             Trace.endSection()
-        } ?: return DrawTiming(callbackStartNs, nsToMs(System.nanoTime() - lockStartNs), 0f, 0f, nsToMs(System.nanoTime() - callbackStartNs), System.nanoTime(), false)
+        } ?: return DrawTiming(
+            frameTimeNs,
+            callbackStartNs,
+            nsToMs(System.nanoTime() - lockStartNs),
+            0f,
+            0f,
+            nsToMs(System.nanoTime() - callbackStartNs),
+            System.nanoTime(),
+            false
+        )
         val lockEndNs = System.nanoTime()
         var drawEndNs = lockEndNs
         var postEndNs = lockEndNs
@@ -468,6 +514,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
         }
         return DrawTiming(
+            frameTimeNs = frameTimeNs,
             callbackStartNs = callbackStartNs,
             lockWaitMs = nsToMs(lockEndNs - lockStartNs),
             drawMs = nsToMs(drawEndNs - lockEndNs),
@@ -627,10 +674,21 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun dispatchWindowRequest(request: WindowRequest?) {
         if (request == null) return
+        synchronized(stateLock) {
+            pendingWindowRequest = request
+            if (windowDispatchPosted) return
+            windowDispatchPosted = true
+        }
         mainHandler.post {
+            val latest = synchronized(stateLock) {
+                windowDispatchPosted = false
+                val next = pendingWindowRequest
+                pendingWindowRequest = null
+                next
+            } ?: return@post
             val currentListener = listener ?: return@post
-            currentListener.onWindowChanged(request.firstPage, request.lastPage, request.anchorPage, request.busy)
-            if (request.nearEnd) currentListener.onNearEnd(request.anchorPage)
+            currentListener.onWindowChanged(latest.firstPage, latest.lastPage, latest.anchorPage, latest.busy)
+            if (latest.nearEnd) currentListener.onNearEnd(latest.anchorPage)
         }
     }
 
@@ -687,12 +745,28 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return result
     }
 
+    private fun isNearVisibleLocked(index: Int, extraPages: Int): Boolean {
+        if (pages.isEmpty()) return false
+        val anchor = anchorPageLocked()
+        return index in (anchor - extraPages)..(anchor + extraPages)
+    }
+
     private fun noteInputLocked(event: MotionEvent) {
-        val receivedNs = System.nanoTime()
-        if (pendingOldestInputNs == 0L || receivedNs < pendingOldestInputNs) pendingOldestInputNs = receivedNs
-        if (receivedNs > pendingNewestInputNs) pendingNewestInputNs = receivedNs
+        fun addInputTime(uptimeMs: Long) {
+            val eventNs = uptimeMsToNanoTime(uptimeMs)
+            if (pendingOldestInputNs == 0L || eventNs < pendingOldestInputNs) pendingOldestInputNs = eventNs
+            if (eventNs > pendingNewestInputNs) pendingNewestInputNs = eventNs
+        }
+        for (i in 0 until event.historySize) addInputTime(event.getHistoricalEventTime(i))
+        addInputTime(event.eventTime)
         pendingInputEvents++
         pendingHistorySamples += event.historySize
+    }
+
+    private fun uptimeMsToNanoTime(uptimeMs: Long): Long {
+        val nowNs = System.nanoTime()
+        val nowUptimeNs = SystemClock.uptimeMillis() * 1_000_000L
+        return nowNs - (nowUptimeNs - uptimeMs * 1_000_000L)
     }
 
     private fun consumePendingInputLocked(): PendingInput? {
@@ -767,17 +841,25 @@ class ReaderSurfaceView @JvmOverloads constructor(
         total.sort()
         inputOldest.sort()
         inputNewest.sort()
-        val budget = frameBudgetMs()
+        val nominalBudget = frameBudgetMs()
+        val measuredBudget = if (callbackIntervals.size >= MIN_FRAME_SAMPLES) {
+            percentile(callbackIntervals, 0.50f).coerceIn(nominalBudget * 0.90f, nominalBudget * 1.25f)
+        } else {
+            nominalBudget
+        }
         val frameSamples = if (postIntervals.isNotEmpty()) postIntervals else callbackIntervals
-        val overBudget = frameSamples.count { it > budget }
-        val jankThreshold = budget * MISSED_VSYNC_FACTOR
-        val jank = frameSamples.count { it > jankThreshold }
-        val overBudgetPercent = if (frameSamples.isEmpty()) 0f else overBudget * 100f / frameSamples.size
-        val jankPercent = if (frameSamples.isEmpty()) 0f else jank * 100f / frameSamples.size
+        val strictOverBudget = frameSamples.count { it > nominalBudget }
+        val missedThreshold = measuredBudget * MISSED_VSYNC_FACTOR
+        val missedIntervals = frameSamples.count { it > missedThreshold }
+        var missedFrames = 0
+        for (interval in frameSamples) missedFrames += max(0, kotlin.math.floor(interval / measuredBudget - 0.5f).toInt())
+        val strictPercent = if (frameSamples.isEmpty()) 0f else strictOverBudget * 100f / frameSamples.size
+        val missedPercent = if (frameSamples.isEmpty()) 0f else missedIntervals * 100f / frameSamples.size
         Log.i(
             TAG,
-            "surface_frame_v2 samples=${frameSamples.size} budget=${fmt(budget)} jankThreshold=${fmt(jankThreshold)} " +
-                "overBudget=$overBudget overBudgetPct=${fmt(overBudgetPercent)} jank=$jank jankPct=${fmt(jankPercent)} " +
+            "surface_jank_v3 samples=${frameSamples.size} nominalBudget=${fmt(nominalBudget)} measuredBudget=${fmt(measuredBudget)} " +
+                "strictOverBudget=$strictOverBudget strictPct=${fmt(strictPercent)} " +
+                "missedIntervals=$missedIntervals missedFrames=$missedFrames missedPct=${fmt(missedPercent)} " +
                 "callbackP95=${fmt(percentile(callbackIntervals, 0.95f))} callbackMax=${fmt(maxOrZero(callbackIntervals))} " +
                 "postP95=${fmt(percentile(postIntervals, 0.95f))} postMax=${fmt(maxOrZero(postIntervals))} " +
                 "lockP95=${fmt(percentile(lockWait, 0.95f))} drawP95=${fmt(percentile(draw, 0.95f))} " +
@@ -839,6 +921,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val TAG = "ReaderSurfaceStats"
         private const val DEFAULT_FRAME_BUDGET_MS = 16.67f
         private const val MISSED_VSYNC_FACTOR = 1.5f
+        private const val MIN_FRAME_SAMPLES = 8
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
     }
