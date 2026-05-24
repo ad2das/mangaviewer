@@ -70,10 +70,10 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     int width;
     int count = 0;
     final static int MaxStackSize = 3;
-    private static final int PRELOAD_AHEAD_COUNT = 24;
-    private static final int DATA_SAVE_PRELOAD_AHEAD_COUNT = 5;
-    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 24;
-    private static final int PRELOAD_TRACK_LIMIT = 500;
+    private static final int PRELOAD_AHEAD_COUNT = 6;
+    private static final int DATA_SAVE_PRELOAD_AHEAD_COUNT = 2;
+    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 4;
+    private static final int PRELOAD_TRACK_LIMIT = 128;
     private static final int DECODED_PRELOAD_ACTIVE_LIMIT = 0;
     private static final int IMAGE_LOAD_RETRY_LIMIT = 3;
     private static final int SCROLL_BUSY_PRELOAD_MIN_DISTANCE = 4;

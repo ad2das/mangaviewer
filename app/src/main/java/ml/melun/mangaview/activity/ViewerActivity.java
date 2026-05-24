@@ -140,7 +140,7 @@ public class ViewerActivity extends AppCompatActivity {
     long lastBoundaryCheckMs = 0L;
     long suppressBoundaryLoadUntilMs = 0L;
     boolean suppressBoundaryLoadUntilUserScroll = false;
-    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 24;
+    private static final int INITIAL_PRELOAD_AHEAD_COUNT = 4;
     private static final int NEXT_EPISODE_ATTACH_THRESHOLD = 22;
     private static final int DATA_SAVE_NEXT_EPISODE_ATTACH_THRESHOLD = 12;
     private static final int NEXT_EPISODE_PREFETCH_CHAIN_DEPTH = 1;
@@ -2252,9 +2252,10 @@ public class ViewerActivity extends AppCompatActivity {
 
     public void refreshAdapter(){
         strip.stopScroll();
-        strip.setAdapter(null);
-        strip.getRecycledViewPool().clear();
-        strip.setAdapter(stripAdapter);
+        if(strip.getAdapter() != stripAdapter)
+            strip.setAdapter(stripAdapter);
+        else
+            stripAdapter.notifyDataSetChanged();
         stripAdapter.setClickListener(this::toggleToolbar);
     }
 

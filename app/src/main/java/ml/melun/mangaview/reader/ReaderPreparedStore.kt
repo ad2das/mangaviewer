@@ -8,8 +8,8 @@ import java.util.LinkedHashMap
 
 object ReaderPreparedStore {
     private const val MAX_ENTRIES = 24
-    private const val MAX_BITMAP_BYTES = 48L * 1024L * 1024L
-    private const val MAX_PINNED_START_BITMAPS = 3
+    private const val MAX_BITMAP_BYTES = 24L * 1024L * 1024L
+    private const val MAX_PINNED_START_BITMAPS = 1
 
     enum class Status {
         PENDING,
@@ -66,7 +66,15 @@ object ReaderPreparedStore {
 
         fun updateStartPin(pin: Boolean) {
             synchronized(lock) {
-                pinStartBitmap = pinStartBitmap || pin
+                if (pin) pinStartBitmap = true
+            }
+            trimBitmapBudget()
+        }
+
+        fun clearBitmaps() {
+            synchronized(lock) {
+                bitmapMap.clear()
+                pinStartBitmap = false
             }
             trimBitmapBudget()
         }
@@ -185,6 +193,11 @@ object ReaderPreparedStore {
     @Synchronized
     fun remove(key: String?) {
         if (!key.isNullOrEmpty()) entries.remove(key)
+    }
+
+    @JvmStatic
+    fun clearBitmaps(key: String?) {
+        get(key)?.clearBitmaps()
     }
 
     @JvmStatic

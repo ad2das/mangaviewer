@@ -13,6 +13,8 @@ import java.util.concurrent.FutureTask
 
 object ReaderImageCache {
     private const val DIR_NAME = "reader_image_cache_v1"
+    private const val MAX_CACHE_BYTES = 512L * 1024L * 1024L
+    private const val TARGET_CACHE_BYTES = 384L * 1024L * 1024L
     private val flights = ConcurrentHashMap<String, FutureTask<FetchResult>>()
 
     private data class FetchResult(
@@ -25,6 +27,7 @@ object ReaderImageCache {
         return getOrFetch(context, manga, image, false).file
     }
 
+    @Deprecated("Use getOrFetchFile and decode from disk to avoid large byte-array memory spikes.")
     fun getOrFetchBytes(context: Context, manga: Manga, image: String): ByteArray {
         if (!manga.isOnline) return getOrFetchFile(context, manga, image).readBytes()
         val result = getOrFetch(context, manga, image, true)
@@ -36,12 +39,13 @@ object ReaderImageCache {
         val key = key(manga.baseMode, image)
         val finalFile = File(cacheDir(appContext), "$key.img")
         if (isUsableImage(finalFile)) {
+            finalFile.setLastModified(System.currentTimeMillis())
             return FetchResult(finalFile, if (wantBytes) finalFile.readBytes() else null)
         }
         val task = FutureTask {
             if (wantBytes) {
                 val bytes = downloadBytes(appContext, manga, image)
-                writeAtomically(finalFile, bytes)
+                writeAtomically(appContext, finalFile, bytes)
                 FetchResult(finalFile, bytes)
             } else {
                 FetchResult(downloadAtomically(appContext, manga, image, finalFile), null)
@@ -76,6 +80,8 @@ object ReaderImageCache {
             }
             if (!isUsableImage(tmp)) throw java.io.IOException("Invalid image cache file")
             replace(tmp, finalFile)
+            finalFile.setLastModified(System.currentTimeMillis())
+            trimCache(context)
             return finalFile
         } catch (t: Throwable) {
             tmp.delete()
@@ -101,12 +107,14 @@ object ReaderImageCache {
         return getHttpClient().imageClient.newCall(requestBuilder.build()).execute()
     }
 
-    private fun writeAtomically(finalFile: File, bytes: ByteArray) {
+    private fun writeAtomically(context: Context, finalFile: File, bytes: ByteArray) {
         val tmp = File(finalFile.parentFile, "${finalFile.name}.part.${System.nanoTime()}")
         try {
             FileOutputStream(tmp).use { it.write(bytes) }
             if (!isUsableImage(tmp)) throw java.io.IOException("Invalid image cache file")
             replace(tmp, finalFile)
+            finalFile.setLastModified(System.currentTimeMillis())
+            trimCache(context)
         } catch (t: Throwable) {
             tmp.delete()
             throw t
@@ -145,5 +153,19 @@ object ReaderImageCache {
         if (b0 == 0x52 && b1 == 0x49 && b2 == 0x46 && b3 == 0x46) return true
         if (b0 == 0x47 && b1 == 0x49 && b2 == 0x46) return true
         return false
+    }
+
+    private fun trimCache(context: Context) {
+        val dir = cacheDir(context)
+        val files = dir.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".img") }
+            ?: return
+        var total = files.sumOf { it.length() }
+        if (total <= MAX_CACHE_BYTES) return
+        for (file in files.sortedBy { it.lastModified() }) {
+            if (total <= TARGET_CACHE_BYTES) break
+            val length = file.length()
+            if (file.delete()) total -= length
+        }
     }
 }

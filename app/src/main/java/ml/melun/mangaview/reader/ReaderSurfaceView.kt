@@ -290,6 +290,20 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
+    fun clearAllPages() {
+        synchronized(stateLock) {
+            for (page in pages) {
+                page.bitmap = null
+                page.loading = false
+                page.cardText = null
+            }
+            layoutDirty = true
+            renderRequested = true
+            scheduleFrameLocked()
+            stateLock.notifyAll()
+        }
+    }
+
     fun setPageBounds(index: Int, pageWidth: Int, pageHeight: Int) {
         val request = synchronized(stateLock) {
             val page = pages.getOrNull(index) ?: return
@@ -606,7 +620,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val cardText = item.cardText
         if (cardText != null) {
             val cardWidth = state.width * TRANSITION_CARD_WIDTH_RATIO
-            val cardHeight = min(item.pageHeight * 0.68f, state.height * 0.18f)
+            val cardHeight = min(item.pageHeight * 0.72f, state.height * 0.11f)
             val centerY = item.top + item.pageHeight / 2f
             val top = max(0f, centerY - cardHeight / 2f)
             val bottom = min(state.height.toFloat(), top + cardHeight)
@@ -618,12 +632,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
             )
             paint.color = Color.rgb(14, 14, 14)
             canvas.drawRoundRect(dst, 8f, 8f, paint)
-            textPaint.textSize = 24f
+            textPaint.textSize = 21f
             textPaint.color = Color.rgb(160, 160, 160)
-            canvas.drawText("회차 전환", state.width / 2f, dst.centerY() - 20f, textPaint)
-            textPaint.textSize = 34f
+            canvas.drawText("회차 전환", state.width / 2f, dst.centerY() - 16f, textPaint)
+            textPaint.textSize = 30f
             textPaint.color = Color.WHITE
-            canvas.drawText(cardText, state.width / 2f, dst.centerY() + 28f, textPaint)
+            canvas.drawText(cardText, state.width / 2f, dst.centerY() + 24f, textPaint)
             textPaint.textSize = 34f
             textPaint.color = Color.rgb(190, 190, 190)
             return
@@ -704,6 +718,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
             !immediateFrameScheduled &&
             (lastPostedFrameEndNs == 0L || nowNs - lastPostedFrameEndNs >= IMMEDIATE_FRAME_MIN_INTERVAL_NS)
         if (frameScheduled) {
+            if (canRenderImmediate) {
+                statsCoalescedRequests++
+                frameToken++
+                val token = frameToken
+                immediateFrameScheduled = true
+                handler.post { renderFrame(System.nanoTime(), token) }
+                return
+            }
             statsCoalescedRequests++
             return
         }
@@ -780,7 +802,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         lastRequestedBusy = busy
         val first = max(0, anchor - ReaderPipelinePolicy.windowBefore(busy))
         val last = min(pages.lastIndex, anchor + ReaderPipelinePolicy.windowAfter(busy))
-        return WindowRequest(first, last, anchor, busy, anchor >= pages.size - 3)
+        val remainingPx = contentHeight - (scrollOffset + height)
+        val nearEnd = remainingPx <= height * NEAR_END_SCREENFULS ||
+            anchor >= pages.size - NEAR_END_PAGE_THRESHOLD
+        return WindowRequest(first, last, anchor, busy, nearEnd)
     }
 
     private fun dispatchWindowRequest(request: WindowRequest?) {
@@ -1067,11 +1092,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val MISSED_VSYNC_FACTOR = 1.5f
         private const val MIN_FRAME_SAMPLES = 8
         private const val DEFAULT_PAGE_GAP_PX = 0
-        private const val TRANSITION_CARD_WIDTH_RATIO = 0.72f
-        private const val TRANSITION_CARD_PAGE_HEIGHT_RATIO = 0.22f
+        private const val TRANSITION_CARD_WIDTH_RATIO = 0.58f
+        private const val TRANSITION_CARD_PAGE_HEIGHT_RATIO = 0.14f
+        private const val NEAR_END_SCREENFULS = 5
+        private const val NEAR_END_PAGE_THRESHOLD = 8
         private const val BOUNDARY_EPSILON_PX = 2f
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
-        private const val IMMEDIATE_FRAME_MIN_INTERVAL_NS = 8_000_000L
+        private const val IMMEDIATE_FRAME_MIN_INTERVAL_NS = 4_000_000L
     }
 }

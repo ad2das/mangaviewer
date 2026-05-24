@@ -4,6 +4,8 @@ import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
@@ -56,6 +58,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var adjacentNavigationInFlight = false
     private var episodeListFetchAttempted = false
     private var destroyed = false
+    private val progressHandler = Handler(Looper.getMainLooper())
+    private var pendingProgressInfo: ReaderSession.PageInfo? = null
+    private val saveProgressRunnable = Runnable {
+        pendingProgressInfo?.let { saveReadingProgressNow(it) }
+        pendingProgressInfo = null
+    }
 
     private data class AdjacentResolution(
         val target: Manga?,
@@ -178,7 +186,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onDestroy() {
         destroyed = true
+        progressHandler.removeCallbacks(saveProgressRunnable)
+        pendingProgressInfo?.let { saveReadingProgressNow(it) }
+        pendingProgressInfo = null
         renderView.setWindowListener(null)
+        renderView.clearAllPages()
         session?.cancel()
         session = null
         super.onDestroy()
@@ -189,6 +201,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pageCount = count
         renderView.setPageCount(count)
         updateCurrentEpisode(currentPage)
+        session?.appendAdjacentEpisode(currentPage, ReaderSurfaceView.DIRECTION_NEXT, true)
     }
 
     override fun onPagesAppended(count: Int) {
@@ -264,7 +277,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     override fun onNearEnd(anchorPage: Int) {
-        session?.appendAdjacentEpisode(anchorPage, ReaderSurfaceView.DIRECTION_NEXT)
+        session?.appendAdjacentEpisode(anchorPage, ReaderSurfaceView.DIRECTION_NEXT, silentMissing = true)
     }
 
     override fun onBoundaryReached(direction: Int, anchorPage: Int) {
@@ -443,13 +456,20 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 "${info.localPage} / ${info.totalPages}"
             }
             updateAdjacentButtons()
-            saveReadingProgress(info)
+            scheduleSaveReadingProgress(info)
             return
         }
         updatePageLabel()
     }
 
-    private fun saveReadingProgress(info: ReaderSession.PageInfo) {
+    private fun scheduleSaveReadingProgress(info: ReaderSession.PageInfo) {
+        if (info.transitionCard || !info.manga.useBookmark()) return
+        pendingProgressInfo = info
+        progressHandler.removeCallbacks(saveProgressRunnable)
+        progressHandler.postDelayed(saveProgressRunnable, PROGRESS_SAVE_DEBOUNCE_MS)
+    }
+
+    private fun saveReadingProgressNow(info: ReaderSession.PageInfo) {
         if (info.transitionCard || !info.manga.useBookmark()) return
         val title = currentTitle ?: info.manga.title ?: return
         info.manga.title = title
@@ -534,6 +554,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     companion object {
         private const val BUSY_UI_UPDATE_INTERVAL_MS = 250L
+        private const val PROGRESS_SAVE_DEBOUNCE_MS = 1000L
         private const val DEFAULT_PAGE_GAP_PX = 2
         private const val WEBTOON_PAGE_GAP_PX = 0
 
