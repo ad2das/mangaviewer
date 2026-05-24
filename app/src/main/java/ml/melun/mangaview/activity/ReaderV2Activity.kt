@@ -249,7 +249,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onWindowChanged(firstPage: Int, lastPage: Int, anchorPage: Int, busy: Boolean) {
         currentPage = anchorPage
-        session?.requestWindow(firstPage, lastPage, anchorPage, busy)
+        session?.requestWindowAsync(firstPage, lastPage, anchorPage, busy)
         if (busy) {
             pendingAnchorAfterBusy = anchorPage
             val now = SystemClock.uptimeMillis()

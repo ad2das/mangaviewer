@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
 import android.os.SystemClock
 import ml.melun.mangaview.Utils
 import ml.melun.mangaview.glide.ViewerWarmupManager
@@ -19,6 +20,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.Semaphore
+import java.util.concurrent.ThreadFactory
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.max
@@ -64,13 +66,35 @@ class ReaderSession(
         val clearPage: Boolean
     )
 
+    private data class WindowCommand(
+        val first: Int,
+        val last: Int,
+        val anchor: Int,
+        val busy: Boolean
+    )
+
     private val appContext = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
-    private val network = Executors.newFixedThreadPool(ReaderPipelinePolicy.FOREGROUND_NETWORK_PARALLELISM)
-    private val decode = Executors.newFixedThreadPool(ReaderPipelinePolicy.IDLE_DECODE_PARALLELISM)
-    private val anchorNetwork = Executors.newSingleThreadExecutor()
-    private val anchorDecode = Executors.newSingleThreadExecutor()
-    private val cleanup = Executors.newSingleThreadExecutor()
+    private val network = Executors.newFixedThreadPool(
+        ReaderPipelinePolicy.FOREGROUND_NETWORK_PARALLELISM,
+        readerThreadFactory("ReaderNetwork", Process.THREAD_PRIORITY_BACKGROUND)
+    )
+    private val decode = Executors.newFixedThreadPool(
+        ReaderPipelinePolicy.IDLE_DECODE_PARALLELISM,
+        readerThreadFactory("ReaderDecode", Process.THREAD_PRIORITY_BACKGROUND)
+    )
+    private val anchorNetwork = Executors.newSingleThreadExecutor(
+        readerThreadFactory("ReaderAnchorNetwork", Process.THREAD_PRIORITY_BACKGROUND)
+    )
+    private val anchorDecode = Executors.newSingleThreadExecutor(
+        readerThreadFactory("ReaderAnchorDecode", Process.THREAD_PRIORITY_DEFAULT)
+    )
+    private val cleanup = Executors.newSingleThreadExecutor(
+        readerThreadFactory("ReaderCleanup", Process.THREAD_PRIORITY_BACKGROUND)
+    )
+    private val control = Executors.newSingleThreadExecutor(
+        readerThreadFactory("ReaderControl", Process.THREAD_PRIORITY_BACKGROUND)
+    )
     private val busyDecodeGate = Semaphore(ReaderPipelinePolicy.BUSY_DECODE_PARALLELISM)
     private val idleDecodeGate = Semaphore(ReaderPipelinePolicy.IDLE_DECODE_PARALLELISM)
     private val cancelled = AtomicBoolean(false)
@@ -94,6 +118,9 @@ class ReaderSession(
     private val windowLock = Object()
     private var lastWindowAnchor = -1
     private var lastWindowDirection = 0
+    private val controlLock = Object()
+    private var pendingWindowCommand: WindowCommand? = null
+    private var windowCommandPosted = false
     private val preparedEntry = ReaderPreparedStore.get(preparedKey)
     private val pagesInstalled = AtomicBoolean(false)
     private val preparedListener = object : ReaderPreparedStore.Listener {
@@ -266,6 +293,34 @@ class ReaderSession(
         requestWindow(first, last, anchor, busy, true)
     }
 
+    fun requestWindowAsync(first: Int, last: Int, anchor: Int, busy: Boolean) {
+        synchronized(controlLock) {
+            pendingWindowCommand = WindowCommand(first, last, anchor, busy)
+            if (windowCommandPosted) return
+            windowCommandPosted = true
+        }
+        try {
+            control.execute {
+                while (!cancelled.get()) {
+                    val command = synchronized(controlLock) {
+                        val next = pendingWindowCommand
+                        pendingWindowCommand = null
+                        if (next == null) {
+                            windowCommandPosted = false
+                            return@synchronized null
+                        }
+                        next
+                    } ?: return@execute
+                    requestWindow(command.first, command.last, command.anchor, command.busy, true)
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            synchronized(controlLock) {
+                windowCommandPosted = false
+            }
+        }
+    }
+
     private fun requestWindow(first: Int, last: Int, anchor: Int, busy: Boolean, retainWindow: Boolean) {
         if (cancelled.get()) return
         val count = synchronized(pagesLock) { pages.size }
@@ -311,6 +366,7 @@ class ReaderSession(
         anchorNetwork.shutdownNow()
         anchorDecode.shutdownNow()
         cleanup.shutdownNow()
+        control.shutdownNow()
     }
 
     fun prepareNextEpisode(anchor: Int) {
@@ -505,7 +561,9 @@ class ReaderSession(
             return
         }
         inFlightWidths[index] = targetWidth
-        main.post { if (!cancelled.get()) listener.onPageLoading(index) }
+        if (!busy || anchor) {
+            main.post { if (!cancelled.get()) listener.onPageLoading(index) }
+        }
         val networkExecutor = if (anchor) anchorNetwork else network
         val decodeExecutor = if (anchor) anchorDecode else decode
         try {
@@ -879,5 +937,18 @@ class ReaderSession(
         private const val PREPARED_FALLBACK_MS = 1500L
         private const val ACTIVE_BITMAP_BYTES = 64L * 1024L * 1024L
         private const val REPLACED_BITMAP_RECYCLE_DELAY_MS = 750L
+
+        private fun readerThreadFactory(name: String, priority: Int): ThreadFactory {
+            val counter = AtomicInteger(1)
+            return ThreadFactory { runnable ->
+                Thread {
+                    Process.setThreadPriority(priority)
+                    runnable.run()
+                }.apply {
+                    this.name = "$name-${counter.getAndIncrement()}"
+                    isDaemon = true
+                }
+            }
+        }
     }
 }

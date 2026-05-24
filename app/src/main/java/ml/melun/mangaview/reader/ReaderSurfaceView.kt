@@ -94,6 +94,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val history: Int
     )
 
+    private data class RenderWork(
+        val request: WindowRequest?,
+        val boundary: BoundaryRequest?,
+        val state: DrawState?
+    )
+
     private val stateLock = Object()
     private val pages = ArrayList<Page>()
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
@@ -106,6 +112,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private val dst = RectF()
     private val scroller = OverScroller(context)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private val dragStartSlop = max(1f, touchSlop * 0.5f)
     private val minVelocity = ViewConfiguration.get(context).scaledMinimumFlingVelocity
     private val maxVelocity = ViewConfiguration.get(context).scaledMaximumFlingVelocity
     private var pageGapPx = DEFAULT_PAGE_GAP_PX
@@ -120,6 +127,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var renderRequested = false
     private var frameScheduled = false
     private var immediateFrameScheduled = false
+    private var pendingFrameCallback: Choreographer.FrameCallback? = null
+    private var frameToken = 0
     private var lastY = 0f
     private var downY = 0f
     private var pointerDown = false
@@ -409,8 +418,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 velocityTracker?.addMovement(event)
                 val request = synchronized(stateLock) {
                     noteInputLocked(event)
-                    val dy = lastY - event.y
-                    if (!dragging && abs(dy) > touchSlop) dragging = true
+                    var dy = lastY - event.y
+                    if (!dragging) {
+                        val totalDy = downY - event.y
+                        if (abs(totalDy) > dragStartSlop) {
+                            dragging = true
+                            lastY = downY - if (totalDy > 0f) dragStartSlop else -dragStartSlop
+                            dy = lastY - event.y
+                        }
+                    }
                     if (dragging) {
                         val busyRequest = setBusyLocked(true)
                         val direction = directionForDelta(dy)
@@ -421,7 +437,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         renderRequested = true
                         scheduleFrameLocked(preferImmediate = true)
                         stateLock.notifyAll()
-                        busyRequest ?: windowRequestLocked(true)
+                        busyRequest
                     } else {
                         null
                     }
@@ -489,15 +505,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return true
     }
 
-    private val frameCallback = Choreographer.FrameCallback { frameTimeNanos ->
-        renderFrame(frameTimeNanos)
-    }
-
-    private fun renderFrame(frameTimeNanos: Long) {
+    private fun renderFrame(frameTimeNanos: Long, token: Int) {
         val callbackStartNs = System.nanoTime()
-        val requestAndState = synchronized(stateLock) {
+        val work = synchronized(stateLock) {
+            if (token != frameToken) return
             frameScheduled = false
             immediateFrameScheduled = false
+            pendingFrameCallback = null
             if (!renderRunning || !surfaceReady) return
             var request: WindowRequest? = null
             var boundary: BoundaryRequest? = null
@@ -521,16 +535,19 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 request = windowRequestLocked(true) ?: request
             }
             if (wasBusy && !busyNow) boundary = boundaryRequestLocked()
-            val state = buildDrawStateLocked(busyNow)
-            renderRequested = false
-            if (busyNow) scheduleFrameLocked()
-            Triple(request, boundary, state)
+            val animateScroll = dragging || scrolling || !scroller.isFinished
+            val shouldDraw = renderRequested || animateScroll
+            val state = if (shouldDraw) buildDrawStateLocked(busyNow) else null
+            if (shouldDraw) renderRequested = false
+            if (animateScroll) scheduleFrameLocked()
+            RenderWork(request, boundary, state)
         }
-        dispatchWindowRequest(requestAndState.first)
-        dispatchBoundaryRequest(requestAndState.second)
-        val timing = drawState(frameTimeNanos, callbackStartNs, requestAndState.third)
+        dispatchWindowRequest(work.request)
+        dispatchBoundaryRequest(work.boundary)
+        val state = work.state ?: return
+        val timing = drawState(frameTimeNanos, callbackStartNs, state)
         if (timing.posted) synchronized(stateLock) { lastPostedFrameEndNs = timing.postEndNs }
-        recordFrameStats(timing, requestAndState.third.busy)
+        recordFrameStats(timing, state.busy)
     }
 
     private fun drawState(frameTimeNs: Long, callbackStartNs: Long, state: DrawState): DrawTiming {
@@ -666,41 +683,47 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (lastBusy == busy) return null
         lastBusy = busy
         renderRequested = true
-        scheduleFrameLocked()
-        stateLock.notifyAll()
         return windowRequestLocked(busy)
     }
 
     private fun scheduleFrameLocked(preferImmediate: Boolean = false) {
         if (!renderRunning || !surfaceReady) return
-        if (frameScheduled) {
-            statsCoalescedRequests++
-            return
-        }
         val handler = renderHandler
+        val choreographer = renderChoreographer
+        if (handler == null && choreographer == null) return
         val nowNs = System.nanoTime()
         val canRenderImmediate = preferImmediate &&
             handler != null &&
             !immediateFrameScheduled &&
             (lastPostedFrameEndNs == 0L || nowNs - lastPostedFrameEndNs >= IMMEDIATE_FRAME_MIN_INTERVAL_NS)
+        if (frameScheduled) {
+            statsCoalescedRequests++
+            return
+        }
+        frameToken++
+        val token = frameToken
         if (canRenderImmediate) {
             frameScheduled = true
             immediateFrameScheduled = true
-            handler.post {
-                renderFrame(System.nanoTime())
-            }
+            handler.post { renderFrame(System.nanoTime(), token) }
             return
         }
-        val choreographer = renderChoreographer
+        val callback = Choreographer.FrameCallback { frameTimeNanos ->
+            renderFrame(frameTimeNanos, token)
+        }
+        pendingFrameCallback = callback
+        frameScheduled = true
         if (choreographer != null) {
-            frameScheduled = true
-            immediateFrameScheduled = false
-            choreographer.postFrameCallback(frameCallback)
+            choreographer.postFrameCallback(callback)
         } else if (handler != null) {
-            frameScheduled = true
-            immediateFrameScheduled = false
             handler.post {
-                Choreographer.getInstance().postFrameCallback(frameCallback)
+                val shouldPost = synchronized(stateLock) {
+                    pendingFrameCallback === callback &&
+                        frameToken == token &&
+                        renderRunning &&
+                        surfaceReady
+                }
+                if (shouldPost) Choreographer.getInstance().postFrameCallback(callback)
             }
         }
     }
@@ -732,9 +755,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
         renderThread = null
         frameScheduled = false
         immediateFrameScheduled = false
+        frameToken++
+        val callback = pendingFrameCallback
+        pendingFrameCallback = null
         if (handler == null || thread == null) return
         handler.post {
-            Choreographer.getInstance().removeFrameCallback(frameCallback)
+            callback?.let { Choreographer.getInstance().removeFrameCallback(it) }
             thread.quitSafely()
         }
     }
@@ -1032,7 +1058,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val DEFAULT_FRAME_BUDGET_MS = 16.67f
         private const val MISSED_VSYNC_FACTOR = 1.5f
         private const val MIN_FRAME_SAMPLES = 8
-        private const val DEFAULT_PAGE_GAP_PX = 2
+        private const val DEFAULT_PAGE_GAP_PX = 0
         private const val BOUNDARY_EPSILON_PX = 2f
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
