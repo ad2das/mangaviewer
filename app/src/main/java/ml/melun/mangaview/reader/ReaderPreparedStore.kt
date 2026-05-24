@@ -114,10 +114,13 @@ object ReaderPreparedStore {
 
         internal fun trimOldestBitmap(): Boolean = synchronized(lock) {
             val iterator = bitmapMap.entries.iterator()
-            if (!iterator.hasNext()) return false
-            iterator.next()
-            iterator.remove()
-            true
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+                if (entry.key == resolvedStartPage) continue
+                iterator.remove()
+                return true
+            }
+            false
         }
     }
 

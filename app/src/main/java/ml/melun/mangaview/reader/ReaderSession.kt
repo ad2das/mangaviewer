@@ -64,6 +64,8 @@ class ReaderSession(
     private val decodedWidths = ConcurrentHashMap<Int, Int>()
     private val deliveredBitmaps = LinkedHashMap<Int, Bitmap>(32, 0.75f, true)
     private val deliveredOwned = HashSet<Int>()
+    private var retainedFirstPage = 0
+    private var retainedLastPage = 0
     private val nextLoading = AtomicBoolean(false)
     private val repositoryLoading = AtomicBoolean(false)
     private val preparedEntry = ReaderPreparedStore.get(preparedKey)
@@ -207,6 +209,10 @@ class ReaderSession(
         if (count <= 0) return
         val safeFirst = first.coerceIn(0, count - 1)
         val safeLast = last.coerceIn(safeFirst, count - 1)
+        synchronized(deliveredBitmaps) {
+            retainedFirstPage = safeFirst
+            retainedLastPage = safeLast
+        }
         for (i in windowOrder(safeFirst, safeLast, anchor)) requestPage(i, busy, i == anchor)
         trimDecodedWidth(anchor, busy)
     }
@@ -418,11 +424,17 @@ class ReaderSession(
     private fun trimDeliveredBudgetLocked(cleared: MutableList<Pair<Int, Bitmap?>>) {
         while (deliveredBitmapBytesLocked() > ACTIVE_BITMAP_BYTES) {
             val iterator = deliveredBitmaps.entries.iterator()
-            if (!iterator.hasNext()) return
-            val entry = iterator.next()
-            val owned = deliveredOwned.remove(entry.key)
-            cleared.add(entry.key to if (owned) entry.value else null)
-            iterator.remove()
+            var trimmed = false
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+                if (entry.key in retainedFirstPage..retainedLastPage) continue
+                val owned = deliveredOwned.remove(entry.key)
+                cleared.add(entry.key to if (owned) entry.value else null)
+                iterator.remove()
+                trimmed = true
+                break
+            }
+            if (!trimmed) return
         }
     }
 

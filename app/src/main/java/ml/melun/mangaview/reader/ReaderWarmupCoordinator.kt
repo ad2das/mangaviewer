@@ -51,7 +51,8 @@ object ReaderWarmupCoordinator {
         val key = stableKey(manga, launchTitle, startPage, width, exactEpisode)
         val entry = ReaderPreparedStore.get(key) ?: return null
         val snapshot = entry.snapshot()
-        return if (!snapshot.images.isNullOrEmpty()) key else null
+        val startBitmap = snapshot.bitmaps[snapshot.startPage]
+        return if (!snapshot.images.isNullOrEmpty() && startBitmap != null && !startBitmap.isRecycled) key else null
     }
 
     @JvmStatic

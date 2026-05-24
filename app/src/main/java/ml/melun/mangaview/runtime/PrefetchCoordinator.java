@@ -106,7 +106,7 @@ public final class PrefetchCoordinator {
         if(shouldSkipWolfBackgroundPrefetchForTest(title == null ? null : title.getSourceSite(), p != null && p.isNtkSite(), getHttpClient().isNtk()))
             return;
         Context appContext = context.getApplicationContext();
-        warmAndPreload(appContext, current.nextEp(), title, width, autoCut, reverse);
+        warmAndPreload(appContext, current.prevEp(), title, width, autoCut, reverse);
     }
 
     public static void prefetchViewerWindow(Context context, Manga manga, int pageIndex, int width, boolean autoCut, boolean reverse) {
