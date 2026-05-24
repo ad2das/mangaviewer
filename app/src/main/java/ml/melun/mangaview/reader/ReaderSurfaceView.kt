@@ -137,6 +137,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var statsLastCallbackStartNs = 0L
     private var statsLastPostEndNs = 0L
     private var lastPostedFrameEndNs = 0L
+    private var lastImmediateFrameRequestNs = 0L
     private var statsCoalescedRequests = 0
     private var statsNoCanvasFrames = 0
     private val statsCallbackSpacingMs = ArrayList<Float>(240)
@@ -480,18 +481,31 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    requestUnbufferedDispatch(event)
+                }
                 velocityTracker?.addMovement(event)
                 val request = synchronized(stateLock) {
                     noteInputLocked(event)
-                    val dy = lastY - event.y
-                    if (dy != 0f) {
-                        dragging = true
-                        val busyRequest = setBusyLocked(true)
+                    var moved = false
+                    var busyRequest: WindowRequest? = null
+                    fun applyMove(y: Float) {
+                        val dy = lastY - y
+                        if (dy == 0f) return
+                        moved = true
+                        if (!dragging) dragging = true
+                        busyRequest = setBusyLocked(true) ?: busyRequest
                         val direction = directionForDelta(dy)
                         if (direction != 0) boundaryArmedDirection = direction
                         scrollOffset += dy * DRAG_SCROLL_MULTIPLIER
                         clampScrollLocked()
-                        lastY = event.y
+                        lastY = y
+                    }
+                    for (i in 0 until event.historySize) {
+                        applyMove(event.getHistoricalY(i))
+                    }
+                    applyMove(event.y)
+                    if (moved) {
                         renderRequested = true
                         scheduleFrameLocked(preferImmediate = true)
                         stateLock.notifyAll()
@@ -771,11 +785,27 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (!renderRunning) return
         if (frameScheduled) {
             statsCoalescedRequests++
+            if (preferImmediate) postImmediateFrameIfDueLocked()
             return
         }
         frameToken++
         frameScheduled = true
+        if (preferImmediate && postImmediateFrameIfDueLocked()) return
         postInvalidateOnAnimation()
+    }
+
+    private fun postImmediateFrameIfDueLocked(): Boolean {
+        val nowNs = System.nanoTime()
+        val lastFrameNs = max(lastPostedFrameEndNs, lastImmediateFrameRequestNs)
+        val elapsedNs = if (lastFrameNs > 0L) nowNs - lastFrameNs else Long.MAX_VALUE
+        if (elapsedNs < IMMEDIATE_FRAME_MIN_INTERVAL_NS) return false
+        lastImmediateFrameRequestNs = nowNs
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            invalidate()
+        } else {
+            postInvalidate()
+        }
+        return true
     }
 
     private fun stopRenderThreadLocked(): Thread? {
