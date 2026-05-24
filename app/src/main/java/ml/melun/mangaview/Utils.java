@@ -70,6 +70,7 @@ import ml.melun.mangaview.activity.ViewerActivity3;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.IntegerCallback;
 import ml.melun.mangaview.interfaces.StringCallback;
+import ml.melun.mangaview.reader.ReaderLaunchPreparer;
 import ml.melun.mangaview.repository.DownloadRepository;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
@@ -221,25 +222,7 @@ public class Utils {
     private static Intent viewerIntent(Context context, Manga manga, boolean warmupContinue,
                                        boolean includeViewerTitle, boolean includeMangaEpisodes,
                                        boolean includeTitleEpisodes){
-        Intent viewer = null;
-        if(shouldUseReaderV2(manga)) {
-            viewer = new Intent(context, ml.melun.mangaview.activity.ReaderV2Activity.class);
-        } else {
-            int viewerType = p == null ? new Preference(context).getViewerType() : p.getViewerType();
-            switch (viewerType){
-                case 0:
-                    viewer = new Intent(context, ViewerActivity.class);
-                    break;
-                case 2:
-                    viewer = new Intent(context, ViewerActivity3.class);
-                    break;
-                case 1:
-                    viewer = new Intent(context, ViewerActivity2.class);
-                    break;
-            }
-        }
-        if(shouldScheduleViewerIntentWarmup(context, manga, warmupContinue))
-            ViewerWarmupManager.warmupContinue(context, manga, manga == null ? null : manga.getTitle());
+        Intent viewer = new Intent(context, ml.melun.mangaview.activity.ReaderV2Activity.class);
         Title title = manga == null ? null : manga.getTitle();
         viewer.putExtra("manga", toViewerMangaJson(manga, title, includeMangaEpisodes));
         if(includeViewerTitle)
@@ -322,34 +305,6 @@ public class Utils {
             switchToTitleSourceSite(launchTitle);
             manga.setTitle(launchTitle);
             manga.setTitleId(launchTitle.getId());
-        }
-        if(!manga.isOnline()) {
-            launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken, exactEpisode);
-            return;
-        }
-        Manga immediate = exactEpisode
-                ? ViewerWarmupManager.usePreparedExactFirstFrame(context, manga, launchTitle, false, p.getReverse(), 0)
-                : ViewerWarmupManager.usePreparedFirstFrame(context, manga, launchTitle, false, p.getReverse());
-        if(immediate != null) {
-            launchPreparedViewer(context, immediate, code, returnToEpisodes, online, recent,
-                    launchTitle != null ? launchTitle : immediate.getTitle(), includeTitleEpisodes, launchToken, exactEpisode);
-            return;
-        }
-        if(!exactEpisode) {
-            int firstPage = manga.useBookmark() && p != null ? p.getViewerBookmark(manga) : 0;
-            Manga preparedImages = ViewerWarmupManager.usePreparedContinueImages(context, manga, launchTitle, firstPage);
-            if(preparedImages != null) {
-                launchPreparedViewer(context, preparedImages, code, returnToEpisodes, online, recent,
-                        launchTitle != null ? launchTitle : preparedImages.getTitle(), includeTitleEpisodes,
-                        launchToken, false);
-                return;
-            }
-        }
-        if(!exactEpisode && waitForFirstFrame) {
-            ViewerWarmupManager.prioritizeUserSelectedContinue();
-            launchWhenFirstFrameReady(context, manga, code, returnToEpisodes, online, recent,
-                    launchTitle, includeTitleEpisodes, launchToken);
-            return;
         }
         launchPreparedViewer(context, manga, code, returnToEpisodes, online, recent, launchTitle, includeTitleEpisodes, launchToken, exactEpisode);
     }
@@ -557,35 +512,58 @@ public class Utils {
                                              int launchToken, boolean exactEpisode) {
         if(context == null || manga == null)
             return;
-        if(!consumeViewerLaunchToken(context, launchToken))
-            return;
         if(context instanceof Activity && !canUseActivity((Activity) context))
             return;
-        Intent viewer = viewerIntent(context, manga, !exactEpisode, false, !exactEpisode, false);
-        viewer.putExtra("online", online);
-        if(exactEpisode) {
-            viewer.putExtra(ViewerActivity.EXTRA_EXACT_EPISODE, true);
-            viewer.putExtra(ViewerActivity.EXTRA_START_AT_FIRST_PAGE, true);
-        }
-        if(returnToEpisodes)
-            viewer.putExtra("returnToEpisodes", true);
+        int width = context instanceof Activity
+                ? getScreenWidth(((Activity) context).getWindowManager().getDefaultDisplay())
+                : context.getResources().getDisplayMetrics().widthPixels;
+        Context appContext = context.getApplicationContext();
         Title launchTitle = title != null ? title : manga.getTitle();
-        if(launchTitle != null)
-            viewer.putExtra("title", toViewerTitleJson(launchTitle, includeTitleEpisodes));
-        if(recent)
-            viewer.putExtra("recent", true);
-        viewer.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
-        try {
-            if(context instanceof Activity) {
-                ((Activity) context).startActivityForResult(viewer, code);
-                ((Activity) context).overridePendingTransition(0, 0);
-            } else {
-                viewer.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                context.startActivity(viewer);
+        AppDispatchers.submitUserAction(() -> {
+            String preparedKey;
+            try {
+                preparedKey = ReaderLaunchPreparer.prepareFirstFrame(appContext, manga, launchTitle, width, exactEpisode);
+            } catch (Exception e) {
+                ml.melun.mangaview.report.CrashReporter.record(e);
+                preparedKey = null;
             }
-        } catch(RuntimeException e) {
-            ml.melun.mangaview.report.CrashReporter.record(e);
-        }
+            String finalPreparedKey = preparedKey;
+            AppDispatchers.runOnMain(() -> {
+                if(!consumeViewerLaunchToken(context, launchToken))
+                    return;
+                if(context instanceof Activity && !canUseActivity((Activity) context))
+                    return;
+                if(finalPreparedKey == null) {
+                    Toast.makeText(context, "이미지를 불러오지 못했습니다", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                Intent viewer = viewerIntent(context, manga, false, false, true, false);
+                viewer.putExtra("online", online);
+                viewer.putExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY, finalPreparedKey);
+                if(exactEpisode) {
+                    viewer.putExtra(ViewerActivity.EXTRA_EXACT_EPISODE, true);
+                    viewer.putExtra(ViewerActivity.EXTRA_START_AT_FIRST_PAGE, true);
+                }
+                if(returnToEpisodes)
+                    viewer.putExtra("returnToEpisodes", true);
+                if(launchTitle != null)
+                    viewer.putExtra("title", toViewerTitleJson(launchTitle, includeTitleEpisodes));
+                if(recent)
+                    viewer.putExtra("recent", true);
+                viewer.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+                try {
+                    if(context instanceof Activity) {
+                        ((Activity) context).startActivityForResult(viewer, code);
+                        ((Activity) context).overridePendingTransition(0, 0);
+                    } else {
+                        viewer.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        context.startActivity(viewer);
+                    }
+                } catch(RuntimeException e) {
+                    ml.melun.mangaview.report.CrashReporter.record(e);
+                }
+            });
+        });
     }
 
     private static synchronized int nextViewerLaunchToken(Context context) {

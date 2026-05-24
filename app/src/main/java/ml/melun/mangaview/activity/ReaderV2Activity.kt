@@ -14,11 +14,12 @@ import ml.melun.mangaview.MainApplication.p
 import ml.melun.mangaview.Utils
 import ml.melun.mangaview.mangaview.Manga
 import ml.melun.mangaview.mangaview.Title
-import ml.melun.mangaview.reader.ReaderRenderView
+import ml.melun.mangaview.reader.ReaderLaunchPreparer
 import ml.melun.mangaview.reader.ReaderSession
+import ml.melun.mangaview.reader.ReaderSurfaceView
 
-class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderRenderView.WindowListener {
-    private lateinit var renderView: ReaderRenderView
+class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.WindowListener {
+    private lateinit var renderView: ReaderSurfaceView
     private lateinit var status: TextView
     private var session: ReaderSession? = null
     private var pagesReady = false
@@ -30,9 +31,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderRenderView.Wi
             View.SYSTEM_UI_FLAG_FULLSCREEN
                 or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                 or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-            )
+        )
         val root = FrameLayout(this)
-        renderView = ReaderRenderView(this).also { it.setWindowListener(this) }
+        renderView = ReaderSurfaceView(this).also { it.setWindowListener(this) }
         status = TextView(this).apply {
             text = "로딩 중"
             setTextColor(0xffcccccc.toInt())
@@ -56,7 +57,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderRenderView.Wi
         }
         status.text = manga.name ?: "로딩 중"
         root.post {
-            session = ReaderSession(this, manga, title, Utils.getScreenWidth(windowManager.defaultDisplay), this).also {
+            session = ReaderSession(
+                this,
+                manga,
+                title,
+                Utils.getScreenWidth(windowManager.defaultDisplay),
+                intent.getStringExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY),
+                this
+            ).also {
                 it.start()
             }
         }
@@ -80,6 +88,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderRenderView.Wi
         if (pagesReady) renderView.appendPageCount(count)
     }
 
+    override fun onInitialPage(index: Int) {
+        if (pagesReady) renderView.scrollToPage(index)
+    }
+
     override fun onPageLoading(index: Int) {
         if (pagesReady) renderView.setPageLoading(index)
     }
@@ -94,7 +106,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderRenderView.Wi
     }
 
     override fun onWindowChanged(firstPage: Int, lastPage: Int, anchorPage: Int, busy: Boolean) {
-        renderView.clearOutside(firstPage - 2, lastPage + 2)
         session?.requestWindow(firstPage, lastPage, anchorPage, busy)
     }
 

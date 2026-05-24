@@ -11,7 +11,7 @@ public class ReaderPipelinePolicyTest {
         assertEquals(1, ReaderPipelinePolicy.windowBefore(true));
         assertEquals(3, ReaderPipelinePolicy.windowAfter(true));
         assertEquals(1, ReaderPipelinePolicy.decodeParallelism(true));
-        assertEquals(320, ReaderPipelinePolicy.BUSY_DECODE_WIDTH);
+        assertEquals(480, ReaderPipelinePolicy.BUSY_DECODE_WIDTH);
     }
 
     @Test

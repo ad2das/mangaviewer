@@ -92,6 +92,17 @@ class ReaderRenderView @JvmOverloads constructor(
         invalidate()
     }
 
+    fun scrollToPage(index: Int) {
+        val target = index.coerceIn(0, pages.lastIndex)
+        var top = 0f
+        for (i in 0 until target) top += pageDrawHeight(pages[i]) + gapPx
+        scrollOffset = top
+        clampScroll()
+        lastAnchor = -1
+        requestWindow(false)
+        invalidate()
+    }
+
     fun clearPage(index: Int) {
         val page = pages.getOrNull(index) ?: return
         page.bitmap = null
@@ -137,14 +148,19 @@ class ReaderRenderView @JvmOverloads constructor(
         val page = pages[index]
         val bitmap = page.bitmap
         if (bitmap != null && !bitmap.isRecycled) {
-            src.set(0, 0, bitmap.width, bitmap.height)
-            dst.set(0f, top, width.toFloat(), top + pageHeight)
+            val visibleTop = max(0f, top)
+            val visibleBottom = min(height.toFloat(), top + pageHeight)
+            if (visibleBottom <= visibleTop) return
+            val sourceTop = ((visibleTop - top) / pageHeight * bitmap.height).toInt().coerceIn(0, bitmap.height - 1)
+            val sourceBottom = ((visibleBottom - top) / pageHeight * bitmap.height).toInt().coerceIn(sourceTop + 1, bitmap.height)
+            src.set(0, sourceTop, bitmap.width, sourceBottom)
+            dst.set(0f, visibleTop, width.toFloat(), visibleBottom)
             paint.isFilterBitmap = !lastBusy
             canvas.drawBitmap(bitmap, src, dst, paint)
             return
         }
         paint.color = Color.rgb(18, 18, 18)
-        dst.set(0f, top, width.toFloat(), top + pageHeight)
+        dst.set(0f, max(0f, top), width.toFloat(), min(height.toFloat(), top + pageHeight))
         canvas.drawRect(dst, paint)
         canvas.drawText(if (page.loading) "불러오는 중" else "대기 중", width / 2f, top + min(pageHeight / 2f, height / 2f), textPaint)
     }
@@ -191,7 +207,6 @@ class ReaderRenderView @JvmOverloads constructor(
         if (scroller.computeScrollOffset()) {
             scrollOffset = scroller.currY.toFloat()
             requestWindow(true)
-            invalidate()
             postInvalidateOnAnimation()
         } else if (lastBusy && !dragging) {
             setBusy(false)
@@ -215,7 +230,6 @@ class ReaderRenderView @JvmOverloads constructor(
         if (lastBusy == busy) return
         lastBusy = busy
         requestWindow(busy)
-        invalidate()
     }
 
     private fun clampScroll() {
