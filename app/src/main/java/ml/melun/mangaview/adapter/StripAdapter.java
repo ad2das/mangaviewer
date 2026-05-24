@@ -281,9 +281,14 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(items.size() == 0)
             items.add(new InfoItem(m.prevEp(), m));
         for(int i=0; i<imgs.size(); i++){
-            items.add(new PageItem(i,imgs.get(i),m));
-            if(autoCut)
-                items.add(new PageItem(i,imgs.get(i),m,PageItem.SECOND));
+            PageItem first = new PageItem(i, imgs.get(i), m);
+            seedPageHeightFromWarmup(first);
+            items.add(first);
+            if(autoCut) {
+                PageItem second = new PageItem(i, imgs.get(i), m, PageItem.SECOND);
+                seedPageHeightFromWarmup(second);
+                items.add(second);
+            }
         }
         items.add(new InfoItem(m, m.nextEp()));
         notifyItemRangeInserted(prevsize, items.size()-prevsize);
@@ -305,9 +310,14 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(items.size() == 0)
             pending.add(new InfoItem(m.prevEp(), m));
         for(int i = 0; i < imgs.size(); i++) {
-            pending.add(new PageItem(i, imgs.get(i), m));
-            if(autoCut)
-                pending.add(new PageItem(i, imgs.get(i), m, PageItem.SECOND));
+            PageItem first = new PageItem(i, imgs.get(i), m);
+            seedPageHeightFromWarmup(first);
+            pending.add(first);
+            if(autoCut) {
+                PageItem second = new PageItem(i, imgs.get(i), m, PageItem.SECOND);
+                seedPageHeightFromWarmup(second);
+                pending.add(second);
+            }
         }
         pending.add(new InfoItem(m, m.nextEp()));
         appendMangaBatch(pending, 0);
@@ -348,9 +358,14 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         if(imgs == null || imgs.size() == 0)
             return 0;
         for(int i=imgs.size()-1; i>=0; i--){
-            if(autoCut)
-                items.add(0, new PageItem(i,imgs.get(i),m,PageItem.SECOND));
-            items.add(0,new PageItem(i,imgs.get(i),m));
+            if(autoCut) {
+                PageItem second = new PageItem(i, imgs.get(i), m, PageItem.SECOND);
+                seedPageHeightFromWarmup(second);
+                items.add(0, second);
+            }
+            PageItem first = new PageItem(i, imgs.get(i), m);
+            seedPageHeightFromWarmup(first);
+            items.add(0, first);
         }
         items.add(0, new InfoItem(null, m));
 
@@ -986,6 +1001,18 @@ public class StripAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         }
         if(scrollBusy)
             pendingHeightCorrections.add(pageKey);
+    }
+
+    private void seedPageHeightFromWarmup(PageItem item) {
+        if(item == null)
+            return;
+        String pageKey = pageBindKey(item);
+        if(hasKnownPageHeight(pageKey))
+            return;
+        Bitmap bitmap = ViewerWarmupManager.getDecodedBitmap(item, autoCut, reverse, width);
+        if(!isDisplayBitmapUsable(bitmap))
+            return;
+        rememberPageHeight(pageKey, bitmap);
     }
 
     private void applyKnownHeight(ImgViewHolder holder, PageItem item, String pageKey) {
