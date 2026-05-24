@@ -137,7 +137,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var statsLastCallbackStartNs = 0L
     private var statsLastPostEndNs = 0L
     private var lastPostedFrameEndNs = 0L
-    private var lastImmediateFrameRequestNs = 0L
     private var statsCoalescedRequests = 0
     private var statsNoCanvasFrames = 0
     private val statsCallbackSpacingMs = ArrayList<Float>(240)
@@ -205,9 +204,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val shouldExtendActiveFling = !scroller.isFinished &&
                 boundaryArmedDirection == DIRECTION_NEXT &&
                 scroller.finalY >= oldMaxScroll - BOUNDARY_FLING_EXTEND_EPSILON_PX
-            repeat(count - pages.size) { pages.add(Page()) }
-            layoutDirty = true
-            rebuildLayoutLocked()
+            appendEmptyPagesLocked(count - pages.size)
             val newMaxScroll = max(0f, contentHeight - height).toInt()
             if (shouldExtendActiveFling && newMaxScroll > oldMaxScroll) {
                 val velocity = scroller.currVelocity
@@ -272,7 +269,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val newHeight = pageDrawHeightLocked(page)
             if (oldTop + oldHeight <= scrollOffset) scrollOffset += newHeight - oldHeight
             val belowVisible = oldTop > scrollOffset + height
-            layoutDirty = true
+            updatePageHeightDeltaLocked(index, newHeight - oldHeight)
             clampScrollLocked()
             if (!lastBusy || !belowVisible) {
                 renderRequested = true
@@ -301,7 +298,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val newHeight = pageDrawHeightLocked(page)
             if (oldTop + oldHeight <= scrollOffset) scrollOffset += newHeight - oldHeight
             val belowVisible = oldTop > scrollOffset + height
-            layoutDirty = true
+            updatePageHeightDeltaLocked(index, newHeight - oldHeight)
             clampScrollLocked()
             if (!lastBusy || !belowVisible) {
                 renderRequested = true
@@ -373,7 +370,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val newHeight = pageDrawHeightLocked(page)
             if (oldTop + oldHeight <= scrollOffset) scrollOffset += newHeight - oldHeight
             val belowVisible = oldTop > scrollOffset + height
-            layoutDirty = true
+            updatePageHeightDeltaLocked(index, newHeight - oldHeight)
             clampScrollLocked()
             if (!lastBusy || !belowVisible) {
                 renderRequested = true
@@ -481,9 +478,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    requestUnbufferedDispatch(event)
-                }
                 velocityTracker?.addMovement(event)
                 val request = synchronized(stateLock) {
                     noteInputLocked(event)
@@ -507,7 +501,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     applyMove(event.y)
                     if (moved) {
                         renderRequested = true
-                        scheduleFrameLocked(preferImmediate = true)
+                        scheduleFrameLocked()
                         stateLock.notifyAll()
                         busyRequest
                     } else {
@@ -785,27 +779,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (!renderRunning) return
         if (frameScheduled) {
             statsCoalescedRequests++
-            if (preferImmediate) postImmediateFrameIfDueLocked()
             return
         }
         frameToken++
         frameScheduled = true
-        if (preferImmediate && postImmediateFrameIfDueLocked()) return
         postInvalidateOnAnimation()
-    }
-
-    private fun postImmediateFrameIfDueLocked(): Boolean {
-        val nowNs = System.nanoTime()
-        val lastFrameNs = max(lastPostedFrameEndNs, lastImmediateFrameRequestNs)
-        val elapsedNs = if (lastFrameNs > 0L) nowNs - lastFrameNs else Long.MAX_VALUE
-        if (elapsedNs < IMMEDIATE_FRAME_MIN_INTERVAL_NS) return false
-        lastImmediateFrameRequestNs = nowNs
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            invalidate()
-        } else {
-            postInvalidate()
-        }
-        return true
     }
 
     private fun stopRenderThreadLocked(): Thread? {
@@ -905,6 +883,28 @@ class ReaderSurfaceView @JvmOverloads constructor(
             top += pageDrawHeightLocked(pages[i]) + pageGapPx
         }
         contentHeight = max(0f, top - pageGapPx)
+        layoutDirty = false
+    }
+
+    private fun appendEmptyPagesLocked(additionalCount: Int) {
+        if (additionalCount <= 0) return
+        var top = if (pages.isEmpty()) 0f else contentHeight + pageGapPx
+        repeat(additionalCount) {
+            val page = Page()
+            pages.add(page)
+            pageTops[pages.lastIndex] = top
+            top += pageDrawHeightLocked(page) + pageGapPx
+        }
+        contentHeight = max(0f, top - pageGapPx)
+        layoutDirty = false
+    }
+
+    private fun updatePageHeightDeltaLocked(index: Int, delta: Float) {
+        if (abs(delta) <= 0.01f) return
+        for (i in index + 1 until pages.size) {
+            pageTops[i] = pageTops[i] + delta
+        }
+        contentHeight = max(0f, contentHeight + delta)
         layoutDirty = false
     }
 
@@ -1125,7 +1125,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val BOUNDARY_FLING_MIN_VELOCITY_MULTIPLIER = 2f
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
-        private const val IMMEDIATE_FRAME_MIN_INTERVAL_NS = 4_000_000L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
     }
 }

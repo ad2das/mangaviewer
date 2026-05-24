@@ -61,10 +61,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var episodeListFetchAttempted = false
     private var destroyed = false
     private val progressHandler = Handler(Looper.getMainLooper())
+    private val statusHandler = Handler(Looper.getMainLooper())
     private var pendingProgressInfo: ReaderSession.PageInfo? = null
+    private var pendingBoundaryStatus = false
     private val saveProgressRunnable = Runnable {
         pendingProgressInfo?.let { saveReadingProgressNow(it) }
         pendingProgressInfo = null
+    }
+    private val showBoundaryStatusRunnable = Runnable {
+        if (pendingBoundaryStatus && pagesReady && !destroyed && !isFinishing) {
+            status.visibility = TextView.VISIBLE
+            status.text = "회차 연결 중"
+        }
     }
 
     private data class AdjacentResolution(
@@ -189,8 +197,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     override fun onDestroy() {
         destroyed = true
         progressHandler.removeCallbacks(saveProgressRunnable)
+        statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         pendingProgressInfo?.let { saveReadingProgressNow(it) }
         pendingProgressInfo = null
+        pendingBoundaryStatus = false
         renderView.setWindowListener(null)
         renderView.stopRenderingAndClearPages()
         session?.cancel()
@@ -207,6 +217,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPagesAppended(count: Int) {
         if (pagesReady) {
+            hideBoundaryStatus()
             pageCount = count
             renderView.appendPageCount(count)
             updateCurrentEpisode(currentPage)
@@ -215,6 +226,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPagesPrepended(count: Int, insertedCount: Int) {
         if (pagesReady) {
+            hideBoundaryStatus()
             pageCount = count
             currentPage += insertedCount
             renderView.prependPageCount(count, insertedCount)
@@ -240,21 +252,21 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPageReady(index: Int, bitmap: Bitmap) {
         if (pagesReady) {
-            status.visibility = TextView.GONE
+            hideBoundaryStatus()
             renderView.setPageBitmap(index, bitmap)
         }
     }
 
     override fun onPageTilesReady(index: Int, pageWidth: Int, pageHeight: Int, tiles: List<ReaderTile>) {
         if (pagesReady) {
-            status.visibility = TextView.GONE
+            hideBoundaryStatus()
             renderView.setPageTiles(index, pageWidth, pageHeight, tiles)
         }
     }
 
     override fun onPageCard(index: Int, title: String) {
         if (pagesReady) {
-            status.visibility = TextView.GONE
+            hideBoundaryStatus()
             renderView.setPageCard(index, title)
         }
     }
@@ -264,6 +276,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     override fun onMessage(message: String) {
+        pendingBoundaryStatus = false
+        statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         status.visibility = TextView.VISIBLE
         status.text = message
     }
@@ -274,7 +288,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (busy) {
             pendingAnchorAfterBusy = anchorPage
             val now = SystemClock.uptimeMillis()
-            if (now - lastBusyUiUpdateMs >= BUSY_UI_UPDATE_INTERVAL_MS) {
+            if (toolbarVisible && now - lastBusyUiUpdateMs >= BUSY_UI_UPDATE_INTERVAL_MS) {
                 lastBusyUiUpdateMs = now
                 updatePageLabel()
             }
@@ -293,8 +307,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         session?.pageInfo(anchorPage)?.let {
             if (!it.transitionCard) currentManga = it.manga
         }
-        status.visibility = TextView.VISIBLE
-        status.text = "회차 연결 중"
+        pendingBoundaryStatus = true
+        statusHandler.removeCallbacks(showBoundaryStatusRunnable)
+        statusHandler.postDelayed(showBoundaryStatusRunnable, BOUNDARY_STATUS_DELAY_MS)
         session?.appendAdjacentEpisode(anchorPage, direction)
     }
 
@@ -569,11 +584,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         bottomBar.visibility = visibility
     }
 
+    private fun hideBoundaryStatus() {
+        pendingBoundaryStatus = false
+        statusHandler.removeCallbacks(showBoundaryStatusRunnable)
+        if (status.visibility != TextView.GONE) status.visibility = TextView.GONE
+    }
+
     private fun Int.dp(): Int = (this * resources.displayMetrics.density + 0.5f).toInt()
 
     companion object {
         private const val BUSY_UI_UPDATE_INTERVAL_MS = 250L
         private const val PROGRESS_SAVE_DEBOUNCE_MS = 1000L
+        private const val BOUNDARY_STATUS_DELAY_MS = 250L
         private const val DEFAULT_PAGE_GAP_PX = 2
         private const val WEBTOON_PAGE_GAP_PX = 0
 

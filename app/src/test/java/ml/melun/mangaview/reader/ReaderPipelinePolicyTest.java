@@ -8,10 +8,10 @@ import static org.junit.Assert.assertTrue;
 public class ReaderPipelinePolicyTest {
     @Test
     public void busyScrollKeepsWorkWindowSmall() {
-        assertEquals(1, ReaderPipelinePolicy.windowBefore(true));
-        assertEquals(4, ReaderPipelinePolicy.windowAfter(true));
+        assertEquals(0, ReaderPipelinePolicy.windowBefore(true));
+        assertEquals(1, ReaderPipelinePolicy.windowAfter(true));
         assertEquals(1, ReaderPipelinePolicy.decodeParallelism(true));
-        assertEquals(720, ReaderPipelinePolicy.BUSY_DECODE_WIDTH);
+        assertEquals(480, ReaderPipelinePolicy.BUSY_DECODE_WIDTH);
     }
 
     @Test
