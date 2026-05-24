@@ -208,6 +208,26 @@ class ReaderSurfaceView @JvmOverloads constructor(
         dispatchWindowRequest(request)
     }
 
+    fun prependPageCount(count: Int, insertedCount: Int) {
+        val request = synchronized(stateLock) {
+            if (insertedCount <= 0 || count <= pages.size) return
+            rebuildLayoutLocked()
+            val oldFirstTop = pageTops.getOrElse(0, 0f)
+            repeat(insertedCount) { pages.add(0, Page()) }
+            layoutDirty = true
+            rebuildLayoutLocked()
+            val shiftedFirstTop = pageTops.getOrElse(insertedCount, 0f)
+            scrollOffset += shiftedFirstTop - oldFirstTop
+            boundaryArmedDirection = 0
+            clampScrollLocked()
+            renderRequested = true
+            scheduleFrameLocked()
+            stateLock.notifyAll()
+            windowRequestLocked(lastBusy)
+        }
+        dispatchWindowRequest(request)
+    }
+
     fun setPageLoading(index: Int) {
         synchronized(stateLock) {
             pages.getOrNull(index)?.let {
@@ -576,7 +596,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             canvas.drawRect(dst, paint)
             textPaint.textSize = 30f
             textPaint.color = Color.rgb(170, 170, 170)
-            canvas.drawText("다음 회차", state.width / 2f, item.top + item.pageHeight / 2f - 34f, textPaint)
+            canvas.drawText("회차 전환", state.width / 2f, item.top + item.pageHeight / 2f - 34f, textPaint)
             textPaint.textSize = 42f
             textPaint.color = Color.WHITE
             canvas.drawText(cardText, state.width / 2f, item.top + item.pageHeight / 2f + 30f, textPaint)

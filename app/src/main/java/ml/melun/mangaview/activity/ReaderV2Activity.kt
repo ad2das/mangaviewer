@@ -199,6 +199,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
     }
 
+    override fun onPagesPrepended(count: Int, insertedCount: Int) {
+        if (pagesReady) {
+            pageCount = count
+            currentPage += insertedCount
+            renderView.prependPageCount(count, insertedCount)
+            updateCurrentEpisode(currentPage)
+        }
+    }
+
     override fun onInitialPage(index: Int) {
         if (pagesReady) {
             currentPage = index
@@ -263,7 +272,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         session?.pageInfo(anchorPage)?.let {
             if (!it.transitionCard) currentManga = it.manga
         }
-        openAdjacent(direction == ReaderSurfaceView.DIRECTION_NEXT)
+        status.visibility = TextView.VISIBLE
+        status.text = "회차 연결 중"
+        session?.appendAdjacentEpisode(anchorPage, direction)
     }
 
     override fun onTap() {

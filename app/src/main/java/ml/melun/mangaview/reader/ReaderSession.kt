@@ -34,6 +34,7 @@ class ReaderSession(
     interface Listener {
         fun onPagesReady(count: Int)
         fun onPagesAppended(count: Int)
+        fun onPagesPrepended(count: Int, insertedCount: Int)
         fun onInitialPage(index: Int)
         fun onPageLoading(index: Int)
         fun onPageBoundsReady(index: Int, width: Int, height: Int)
@@ -88,6 +89,7 @@ class ReaderSession(
     private val firstBitmapLogged = AtomicBoolean(false)
     private val windowGeneration = AtomicInteger(0)
     private val nextLoading = AtomicBoolean(false)
+    private val adjacentAppendLoading = AtomicBoolean(false)
     private val repositoryLoading = AtomicBoolean(false)
     private val windowLock = Object()
     private var lastWindowAnchor = -1
@@ -345,6 +347,137 @@ class ReaderSession(
                 nextLoading.set(false)
             }
         }
+    }
+
+    fun appendAdjacentEpisode(anchor: Int, direction: Int) {
+        if (cancelled.get() || adjacentAppendLoading.getAndSet(true)) return
+        network.execute {
+            try {
+                val anchorManga = pageRef(anchor)?.manga ?: manga
+                val currentTitle = title ?: anchorManga.title ?: manga.title
+                if (currentTitle == null) return@execute
+                if (currentTitle.eps == null || currentTitle.eps.size <= 1) {
+                    val result = MangaRepository.fetchEpisodesForeground(currentTitle, MangaRepository.cancellation())
+                    if (result != Title.LOAD_OK) {
+                        postMessage(if (result == Title.LOAD_CAPTCHA) "캡차 확인이 필요합니다" else "회차를 불러오지 못했습니다")
+                        return@execute
+                    }
+                }
+                attachTitle()
+                val episodes = Utils.snapshotEpisodes(currentTitle)
+                if (episodes.isNotEmpty()) {
+                    manga.setEps(episodes)
+                    anchorManga.setEps(episodes)
+                }
+                anchorManga.title = currentTitle
+                anchorManga.titleId = currentTitle.id
+                val target = if (direction < 0) anchorManga.prevEp() else anchorManga.nextEp()
+                if (target == null) {
+                    postMessage(if (direction < 0) "이전 회차가 없습니다" else "다음 회차가 없습니다")
+                    return@execute
+                }
+                target.title = currentTitle
+                target.titleId = currentTitle.id
+                target.mode = anchorManga.mode
+                if (episodes.isNotEmpty()) target.setEps(episodes)
+                if (hasEpisode(target)) return@execute
+                if (MangaRepository.imageUrls(target, appContext).isNullOrEmpty()) {
+                    val result = MangaRepository.fetchViewerInitial(target, MangaRepository.cancellation())
+                    if (result != Title.LOAD_OK) {
+                        postMessage(if (result == Title.LOAD_CAPTCHA) "캡차 확인이 필요합니다" else "회차를 불러오지 못했습니다")
+                        return@execute
+                    }
+                }
+                val urls = MangaRepository.imageUrls(target, appContext)
+                if (urls.isNullOrEmpty()) {
+                    postMessage("표시할 이미지가 없습니다")
+                    return@execute
+                }
+                appendResolvedEpisode(target, urls, direction)
+            } catch (e: Exception) {
+                if (!cancelled.get()) ml.melun.mangaview.report.CrashReporter.record(e)
+            } finally {
+                adjacentAppendLoading.set(false)
+            }
+        }
+    }
+
+    private fun appendResolvedEpisode(target: Manga, urls: List<String>, direction: Int) {
+        val episodeName = target.name ?: title?.name ?: "회차"
+        val transitionTitle = if (direction < 0) "이전 회차: $episodeName" else "다음 회차: $episodeName"
+        val refs = ArrayList<PageRef>(urls.size + 1)
+        refs.add(PageRef(target, null, transitionTitle))
+        refs.addAll(urls.map { PageRef(target, it) })
+        val inserted = refs.size
+        val total: Int
+        if (direction < 0) {
+            synchronized(pagesLock) {
+                pages.addAll(0, refs)
+                total = pages.size
+                shiftPageStateForPrepend(inserted)
+            }
+            main.post {
+                if (!cancelled.get()) {
+                    listener.onPagesPrepended(total, inserted)
+                    listener.onPageCard(0, transitionTitle)
+                }
+            }
+        } else {
+            val cardIndex: Int
+            synchronized(pagesLock) {
+                cardIndex = pages.size
+                pages.addAll(refs)
+                total = pages.size
+            }
+            main.post {
+                if (!cancelled.get()) {
+                    listener.onPagesAppended(total)
+                    listener.onPageCard(cardIndex, transitionTitle)
+                }
+            }
+        }
+    }
+
+    private fun hasEpisode(target: Manga): Boolean = synchronized(pagesLock) {
+        pages.any { sameEpisode(it.manga, target) }
+    }
+
+    private fun shiftPageStateForPrepend(delta: Int) {
+        if (delta <= 0) return
+        shiftConcurrentMap(decodedWidths, delta)
+        shiftConcurrentMap(desiredWidths, delta)
+        shiftConcurrentMap(inFlightWidths, delta)
+        shiftConcurrentMap(sourceWidths, delta)
+        shiftConcurrentMap(earlyPreparedBitmaps, delta)
+        shiftConcurrentSet(loading, delta)
+        synchronized(deliveredBitmaps) {
+            val oldEntries = deliveredBitmaps.entries.toList()
+            deliveredBitmaps.clear()
+            for (entry in oldEntries) deliveredBitmaps[entry.key + delta] = entry.value
+            val oldOwned = deliveredOwned.toList()
+            deliveredOwned.clear()
+            for (index in oldOwned) deliveredOwned.add(index + delta)
+            retainedFirstPage += delta
+            retainedLastPage += delta
+        }
+        synchronized(windowLock) {
+            if (lastWindowAnchor >= 0) lastWindowAnchor += delta
+            windowGeneration.incrementAndGet()
+        }
+    }
+
+    private fun <T> shiftConcurrentMap(map: ConcurrentHashMap<Int, T>, delta: Int) {
+        if (map.isEmpty()) return
+        val entries = map.entries.toList()
+        map.clear()
+        for (entry in entries) map[entry.key + delta] = entry.value
+    }
+
+    private fun shiftConcurrentSet(set: MutableSet<Int>, delta: Int) {
+        if (set.isEmpty()) return
+        val entries = set.toList()
+        set.clear()
+        for (index in entries) set.add(index + delta)
     }
 
     private fun requestPage(index: Int, busy: Boolean, anchor: Boolean, generation: Int = windowGeneration.get()) {
