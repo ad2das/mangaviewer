@@ -724,7 +724,7 @@ public class MainActivity extends AppCompatActivity
             status.setText(R.string.account_status_signed_in);
             panel.setOnClickListener(v -> showAccountDialog());
             button.setOnClickListener(v -> showAccountDialog());
-            if(!accountInitialSyncStarted && MainApplication.firebaseSyncManager != null) {
+            if(!accountInitialSyncStarted && MainApplication.getFirebaseSyncManager() != null) {
                 accountInitialSyncStarted = true;
                 panel.post(() -> {
                     if(!isFinishing() && !isDestroyed())
