@@ -119,6 +119,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var surfaceReady = false
     private var renderRequested = false
     private var frameScheduled = false
+    private var immediateFrameScheduled = false
     private var lastY = 0f
     private var downY = 0f
     private var pointerDown = false
@@ -134,6 +135,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var statsActive = false
     private var statsLastCallbackStartNs = 0L
     private var statsLastPostEndNs = 0L
+    private var lastPostedFrameEndNs = 0L
     private var statsCoalescedRequests = 0
     private var statsNoCanvasFrames = 0
     private val statsCallbackSpacingMs = ArrayList<Float>(240)
@@ -397,7 +399,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         clampScrollLocked()
                         lastY = event.y
                         renderRequested = true
-                        scheduleFrameLocked()
+                        scheduleFrameLocked(preferImmediate = true)
                         stateLock.notifyAll()
                         busyRequest ?: windowRequestLocked(true)
                     } else {
@@ -475,6 +477,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val callbackStartNs = System.nanoTime()
         val requestAndState = synchronized(stateLock) {
             frameScheduled = false
+            immediateFrameScheduled = false
             if (!renderRunning || !surfaceReady) return
             var request: WindowRequest? = null
             var boundary: BoundaryRequest? = null
@@ -506,6 +509,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         dispatchWindowRequest(requestAndState.first)
         dispatchBoundaryRequest(requestAndState.second)
         val timing = drawState(frameTimeNanos, callbackStartNs, requestAndState.third)
+        if (timing.posted) synchronized(stateLock) { lastPostedFrameEndNs = timing.postEndNs }
         recordFrameStats(timing, requestAndState.third.busy)
     }
 
@@ -631,7 +635,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun requestRender() {
         synchronized(stateLock) {
             renderRequested = true
-            scheduleFrameLocked()
+            scheduleFrameLocked(preferImmediate = pointerDown || dragging)
             stateLock.notifyAll()
         }
     }
@@ -647,19 +651,34 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return windowRequestLocked(busy)
     }
 
-    private fun scheduleFrameLocked() {
+    private fun scheduleFrameLocked(preferImmediate: Boolean = false) {
         if (!renderRunning || !surfaceReady) return
         if (frameScheduled) {
             statsCoalescedRequests++
             return
         }
-        val choreographer = renderChoreographer
         val handler = renderHandler
+        val nowNs = System.nanoTime()
+        val canRenderImmediate = preferImmediate &&
+            handler != null &&
+            !immediateFrameScheduled &&
+            (lastPostedFrameEndNs == 0L || nowNs - lastPostedFrameEndNs >= IMMEDIATE_FRAME_MIN_INTERVAL_NS)
+        if (canRenderImmediate) {
+            frameScheduled = true
+            immediateFrameScheduled = true
+            handler.post {
+                renderFrame(System.nanoTime())
+            }
+            return
+        }
+        val choreographer = renderChoreographer
         if (choreographer != null) {
             frameScheduled = true
+            immediateFrameScheduled = false
             choreographer.postFrameCallback(frameCallback)
         } else if (handler != null) {
             frameScheduled = true
+            immediateFrameScheduled = false
             handler.post {
                 Choreographer.getInstance().postFrameCallback(frameCallback)
             }
@@ -692,6 +711,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         renderChoreographer = null
         renderThread = null
         frameScheduled = false
+        immediateFrameScheduled = false
         if (handler == null || thread == null) return
         handler.post {
             Choreographer.getInstance().removeFrameCallback(frameCallback)
@@ -996,5 +1016,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val BOUNDARY_EPSILON_PX = 2f
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
+        private const val IMMEDIATE_FRAME_MIN_INTERVAL_NS = 8_000_000L
     }
 }

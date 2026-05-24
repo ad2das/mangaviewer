@@ -14,7 +14,6 @@ import ml.melun.mangaview.mangaview.Manga
 import ml.melun.mangaview.mangaview.Title
 import ml.melun.mangaview.repository.MangaRepository
 import java.io.File
-import java.util.Collections
 import java.util.LinkedHashMap
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -74,7 +73,8 @@ class ReaderSession(
     private val busyDecodeGate = Semaphore(ReaderPipelinePolicy.BUSY_DECODE_PARALLELISM)
     private val idleDecodeGate = Semaphore(ReaderPipelinePolicy.IDLE_DECODE_PARALLELISM)
     private val cancelled = AtomicBoolean(false)
-    private val pages = Collections.synchronizedList(ArrayList<PageRef>())
+    private val pages = ArrayList<PageRef>()
+    private val pagesLock = Object()
     private val loading = ConcurrentHashMap.newKeySet<Int>()
     private val decodedWidths = ConcurrentHashMap<Int, Int>()
     private val desiredWidths = ConcurrentHashMap<Int, Int>()
@@ -179,8 +179,10 @@ class ReaderSession(
     private fun installImages(urls: List<String>, requestedStartPage: Int, requestInitialWindow: Boolean) {
         if (cancelled.get() || urls.isEmpty()) return
         if (!pagesInstalled.compareAndSet(false, true)) return
-        pages.clear()
-        pages.addAll(urls.map { PageRef(manga, it) })
+        synchronized(pagesLock) {
+            pages.clear()
+            pages.addAll(urls.map { PageRef(manga, it) })
+        }
         val startPage = requestedStartPage.coerceIn(0, urls.lastIndex)
         main.post {
             if (!cancelled.get()) {
@@ -192,7 +194,7 @@ class ReaderSession(
     }
 
     private fun requestInitialWindow(startPage: Int, busy: Boolean) {
-        val count = pages.size
+        val count = synchronized(pagesLock) { pages.size }
         if (count <= 0) return
         requestWindow(
             max(0, startPage - ReaderPipelinePolicy.INITIAL_WINDOW_BEFORE),
@@ -264,7 +266,7 @@ class ReaderSession(
 
     private fun requestWindow(first: Int, last: Int, anchor: Int, busy: Boolean, retainWindow: Boolean) {
         if (cancelled.get()) return
-        val count = pages.size
+        val count = synchronized(pagesLock) { pages.size }
         if (count <= 0) return
         val requestList: List<Int>
         val generation: Int
@@ -529,23 +531,27 @@ class ReaderSession(
         return minOf(requestedWidth, max(1, sourceWidth))
     }
 
-    private fun pageRef(index: Int): PageRef? = synchronized(pages) {
+    private fun pageRef(index: Int): PageRef? = synchronized(pagesLock) {
         pages.getOrNull(index)
     }
 
-    fun pageInfo(index: Int): PageInfo? = synchronized(pages) {
-        val page = pages.getOrNull(index) ?: return@synchronized null
+    fun pageInfo(index: Int): PageInfo? {
+        val snapshot = synchronized(pagesLock) {
+            if (index !in pages.indices) return null
+            pages.toList()
+        }
+        val page = snapshot.getOrNull(index) ?: return null
         val episodeManga = page.manga
         val transition = page.transitionTitle != null
         var total = 0
         var local = 0
-        for (i in pages.indices) {
-            val candidate = pages[i]
+        for (i in snapshot.indices) {
+            val candidate = snapshot[i]
             if (!sameEpisode(candidate.manga, episodeManga) || candidate.image == null) continue
             total++
             if (i <= index) local = total
         }
-        PageInfo(
+        return PageInfo(
             manga = episodeManga,
             title = page.transitionTitle ?: episodeManga.name ?: title?.name ?: "",
             localPage = if (transition) 0 else max(1, local),
