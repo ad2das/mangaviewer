@@ -341,7 +341,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingInitialRestorePage = -1
         pendingInitialRestoreOffset = 0
         currentPage = page
-        renderView.scrollToPage(page, offset)
+        renderView.lockRestoredPageOffset(page, offset)
         updateCurrentEpisode(page, offset, saveProgress = false)
     }
 

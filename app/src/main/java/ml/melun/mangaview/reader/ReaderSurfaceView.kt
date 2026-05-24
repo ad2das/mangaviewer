@@ -137,6 +137,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var pointerDown = false
     private var dragging = false
     private var scrollOffset = 0f
+    private var lockedRestorePage = -1
+    private var lockedRestoreOffset = 0
+    private var lockedRestoreUntilMs = 0L
     private var listener: WindowListener? = null
     private var lastAnchor = -1
     private var lastBusy = false
@@ -285,6 +288,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (oldTop + oldHeight <= scrollOffset) scrollOffset += newHeight - oldHeight
             val belowVisible = oldTop > scrollOffset + height
             updatePageHeightDeltaLocked(index, newHeight - oldHeight)
+            applyLockedRestorePositionLocked()
             clampScrollLocked()
             if (!lastBusy || !belowVisible) {
                 renderRequested = true
@@ -314,6 +318,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (oldTop + oldHeight <= scrollOffset) scrollOffset += newHeight - oldHeight
             val belowVisible = oldTop > scrollOffset + height
             updatePageHeightDeltaLocked(index, newHeight - oldHeight)
+            applyLockedRestorePositionLocked()
             clampScrollLocked()
             if (!lastBusy || !belowVisible) {
                 renderRequested = true
@@ -386,6 +391,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (oldTop + oldHeight <= scrollOffset) scrollOffset += newHeight - oldHeight
             val belowVisible = oldTop > scrollOffset + height
             updatePageHeightDeltaLocked(index, newHeight - oldHeight)
+            applyLockedRestorePositionLocked()
             clampScrollLocked()
             if (!lastBusy || !belowVisible) {
                 renderRequested = true
@@ -427,6 +433,23 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val target = index.coerceIn(0, pages.lastIndex)
             rebuildLayoutLocked()
             scrollOffset = pageTopOrElseLocked(target, 0f) - offset
+            clampScrollLocked()
+            lastAnchor = -1
+            renderRequested = true
+            scheduleFrameLocked()
+            stateLock.notifyAll()
+            windowRequestLocked(false)
+        }
+        dispatchWindowRequest(request)
+    }
+
+    fun lockRestoredPageOffset(index: Int, offset: Int) {
+        val request = synchronized(stateLock) {
+            if (index !in 0 until pages.size) return
+            lockedRestorePage = index
+            lockedRestoreOffset = offset
+            lockedRestoreUntilMs = SystemClock.uptimeMillis() + RESTORE_POSITION_LOCK_MS
+            applyLockedRestorePositionLocked()
             clampScrollLocked()
             lastAnchor = -1
             renderRequested = true
@@ -485,6 +508,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 velocityTracker = VelocityTracker.obtain().also { it.addMovement(event) }
                 synchronized(stateLock) {
                     noteInputLocked(event)
+                    clearLockedRestorePositionLocked()
                     scroller.forceFinished(true)
                     lastY = event.y
                     downY = event.y
@@ -898,6 +922,22 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return (pageTopOrElseLocked(index, 0f) - scrollOffset).toInt()
     }
 
+    private fun applyLockedRestorePositionLocked() {
+        if (lockedRestorePage !in 0 until pages.size) return
+        if (SystemClock.uptimeMillis() > lockedRestoreUntilMs) {
+            clearLockedRestorePositionLocked()
+            return
+        }
+        rebuildLayoutLocked()
+        scrollOffset = pageTopOrElseLocked(lockedRestorePage, 0f) - lockedRestoreOffset
+    }
+
+    private fun clearLockedRestorePositionLocked() {
+        lockedRestorePage = -1
+        lockedRestoreOffset = 0
+        lockedRestoreUntilMs = 0L
+    }
+
     private fun progressPositionLocked(): ProgressPosition? {
         if (pages.isEmpty() || width <= 0 || height <= 0) return null
         rebuildLayoutLocked()
@@ -1293,6 +1333,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val BOUNDARY_FLING_MIN_VELOCITY_MULTIPLIER = 2f
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
+        private const val RESTORE_POSITION_LOCK_MS = 1200L
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
     }
