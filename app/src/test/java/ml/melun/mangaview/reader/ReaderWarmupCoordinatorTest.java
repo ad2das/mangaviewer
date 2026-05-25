@@ -36,10 +36,10 @@ public class ReaderWarmupCoordinatorTest {
 
     @Test
     public void preparedStoreCapsPinnedStartBitmaps() {
-        assertEquals(1, ReaderPreparedStore.maxPinnedStartBitmapsForTest());
-        assertEquals(16L * 1024L * 1024L, ReaderPreparedStore.softBitmapBytesForTest(""));
-        assertEquals(24L * 1024L * 1024L, ReaderPreparedStore.hardBitmapBytesForTest(""));
-        assertEquals(12L * 1024L * 1024L, ReaderPreparedStore.softBitmapBytesForTest("ntk"));
-        assertEquals(16L * 1024L * 1024L, ReaderPreparedStore.hardBitmapBytesForTest("ntk"));
+        assertEquals(2, ReaderPreparedStore.maxPinnedStartBitmapsForTest());
+        assertEquals(24L * 1024L * 1024L, ReaderPreparedStore.softBitmapBytesForTest(""));
+        assertEquals(32L * 1024L * 1024L, ReaderPreparedStore.hardBitmapBytesForTest(""));
+        assertEquals(16L * 1024L * 1024L, ReaderPreparedStore.softBitmapBytesForTest("ntk"));
+        assertEquals(24L * 1024L * 1024L, ReaderPreparedStore.hardBitmapBytesForTest("ntk"));
     }
 }
