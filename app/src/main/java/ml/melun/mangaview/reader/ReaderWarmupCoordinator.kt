@@ -53,7 +53,7 @@ object ReaderWarmupCoordinator {
         viewerWidth: Int,
         exactEpisode: Boolean
     ): String? {
-        val profile = tapProfile(title ?: manga?.title)
+        val profile = launchProfile(title ?: manga?.title)
         val entry = createEntry(context, manga, title, viewerWidth, exactEpisode, profile) ?: return null
         schedule(context!!.applicationContext, entry, exactEpisode, profile)
         return entry.key
@@ -79,16 +79,13 @@ object ReaderWarmupCoordinator {
         }
         val snapshot = entry.snapshot()
         val startBitmap = snapshot.bitmaps[snapshot.startPage]
-        val hasImages = !snapshot.images.isNullOrEmpty()
         val hasStartBitmap = startBitmap != null && !startBitmap.isRecycled
-        val ready = hasImages
         if (hasStartBitmap) ml.melun.mangaview.glide.ViewerWarmupManager.logMetric("prepared_ready_bitmap_hit", 1L)
-        else if (ready) ml.melun.mangaview.glide.ViewerWarmupManager.logMetric("prepared_ready_urls_hit", 1L)
         else ml.melun.mangaview.glide.ViewerWarmupManager.logMetric(
             "prepared_miss_" + snapshot.status.name.lowercase(Locale.ROOT),
             1L
         )
-        return if (ready) key else null
+        return if (hasStartBitmap) key else null
     }
 
     @JvmStatic
@@ -100,7 +97,7 @@ object ReaderWarmupCoordinator {
 
     @JvmStatic
     fun primeImmediate(context: Context?, manga: Manga?, title: Title?) {
-        val profile = tapProfile(title ?: manga?.title)
+        val profile = launchProfile(title ?: manga?.title)
         val entry = createEntry(context, manga, title, 0, false, profile) ?: return
         BackgroundPrefetchBudget.suppressForUserNavigation()
         schedule(context!!.applicationContext, entry, false, profile)
@@ -115,7 +112,7 @@ object ReaderWarmupCoordinator {
 
     @JvmStatic
     fun primeExactImmediate(context: Context?, manga: Manga?, title: Title?) {
-        val profile = tapProfile(title ?: manga?.title)
+        val profile = launchProfile(title ?: manga?.title)
         val entry = createEntry(context, manga, title, 0, true, profile) ?: return
         BackgroundPrefetchBudget.suppressForUserNavigation()
         schedule(context!!.applicationContext, entry, true, profile)
@@ -316,6 +313,11 @@ object ReaderWarmupCoordinator {
         return sourceProfile(title).tapProfile
     }
 
+    private fun launchProfile(title: Title?): WarmupProfile {
+        if (p != null && p.getDataSave()) return tapProfile(title)
+        return WarmupProfile.LAUNCH_WINDOW
+    }
+
     private fun shouldPinStart(profile: WarmupProfile): Boolean {
         return profile == WarmupProfile.FIRST_BITMAP || profile == WarmupProfile.LAUNCH_WINDOW
     }
@@ -466,6 +468,11 @@ object ReaderWarmupCoordinator {
     @JvmStatic
     fun tapProfileForTest(sourceSite: String?): WarmupProfile {
         return sourceProfile(sourceSite).tapProfile
+    }
+
+    @JvmStatic
+    fun launchProfileForTest(dataSave: Boolean): WarmupProfile {
+        return if (dataSave) WarmupProfile.URL_ONLY else WarmupProfile.LAUNCH_WINDOW
     }
 
     @JvmStatic

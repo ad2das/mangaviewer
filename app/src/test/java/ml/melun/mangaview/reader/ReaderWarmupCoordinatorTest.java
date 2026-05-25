@@ -28,16 +28,18 @@ public class ReaderWarmupCoordinatorTest {
     public void tapAndAdjacentProfilesStayFileOnly() {
         assertEquals(ReaderWarmupCoordinator.WarmupProfile.FIRST_BYTE, ReaderWarmupCoordinator.tapProfileForTest("ntk"));
         assertEquals(ReaderWarmupCoordinator.WarmupProfile.FIRST_BYTE, ReaderWarmupCoordinator.tapProfileForTest("wfwf"));
+        assertEquals(ReaderWarmupCoordinator.WarmupProfile.LAUNCH_WINDOW, ReaderWarmupCoordinator.launchProfileForTest(false));
+        assertEquals(ReaderWarmupCoordinator.WarmupProfile.URL_ONLY, ReaderWarmupCoordinator.launchProfileForTest(true));
         assertEquals(3, ReaderWarmupCoordinator.adjacentByteLimitForTest("ntk"));
         assertEquals(5, ReaderWarmupCoordinator.adjacentByteLimitForTest("wfwf"));
     }
 
     @Test
     public void preparedStoreCapsPinnedStartBitmaps() {
-        assertEquals(2, ReaderPreparedStore.maxPinnedStartBitmapsForTest());
-        assertEquals(24L * 1024L * 1024L, ReaderPreparedStore.softBitmapBytesForTest(""));
-        assertEquals(32L * 1024L * 1024L, ReaderPreparedStore.hardBitmapBytesForTest(""));
-        assertEquals(16L * 1024L * 1024L, ReaderPreparedStore.softBitmapBytesForTest("ntk"));
-        assertEquals(24L * 1024L * 1024L, ReaderPreparedStore.hardBitmapBytesForTest("ntk"));
+        assertEquals(1, ReaderPreparedStore.maxPinnedStartBitmapsForTest());
+        assertEquals(16L * 1024L * 1024L, ReaderPreparedStore.softBitmapBytesForTest(""));
+        assertEquals(24L * 1024L * 1024L, ReaderPreparedStore.hardBitmapBytesForTest(""));
+        assertEquals(12L * 1024L * 1024L, ReaderPreparedStore.softBitmapBytesForTest("ntk"));
+        assertEquals(16L * 1024L * 1024L, ReaderPreparedStore.hardBitmapBytesForTest("ntk"));
     }
 }
