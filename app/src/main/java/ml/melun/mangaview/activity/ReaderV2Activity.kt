@@ -1157,10 +1157,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun installInitialDrawGate(root: View) {
-        initialDrawGateOpen = true
+        initialDrawGateOpen = false
         initialDrawGateView = root
         statusHandler.removeCallbacks(initialDrawGateTimeoutRunnable)
-        root.post { convertReaderWindowOpaque() }
+        val listener = ViewTreeObserver.OnPreDrawListener {
+            initialDrawGateOpen || destroyed || isFinishing
+        }
+        initialDrawGateListener = listener
+        val observer = root.viewTreeObserver
+        if (observer.isAlive) observer.addOnPreDrawListener(listener)
+        statusHandler.postDelayed(initialDrawGateTimeoutRunnable, INITIAL_DRAW_GATE_TIMEOUT_MS)
     }
 
     private fun releaseInitialDrawGate(reason: String) {
@@ -1208,7 +1214,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val DEFAULT_PAGE_GAP_PX = 2
         private const val WEBTOON_PAGE_GAP_PX = 0
         private const val ADJACENT_BUTTON_REFRESH_DELAY_MS = 350L
-        private const val INITIAL_DRAW_GATE_TIMEOUT_MS = 320L
+        private const val INITIAL_DRAW_GATE_TIMEOUT_MS = 1600L
         private const val CAPTCHA_RETRY_READER = 0
         private const val CAPTCHA_RETRY_TOOLBAR_ADJACENT = 1
         private const val CAPTCHA_RETRY_BOUNDARY = 2

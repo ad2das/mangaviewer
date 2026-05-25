@@ -161,6 +161,9 @@ public class UtilsTest {
         assertFalse(Utils.shouldWaitForContinueFirstFrameForTest(true, false));
         assertFalse(Utils.shouldWaitForContinueFirstFrameForTest(false, true));
         assertFalse(Utils.shouldWaitForContinueFirstFrameForTest(true, true));
+        assertTrue(Utils.shouldWaitForContinueFirstFrameForTest(true, false, "ntk", true));
+        assertTrue(Utils.shouldWaitForContinueFirstFrameForTest(true, true, "ntk", true));
+        assertFalse(Utils.shouldWaitForContinueFirstFrameForTest(false, false, "ntk", true));
     }
 
     @Test

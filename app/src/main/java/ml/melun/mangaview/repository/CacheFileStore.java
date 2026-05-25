@@ -39,7 +39,6 @@ public final class CacheFileStore {
     public static String read(File rootDir, String key) {
         if(rootDir == null || key == null)
             return "";
-        logMainThreadAccess("cache_read_main_thread");
         String cached = readMemoryInternal(key);
         if(cached != null)
             return cached;
@@ -47,6 +46,7 @@ public final class CacheFileStore {
             cached = readMemoryInternal(key);
             if(cached != null)
                 return cached;
+            logMainThreadAccess("cache_read_main_thread");
             File file = file(rootDir, key);
             if(!file.exists())
                 return "";

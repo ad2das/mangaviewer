@@ -503,7 +503,9 @@ public class Utils {
             Title title = manga.getTitle();
             source = title == null ? "" : title.getSourceSite();
             hasNtkEpisodePath = manga.getNtkEpisodePath().length() > 0;
-            if(("wfwf".equals(source) || "ntk".equals(source))
+            boolean needsEpisodesBeforeFallback = "wfwf".equals(source)
+                    || ("ntk".equals(source) && !hasNtkEpisodePath);
+            if(needsEpisodesBeforeFallback
                     && title != null && snapshotEpisodes(title).size() == 0 && !hasLoadedImages)
                 return false;
         }

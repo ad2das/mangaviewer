@@ -158,6 +158,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var lastPostedFrameEndNs = 0L
     private var statsCoalescedRequests = 0
     private var statsNoCanvasFrames = 0
+    private var hasDrawnContentFrame = false
     private var lastVisibleLoading = -1
     private val statsCallbackSpacingMs = ArrayList<Float>(240)
     private val statsPostSpacingMs = ArrayList<Float>(240)
@@ -207,6 +208,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             scrollOffset = 0f
             boundaryArmedDirection = 0
             lastAnchor = -1
+            hasDrawnContentFrame = false
             deferInitialEmptyDraw = count > 0
             layoutDirty = true
             renderRequested = count <= 0
@@ -366,6 +368,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 page.loading = false
                 page.cardText = null
             }
+            hasDrawnContentFrame = false
             layoutDirty = true
             renderRequested = true
             scheduleFrameLocked()
@@ -383,6 +386,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 page.loading = false
                 page.cardText = null
             }
+            hasDrawnContentFrame = false
             layoutDirty = true
             val stopped = stopRenderThreadLocked()
             stateLock.notifyAll()
@@ -479,7 +483,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (index !in 0 until pages.size) return
             initialRenderHoldPage = index
             initialRenderHoldUntilMs = SystemClock.uptimeMillis() + INITIAL_RENDER_HOLD_MS
-            if (pageHasStableLayoutLocked(index)) {
+            if (pageHasDrawableContentLocked(index)) {
                 renderRequested = true
                 scheduleFrameLocked()
             }
@@ -710,6 +714,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (!state.empty) {
                 for (item in state.items) drawItem(canvas, state, item)
             }
+            if (stateHasDrawableContent(state)) hasDrawnContentFrame = true
         } finally {
             Trace.endSection()
             drawEndNs = System.nanoTime()
@@ -835,7 +840,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (top > viewHeight) break
             index++
         }
-        return DrawState(viewWidth, viewHeight, busy, false, visibleLoading, items)
+        val state = DrawState(viewWidth, viewHeight, busy, false, visibleLoading, items)
+        if (hasDrawnContentFrame && !stateHasDrawableContent(state)) {
+            renderRequested = true
+            scheduleFrameLocked()
+            return null
+        }
+        return state
     }
 
     private fun heldRestoreDrawStateLocked(viewWidth: Int, viewHeight: Int, busy: Boolean): DrawState? {
@@ -852,6 +863,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return DrawState(viewWidth, viewHeight, busy, false, 0, listOf(item))
     }
 
+    private fun stateHasDrawableContent(state: DrawState): Boolean {
+        for (item in state.items) {
+            if (item.cardText != null) return true
+            val bitmap = item.bitmap
+            if (bitmap != null && !bitmap.isRecycled) return true
+            if (item.tiles.any { !it.bitmap.isRecycled }) return true
+        }
+        return false
+    }
+
     private fun shouldHoldInitialRenderLocked(): Boolean {
         val page = initialRenderHoldPage
         if (page !in 0 until pages.size) return false
@@ -860,6 +881,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             clearInitialRenderHoldLocked()
             return false
         }
+        if (!pageHasDrawableContentLocked(page)) return true
         val first = max(0, page - INITIAL_RENDER_HOLD_BEFORE)
         val last = min(pages.lastIndex, page + INITIAL_RENDER_HOLD_AFTER)
         for (index in first..last) {
@@ -878,13 +900,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val page = initialRenderHoldPage
         return page in 0 until pages.size &&
             SystemClock.uptimeMillis() <= initialRenderHoldUntilMs &&
-            !pageHasStableLayoutLocked(page)
+            !pageHasDrawableContentLocked(page)
     }
 
     private fun shouldDeferInitialEmptyDrawLocked(): Boolean {
         if (!deferInitialEmptyDraw || pages.isEmpty()) return false
         for (index in pages.indices) {
-            if (pageHasStableLayoutLocked(index)) {
+            if (pageHasDrawableContentLocked(index)) {
                 deferInitialEmptyDraw = false
                 return false
             }
@@ -1432,7 +1454,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val BOUNDARY_FLING_MIN_VELOCITY_MULTIPLIER = 2f
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
-        private const val RESTORE_POSITION_LOCK_MS = 1200L
+        private const val RESTORE_POSITION_LOCK_MS = 4000L
         private const val INITIAL_RENDER_HOLD_MS = 700L
         private const val INITIAL_RENDER_HOLD_BEFORE = 2
         private const val INITIAL_RENDER_HOLD_AFTER = 2
