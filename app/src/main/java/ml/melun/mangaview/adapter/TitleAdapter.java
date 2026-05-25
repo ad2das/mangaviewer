@@ -247,6 +247,8 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         Title title = mDataFiltered.get(position);
         if(title == null || title.getPath() != null && title.getPath().length() > 0)
             return false;
+        if("ntk".equals(sourceSiteForTitle(title)))
+            return false;
         int bookmark = resolveResumeBookmark(title);
         if(bookmark <= 0 || title.getId() <= 0)
             return false;

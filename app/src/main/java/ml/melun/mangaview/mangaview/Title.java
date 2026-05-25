@@ -70,6 +70,7 @@ public class Title extends MTitle {
         setPath(title.getPath());
         setSourceSite(title.getSourceSite());
         setNtkStatusLabel(title.getNtkStatusLabel());
+        setResumeNtkEpisodePath(title.getResumeNtkEpisodePath());
         setReadingProgress(title.getBookmarkEpisodeId(), title.getBookmarkEpisodeIndex(), title.getEpisodeCount());
         bookmark = title.getBookmarkEpisodeId();
     }

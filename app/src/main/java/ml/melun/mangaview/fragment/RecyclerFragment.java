@@ -561,8 +561,12 @@ public class RecyclerFragment extends Fragment {
         if(title == null && selectedPosition > -1)
             title = titleAdapter.getItem(selectedPosition);
         manga.setMode(0);
-        if(title != null)
+        if(title != null) {
             manga.setTitle(title);
+            if("ntk".equals(title.getSourceSite()) && manga.getNtkEpisodePath().length() == 0
+                    && title.getResumeNtkEpisodePath().length() > 0)
+                manga.setNtkEpisodePath(title.getResumeNtkEpisodePath());
+        }
         Utils.openContinueViewer(getContext(), manga, code, false, mode == R.id.nav_recent, title, true);
     }
 

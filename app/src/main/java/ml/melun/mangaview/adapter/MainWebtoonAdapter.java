@@ -1522,6 +1522,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     if(!continueStyle || item == null)
                         return false;
                     if(event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                        if("ntk".equals(sourceSiteForContinueItem(item)))
+                            return false;
                         Manga manga = resolveContinueManga(item);
                         if(manga != null)
                             ContinueReadinessCoordinator.primeImmediate(context, manga, item);
@@ -1556,6 +1558,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(style == STYLE_CONTINUE) {
                 Title item = continueItemAt(recyclerView, x, y);
                 if(item != null) {
+                    if("ntk".equals(sourceSiteForContinueItem(item)))
+                        return;
                     Manga manga = resolveContinueManga(item);
                     if(manga != null)
                         ContinueReadinessCoordinator.primeImmediate(context, manga, item);

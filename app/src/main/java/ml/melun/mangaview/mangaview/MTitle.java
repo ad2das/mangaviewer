@@ -16,6 +16,7 @@ public class MTitle{
     String path;
     String sourceSite;
     String ntkStatusLabel;
+    String resumeNtkEpisodePath;
     int bookmarkEpisodeId = -1;
     int bookmarkEpisodeIndex = -1;
     int episodeCount = 0;
@@ -70,6 +71,14 @@ public class MTitle{
 
     public void setNtkStatusLabel(String ntkStatusLabel) {
         this.ntkStatusLabel = ntkStatusLabel == null ? "" : ntkStatusLabel;
+    }
+
+    public String getResumeNtkEpisodePath() {
+        return resumeNtkEpisodePath == null ? "" : resumeNtkEpisodePath;
+    }
+
+    public void setResumeNtkEpisodePath(String resumeNtkEpisodePath) {
+        this.resumeNtkEpisodePath = resumeNtkEpisodePath == null ? "" : resumeNtkEpisodePath.trim();
     }
 
     public int getBaseMode() {
@@ -182,6 +191,7 @@ public class MTitle{
         clone.setPath(path);
         clone.setSourceSite(sourceSite);
         clone.setNtkStatusLabel(ntkStatusLabel);
+        clone.setResumeNtkEpisodePath(resumeNtkEpisodePath);
         return clone;
     }
 

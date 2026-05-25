@@ -1007,6 +1007,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             if (episodes.isNotEmpty()) title.setEps(episodes)
         }
         title.eps?.let { info.manga.setEps(it) }
+        val ntkPath = info.manga.ntkEpisodePath ?: ""
+        if (title.sourceSite == "ntk" && ntkPath.isNotBlank()) {
+            title.resumeNtkEpisodePath = ntkPath
+        }
         val zeroBasedPage = info.sourcePageIndex.coerceAtLeast(0)
         if (
             lastSavedEpisodeId == info.manga.id &&

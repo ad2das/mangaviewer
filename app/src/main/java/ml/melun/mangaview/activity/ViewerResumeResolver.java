@@ -69,13 +69,17 @@ public final class ViewerResumeResolver {
         if(exactIndex >= 0)
             addCandidate(candidates, episodes.get(exactIndex), title);
 
+        boolean pathlessNtkResume = skipTarget && shouldBlockPathlessNtkResume(target, title);
+        if(pathlessNtkResume)
+            addVisibleNumberCandidate(candidates, episodes, target, title);
+
         int progressIndex = title.getBookmarkEpisodeIndex() - 1;
         addEpisodeAt(candidates, episodes, progressIndex, title);
 
         int computedIndex = title.getBookmarkIndex() - 1;
         addEpisodeAt(candidates, episodes, computedIndex, title);
 
-        if(skipTarget)
+        if(skipTarget && !pathlessNtkResume)
             addVisibleNumberCandidate(candidates, episodes, target, title);
 
         if(!skipTarget)
@@ -140,6 +144,11 @@ public final class ViewerResumeResolver {
             resolved = new Manga(bookmark, "", "", title.getBaseMode());
         resolved.setTitle(title);
         resolved.setTitleId(title.getId());
+        if(resolved.getNtkEpisodePath().length() == 0 && "ntk".equals(title.getSourceSite())) {
+            String resumePath = title.getResumeNtkEpisodePath();
+            if(resumePath.length() > 0)
+                resolved.setNtkEpisodePath(resumePath);
+        }
         if(episodes.size() > 0)
             resolved.setEps(episodes);
         return resolved;

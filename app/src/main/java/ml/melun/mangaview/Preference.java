@@ -1095,6 +1095,9 @@ public class Preference {
         if(episodeIndex <= 0 && recentTitle.getBookmarkEpisodeId() == episodeId)
             episodeIndex = recentTitle.getBookmarkEpisodeIndex();
         recentTitle.setReadingProgress(episodeId, episodeIndex, episodeCount);
+        String resumePath = title.getResumeNtkEpisodePath();
+        if(resumePath.length() > 0)
+            recentTitle.setResumeNtkEpisodePath(resumePath);
         normalizeNtkProgressFromRelease(recentTitle);
         writeRecent();
     }

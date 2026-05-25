@@ -107,6 +107,46 @@ public class ViewerResumeResolverTest {
     }
 
     @Test
+    public void pathlessNtkResumeUsesVisibleEpisodeNumberBeforeStaleProgressIndex() {
+        Title title = new Title("원피스", "", "", null, "", 2, MTitle.base_comic);
+        title.setSourceSite("ntk");
+        title.setReadingProgress(1274, 3, 10);
+        Manga target = new Manga(1274, "", "", MTitle.base_comic);
+        target.setTitle(title);
+        target.setTitleId(title.getId());
+
+        ArrayList<Manga> episodes = new ArrayList<>();
+        for(int i = 1300; i >= 1; i--) {
+            Manga episode = new Manga(i, "원피스 " + i + "화", "", MTitle.base_comic);
+            episode.setTitle(title);
+            episode.setTitleId(title.getId());
+            episode.setNtkEpisodePath("/manhwa/2/" + i);
+            episodes.add(episode);
+        }
+        title.setEps(episodes);
+
+        List<Manga> candidates = ViewerResumeResolver.candidates(target, title,
+                ViewerResumeResolver.shouldResolveBeforeDirectFetch(target, title));
+
+        assertFalse(candidates.isEmpty());
+        assertEquals("/manhwa/2/1274", candidates.get(0).getNtkEpisodePath());
+    }
+
+    @Test
+    public void ntkResumeMangaUsesStoredResumePathWhenEpisodesAreMissing() {
+        Title title = new Title("원피스", "", "", null, "", 2, MTitle.base_comic);
+        title.setSourceSite("ntk");
+        title.setBookmark(1290);
+        title.setResumeNtkEpisodePath("/manhwa/2/one-piece-1183");
+
+        Manga resume = ViewerResumeResolver.resumeManga(title);
+
+        assertTrue(resume != null);
+        assertEquals(1290, resume.getId());
+        assertEquals("/manhwa/2/one-piece-1183", resume.getNtkEpisodePath());
+    }
+
+    @Test
     public void resumeMangaPrefersSavedEpisodeIdOverStaleProgressIndex() {
         Title title = new Title("마왕의 딸은 너무 착해!!", "", "", null, "", 1001, MTitle.base_webtoon);
         title.setSourceSite("wfwf");

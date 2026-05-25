@@ -293,16 +293,15 @@ public class MangaTest {
     }
 
     @Test
-    public void ntkEpisodePathCanBeInferredFromTitleAndEpisodeId() {
+    public void ntkEpisodePathIsNotGuessedFromNumericIdentity() {
         Title title = new Title("one piece", "", "", null, "", 2, MTitle.base_comic);
         title.setSourceSite("ntk");
         Manga candidate = new Manga(1293, "", "", MTitle.base_comic);
         candidate.setTitle(title);
         candidate.setTitleId(title.getId());
 
-        assertEquals(true, candidate.ensureNtkEpisodePathFromIdentity());
-        assertEquals("/manhwa/2/1293", candidate.getNtkEpisodePath());
-        assertEquals("/manhwa/2/1293", candidate.getUrl());
+        assertEquals(false, candidate.ensureNtkEpisodePathFromIdentity());
+        assertEquals("", candidate.getNtkEpisodePath());
     }
 
     @Test

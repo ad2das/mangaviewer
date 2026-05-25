@@ -958,6 +958,8 @@ public class MainSearch extends Fragment {
         Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
         manga.setTitle(title);
         manga.setTitleId(title.getId());
+        if("ntk".equals(title.getSourceSite()) && title.getResumeNtkEpisodePath().length() > 0)
+            manga.setNtkEpisodePath(title.getResumeNtkEpisodePath());
         Utils.openContinueViewer(getContext(), manga, -1);
     }
 
@@ -1001,10 +1003,14 @@ public class MainSearch extends Fragment {
     private void openOnlineResume(Title title, int bookmark) {
         Title onlineTitle = new Title(title.getName(), title.getThumb(), title.getAuthor(),
                 title.getTags(), title.getRelease(), title.getId(), title.getBaseMode());
+        onlineTitle.setSourceSite(title.getSourceSite());
+        onlineTitle.setResumeNtkEpisodePath(title.getResumeNtkEpisodePath());
         onlineTitle.setBookmark(bookmark);
         Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
         manga.setTitle(onlineTitle);
         manga.setTitleId(onlineTitle.getId());
+        if("ntk".equals(onlineTitle.getSourceSite()) && onlineTitle.getResumeNtkEpisodePath().length() > 0)
+            manga.setNtkEpisodePath(onlineTitle.getResumeNtkEpisodePath());
         Utils.openContinueViewer(getContext(), manga, -1);
     }
 

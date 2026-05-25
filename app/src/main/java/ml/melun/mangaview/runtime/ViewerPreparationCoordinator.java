@@ -30,6 +30,8 @@ public final class ViewerPreparationCoordinator {
                                                        MangaRepository.Cancellation cancellation) {
         if(context == null || manga == null)
             return PreparedViewerLaunch.failed(PreparedViewerLaunch.Status.ERROR, Title.LOAD_ERROR);
+        if(cancellation != null)
+            cancellation.prioritizeWebViewFallback();
         if(!manga.isOnline())
             return PreparedViewerLaunch.offline(manga, title != null ? title : manga.getTitle());
         Title launchTitle = attachTitle(manga, title);
@@ -41,7 +43,10 @@ public final class ViewerPreparationCoordinator {
             manga = resolved;
             launchTitle = attachTitle(manga, launchTitle);
         }
-        if(launchTitle != null && Utils.snapshotEpisodes(launchTitle).size() == 0) {
+        boolean hasConcreteNtkPath = launchTitle != null
+                && "ntk".equals(launchTitle.getSourceSite())
+                && manga.getNtkEpisodePath().length() > 0;
+        if(launchTitle != null && Utils.snapshotEpisodes(launchTitle).size() == 0 && !hasConcreteNtkPath) {
             int result = MangaRepository.fetchEpisodesForeground(launchTitle, cancellation);
             if(result == LOAD_CAPTCHA)
                 return PreparedViewerLaunch.failed(PreparedViewerLaunch.Status.CAPTCHA, result);
@@ -76,6 +81,8 @@ public final class ViewerPreparationCoordinator {
                                                     boolean allowForegroundFallback) {
         if(context == null || manga == null)
             return PreparedViewerLaunch.failed(PreparedViewerLaunch.Status.ERROR, Title.LOAD_ERROR);
+        if(cancellation != null)
+            cancellation.prioritizeWebViewFallback();
         if(!manga.isOnline())
             return PreparedViewerLaunch.offline(manga, title != null ? title : manga.getTitle());
         Title launchTitle = attachTitle(manga, title);
@@ -118,6 +125,8 @@ public final class ViewerPreparationCoordinator {
                                                                   boolean skipTarget, long waitMs) throws Exception {
         if(context == null || target == null)
             return PreparedViewerLaunch.failed(PreparedViewerLaunch.Status.ERROR, Title.LOAD_ERROR);
+        if(cancellation != null)
+            cancellation.prioritizeWebViewFallback();
         if(!target.isOnline())
             return PreparedViewerLaunch.offline(target, title != null ? title : target.getTitle());
         Title currentTitle = attachTitle(target, title);

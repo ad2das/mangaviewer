@@ -111,19 +111,7 @@ public class Manga {
             setNtkEpisodePath(path);
             return true;
         }
-        int tid = getTitleId();
-        if(tid <= 0 || id <= 0 || !canInferNtkEpisodePath())
-            return false;
-        String segment = baseMode == MTitle.base_webtoon ? "webtoon" : "manhwa";
-        setNtkEpisodePath("/" + segment + "/" + tid + "/" + id);
-        return true;
-    }
-
-    private boolean canInferNtkEpisodePath() {
-        String source = title == null ? "" : title.getSourceSite();
-        if(source != null && source.trim().length() > 0)
-            return "ntk".equals(source.trim().toLowerCase(Locale.ROOT));
-        return p != null && p.isNtkSite();
+        return false;
     }
 
     public boolean hasExplicitNtkEpisodePath() {
