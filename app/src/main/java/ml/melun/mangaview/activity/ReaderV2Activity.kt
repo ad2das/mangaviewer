@@ -102,6 +102,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var initialDrawGateView: View? = null
     private var initialDrawGateListener: ViewTreeObserver.OnPreDrawListener? = null
     private var convertedFromTranslucent = false
+    private var viewerLaunchStartedAtMs = 0L
+    private var viewerLaunchSourceSite = ""
+    private var firstDrawableMetricLogged = false
     private val initialDrawGateTimeoutRunnable = Runnable {
         if (!pagesReady && !destroyed && !isFinishing) {
             initialStatusPending = false
@@ -275,6 +278,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
         currentManga = manga
         currentTitle = title
+        viewerLaunchStartedAtMs = intent.getLongExtra("viewerLaunchStartedAtMs", 0L)
+        viewerLaunchSourceSite = intent.getStringExtra("viewerLaunchSourceSite")
+            ?: title?.sourceSite
+            ?: manga.title?.sourceSite
+            ?: ""
+        if (viewerLaunchStartedAtMs > 0L) {
+            Log.d("ViewerPerf", "reader_activity_create_from_launch source=$viewerLaunchSourceSite ms=${SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs}")
+        }
         renderView.setPageGapPx(pageGapForBaseMode(manga.baseMode))
         if (title != null) {
             manga.title = title
@@ -450,6 +461,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             if (pagesReady) {
                 hideBoundaryStatus()
                 renderView.setPageBitmap(index, bitmap)
+                logFirstDrawableMetric(index, "bitmap")
                 if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
                 releaseInitialDrawGate("page")
             }
@@ -461,6 +473,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             if (pagesReady) {
                 hideBoundaryStatus()
                 renderView.setPageTiles(index, pageWidth, pageHeight, tiles)
+                logFirstDrawableMetric(index, "tiles")
                 if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
                 releaseInitialDrawGate("tiles")
             }
@@ -493,6 +506,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         renderView.lockRestoredPageOffset(page, offset)
         renderView.holdInitialRestoreRender(page)
         updateCurrentEpisode(page, offset, saveProgress = false)
+    }
+
+    private fun logFirstDrawableMetric(index: Int, kind: String) {
+        if (firstDrawableMetricLogged || viewerLaunchStartedAtMs <= 0L) return
+        firstDrawableMetricLogged = true
+        val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
+        Log.d("ViewerPerf", "reader_open_to_first_drawable source=$viewerLaunchSourceSite kind=$kind page=$index ms=$elapsed")
     }
 
     override fun onMessage(message: String) {

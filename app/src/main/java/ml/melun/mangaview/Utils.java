@@ -548,10 +548,10 @@ public class Utils {
     private static long continueLaunchFallbackMs(String sourceSite, boolean ntkSite) {
         String source = sourceSite == null ? "" : sourceSite.trim().toLowerCase(Locale.ROOT);
         if("ntk".equals(source))
-            return 420L;
+            return 220L;
         if("wfwf".equals(source))
             return 520L;
-        return ntkSite ? 420L : 520L;
+        return ntkSite ? 220L : 520L;
     }
 
     private static void switchToTitleSourceSite(Title title) {
@@ -626,6 +626,8 @@ public class Utils {
             viewer.putExtra("title", toViewerTitleJson(launchTitle, includeTitleEpisodes));
         if(recent)
             viewer.putExtra("recent", true);
+        viewer.putExtra("viewerLaunchStartedAtMs", SystemClock.elapsedRealtime());
+        viewer.putExtra("viewerLaunchSourceSite", launchTitle == null ? "" : launchTitle.getSourceSite());
         viewer.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
         try {
             ViewerWarmupManager.logMetric(preparedKey == null ? "viewer_launch_start_unprepared" : "viewer_launch_start_prepared", manga.getId());

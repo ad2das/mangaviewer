@@ -177,8 +177,8 @@ public class UtilsTest {
     public void continueViewerLaunchHasShortFallbackWhenPreparationIsSlow() {
         assertEquals(520L, Utils.continueLaunchFallbackMsForTest("wfwf", false));
         assertEquals(520L, Utils.continueLaunchFallbackMsForTest("", false));
-        assertEquals(420L, Utils.continueLaunchFallbackMsForTest("ntk", true));
-        assertEquals(420L, Utils.continueLaunchFallbackMsForTest("", true));
+        assertEquals(220L, Utils.continueLaunchFallbackMsForTest("ntk", true));
+        assertEquals(220L, Utils.continueLaunchFallbackMsForTest("", true));
     }
 
     @Test
