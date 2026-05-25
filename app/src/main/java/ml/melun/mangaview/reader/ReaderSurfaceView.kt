@@ -806,7 +806,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
-    private fun buildDrawStateLocked(busy: Boolean = lastBusy): DrawState {
+    private fun buildDrawStateLocked(busy: Boolean = lastBusy): DrawState? {
         val viewWidth = max(1, width)
         val viewHeight = max(1, height)
         if (pages.isEmpty()) return DrawState(viewWidth, viewHeight, busy, true, 1, emptyList())
@@ -817,7 +817,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             renderRequested = true
             scheduleFrameLocked()
             return heldRestoreDrawStateLocked(viewWidth, viewHeight, busy)
-                ?: DrawState(viewWidth, viewHeight, busy, true, 1, emptyList())
         }
         val items = ArrayList<DrawItem>()
         var visibleLoading = 0
@@ -842,7 +841,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun heldRestoreDrawStateLocked(viewWidth: Int, viewHeight: Int, busy: Boolean): DrawState? {
         val index = initialRenderHoldPage
         val page = pages.getOrNull(index) ?: return null
-        if (!pageHasStableLayoutLocked(index)) return null
+        if (!pageHasDrawableContentLocked(index)) return null
         val top = if (lockedRestorePage == index) {
             lockedRestoreOffset.toFloat()
         } else {
@@ -899,6 +898,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.bitmap != null ||
             page.tiles.isNotEmpty() ||
             (page.width > 0 && page.height > 0)
+    }
+
+    private fun pageHasDrawableContentLocked(index: Int): Boolean {
+        val page = pages.getOrNull(index) ?: return false
+        return page.cardText != null || page.bitmap != null || page.tiles.isNotEmpty()
     }
 
     fun requestRender() {

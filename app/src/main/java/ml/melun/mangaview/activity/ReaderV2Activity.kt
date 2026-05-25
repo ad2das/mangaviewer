@@ -19,6 +19,7 @@ import android.view.MotionEvent
 import android.view.ViewGroup
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
@@ -86,6 +87,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var pendingProgressOffset = 0
     private var pendingBoundaryStatus = false
     private var initialStatusPending = false
+    private var initialDrawGateOpen = true
+    private var initialDrawGateView: View? = null
+    private var initialDrawGateListener: ViewTreeObserver.OnPreDrawListener? = null
+    private var convertedFromTranslucent = false
+    private val initialDrawGateTimeoutRunnable = Runnable {
+        releaseInitialDrawGate("timeout")
+    }
     private val saveProgressRunnable = Runnable {
         saveCurrentReadingProgress()
         pendingProgressInfo = null
@@ -115,7 +123,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         super.onCreate(savedInstanceState)
         toolbarTouchSlop = ViewConfiguration.get(this).scaledTouchSlop
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.BLACK))
+        window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
         window.navigationBarColor = Color.BLACK
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             window.isNavigationBarContrastEnforced = false
@@ -240,9 +248,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             pageView
         )
         setContentView(root)
+        installInitialDrawGate(root)
         val title = Gson().fromJson<Title?>(intent.getStringExtra("title"), object : TypeToken<Title?>() {}.type)
         val manga = Gson().fromJson<Manga?>(intent.getStringExtra("manga"), object : TypeToken<Manga?>() {}.type)
         if (manga == null) {
+            releaseInitialDrawGate("no_manga")
             finish()
             return
         }
@@ -292,6 +302,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         progressHandler.removeCallbacks(saveProgressRunnable)
         statusHandler.removeCallbacks(showInitialStatusRunnable)
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
+        statusHandler.removeCallbacks(initialDrawGateTimeoutRunnable)
+        removeInitialDrawGateListener()
         saveCurrentReadingProgress()
         pendingProgressInfo = null
         pendingBoundaryStatus = false
@@ -364,6 +376,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 hideBoundaryStatus()
                 renderView.setPageBitmap(index, bitmap)
                 if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
+                releaseInitialDrawGate("page")
             }
         }
     }
@@ -374,6 +387,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 hideBoundaryStatus()
                 renderView.setPageTiles(index, pageWidth, pageHeight, tiles)
                 if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
+                releaseInitialDrawGate("tiles")
             }
         }
     }
@@ -383,6 +397,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             if (pagesReady) {
                 hideBoundaryStatus()
                 renderView.setPageCard(index, title)
+                releaseInitialDrawGate("card")
             }
         }
     }
@@ -414,6 +429,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         status.visibility = TextView.VISIBLE
         status.text = message
+        releaseInitialDrawGate("message")
     }
 
     override fun onWindowChanged(
@@ -1004,6 +1020,53 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (status.visibility != TextView.GONE) status.visibility = TextView.GONE
     }
 
+    private fun installInitialDrawGate(root: View) {
+        initialDrawGateOpen = false
+        initialDrawGateView = root
+        val listener = ViewTreeObserver.OnPreDrawListener {
+            initialDrawGateOpen || destroyed || isFinishing
+        }
+        initialDrawGateListener = listener
+        root.viewTreeObserver.addOnPreDrawListener(listener)
+        statusHandler.postDelayed(initialDrawGateTimeoutRunnable, INITIAL_DRAW_GATE_TIMEOUT_MS)
+    }
+
+    private fun releaseInitialDrawGate(reason: String) {
+        if (initialDrawGateOpen) return
+        initialDrawGateOpen = true
+        statusHandler.removeCallbacks(initialDrawGateTimeoutRunnable)
+        val view = initialDrawGateView
+        removeInitialDrawGateListener()
+        view?.invalidate()
+        view?.post { convertReaderWindowOpaque() }
+        Log.d(TAG, "initial_draw_gate_released reason=$reason")
+    }
+
+    private fun removeInitialDrawGateListener() {
+        val view = initialDrawGateView
+        val listener = initialDrawGateListener
+        initialDrawGateListener = null
+        if (view != null && listener != null) {
+            val observer = view.viewTreeObserver
+            if (observer.isAlive) observer.removeOnPreDrawListener(listener)
+        }
+        initialDrawGateView = null
+    }
+
+    private fun convertReaderWindowOpaque() {
+        if (convertedFromTranslucent || destroyed || isFinishing) return
+        convertedFromTranslucent = true
+        try {
+            Activity::class.java.getDeclaredMethod("convertFromTranslucent").apply {
+                isAccessible = true
+                invoke(this@ReaderV2Activity)
+            }
+            Log.d(TAG, "reader_window_converted_opaque")
+        } catch (e: Exception) {
+            Log.w(TAG, "reader_window_convert_opaque_failed", e)
+        }
+    }
+
     private fun Int.dp(): Int = (this * resources.displayMetrics.density + 0.5f).toInt()
 
     companion object {
@@ -1013,6 +1076,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val DEFAULT_PAGE_GAP_PX = 2
         private const val WEBTOON_PAGE_GAP_PX = 0
         private const val ADJACENT_BUTTON_REFRESH_DELAY_MS = 350L
+        private const val INITIAL_DRAW_GATE_TIMEOUT_MS = 900L
         private const val TAG = "ReaderV2"
 
         @JvmStatic
