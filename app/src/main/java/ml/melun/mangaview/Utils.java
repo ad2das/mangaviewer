@@ -301,6 +301,8 @@ public class Utils {
         int launchToken = nextViewerLaunchToken(context);
         Title launchTitle = title != null ? title : manga.getTitle();
         if(launchTitle != null) {
+            if(p != null)
+                p.ensureSourceSiteForTitle(launchTitle);
             switchToTitleSourceSite(launchTitle);
             manga.setTitle(launchTitle);
             manga.setTitleId(launchTitle.getId());
@@ -314,7 +316,7 @@ public class Utils {
                         launchTitle, includeTitleEpisodes, launchToken);
                 return;
             }
-            if(!exactEpisode && shouldWaitForContinueFirstFrame(waitForFirstFrame, recent)) {
+            if(!exactEpisode && shouldWaitForContinueFirstFrame(waitForFirstFrame, recent, launchTitle)) {
                 ViewerWarmupManager.logMetric("viewer_continue_prepare_gate", manga.getId());
                 launchWhenFirstFrameReady(context, manga, code, returnToEpisodes, online, recent,
                         launchTitle, includeTitleEpisodes, launchToken);
@@ -337,12 +339,26 @@ public class Utils {
         return false;
     }
 
-    private static boolean shouldWaitForContinueFirstFrame(boolean waitForFirstFrame, boolean recent) {
-        return false;
+    private static boolean shouldWaitForContinueFirstFrame(boolean waitForFirstFrame, boolean recent, Title title) {
+        String source = title == null ? "" : title.getSourceSite();
+        return shouldWaitForContinueFirstFrame(waitForFirstFrame, recent, source, p != null && p.isNtkSite());
     }
 
     static boolean shouldWaitForContinueFirstFrameForTest(boolean waitForFirstFrame, boolean recent) {
-        return shouldWaitForContinueFirstFrame(waitForFirstFrame, recent);
+        return shouldWaitForContinueFirstFrame(waitForFirstFrame, recent, "", false);
+    }
+
+    static boolean shouldWaitForContinueFirstFrameForTest(boolean waitForFirstFrame, boolean recent,
+                                                          String sourceSite, boolean ntkSite) {
+        return shouldWaitForContinueFirstFrame(waitForFirstFrame, recent, sourceSite, ntkSite);
+    }
+
+    private static boolean shouldWaitForContinueFirstFrame(boolean waitForFirstFrame, boolean recent,
+                                                           String sourceSite, boolean ntkSite) {
+        if(!waitForFirstFrame)
+            return false;
+        String source = sourceSite == null ? "" : sourceSite.trim().toLowerCase(Locale.ROOT);
+        return "ntk".equals(source) || ntkSite;
     }
 
     private static void launchExactWhenFirstFrameReady(Context context, Manga manga, int code, boolean returnToEpisodes,
@@ -432,20 +448,28 @@ public class Utils {
                             online, recent, title, includeTitleEpisodes, launchToken, false),
                     continueLaunchFallbackMs(title));
         AppDispatchers.submitUserAction(() -> {
-            PreparedViewerLaunch prepared = ViewerPreparationCoordinator.prepareContinue(appContext, manga, title,
-                    false, p.getReverse(), MangaRepository.cancellation());
-            if(!prepared.canLaunch() && shouldBlockUnpreparedContinueLaunch(prepared)) {
-                ViewerWarmupManager.logMetric("viewer_continue_unprepared_blocked", manga.getId());
-                AppDispatchers.runOnMain(() -> showViewerPreparationIssue(context, launchToken, prepared, manga));
-                return;
+            try {
+                PreparedViewerLaunch prepared = ViewerPreparationCoordinator.prepareContinue(appContext, manga, title,
+                        false, p.getReverse(), MangaRepository.cancellation());
+                if(!prepared.canLaunch() && shouldBlockUnpreparedContinueLaunch(prepared)) {
+                    ViewerWarmupManager.logMetric("viewer_continue_unprepared_blocked", manga.getId());
+                    AppDispatchers.runOnMain(() -> showViewerPreparationIssue(context, launchToken, prepared, manga));
+                    return;
+                }
+                ViewerWarmupManager.logMetric(prepared.canLaunch() ? "viewer_continue_prepared_ready" : "viewer_continue_prepared_fallback", manga.getId());
+                Manga launchManga = prepared.canLaunch() ? prepared.getManga() : manga;
+                Title launchTitle = title != null ? title : prepared.getTitle();
+                if(launchTitle == null && launchManga != null)
+                    launchTitle = launchManga.getTitle();
+                final Title finalLaunchTitle = launchTitle;
+                AppDispatchers.runOnMain(() -> launchPreparedViewer(context, launchManga, code, returnToEpisodes,
+                        online, recent, finalLaunchTitle, includeTitleEpisodes, launchToken, false));
+            } catch (RuntimeException e) {
+                ViewerWarmupManager.logMetric("viewer_continue_prepare_exception", manga.getId());
+                ml.melun.mangaview.report.CrashReporter.record(e);
+                AppDispatchers.runOnMain(() -> launchPreparedViewer(context, manga, code, returnToEpisodes,
+                        online, recent, title, includeTitleEpisodes, launchToken, false));
             }
-            Manga launchManga = prepared.canLaunch() ? prepared.getManga() : manga;
-            Title launchTitle = title != null ? title : prepared.getTitle();
-            if(launchTitle == null && launchManga != null)
-                launchTitle = launchManga.getTitle();
-            final Title finalLaunchTitle = launchTitle;
-            AppDispatchers.runOnMain(() -> launchPreparedViewer(context, launchManga, code, returnToEpisodes,
-                    online, recent, finalLaunchTitle, includeTitleEpisodes, launchToken, false));
         });
     }
 
@@ -492,7 +516,7 @@ public class Utils {
 
     private static boolean shouldLaunchContinueFallback(String sourceSite, boolean online,
                                                         boolean hasLoadedImages, boolean hasNtkEpisodePath) {
-        if(online && "ntk".equals(sourceSite) && !hasLoadedImages && !hasNtkEpisodePath)
+        if(online && "ntk".equals(sourceSite) && !hasLoadedImages)
             return false;
         return true;
     }
@@ -552,10 +576,14 @@ public class Utils {
     private static void launchPreparedViewer(Context context, Manga manga, int code, boolean returnToEpisodes,
                                              boolean online, boolean recent, Title title, boolean includeTitleEpisodes,
                                              int launchToken, boolean exactEpisode) {
-        if(context == null || manga == null)
+        if(context == null || manga == null) {
+            ViewerWarmupManager.logMetric("viewer_launch_abort_null", manga == null ? -1 : manga.getId());
             return;
-        if(context instanceof Activity && !canUseActivity((Activity) context))
+        }
+        if(context instanceof Activity && !canUseActivity((Activity) context)) {
+            ViewerWarmupManager.logMetric("viewer_launch_abort_activity_before", manga.getId());
             return;
+        }
         int width = context instanceof Activity
                 ? getScreenWidth(((Activity) context).getWindowManager().getDefaultDisplay())
                 : context.getResources().getDisplayMetrics().widthPixels;
@@ -574,10 +602,14 @@ public class Utils {
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
-        if(!consumeViewerLaunchToken(context, launchToken))
+        if(!consumeViewerLaunchToken(context, launchToken)) {
+            ViewerWarmupManager.logMetric("viewer_launch_abort_token", manga.getId());
             return;
-        if(context instanceof Activity && !canUseActivity((Activity) context))
+        }
+        if(context instanceof Activity && !canUseActivity((Activity) context)) {
+            ViewerWarmupManager.logMetric("viewer_launch_abort_activity_after", manga.getId());
             return;
+        }
         Intent viewer = viewerIntent(context, manga, false, false, true, false);
         viewer.putExtra("online", online);
         if(preparedKey != null)
@@ -594,6 +626,7 @@ public class Utils {
             viewer.putExtra("recent", true);
         viewer.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
         try {
+            ViewerWarmupManager.logMetric(preparedKey == null ? "viewer_launch_start_unprepared" : "viewer_launch_start_prepared", manga.getId());
             if(context instanceof Activity) {
                 ((Activity) context).startActivityForResult(viewer, code);
                 ((Activity) context).overridePendingTransition(0, 0);
@@ -602,6 +635,7 @@ public class Utils {
                 context.startActivity(viewer);
             }
         } catch(RuntimeException e) {
+            ViewerWarmupManager.logMetric("viewer_launch_exception", manga.getId());
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
     }

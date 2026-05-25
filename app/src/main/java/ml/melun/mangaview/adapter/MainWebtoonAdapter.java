@@ -120,6 +120,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private static final String HOME_CACHE_KEY_PREFIX = "homeSnapshotV3_";
     private static final int HOME_CACHE_MAX_SECTIONS = 6;
     private static final int HOME_CACHE_MAX_TITLES_PER_SECTION = 10;
+    private static final long CONTINUE_OPEN_DEDUPE_MS = 3200L;
     private static final Executor ROW_DIFF_EXECUTOR = AppDispatchers.uiDiff();
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final Map<String, List<Ranking<?>>> HOME_SNAPSHOT_MEMORY_CACHE = new ConcurrentHashMap<>();
@@ -1580,14 +1581,22 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         private void openContinueOrTitle(Title item, boolean continueStyle) {
-            if(listener == null || item == null)
+            if(listener == null || item == null) {
+                if(continueStyle)
+                    ViewerWarmupManager.logMetric("home_continue_click_ignored", -1);
                 return;
+            }
             Manga manga = continueStyle ? resolveContinueManga(item) : null;
             if(manga != null) {
-                if(!markContinueOpen(item))
+                if(!markContinueOpen(item)) {
+                    ViewerWarmupManager.logMetric("home_continue_click_deduped", item.getId());
                     return;
-                Utils.openContinueViewer(context, manga, -1);
+                }
+                ViewerWarmupManager.logMetric("home_continue_click", item.getId());
+                listener.clickedManga(manga);
             } else {
+                if(continueStyle)
+                    ViewerWarmupManager.logMetric("home_continue_no_resume", item.getId());
                 listener.clickedTitle(item);
             }
         }
@@ -1682,7 +1691,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private boolean markContinueOpen(Title item) {
         String key = titleKey(item) + ":" + (item == null ? 0 : item.getBookmark()) + ":" + (item == null ? 0 : item.getBookmarkEpisodeId());
         long now = System.currentTimeMillis();
-        if(key.equals(lastContinueOpenKey) && now - lastContinueOpenAt < 700)
+        if(key.equals(lastContinueOpenKey) && now - lastContinueOpenAt < CONTINUE_OPEN_DEDUPE_MS)
             return false;
         lastContinueOpenKey = key;
         lastContinueOpenAt = now;
