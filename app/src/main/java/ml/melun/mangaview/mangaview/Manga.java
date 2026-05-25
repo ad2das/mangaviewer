@@ -413,7 +413,8 @@ public class Manga {
                 }
             }
         } catch (Exception e) {
-            if(isCloudflareChallenge(e))
+            if(isCloudflareChallenge(e) || isRecentNtkCloudflareChallenge(client)
+                    || isNtkViewerChallengeFailure(client, e))
                 return LOAD_CAPTCHA;
             recordFetchException(e);
         }
@@ -600,6 +601,14 @@ public class Manga {
     private static boolean isCloudflareChallenge(Exception e) {
         String message = e == null ? null : e.getMessage();
         return message != null && message.toLowerCase(Locale.ROOT).contains("cloudflare");
+    }
+
+    private static boolean isRecentNtkCloudflareChallenge(CustomHttpClient client) {
+        return client != null && client.isNtk() && client.hasRecentCloudflareChallenge();
+    }
+
+    private static boolean isNtkViewerChallengeFailure(CustomHttpClient client, Exception e) {
+        return client != null && client.isNtk() && isRecoverableNetworkFetchFailure(e);
     }
 
     private static void recordFetchException(Exception e) {

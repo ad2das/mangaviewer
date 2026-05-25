@@ -57,6 +57,7 @@ class ReaderSession(
         fun onPageCard(index: Int, title: String)
         fun onPageCleared(index: Int)
         fun onMessage(message: String)
+        fun onCaptchaRequired(manga: Manga)
     }
 
     data class PageInfo(
@@ -231,6 +232,10 @@ class ReaderSession(
                 if (urls.isNullOrEmpty()) {
                     val result = MangaRepository.fetchViewerInitial(manga, MangaRepository.cancellation())
                     if (result != Title.LOAD_OK) {
+                        if (result == Title.LOAD_CAPTCHA) {
+                            postCaptchaRequired(manga)
+                            return@execute
+                        }
                         postMessage("이미지를 불러오지 못했습니다")
                         return@execute
                     }
@@ -1669,6 +1674,10 @@ class ReaderSession(
 
     private fun postMessage(message: String) {
         main.post { if (!cancelled.get()) listener.onMessage(message) }
+    }
+
+    private fun postCaptchaRequired(target: Manga) {
+        main.post { if (!cancelled.get()) listener.onCaptchaRequired(target) }
     }
 
     private companion object {

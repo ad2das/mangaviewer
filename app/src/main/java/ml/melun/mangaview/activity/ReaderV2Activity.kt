@@ -28,7 +28,10 @@ import android.widget.TextView
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import ml.melun.mangaview.MainApplication.p
+import ml.melun.mangaview.MainApplication.getHttpClient
 import ml.melun.mangaview.Utils
+import ml.melun.mangaview.activity.CaptchaActivity.REQUEST_CAPTCHA
+import ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA
 import ml.melun.mangaview.mangaview.Manga
 import ml.melun.mangaview.mangaview.MTitle
 import ml.melun.mangaview.mangaview.Title
@@ -290,6 +293,28 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         renderView.requestRender()
     }
 
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != RESULT_CAPTCHA) return
+        AppDispatchers.runUserAction {
+            val pref = p
+            if (pref != null) {
+                getHttpClient().syncCookiesFromWebView(pref.webtoonUrl, true)
+                getHttpClient().syncCookiesFromWebView(pref.url, true)
+            }
+            runOnUiThread {
+                if (destroyed || isFinishing) return@runOnUiThread
+                val manga = currentManga ?: return@runOnUiThread
+                startReaderSession(
+                    manga,
+                    currentTitle ?: manga.title,
+                    null,
+                    clearViewImmediately = false
+                )
+            }
+        }
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus && ::renderView.isInitialized) {
@@ -430,6 +455,19 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         status.visibility = TextView.VISIBLE
         status.text = message
         releaseInitialDrawGate("message")
+    }
+
+    override fun onCaptchaRequired(manga: Manga) {
+        pendingBoundaryStatus = false
+        initialStatusPending = false
+        pendingInitialRestorePage = -1
+        pendingInitialRestoreOffset = 0
+        statusHandler.removeCallbacks(showInitialStatusRunnable)
+        statusHandler.removeCallbacks(showBoundaryStatusRunnable)
+        status.visibility = TextView.VISIBLE
+        status.text = "캡차 확인이 필요합니다"
+        releaseInitialDrawGate("captcha")
+        Utils.showCaptchaPopup(Manga.safeUrl(manga), this, REQUEST_CAPTCHA, p)
     }
 
     override fun onWindowChanged(
