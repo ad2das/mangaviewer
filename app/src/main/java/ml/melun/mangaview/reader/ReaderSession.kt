@@ -43,7 +43,8 @@ class ReaderSession(
     private val reverse: Boolean,
     preparedKey: String?,
     private val startAtFirstPage: Boolean = false,
-    private val listener: Listener
+    private val listener: Listener,
+    private val imageRepository: ReaderImageRepository = LegacyReaderImageRepository
 ) {
     interface Listener {
         fun onPagesReady(count: Int)
@@ -239,9 +240,9 @@ class ReaderSession(
         network.execute {
             try {
                 attachTitle()
-                var urls = MangaRepository.imageUrls(manga, appContext)
+                var urls = imageRepository.imageUrls(manga, appContext)
                 if (urls.isNullOrEmpty()) {
-                    val result = MangaRepository.fetchViewerInitial(manga, MangaRepository.cancellation())
+                    val result = imageRepository.fetchViewerInitial(manga, MangaRepository.cancellation())
                     if (result != Title.LOAD_OK) {
                         if (result == Title.LOAD_CAPTCHA) {
                             postCaptchaRequired(manga)
@@ -250,7 +251,7 @@ class ReaderSession(
                         postMessage("이미지를 불러오지 못했습니다")
                         return@execute
                     }
-                    urls = MangaRepository.imageUrls(manga, appContext)
+                    urls = imageRepository.imageUrls(manga, appContext)
                 }
                 if (urls.isNullOrEmpty()) {
                     postMessage("표시할 이미지가 없습니다")
@@ -490,7 +491,7 @@ class ReaderSession(
                 val currentTitle = title ?: anchorManga.title ?: manga.title
                 if (currentTitle == null) return@execute
                 if (currentTitle.eps == null || currentTitle.eps.size <= 1) {
-                    MangaRepository.fetchEpisodesForeground(currentTitle, MangaRepository.cancellation())
+                    imageRepository.fetchEpisodesForeground(currentTitle, MangaRepository.cancellation())
                 }
                 attachTitle()
                 val episodes = Utils.snapshotEpisodes(currentTitle)
@@ -504,11 +505,11 @@ class ReaderSession(
                 next.title = currentTitle
                 next.titleId = currentTitle.id
                 if (episodes.isNotEmpty()) next.setEps(episodes)
-                if (MangaRepository.imageUrls(next, appContext).isNullOrEmpty()) {
-                    val result = MangaRepository.fetchViewerInitial(next, MangaRepository.cancellation())
+                if (imageRepository.imageUrls(next, appContext).isNullOrEmpty()) {
+                    val result = imageRepository.fetchViewerInitial(next, MangaRepository.cancellation())
                     if (result != Title.LOAD_OK) return@execute
                 }
-                val nextUrls = MangaRepository.imageUrls(next, appContext)
+                val nextUrls = imageRepository.imageUrls(next, appContext)
                 if (nextUrls.isNullOrEmpty()) return@execute
             } catch (e: Exception) {
                 recordIfUnexpected(e)
@@ -534,7 +535,7 @@ class ReaderSession(
                 val anchorManga = pageRef(anchor)?.manga ?: manga
                 val currentTitle = title ?: anchorManga.title ?: manga.title ?: return@execute
                 if (currentTitle.eps == null || currentTitle.eps.size <= 1) {
-                    val result = MangaRepository.fetchEpisodesForeground(currentTitle, MangaRepository.cancellation())
+                    val result = imageRepository.fetchEpisodesForeground(currentTitle, MangaRepository.cancellation())
                     if (result != Title.LOAD_OK) {
                         if (result == Title.LOAD_CAPTCHA) {
                             if (silentMissing) {
@@ -569,8 +570,8 @@ class ReaderSession(
                 target.mode = anchorManga.mode
                 if (episodes.isNotEmpty()) target.setEps(episodes)
                 if (hasEpisode(target)) return@execute
-                if (MangaRepository.imageUrls(target, appContext).isNullOrEmpty()) {
-                    val result = MangaRepository.fetchViewerInitial(target, MangaRepository.cancellation())
+                if (imageRepository.imageUrls(target, appContext).isNullOrEmpty()) {
+                    val result = imageRepository.fetchViewerInitial(target, MangaRepository.cancellation())
                     if (result != Title.LOAD_OK) {
                         if (result == Title.LOAD_CAPTCHA) {
                             if (silentMissing) {
@@ -585,7 +586,7 @@ class ReaderSession(
                         return@execute
                     }
                 }
-                val urls = MangaRepository.imageUrls(target, appContext)
+                val urls = imageRepository.imageUrls(target, appContext)
                 if (urls.isNullOrEmpty()) {
                     postMessage("표시할 이미지가 없습니다")
                     return@execute
@@ -612,7 +613,7 @@ class ReaderSession(
                 var current = manga
                 val currentTitle = title ?: current.title ?: manga.title ?: return@execute
                 if (currentTitle.eps == null || currentTitle.eps.size <= 1) {
-                    val result = MangaRepository.fetchEpisodesForeground(currentTitle, MangaRepository.cancellation())
+                    val result = imageRepository.fetchEpisodesForeground(currentTitle, MangaRepository.cancellation())
                     if (result != Title.LOAD_OK) return@execute
                 }
                 attachTitle()
@@ -633,11 +634,11 @@ class ReaderSession(
                     target.mode = current.mode
                     if (episodes.isNotEmpty()) target.setEps(episodes)
                     if (!hasEpisode(target)) {
-                        if (MangaRepository.imageUrls(target, appContext).isNullOrEmpty()) {
-                            val result = MangaRepository.fetchViewerInitial(target, MangaRepository.cancellation())
+                        if (imageRepository.imageUrls(target, appContext).isNullOrEmpty()) {
+                            val result = imageRepository.fetchViewerInitial(target, MangaRepository.cancellation())
                             if (result != Title.LOAD_OK) break
                         }
-                        val urls = MangaRepository.imageUrls(target, appContext)
+                        val urls = imageRepository.imageUrls(target, appContext)
                         if (urls.isNullOrEmpty()) break
                         cardOffsets.add(primedRefs.size)
                         primedRefs.addAll(pageRefsForEpisode(target, urls, ReaderSurfaceView.DIRECTION_NEXT))
@@ -1271,8 +1272,8 @@ class ReaderSession(
             a.titleId == b.titleId &&
             (a.ntkEpisodePath ?: "") == (b.ntkEpisodePath ?: "")
         ) return true
-        val first = MangaRepository.imageUrls(a, appContext)
-        val second = MangaRepository.imageUrls(b, appContext)
+        val first = imageRepository.imageUrls(a, appContext)
+        val second = imageRepository.imageUrls(b, appContext)
         return !first.isNullOrEmpty() && first == second
     }
 
@@ -1419,6 +1420,7 @@ class ReaderSession(
             recycleDecodeResult(delivery.result)
             return
         }
+        var droppedLowerWidth = false
         val currentIndex = synchronized(pagesLock) {
             val index = if (knownIndex in pages.indices && pages[knownIndex] === delivery.page) {
                 knownIndex
@@ -1426,17 +1428,35 @@ class ReaderSession(
                 pages.indexOfFirst { it === delivery.page }
             }
             if (index >= 0 && (!busy || index in retainedFirst..retainedLast)) {
-                decodedWidths[index] = max(decodedWidths[index] ?: 0, delivery.result.width)
-                desiredWidths[index] = max(desiredWidths[index] ?: 0, delivery.requestedWidth)
-                if (delivery.result is PageDecodeResult.Tiles) {
-                    achievableWidths[index] = delivery.result.decodedWidth
+                val deliveredWidth = decodedWidths[index] ?: 0
+                if (deliveredWidth > delivery.result.width && hasDeliveredBitmap(index)) {
+                    droppedLowerWidth = true
+                } else {
+                    decodedWidths[index] = max(deliveredWidth, delivery.result.width)
+                    val desiredWidth = if (busy) {
+                        max(delivery.requestedWidth, targetWidth(false))
+                    } else {
+                        delivery.requestedWidth
+                    }
+                    desiredWidths[index] = max(desiredWidths[index] ?: 0, desiredWidth)
+                    if (delivery.result is PageDecodeResult.Tiles) {
+                        if (delivery.result.decodedWidth < delivery.requestedWidth) {
+                            achievableWidths[index] = max(achievableWidths[index] ?: 0, delivery.result.decodedWidth)
+                        }
+                    }
+                    trackDeliveredResult(index, delivery.result)
                 }
-                trackDeliveredResult(index, delivery.result)
             }
             index
         }
         if (currentIndex < 0 || (busy && currentIndex !in retainedFirst..retainedLast)) {
             recycleDecodeResult(delivery.result)
+            return
+        }
+        if (droppedLowerWidth) {
+            ViewerWarmupManager.logMetric("reader_drop_stale_lower_width", delivery.result.width.toLong())
+            recycleDecodeResult(delivery.result)
+            retryPendingWidthIfNeeded(currentIndex)
             return
         }
         logFirstBitmapIfNeeded(delivery.startedAt)

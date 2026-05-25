@@ -64,7 +64,7 @@ import java.util.WeakHashMap;
 
 import ml.melun.mangaview.activity.CaptchaActivity;
 import ml.melun.mangaview.activity.EpisodeActivity;
-import ml.melun.mangaview.activity.ViewerActivity;
+import ml.melun.mangaview.activity.ViewerIntentContract;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.IntegerCallback;
 import ml.melun.mangaview.interfaces.StringCallback;
@@ -617,8 +617,8 @@ public class Utils {
         if(preparedKey != null)
             viewer.putExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY, preparedKey);
         if(exactEpisode) {
-            viewer.putExtra(ViewerActivity.EXTRA_EXACT_EPISODE, true);
-            viewer.putExtra(ViewerActivity.EXTRA_START_AT_FIRST_PAGE, true);
+            viewer.putExtra(ViewerIntentContract.EXTRA_EXACT_EPISODE, true);
+            viewer.putExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, true);
         }
         if(returnToEpisodes)
             viewer.putExtra("returnToEpisodes", true);

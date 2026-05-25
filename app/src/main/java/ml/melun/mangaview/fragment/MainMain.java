@@ -209,7 +209,7 @@ public class MainMain extends Fragment{
                 //getTitleFromManga intentStarter = new getTitleFromManga();
                 //intentStarter.execute(m);
                 cancelHomeFetches();
-                openViewer(getContext(), m,-1);
+                Utils.openContinueViewer(getContext(), m, -1);
             }
 
             @Override

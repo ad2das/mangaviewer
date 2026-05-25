@@ -128,3 +128,4 @@ public class AdvSearchActivity extends AppCompatActivity {
         return super.onOptionsItemSelected(item);
     }
 }
+

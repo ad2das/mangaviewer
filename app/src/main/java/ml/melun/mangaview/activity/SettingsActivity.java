@@ -3,12 +3,10 @@ package ml.melun.mangaview.activity;
 import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
-import android.content.res.ColorStateList;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -22,7 +20,6 @@ import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
 
 import android.os.Bundle;
-import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MenuItem;
 import android.view.View;
@@ -351,112 +348,11 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void styleSettingsScreen() {
-        View root = findViewById(android.R.id.content);
-        root.setBackgroundColor(ContextCompat.getColor(this, dark ? R.color.colorDarkWindowBackground : R.color.appSurface));
-        styleSettingsTree(root);
-
-        int[] rowIds = {
-                R.id.setting_url,
-                R.id.setting_site_toggle,
-                R.id.setting_ntk_diagnostics,
-                R.id.setting_dir,
-                R.id.setting_startTab,
-                R.id.setting_dark,
-                R.id.setting_viewer,
-                R.id.setting_key,
-                R.id.setting_reverse,
-                R.id.setting_buttonLayout,
-                R.id.setting_double,
-                R.id.setting_double_leftright,
-                R.id.setting_stretch,
-                R.id.setting_pageRtl,
-                R.id.setting_dataExport,
-                R.id.setting_dataImport,
-                R.id.setting_reset,
-                R.id.setting_dataSave,
-                R.id.setting_license
-        };
-
-        for (int id : rowIds) {
-            View row = findViewById(id);
-            if (row == null)
-                continue;
-            if(dark)
-                row.setBackground(makeSettingsRowBackground(id == R.id.setting_reset));
-            else
-                row.setBackgroundResource(id == R.id.setting_reset ? R.drawable.app_danger_row_bg : R.drawable.app_setting_row_bg);
-            row.setPadding(dp(12), 0, dp(12), 0);
-            row.setMinimumHeight(dp(62));
-            if (row.getLayoutParams() instanceof LinearLayout.LayoutParams) {
-                LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) row.getLayoutParams();
-                lp.width = LinearLayout.LayoutParams.MATCH_PARENT;
-                lp.height = LinearLayout.LayoutParams.WRAP_CONTENT;
-                lp.setMargins(dp(16), dp(4), dp(16), dp(4));
-                row.setLayoutParams(lp);
-            }
-        }
-    }
-
-    private void styleSettingsTree(View view) {
-        if (view instanceof TextView) {
-            TextView text = (TextView) view;
-            boolean sectionHeader = view.getParent() instanceof LinearLayout
-                    && !(view.getParent() instanceof ConstraintLayout);
-            if (sectionHeader) {
-                text.setBackgroundColor(ContextCompat.getColor(this, dark ? R.color.colorDarkWindowBackground : R.color.appSurface));
-                text.setTextColor(ContextCompat.getColor(this, R.color.appAccent));
-                text.setTextSize(12);
-                text.setGravity(Gravity.BOTTOM | Gravity.START);
-                text.setAllCaps(false);
-                text.setPadding(dp(20), dp(18), dp(20), dp(7));
-            } else {
-                text.setTextColor(ContextCompat.getColor(this, dark ? R.color.colorDarkText : R.color.appText));
-                text.setTextSize(14);
-                text.setIncludeFontPadding(false);
-                text.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
-            }
-        }
-
-        if (view instanceof Spinner) {
-            if(dark)
-                view.setBackground(makeSettingsRowBackground(false));
-            else
-                view.setBackgroundResource(R.drawable.app_search_filter_bg);
-        }
-
-        if (view instanceof Switch) {
-            int accent = ContextCompat.getColor(this, R.color.appAccent);
-            int muted = ContextCompat.getColor(this, dark ? R.color.colorDarkDivider : R.color.appDivider);
-            int[][] states = new int[][]{
-                    new int[]{android.R.attr.state_checked},
-                    new int[]{}
-            };
-            ((Switch) view).setThumbTintList(new ColorStateList(states, new int[]{accent, ContextCompat.getColor(this, dark ? R.color.colorDarkSurface : R.color.appCard)}));
-            ((Switch) view).setTrackTintList(new ColorStateList(states, new int[]{ContextCompat.getColor(this, R.color.appAccentLight), muted}));
-        }
-
-        if (view instanceof LinearLayout) {
-            LinearLayout layout = (LinearLayout) view;
-            layout.setBackgroundColor(ContextCompat.getColor(this, dark ? R.color.colorDarkWindowBackground : R.color.appSurface));
-        }
-
-        if (view instanceof android.view.ViewGroup) {
-            android.view.ViewGroup group = (android.view.ViewGroup) view;
-            for (int i = 0; i < group.getChildCount(); i++)
-                styleSettingsTree(group.getChildAt(i));
-        }
+        SettingsScreenStyler.style(this, dark);
     }
 
     private int dp(int value) {
-        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
-    }
-
-    private GradientDrawable makeSettingsRowBackground(boolean danger) {
-        GradientDrawable background = new GradientDrawable();
-        background.setColor(ContextCompat.getColor(this, danger ? R.color.colorDarkSurfaceElevated : R.color.colorDarkSurface));
-        background.setStroke(dp(1), ContextCompat.getColor(this, danger ? R.color.appAccent : R.color.colorDarkDivider));
-        background.setCornerRadius(dp(8));
-        return background;
+        return SettingsScreenStyler.dp(this, value);
     }
 
     private void updateSiteToggleText() {
@@ -702,3 +598,4 @@ public class SettingsActivity extends AppCompatActivity {
         void onKeyEvent(KeyEvent event);
     }
 }
+

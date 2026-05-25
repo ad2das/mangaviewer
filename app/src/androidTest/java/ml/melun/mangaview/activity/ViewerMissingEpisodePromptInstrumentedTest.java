@@ -31,6 +31,7 @@ import java.util.regex.Pattern;
 import ml.melun.mangaview.MainApplication;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
+import ml.melun.mangaview.LiveNetworkAssume;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
@@ -255,7 +256,7 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
             assertNotNull("Expected viewer picker backing list to include 91화", pickerEpisode91);
             pickerEpisode91.setImgs(Collections.singletonList("https://example.com/ntk-summertime-91.jpg"));
 
-            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> ((ViewerActivity) activity).loadManga(pickerEpisode91));
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> ((ReaderV2Activity) activity).testOpenEpisode(pickerEpisode91));
             assertTrue("Expected picker-selected NTK 91화 to open as 91화",
                     waitForToolbarTitle(activity, "91화", 60000));
             assertFalse("NTK 91화 selection must not land on 87화",
@@ -311,6 +312,7 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
     }
 
     private Title fetchWfwfSummertimeRendering() {
+        LiveNetworkAssume.assumeEnabled();
         MainApplication.p.setSitePreset("https://wfwf453.com/cm", "https://wfwf453.com");
         MainApplication.p.setBaseMode(MTitle.base_comic);
 
@@ -330,6 +332,7 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
     }
 
     private Title fetchNtkSummertimeRendering() {
+        LiveNetworkAssume.assumeEnabled();
         MainApplication.p.setNtkSitePreset(CustomHttpClient.NTK_WEBTOON_URL);
         MainApplication.p.setBaseMode(MTitle.base_comic);
 
@@ -355,12 +358,12 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
     }
 
     private Intent viewerIntent(Context context, Manga episode, Title title, boolean newTask) {
-        Intent intent = new Intent(context, ViewerActivity.class);
+        Intent intent = new Intent(context, ReaderV2Activity.class);
         intent.putExtra("online", true);
         intent.putExtra("title", Utils.toViewerTitleJson(title, true));
         intent.putExtra("manga", Utils.toViewerMangaJson(episode, title));
-        intent.putExtra(ViewerActivity.EXTRA_EXACT_EPISODE, true);
-        intent.putExtra(ViewerActivity.EXTRA_START_AT_FIRST_PAGE, true);
+        intent.putExtra(ViewerIntentContract.EXTRA_EXACT_EPISODE, true);
+        intent.putExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, true);
         if(newTask)
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         return intent;
@@ -427,14 +430,9 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
     private static Manga viewerEpisode(Activity activity, int episodeNumber) {
         final Manga[] result = new Manga[1];
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
-            if(!(activity instanceof ViewerActivity))
+            if(!(activity instanceof ReaderV2Activity))
                 return;
-            ViewerActivity viewer = (ViewerActivity) activity;
-            result[0] = findEpisode(viewer.eps, episodeNumber);
-            if(result[0] == null && viewer.manga != null)
-                result[0] = findEpisode(viewer.manga.getEps(), episodeNumber);
-            if(result[0] == null && viewer.title != null)
-                result[0] = findEpisode(viewer.title.getEps(), episodeNumber);
+            result[0] = ((ReaderV2Activity) activity).testEpisode(episodeNumber);
         });
         return result[0];
     }
@@ -442,14 +440,9 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
     private static boolean setViewerEpisodeImages(Activity activity, int episodeNumber, List<String> images) {
         final boolean[] found = {false};
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
-            if(!(activity instanceof ViewerActivity))
+            if(!(activity instanceof ReaderV2Activity))
                 return;
-            ViewerActivity viewer = (ViewerActivity) activity;
-            found[0] |= setEpisodeImages(viewer.eps, episodeNumber, images);
-            if(viewer.manga != null)
-                found[0] |= setEpisodeImages(viewer.manga.getEps(), episodeNumber, images);
-            if(viewer.title != null)
-                found[0] |= setEpisodeImages(viewer.title.getEps(), episodeNumber, images);
+            found[0] = ((ReaderV2Activity) activity).testSetEpisodeImages(episodeNumber, images);
         });
         return found[0];
     }
@@ -470,16 +463,9 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
     private static Manga viewerEpisode(Activity activity, String episodeName) {
         final Manga[] result = new Manga[1];
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
-            if(!(activity instanceof ViewerActivity))
+            if(!(activity instanceof ReaderV2Activity))
                 return;
-            List<Manga> episodes = ((ViewerActivity) activity).eps;
-            if(episodes == null)
-                return;
-            for(Manga episode : episodes)
-                if(episode != null && episode.getName() != null && episode.getName().contains(episodeName)) {
-                    result[0] = episode;
-                    return;
-                }
+            result[0] = ((ReaderV2Activity) activity).testEpisode(episodeName);
         });
         return result[0];
     }
@@ -517,11 +503,20 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
 
     private static boolean waitForUiToolbarTitle(UiDevice device, String expectedText, long timeoutMs) {
         long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+        boolean tappedReader = false;
         while(SystemClock.elapsedRealtime() < deadline) {
             UiObject2 title = device.findObject(By.res(PACKAGE_NAME, "toolbar_title"));
             String text = title == null ? "" : title.getText();
             if(text != null && text.contains(expectedText))
                 return true;
+            if(!tappedReader) {
+                UiObject2 strip = device.findObject(By.res(PACKAGE_NAME, "strip"));
+                if(strip != null) {
+                    android.graphics.Rect bounds = strip.getVisibleBounds();
+                    device.click(bounds.centerX(), bounds.centerY());
+                    tappedReader = true;
+                }
+            }
             SystemClock.sleep(500);
         }
         return false;

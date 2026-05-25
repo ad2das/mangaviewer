@@ -36,4 +36,14 @@ public class NtkWebViewFallbackManagerTest {
         assertTrue(NtkWebViewFallbackManager.shouldStopWaitingForCallerForTest(false, 2000L, 2000L));
         assertFalse(NtkWebViewFallbackManager.shouldStopWaitingForCallerForTest(false, 1999L, 2000L));
     }
+
+    @Test
+    public void documentFallbackLeavesTimeForWebViewStartupAndRenderedHtmlExtraction() {
+        assertTrue(NtkWebViewFallbackManager.webViewLoadTimeoutMsForTest() >= 22_000L);
+        assertTrue(NtkWebViewFallbackManager.documentReadyWaitMsForTest() >= 18_000L);
+        assertTrue(NtkWebViewFallbackManager.webViewLoadTimeoutMsForTest()
+                > NtkWebViewFallbackManager.documentReadyWaitMsForTest());
+        assertTrue(NtkWebViewFallbackManager.callerWaitTimeoutMsForTest()
+                > NtkWebViewFallbackManager.webViewLoadTimeoutMsForTest());
+    }
 }

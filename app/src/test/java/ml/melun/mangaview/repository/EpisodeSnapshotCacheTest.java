@@ -35,4 +35,21 @@ public class EpisodeSnapshotCacheTest {
         assertEquals("episodeSnapshotV1_" + base_webtoon + "_7",
                 EpisodeSnapshotCache.legacyKey(title));
     }
+
+    @Test
+    public void nullTitleStillUsesVersionedSourceFallbackKey() {
+        assertEquals("episodeSnapshotV2_wfwf_0_0",
+                EpisodeSnapshotCache.key(null, false));
+        assertEquals("episodeSnapshotV2_ntk_0_0",
+                EpisodeSnapshotCache.key(null, true));
+    }
+
+    @Test
+    public void sourceNamesAreNormalizedForStableDiskKeys() {
+        Title title = new Title(new MTitle("name", 12, "", "", null, "", base_webtoon));
+        title.setSourceSite(" NTK ");
+
+        assertEquals("episodeSnapshotV2_ntk_" + base_webtoon + "_12",
+                EpisodeSnapshotCache.key(title, false));
+    }
 }

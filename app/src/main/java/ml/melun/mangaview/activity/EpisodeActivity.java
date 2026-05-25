@@ -9,7 +9,6 @@ import androidx.annotation.NonNull;
 import androidx.appcompat.app.ActionBar;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.content.ContextCompat;
 
 import android.os.Bundle;
 import android.util.Log;
@@ -31,10 +30,6 @@ import android.widget.Toast;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -79,14 +74,12 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_ERROR;
 public class EpisodeActivity extends AppCompatActivity {
     private static final long DESTINATION_LAUNCH_DEBOUNCE_MS = 1500L;
     private static final long VIEWER_PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
-    private static final long VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS = 80L;
-    private static final long EPISODE_REFRESH_AFTER_CACHE_PROBE_MS = 160L;
-    private static final long INITIAL_VIEWER_TARGET_WARMUP_DELAY_MS = 0L;
-    private static final long INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 0L;
-    private static final long NTK_INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = 0L;
-    private static final long MAX_EPISODE_CACHE_FILE_BYTES = 2 * 1024 * 1024L;
-    private static final int MEMORY_CACHE_MAIN_THREAD_PARSE_MAX_CHARS = 64 * 1024;
-    private static final int VISIBLE_EPISODE_WARMUP_AHEAD = 3;
+    private static final long VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS = EpisodeWarmupPolicy.VISIBLE_IDLE_DELAY_MS;
+    private static final long EPISODE_REFRESH_AFTER_CACHE_PROBE_MS = EpisodeWarmupPolicy.REFRESH_AFTER_CACHE_PROBE_MS;
+    private static final long INITIAL_VIEWER_TARGET_WARMUP_DELAY_MS = EpisodeWarmupPolicy.INITIAL_VIEWER_TARGET_DELAY_MS;
+    private static final long INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = EpisodeWarmupPolicy.INITIAL_VISIBLE_DELAY_MS;
+    private static final long NTK_INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = EpisodeWarmupPolicy.NTK_INITIAL_VISIBLE_DELAY_MS;
+    private static final int VISIBLE_EPISODE_WARMUP_AHEAD = EpisodeWarmupPolicy.VISIBLE_AHEAD;
     //global variables
     Title title;
     EpisodeAdapter episodeAdapter;
@@ -210,9 +203,9 @@ public class EpisodeActivity extends AppCompatActivity {
         if(resultCode== RESULT_OK){
             if(data == null)
                 return;
-            String switchedTitleJson = data.getStringExtra(ViewerActivity.EXTRA_RETURN_EPISODE_TITLE);
+            String switchedTitleJson = data.getStringExtra(ViewerIntentContract.EXTRA_RETURN_EPISODE_TITLE);
             if(shouldSwitchEpisodeListForViewerResult(
-                    data.getBooleanExtra(ViewerActivity.EXTRA_RETURN_EPISODE_SOURCE_SWITCHED, false),
+                    data.getBooleanExtra(ViewerIntentContract.EXTRA_RETURN_EPISODE_SOURCE_SWITCHED, false),
                     switchedTitleJson)) {
                 restartWithViewerResultTitle(switchedTitleJson);
                 return;
@@ -583,11 +576,7 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     static int visibleEpisodeWarmupLimitForTest(boolean dataSave, boolean aggressiveAllowed, boolean ntkSite) {
-        if(dataSave)
-            return 1;
-        if(ntkSite)
-            return aggressiveAllowed ? 5 : 4;
-        return aggressiveAllowed ? 5 : 4;
+        return EpisodeWarmupPolicy.visibleLimit(dataSave, aggressiveAllowed, ntkSite);
     }
 
     static long visibleEpisodeWarmupIdleDelayMsForTest() {
@@ -603,11 +592,11 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     static long initialViewerTargetWarmupDelayMsForTest(boolean ntkSite) {
-        return ntkSite ? NTK_INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS : INITIAL_VIEWER_TARGET_WARMUP_DELAY_MS;
+        return EpisodeWarmupPolicy.initialViewerTargetDelay(ntkSite);
     }
 
     static long initialVisibleEpisodeWarmupDelayMsForTest(boolean ntkSite) {
-        return ntkSite ? NTK_INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS : INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS;
+        return EpisodeWarmupPolicy.initialVisibleDelay(ntkSite);
     }
 
     private void warmupLikelyNtkViewerPage() {
@@ -639,13 +628,11 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     static boolean shouldDirectWarmupNtkViewerPageForTest(boolean ntkPreference, boolean ntkClient, String episodePath) {
-        return (ntkPreference || ntkClient)
-                && episodePath != null
-                && episodePath.trim().length() > 0;
+        return EpisodeWarmupPolicy.shouldDirectWarmupNtkViewerPage(ntkPreference, ntkClient, episodePath);
     }
 
     static boolean shouldPreloadNtkFirstFrameAfterDirectWarmupForTest(boolean directWarmupSucceeded) {
-        return directWarmupSucceeded;
+        return EpisodeWarmupPolicy.shouldPreloadNtkFirstFrameAfterDirectWarmup(directWarmupSucceeded);
     }
 
     private void confirmDeleteOfflineEpisode(int position, Manga manga) {
@@ -883,7 +870,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 return showCachedEpisodesJson(json);
             String cacheJson = json;
             AppDispatchers.submitIo(() -> {
-                CachedEpisodes cached = parseCachedEpisodesJson(cacheJson);
+                EpisodeCachedEpisodes cached = parseCachedEpisodesJson(cacheJson);
                 if(cached == null)
                     return;
                 AppDispatchers.runOnMain(() -> {
@@ -949,7 +936,7 @@ public class EpisodeActivity extends AppCompatActivity {
         String cacheKey = episodeCacheKey();
         AppDispatchers.submitIo(() -> {
             long startedAt = PerfTrace.start("episode_cache_async_load_ms");
-            CachedEpisodes cached = readCachedEpisodes(appContext, cacheKey);
+            EpisodeCachedEpisodes cached = readCachedEpisodes(appContext, cacheKey);
             PerfTrace.end("episode_cache_async_load_ms", startedAt);
             if(cached == null)
                 return;
@@ -960,12 +947,12 @@ public class EpisodeActivity extends AppCompatActivity {
         });
     }
 
-    private CachedEpisodes readCachedEpisodes(Context cacheContext, String cacheKey) {
+    private EpisodeCachedEpisodes readCachedEpisodes(Context cacheContext, String cacheKey) {
         try {
             String json = CacheFileStore.read(cacheContext, cacheKey);
             if(json == null || json.length() == 0)
                 return null;
-            CachedEpisodes cached = parseCachedEpisodesJson(json);
+            EpisodeCachedEpisodes cached = parseCachedEpisodesJson(json);
             if(cached == null)
                 return null;
             return cached;
@@ -978,26 +965,26 @@ public class EpisodeActivity extends AppCompatActivity {
     private boolean showCachedEpisodesJson(String json) {
         if(json == null || json.length() == 0)
             return false;
-        CachedEpisodes cached = new Gson().fromJson(json, new TypeToken<CachedEpisodes>(){}.getType());
+        EpisodeCachedEpisodes cached = new Gson().fromJson(json, new TypeToken<EpisodeCachedEpisodes>(){}.getType());
         return showCachedEpisodes(cached);
     }
 
-    private CachedEpisodes parseCachedEpisodesJson(String json) {
+    private EpisodeCachedEpisodes parseCachedEpisodesJson(String json) {
         if(json == null || json.length() == 0)
             return null;
-        CachedEpisodes cached = new Gson().fromJson(json, new TypeToken<CachedEpisodes>(){}.getType());
+        EpisodeCachedEpisodes cached = new Gson().fromJson(json, new TypeToken<EpisodeCachedEpisodes>(){}.getType());
         return isUsableCachedEpisodes(cached) ? cached : null;
     }
 
     private static boolean shouldParseMemoryCacheOnMain(int jsonLength) {
-        return jsonLength > 0 && jsonLength <= MEMORY_CACHE_MAIN_THREAD_PARSE_MAX_CHARS;
+        return EpisodeCachePolicy.shouldParseMemoryCacheOnMain(jsonLength);
     }
 
     static boolean shouldParseMemoryCacheOnMainForTest(int jsonLength) {
         return shouldParseMemoryCacheOnMain(jsonLength);
     }
 
-    private boolean showCachedEpisodes(CachedEpisodes cached) {
+    private boolean showCachedEpisodes(EpisodeCachedEpisodes cached) {
         if(!isUsableCachedEpisodes(cached))
             return false;
         if(hasRenderedEpisodes())
@@ -1015,7 +1002,7 @@ public class EpisodeActivity extends AppCompatActivity {
         return true;
     }
 
-    private boolean isUsableCachedEpisodes(CachedEpisodes cached) {
+    private boolean isUsableCachedEpisodes(EpisodeCachedEpisodes cached) {
         return cached != null
                 && cached.episodes != null
                 && cached.episodes.size() > 0
@@ -1038,7 +1025,7 @@ public class EpisodeActivity extends AppCompatActivity {
         Title target = title;
         String stableName = originalTitleName;
         AppDispatchers.submitIo(() -> {
-            CompatibleCachedEpisodes compatible = findCompatibleCachedEpisodes(appContext, target, stableName);
+            EpisodeCompatibleCachedEpisodes compatible = findCompatibleCachedEpisodes(appContext, target, stableName);
             AppDispatchers.runOnMain(() -> {
                 compatibleCacheLookupInFlight = false;
                 if(!isUiAlive())
@@ -1058,7 +1045,7 @@ public class EpisodeActivity extends AppCompatActivity {
         });
     }
 
-    private boolean applyCompatibleCachedEpisodes(CompatibleCachedEpisodes compatible) {
+    private boolean applyCompatibleCachedEpisodes(EpisodeCompatibleCachedEpisodes compatible) {
         if(compatible == null || title == null)
             return false;
         if(hasRenderedEpisodes() || !isUsableCachedEpisodes(compatible.cached))
@@ -1098,129 +1085,20 @@ public class EpisodeActivity extends AppCompatActivity {
         }
     }
 
-    private static CompatibleCachedEpisodes findCompatibleCachedEpisodes(Context cacheContext, Title target, String stableName) {
-        String matchName = stableName != null && stableName.trim().length() > 0
-                ? stableName
-                : target == null ? "" : target.getName();
-        if(cacheContext == null || target == null || matchName.trim().length() == 0)
-            return null;
-        File dir = new File(cacheContext.getCacheDir(), "structured_cache");
-        File[] files = dir.listFiles();
-        if(files == null || files.length == 0)
-            return null;
-        String normalizedName = normalizeCachedTitleName(matchName);
-        String targetSource = normalizeCacheSource(target.getSourceSite());
-        CompatibleCachedEpisodes best = null;
-        Gson gson = new Gson();
-        for(File file : files) {
-            CacheFileMeta meta = cacheFileMeta(file == null ? "" : file.getName());
-            if(meta == null || meta.baseMode != target.getBaseMode())
-                continue;
-            if(!isCompatibleCacheSource(targetSource, meta.sourceSite))
-                continue;
-            if(meta.titleId == target.getId() && meta.sourceSite.equals(target.getSourceSite()))
-                continue;
-            try {
-                String json = readUtf8(file);
-                if(json.length() == 0)
-                    continue;
-                CachedEpisodes cached = gson.fromJson(json, new TypeToken<CachedEpisodes>(){}.getType());
-                if(cached == null || cached.episodes == null || cached.episodes.size() == 0)
-                    continue;
-                if(!CachePolicy.isFresh(cached.savedAt, CachePolicy.EPISODE_TTL_MS)
-                        && !CachePolicy.isReusableForColdStart(cached.savedAt))
-                    continue;
-                int matchScore = cachedEpisodeTitleMatchScore(normalizedName, cached.episodes);
-                if(matchScore <= 0)
-                    continue;
-                CompatibleCachedEpisodes candidate = new CompatibleCachedEpisodes();
-                candidate.cached = cached;
-                candidate.sourceSite = meta.sourceSite;
-                candidate.titleId = meta.titleId;
-                candidate.episodeCount = cached.episodes.size();
-                candidate.score = matchScore + ("ntk".equals(meta.sourceSite) ? 1000 : 0);
-                if(best == null || candidate.score > best.score || (candidate.score == best.score
-                        && candidate.cached.savedAt > best.cached.savedAt))
-                    best = candidate;
-            } catch(Exception e) {
-                ml.melun.mangaview.report.CrashReporter.record(e);
-            }
-        }
-        return best;
+    private static EpisodeCompatibleCachedEpisodes findCompatibleCachedEpisodes(Context cacheContext, Title target, String stableName) {
+        return EpisodeCompatibleCacheFinder.find(cacheContext, target, stableName);
     }
 
     private static boolean isCompatibleCacheSource(String targetSource, String candidateSource) {
-        if(targetSource == null || targetSource.length() == 0)
-            return true;
-        return targetSource.equals(normalizeCacheSource(candidateSource));
+        return EpisodeCachePolicy.isCompatibleCacheSource(targetSource, candidateSource);
     }
 
     static boolean isCompatibleCacheSourceForTest(String targetSource, String candidateSource) {
-        return isCompatibleCacheSource(normalizeCacheSource(targetSource), candidateSource);
+        return EpisodeCachePolicy.isCompatibleCacheSource(targetSource, candidateSource);
     }
 
     static int cachedEpisodeTitleMatchScoreForTest(String titleName, List<Manga> episodes) {
-        return cachedEpisodeTitleMatchScore(normalizeCachedTitleName(titleName), episodes);
-    }
-
-    private static int cachedEpisodeTitleMatchScore(String normalizedTitleName, List<Manga> episodes) {
-        if(normalizedTitleName == null || normalizedTitleName.length() == 0 || episodes == null)
-            return 0;
-        int matches = 0;
-        int checked = 0;
-        for(Manga episode : episodes) {
-            if(episode == null)
-                continue;
-            checked++;
-            String episodeName = normalizeCachedTitleName(episode.getName());
-            if(episodeName.startsWith(normalizedTitleName))
-                matches++;
-            if(checked >= 20)
-                break;
-        }
-        if(matches >= 2)
-            return matches;
-        return matches == 1 && episodes.size() == 1 ? 1 : 0;
-    }
-
-    private static String normalizeCachedTitleName(String value) {
-        return value == null ? "" : value.toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", "");
-    }
-
-    private static String normalizeCacheSource(String value) {
-        return value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
-    }
-
-    private static CacheFileMeta cacheFileMeta(String fileName) {
-        if(fileName == null || !fileName.startsWith("episodeSnapshotV2_"))
-            return null;
-        String[] parts = fileName.split("_", 5);
-        if(parts.length < 5)
-            return null;
-        try {
-            CacheFileMeta meta = new CacheFileMeta();
-            meta.sourceSite = parts[1];
-            meta.baseMode = Integer.parseInt(parts[2]);
-            meta.titleId = Integer.parseInt(parts[3]);
-            return meta;
-        } catch(Exception e) {
-            return null;
-        }
-    }
-
-    private static String readUtf8(File file) throws Exception {
-        if(file == null || !file.exists() || !file.isFile())
-            return "";
-        if(file.length() <= 0 || file.length() > MAX_EPISODE_CACHE_FILE_BYTES)
-            return "";
-        try (FileInputStream input = new FileInputStream(file);
-             ByteArrayOutputStream output = new ByteArrayOutputStream((int) file.length())) {
-            byte[] buffer = new byte[8192];
-            int read;
-            while((read = input.read(buffer)) > 0)
-                output.write(buffer, 0, read);
-            return output.toString(StandardCharsets.UTF_8.name());
-        }
+        return EpisodeCachePolicy.cachedEpisodeTitleMatchScore(titleName, episodes);
     }
 
     private boolean hasRenderedEpisodes() {
@@ -1244,18 +1122,7 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     private static ArrayList<Manga> normalizeEpisodeSnapshot(List<Manga> loadedEpisodes, Title title) {
-        ArrayList<Manga> normalized = Title.orderedEpisodeSnapshot(loadedEpisodes);
-        if(normalized == null)
-            normalized = new ArrayList<>();
-        if(title == null)
-            return normalized;
-        for(Manga episode : normalized) {
-            if(episode == null)
-                continue;
-            episode.setTitle(title);
-            episode.setTitleId(title.getId());
-        }
-        return normalized;
+        return EpisodeCachePolicy.normalizeEpisodeSnapshot(loadedEpisodes, title);
     }
 
     private void hideProgress() {
@@ -1269,7 +1136,7 @@ public class EpisodeActivity extends AppCompatActivity {
         String cacheKey = episodeCacheKey();
         ArrayList<Manga> episodeSnapshot = episodeCacheSnapshot(episodes);
         AppDispatchers.submitIo(() -> {
-            CachedEpisodes cached = new CachedEpisodes();
+            EpisodeCachedEpisodes cached = new EpisodeCachedEpisodes();
             cached.savedAt = System.currentTimeMillis();
             cached.episodes = episodeSnapshot;
             CacheFileStore.write(appContext, cacheKey, new Gson().toJson(cached));
@@ -1277,24 +1144,7 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     private static ArrayList<Manga> episodeCacheSnapshot(List<Manga> episodes) {
-        ArrayList<Manga> snapshot = new ArrayList<>();
-        if(episodes == null)
-            return snapshot;
-        ArrayList<Manga> orderedEpisodes = Title.orderedEpisodeSnapshot(episodes);
-        if(orderedEpisodes == null)
-            return snapshot;
-        for(Manga episode : orderedEpisodes) {
-            if(episode == null)
-                continue;
-            Manga copy = new Manga(episode.getId(), episode.getName(), episode.getDate(), episode.getBaseMode());
-            copy.addThumb(episode.getThumb());
-            copy.setMode(episode.getMode());
-            copy.setTitleId(episode.getTitleId());
-            copy.setNtkEpisodePath(episode.getNtkEpisodePath());
-            copy.setOfflinePath(episode.getOfflinePath());
-            snapshot.add(copy);
-        }
-        return snapshot;
+        return EpisodeCachePolicy.episodeCacheSnapshot(episodes);
     }
 
     private String episodeCacheKey() {
@@ -1315,44 +1165,7 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     static boolean sameEpisodeIdentityList(List<Manga> current, List<Manga> fresh) {
-        if(current == null || fresh == null || current.size() != fresh.size())
-            return false;
-        for(int i = 0; i < current.size(); i++) {
-            Manga left = current.get(i);
-            Manga right = fresh.get(i);
-            if(left == null || right == null) {
-                if(left != right)
-                    return false;
-                continue;
-            }
-            if(left.getId() != right.getId() || left.getBaseMode() != right.getBaseMode())
-                return false;
-            String leftPath = left.getNtkEpisodePath();
-            String rightPath = right.getNtkEpisodePath();
-            if(leftPath != null && leftPath.length() > 0 && rightPath != null && rightPath.length() > 0
-                    && !leftPath.equals(rightPath))
-                return false;
-        }
-        return true;
-    }
-
-    private static class CachedEpisodes {
-        long savedAt;
-        ArrayList<Manga> episodes;
-    }
-
-    private static class CompatibleCachedEpisodes {
-        CachedEpisodes cached;
-        String sourceSite;
-        int titleId;
-        int episodeCount;
-        int score;
-    }
-
-    private static class CacheFileMeta {
-        String sourceSite;
-        int baseMode;
-        int titleId;
+        return EpisodeCachePolicy.sameEpisodeIdentityList(current, fresh);
     }
 
     public void openViewer(Manga manga, int code){
@@ -1501,26 +1314,8 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     private void applyEpisodeWindowChrome() {
-        View root = findViewById(android.R.id.content);
-        View appBar = findViewById(R.id.episode_toolbar);
-        View toolbar = findViewById(R.id.toolbar);
-        int surface = ContextCompat.getColor(this, dark ? R.color.colorDarkWindowBackground : R.color.appSurface);
-        int chrome = ContextCompat.getColor(this, dark ? R.color.colorDarkSurface : R.color.appSurface);
-        getWindow().setStatusBarColor(chrome);
-        getWindow().setNavigationBarColor(surface);
-        if(root != null)
-            root.setBackgroundColor(surface);
-        if(appBar != null)
-            appBar.setBackgroundColor(chrome);
-        if(toolbar != null)
-            toolbar.setBackgroundColor(chrome);
-        if(episodeList != null)
-            episodeList.setBackgroundColor(surface);
-        if(dark) {
-            getWindow().getDecorView().setSystemUiVisibility(0);
-            return;
-        }
-        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+        EpisodeWindowStyler.apply(this, dark, episodeList);
     }
 
 }
+

@@ -8,7 +8,6 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -20,7 +19,6 @@ import android.view.ViewGroup
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewTreeObserver
-import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -29,11 +27,11 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import ml.melun.mangaview.MainApplication.p
 import ml.melun.mangaview.MainApplication.getHttpClient
+import ml.melun.mangaview.R
 import ml.melun.mangaview.Utils
 import ml.melun.mangaview.activity.CaptchaActivity.REQUEST_CAPTCHA
 import ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA
 import ml.melun.mangaview.mangaview.Manga
-import ml.melun.mangaview.mangaview.MTitle
 import ml.melun.mangaview.mangaview.Title
 import ml.melun.mangaview.reader.ReaderLaunchPreparer
 import ml.melun.mangaview.reader.ReaderWarmupCoordinator
@@ -90,6 +88,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var pendingProgressOffset = 0
     private var pendingBoundaryStatus = false
     private var pendingBoundaryCaptchaRetry = false
+    private val missingEpisodePromptState = MissingEpisodeNavigator.PromptState()
     private var pendingCaptchaRetryManga: Manga? = null
     private var pendingCaptchaRetryTitle: Title? = null
     private var pendingCaptchaRetryStartAtFirstPage = false
@@ -101,7 +100,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var initialDrawGateOpen = true
     private var initialDrawGateView: View? = null
     private var initialDrawGateListener: ViewTreeObserver.OnPreDrawListener? = null
-    private var convertedFromTranslucent = false
     private var viewerLaunchStartedAtMs = 0L
     private var viewerLaunchSourceSite = ""
     private var firstDrawableMetricLogged = false
@@ -142,20 +140,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         toolbarTouchSlop = ViewConfiguration.get(this).scaledTouchSlop
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
-        window.navigationBarColor = Color.BLACK
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            window.isNavigationBarContrastEnforced = false
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            window.decorView.systemUiVisibility = window.decorView.systemUiVisibility and
-                View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR.inv()
-        }
-        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN
+        ReaderChromeStyler.applyReaderWindow(this)
         val root = FrameLayout(this)
-        renderView = ReaderSurfaceView(this).also { it.setWindowListener(this) }
+        renderView = ReaderSurfaceView(this).also {
+            it.id = R.id.strip
+            it.isClickable = true
+            it.setWindowListener(this)
+        }
         topBar = LinearLayout(this).apply {
+            id = R.id.viewerToolbar
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(12.dp(), 8.dp(), 12.dp(), 8.dp())
@@ -170,6 +163,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             visibility = View.GONE
         }
         titleView = TextView(this).apply {
+            id = R.id.toolbar_title
             setTextColor(Color.WHITE)
             textSize = 18f
             typeface = Typeface.DEFAULT_BOLD
@@ -191,6 +185,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             setOnClickListener { finish() }
         }
         prevButton = Button(this).apply {
+            id = R.id.toolbar_previous
             text = "이전"
             setOnClickListener {
                 Log.d(TAG, "toolbar_prev_click")
@@ -198,6 +193,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             }
         }
         episodeButton = Button(this).apply {
+            id = R.id.toolbar_spinner
             text = "회차"
             textSize = 14f
             typeface = Typeface.DEFAULT_BOLD
@@ -209,6 +205,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             }
         }
         nextButton = Button(this).apply {
+            id = R.id.toolbar_next
             text = "다음"
             setOnClickListener {
                 Log.d(TAG, "toolbar_next_click")
@@ -301,7 +298,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 manga,
                 title,
                 intent.getStringExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY),
-                intent.getBooleanExtra(ViewerActivity.EXTRA_START_AT_FIRST_PAGE, false)
+                intent.getBooleanExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, false)
             )
         }
         updateResultEpisode(manga)
@@ -321,6 +318,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (resultCode != RESULT_CAPTCHA) return
+        if (MissingEpisodeNavigator.retryPendingAfterCaptcha(this, missingEpisodePromptState, missingEpisodeHost())) return
         AppDispatchers.runUserAction {
             val pref = p
             if (pref != null) {
@@ -388,6 +386,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         statusHandler.removeCallbacks(showInitialStatusRunnable)
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         statusHandler.removeCallbacks(initialDrawGateTimeoutRunnable)
+        missingEpisodePromptState.dismiss()
         removeInitialDrawGateListener()
         saveCurrentReadingProgress()
         pendingProgressInfo = null
@@ -423,11 +422,17 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPagesPrepended(count: Int, insertedCount: Int) {
         if (pagesReady) {
+            val revealPrependedBoundary = pendingBoundaryStatus &&
+                pendingCaptchaRetryDirection == ReaderSurfaceView.DIRECTION_PREVIOUS
             hideBoundaryStatus()
             pageCount = count
             currentPage += insertedCount
             if (pendingInitialRestorePage >= 0) pendingInitialRestorePage += insertedCount
-            renderView.prependPageCount(count, insertedCount)
+            renderView.prependPageCount(count, insertedCount, revealPrependedBoundary)
+            if (revealPrependedBoundary) {
+                currentPage = (insertedCount - 1).coerceIn(0, count - 1)
+            }
+            Log.d(TAG, "pages_prepended total=$count inserted=$insertedCount reveal=$revealPrependedBoundary currentPage=$currentPage")
             updateCurrentEpisode(currentPage)
         }
     }
@@ -622,6 +627,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onBoundaryReached(direction: Int, anchorPage: Int) {
         if (destroyed || isFinishing) return
+        Log.d(TAG, "boundary_reached direction=$direction anchorPage=$anchorPage")
         session?.pageInfo(anchorPage)?.let {
             if (!it.transitionCard) currentManga = it.manga
         }
@@ -685,6 +691,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (resolved.fetchedEpisodes) episodeListFetchAttempted = true
         currentTitle = resolved.title ?: currentTitle
         if (resolved.target != null) {
+            if (next && MissingEpisodeNavigator.maybePromptNextEpisode(
+                    this,
+                    p?.darkTheme == true,
+                    source,
+                    resolved.target,
+                    missingEpisodePromptState,
+                    missingEpisodeHost(),
+                    Runnable { launchAdjacent(source, resolved.target, resolved.title, resolved.preparedKey) }
+                )
+            ) {
+                return
+            }
             launchAdjacent(source, resolved.target, resolved.title, resolved.preparedKey)
             return
         }
@@ -744,9 +762,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             return
         }
         val labels = episodes.mapIndexed { index, episode ->
-            episodeDisplayName(episode, episodes, index, title)
+            ReaderDisplayPolicy.episodeDisplayName(episode, episodes, index, title)
         }.toTypedArray()
-        val currentIndex = episodeIndex(episodes, source)
+        val currentIndex = ReaderDisplayPolicy.episodeIndex(episodes, source)
         val dialog = AlertDialog.Builder(this)
             .setTitle("회차 선택")
             .setSingleChoiceItems(labels, currentIndex) { dialog, which ->
@@ -876,12 +894,51 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun roundedBackground(fill: Int, stroke: Int, radius: Int): GradientDrawable {
-        return GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            setColor(fill)
-            cornerRadius = radius.toFloat()
-            setStroke(1.dp(), stroke)
+        return ReaderChromeStyler.roundedBackground(fill, stroke, radius, resources.displayMetrics.density)
+    }
+
+    private fun missingEpisodeHost(): MissingEpisodeNavigator.Host {
+        return object : MissingEpisodeNavigator.Host {
+            override fun lockUi(lock: Boolean) {
+                adjacentNavigationInFlight = lock
+                setAdjacentButtonState(!lock, !lock)
+                status.visibility = if (lock) TextView.VISIBLE else TextView.GONE
+                if (lock) status.text = "다른 소스 확인 중"
+                if (!lock) updateAdjacentButtons()
+            }
+
+            override fun openAlternateEpisode(title: Title?, episode: Manga?) {
+                if (title == null || episode == null || destroyed || isFinishing) return
+                markEpisodeSourceSwitched(title)
+                openAlternateReaderEpisode(title, episode)
+            }
+
+            override fun showCaptcha(episode: Manga?) {
+                status.visibility = TextView.VISIBLE
+                status.text = "캡차 확인이 필요합니다"
+                Utils.showCaptchaPopup(Manga.safeUrl(episode ?: currentManga), this@ReaderV2Activity, REQUEST_CAPTCHA, p)
+            }
+
+            override fun onPromptCancelled() {
+                adjacentNavigationInFlight = false
+                if (pagesReady) status.visibility = TextView.GONE
+                updateAdjacentButtons()
+            }
         }
+    }
+
+    private fun openAlternateReaderEpisode(title: Title, episode: Manga) {
+        attachEpisodeList(title, episode)
+        episode.mode = currentManga?.mode ?: episode.mode
+        episode.setEps(Utils.snapshotEpisodes(title))
+        val source = currentManga ?: episode
+        launchAdjacent(source, episode, title)
+    }
+
+    private fun markEpisodeSourceSwitched(title: Title) {
+        val result = resultIntent ?: Intent().also { resultIntent = it }
+        ViewerReturnResult.addEpisodeListResult(result, ViewerReturnResult.episodeListTitleJson(title))
+        setResult(RESULT_OK, result)
     }
 
     private fun resolveAdjacent(source: Manga, next: Boolean, fetchEpisodes: Boolean): AdjacentResolution {
@@ -908,7 +965,22 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun adjacentEpisode(manga: Manga, next: Boolean): Manga? {
-        return if (next) manga.nextEp() else manga.prevEp()
+        val title = currentTitle ?: manga.title
+        restoreTitleEpisodes(title, manga)
+        attachEpisodeList(title, manga)
+        return if (next) {
+            ViewerEpisodeResolver.nextCandidate(manga, null, title, this::sameManga)
+        } else {
+            ViewerEpisodeResolver.previousCandidate(manga, null, title, this::sameManga)
+        }
+    }
+
+    private fun sameManga(first: Manga?, second: Manga?): Boolean {
+        if (Manga.sameEpisodeIdentity(first, second)) return true
+        if (first == null || second == null || first === second) return first === second
+        val firstImages = MangaRepository.imageUrls(first, applicationContext)
+        val secondImages = MangaRepository.imageUrls(second, applicationContext)
+        return !firstImages.isNullOrEmpty() && firstImages == secondImages
     }
 
     private fun canFetchMissingAdjacent(manga: Manga?, title: Title?, target: Manga?): Boolean {
@@ -957,10 +1029,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val info = MainThreadStallMonitor.traceResult("reader_page_info") {
             session?.pageInfo(anchorPage)
         }
-        if (info != null) {
+            if (info != null) {
             val previousManga = currentManga
             val episodeChanged = previousManga == null || !Manga.sameEpisodeIdentity(previousManga, info.manga)
             currentManga = info.manga
+            if (episodeChanged || info.transitionCard) {
+                Log.d(TAG, "current_episode page=$anchorPage offset=$anchorOffset transition=${info.transitionCard} mangaId=${info.manga.id} title=${info.title}")
+            }
             updateResultEpisode(info.manga, info.transitionCard)
             val displayTitle = if (!episodeChanged && lastDisplayedEpisodeId == info.manga.id) {
                 lastDisplayedEpisodeTitle
@@ -1057,8 +1132,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun displayEpisodeTitle(manga: Manga?, title: Title?): String {
         val episodes = Utils.snapshotEpisodes(title).ifEmpty { Utils.snapshotEpisodes(manga) }
-        val index = episodeIndex(episodes, manga)
-        return episodeDisplayName(manga, episodes, index, title)
+        val index = ReaderDisplayPolicy.episodeIndex(episodes, manga)
+        return ReaderDisplayPolicy.episodeDisplayName(manga, episodes, index, title)
             .takeIf { it.isNotBlank() }
             ?: title?.name?.takeIf { it.isNotBlank() }
             ?: manga?.title?.name?.takeIf { it.isNotBlank() }
@@ -1066,34 +1141,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun fastDisplayEpisodeTitle(manga: Manga?, title: Title?): String {
-        return manga?.name?.trim()?.takeIf { it.isNotBlank() }
-            ?: title?.name?.takeIf { it.isNotBlank() }
-            ?: manga?.title?.name?.takeIf { it.isNotBlank() }
-            ?: "회차"
-    }
-
-    private fun episodeDisplayName(manga: Manga?, episodes: List<Manga?>, index: Int, title: Title?): String {
-        val cleaned = Manga.cleanViewerEpisodeName(manga?.name).takeIf { it.isNotBlank() }
-        if (cleaned != null) return cleaned
-        val matched = episodes.getOrNull(index)
-        val matchedName = Manga.cleanViewerEpisodeName(matched?.name).takeIf { it.isNotBlank() }
-        if (matchedName != null) return matchedName
-        val number = Manga.visibleEpisodeNumberKey(manga?.name).takeIf { it.isNotBlank() }
-        if (number != null) return "${number}화"
-        val matchedNumber = Manga.visibleEpisodeNumberKey(matched?.name).takeIf { it.isNotBlank() }
-        if (matchedNumber != null) return "${matchedNumber}화"
-        return title?.name?.takeIf { it.isNotBlank() }
-            ?: manga?.title?.name?.takeIf { it.isNotBlank() }
-            ?: ""
-    }
-
-    private fun episodeIndex(episodes: List<Manga?>, target: Manga?): Int {
-        if (target == null) return -1
-        for (i in episodes.indices) {
-            val episode = episodes[i]
-            if (episode != null && Manga.sameEpisodeIdentity(episode, target)) return i
-        }
-        return -1
+        return ReaderDisplayPolicy.fastDisplayEpisodeTitle(manga, title)
     }
 
     private fun installToolbarTouchForwarder(vararg views: View) {
@@ -1196,7 +1244,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val view = initialDrawGateView
         removeInitialDrawGateListener()
         view?.invalidate()
-        view?.post { convertReaderWindowOpaque() }
         Log.d(TAG, "initial_draw_gate_released reason=$reason")
     }
 
@@ -1211,28 +1258,69 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         initialDrawGateView = null
     }
 
-    private fun convertReaderWindowOpaque() {
-        if (convertedFromTranslucent || destroyed || isFinishing) return
-        convertedFromTranslucent = true
-        try {
-            Activity::class.java.getDeclaredMethod("convertFromTranslucent").apply {
-                isAccessible = true
-                invoke(this@ReaderV2Activity)
-            }
-            Log.d(TAG, "reader_window_converted_opaque")
-        } catch (e: Exception) {
-            Log.w(TAG, "reader_window_convert_opaque_failed", e)
+    private fun Int.dp(): Int = (this * resources.displayMetrics.density + 0.5f).toInt()
+
+    fun testEpisode(episodeNumber: Int): Manga? {
+        return findTestEpisode { episode ->
+            testEpisodeNumber(episode.name) == episodeNumber
         }
     }
 
-    private fun Int.dp(): Int = (this * resources.displayMetrics.density + 0.5f).toInt()
+    fun testEpisode(episodeName: String): Manga? {
+        return findTestEpisode { episode ->
+            episode.name?.contains(episodeName) == true
+        }
+    }
+
+    fun testSetEpisodeImages(episodeNumber: Int, images: List<String>): Boolean {
+        var found = false
+        testEpisodeLists().forEach { episodes ->
+            episodes.forEach { episode ->
+                if (testEpisodeNumber(episode.name) == episodeNumber) {
+                    episode.setImgs(images)
+                    found = true
+                }
+            }
+        }
+        return found
+    }
+
+    fun testOpenEpisode(episode: Manga) {
+        val source = currentManga ?: episode
+        launchAdjacent(source, episode, currentTitle ?: episode.title)
+    }
+
+    private fun findTestEpisode(predicate: (Manga) -> Boolean): Manga? {
+        testEpisodeLists().forEach { episodes ->
+            episodes.firstOrNull { predicate(it) }?.let { return it }
+        }
+        return null
+    }
+
+    private fun testEpisodeLists(): List<List<Manga>> {
+        val lists = ArrayList<List<Manga>>()
+        currentTitle?.let { title ->
+            Utils.snapshotEpisodes(title).takeIf { it.isNotEmpty() }?.let { lists.add(it) }
+        }
+        currentManga?.let { manga ->
+            Utils.snapshotEpisodes(manga).takeIf { it.isNotEmpty() }?.let { lists.add(it) }
+        }
+        session?.pageInfo(currentPage)?.manga?.let { manga ->
+            Utils.snapshotEpisodes(manga).takeIf { it.isNotEmpty() }?.let { lists.add(it) }
+        }
+        return lists
+    }
+
+    private fun testEpisodeNumber(name: String?): Int {
+        if (name == null) return -1
+        val match = Regex("""(^|\D)0*(\d+)\s*화""").find(name) ?: return -1
+        return match.groupValues.getOrNull(2)?.toIntOrNull() ?: -1
+    }
 
     companion object {
         private const val PROGRESS_SAVE_DEBOUNCE_MS = 1000L
         private const val INITIAL_STATUS_DELAY_MS = 450L
         private const val BOUNDARY_STATUS_DELAY_MS = 250L
-        private const val DEFAULT_PAGE_GAP_PX = 2
-        private const val WEBTOON_PAGE_GAP_PX = 0
         private const val ADJACENT_BUTTON_REFRESH_DELAY_MS = 350L
         private const val INITIAL_DRAW_GATE_TIMEOUT_MS = 1600L
         private const val CAPTCHA_RETRY_READER = 0
@@ -1249,11 +1337,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
 
         private fun pageGapForBaseMode(baseMode: Int): Int {
-            return if (baseMode == MTitle.base_webtoon) WEBTOON_PAGE_GAP_PX else DEFAULT_PAGE_GAP_PX
+            return ReaderDisplayPolicy.pageGapForBaseMode(baseMode)
         }
 
         private fun shouldEnableAdjacentButton(hasAdjacent: Boolean, canFetchMissingAdjacent: Boolean): Boolean {
-            return hasAdjacent || canFetchMissingAdjacent
+            return ReaderDisplayPolicy.shouldEnableAdjacentButton(hasAdjacent, canFetchMissingAdjacent)
         }
     }
 }

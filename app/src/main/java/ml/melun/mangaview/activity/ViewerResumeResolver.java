@@ -109,6 +109,40 @@ public final class ViewerResumeResolver {
         return candidates;
     }
 
+    public static List<Manga> nearbyCandidates(Manga target, Title title, boolean skipTarget) {
+        ArrayList<Manga> candidates = new ArrayList<>();
+        if(!skipTarget)
+            addNearbyCandidate(candidates, target, title);
+        List<Manga> episodes = title == null ? null : Utils.snapshotEpisodes(title);
+        if(episodes == null || episodes.size() == 0)
+            return candidates;
+
+        int exactIndex = -1;
+        if(target != null) {
+            for(int i = 0; i < episodes.size(); i++) {
+                Manga episode = episodes.get(i);
+                if(episode != null && episode.getId() == target.getId()
+                        && episode.getBaseMode() == target.getBaseMode()) {
+                    exactIndex = i;
+                    addNearbyCandidate(candidates, episode, title);
+                    break;
+                }
+            }
+        }
+
+        int progressIndex = title.getBookmarkEpisodeIndex() - 1;
+        addNearbyEpisodeAt(candidates, episodes, progressIndex, title);
+        int computedIndex = title.getBookmarkIndex() - 1;
+        addNearbyEpisodeAt(candidates, episodes, computedIndex, title);
+
+        int center = exactIndex >= 0 ? exactIndex : progressIndex;
+        for(int distance = 1; center >= 0 && distance <= 2; distance++) {
+            addNearbyEpisodeAt(candidates, episodes, center - distance, title);
+            addNearbyEpisodeAt(candidates, episodes, center + distance, title);
+        }
+        return candidates;
+    }
+
     public static int resolveBookmark(Title title) {
         if(title == null)
             return -1;
@@ -228,6 +262,12 @@ public final class ViewerResumeResolver {
         addCandidate(candidates, episodes.get(index), title);
     }
 
+    private static void addNearbyEpisodeAt(List<Manga> candidates, List<Manga> episodes, int index, Title title) {
+        if(episodes == null || index < 0 || index >= episodes.size())
+            return;
+        addNearbyCandidate(candidates, episodes.get(index), title);
+    }
+
     private static void addCandidate(List<Manga> candidates, Manga candidate, Title title) {
         if(candidate == null || !candidate.isOnline())
             return;
@@ -243,4 +283,23 @@ public final class ViewerResumeResolver {
                 return;
         candidates.add(candidate);
     }
+
+    private static void addNearbyCandidate(List<Manga> candidates, Manga candidate, Title title) {
+        if(candidate == null || !candidate.isOnline())
+            return;
+        Title currentTitle = title != null ? title : candidate.getTitle();
+        if(currentTitle != null) {
+            candidate.setTitle(currentTitle);
+            candidate.setTitleId(currentTitle.getId());
+            List<Manga> episodes = Utils.snapshotEpisodes(currentTitle);
+            if(episodes.size() > 0)
+                candidate.setEps(episodes);
+        }
+        for(Manga existing : candidates)
+            if(existing != null && existing.getId() == candidate.getId()
+                    && existing.getBaseMode() == candidate.getBaseMode())
+                return;
+        candidates.add(candidate);
+    }
 }
+

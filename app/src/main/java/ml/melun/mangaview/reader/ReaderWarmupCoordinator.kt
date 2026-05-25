@@ -5,10 +5,12 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import ml.melun.mangaview.MainApplication.p
+import ml.melun.mangaview.MainApplication.getHttpClient
 import ml.melun.mangaview.Utils
 import ml.melun.mangaview.mangaview.Decoder
 import ml.melun.mangaview.mangaview.Manga
 import ml.melun.mangaview.mangaview.Title
+import ml.melun.mangaview.mangaview.CustomHttpClient
 import ml.melun.mangaview.repository.MangaRepository
 import ml.melun.mangaview.runtime.AppDispatchers
 import ml.melun.mangaview.runtime.BackgroundPrefetchBudget
@@ -34,7 +36,7 @@ object ReaderWarmupCoordinator {
     private const val WFWF_LAUNCH_WINDOW_DECODE_PAGES = 1
     private const val WFWF_LAUNCH_WINDOW_BYTE_PAGES = 12
     private val inFlight = ConcurrentHashMap<String, AtomicBoolean>()
-    private val entryLocks = Array(64) { Any() }
+    private val entryLocks = Array(4096) { Any() }
 
     private data class SourcePreloadProfile(
         val visibleProfile: WarmupProfile,
@@ -217,7 +219,7 @@ object ReaderWarmupCoordinator {
             }
             var urls = MangaRepository.imageUrls(manga, appContext)
             if (manga.isOnline && urls.isNullOrEmpty()) {
-                val result = MangaRepository.fetchViewerInitial(manga, MangaRepository.cancellation())
+                val result = fetchViewerInitialForProfile(manga, effectiveProfile)
                 if (result != Title.LOAD_OK) {
                     ml.melun.mangaview.glide.ViewerWarmupManager.logMetric("prepared_warmup_soft_fail", result.toLong())
                     return
@@ -245,6 +247,18 @@ object ReaderWarmupCoordinator {
             entry.fail()
         }
         }
+    }
+
+    private fun fetchViewerInitialForProfile(manga: Manga, profile: WarmupProfile): Int {
+        val cancellation = MangaRepository.cancellation()
+        if (profile == WarmupProfile.LAUNCH_WINDOW) {
+            cancellation.prioritizeWebViewFallback()
+            return MangaRepository.fetchViewerInitial(manga, cancellation)
+        }
+        val client = getHttpClient()
+        return client?.runWithFetchMode(CustomHttpClient.FetchMode.DIRECT_ONLY) {
+            MangaRepository.fetchViewerInitial(manga, cancellation)
+        } ?: MangaRepository.fetchViewerInitial(manga, cancellation)
     }
 
     private fun isSpeculativeByteProfile(profile: WarmupProfile): Boolean {

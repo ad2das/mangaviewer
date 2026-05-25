@@ -3,6 +3,7 @@ package ml.melun.mangaview.activity;
 import org.junit.Test;
 
 import ml.melun.mangaview.mangaview.MTitle;
+import ml.melun.mangaview.mangaview.Manga;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -20,5 +21,13 @@ public class ReaderV2ActivityTest {
         assertTrue(ReaderV2Activity.shouldEnableAdjacentButtonForTest(false, true));
         assertTrue(ReaderV2Activity.shouldEnableAdjacentButtonForTest(true, false));
         assertFalse(ReaderV2Activity.shouldEnableAdjacentButtonForTest(false, false));
+    }
+
+    @Test
+    public void displayPolicyCleansEpisodeNamesForPickerLabels() {
+        Manga episode = new Manga(7, "Some Title 12화", "", MTitle.base_comic);
+        assertEquals("Some Title 12화", ReaderDisplayPolicy.INSTANCE.fastDisplayEpisodeTitle(episode, null));
+        assertEquals("Some Title 12화", ReaderDisplayPolicy.INSTANCE.episodeDisplayName(
+                episode, java.util.Collections.singletonList(episode), 0, null));
     }
 }

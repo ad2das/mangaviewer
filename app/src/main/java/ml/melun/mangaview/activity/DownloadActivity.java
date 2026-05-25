@@ -181,3 +181,4 @@ public class DownloadActivity extends AppCompatActivity {
         return drawable;
     }
 }
+

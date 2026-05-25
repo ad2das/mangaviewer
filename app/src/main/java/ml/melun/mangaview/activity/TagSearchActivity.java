@@ -35,7 +35,6 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
@@ -68,14 +67,14 @@ import static ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA;
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 
 public class TagSearchActivity extends AppCompatActivity {
-    private static final int THUMBNAIL_PRELOAD_AHEAD = 6;
-    private static final int THUMBNAIL_PRELOAD_DELAY_MS = 80;
+    private static final int THUMBNAIL_PRELOAD_AHEAD = TagSearchPolicy.THUMBNAIL_PRELOAD_AHEAD;
+    private static final int THUMBNAIL_PRELOAD_DELAY_MS = TagSearchPolicy.THUMBNAIL_PRELOAD_DELAY_MS;
     private static final long DESTINATION_LAUNCH_DEBOUNCE_MS = 1500L;
-    private static final int EPISODE_SNAPSHOT_PREFETCH_AHEAD = 8;
-    private static final int EPISODE_SNAPSHOT_PREFETCH_DELAY_MS = 0;
-    private static final int EPISODE_SNAPSHOT_PREFETCH_ACTIVE_LIMIT = 4;
-    private static final int EPISODE_SNAPSHOT_BACKGROUND_LIMIT = 36;
-    private static final int LOAD_MORE_THRESHOLD = 18;
+    private static final int EPISODE_SNAPSHOT_PREFETCH_AHEAD = TagSearchPolicy.EPISODE_SNAPSHOT_PREFETCH_AHEAD;
+    private static final int EPISODE_SNAPSHOT_PREFETCH_DELAY_MS = TagSearchPolicy.EPISODE_SNAPSHOT_PREFETCH_DELAY_MS;
+    private static final int EPISODE_SNAPSHOT_PREFETCH_ACTIVE_LIMIT = TagSearchPolicy.EPISODE_SNAPSHOT_PREFETCH_ACTIVE_LIMIT;
+    private static final int EPISODE_SNAPSHOT_BACKGROUND_LIMIT = TagSearchPolicy.EPISODE_SNAPSHOT_BACKGROUND_LIMIT;
+    private static final int LOAD_MORE_THRESHOLD = TagSearchPolicy.LOAD_MORE_THRESHOLD;
     RecyclerView searchResult;
     int mode;
     String query;
@@ -710,11 +709,8 @@ public class TagSearchActivity extends AppCompatActivity {
     }
 
     private static boolean shouldOpenCaptchaAfterSearchFailure(int result, Exception failure, long loadStartedAt) {
-        if(result == 0)
-            return false;
-        if(failure != null)
-            return MangaRepository.shouldReportSearchFailure(failure);
-        return getHttpClient().hasCloudflareChallengeSince(loadStartedAt);
+        return TagSearchPolicy.shouldOpenCaptchaAfterSearchFailure(result, failure,
+                getHttpClient().hasCloudflareChallengeSince(loadStartedAt));
     }
 
     private class getUpdated implements LoadOperation {
@@ -1004,7 +1000,7 @@ public class TagSearchActivity extends AppCompatActivity {
             int result = MangaRepository.fetchEpisodesBackground(target);
             List<Manga> episodes = Utils.snapshotEpisodes(target);
             if(result == Title.LOAD_OK && episodes != null && episodes.size() > 0)
-                CacheFileStore.write(appContext, episodeSnapshotKey(target), new Gson().toJson(new EpisodeSnapshot(episodes)));
+                CacheFileStore.write(appContext, episodeSnapshotKey(target), new Gson().toJson(new TagSearchEpisodeSnapshot(episodes)));
             else if(result == Title.LOAD_ERROR)
                 BackgroundPrefetchBudget.recordEpisodeSnapshotFailure();
         } catch (Exception e) {
@@ -1014,15 +1010,7 @@ public class TagSearchActivity extends AppCompatActivity {
     }
 
     private boolean shouldPrefetchEpisodeSnapshot(String sourceSite) {
-        if(sourceSite == null || sourceSite.trim().length() == 0)
-            return true;
-        String source = sourceSite.trim().toLowerCase(Locale.ROOT);
-        boolean ntk = p.isNtkSite();
-        if("ntk".equals(source))
-            return ntk;
-        if("wfwf".equals(source) || source.startsWith("wolf"))
-            return !ntk;
-        return true;
+        return TagSearchPolicy.shouldPrefetchEpisodeSnapshot(sourceSite, p.isNtkSite());
     }
 
     private String episodeSnapshotRequestKey(Title title) {
@@ -1036,16 +1024,6 @@ public class TagSearchActivity extends AppCompatActivity {
 
     private String episodeSnapshotKey(Title title) {
         return EpisodeSnapshotCache.key(title, p != null && p.isNtkSite());
-    }
-
-    private static class EpisodeSnapshot {
-        long savedAt;
-        ArrayList<Manga> episodes;
-
-        EpisodeSnapshot(List<Manga> episodes) {
-            this.savedAt = System.currentTimeMillis();
-            this.episodes = new ArrayList<>(episodes);
-        }
     }
 
     private void maybeLoadMoreSearchResults() {
@@ -1162,3 +1140,4 @@ public class TagSearchActivity extends AppCompatActivity {
         super.onDestroy();
     }
 }
+

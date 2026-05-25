@@ -25,4 +25,15 @@ public class MainActivityStartupPolicyTest {
         assertFalse(MainActivity.shouldFinishDuplicateLauncherForTest(false, Intent.ACTION_VIEW, true));
         assertFalse(MainActivity.shouldFinishDuplicateLauncherForTest(false, Intent.ACTION_MAIN, false));
     }
+
+    @Test
+    public void tabPolicyMapsNavigationItemsToStableFragments() {
+        assertEquals(0, MainTabPolicy.fragmentIndex(ml.melun.mangaview.R.id.nav_main));
+        assertEquals(1, MainTabPolicy.fragmentIndex(ml.melun.mangaview.R.id.nav_search));
+        assertEquals(2, MainTabPolicy.fragmentIndex(ml.melun.mangaview.R.id.nav_recent));
+        assertEquals(2, MainTabPolicy.fragmentIndex(ml.melun.mangaview.R.id.nav_favorite));
+        assertEquals(2, MainTabPolicy.fragmentIndex(ml.melun.mangaview.R.id.nav_download));
+        assertEquals(ml.melun.mangaview.R.id.nav_search, MainTabPolicy.tabId(1));
+        assertEquals("내 보관함", MainTabPolicy.tabTitle(2));
+    }
 }

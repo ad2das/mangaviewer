@@ -501,6 +501,8 @@ public class ViewerWarmupManager {
                                                boolean reverse, MangaRepository.Cancellation cancellation) {
         if(context == null || manga == null)
             return null;
+        if(cancellation != null)
+            cancellation.prioritizeWebViewFallback();
         if(!manga.isOnline())
             return manga;
         if(title != null) {

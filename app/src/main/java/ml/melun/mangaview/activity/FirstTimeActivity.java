@@ -186,3 +186,4 @@ public class FirstTimeActivity extends AppCompatActivity {
         this.overridePendingTransition(R.anim.fade_in, R.anim.fade_out);
     }
 }
+

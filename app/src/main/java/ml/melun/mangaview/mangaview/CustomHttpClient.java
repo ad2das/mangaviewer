@@ -2226,7 +2226,7 @@ public class CustomHttpClient {
     }
 
     private static boolean shouldWaitForActivePageLoad(boolean hasStaleCache) {
-        return !hasStaleCache;
+        return PageCachePolicy.shouldWaitForActiveLoad(hasStaleCache);
     }
 
     static boolean isPageCacheFreshForTest(long cachedAt, long now, long ttlMillis) {
@@ -2234,7 +2234,7 @@ public class CustomHttpClient {
     }
 
     private static boolean isPageCacheFresh(long cachedAt, long now, long ttlMillis) {
-        return cachedAt <= now && now - cachedAt < ttlMillis;
+        return PageCachePolicy.isFresh(cachedAt, now, ttlMillis);
     }
 
     static boolean isPageCacheUsableForColdStartForTest(long cachedAt, long now) {
@@ -2242,7 +2242,7 @@ public class CustomHttpClient {
     }
 
     private static boolean isPageCacheUsableForColdStart(long cachedAt, long now) {
-        return cachedAt <= now && now - cachedAt <= PAGE_CACHE_COLD_START_TTL_MS;
+        return PageCachePolicy.isUsableForColdStart(cachedAt, now, PAGE_CACHE_COLD_START_TTL_MS);
     }
 
     static boolean shouldServeColdStartCachedPageImmediatelyForTest(boolean allowColdStartStale, FetchMode fetchMode, boolean hasCachedPage, boolean fresh) {
@@ -2250,7 +2250,7 @@ public class CustomHttpClient {
     }
 
     private static boolean shouldServeColdStartCachedPageImmediately(boolean allowColdStartStale, FetchMode fetchMode, boolean hasCachedPage, boolean fresh) {
-        return allowColdStartStale && hasCachedPage && !fresh && fetchMode != FetchMode.CACHE_ONLY;
+        return PageCachePolicy.shouldServeColdStartImmediately(allowColdStartStale, fetchMode, hasCachedPage, fresh);
     }
 
     private CachedPage readDiskCachedPage(String cacheKey, long now, long ttlMillis, boolean allowColdStartStale) {
@@ -2793,9 +2793,7 @@ public class CustomHttpClient {
     }
 
     private static boolean shouldUseNtkWebViewFallback(boolean ntkUrl, boolean missingResponse, String path, FetchMode fetchMode) {
-        if(fetchMode != FetchMode.ALLOW_SHARED_WEBVIEW || !ntkUrl || !missingResponse || path == null)
-            return false;
-        return isNtkWebViewFetchPath(path);
+        return HttpDocumentPolicy.shouldUseNtkWebViewFallback(ntkUrl, missingResponse, path, fetchMode);
     }
 
     static boolean isNtkEpisodeDocumentPathForTest(String path) {
@@ -2803,9 +2801,7 @@ public class CustomHttpClient {
     }
 
     private static boolean isNtkEpisodeDocumentPath(String path) {
-        if(path == null)
-            return false;
-        return path.matches("^/(?:webtoon|manhwa)/[^/?#]+/[^/?#]+.*");
+        return HttpDocumentPolicy.isNtkEpisodeDocumentPath(path);
     }
 
     static boolean isNtkTitleDocumentPathForTest(String path) {
@@ -2813,27 +2809,23 @@ public class CustomHttpClient {
     }
 
     private static boolean isNtkTitleDocumentPath(String path) {
-        if(path == null)
-            return false;
-        return path.matches("^/(?:webtoon|manhwa)/[^/?#]+/?$");
+        return HttpDocumentPolicy.isNtkTitleDocumentPath(path);
     }
 
     private static boolean isNtkNavigableDocumentPath(String path) {
-        return isNtkTitleDocumentPath(path) || isNtkEpisodeDocumentPath(path);
+        return HttpDocumentPolicy.isNtkNavigableDocumentPath(path);
     }
 
     private static boolean isNtkWebViewFetchPath(String path) {
-        return isNtkNavigableDocumentPath(path)
-                || isNtkApiPath(path)
-                || isNtkSearchPath(path);
+        return HttpDocumentPolicy.isNtkWebViewFetchPath(path);
     }
 
     private static boolean isNtkApiPath(String path) {
-        return path != null && path.startsWith("/api/");
+        return HttpDocumentPolicy.isNtkApiPath(path);
     }
 
     private static boolean isNtkSearchPath(String path) {
-        return path != null && (path.equals("/search") || path.startsWith("/search?"));
+        return HttpDocumentPolicy.isNtkSearchPath(path);
     }
 
     static boolean shouldUseSharedWebViewFallbackForTest(boolean ntkUrl, boolean missingResponse, String path, FetchMode fetchMode) {
@@ -2851,20 +2843,13 @@ public class CustomHttpClient {
 
     private static boolean shouldUseSharedWebViewFallback(boolean ntkUrl, boolean missingResponse, String path,
                                                          FetchMode fetchMode, boolean allowWolfWebViewFallback) {
-        if(fetchMode != FetchMode.ALLOW_SHARED_WEBVIEW || !missingResponse || path == null)
-            return false;
-        if(ntkUrl)
-            return shouldUseNtkWebViewFallback(true, true, path, fetchMode);
-        return shouldUseWolfWebViewFallback(false, true, path, fetchMode, allowWolfWebViewFallback);
+        return HttpDocumentPolicy.shouldUseSharedWebViewFallback(ntkUrl, missingResponse, path, fetchMode, allowWolfWebViewFallback);
     }
 
     private static boolean shouldUseWolfWebViewFallback(boolean ntkUrl, boolean missingResponse, String path,
                                                        FetchMode fetchMode, boolean allowWolfWebViewFallback) {
-        return fetchMode == FetchMode.ALLOW_SHARED_WEBVIEW
-                && allowWolfWebViewFallback
-                && !ntkUrl
-                && missingResponse
-                && isWolfEpisodeDocumentPath(path);
+        return HttpDocumentPolicy.shouldUseWolfWebViewFallback(ntkUrl, missingResponse, path, fetchMode,
+                allowWolfWebViewFallback);
     }
 
     static boolean isWolfEpisodeDocumentPathForTest(String path) {
@@ -2872,10 +2857,7 @@ public class CustomHttpClient {
     }
 
     static boolean isWolfEpisodeDocumentPath(String path) {
-        return path != null && (path.startsWith("/cl?toon=")
-                || path.startsWith("/list?toon=")
-                || path.startsWith("/cv?toon=")
-                || path.startsWith("/view?toon="));
+        return HttpDocumentPolicy.isWolfEpisodeDocumentPath(path);
     }
 
     static boolean shouldUseFastNtkPageDirectForTest(boolean ntkUrl, String path, FetchMode fetchMode) {
@@ -2883,9 +2865,7 @@ public class CustomHttpClient {
     }
 
     private static boolean shouldUseFastNtkPageDirect(boolean ntkUrl, String path, FetchMode fetchMode) {
-        if(!ntkUrl || path == null || fetchMode == FetchMode.CACHE_ONLY)
-            return false;
-        return path.startsWith("/webtoon/") || path.startsWith("/manhwa/") || path.startsWith("/api/");
+        return HttpDocumentPolicy.shouldUseFastNtkPageDirect(ntkUrl, path, fetchMode);
     }
 
     private Map<String, String> buildHeaders(String baseUrl, Boolean useDefaultCookies, Map<String, String> customCookie) {
@@ -3279,6 +3259,7 @@ public class CustomHttpClient {
         private final Set<Call> calls = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
         private volatile boolean cancelled = false;
         private volatile boolean wolfWebViewFallback = false;
+        private volatile boolean priorityWebViewFallback = false;
 
         public RequestGroup allowWolfWebViewFallback() {
             wolfWebViewFallback = true;
@@ -3287,6 +3268,15 @@ public class CustomHttpClient {
 
         public boolean allowsWolfWebViewFallback() {
             return wolfWebViewFallback;
+        }
+
+        public RequestGroup prioritizeWebViewFallback() {
+            priorityWebViewFallback = true;
+            return this;
+        }
+
+        public boolean prioritizesWebViewFallback() {
+            return priorityWebViewFallback;
         }
 
         void add(Call call) {

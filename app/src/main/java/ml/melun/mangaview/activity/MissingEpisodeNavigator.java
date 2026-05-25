@@ -1,9 +1,8 @@
 package ml.melun.mangaview.activity;
 
+import android.app.Activity;
+import android.app.AlertDialog;
 import android.widget.Toast;
-
-import androidx.appcompat.app.AlertDialog;
-import androidx.appcompat.app.AppCompatActivity;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -56,7 +55,7 @@ final class MissingEpisodeNavigator {
         }
     }
 
-    static boolean retryPendingAfterCaptcha(AppCompatActivity activity, PromptState state, Host host) {
+    static boolean retryPendingAfterCaptcha(Activity activity, PromptState state, Host host) {
         if(activity == null || state == null || host == null || state.pendingSwitch == null)
             return false;
         PendingSwitch pending = state.pendingSwitch;
@@ -64,7 +63,7 @@ final class MissingEpisodeNavigator {
         return true;
     }
 
-    static boolean maybePromptNextEpisode(AppCompatActivity activity, boolean dark, Manga source, Manga target,
+    static boolean maybePromptNextEpisode(Activity activity, boolean dark, Manga source, Manga target,
                                           PromptState state, Host host, Runnable skipAction) {
         MissingEpisodeGap gap = missingNextEpisodeGap(source, target);
         if(gap == null || activity == null || state == null || host == null)
@@ -119,7 +118,7 @@ final class MissingEpisodeNavigator {
         return missingNextEpisodeGap(source, target) != null;
     }
 
-    private static void openAlternateEpisode(AppCompatActivity activity, Manga source, MissingEpisodeGap gap,
+    private static void openAlternateEpisode(Activity activity, Manga source, MissingEpisodeGap gap,
                                              String alternateSource, PromptState state, Host host) {
         host.lockUi(true);
         AppDispatchers.submitUserAction(() -> {
@@ -522,3 +521,4 @@ final class MissingEpisodeNavigator {
         }
     }
 }
+

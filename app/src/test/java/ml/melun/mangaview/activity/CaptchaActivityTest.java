@@ -31,4 +31,12 @@ public class CaptchaActivityTest {
                 "foo=bar\ncf_clearance=value", "cf_clearance"));
         assertNull(CaptchaActivity.extractCookieValueForTest("clearance=value", "cf_clearance"));
     }
+
+    @Test
+    public void clearanceCookiePolicyRejectsDeletedOrShortValues() {
+        assertFalse(CaptchaCookiePolicy.isValidClearanceValue("deleted"));
+        assertFalse(CaptchaCookiePolicy.isValidClearanceValue("null"));
+        assertFalse(CaptchaCookiePolicy.isValidClearanceValue("short"));
+        assertTrue(CaptchaCookiePolicy.isValidClearanceValue("abcdefghijklmnopqrstuvwxyz"));
+    }
 }

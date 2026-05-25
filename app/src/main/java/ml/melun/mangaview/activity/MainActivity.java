@@ -9,7 +9,6 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.ColorStateList;
-import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
@@ -511,59 +510,43 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void applyNavigationDrawerColors() {
-        if(!dark || navigationView == null)
-            return;
-        int[][] states = new int[][]{
-                new int[]{-android.R.attr.state_enabled},
-                new int[]{android.R.attr.state_enabled},
-                new int[]{-android.R.attr.state_checked},
-                new int[]{android.R.attr.state_pressed}
-        };
-        int[] colors = new int[]{
-                Color.parseColor("#565656"),
-                Color.parseColor("#a2a2a2"),
-                Color.WHITE,
-                Color.WHITE
-        };
-        navigationView.setItemTextColor(new ColorStateList(states, colors));
+        MainChromeStyler.applyNavigationDrawer(navigationView, dark);
     }
 
     static long startupDeferredTasksDelayMsForTest() {
-        return 12_000L;
+        return MainActivityStartupPolicy.DEFERRED_TASKS_DELAY_MS;
     }
 
     static long startupUpdateCheckDelayMsForTest() {
-        return 5 * 60_000L;
+        return MainActivityStartupPolicy.UPDATE_CHECK_DELAY_MS;
     }
 
     static long startupVisibleWarmupSuppressMsForTest() {
-        return 15_000L;
+        return MainActivityStartupPolicy.VISIBLE_WARMUP_SUPPRESS_MS;
     }
 
     static long startupContinueWarmupSuppressMsForTest() {
-        return 0L;
+        return MainActivityStartupPolicy.CONTINUE_WARMUP_SUPPRESS_MS;
     }
 
     static long startupPerformanceMonitorDelayMsForTest() {
-        return 16_000L;
+        return MainActivityStartupPolicy.PERFORMANCE_MONITOR_DELAY_MS;
     }
 
     static long startupNtkCaptchaCheckDelayMsForTest() {
-        return 20_000L;
+        return MainActivityStartupPolicy.NTK_CAPTCHA_CHECK_DELAY_MS;
     }
 
     static long startupWfwfDomainRefreshDelayMsForTest() {
-        return 8_000L;
+        return MainActivityStartupPolicy.WFWF_DOMAIN_REFRESH_DELAY_MS;
     }
 
     static long ntkCaptchaCheckMinIntervalMsForTest() {
-        return 10_000L;
+        return MainActivityStartupPolicy.NTK_CAPTCHA_CHECK_MIN_INTERVAL_MS;
     }
 
     static boolean shouldFinishDuplicateLauncherForTest(boolean isTaskRoot, String action, boolean hasLauncherCategory) {
-        return !isTaskRoot
-                && Intent.ACTION_MAIN.equals(action)
-                && hasLauncherCategory;
+        return MainActivityStartupPolicy.shouldFinishDuplicateLauncher(isTaskRoot, action, hasLauncherCategory);
     }
 
     @Override
@@ -929,42 +912,15 @@ public class MainActivity extends AppCompatActivity
     }
 
     public int getTabId(int i){
-        switch(i){
-            case 0:
-                return(R.id.nav_main);
-            case 1:
-                return(R.id.nav_search);
-            case 2:
-                return(R.id.nav_recent);
-        }
-        return 0;
+        return MainTabPolicy.tabId(i);
     }
 
     public int getFragmentIndex(int i){
-        switch(i){
-            case R.id.nav_main:
-                return 0;
-            case R.id.nav_search:
-                return 1;
-            case R.id.nav_recent:
-                return 2;
-            case R.id.nav_favorite:
-            case R.id.nav_download:
-                return 2;
-        }
-        return -1;
+        return MainTabPolicy.fragmentIndex(i);
     }
 
     private CharSequence getTabTitle(int index) {
-        switch(index) {
-            case 0:
-                return "MangaView";
-            case 1:
-                return "검색";
-            case 2:
-                return "내 보관함";
-        }
-        return "";
+        return MainTabPolicy.tabTitle(index);
     }
 
     private void restoreExistingFragments() {
@@ -1022,53 +978,11 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void applyMainWindowChrome() {
-        if(dark) {
-            int background = ContextCompat.getColor(this, R.color.colorDarkWindowBackground);
-            getWindow().setStatusBarColor(background);
-            getWindow().setNavigationBarColor(background);
-            getWindow().getDecorView().setSystemUiVisibility(0);
-            View contentHolder = findViewById(R.id.contentHolder);
-            if(contentHolder != null) {
-                contentHolder.setBackgroundColor(background);
-                if(contentHolder.getParent() instanceof View)
-                    ((View) contentHolder.getParent()).setBackgroundColor(background);
-            }
-            Toolbar toolbar = findViewById(R.id.toolbar);
-            if(toolbar != null) {
-                toolbar.setBackgroundColor(background);
-                toolbar.setTitleTextColor(ContextCompat.getColor(this, R.color.colorDarkText));
-            }
-            View root = findViewById(R.id.drawer_layout);
-            if(root != null)
-                root.setBackgroundColor(background);
-            return;
-        }
-        getWindow().setStatusBarColor(ContextCompat.getColor(this, R.color.appSurface));
-        getWindow().setNavigationBarColor(ContextCompat.getColor(this, R.color.appCard));
-        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+        MainChromeStyler.applyWindowChrome(this, dark);
     }
 
     private void applyBottomNavigationChrome() {
-        if(bottomNavigationView == null)
-            return;
-        if(!dark)
-            return;
-        GradientDrawable background = new GradientDrawable();
-        background.setColor(ContextCompat.getColor(this, R.color.colorDarkSurface));
-        background.setStroke(dp(1), ContextCompat.getColor(this, R.color.colorDarkDivider));
-        background.setCornerRadius(dp(24));
-        bottomNavigationView.setBackground(background);
-        int[][] states = new int[][]{
-                new int[]{android.R.attr.state_checked},
-                new int[]{}
-        };
-        int[] colors = new int[]{
-                ContextCompat.getColor(this, R.color.appAccent),
-                ContextCompat.getColor(this, R.color.colorDarkTextSecondary)
-        };
-        ColorStateList tint = new ColorStateList(states, colors);
-        bottomNavigationView.setItemIconTintList(tint);
-        bottomNavigationView.setItemTextColor(tint);
+        MainChromeStyler.applyBottomNavigation(this, bottomNavigationView, dark);
     }
 
     private GradientDrawable makeRoundedBackground(int fillColorRes, int strokeColorRes, int radiusDp) {
@@ -1406,3 +1320,4 @@ public class MainActivity extends AppCompatActivity
             showPopup(context, "연결 오류", "연결을 확인하고 다시 시도해 주세요.", (dialogInterface, i) -> finish(), dialogInterface -> finish());
     }
 }
+

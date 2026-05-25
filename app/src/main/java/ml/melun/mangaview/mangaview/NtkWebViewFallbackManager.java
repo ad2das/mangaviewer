@@ -26,8 +26,9 @@ import okhttp3.Response;
 
 final class NtkWebViewFallbackManager {
     private static final String TAG = "ViewerPerf";
-    private static final long WEBVIEW_LOAD_TIMEOUT_MS = 10_000L;
-    private static final long CALLER_WAIT_TIMEOUT_MS = 15_000L;
+    private static final long WEBVIEW_LOAD_TIMEOUT_MS = 22_000L;
+    private static final long CALLER_WAIT_TIMEOUT_MS = 30_000L;
+    private static final long DOCUMENT_READY_WAIT_MS = 18_000L;
     private static final Object INSTANCE_LOCK = new Object();
     private static WeakReference<NtkWebViewFallbackManager> instanceRef;
 
@@ -71,7 +72,8 @@ final class NtkWebViewFallbackManager {
         synchronized (lock) {
             task = inFlight.get(key);
             if(task == null) {
-                task = new FetchTask(String.valueOf(nextToken++), key, userAgent, baseUrl, path, headers);
+                task = new FetchTask(String.valueOf(nextToken++), key, userAgent, baseUrl, path, headers,
+                        requestGroup != null && requestGroup.prioritizesWebViewFallback());
                 inFlight.put(key, task);
                 if(task.highPriority) {
                     queue.addFirst(task);
@@ -121,6 +123,18 @@ final class NtkWebViewFallbackManager {
 
     static boolean shouldStopWaitingForCallerForTest(boolean requestCancelled, long now, long deadline) {
         return shouldStopWaitingForCaller(requestCancelled, now, deadline);
+    }
+
+    static long webViewLoadTimeoutMsForTest() {
+        return WEBVIEW_LOAD_TIMEOUT_MS;
+    }
+
+    static long callerWaitTimeoutMsForTest() {
+        return CALLER_WAIT_TIMEOUT_MS;
+    }
+
+    static long documentReadyWaitMsForTest() {
+        return DOCUMENT_READY_WAIT_MS;
     }
 
     private static boolean shouldStopWaitingForCaller(boolean requestCancelled, long now, long deadline) {
@@ -429,6 +443,7 @@ final class NtkWebViewFallbackManager {
 
     private static String buildDocumentHtmlScript(String token) {
         String quotedToken = jsonQuote(token);
+        String readyWaitMs = String.valueOf(DOCUMENT_READY_WAIT_MS);
         return "(function(){var token=" + quotedToken + ";var started=Date.now();"
                 + "function html(){return document.documentElement?document.documentElement.outerHTML:(document.body?document.body.innerHTML:'');}"
                 + "function lower(v){return (v||'').toLowerCase();}"
@@ -439,9 +454,9 @@ final class NtkWebViewFallbackManager {
                 + "function ntkShell(v){v=lower(v);return (v.indexOf('/_next/static/')>=0||v.indexOf('self.__next_f')>=0||v.indexOf('id=\"__next\"')>=0||v.indexOf(\"id='__next'\")>=0)&&(v.indexOf('%5bsourceworkid%5d')>=0||v.indexOf('[sourceworkid]')>=0||v.indexOf('%5bviewid%5d')>=0||v.indexOf('[viewid]')>=0||v.indexOf('next-route-announcer')>=0||v.indexOf('app-router-announcer')>=0)&&!ntkRendered();}"
                 + "function send(code,body){window.NtkBridge.onFetchResult(token,JSON.stringify({code:code,body:body||''}));}"
                 + "function check(){try{var v=html();"
-                + "if((emptyDoc(v)||webviewError(v))&&Date.now()-started<8500){setTimeout(check,250);return;}"
-                + "if(challenge(v)&&Date.now()-started<8500){setTimeout(check,350);return;}"
-                + "if(ntkShell(v)&&Date.now()-started<8500){setTimeout(check,300);return;}"
+                + "if((emptyDoc(v)||webviewError(v))&&Date.now()-started<" + readyWaitMs + "){setTimeout(check,250);return;}"
+                + "if(challenge(v)&&Date.now()-started<" + readyWaitMs + "){setTimeout(check,350);return;}"
+                + "if(ntkShell(v)&&Date.now()-started<" + readyWaitMs + "){setTimeout(check,300);return;}"
                 + "if(emptyDoc(v)||webviewError(v)){send(0,v||'');return;}"
                 + "if(challenge(v)){send(403,v);return;}"
                 + "if(ntkShell(v)){send(0,v);return;}"
@@ -520,14 +535,15 @@ final class NtkWebViewFallbackManager {
         volatile long loadStartedAt = 0L;
         volatile int waiters = 1;
 
-        FetchTask(String token, String key, String userAgent, String baseUrl, String path, Map<String, String> headers) {
+        FetchTask(String token, String key, String userAgent, String baseUrl, String path, Map<String, String> headers,
+                  boolean highPriority) {
             this.token = token;
             this.key = key;
             this.userAgent = userAgent;
             this.baseUrl = baseUrl;
             this.path = path;
             this.headers = headers == null ? new HashMap<>() : new HashMap<>(headers);
-            this.highPriority = shouldNavigateDocument(path);
+            this.highPriority = highPriority;
         }
     }
 }

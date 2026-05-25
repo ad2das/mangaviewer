@@ -244,7 +244,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         dispatchWindowRequest(request)
     }
 
-    fun prependPageCount(count: Int, insertedCount: Int) {
+    fun prependPageCount(count: Int, insertedCount: Int, revealPrependedBoundary: Boolean = false) {
         val request = synchronized(stateLock) {
             if (insertedCount <= 0 || count <= pages.size) return
             rebuildLayoutLocked()
@@ -257,6 +257,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val shiftedFirstTop = pageTopOrElseLocked(insertedCount, 0f)
             if (lockedRestorePage >= 0 && SystemClock.uptimeMillis() <= lockedRestoreUntilMs) {
                 applyLockedRestorePositionLocked()
+            } else if (revealPrependedBoundary) {
+                scrollOffset = max(0f, shiftedFirstTop - height * PREPENDED_BOUNDARY_REVEAL_SCREEN_RATIO)
             } else {
                 scrollOffset += shiftedFirstTop - oldFirstTop
             }
@@ -298,7 +300,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.cardText = null
             deferInitialEmptyDraw = false
             val newHeight = pageDrawHeightLocked(page)
-            if (oldTop + oldHeight <= scrollOffset) scrollOffset += newHeight - oldHeight
+            adjustScrollForChangedPageHeightLocked(oldTop, oldHeight, newHeight - oldHeight)
             val belowVisible = oldTop > scrollOffset + height
             updatePageHeightDeltaLocked(index, newHeight - oldHeight)
             applyLockedRestorePositionLocked()
@@ -329,7 +331,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.cardText = null
             deferInitialEmptyDraw = false
             val newHeight = pageDrawHeightLocked(page)
-            if (oldTop + oldHeight <= scrollOffset) scrollOffset += newHeight - oldHeight
+            adjustScrollForChangedPageHeightLocked(oldTop, oldHeight, newHeight - oldHeight)
             val belowVisible = oldTop > scrollOffset + height
             updatePageHeightDeltaLocked(index, newHeight - oldHeight)
             applyLockedRestorePositionLocked()
@@ -405,7 +407,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.height = pageHeight
             deferInitialEmptyDraw = false
             val newHeight = pageDrawHeightLocked(page)
-            if (oldTop + oldHeight <= scrollOffset) scrollOffset += newHeight - oldHeight
+            adjustScrollForChangedPageHeightLocked(oldTop, oldHeight, newHeight - oldHeight)
             val belowVisible = oldTop > scrollOffset + height
             updatePageHeightDeltaLocked(index, newHeight - oldHeight)
             applyLockedRestorePositionLocked()
@@ -425,6 +427,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun setPageCard(index: Int, title: String) {
         val request = synchronized(stateLock) {
             val page = pages.getOrNull(index) ?: return
+            rebuildLayoutLocked()
+            val oldHeight = pageDrawHeightLocked(page)
+            val oldTop = pageTopOrElseLocked(index, 0f)
             page.bitmap = null
             page.tiles = emptyList()
             page.width = width
@@ -432,7 +437,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.loading = false
             page.cardText = title
             deferInitialEmptyDraw = false
-            layoutDirty = true
+            val newHeight = pageDrawHeightLocked(page)
+            adjustScrollForChangedPageHeightLocked(oldTop, oldHeight, newHeight - oldHeight)
+            updatePageHeightDeltaLocked(index, newHeight - oldHeight)
+            applyLockedRestorePositionLocked()
             clampScrollLocked()
             renderRequested = true
             scheduleFrameLocked()
@@ -1137,6 +1145,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
         layoutDirty = false
     }
 
+    private fun adjustScrollForChangedPageHeightLocked(oldTop: Float, oldHeight: Float, delta: Float) {
+        if (abs(delta) <= 0.01f) return
+        val oldBottom = oldTop + oldHeight
+        val bottomBoundaryVisible = oldTop <= scrollOffset &&
+            oldBottom > scrollOffset &&
+            oldBottom - scrollOffset <= height
+        if (oldBottom <= scrollOffset || bottomBoundaryVisible) {
+            scrollOffset += delta
+        }
+    }
+
     private fun firstVisiblePageLocked(position: Float): Int {
         if (pages.isEmpty()) return 0
         rebuildLayoutLocked()
@@ -1452,6 +1471,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val BOUNDARY_EPSILON_PX = 2f
         private const val BOUNDARY_FLING_EXTEND_EPSILON_PX = 4
         private const val BOUNDARY_FLING_MIN_VELOCITY_MULTIPLIER = 2f
+        private const val PREPENDED_BOUNDARY_REVEAL_SCREEN_RATIO = 0.72f
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
         private const val RESTORE_POSITION_LOCK_MS = 4000L

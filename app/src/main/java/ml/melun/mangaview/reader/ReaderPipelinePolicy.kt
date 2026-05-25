@@ -9,7 +9,7 @@ object ReaderPipelinePolicy {
     const val BUSY_WINDOW_BEFORE = 0
     const val BUSY_WINDOW_AFTER = 2
     const val IDLE_WINDOW_BEFORE = 0
-    const val IDLE_WINDOW_AFTER = 2
+    const val IDLE_WINDOW_AFTER = 3
     const val BUSY_DECODE_WIDTH = 480
 
     @JvmStatic

@@ -33,26 +33,15 @@ import android.webkit.RenderProcessGoneDetail;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.net.MalformedURLException;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.RejectedExecutionException;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
-import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import okhttp3.Response;
 
@@ -699,7 +688,7 @@ public class CaptchaActivity extends AppCompatActivity {
                 if(cookieStr == null || cookieStr.length() == 0)
                     continue;
                 final boolean[] foundClearance = { hasClearance };
-                forEachCookiePair(cookieStr, (k, v) -> {
+                CaptchaCookiePolicy.forEachCookiePair(cookieStr, (k, v) -> {
                     boolean clearance = "cf_clearance".equalsIgnoreCase(k);
                     if(clearance && !isValidClearanceValue(v))
                         return;
@@ -879,14 +868,7 @@ public class CaptchaActivity extends AppCompatActivity {
     }
 
     static String extractCookieValueForTest(String text, String cookieName) {
-        if(text == null || cookieName == null || cookieName.length() == 0)
-            return null;
-        final String[] value = new String[1];
-        forEachCookiePair(text, (key, cookieValue) -> {
-            if(value[0] == null && cookieName.equalsIgnoreCase(key))
-                value[0] = cookieValue;
-        });
-        return value[0];
+        return CaptchaCookiePolicy.extractCookieValue(text, cookieName);
     }
 
     private static boolean isNtkLikeUrlForCaptcha(String url) {
@@ -906,7 +888,7 @@ public class CaptchaActivity extends AppCompatActivity {
             String cookieStr = cookiem.getCookie(url);
             if(cookieStr == null || cookieStr.length() == 0)
                 continue;
-            forEachCookiePair(cookieStr, (key, value) -> {
+            CaptchaCookiePolicy.forEachCookiePair(cookieStr, (key, value) -> {
                 if("cf_clearance".equalsIgnoreCase(key) && isValidClearanceValue(value))
                     values.add(value);
             });
@@ -914,49 +896,8 @@ public class CaptchaActivity extends AppCompatActivity {
         return values;
     }
 
-    private interface CookiePairConsumer {
-        void accept(String key, String value);
-    }
-
-    private static void forEachCookiePair(String cookieStr, CookiePairConsumer consumer) {
-        if(cookieStr == null || consumer == null)
-            return;
-        int start = 0;
-        int length = cookieStr.length();
-        while(start < length) {
-            int end = nextCookieSeparator(cookieStr, start);
-            int eq = cookieStr.indexOf('=', start);
-            if(eq > start && eq < end) {
-                String key = cookieStr.substring(start, eq).trim();
-                String value = cookieStr.substring(eq + 1, end).trim();
-                if(key.length() > 0)
-                    consumer.accept(key, value);
-            }
-            start = end + 1;
-        }
-    }
-
-    private static int nextCookieSeparator(String cookieStr, int start) {
-        int end = cookieStr.length();
-        int semicolon = cookieStr.indexOf(';', start);
-        if(semicolon >= 0 && semicolon < end)
-            end = semicolon;
-        int newline = cookieStr.indexOf('\n', start);
-        if(newline >= 0 && newline < end)
-            end = newline;
-        int carriageReturn = cookieStr.indexOf('\r', start);
-        if(carriageReturn >= 0 && carriageReturn < end)
-            end = carriageReturn;
-        return end;
-    }
-
     private boolean isValidClearanceValue(String value) {
-        if(value == null)
-            return false;
-        String trimmed = value.trim();
-        return trimmed.length() >= 20
-                && !"deleted".equalsIgnoreCase(trimmed)
-                && !"null".equalsIgnoreCase(trimmed);
+        return CaptchaCookiePolicy.isValidClearanceValue(value);
     }
 
     private String[] cookieReadUrls(String purl, String currentUrl) {
@@ -1054,145 +995,5 @@ public class CaptchaActivity extends AppCompatActivity {
         }
     }
 
-    private static class LocalWebViewProxy {
-        private final ServerSocket serverSocket;
-        private final ExecutorService executor = Executors.newCachedThreadPool();
-        private volatile boolean closed = false;
-
-        static LocalWebViewProxy start() throws Exception {
-            ServerSocket socket = new ServerSocket();
-            socket.bind(new InetSocketAddress("127.0.0.1", 0));
-            LocalWebViewProxy proxy = new LocalWebViewProxy(socket);
-            proxy.acceptLoop();
-            return proxy;
-        }
-
-        private LocalWebViewProxy(ServerSocket serverSocket) {
-            this.serverSocket = serverSocket;
-        }
-
-        int port() {
-            return serverSocket.getLocalPort();
-        }
-
-        private void acceptLoop() {
-            executor.execute(() -> {
-                while(!closed) {
-                    try {
-                        Socket client = serverSocket.accept();
-                        if(!executeProxyTask(() -> handle(client)))
-                            closeQuietly(client);
-                    } catch (Exception e) {
-                        if(!closed)
-                            android.util.Log.d("CaptchaActivity", "NTK WebView proxy accept failed", e);
-                    }
-                }
-            });
-        }
-
-        private void handle(Socket client) {
-            try {
-                client.setSoTimeout(15000);
-                InputStream input = client.getInputStream();
-                OutputStream output = client.getOutputStream();
-                String requestLine = readLine(input);
-                if(requestLine == null || !requestLine.startsWith("CONNECT ")) {
-                    output.write("HTTP/1.1 501 Not Implemented\r\nConnection: close\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
-                    closeQuietly(client);
-                    return;
-                }
-                String target = requestLine.substring("CONNECT ".length()).split(" ", 2)[0];
-                while(true) {
-                    String header = readLine(input);
-                    if(header == null || header.length() == 0)
-                        break;
-                }
-                String host = target;
-                int port = 443;
-                int colon = target.lastIndexOf(':');
-                if(colon > 0) {
-                    host = target.substring(0, colon);
-                    port = Integer.parseInt(target.substring(colon + 1));
-                }
-                Socket upstream = new Socket();
-                String connectHost = CustomHttpClient.resolveDirectHostForNtkProxy(host);
-                upstream.connect(new InetSocketAddress(InetAddress.getByName(connectHost), port), 10000);
-                output.write("HTTP/1.1 200 Connection Established\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
-                output.flush();
-                pipeBoth(client, upstream);
-            } catch (Exception e) {
-                if(!closed)
-                    android.util.Log.d("CaptchaActivity", "NTK WebView proxy connection failed", e);
-                closeQuietly(client);
-            }
-        }
-
-        private void pipeBoth(Socket a, Socket b) {
-            boolean first = executeProxyTask(() -> pipe(a, b));
-            boolean second = executeProxyTask(() -> pipe(b, a));
-            if(!first || !second) {
-                closeQuietly(a);
-                closeQuietly(b);
-            }
-        }
-
-        private boolean executeProxyTask(Runnable task) {
-            if(closed || executor.isShutdown())
-                return false;
-            try {
-                executor.execute(task);
-                return true;
-            } catch (RejectedExecutionException ignored) {
-                return false;
-            }
-        }
-
-        private void pipe(Socket from, Socket to) {
-            byte[] buffer = new byte[8192];
-            try {
-                InputStream input = from.getInputStream();
-                OutputStream output = to.getOutputStream();
-                int read;
-                while((read = input.read(buffer)) >= 0) {
-                    output.write(buffer, 0, read);
-                    output.flush();
-                }
-            } catch (Exception ignored) {
-            } finally {
-                closeQuietly(from);
-                closeQuietly(to);
-            }
-        }
-
-        private String readLine(InputStream input) throws Exception {
-            StringBuilder builder = new StringBuilder();
-            int previous = -1;
-            int current;
-            while((current = input.read()) != -1) {
-                if(previous == '\r' && current == '\n') {
-                    builder.setLength(Math.max(0, builder.length() - 1));
-                    return builder.toString();
-                }
-                builder.append((char) current);
-                previous = current;
-                if(builder.length() > 8192)
-                    throw new Exception("Proxy header too long");
-            }
-            return builder.length() == 0 ? null : builder.toString();
-        }
-
-        void close() {
-            closed = true;
-            closeQuietly(serverSocket);
-            executor.shutdownNow();
-        }
-
-        private static void closeQuietly(java.io.Closeable closeable) {
-            try {
-                if(closeable != null)
-                    closeable.close();
-            } catch (Exception ignored) {
-            }
-        }
-    }
 }
+

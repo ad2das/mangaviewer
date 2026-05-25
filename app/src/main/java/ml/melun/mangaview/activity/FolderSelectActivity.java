@@ -338,3 +338,4 @@ public class FolderSelectActivity extends AppCompatActivity {
         dirList.setSelection(0);
     }
 }
+

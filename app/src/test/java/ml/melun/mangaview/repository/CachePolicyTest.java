@@ -24,4 +24,18 @@ public class CachePolicyTest {
         assertFalse(CachePolicy.isReusableForColdStartForTest(now - CachePolicy.EPISODE_COLD_START_TTL_MS - 1L, now));
         assertFalse(CachePolicy.isReusableForColdStartForTest(now + 1L, now));
     }
+
+    @Test
+    public void cacheFreshnessKeepsBoundaryInclusiveForPersistedSnapshots() {
+        long now = 20_000L;
+        long ttl = 5_000L;
+
+        assertTrue(CachePolicy.isFreshForTest(now - ttl, ttl, now));
+        assertFalse(CachePolicy.isFreshForTest(now - ttl - 1L, ttl, now));
+    }
+
+    @Test
+    public void zeroTimestampIsNeverReusableForColdStart() {
+        assertFalse(CachePolicy.isReusableForColdStartForTest(0L, 10_000L));
+    }
 }

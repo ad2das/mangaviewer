@@ -1875,7 +1875,7 @@ public class Search {
             return new PageTitles(new ArrayList<>(), null,
                     isNtkKeywordApiEmptyAuthoritative(successfulPaths, paths.size(), total, parsedCandidates),
                     false, total);
-        return new PageTitles(titles, singleNextPath, true, paths.size() == 1 && hasMore, total);
+        return new PageTitles(titles, singleNextPath, true, NtkKeywordSearchPolicy.apiHasMore(paths.size(), hasMore), total);
     }
 
     private NtkApiPathResult fetchNtkKeywordApiPathResult(CustomHttpClient client, String path, int targetBaseMode,
@@ -2023,30 +2023,19 @@ public class Search {
     }
 
     private static boolean shouldFetchNtkKeywordApiPathsInParallel(ArrayList<String> paths) {
-        return paths != null && paths.size() > 1;
+        return NtkKeywordSearchPolicy.shouldFetchPathsInParallel(paths);
     }
 
     private static ArrayList<String> ntkKeywordApiPaths(String query, int targetBaseMode, int page, int limit) {
-        ArrayList<String> paths = new ArrayList<>();
-        if(page < 1)
-            page = 1;
-        int pageSize = ntkKeywordPageSize(limit);
-        String encoded = percentEncode(query, Charset.forName("UTF-8"));
-        if(targetBaseMode == base_auto || targetBaseMode == base_webtoon)
-            paths.add("/api/works?keyword=" + encoded + "&page=" + page + "&pageSize=" + pageSize + "&withTotal=1");
-        if(targetBaseMode == base_auto || targetBaseMode == base_comic)
-            paths.add("/api/manhwa-list?keyword=" + encoded + "&page=" + page + "&pageSize=" + pageSize + "&withTotal=1");
-        return paths;
+        return NtkKeywordSearchPolicy.keywordApiPaths(query, targetBaseMode, page, limit);
     }
 
     private static int ntkKeywordPageSize(int limit) {
-        return limit > 0 ? Math.min(NTK_KEYWORD_PAGE_SIZE, Math.max(10, limit)) : NTK_KEYWORD_PAGE_SIZE;
+        return NtkKeywordSearchPolicy.keywordPageSize(limit);
     }
 
     private static int perNtkKeywordKindLimit(int targetBaseMode, int limit) {
-        if(limit <= 0 || targetBaseMode != base_auto)
-            return limit;
-        return Math.max(10, limit / 2);
+        return NtkKeywordSearchPolicy.perKindLimit(targetBaseMode, limit);
     }
 
     static ArrayList<Title> filterNtkKeywordResultsForTest(ArrayList<Title> titles, String query, int limit) {
@@ -2054,32 +2043,15 @@ public class Search {
     }
 
     private static ArrayList<Title> filterNtkKeywordResults(ArrayList<Title> titles, String query, int limit) {
-        ArrayList<Title> filtered = new ArrayList<>();
-        if(titles == null)
-            return filtered;
-        String normalized = normalizeSearchText(query);
-        for(Title title : titles) {
-            if(title == null)
-                continue;
-            if(normalized.length() > 0 && !matchesNtkKeyword(title, normalized))
-                continue;
-            filtered.add(title);
-            if(limit > 0 && filtered.size() >= limit)
-                break;
-        }
-        return filtered;
+        return NtkKeywordSearchPolicy.filterResults(titles, query, limit);
     }
 
     private static boolean matchesNtkKeyword(Title title, String normalizedQuery) {
-        if(normalizedQuery.length() == 0)
-            return true;
-        return normalizeSearchText(title.getName()).contains(normalizedQuery);
+        return NtkKeywordSearchPolicy.matchesKeyword(title, normalizedQuery);
     }
 
     private static String normalizeSearchText(String value) {
-        if(value == null)
-            return "";
-        return value.toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
+        return NtkKeywordSearchPolicy.normalizeSearchText(value);
     }
 
     private static String ntkPath(CustomHttpClient client, String ntkPath, String wolfPath) {

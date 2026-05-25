@@ -18,6 +18,7 @@ import androidx.test.uiautomator.UiObject2;
 import androidx.test.uiautomator.Until;
 
 import org.junit.Test;
+import org.junit.Before;
 import org.junit.runner.RunWith;
 
 import java.lang.reflect.Field;
@@ -27,13 +28,20 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import ml.melun.mangaview.activity.EpisodeActivity;
+import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.MTitle;
+import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
 
 @RunWith(AndroidJUnit4.class)
 public class EpisodeActivityNetworkTest {
     private static final String PACKAGE_NAME = "ml.melun.mangaview";
+
+    @Before
+    public void requireLiveNetworkOptIn() {
+        LiveNetworkAssume.assumeEnabled();
+    }
 
     @Test
     public void ntkComicTitleOpensEpisodeList() throws Exception {
@@ -56,10 +64,7 @@ public class EpisodeActivityNetworkTest {
 
         episodeRow.click();
 
-        UiObject2 viewerToolbar = device.wait(Until.findObject(By.res(PACKAGE_NAME, "viewerToolbar")), 60000L);
-        assertNotNull("Expected tapping an NTK episode to open the viewer", viewerToolbar);
-        UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 60000L);
-        assertNotNull("Expected NTK viewer content strip to render", strip);
+        assertReaderOpened(device, "NTK");
     }
 
     @Test
@@ -83,10 +88,33 @@ public class EpisodeActivityNetworkTest {
 
         episodeRow.click();
 
-        UiObject2 viewerToolbar = device.wait(Until.findObject(By.res(PACKAGE_NAME, "viewerToolbar")), 60000L);
-        assertNotNull("Expected tapping a WFWF episode to open the viewer", viewerToolbar);
-        UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 60000L);
-        assertNotNull("Expected WFWF viewer content strip to render", strip);
+        assertReaderOpened(device, "WFWF");
+    }
+
+    @Test
+    public void wfwfWebtoonSearchResultOpensEpisodeListAndViewer() throws Exception {
+        launchSearchWebtoonTitle(false);
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 90000L);
+        assertNotNull("Expected WFWF webtoon title to render at least one episode", episodeRow);
+
+        episodeRow.click();
+
+        assertReaderOpened(device, "WFWF webtoon");
+    }
+
+    @Test
+    public void ntkWebtoonSearchResultOpensEpisodeListAndViewer() throws Exception {
+        launchSearchWebtoonTitle(true);
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 90000L);
+        assertNotNull("Expected NTK webtoon title to render at least one episode", episodeRow);
+
+        episodeRow.click();
+
+        assertReaderOpened(device, "NTK webtoon");
     }
 
     @Test
@@ -119,8 +147,8 @@ public class EpisodeActivityNetworkTest {
             assertTrue("Expected visible Summertime Rendering episode rows", visibleRows.size() >= 1);
             String selectedEpisodeName = visibleRows.get(0).getText();
             visibleRows.get(0).click();
-            UiObject2 viewerToolbar = device.wait(Until.findObject(By.res(PACKAGE_NAME, "viewerToolbar")), 60000L);
-            assertNotNull("Expected tapping a Summertime Rendering episode to open the viewer", viewerToolbar);
+            assertReaderOpened(device, "Summertime Rendering");
+            showReaderToolbar(device);
             UiObject2 toolbarTitle = device.wait(Until.findObject(By.res(PACKAGE_NAME, "toolbar_title")), 10000L);
             assertNotNull("Expected viewer toolbar title to render", toolbarTitle);
             assertEquals("Viewer should open the same episode selected from the episode screen",
@@ -182,6 +210,51 @@ public class EpisodeActivityNetworkTest {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
 
         context.startActivity(intent);
+    }
+
+    private void launchSearchWebtoonTitle(boolean ntk) throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        if(ntk)
+            MainApplication.p.setNtkSitePreset(CustomHttpClient.NTK_WEBTOON_URL);
+        else
+            MainApplication.p.setSitePreset(CustomHttpClient.DEFAULT_COMIC_URL, CustomHttpClient.WEBTOON_URL);
+        MainApplication.p.setBaseMode(MTitle.base_webtoon);
+
+        Title title = findLiveWebtoonTitle(ntk);
+
+        Intent intent = new Intent(context, EpisodeActivity.class);
+        intent.putExtra("title", Utils.toViewerTitleJson(title, true));
+        intent.putExtra("online", true);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+        context.startActivity(intent);
+    }
+
+    private Title findLiveWebtoonTitle(boolean ntk) throws Exception {
+        String[] queries = {
+                "나 혼자만 레벨업",
+                "외모지상주의",
+                "화산귀환",
+                "마왕의 딸은 너무 착해"
+        };
+        for(String query : queries) {
+            Search search = new Search(query, 0, MTitle.base_webtoon);
+            int status = search.fetch(MainApplication.getHttpClient());
+            if(status != 0 || search.getResult() == null)
+                continue;
+            for(Title title : search.getResult()) {
+                if(title == null || title.getId() <= 0)
+                    continue;
+                if(title.getBaseMode() != MTitle.base_webtoon)
+                    continue;
+                if(ntk && !"ntk".equals(title.getSourceSite()))
+                    continue;
+                if(!ntk && !"wfwf".equals(title.getSourceSite()))
+                    continue;
+                return title;
+            }
+        }
+        throw new AssertionError("Expected live " + (ntk ? "NTK" : "WFWF") + " webtoon search to return a launchable title");
     }
 
     private ActivityScenario<EpisodeActivity> launchWfwfSummertimeTitle() {
@@ -261,5 +334,26 @@ public class EpisodeActivityNetworkTest {
             return Integer.compare(leftBounds.left, rightBounds.left);
         });
         return rows;
+    }
+
+    private static void assertReaderOpened(UiDevice device, String label) {
+        UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 60000L);
+        assertNotNull("Expected tapping a " + label + " episode to open the reader", strip);
+    }
+
+    private static void showReaderToolbar(UiDevice device) {
+        UiObject2 toolbar = device.findObject(By.res(PACKAGE_NAME, "viewerToolbar"));
+        if(toolbar != null)
+            return;
+        UiObject2 strip = device.findObject(By.res(PACKAGE_NAME, "strip"));
+        assertNotNull("Expected reader surface to render before showing toolbar", strip);
+        Rect bounds = strip.getVisibleBounds();
+        for(int i = 0; i < 5 && toolbar == null; i++) {
+            device.click(bounds.centerX(), bounds.centerY());
+            toolbar = device.wait(Until.findObject(By.res(PACKAGE_NAME, "viewerToolbar")), 2000L);
+            if(toolbar == null && device.findObject(By.res(PACKAGE_NAME, "toolbar_title")) != null)
+                toolbar = device.findObject(By.res(PACKAGE_NAME, "viewerToolbar"));
+        }
+        assertNotNull("Expected reader toolbar to show after tapping the reader surface", toolbar);
     }
 }

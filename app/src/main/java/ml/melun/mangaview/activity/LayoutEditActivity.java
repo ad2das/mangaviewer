@@ -111,3 +111,4 @@ public class LayoutEditActivity extends AppCompatActivity {
         refreshSeekbar();
     }
 }
+

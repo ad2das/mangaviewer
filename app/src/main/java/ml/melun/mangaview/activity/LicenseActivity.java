@@ -33,3 +33,4 @@ public class LicenseActivity extends AppCompatActivity {
         return super.onOptionsItemSelected(item);
     }
 }
+

@@ -370,6 +370,11 @@ public final class MangaRepository {
             group.cancel();
         }
 
+        public Cancellation prioritizeWebViewFallback() {
+            group.prioritizeWebViewFallback();
+            return this;
+        }
+
         public boolean isCancelled() {
             return group.isCancelled();
         }

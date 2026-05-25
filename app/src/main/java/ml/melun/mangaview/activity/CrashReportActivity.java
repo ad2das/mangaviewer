@@ -101,3 +101,4 @@ public class CrashReportActivity extends Activity {
         return value.substring(0, maxLength) + "\n... truncated ...";
     }
 }
+

@@ -9,12 +9,7 @@ import com.google.gson.JsonParser;
 
 import java.net.URLEncoder;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import org.jsoup.*;
 import org.jsoup.nodes.Document;
@@ -24,7 +19,6 @@ import org.jsoup.select.Elements;
 import okhttp3.Response;
 
 import static ml.melun.mangaview.MainApplication.p;
-import static ml.melun.mangaview.Utils.getNumberFromString;
 
 
 public class Title extends MTitle {
@@ -45,9 +39,6 @@ public class Title extends MTitle {
     public static final int LOAD_ERROR = 2;
     private static final long PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final int MAX_TIMEOUT_RETRIES = 2;
-    private static final Pattern EPISODE_WHITESPACE_PATTERN = Pattern.compile("\\s+");
-    private static final Pattern EPISODE_NUMBER_PATTERN = Pattern.compile("(\\d+(?:\\.\\d+)?(?:\\s*[,~～\\-]\\s*\\d+(?:\\.\\d+)?)*)\\s*화");
-    private static final Pattern EPISODE_BLOCK_NUMBER_PATTERN = Pattern.compile("\\d+(?:\\.\\d+)?");
 
 
     public Title(String n, String t, String a, List<String> tg, String r, int id, int baseMode) {
@@ -167,7 +158,7 @@ public class Title extends MTitle {
                     }catch (Exception e2){continue;}
                 }
 
-                eps = parseLegacyEpisodes(d, baseMode);
+                eps = WfwfEpisodeParser.parseLegacyEpisodes(d, baseMode);
                 for(Manga episode : eps)
                     episode.setTitle(this);
                 break;
@@ -202,13 +193,13 @@ public class Title extends MTitle {
                     return LOAD_CAPTCHA;
                 throw e;
             }
-            if(client.isCloudflareChallengeResponse(page.code, page.body) || looksLikeNtkErrorPage(page.body)) {
+            if(client.isCloudflareChallengeResponse(page.code, page.body) || NtkEpisodeParser.looksLikeErrorPage(page.body)) {
                 logNtkEpisodeParse("challenge_or_error", page, segment, 0, 0);
                 if(allowPathRefresh && refreshNtkTitlePathFromApi(client, segment, titlePath))
                     return fetchNtkEps(client, false);
                 return LOAD_CAPTCHA;
             }
-            if(page.code >= 400 || looksLikeNtkMissingPage(page.body)) {
+            if(page.code >= 400 || NtkEpisodeParser.looksLikeMissingPage(page.body)) {
                 logNtkEpisodeParse("missing", page, segment, 0, 0);
                 if(allowPathRefresh && refreshNtkTitlePathFromApi(client, segment, titlePath))
                     return fetchNtkEps(client, false);
@@ -230,12 +221,12 @@ public class Title extends MTitle {
                     tags.add(text);
             }
 
-            Element img = firstNtkTitleImage(d, titleKey, name);
+            Element img = NtkEpisodeParser.firstTitleImage(d, titleKey, name);
             if(img != null)
                 thumb = img.hasAttr("data-original") ? img.attr("data-original") : img.attr("src");
 
             Elements episodeLinks = d.select("a[href]");
-            NtkEpisodeParseResult parsed = parseNtkEpisodes(d, segment, titleKey, baseMode, this);
+            NtkEpisodeParser.ParseResult parsed = NtkEpisodeParser.parse(d, segment, titleKey, baseMode, this);
             eps = parsed.episodes;
             if(eps.size() == 0) {
                 logNtkEpisodeParse("empty", page, segment, parsed.matchedEpisodeLinks, episodeLinks.size());
@@ -250,99 +241,6 @@ public class Title extends MTitle {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return LOAD_OK;
-    }
-
-    private static NtkEpisodeParseResult parseNtkEpisodes(Document document, String segment, String titleKey,
-                                                          int baseMode, Title title) {
-        NtkEpisodeParseResult result = new NtkEpisodeParseResult();
-        if(document == null)
-            return result;
-        int titleId = title == null ? parsePositiveInt(titleKey) : title.getId();
-        Set<String> seenEpisodePaths = new HashSet<>();
-        for(Element link : document.select("a[href]")) {
-            if(link.hasClass("cta"))
-                continue;
-            String href = link.attr("href");
-            String epPath = normalizeNtkEpisodePath(href, segment, titleKey);
-            if(epPath.length() == 0)
-                continue;
-            result.matchedEpisodeLinks++;
-            int epId = ntkEpisodeSortId(link, epPath, segment);
-            if(epId <= 0)
-                continue;
-            String epTitle = cleanNtkEpisodeTitle(link);
-            if(isNtkEpisodeActionTitle(epTitle))
-                continue;
-            if(!seenEpisodePaths.add(epPath))
-                continue;
-            String date = extractNtkEpisodeDate(link, epTitle);
-            Manga tmp = new Manga(epId, epTitle, date, baseMode);
-            tmp.setMode(0);
-            tmp.setTitle(title);
-            tmp.setTitleId(titleId);
-            tmp.setNtkEpisodePath(epPath);
-            result.episodes.add(tmp);
-        }
-        Collections.sort(result.episodes, (left, right) -> Integer.compare(right.getId(), left.getId()));
-        sortEpisodesByVisibleEpisodeNumber(result.episodes);
-        return result;
-    }
-
-    private static class NtkEpisodeParseResult {
-        final ArrayList<Manga> episodes = new ArrayList<>();
-        int matchedEpisodeLinks;
-    }
-
-    private static boolean looksLikeNtkErrorPage(String body) {
-        if(body == null || body.length() == 0)
-            return true;
-        if(body.length() < 160 && body.toLowerCase(java.util.Locale.ROOT).contains("<body></body>"))
-            return true;
-        String lower = body.toLowerCase(java.util.Locale.ROOT);
-        return lower.contains("webpage not available")
-                || lower.contains("net::err_")
-                || lower.contains("err_connection_reset")
-                || lower.contains("err_name_not_resolved")
-                || lower.contains("err_timed_out")
-                || lower.contains("just a moment")
-                || lower.contains("challenges.cloudflare.com")
-                || lower.contains("cf-challenge")
-                || lower.contains("cf_chl")
-                || lower.contains("turnstile");
-    }
-
-    private static boolean looksLikeNtkMissingPage(String body) {
-        if(body == null || body.length() == 0)
-            return true;
-        String lower = body.toLowerCase(java.util.Locale.ROOT);
-        if(hasNtkEpisodeListContent(lower))
-            return false;
-        return lower.matches("(?s).*next_http_error_fallback[^\\]]*(?:404|410).*")
-                || lower.matches("(?s).*<html[^>]+id=[\"']__next_error__[\"'].*")
-                || lower.contains("404: this page could not be found")
-                || body.contains("\uC791\uD488\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4")
-                || body.contains("\uD68C\uCC28 \uC5C6\uC74C");
-    }
-
-    private static boolean hasNtkEpisodeListContent(String lowerBody) {
-        if(lowerBody == null || lowerBody.length() == 0)
-            return false;
-        return lowerBody.contains("ep-row-v2-link")
-                || lowerBody.matches("(?s).*/(?:manhwa|webtoon)/[^\"'<>\\s]+/[^\"'<>\\s]+.*");
-    }
-
-    private static Element firstNtkTitleImage(Document document, String titleKey, String titleName) {
-        if(document == null)
-            return null;
-        String keyNeedle = titleKey == null || titleKey.length() == 0 ? "" : "/" + titleKey + "/";
-        for(Element img : document.select("img")) {
-            String src = img.hasAttr("data-original") ? img.attr("data-original") : img.attr("src");
-            if(keyNeedle.length() > 0 && src != null && src.contains(keyNeedle))
-                return img;
-            if(titleName != null && titleName.length() > 0 && titleName.equals(img.attr("alt")))
-                return img;
-        }
-        return null;
     }
 
     private void logNtkEpisodeParse(String reason, CustomHttpClient.PageResponse page, String segment,
@@ -382,7 +280,7 @@ public class Title extends MTitle {
     }
 
     static List<Manga> parseLegacyEpisodesForTest(String html, int baseMode) {
-        return parseLegacyEpisodes(Jsoup.parse(html), baseMode);
+        return WfwfEpisodeParser.parseLegacyEpisodesForTest(html, baseMode);
     }
 
     static String legacyInfoRootTextForTest(String html, String selector) {
@@ -410,164 +308,24 @@ public class Title extends MTitle {
         return header == null ? d : header;
     }
 
-    private static List<Manga> parseLegacyEpisodes(Document d, int baseMode) {
-        ArrayList<Manga> result = new ArrayList<>();
-        Set<Integer> seenEpisodeIds = new HashSet<>();
-        if(d == null)
-            return result;
-        Element list = d.selectFirst("ul.list-body");
-        if(list == null)
-            return result;
-        for(Element row : list.select("li.list-item")) {
-            Element titleElement = row.selectFirst("a.item-subject");
-            if(titleElement == null)
-                continue;
-            int episodeId = legacyEpisodeId(titleElement.attr("href"), baseMode);
-            if(episodeId <= 0 || !seenEpisodeIds.add(episodeId))
-                continue;
-            String episodeTitle = titleElement.ownText();
-            String date = "";
-            Element detail = row.selectFirst("div.item-details");
-            if(detail != null) {
-                Elements spans = detail.select("span");
-                if(spans.size() > 0)
-                    date = spans.get(0).ownText();
-            }
-            Manga episode = new Manga(episodeId, episodeTitle, date, baseMode);
-            episode.setMode(0);
-            result.add(episode);
-        }
-        return result;
-    }
-
-    private static int legacyEpisodeId(String href, int baseMode) {
-        if(href == null)
-            return -1;
-        int id = legacyEpisodeIdAfterMarker(href, baseModeStr(baseMode) + '/');
-        if(id > 0)
-            return id;
-        id = legacyEpisodeIdAfterMarker(href, "webtoon/");
-        if(id > 0)
-            return id;
-        return legacyEpisodeIdAfterMarker(href, "comic/");
-    }
-
-    private static int legacyEpisodeIdAfterMarker(String href, String marker) {
-        int start = href.indexOf(marker);
-        if(start < 0)
-            return -1;
-        start += marker.length();
-        int end = start;
-        while(end < href.length() && Character.isDigit(href.charAt(end)))
-            end++;
-        if(end == start)
-            return -1;
-        try {
-            return Integer.parseInt(href.substring(start, end));
-        }catch(NumberFormatException e) {
-            return -1;
-        }
-    }
-
     static String cleanNtkEpisodeTitleForTest(String html) {
-        return cleanNtkEpisodeTitle(Jsoup.parseBodyFragment(html).body());
+        return NtkEpisodeParser.cleanEpisodeTitleForTest(html);
     }
 
     static String normalizeNtkEpisodePathForTest(String href, String segment, int titleId) {
-        return normalizeNtkEpisodePath(href, segment, String.valueOf(titleId));
+        return NtkEpisodeParser.normalizeEpisodePathForTest(href, segment, String.valueOf(titleId));
     }
 
     static String normalizeNtkEpisodePathForTest(String href, String segment, String titleKey) {
-        return normalizeNtkEpisodePath(href, segment, titleKey);
+        return NtkEpisodeParser.normalizeEpisodePathForTest(href, segment, titleKey);
     }
 
     static int ntkEpisodeSortIdForTest(String html, String epPath, String segment) {
-        return ntkEpisodeSortId(Jsoup.parseBodyFragment(html).body(), epPath, segment);
+        return NtkEpisodeParser.episodeSortIdForTest(html, epPath, segment);
     }
 
     static boolean looksLikeNtkMissingPageForTest(String body) {
-        return looksLikeNtkMissingPage(body);
-    }
-
-    private static String cleanNtkEpisodeTitle(Element link) {
-        if(link == null)
-            return "";
-        Element subject = link.selectFirst(".subject, .wr-subject, .episode-title, .title, strong, b");
-        String text = subject == null ? link.text() : subject.text();
-        text = text.replace("첫화부터 정주행", "")
-                .replace("첫화부터", "")
-                .replace("정주행", "")
-                .replace("▶ 보기", "")
-                .replace("›", " ")
-                .replace("UP", "")
-                .replace("NEW", "")
-                .trim();
-        text = text.replaceAll("\\d{2}\\.\\d{2}\\.\\d{2}", " ").trim();
-        text = text.replaceAll("\\s+", " ");
-        if(!hasLetterOrDigit(text))
-            return "";
-        return text;
-    }
-
-    private static boolean isNtkEpisodeActionTitle(String title) {
-        if(title == null)
-            return true;
-        String normalized = title.replaceAll("\\s+", "");
-        return normalized.length() == 0
-                || !hasLetterOrDigit(normalized)
-                || "보기".equals(normalized)
-                || "첫화부터정주행".equals(normalized)
-                || "첫화부터".equals(normalized)
-                || "정주행".equals(normalized);
-    }
-
-    private static boolean hasLetterOrDigit(String value) {
-        if(value == null)
-            return false;
-        for(int i = 0; i < value.length();) {
-            int codePoint = value.codePointAt(i);
-            if(Character.isLetterOrDigit(codePoint))
-                return true;
-            i += Character.charCount(codePoint);
-        }
-        return false;
-    }
-
-    private static String normalizeNtkEpisodePath(String href, String segment, String titleKey) {
-        if(href == null)
-            return "";
-        if(titleKey == null || titleKey.length() == 0)
-            return "";
-        String path = href.trim();
-        int schemeIndex = path.indexOf("://");
-        if(schemeIndex >= 0) {
-            int slash = path.indexOf('/', schemeIndex + 3);
-            path = slash >= 0 ? path.substring(slash) : "";
-        }
-        int hash = path.indexOf('#');
-        if(hash >= 0)
-            path = path.substring(0, hash);
-        int query = path.indexOf('?');
-        if(query >= 0)
-            path = path.substring(0, query);
-        if(path.length() > 0 && path.charAt(0) != '/')
-            path = "/" + path;
-        String prefix = "/" + segment + "/" + titleKey + "/";
-        if(!path.startsWith(prefix))
-            return "";
-        String token = path.substring(prefix.length());
-        return token.length() == 0 ? "" : path;
-    }
-
-    private static int ntkEpisodeSortId(Element link, String epPath, String segment) {
-        Element number = link == null ? null : link.selectFirst(".ep-row-v2-no");
-        int sortId = parsePositiveInt(number == null ? "" : number.text());
-        if(sortId > 0)
-            return sortId;
-        sortId = MainPageWebtoon.getSecondPathId(epPath, segment);
-        if(sortId > 0)
-            return sortId;
-        return parsePositiveInt(cleanNtkEpisodeTitle(link));
+        return NtkEpisodeParser.looksLikeMissingPage(body);
     }
 
     private static int parsePositiveInt(String value) {
@@ -581,19 +339,6 @@ public class Title extends MTitle {
         } catch (Exception e) {
             return 0;
         }
-    }
-
-    private static String extractNtkEpisodeDate(Element link, String epTitle) {
-        if(link == null)
-            return "";
-        String text = link.text();
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d{2}\\.\\d{2}\\.\\d{2})").matcher(text);
-        if(matcher.find())
-            return matcher.group(1);
-        matcher = java.util.regex.Pattern.compile("(\\d{2}\\.\\d{2}\\.\\d{2})").matcher(epTitle == null ? "" : epTitle);
-        if(matcher.find())
-            return matcher.group(1);
-        return "";
     }
 
     private String ntkSegment() {
@@ -663,7 +408,7 @@ public class Title extends MTitle {
                 }
             }catch (Exception e){}
 
-            eps = parseWolfEpisodes(d, id, viewPath, baseMode, this);
+            eps = WfwfEpisodeParser.parseWolfEpisodes(d, id, viewPath, baseMode, this);
             if(eps.size() == 0 && client.resolveWfwfDomainNow())
                 return fetchWolfEps(client, listPath, viewPath);
             if(eps.size() == 0)
@@ -678,151 +423,8 @@ public class Title extends MTitle {
         return LOAD_OK;
     }
 
-    private static ArrayList<Manga> parseWolfEpisodes(Document document, int titleId, String viewPath, int baseMode, Title title) {
-        ArrayList<Manga> episodes = new ArrayList<>();
-        if(document == null)
-            return episodes;
-
-        String episodeHrefSelector = "a[href^=\"" + viewPath + titleId + "\"]";
-        Elements links = document.select(".webtoon-bbs-list " + episodeHrefSelector + ":has(.list-box), "
-                + ".bbs-list " + episodeHrefSelector + ":has(.list-box), "
-                + episodeHrefSelector + ":has(.list-box)");
-        if(links.size() == 0)
-            links = document.select(episodeHrefSelector);
-
-        Set<Integer> seenEpisodeIds = new HashSet<>();
-        for(Element e : links) {
-            String href = e.attr("href");
-            int epId = MainPageWebtoon.getQueryInt(href, "num");
-            if(epId <= 0) continue;
-            if(!seenEpisodeIds.add(epId)) continue;
-            String epTitle = wolfEpisodeTitle(e, href);
-            String date = "";
-            Element dateElement = e.selectFirst("span.date, div.date, span:last-child");
-            if(dateElement != null)
-                date = dateElement.ownText();
-
-            Manga tmp = new Manga(epId, epTitle, date, baseMode);
-            tmp.setMode(0);
-            tmp.setTitle(title);
-            tmp.setTitleId(titleId);
-            episodes.add(tmp);
-        }
-        sortEpisodesByVisibleEpisodeNumber(episodes);
-        return episodes;
-    }
-
     private static void sortEpisodesByVisibleEpisodeNumber(ArrayList<Manga> episodes) {
-        if(episodes == null || episodes.size() < 2)
-            return;
-        int blockStart = -1;
-        for(int i = 0; i <= episodes.size(); i++) {
-            boolean sortable = i < episodes.size() && visibleEpisodeNumber(episodes.get(i)) >= 0;
-            if(sortable) {
-                if(blockStart < 0)
-                    blockStart = i;
-                continue;
-            }
-            if(blockStart >= 0) {
-                sortEpisodeBlockByVisibleEpisodeNumber(episodes, blockStart, i);
-                blockStart = -1;
-            }
-        }
-    }
-
-    private static void sortEpisodeBlockByVisibleEpisodeNumber(ArrayList<Manga> episodes, int start, int end) {
-        if(end - start < 2)
-            return;
-        ArrayList<EpisodeOrder> block = new ArrayList<>();
-        for(int i = start; i < end; i++)
-            block.add(new EpisodeOrder(episodes.get(i), i - start, visibleEpisodeNumber(episodes.get(i))));
-        Collections.sort(block, (left, right) -> {
-            int numberCompare = Double.compare(right.number, left.number);
-            if(numberCompare != 0)
-                return numberCompare;
-            return Integer.compare(left.originalIndex, right.originalIndex);
-        });
-        for(int i = 0; i < block.size(); i++)
-            episodes.set(start + i, block.get(i).episode);
-    }
-
-    private static double visibleEpisodeNumber(Manga episode) {
-        return episode == null ? -1 : visibleEpisodeNumber(episode.getName());
-    }
-
-    private static double visibleEpisodeNumber(String title) {
-        if(title == null)
-            return -1;
-        String compact = EPISODE_WHITESPACE_PATTERN.matcher(title).replaceAll("");
-        if(compact.contains("번외")
-                || compact.contains("외전")
-                || compact.contains("특별")
-                || compact.contains("부록")
-                || compact.contains("기록")
-                || compact.contains("후기")
-                || compact.contains("프롤로그"))
-            return -1;
-        Matcher episodeMatcher = EPISODE_NUMBER_PATTERN.matcher(title);
-        double result = -1;
-        while(episodeMatcher.find()) {
-            double number = visibleEpisodeNumberBlockValue(episodeMatcher.group(1));
-            if(number >= 0)
-                result = Math.max(result, number);
-        }
-        return result;
-    }
-
-    private static double visibleEpisodeNumberBlockValue(String block) {
-        ArrayList<Double> numbers = new ArrayList<>();
-        Matcher numberMatcher = EPISODE_BLOCK_NUMBER_PATTERN.matcher(block == null ? "" : block);
-        while(numberMatcher.find()) {
-            try {
-                numbers.add(Double.parseDouble(numberMatcher.group()));
-            } catch (NumberFormatException ignored) {
-            }
-        }
-        if(numbers.size() == 0)
-            return -1;
-        if(numbers.size() == 2 && isHyphenPartEpisode(block, numbers.get(0), numbers.get(1)))
-            return numbers.get(0) + Math.min(numbers.get(1), 9999.0d) / 10000.0d;
-        double result = -1;
-        for(Double number : numbers)
-            result = Math.max(result, number);
-        return result;
-    }
-
-    private static boolean isHyphenPartEpisode(String value, double first, double second) {
-        if(value == null || !value.contains("-"))
-            return false;
-        if(first != Math.floor(first) || second != Math.floor(second))
-            return false;
-        return first > 0 && second > 0 && second < first;
-    }
-
-    private static class EpisodeOrder {
-        final Manga episode;
-        final int originalIndex;
-        final double number;
-
-        EpisodeOrder(Manga episode, int originalIndex, double number) {
-            this.episode = episode;
-            this.originalIndex = originalIndex;
-            this.number = number;
-        }
-    }
-
-    private static String wolfEpisodeTitle(Element episodeLink, String href) {
-        if(episodeLink == null)
-            return MainPageWebtoon.getQueryString(href, "title");
-        String epTitle = "";
-        Element subject = episodeLink.selectFirst(".subject");
-        if(subject != null)
-            epTitle = subject.ownText().replace("\u00a0", " ").trim();
-        if(epTitle.length() == 0)
-            epTitle = episodeLink.ownText().replace("\u00a0", " ").trim();
-        if(epTitle.length() == 0)
-            epTitle = MainPageWebtoon.getQueryString(href, "title");
-        return epTitle;
+        EpisodeOrderingPolicy.sortByVisibleEpisodeNumber(episodes);
     }
 
     private boolean refreshNtkTitlePathFromApi(CustomHttpClient client, String segment, String currentPath) {
@@ -940,24 +542,11 @@ public class Title extends MTitle {
     }
 
     static List<Manga> parseNtkEpisodesForTest(String html, String segment, String titleKey, int baseMode) {
-        int titleId = parsePositiveInt(titleKey);
-        if(titleId <= 0)
-            titleId = 1;
-        Title title = new Title("title", "", "", null, "", titleId, baseMode);
-        title.setSourceSite("ntk");
-        title.setPath("/" + segment + "/" + titleKey);
-        NtkEpisodeParseResult parsed = parseNtkEpisodes(Jsoup.parse(html == null ? "" : html),
-                segment, titleKey, baseMode, title);
-        title.setEps(parsed.episodes);
-        return parsed.episodes;
+        return NtkEpisodeParser.parseForTest(html, segment, titleKey, baseMode);
     }
 
     static List<Manga> parseWolfEpisodesForTest(String html, int titleId, String viewPath, int baseMode) {
-        Title title = new Title("title", "", "", null, "", titleId, baseMode);
-        title.setSourceSite("wfwf");
-        ArrayList<Manga> episodes = parseWolfEpisodes(Jsoup.parse(html == null ? "" : html), titleId, viewPath, baseMode, title);
-        title.setEps(episodes);
-        return episodes;
+        return WfwfEpisodeParser.parseWolfEpisodesForTest(html, titleId, viewPath, baseMode);
     }
 
     private static String ntkApiTitlePath(String segment, String sourceWorkId) {
