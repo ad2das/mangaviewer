@@ -223,6 +223,7 @@ public final class ViewerPreparationCoordinator {
             List<Manga> episodes = Utils.snapshotEpisodes(currentTitle);
             if(episodes.size() > 0)
                 manga.setEps(episodes);
+            manga.ensureNtkEpisodePathFromIdentity();
         }
         return currentTitle;
     }

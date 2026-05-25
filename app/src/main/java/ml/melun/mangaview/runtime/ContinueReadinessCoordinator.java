@@ -108,6 +108,7 @@ public final class ContinueReadinessCoordinator {
             List<Manga> episodes = Utils.snapshotEpisodes(title);
             if(episodes.size() > 0)
                 manga.setEps(episodes);
+            manga.ensureNtkEpisodePathFromIdentity();
         } else {
             title = manga.getTitle();
         }
@@ -162,6 +163,7 @@ public final class ContinueReadinessCoordinator {
         List<Manga> episodes = Utils.snapshotEpisodes(title);
         if(episodes.size() > 0)
             manga.setEps(episodes);
+        manga.ensureNtkEpisodePathFromIdentity();
         return manga;
     }
 

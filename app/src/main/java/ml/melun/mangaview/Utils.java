@@ -304,6 +304,7 @@ public class Utils {
             switchToTitleSourceSite(launchTitle);
             manga.setTitle(launchTitle);
             manga.setTitleId(launchTitle.getId());
+            manga.ensureNtkEpisodePathFromIdentity();
         }
         ml.melun.mangaview.runtime.BackgroundPrefetchBudget.suppressForUserNavigation();
         if(online && manga.isOnline()) {
@@ -560,6 +561,11 @@ public class Utils {
                 : context.getResources().getDisplayMetrics().widthPixels;
         Context appContext = context.getApplicationContext();
         Title launchTitle = title != null ? title : manga.getTitle();
+        if(launchTitle != null) {
+            manga.setTitle(launchTitle);
+            manga.setTitleId(launchTitle.getId());
+            manga.ensureNtkEpisodePathFromIdentity();
+        }
         String preparedKey = null;
         try {
             preparedKey = ReaderWarmupCoordinator.readyKey(appContext, manga, launchTitle, width, exactEpisode);

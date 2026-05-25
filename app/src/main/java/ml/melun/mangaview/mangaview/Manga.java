@@ -105,6 +105,27 @@ public class Manga {
         return title == null ? "" : matchingNtkEpisodePath(title.getEps());
     }
 
+    public boolean ensureNtkEpisodePathFromIdentity() {
+        String path = getNtkEpisodePath();
+        if(path.length() > 0) {
+            setNtkEpisodePath(path);
+            return true;
+        }
+        int tid = getTitleId();
+        if(tid <= 0 || id <= 0 || !canInferNtkEpisodePath())
+            return false;
+        String segment = baseMode == MTitle.base_webtoon ? "webtoon" : "manhwa";
+        setNtkEpisodePath("/" + segment + "/" + tid + "/" + id);
+        return true;
+    }
+
+    private boolean canInferNtkEpisodePath() {
+        String source = title == null ? "" : title.getSourceSite();
+        if(source != null && source.trim().length() > 0)
+            return "ntk".equals(source.trim().toLowerCase(Locale.ROOT));
+        return p != null && p.isNtkSite();
+    }
+
     public boolean hasExplicitNtkEpisodePath() {
         return ntkEpisodePath != null && ntkEpisodePath.trim().length() > 0;
     }
@@ -346,12 +367,14 @@ public class Manga {
                 return LOAD_OK;
             String segment = baseMode == MTitle.base_webtoon ? "webtoon" : "manhwa";
             String path = getNtkEpisodePath();
-            if(path.length() == 0 && shouldRejectPathlessNtkFetch()) {
-                logNtkViewerParse("pathless", null, "", 0, 0);
-                return LOAD_ERROR;
+            if(path.length() == 0) {
+                ensureNtkEpisodePathFromIdentity();
+                path = getNtkEpisodePath();
             }
-            if(path.length() == 0)
+            if(path.length() == 0) {
                 path = "/" + segment + "/" + tid + "/" + id;
+                setNtkEpisodePath(path);
+            }
             CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
             if(client.isCloudflareChallengeResponse(page.code, page.body) || looksLikeNtkBlockedPage(page.body)) {
                 logNtkViewerParse("blocked", page, path, 0, 0);
@@ -397,14 +420,6 @@ public class Manga {
         restoreBetterEpisodeList(previousEpisodes);
         attachEpisodeSeriesMetadata();
         return LOAD_OK;
-    }
-
-    private boolean shouldRejectPathlessNtkFetch() {
-        if(title == null || !"ntk".equals(title.getSourceSite()))
-            return false;
-        if(name != null && name.trim().length() > 0)
-            return false;
-        return imgs == null || imgs.size() == 0;
     }
 
     private void addNtkDocumentImageCandidates(CustomHttpClient client, Document d, Set<String> seenImages,
