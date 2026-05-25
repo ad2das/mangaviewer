@@ -516,7 +516,7 @@ public class Utils {
 
     private static boolean shouldLaunchContinueFallback(String sourceSite, boolean online,
                                                         boolean hasLoadedImages, boolean hasNtkEpisodePath) {
-        if(online && "ntk".equals(sourceSite) && !hasLoadedImages)
+        if(online && "ntk".equals(sourceSite) && !hasLoadedImages && !hasNtkEpisodePath)
             return false;
         return true;
     }
