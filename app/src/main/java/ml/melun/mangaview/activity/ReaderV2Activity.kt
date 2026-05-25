@@ -95,6 +95,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var initialDrawGateListener: ViewTreeObserver.OnPreDrawListener? = null
     private var convertedFromTranslucent = false
     private val initialDrawGateTimeoutRunnable = Runnable {
+        if (!pagesReady && !destroyed && !isFinishing) {
+            initialStatusPending = false
+            statusHandler.removeCallbacks(showInitialStatusRunnable)
+            status.visibility = TextView.VISIBLE
+            status.text = displayEpisodeTitle(currentManga, currentTitle)
+        }
         releaseInitialDrawGate("timeout")
     }
     private val saveProgressRunnable = Runnable {
@@ -1114,7 +1120,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val DEFAULT_PAGE_GAP_PX = 2
         private const val WEBTOON_PAGE_GAP_PX = 0
         private const val ADJACENT_BUTTON_REFRESH_DELAY_MS = 350L
-        private const val INITIAL_DRAW_GATE_TIMEOUT_MS = 900L
+        private const val INITIAL_DRAW_GATE_TIMEOUT_MS = 320L
         private const val TAG = "ReaderV2"
 
         @JvmStatic
