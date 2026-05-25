@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "updated": "2026-05-24",
-  "sourceRoot": "https://wfwf453.com",
+  "updated": "2026-05-25",
+  "sourceRoot": "https://wfwf454.com",
   "sources": [
     "naver-webtoon-genre",
     "source-title-match"
@@ -2892,14 +2892,6 @@
         "스릴러"
       ]
     },
-    "314": {
-      "name": "이렇게 귀여운 간첩",
-      "thumb": "https://i2.vcloud17.com/ll2/95a192f5e7155027411b0d0f581c4c4c3d511bdd917e11dfdf5018f39857bbfb.jpg",
-      "release": "",
-      "sourceTags": [
-        "드라마"
-      ]
-    },
     "315": {
       "name": "몸둥이",
       "thumb": "https://i2.vcloud17.com/l0g/e09d79cf1f1d96835c101426f01c5d6c58779eabad4f5d681194202961cb11a1.jpg",
@@ -3966,15 +3958,6 @@
         "무협"
       ]
     },
-    "434": {
-      "name": "요괴소녀",
-      "thumb": "https://i2.vcloud17.com/ll2/eca758956b8daea99674a6f761f45b4e8f3e2a8129547697dcac487e042d9054.jpg",
-      "release": "",
-      "sourceTags": [
-        "드라마",
-        "판타지"
-      ]
-    },
     "435": {
       "name": "베리타스",
       "thumb": "https://i2.vcloud17.com/lh8/80662fcfffc54421491c28a623079622d095dff582934d85aa0cb15d80055640.jpg",
@@ -4902,6 +4885,14 @@
       "sourceTags": [
         "판타지",
         "액션"
+      ]
+    },
+    "540": {
+      "name": "엘피스 전기: 신계전설",
+      "thumb": "https://i2.vcloud17.com/ll2/9b3f73d6f0104ba6e004201eea4d83c071ce2abe56434dcd2621455970c89931.jpg",
+      "release": "",
+      "sourceTags": [
+        "판타지"
       ]
     },
     "541": {
@@ -17814,15 +17805,6 @@
         "판타지"
       ]
     },
-    "2033": {
-      "name": "인 유어 드림 (In You",
-      "thumb": "https://i2.vcloud17.com/2033/1af014f470572059a9704950f475365d128cab3ebef63f814ba2d122c6878984.jpg",
-      "release": "",
-      "sourceTags": [
-        "드라마",
-        "로맨스"
-      ]
-    },
     "2034": {
       "name": "마법전사 VS. 마법전사",
       "thumb": "https://i2.vcloud17.com/2034/eecafa9c4307a3853de368a2223e0ff87837735b627efd84d02d31a3595a9db5.jpg",
@@ -18629,15 +18611,6 @@
         "로맨스",
         "순정",
         "드라마"
-      ]
-    },
-    "2123": {
-      "name": "언더페인팅",
-      "thumb": "https://i2.vcloud17.com/2123/b961395590d761dc55322af7f4c0a01c1865ee924006600876b64ba06120df7d.jpg",
-      "release": "",
-      "sourceTags": [
-        "드라마",
-        "로맨스"
       ]
     },
     "2124": {
@@ -19922,15 +19895,6 @@
         "스릴러"
       ]
     },
-    "2261": {
-      "name": "애간장",
-      "thumb": "https://i2.vcloud17.com/2261/b76d222711cc08b25a2259b860bfd947d49e619f7654110b444e918ae3c0a912.jpg",
-      "release": "",
-      "sourceTags": [
-        "로맨스",
-        "드라마"
-      ]
-    },
     "2262": {
       "name": "기억의 나라",
       "thumb": "https://i2.vcloud17.com/2262/4964a13e6ac2d05a5beec9255e6efac86af638742f0c57b8a8b925b69417fac1.jpg",
@@ -20781,15 +20745,6 @@
       "sourceTags": [
         "드라마",
         "로맨스"
-      ]
-    },
-    "2355": {
-      "name": "욕망의 방향",
-      "thumb": "https://i2.vcloud17.com/2355/90f00c0ce9176444c1c63124a52627127c07241e566d9fe7cfb9a7e29083be40.jpg",
-      "release": "",
-      "sourceTags": [
-        "로맨스",
-        "드라마"
       ]
     },
     "2356": {
@@ -23066,14 +23021,6 @@
         "개그"
       ]
     },
-    "2597": {
-      "name": "위너클럽",
-      "thumb": "https://i2.vcloud17.com/2597/fc36385f0dcdfa430715a31cd569e9973466d1e4259679a077c176e5594fec22.jpg",
-      "release": "",
-      "sourceTags": [
-        "드라마"
-      ]
-    },
     "2598": {
       "name": "보스 오빠,제발!",
       "thumb": "https://i2.vcloud17.com/2598/07e5e5f930bf2f68c522d52f60da0eda0fa25fca9fc7203423204612871b0256.jpg",
@@ -23095,15 +23042,6 @@
     "2600": {
       "name": "피플",
       "thumb": "https://i2.vcloud17.com/2600/f7ba15cb19b4f9cbf4c22f4a2da8c4afdaf2bf922a51346dee58df95d4eb5f64.jpg",
-      "release": "",
-      "sourceTags": [
-        "스토리",
-        "드라마"
-      ]
-    },
-    "2601": {
-      "name": "일진에게 회초리",
-      "thumb": "https://i2.vcloud17.com/2601/ec80b9f650a28114ebfce81d76c064f13f021c0457e12ea3d15fe550d294ada4.jpg",
       "release": "",
       "sourceTags": [
         "스토리",
@@ -23170,15 +23108,6 @@
       "release": "",
       "sourceTags": [
         "스토리"
-      ]
-    },
-    "2609": {
-      "name": "오모와 위르시스",
-      "thumb": "https://i2.vcloud17.com/2609/8894c877b494e1dd81f97ca8f013b81d972f169bbb235d6a549eedd1c6e7633d.jpg",
-      "release": "",
-      "sourceTags": [
-        "드라마",
-        "판타지"
       ]
     },
     "2610": {
@@ -23506,14 +23435,6 @@
       "release": "",
       "sourceTags": [
         "드라마"
-      ]
-    },
-    "2644": {
-      "name": "자판귀",
-      "thumb": "https://i2.vcloud17.com/2644/62f6a26c533bcdb4130dad48662f88e23e100868c6386236bd2d07d9b03417e9.jpg",
-      "release": "",
-      "sourceTags": [
-        "스토리"
       ]
     },
     "2645": {
@@ -24570,14 +24491,6 @@
     "2751": {
       "name": "이웃일 뿐이야!",
       "thumb": "https://i2.vcloud17.com/2751/b2c8bd7050daf1ad26e3e1ab84e4a1e91281f1bd553578b587ca0f36ce1f65ab.jpg",
-      "release": "",
-      "sourceTags": [
-        "드라마"
-      ]
-    },
-    "2752": {
-      "name": "온더힐",
-      "thumb": "https://i2.vcloud17.com/2752/bc4a0468e51df2eed5ae69a2c3971a68f5112f66bbb37e5f7c6eaf69f06d62de.jpg",
       "release": "",
       "sourceTags": [
         "드라마"
@@ -27327,15 +27240,6 @@
         "액션"
       ]
     },
-    "3048": {
-      "name": "연의 편지",
-      "thumb": "https://i3.vcloud17.com/3048/b148720479a3f5410b7c54ef6287ca779cfaba6c9392bd26fdb1c47cea4938e8.jpg",
-      "release": "",
-      "sourceTags": [
-        "드라마",
-        "판타지"
-      ]
-    },
     "3049": {
       "name": "환상숲",
       "thumb": "https://i3.vcloud17.com/3049/4e313bc9237ba5fc042df7cfc146e0f6e15c8157a0b0a009c7d814efafe48cd0.jpg",
@@ -28260,15 +28164,6 @@
       "sourceTags": [
         "판타지",
         "액션"
-      ]
-    },
-    "3146": {
-      "name": "양다리 하숙",
-      "thumb": "https://i3.vcloud17.com/3146/05fc31385dc87dd9b6a42003915926d687345321847e4eec3308266a3485d40b.jpg",
-      "release": "",
-      "sourceTags": [
-        "로맨스",
-        "드라마"
       ]
     },
     "3147": {
@@ -40460,13 +40355,13 @@
         "성인"
       ],
       "tags": [
-        "드라마",
         "스토리",
+        "드라마",
         "일상",
         "성인"
       ],
       "naverTitleId": 835736,
-      "naverName": "중증외상센터 : 외과의사 백강혁 홍비치라",
+      "naverName": "중증외상센터 : 외과의사 백강혁",
       "match": "normalized-title",
       "matchScore": 1.0
     },
@@ -41469,6 +41364,15 @@
       "sourceTags": [
         "로맨스",
         "순정",
+        "판타지"
+      ]
+    },
+    "4568": {
+      "name": "있잖아요 용님!",
+      "thumb": "https://i5.bacloud2.com/4568/fe38aef0cb10be82e1a97aa29d3625a39c73e948c7ef58e7f67e1b058898e9b4.jpg",
+      "release": "",
+      "sourceTags": [
+        "로맨스",
         "판타지"
       ]
     },
@@ -43868,6 +43772,14 @@
     "4835": {
       "name": "반품여친",
       "thumb": "https://i6.bacloud2.com/4835/e2cfa2013b44ea497eb9d2a8ba8c0ce06be141a2c1dc3327cb4eaa3da9e50195.jpg",
+      "release": "",
+      "sourceTags": [
+        "성인"
+      ]
+    },
+    "4836": {
+      "name": "야한 레슨",
+      "thumb": "https://i6.bacloud2.com/4836/199e567d1e0238b16b5a79f73650478457dd9285612314b9c304ba5d2f5f3600.jpg",
       "release": "",
       "sourceTags": [
         "성인"
@@ -51275,6 +51187,14 @@
       "sourceTags": [
         "무협",
         "액션"
+      ]
+    },
+    "5663": {
+      "name": "뒤끝작렬",
+      "thumb": "https://i0.scloud17.com/5663/0dd8f5bc9729ee6c48af5476160d5ded5fff46b8f7c15c15692c520ad91cfe67.jpg",
+      "release": "",
+      "sourceTags": [
+        "드라마"
       ]
     },
     "5664": {
@@ -59143,6 +59063,14 @@
       "sourceTags": [
         "무협",
         "액션"
+      ]
+    },
+    "6560": {
+      "name": "딸 바보가 되었습니다",
+      "thumb": "https://i0.scloud17.com/6560/29ca3ef6f5fff9d2b9223c3d4d05409feb6a6ff6967ddebbd0baf5e2f376cd5e.jpg",
+      "release": "",
+      "sourceTags": [
+        "드라마"
       ]
     },
     "6561": {
@@ -68087,14 +68015,6 @@
         "학원",
         "로맨스",
         "드라마"
-      ]
-    },
-    "7567": {
-      "name": "파인",
-      "thumb": "https://i8.ba7cloud.com/7567/4e2ca616bb932e860cce229cba1bb583ddbf60a03e542de81b86148622521695.jpg",
-      "release": "",
-      "sourceTags": [
-        "액션"
       ]
     },
     "7568": {
@@ -78603,6 +78523,14 @@
         "액션"
       ]
     },
+    "8731": {
+      "name": "퍼니게임",
+      "thumb": "https://g10img.com/8731/c9a0da87df63ccce74e263686556a4d5209e51b5ca2e2b35bcf85f6c32ce3319.jpg",
+      "release": "",
+      "sourceTags": [
+        "스릴러"
+      ]
+    },
     "8732": {
       "name": "저 같은 정령에게 집착하지",
       "thumb": "https://g10img.com/8732/36a90ff39ac08efdcd581291fe03e9eb8c7a4911100ad4b7e632d15abb36323c.jpg",
@@ -88407,6 +88335,14 @@
         "BL"
       ]
     },
+    "9821": {
+      "name": "동경과 거짓말",
+      "thumb": "https://w11cloud.com/9821/0d883306f3b15297893408ad1c7cd2d93ec4064c47e56d36ef4c43a1ff3c5693.jpg",
+      "release": "",
+      "sourceTags": [
+        "드라마"
+      ]
+    },
     "9822": {
       "name": "공작님, 우리 목욕합시다!",
       "thumb": "https://w11cloud.com/9822/982f9d2f00a5df529ffda205c16fe2307c77f90566d2d53f2b18ae63be971332.jpg",
@@ -94513,7 +94449,7 @@
         "액션"
       ],
       "naverTitleId": 814742,
-      "naverName": "좀비묵시록 82-08",
+      "naverName": "좀비묵시록 82-08 달아 / 경우,아쿠아콘 / 박스오피스",
       "match": "normalized-title",
       "matchScore": 1.0
     },
@@ -99504,7 +99440,7 @@
         "판타지"
       ],
       "naverTitleId": 817757,
-      "naverName": "티엔다비스 - 완벽한 구원을 위하여",
+      "naverName": "티엔다비스 - 완벽한 구원을 위하여 삼공 / 느링 / 김영지",
       "match": "normalized-title",
       "matchScore": 1.0
     },
@@ -111089,6 +111025,14 @@
       "release": "",
       "sourceTags": [
         "BL"
+      ]
+    },
+    "72339": {
+      "name": "대공의 목줄을 당기면",
+      "thumb": "https://y17stm.com/72339/vhincbwr1u1xul3omp0b0ibfcm1dds5nxw.jpg",
+      "release": "",
+      "sourceTags": [
+        "로맨스"
       ]
     },
     "72340": {
@@ -123114,14 +123058,6 @@
         "액션"
       ]
     },
-    "73552": {
-      "name": "지옥의 씰버타운",
-      "thumb": "https://y17stm.com/73552/d2okdvdjugstt7nsy4vc4kos7n8zzzfdmf.jpg",
-      "release": "",
-      "sourceTags": [
-        "액션"
-      ]
-    },
     "73553": {
       "name": "고결하고 천박한 그대에게",
       "thumb": "https://y17stm.com/73553/ozc14yaytvjtpww5pfelt9jx5wodrkutbh.jpg",
@@ -124198,12 +124134,28 @@
         "판타지"
       ]
     },
+    "73661": {
+      "name": "첫눈에 반한 건 아니지만",
+      "thumb": "https://vv14cloud.com/73661/r96feldcrvtfbny3ga58sht67suy1dxxmk.jpg",
+      "release": "",
+      "sourceTags": [
+        "로맨스"
+      ]
+    },
     "73662": {
       "name": "녹아웃 베이비",
       "thumb": "https://vv14cloud.com/73662/pqqqugyek9vtmfpcugzoxglofgqy8ewb0u.jpg",
       "release": "",
       "sourceTags": [
         "BL"
+      ]
+    },
+    "73663": {
+      "name": "두 번 사는 미대생",
+      "thumb": "https://y17stm.com/73663/no9abngzxvtbchyu2c43rf0vp0v5ggst75.jpg",
+      "release": "",
+      "sourceTags": [
+        "드라마"
       ]
     },
     "73664": {
@@ -125533,6 +125485,14 @@
         "로맨스"
       ]
     },
+    "73794": {
+      "name": "더티 매리지",
+      "thumb": "https://vv14cloud.com/73794/1dn4kxeucwhznzerhret2dnxbskhwt4lqk.jpg",
+      "release": "",
+      "sourceTags": [
+        "로맨스"
+      ]
+    },
     "73795": {
       "name": "유아천종",
       "thumb": "https://vv14cloud.com/73795/4afencobvrppn6pyyx44qpxkfoo2igyap7.jpg",
@@ -126418,6 +126378,14 @@
       "match": "normalized-title",
       "matchScore": 1.0
     },
+    "73881": {
+      "name": "첫사랑 그녀를 뺏겠습니다!",
+      "thumb": "https://vv14cloud.com/73881/oifhxy1sor9uhiug9jj6fkraib0oevyoit.jpg",
+      "release": "",
+      "sourceTags": [
+        "로맨스"
+      ]
+    },
     "73882": {
       "name": "거유 왁싱샵 실장님들",
       "thumb": "https://vv14cloud.com/73882/aui8wn6o9ffvmbjhyhon63xpe6tguhww96.jpg",
@@ -126627,8 +126595,8 @@
         "판타지"
       ],
       "tags": [
-        "스토리",
         "판타지",
+        "스토리",
         "액션"
       ],
       "naverTitleId": 832557,
@@ -132183,7 +132151,7 @@
         "로맨스"
       ],
       "naverTitleId": 840900,
-      "naverName": "썸머문: 더 큐프리즈 HYBE",
+      "naverName": "썸머문: 더 큐프리즈",
       "match": "normalized-title",
       "matchScore": 1.0
     },
@@ -132452,14 +132420,6 @@
       "naverName": "시간제 부부",
       "match": "normalized-title",
       "matchScore": 1.0
-    },
-    "74469": {
-      "name": "제0 교도관",
-      "thumb": "https://y17stm.com/74469/wsrgcxt20oo1vhtqf5dcerost8kvx02y7e.jpg",
-      "release": "",
-      "sourceTags": [
-        "액션"
-      ]
     },
     "74470": {
       "name": "조인 어스?(Join Us?",
@@ -133331,14 +133291,6 @@
       "sourceTags": [
         "판타지",
         "로맨스"
-      ]
-    },
-    "74560": {
-      "name": "정의구현",
-      "thumb": "https://vv14cloud.com/74560/tigkyhir7f3spdfgaxnmsiq6jphfq5dclz.jpg",
-      "release": "",
-      "sourceTags": [
-        "액션"
       ]
     },
     "74561": {
@@ -136090,6 +136042,14 @@
         "판타지"
       ]
     },
+    "74836": {
+      "name": "동반입대",
+      "thumb": "https://vv14cloud.com/74836/hnoljsdufrqzgk4oftudlwv6zlztxsacjl.jpg",
+      "release": "",
+      "sourceTags": [
+        "드라마"
+      ]
+    },
     "74837": {
       "name": "S배틀 마스터",
       "thumb": "https://vv14cloud.com/74837/w6knolb7wuflbvvi5yn2hwenw4atnadman.jpg",
@@ -136858,11 +136818,11 @@
         "드라마"
       ],
       "tags": [
-        "드라마",
-        "스토리"
+        "스토리",
+        "드라마"
       ],
       "naverTitleId": 835736,
-      "naverName": "중증외상센터 : 외과의사 백강혁 홍비치라",
+      "naverName": "중증외상센터 : 외과의사 백강혁",
       "match": "normalized-title",
       "matchScore": 1.0
     },
@@ -139774,6 +139734,14 @@
       "sourceTags": [
         "BL",
         "성인"
+      ]
+    },
+    "75197": {
+      "name": "닥터 퀘스트",
+      "thumb": "https://y17stm.com/75197/g1f6rts7ihamga0a3jeao4qodj85ftz1sy.jpg",
+      "release": "",
+      "sourceTags": [
+        "드라마"
       ]
     },
     "75198": {
@@ -150389,8 +150357,8 @@
         "학원"
       ],
       "tags": [
-        "스토리",
         "액션",
+        "스토리",
         "학원"
       ],
       "naverTitleId": 849537,
@@ -150426,8 +150394,8 @@
         "드라마"
       ],
       "tags": [
-        "스토리",
-        "드라마"
+        "드라마",
+        "스토리"
       ],
       "naverTitleId": 850022,
       "naverName": "영혼을 보는 변호사",
@@ -150778,6 +150746,47 @@
       "sourceTags": [
         "로맨스",
         "판타지"
+      ]
+    },
+    "76194": {
+      "name": "야구의 정치",
+      "thumb": "https://y17stm.com/76194/eqs2ku3isngvghnfqioxldeiukluqvmrim.jpg",
+      "release": "",
+      "sourceTags": [
+        "스포츠"
+      ]
+    },
+    "76195": {
+      "name": "베드신이라서,",
+      "thumb": "https://y17stm.com/76195/ljrfodzx22l5xsnux2v2qggjct1jxs9qqg.jpg",
+      "release": "",
+      "sourceTags": [
+        "성인",
+        "로맨스"
+      ]
+    },
+    "76196": {
+      "name": "독왕강림",
+      "thumb": "https://y17stm.com/76196/whl7q2kpdxusonmcqmduujcjrhi5qikewn.jpg",
+      "release": "",
+      "sourceTags": [
+        "무협"
+      ]
+    },
+    "76197": {
+      "name": "개같은 아저씨",
+      "thumb": "https://y17stm.com/76197/5fr3czuriuzugw0lj5mnzmo5rvr9qjzqtj.jpg",
+      "release": "",
+      "sourceTags": [
+        "미분류"
+      ]
+    },
+    "76198": {
+      "name": "아르카디아",
+      "thumb": "https://y17stm.com/76198/4xbofsrzdw5tiowl4pjryn0c4ar8q6lfbb.jpg",
+      "release": "",
+      "sourceTags": [
+        "미분류"
       ]
     }
   }
