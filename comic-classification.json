@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "updated": "2026-05-24",
-  "sourceRoot": "https://wfwf454.com",
+  "updated": "2026-05-25",
+  "sourceRoot": "https://wfwf453.com",
   "sources": [
     "source-comic-genre"
   ],
@@ -12800,7 +12800,7 @@
       "thumb": "https://i4.imgcloud18.com/11388/c279f020.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "11389": {
@@ -13264,13 +13264,13 @@
     },
     "11439": {
       "name": "벗겨줘! 류가사키 양",
-      "thumb": "https://i0.imgcloud18.com/11439/c0ddfbcb.jpg?v=1",
+      "thumb": "https://i0.imgcloud18.com/11439/7db7cb9f.jpg?v=1",
       "release": "",
       "sourceTags": [
+        "학원",
         "러브코미디",
-        "개그",
         "판타지",
-        "학원"
+        "개그"
       ]
     },
     "11440": {
@@ -19679,7 +19679,7 @@
       "thumb": "https://i6.imgcloud18.com/12149/3f4da450.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12150": {
@@ -21877,7 +21877,7 @@
       "thumb": "https://i6.imgcloud18.com/12398/d9b43a1b.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12399": {
@@ -21918,7 +21918,7 @@
       "thumb": "https://i6.imgcloud18.com/12403/e597f9f0.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12404": {
@@ -22144,7 +22144,7 @@
       "thumb": "https://i6.imgcloud18.com/12430/aee4b074.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "학원"
       ]
     },
     "12431": {
@@ -22243,7 +22243,7 @@
       "thumb": "https://i6.imgcloud18.com/12441/82af3261.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12442": {
@@ -22251,7 +22251,7 @@
       "thumb": "https://i6.imgcloud18.com/12442/7b2779fd.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12443": {
@@ -22463,7 +22463,7 @@
       "thumb": "https://i6.imgcloud18.com/12466/63393722.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12467": {
@@ -23521,7 +23521,7 @@
       "thumb": "https://i0.imgcloud18.com/12586/71f2d602.jpg?v=1",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "12587": {
@@ -78257,7 +78257,7 @@
       "thumb": "https://c11cm.net/18667/grp0svhx6y4wnuecurltzljmdam9gvpo5a.jpg",
       "release": "",
       "inferredTags": [
-        "러브코미디"
+        "개그"
       ]
     },
     "18668": {
@@ -78523,6 +78523,15 @@
       "release": "",
       "sourceTags": [
         "드라마"
+      ]
+    },
+    "18765": {
+      "name": "카메라, 시작해도 될까요?",
+      "thumb": "https://c11cm.net/18765/ba2doqa9qpsdphfj1icihwf23fzv7zq4dq.jpg",
+      "release": "",
+      "sourceTags": [
+        "드라마",
+        "일상"
       ]
     }
   }
