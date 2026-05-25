@@ -1,6 +1,7 @@
 package ml.melun.mangaview.repository;
 
 import android.content.Context;
+import android.os.Looper;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -16,18 +17,13 @@ public final class CacheFileStore {
     private static final String DIR_NAME = "structured_cache";
     private static final char[] HEX = "0123456789abcdef".toCharArray();
     private static final int MEMORY_CACHE_MAX_ENTRIES = 64;
-    private static final int KEY_LOCKS_MAX_ENTRIES = 512;
+    private static final int KEY_LOCKS_MAX_ENTRIES = 256;
     private static final long MAX_READ_BYTES = 4L * 1024L * 1024L;
+    private static final Object[] KEY_LOCKS = createKeyLocks();
     private static final Map<String, String> MEMORY_CACHE = new LinkedHashMap<String, String>(MEMORY_CACHE_MAX_ENTRIES, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
             return size() > MEMORY_CACHE_MAX_ENTRIES;
-        }
-    };
-    private static final Map<String, Object> KEY_LOCKS = new LinkedHashMap<String, Object>(KEY_LOCKS_MAX_ENTRIES, 0.75f, true) {
-        @Override
-        protected boolean removeEldestEntry(Map.Entry<String, Object> eldest) {
-            return size() > KEY_LOCKS_MAX_ENTRIES;
         }
     };
 
@@ -43,6 +39,7 @@ public final class CacheFileStore {
     public static String read(File rootDir, String key) {
         if(rootDir == null || key == null)
             return "";
+        logMainThreadAccess("cache_read_main_thread");
         String cached = readMemoryInternal(key);
         if(cached != null)
             return cached;
@@ -75,6 +72,7 @@ public final class CacheFileStore {
     public static void write(File rootDir, String key, String value) {
         if(rootDir == null || key == null || value == null)
             return;
+        logMainThreadAccess("cache_write_main_thread");
         synchronized (lockForKey(key)) {
             File file = file(rootDir, key);
             File dir = file.getParentFile();
@@ -98,6 +96,7 @@ public final class CacheFileStore {
     public static void delete(File rootDir, String key) {
         if(rootDir == null || key == null)
             return;
+        logMainThreadAccess("cache_delete_main_thread");
         synchronized (lockForKey(key)) {
             try {
                 File file = file(rootDir, key);
@@ -152,9 +151,7 @@ public final class CacheFileStore {
     }
 
     static int keyLockCountForTest() {
-        synchronized (KEY_LOCKS) {
-            return KEY_LOCKS.size();
-        }
+        return KEY_LOCKS.length;
     }
 
     static int keyLocksMaxEntriesForTest() {
@@ -183,14 +180,15 @@ public final class CacheFileStore {
 
     private static Object lockForKey(String key) {
         String lockKey = key == null ? "" : key;
-        synchronized (KEY_LOCKS) {
-            Object lock = KEY_LOCKS.get(lockKey);
-            if(lock == null) {
-                lock = new Object();
-                KEY_LOCKS.put(lockKey, lock);
-            }
-            return lock;
-        }
+        int index = (lockKey.hashCode() & 0x7fffffff) % KEY_LOCKS.length;
+        return KEY_LOCKS[index];
+    }
+
+    private static Object[] createKeyLocks() {
+        Object[] locks = new Object[KEY_LOCKS_MAX_ENTRIES];
+        for(int i = 0; i < locks.length; i++)
+            locks[i] = new Object();
+        return locks;
     }
 
     private static void forgetMemory(String key) {
@@ -198,6 +196,15 @@ public final class CacheFileStore {
             return;
         synchronized (MEMORY_CACHE) {
             MEMORY_CACHE.remove(key);
+        }
+    }
+
+    private static void logMainThreadAccess(String metric) {
+        try {
+            if(Looper.myLooper() == Looper.getMainLooper())
+                ml.melun.mangaview.glide.ViewerWarmupManager.logMetric(metric, 1L);
+        } catch (RuntimeException ignored) {
+            // Plain JVM tests do not provide Android Looper internals.
         }
     }
 

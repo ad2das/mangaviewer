@@ -3,6 +3,7 @@ package ml.melun.mangaview.reader
 import android.content.Context
 import ml.melun.mangaview.MainApplication.getHttpClient
 import ml.melun.mangaview.Utils
+import ml.melun.mangaview.glide.ViewerWarmupManager
 import ml.melun.mangaview.mangaview.Manga
 import okhttp3.Request
 import java.io.File
@@ -10,16 +11,31 @@ import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
 import java.util.concurrent.FutureTask
+import java.util.concurrent.ThreadFactory
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
 
 object ReaderImageCache {
     private const val DIR_NAME = "reader_image_cache_v1"
     private const val MAX_CACHE_BYTES = 512L * 1024L * 1024L
     private const val TARGET_CACHE_BYTES = 384L * 1024L * 1024L
+    private const val TRIM_DEBOUNCE_MS = 30_000L
     private val flights = ConcurrentHashMap<String, FutureTask<File>>()
     private val activeReads = ConcurrentHashMap<String, AtomicInteger>()
     private val trimLock = Any()
+    private val trimScheduled = AtomicBoolean(false)
+    private val trimDirty = AtomicBoolean(false)
+    private val lastTrimStartedAt = AtomicLong(0L)
+    private val trimExecutor = Executors.newSingleThreadScheduledExecutor(ThreadFactory { runnable ->
+        Thread(runnable, "ReaderImageCacheTrim").apply {
+            isDaemon = true
+            priority = Thread.MIN_PRIORITY
+        }
+    })
 
     class FileLease internal constructor(
         val file: File,
@@ -59,6 +75,13 @@ object ReaderImageCache {
     fun getOrFetchFile(context: Context, manga: Manga, image: String): File {
         if (!manga.isOnline) return File(image)
         return getOrFetch(context, manga, image)
+    }
+
+    fun cachedFile(context: Context, manga: Manga, image: String): File? {
+        if (!manga.isOnline) return File(image)
+        val appContext = context.applicationContext
+        val file = File(cacheDir(appContext), "${key(manga.baseMode, image)}.img")
+        return if (isUsableImage(file)) file else null
     }
 
     private fun getOrFetch(context: Context, manga: Manga, image: String): File {
@@ -112,7 +135,7 @@ object ReaderImageCache {
             if (!isUsableImage(tmp)) throw java.io.IOException("Invalid image cache file")
             replace(tmp, finalFile)
             finalFile.setLastModified(System.currentTimeMillis())
-            trimCache(context)
+            scheduleTrim(context)
             return finalFile
         } catch (t: Throwable) {
             tmp.delete()
@@ -162,7 +185,27 @@ object ReaderImageCache {
         return false
     }
 
+    private fun scheduleTrim(context: Context) {
+        val now = System.currentTimeMillis()
+        val appContext = context.applicationContext
+        if (!trimScheduled.compareAndSet(false, true)) {
+            trimDirty.set(true)
+            return
+        }
+        val delayMs = (TRIM_DEBOUNCE_MS - (now - lastTrimStartedAt.get())).coerceAtLeast(0L)
+        trimExecutor.schedule({
+            try {
+                trimCache(appContext)
+            } finally {
+                trimScheduled.set(false)
+                if (trimDirty.getAndSet(false)) scheduleTrim(appContext)
+            }
+        }, delayMs, TimeUnit.MILLISECONDS)
+    }
+
     private fun trimCache(context: Context) = synchronized(trimLock) {
+        val startedAt = System.currentTimeMillis()
+        lastTrimStartedAt.set(startedAt)
         val dir = cacheDir(context)
         val files = dir.listFiles()
             ?.filter { it.isFile && it.name.endsWith(".img") }
@@ -176,5 +219,6 @@ object ReaderImageCache {
             val length = file.length()
             if (file.delete()) total -= length
         }
+        ViewerWarmupManager.logMetric("reader_cache_trim_ms", System.currentTimeMillis() - startedAt)
     }
 }

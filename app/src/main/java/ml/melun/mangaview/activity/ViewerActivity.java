@@ -2145,7 +2145,7 @@ public class ViewerActivity extends AppCompatActivity {
     }
 
     private static boolean shouldHoldInitialBackgroundWork(boolean userInteracted, long nowMs, long guardUntilMs) {
-        return nowMs < guardUntilMs;
+        return !userInteracted && nowMs < guardUntilMs;
     }
 
     static long initialBackgroundWorkGuardMsForTest() {
@@ -2861,15 +2861,17 @@ public class ViewerActivity extends AppCompatActivity {
         if(strip == null || pendingPreviousJumpManga == null || pendingPreviousJumpPosition == RecyclerView.NO_POSITION)
             return;
         Manga target = pendingPreviousJumpManga;
-        pendingPreviousJumpManga = null;
-        pendingPreviousJumpPosition = RecyclerView.NO_POSITION;
         strip.postDelayed(() -> {
             if(strip != null && manager != null && stripAdapter != null && !isFinishing()) {
-                if(strip.getScrollState() != RecyclerView.SCROLL_STATE_IDLE)
+                if(strip.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
+                    runPendingPreviousJump();
                     return;
+                }
                 int position = stripAdapter.findLastPagePosition(target);
                 if(position == RecyclerView.NO_POSITION || stripAdapter.getItemCount() == 0)
                     return;
+                pendingPreviousJumpManga = null;
+                pendingPreviousJumpPosition = RecyclerView.NO_POSITION;
                 strip.stopScroll();
                 int boundaryPosition = Math.max(0, Math.min(position + 1, stripAdapter.getItemCount() - 1));
                 manager.scrollToPositionWithOffset(boundaryPosition, strip.getHeight());
@@ -3155,7 +3157,7 @@ public class ViewerActivity extends AppCompatActivity {
     private void scheduleNextEpisodePrefetch(Manga target) {
         if(strip == null || target == null)
             return;
-        if(target.isOnline())
+        if(!target.isOnline())
             return;
         strip.postDelayed(() -> {
             if(isFinishing() || manga == null || !sameManga(manga, target))
@@ -3594,8 +3596,8 @@ public class ViewerActivity extends AppCompatActivity {
         if(strip == null || isFinishing())
             return;
         if(strip.isComputingLayout() || strip.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
-            if(attempts < 40)
-                strip.postDelayed(() -> runStripMutationWhenReady(mutation, attempts + 1, requireStableIdle), 32);
+            long delayMs = attempts < 40 ? 32L : 120L;
+            strip.postDelayed(() -> runStripMutationWhenReady(mutation, attempts + 1, requireStableIdle), delayMs);
             return;
         }
         long idleForMs = SystemClock.elapsedRealtime() - lastViewerScrollMotionAtMs;

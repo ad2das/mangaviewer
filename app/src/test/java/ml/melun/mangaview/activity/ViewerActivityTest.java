@@ -238,7 +238,7 @@ public class ViewerActivityTest {
         assertTrue(ViewerActivity.initialBackgroundWorkGuardMsForTest() >= 3500L);
         assertTrue(ViewerActivity.initialBackgroundWorkGuardMsForTest() <= 5000L);
         assertTrue(ViewerActivity.shouldHoldInitialBackgroundWorkForTest(false, 100L, 200L));
-        assertTrue(ViewerActivity.shouldHoldInitialBackgroundWorkForTest(true, 100L, 200L));
+        assertFalse(ViewerActivity.shouldHoldInitialBackgroundWorkForTest(true, 100L, 200L));
         assertFalse(ViewerActivity.shouldHoldInitialBackgroundWorkForTest(false, 200L, 200L));
     }
 

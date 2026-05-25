@@ -19,3 +19,13 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# Gson is used broadly for intents, SharedPreferences, file caches, and Firebase sync.
+# Keep field names stable while still allowing method shrinking/optimization.
+-keepattributes Signature,*Annotation*
+-keepclassmembers class ml.melun.mangaview.** {
+    <fields>;
+}
+
+-keep class com.google.gson.reflect.TypeToken { *; }
+-keep class * extends com.google.gson.reflect.TypeToken

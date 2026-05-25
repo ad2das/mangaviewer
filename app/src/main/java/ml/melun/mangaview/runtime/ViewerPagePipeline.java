@@ -30,9 +30,9 @@ public final class ViewerPagePipeline {
         void onEpisodePrepareFailed(Manga episode, int result);
     }
 
-    private static final int PREPARED_LIMIT = 192;
-    private static final int IN_FLIGHT_LIMIT = 96;
-    private static final int CANCELLATION_LIMIT = 96;
+    private static final int PREPARED_LIMIT = 64;
+    private static final int IN_FLIGHT_LIMIT = 24;
+    private static final int CANCELLATION_LIMIT = 32;
     private static final int PAGE_BUCKET_SIZE = 8;
 
     private final Context context;
@@ -177,15 +177,17 @@ public final class ViewerPagePipeline {
     private int prepareEpisodeOnWorker(Manga target, int pageIndex, int diskLimit, int decodedLimit,
                                        Priority priority, MangaRepository.Cancellation cancellation) throws Exception {
         int result = LOAD_OK;
-        if(MangaRepository.imageUrls(target, context).size() == 0) {
+        List<String> images = MangaRepository.imageUrls(target, context);
+        if(images == null || images.size() == 0) {
             if(decodedLimit > 0)
                 result = ViewerWarmupManager.prepareFirstFrameBackgroundDirectOnly(context, target, title,
                         pageIndex, width, autoCut, reverse, cancellation);
             else
                 result = ViewerWarmupManager.prepareFirstFrameSourceOnlyDirectOnly(context, target, title,
                         pageIndex, width, autoCut, reverse, cancellation);
+            images = MangaRepository.imageUrls(target, context);
         }
-        if(result == LOAD_OK && MangaRepository.imageUrls(target, context).size() > 0) {
+        if(result == LOAD_OK && images != null && images.size() > 0) {
             ViewerWarmupManager.cacheLoadedContinueSnapshot(context, target, target, title, pageIndex, pageIndex);
             if(diskLimit > 0 || decodedLimit > 0)
                 ViewerWarmupManager.preloadLoadedImages(context, target, pageIndex, width, autoCut, reverse,
@@ -267,47 +269,47 @@ public final class ViewerPagePipeline {
     }
 
     public static int forwardUrlWindow(boolean dataSave) {
-        return dataSave ? 16 : 48;
+        return dataSave ? 8 : 24;
     }
 
     public static int initialDiskWindow(boolean dataSave) {
-        return dataSave ? 4 : 10;
+        return dataSave ? 3 : 6;
     }
 
     public static int scrollDiskWindow(boolean dataSave) {
-        return dataSave ? 4 : 12;
+        return dataSave ? 3 : 6;
     }
 
     public static int busyUrlWindow(boolean dataSave) {
-        return dataSave ? 10 : 24;
+        return dataSave ? 4 : 8;
     }
 
     public static int busyDiskWindow(boolean dataSave) {
-        return dataSave ? 3 : 8;
+        return dataSave ? 1 : 2;
     }
 
     public static int busyDecodedWindow(boolean dataSave) {
-        return dataSave ? 1 : 2;
+        return dataSave ? 0 : 1;
     }
 
     public static int forwardDiskWindow(boolean dataSave) {
-        return dataSave ? 3 : 8;
+        return dataSave ? 2 : 4;
     }
 
     public static int forwardDecodedWindow(boolean dataSave) {
-        return dataSave ? 1 : 2;
+        return 1;
     }
 
     public static int idleDecodedWindow(boolean dataSave) {
-        return dataSave ? 1 : 3;
-    }
-
-    public static int boundaryDecodedWindow(boolean dataSave) {
         return dataSave ? 1 : 2;
     }
 
+    public static int boundaryDecodedWindow(boolean dataSave) {
+        return 1;
+    }
+
     public static int futureDiskWindow(boolean dataSave) {
-        return dataSave ? 0 : 4;
+        return dataSave ? 0 : 2;
     }
 
     public static int futureDecodedWindow(boolean dataSave) {
@@ -315,7 +317,7 @@ public final class ViewerPagePipeline {
     }
 
     public static int nextEpisodeDepth(boolean dataSave) {
-        return dataSave ? 1 : 3;
+        return 1;
     }
 
     public static int previousEpisodeDepth(boolean dataSave) {

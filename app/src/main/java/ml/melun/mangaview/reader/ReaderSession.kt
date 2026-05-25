@@ -58,6 +58,13 @@ class ReaderSession(
         fun onPageCleared(index: Int)
         fun onMessage(message: String)
         fun onCaptchaRequired(manga: Manga)
+        fun onBoundaryAppendFinished(anchor: Int, direction: Int, silent: Boolean, suppressedCaptcha: Boolean)
+    }
+
+    enum class AppendStartResult {
+        STARTED,
+        BUSY,
+        CANCELLED
     }
 
     data class PageInfo(
@@ -79,7 +86,8 @@ class ReaderSession(
         var pageIndex: Int = -1,
         val localPage: Int = 0,
         val totalPages: Int = 0,
-        val side: Int = PAGE_SIDE_FIRST
+        val side: Int = PAGE_SIDE_FIRST,
+        val allowAutoSplit: Boolean = true
     )
 
     private data class BitmapRelease(
@@ -98,9 +106,10 @@ class ReaderSession(
         data class Tiles(
             val pageWidth: Int,
             val pageHeight: Int,
+            val decodedWidth: Int,
             val tiles: List<ReaderTile>
         ) : PageDecodeResult() {
-            override val width: Int = pageWidth
+            override val width: Int = decodedWidth
         }
     }
 
@@ -147,10 +156,12 @@ class ReaderSession(
     private val pages = ArrayList<PageRef>()
     private val pagesLock = Object()
     private val loading = ConcurrentHashMap.newKeySet<Int>()
+    private val bytePrefetching = ConcurrentHashMap.newKeySet<Int>()
     private val decodedWidths = ConcurrentHashMap<Int, Int>()
     private val desiredWidths = ConcurrentHashMap<Int, Int>()
     private val inFlightWidths = ConcurrentHashMap<Int, Int>()
     private val sourceWidths = ConcurrentHashMap<Int, Int>()
+    private val achievableWidths = ConcurrentHashMap<Int, Int>()
     private val deliveryQueue = ConcurrentLinkedQueue<Delivery>()
     private val deliveryDrainPosted = AtomicBoolean(false)
     private val viewportBusy = AtomicBoolean(false)
@@ -310,7 +321,7 @@ class ReaderSession(
                 if (notifyInitialPage) listener.onInitialPage(startPage)
             }
         }
-        primeForwardTimeline()
+        if (!autoCut) primeForwardTimeline()
         if (requestInitialWindow) requestInitialWindow(startPage, false)
         return startPage
     }
@@ -332,37 +343,7 @@ class ReaderSession(
     }
 
     private fun requestPageForeground(index: Int) {
-        val targetWidth = targetWidth(false)
-        rememberDesiredWidth(index, targetWidth)
-        val decodedWidth = decodedWidths[index] ?: 0
-        if (decodedWidth >= achievableWidth(index, targetWidth)) return
-        val activeWidth = inFlightWidths[index] ?: 0
-        if (!loading.add(index)) {
-            if (targetWidth > activeWidth)
-                ViewerWarmupManager.logMetric("busy_to_idle_upgrade_pending", targetWidth.toLong())
-            return
-        }
-        inFlightWidths[index] = targetWidth
-        val startedAt = SystemClock.elapsedRealtime()
-        var delivered = false
-        main.post { if (!cancelled.get()) listener.onPageLoading(index) }
-        try {
-            val page = pageRef(index) ?: return
-            prefetchImageFile(index, page)
-            val result = decodePageWithLease(index, page, targetWidth)
-            if (cancelled.get() || pageRef(index) != page) {
-                recycleDecodeResult(result)
-                return
-            }
-            delivered = true
-            postDecodeResult(Delivery(index, page, result, startedAt, targetWidth))
-        } catch (e: Exception) {
-            recordIfUnexpected(e)
-        } finally {
-            loading.remove(index)
-            inFlightWidths.remove(index)
-            if (delivered) ViewerWarmupManager.logMetric("reader_delivery_posted", index.toLong())
-        }
+        requestPage(index, busy = false, anchor = true, generation = windowGeneration.get())
     }
 
     private fun deliverPreparedBitmap(index: Int, bitmap: Bitmap) {
@@ -370,8 +351,16 @@ class ReaderSession(
         decodedWidths[index] = max(decodedWidths[index] ?: 0, bitmap.width)
         loading.remove(index)
         trackDeliveredBitmap(index, bitmap, false)
+        markFirstPreparedBitmapDelivered()
         main.post {
             if (!cancelled.get()) listener.onPageReady(index, bitmap)
+        }
+    }
+
+    private fun markFirstPreparedBitmapDelivered() {
+        if (firstBitmapLogged.compareAndSet(false, true)) {
+            ViewerWarmupManager.logMetric("reader_first_bitmap_prepared", 1L)
+            releasePreparedStoreBitmapsSoon()
         }
     }
 
@@ -444,13 +433,13 @@ class ReaderSession(
             }
             lastWindowAnchor = anchor
             if (direction != 0) lastWindowDirection = direction
-            if (retainWindow) {
-                synchronized(deliveredBitmaps) {
-                    retainedFirstPage = safeFirst
-                    retainedLastPage = safeLast
-                }
-            }
             requestList = windowOrder(safeFirst, safeLast, anchor, direction)
+        }
+        if (retainWindow) {
+            synchronized(deliveredBitmaps) {
+                retainedFirstPage = safeFirst
+                retainedLastPage = safeLast
+            }
         }
         if (busy) {
             val visibleFirst = max(safeFirst, anchor - BUSY_VISIBLE_DECODE_RADIUS)
@@ -471,11 +460,15 @@ class ReaderSession(
         decodedWidths.keys.removeAll { it < first || it > last }
         desiredWidths.keys.removeAll { it < first || it > last }
         sourceWidths.keys.removeAll { it < first || it > last }
+        achievableWidths.keys.removeAll { it < first || it > last }
         evictDeliveredBitmaps(first, last)
     }
 
     fun cancel() {
         if (!cancelled.compareAndSet(false, true)) return
+        viewportBusy.set(false)
+        deliveryResumeAtMs.set(0L)
+        lastUserInteractionMs.set(0L)
         main.removeCallbacks(clearPreparedBitmapsRunnable)
         main.removeCallbacks(deliveryDrainRunnable)
         recycleQueuedDeliveries()
@@ -529,17 +522,29 @@ class ReaderSession(
         appendAdjacentEpisode(anchor, direction, silentMissing = true)
     }
 
-    fun appendAdjacentEpisode(anchor: Int, direction: Int, silentMissing: Boolean = false) {
+    fun appendAdjacentEpisode(anchor: Int, direction: Int, silentMissing: Boolean = false): AppendStartResult {
         val loadingFlag = if (direction < 0) previousAppendLoading else nextAppendLoading
-        if (cancelled.get() || loadingFlag.getAndSet(true)) return
-        network.execute {
+        if (cancelled.get()) return AppendStartResult.CANCELLED
+        if (loadingFlag.getAndSet(true)) return AppendStartResult.BUSY
+        try {
+            network.execute {
+            var captchaRequired = false
+            var suppressedCaptcha = false
             try {
                 val anchorManga = pageRef(anchor)?.manga ?: manga
-                val currentTitle = title ?: anchorManga.title ?: manga.title
-                if (currentTitle == null) return@execute
+                val currentTitle = title ?: anchorManga.title ?: manga.title ?: return@execute
                 if (currentTitle.eps == null || currentTitle.eps.size <= 1) {
                     val result = MangaRepository.fetchEpisodesForeground(currentTitle, MangaRepository.cancellation())
                     if (result != Title.LOAD_OK) {
+                        if (result == Title.LOAD_CAPTCHA) {
+                            if (silentMissing) {
+                                suppressedCaptcha = true
+                                return@execute
+                            }
+                            captchaRequired = true
+                            postCaptchaRequired(anchorManga)
+                            return@execute
+                        }
                         postMessage(if (result == Title.LOAD_CAPTCHA) "캡차 확인이 필요합니다" else "회차를 불러오지 못했습니다")
                         return@execute
                     }
@@ -567,6 +572,15 @@ class ReaderSession(
                 if (MangaRepository.imageUrls(target, appContext).isNullOrEmpty()) {
                     val result = MangaRepository.fetchViewerInitial(target, MangaRepository.cancellation())
                     if (result != Title.LOAD_OK) {
+                        if (result == Title.LOAD_CAPTCHA) {
+                            if (silentMissing) {
+                                suppressedCaptcha = true
+                                return@execute
+                            }
+                            captchaRequired = true
+                            postCaptchaRequired(target)
+                            return@execute
+                        }
                         postMessage(if (result == Title.LOAD_CAPTCHA) "캡차 확인이 필요합니다" else "회차를 불러오지 못했습니다")
                         return@execute
                     }
@@ -581,8 +595,14 @@ class ReaderSession(
                 recordIfUnexpected(e)
             } finally {
                 loadingFlag.set(false)
+                if (!captchaRequired) postBoundaryAppendFinished(anchor, direction, silentMissing, suppressedCaptcha)
             }
+            }
+        } catch (_: RejectedExecutionException) {
+            loadingFlag.set(false)
+            return AppendStartResult.CANCELLED
         }
+        return AppendStartResult.STARTED
     }
 
     private fun primeForwardTimeline() {
@@ -670,9 +690,10 @@ class ReaderSession(
         var localPage = 1
         for (index in urls.indices) {
             val url = urls[index]
-            refs.add(PageRef(target, url, sourceIndex = index, localPage = localPage++, totalPages = totalPages, side = PAGE_SIDE_FIRST))
+            val split = splitPages[index]
+            refs.add(PageRef(target, url, sourceIndex = index, localPage = localPage++, totalPages = totalPages, side = PAGE_SIDE_FIRST, allowAutoSplit = split))
             if (splitPages[index]) {
-                refs.add(PageRef(target, url, sourceIndex = index, localPage = localPage++, totalPages = totalPages, side = PAGE_SIDE_SECOND))
+                refs.add(PageRef(target, url, sourceIndex = index, localPage = localPage++, totalPages = totalPages, side = PAGE_SIDE_SECOND, allowAutoSplit = split))
             }
         }
         return refs
@@ -821,9 +842,11 @@ class ReaderSession(
         shiftConcurrentMap(decodedWidths, delta)
         shiftConcurrentMap(desiredWidths, delta)
         shiftConcurrentMap(sourceWidths, delta)
+        shiftConcurrentMap(achievableWidths, delta)
         shiftConcurrentMap(earlyPreparedBitmaps, delta)
         inFlightWidths.clear()
         loading.clear()
+        bytePrefetching.clear()
         synchronized(deliveredBitmaps) {
             val oldEntries = deliveredBitmaps.entries.toList()
             deliveredBitmaps.clear()
@@ -848,13 +871,6 @@ class ReaderSession(
         val entries = map.entries.toList()
         map.clear()
         for (entry in entries) map[entry.key + delta] = entry.value
-    }
-
-    private fun shiftConcurrentSet(set: MutableSet<Int>, delta: Int) {
-        if (set.isEmpty()) return
-        val entries = set.toList()
-        set.clear()
-        for (index in entries) set.add(index + delta)
     }
 
     private fun requestPage(index: Int, busy: Boolean, anchor: Boolean, generation: Int = windowGeneration.get()) {
@@ -944,8 +960,7 @@ class ReaderSession(
     }
 
     private fun prefetchBusyPage(index: Int, page: PageRef, generation: Int) {
-        if (!loading.add(index)) return
-        inFlightWidths[index] = targetWidth(true)
+        if (!bytePrefetching.add(index)) return
         try {
             network.execute {
                 try {
@@ -955,13 +970,11 @@ class ReaderSession(
                 } catch (e: Exception) {
                     recordIfUnexpected(e)
                 } finally {
-                    loading.remove(index)
-                    inFlightWidths.remove(index)
+                    bytePrefetching.remove(index)
                 }
             }
         } catch (_: RejectedExecutionException) {
-            loading.remove(index)
-            inFlightWidths.remove(index)
+            bytePrefetching.remove(index)
         }
     }
 
@@ -1061,12 +1074,13 @@ class ReaderSession(
         } else {
             decodeLocal(page.image ?: "", bounds)
         }
-        val displayBounds = displayBounds(bounds.outWidth, bounds.outHeight, page.side)
+        val displayBounds = displayBounds(bounds.outWidth, bounds.outHeight, page.side, page.allowAutoSplit)
         postPageBounds(index, displayBounds.width(), displayBounds.height())
         if (!autoCut && shouldDecodeTiles(page, file, bounds)) {
             return decodePageTiles(file, bounds, targetWidth)
         }
-        val sample = sampleSize(bounds.outWidth, targetWidth)
+        val decodeTargetWidth = decodeTargetWidth(bounds.outWidth, bounds.outHeight, targetWidth, page.allowAutoSplit)
+        val sample = sampleSize(bounds.outWidth, decodeTargetWidth)
         val options = BitmapFactory.Options().apply {
             inPreferredConfig = Bitmap.Config.RGB_565
             inSampleSize = sample
@@ -1077,16 +1091,22 @@ class ReaderSession(
             decodeLocal(page.image ?: "", options)
         }
             ?: throw java.io.IOException("Bitmap decode failed")
-        if (!page.manga.isOnline) return PageDecodeResult.Full(applyAutoSplit(raw, page.side))
-        val decoded = Decoder(page.manga.seed, page.manga.id).decode(raw, targetWidth)
+        if (!page.manga.isOnline) return PageDecodeResult.Full(applyAutoSplit(raw, page.side, page.allowAutoSplit))
+        val decoded = Decoder(page.manga.seed, page.manga.id).decode(raw, decodeTargetWidth)
         if (decoded !== raw && !raw.isRecycled) raw.recycle()
-        return PageDecodeResult.Full(applyAutoSplit(decoded, page.side))
+        return PageDecodeResult.Full(applyAutoSplit(decoded, page.side, page.allowAutoSplit))
     }
 
-    private fun displayBounds(width: Int, height: Int, side: Int): Rect {
+    private fun decodeTargetWidth(sourceWidth: Int, sourceHeight: Int, targetWidth: Int, allowSplit: Boolean): Int {
+        val safeTarget = max(1, targetWidth)
+        if (!autoCut || !allowSplit || !shouldAutoSplit(max(1, sourceWidth), max(1, sourceHeight))) return safeTarget
+        return safeTarget * 2
+    }
+
+    private fun displayBounds(width: Int, height: Int, side: Int, allowSplit: Boolean): Rect {
         val safeWidth = max(1, width)
         val safeHeight = max(1, height)
-        if (!autoCut) return Rect(0, 0, safeWidth, safeHeight)
+        if (!autoCut || !allowSplit) return Rect(0, 0, safeWidth, safeHeight)
         if (shouldAutoSplit(safeWidth, safeHeight)) {
             val cropWidth = max(1, safeWidth / 2)
             return Rect(0, 0, cropWidth, safeHeight)
@@ -1098,8 +1118,8 @@ class ReaderSession(
         }
     }
 
-    private fun applyAutoSplit(bitmap: Bitmap, side: Int): Bitmap {
-        if (!autoCut) return bitmap
+    private fun applyAutoSplit(bitmap: Bitmap, side: Int, allowSplit: Boolean): Bitmap {
+        if (!autoCut || !allowSplit) return bitmap
         val decodedWidth = bitmap.width
         val decodedHeight = bitmap.height
         if (!shouldAutoSplit(decodedWidth, decodedHeight)) {
@@ -1140,7 +1160,7 @@ class ReaderSession(
         return try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             if (target.isOnline) {
-                val file = ReaderImageCache.getOrFetchFile(appContext, target, image)
+                val file = ReaderImageCache.cachedFile(appContext, target, image) ?: return false
                 BitmapFactory.decodeFile(file.absolutePath, bounds)
             } else {
                 decodeLocal(image, bounds)
@@ -1195,7 +1215,8 @@ class ReaderSession(
             }
             decoder.recycle()
         }
-        return PageDecodeResult.Tiles(sourceWidth, sourceHeight, tiles)
+        val decodedWidth = max(1, (sourceWidth + sample - 1) / sample)
+        return PageDecodeResult.Tiles(sourceWidth, sourceHeight, decodedWidth, tiles)
     }
 
     private fun postPageBounds(index: Int, width: Int, height: Int) {
@@ -1208,7 +1229,8 @@ class ReaderSession(
 
     private fun achievableWidth(index: Int, requestedWidth: Int): Int {
         val sourceWidth = sourceWidths[index] ?: return requestedWidth
-        return minOf(requestedWidth, max(1, sourceWidth))
+        val decodeCeiling = achievableWidths[index] ?: Int.MAX_VALUE
+        return minOf(requestedWidth, max(1, sourceWidth), max(1, decodeCeiling))
     }
 
     private fun pageRef(index: Int): PageRef? = synchronized(pagesLock) {
@@ -1406,6 +1428,9 @@ class ReaderSession(
             if (index >= 0 && (!busy || index in retainedFirst..retainedLast)) {
                 decodedWidths[index] = max(decodedWidths[index] ?: 0, delivery.result.width)
                 desiredWidths[index] = max(desiredWidths[index] ?: 0, delivery.requestedWidth)
+                if (delivery.result is PageDecodeResult.Tiles) {
+                    achievableWidths[index] = delivery.result.decodedWidth
+                }
                 trackDeliveredResult(index, delivery.result)
             }
             index
@@ -1455,7 +1480,9 @@ class ReaderSession(
             retainedFirstPage = 0
             retainedLastPage = 0
         }
-        for (bitmap in toRecycle) recycleBitmapAfterDelay(bitmap)
+        for (bitmap in toRecycle) {
+            if (cancelled.get()) recycleBitmapAsync(bitmap) else recycleBitmapAfterDelay(bitmap)
+        }
     }
 
     private fun evictDeliveredBitmaps(first: Int, last: Int) {
@@ -1542,6 +1569,7 @@ class ReaderSession(
                 decodedWidths.remove(release.index)
                 desiredWidths.remove(release.index)
                 sourceWidths.remove(release.index)
+                achievableWidths.remove(release.index)
                 clearedPages.add(release.index)
             }
             release.bitmap?.let { recycleBitmapAfterDelay(it) }
@@ -1557,7 +1585,9 @@ class ReaderSession(
 
     private fun recycleBitmapAfterDelay(bitmap: Bitmap) {
         main.postDelayed({
-            if (viewportBusy.get() || deliveryDrainDelayMs() > 0L) {
+            if (cancelled.get()) {
+                recycleBitmapAsync(bitmap)
+            } else if (viewportBusy.get() || deliveryDrainDelayMs() > 0L) {
                 recycleBitmapAfterDelay(bitmap)
             } else {
                 recycleBitmapAsync(bitmap)
@@ -1614,7 +1644,8 @@ class ReaderSession(
     }
 
     private fun targetWidth(busy: Boolean): Int {
-        return max(1, viewerWidth)
+        val width = max(1, viewerWidth)
+        return if (busy) minOf(width, ReaderPipelinePolicy.BUSY_DECODE_WIDTH) else width
     }
 
     private fun windowOrder(first: Int, last: Int, anchor: Int, direction: Int): List<Int> {
@@ -1678,6 +1709,10 @@ class ReaderSession(
 
     private fun postCaptchaRequired(target: Manga) {
         main.post { if (!cancelled.get()) listener.onCaptchaRequired(target) }
+    }
+
+    private fun postBoundaryAppendFinished(anchor: Int, direction: Int, silent: Boolean, suppressedCaptcha: Boolean) {
+        main.post { if (!cancelled.get()) listener.onBoundaryAppendFinished(anchor, direction, silent, suppressedCaptcha) }
     }
 
     private companion object {

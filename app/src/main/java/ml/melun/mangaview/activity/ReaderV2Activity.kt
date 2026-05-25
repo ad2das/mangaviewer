@@ -89,6 +89,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var pendingProgressInfo: ReaderSession.PageInfo? = null
     private var pendingProgressOffset = 0
     private var pendingBoundaryStatus = false
+    private var pendingBoundaryCaptchaRetry = false
+    private var pendingCaptchaRetryManga: Manga? = null
+    private var pendingCaptchaRetryTitle: Title? = null
+    private var pendingCaptchaRetryStartAtFirstPage = false
+    private var pendingCaptchaRetryAction = CAPTCHA_RETRY_READER
+    private var pendingCaptchaRetryNext = true
+    private var pendingCaptchaRetryDirection = 0
+    private var pendingCaptchaRetryAnchor = -1
     private var initialStatusPending = false
     private var initialDrawGateOpen = true
     private var initialDrawGateView: View? = null
@@ -310,11 +318,46 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             }
             runOnUiThread {
                 if (destroyed || isFinishing) return@runOnUiThread
-                val manga = currentManga ?: return@runOnUiThread
+                val retryManga = pendingCaptchaRetryManga
+                val retryTitle = pendingCaptchaRetryTitle
+                val retryStartAtFirstPage = pendingCaptchaRetryStartAtFirstPage
+                val retryAction = pendingCaptchaRetryAction
+                val retryNext = pendingCaptchaRetryNext
+                val retryDirection = pendingCaptchaRetryDirection
+                val retryAnchor = pendingCaptchaRetryAnchor
+                pendingCaptchaRetryManga = null
+                pendingCaptchaRetryTitle = null
+                pendingCaptchaRetryStartAtFirstPage = false
+                pendingCaptchaRetryAction = CAPTCHA_RETRY_READER
+                pendingCaptchaRetryDirection = 0
+                pendingCaptchaRetryAnchor = -1
+                pendingBoundaryCaptchaRetry = false
+                if (retryAction == CAPTCHA_RETRY_TOOLBAR_ADJACENT) {
+                    adjacentNavigationInFlight = false
+                    openAdjacent(retryNext)
+                    return@runOnUiThread
+                }
+                if (retryAction == CAPTCHA_RETRY_BOUNDARY && retryAnchor >= 0 && retryDirection != 0) {
+                    pendingBoundaryCaptchaRetry = true
+                    pendingCaptchaRetryDirection = retryDirection
+                    pendingCaptchaRetryAnchor = retryAnchor
+                    val retryStart = session?.appendAdjacentEpisode(retryAnchor, retryDirection)
+                    if (retryStart != ReaderSession.AppendStartResult.STARTED && retryStart != ReaderSession.AppendStartResult.BUSY) {
+                        clearPendingBoundaryCaptchaRetry()
+                    }
+                    return@runOnUiThread
+                }
+                val manga = retryManga ?: currentManga ?: return@runOnUiThread
+                if (retryManga != null && retryManga !== currentManga) {
+                    currentManga = retryManga
+                    currentTitle = retryTitle ?: retryManga.title ?: currentTitle
+                    updateResultEpisode(retryManga)
+                }
                 startReaderSession(
                     manga,
-                    currentTitle ?: manga.title,
+                    retryTitle ?: currentTitle ?: manga.title,
                     null,
+                    startAtFirstPage = retryStartAtFirstPage,
                     clearViewImmediately = false
                 )
             }
@@ -338,6 +381,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         saveCurrentReadingProgress()
         pendingProgressInfo = null
         pendingBoundaryStatus = false
+        pendingBoundaryCaptchaRetry = false
         renderView.setWindowListener(null)
         renderView.stopRenderingAndClearPages()
         session?.cancel()
@@ -464,7 +508,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     override fun onCaptchaRequired(manga: Manga) {
+        pendingCaptchaRetryManga = manga
+        pendingCaptchaRetryTitle = manga.title ?: currentTitle
+        pendingCaptchaRetryStartAtFirstPage = manga !== currentManga
+        pendingCaptchaRetryAction = if (pendingBoundaryCaptchaRetry && pendingCaptchaRetryAnchor >= 0 && pendingCaptchaRetryDirection != 0) {
+            CAPTCHA_RETRY_BOUNDARY
+        } else {
+            CAPTCHA_RETRY_READER
+        }
         pendingBoundaryStatus = false
+        pendingBoundaryCaptchaRetry = false
         initialStatusPending = false
         pendingInitialRestorePage = -1
         pendingInitialRestoreOffset = 0
@@ -474,6 +527,22 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         status.text = "캡차 확인이 필요합니다"
         releaseInitialDrawGate("captcha")
         Utils.showCaptchaPopup(Manga.safeUrl(manga), this, REQUEST_CAPTCHA, p)
+    }
+
+    override fun onBoundaryAppendFinished(anchor: Int, direction: Int, silent: Boolean, suppressedCaptcha: Boolean) {
+        if (pendingCaptchaRetryAnchor == anchor && pendingCaptchaRetryDirection == direction) {
+            val retryBoundaryAfterSilent = silent && suppressedCaptcha && pendingBoundaryStatus && pendingBoundaryCaptchaRetry
+            clearPendingBoundaryCaptchaRetry()
+            if (retryBoundaryAfterSilent && !destroyed && !isFinishing) {
+                pendingBoundaryCaptchaRetry = true
+                pendingCaptchaRetryDirection = direction
+                pendingCaptchaRetryAnchor = anchor
+                val retryStart = session?.appendAdjacentEpisode(anchor, direction)
+                if (retryStart != ReaderSession.AppendStartResult.STARTED && retryStart != ReaderSession.AppendStartResult.BUSY) {
+                    clearPendingBoundaryCaptchaRetry()
+                }
+            }
+        }
     }
 
     override fun onWindowChanged(
@@ -537,9 +606,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             if (!it.transitionCard) currentManga = it.manga
         }
         pendingBoundaryStatus = true
+        pendingBoundaryCaptchaRetry = true
+        pendingCaptchaRetryDirection = direction
+        pendingCaptchaRetryAnchor = anchorPage
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         statusHandler.postDelayed(showBoundaryStatusRunnable, BOUNDARY_STATUS_DELAY_MS)
-        session?.appendAdjacentEpisode(anchorPage, direction)
+        val startResult = session?.appendAdjacentEpisode(anchorPage, direction)
+        if (startResult != ReaderSession.AppendStartResult.STARTED && startResult != ReaderSession.AppendStartResult.BUSY) {
+            clearPendingBoundaryCaptchaRetry()
+        }
     }
 
     override fun onTap() {
@@ -579,12 +654,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             }
             runOnUiThread {
                 Log.d(TAG, "open_adjacent resolved next=$next targetId=${resolved.target?.id} targetName=${resolved.target?.name} result=${resolved.result}")
-                finishAdjacentResolution(source, resolved)
+                finishAdjacentResolution(source, next, resolved)
             }
         }
     }
 
-    private fun finishAdjacentResolution(source: Manga, resolved: AdjacentResolution) {
+    private fun finishAdjacentResolution(source: Manga, next: Boolean, resolved: AdjacentResolution) {
         adjacentNavigationInFlight = false
         if (destroyed || isFinishing) return
         if (resolved.fetchedEpisodes) episodeListFetchAttempted = true
@@ -594,8 +669,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             return
         }
         if (resolved.result == Title.LOAD_CAPTCHA) {
+            pendingCaptchaRetryManga = source
+            pendingCaptchaRetryTitle = resolved.title ?: currentTitle
+            pendingCaptchaRetryStartAtFirstPage = false
+            pendingCaptchaRetryAction = CAPTCHA_RETRY_TOOLBAR_ADJACENT
+            pendingCaptchaRetryNext = next
             status.visibility = TextView.VISIBLE
             status.text = "캡차 확인이 필요합니다"
+            Utils.showCaptchaPopup(Manga.safeUrl(source), this, REQUEST_CAPTCHA, p)
         } else if (pagesReady) {
             status.visibility = TextView.GONE
         }
@@ -695,6 +776,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         currentPage = 0
         lastDisplayedPageText = ""
         pendingBoundaryStatus = false
+        clearPendingBoundaryCaptchaRetry()
         pendingInitialRestorePage = -1
         pendingInitialRestoreOffset = 0
         pendingProgressInfo = null
@@ -1064,15 +1146,17 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (status.visibility != TextView.GONE) status.visibility = TextView.GONE
     }
 
+    private fun clearPendingBoundaryCaptchaRetry() {
+        pendingBoundaryCaptchaRetry = false
+        pendingCaptchaRetryDirection = 0
+        pendingCaptchaRetryAnchor = -1
+    }
+
     private fun installInitialDrawGate(root: View) {
-        initialDrawGateOpen = false
+        initialDrawGateOpen = true
         initialDrawGateView = root
-        val listener = ViewTreeObserver.OnPreDrawListener {
-            initialDrawGateOpen || destroyed || isFinishing
-        }
-        initialDrawGateListener = listener
-        root.viewTreeObserver.addOnPreDrawListener(listener)
-        statusHandler.postDelayed(initialDrawGateTimeoutRunnable, INITIAL_DRAW_GATE_TIMEOUT_MS)
+        statusHandler.removeCallbacks(initialDrawGateTimeoutRunnable)
+        root.post { convertReaderWindowOpaque() }
     }
 
     private fun releaseInitialDrawGate(reason: String) {
@@ -1121,6 +1205,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val WEBTOON_PAGE_GAP_PX = 0
         private const val ADJACENT_BUTTON_REFRESH_DELAY_MS = 350L
         private const val INITIAL_DRAW_GATE_TIMEOUT_MS = 320L
+        private const val CAPTCHA_RETRY_READER = 0
+        private const val CAPTCHA_RETRY_TOOLBAR_ADJACENT = 1
+        private const val CAPTCHA_RETRY_BOUNDARY = 2
         private const val TAG = "ReaderV2"
 
         @JvmStatic

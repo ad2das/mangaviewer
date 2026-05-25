@@ -2,14 +2,14 @@ package ml.melun.mangaview.reader
 
 object ReaderPipelinePolicy {
     const val FOREGROUND_NETWORK_PARALLELISM = 2
-    const val IDLE_DECODE_PARALLELISM = 2
-    const val BUSY_DECODE_PARALLELISM = 2
+    const val IDLE_DECODE_PARALLELISM = 1
+    const val BUSY_DECODE_PARALLELISM = 1
     const val INITIAL_WINDOW_BEFORE = 0
-    const val INITIAL_WINDOW_AFTER = 8
-    const val BUSY_WINDOW_BEFORE = 1
-    const val BUSY_WINDOW_AFTER = 8
-    const val IDLE_WINDOW_BEFORE = 2
-    const val IDLE_WINDOW_AFTER = 12
+    const val INITIAL_WINDOW_AFTER = 4
+    const val BUSY_WINDOW_BEFORE = 0
+    const val BUSY_WINDOW_AFTER = 2
+    const val IDLE_WINDOW_BEFORE = 1
+    const val IDLE_WINDOW_AFTER = 6
     const val BUSY_DECODE_WIDTH = 480
 
     @JvmStatic
