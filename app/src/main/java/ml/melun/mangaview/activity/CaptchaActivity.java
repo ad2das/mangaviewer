@@ -150,8 +150,8 @@ public class CaptchaActivity extends AppCompatActivity {
     private long pageFinishedTime = 0;
     private long lastAttemptTime = 0;
     private static final long FIRST_CLICK_DELAY_MS = 0;
-    private static final long RETRY_MIN_MS = 1000;
-    private static final long RETRY_MAX_MS = 3000;
+    private static final long RETRY_MIN_MS = 100;
+    private static final long RETRY_MAX_MS = 300;
     private boolean isFirstAttempt = true;
     private boolean isFinishing = false;
     private Set<String> initialClearanceValues = new HashSet<>();
@@ -235,7 +235,7 @@ public class CaptchaActivity extends AppCompatActivity {
                 android.util.Log.d("CaptchaActivity", "JS Console [" + consoleMessage.sourceId() + ":" + consoleMessage.lineNumber() + "] " + msg);
                 if(msg != null && msg.contains("__TURNSTILE_CB__")) {
                     android.util.Log.d("CaptchaActivity", "Turnstile checkbox detected via MutationObserver - triggering click");
-                    handler.post(() -> attemptTurnstileClick());
+                    handler.post(() -> attemptTurnstileClickImmediate());
                 }
                 return true;
             }
@@ -272,6 +272,8 @@ public class CaptchaActivity extends AppCompatActivity {
                 lastCookieReadAt = 0;
                 normalNtkPageCount = 0;
                 turnstileAutoClickStarted = false;
+                isFirstAttempt = true;
+                lastAttemptTime = 0;
                 view.evaluateJavascript(SHADOW_HOOK_JS, null);
                 super.onPageStarted(view, url, favicon);
             }
@@ -522,6 +524,16 @@ public class CaptchaActivity extends AppCompatActivity {
         if(now - lastAttemptTime < requiredInterval) return;
         lastAttemptTime = now;
 
+        performTurnstileClickEvaluation();
+    }
+
+    private void attemptTurnstileClickImmediate() {
+        if(isFinishing || isDestroyed() || webView == null || captchaLoadErrorVisible) return;
+        lastAttemptTime = System.currentTimeMillis();
+        performTurnstileClickEvaluation();
+    }
+
+    private void performTurnstileClickEvaluation() {
         webView.evaluateJavascript(TURNSTILE_AUTO_JS, result -> {
             if(isFinishing || isDestroyed() || webView == null)
                 return;
