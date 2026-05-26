@@ -65,8 +65,9 @@ public class EpisodeActivityTest {
     }
 
     @Test
-    public void wfwfVisibleWarmupWaitsForPrimaryViewerTarget() {
-        assertEquals(1200L, EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(false, true));
+    public void wfwfVisibleWarmupStartsAfterPrimaryTargetIsScheduled() {
+        assertEquals(0L, EpisodeActivity.initialViewerTargetWarmupDelayMsForTest(false));
+        assertEquals(0L, EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(false, true));
     }
 
     @Test

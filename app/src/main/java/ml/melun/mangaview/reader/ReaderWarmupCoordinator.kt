@@ -352,6 +352,9 @@ object ReaderWarmupCoordinator {
 
     private fun launchProfile(title: Title?): WarmupProfile {
         if (p != null && p.getDataSave()) return tapProfile(title)
+        val source = (title?.sourceSite ?: "").trim().lowercase(Locale.ROOT)
+        if (source == "wfwf" || (source.isEmpty() && getHttpClient()?.isNtk == false))
+            return tapProfile(title)
         return WarmupProfile.LAUNCH_WINDOW
     }
 
@@ -512,7 +515,16 @@ object ReaderWarmupCoordinator {
 
     @JvmStatic
     fun launchProfileForTest(dataSave: Boolean): WarmupProfile {
-        return if (dataSave) WarmupProfile.URL_ONLY else WarmupProfile.LAUNCH_WINDOW
+        return launchProfileForTest(dataSave, null)
+    }
+
+    @JvmStatic
+    fun launchProfileForTest(dataSave: Boolean, sourceSite: String?): WarmupProfile {
+        if (dataSave) return WarmupProfile.URL_ONLY
+        return if ((sourceSite ?: "").trim().lowercase(Locale.ROOT) == "wfwf")
+            WarmupProfile.FIRST_BITMAP
+        else
+            WarmupProfile.LAUNCH_WINDOW
     }
 
     @JvmStatic

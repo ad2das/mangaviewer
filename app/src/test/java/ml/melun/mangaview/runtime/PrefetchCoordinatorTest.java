@@ -52,7 +52,7 @@ public class PrefetchCoordinatorTest {
     }
 
     @Test
-    public void wfwfViewerTargetsWarmScreenTopRowsWithoutBookmark() throws Exception {
+    public void viewerTargetsPreferStartEpisodeBeforeScreenTopRows() throws Exception {
         List<Manga> episodes = episodes(60, 50, 40, 30, 20, 10);
         Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class, boolean.class);
         method.setAccessible(true);
@@ -60,7 +60,19 @@ public class PrefetchCoordinatorTest {
         @SuppressWarnings("unchecked")
         List<Integer> targets = (List<Integer>) method.invoke(null, episodes, -1, 3, true);
 
-        assertEquals(asList(0, 1, 2), targets);
+        assertEquals(asList(5, 0, 1), targets);
+    }
+
+    @Test
+    public void wfwfSingleWarmupStillTargetsStartEpisodeFirst() throws Exception {
+        List<Manga> episodes = episodes(60, 50, 40, 30, 20, 10);
+        Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class, boolean.class);
+        method.setAccessible(true);
+
+        @SuppressWarnings("unchecked")
+        List<Integer> targets = (List<Integer>) method.invoke(null, episodes, -1, 1, true);
+
+        assertEquals(asList(5), targets);
     }
 
     @Test

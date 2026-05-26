@@ -6,7 +6,7 @@ final class EpisodeWarmupPolicy {
     static final long INITIAL_VIEWER_TARGET_DELAY_MS = 0L;
     static final long INITIAL_VISIBLE_DELAY_MS = 0L;
     static final long NTK_INITIAL_VISIBLE_DELAY_MS = 0L;
-    static final long WFWF_INITIAL_VISIBLE_DELAY_MS = 1200L;
+    static final long WFWF_INITIAL_VISIBLE_DELAY_MS = 0L;
     static final int VISIBLE_AHEAD = 3;
 
     private EpisodeWarmupPolicy() {

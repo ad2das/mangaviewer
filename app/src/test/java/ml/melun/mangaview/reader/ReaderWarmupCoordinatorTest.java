@@ -34,6 +34,8 @@ public class ReaderWarmupCoordinatorTest {
         assertEquals(ReaderWarmupCoordinator.WarmupProfile.FIRST_BITMAP, ReaderWarmupCoordinator.tapProfileForTest("ntk"));
         assertEquals(ReaderWarmupCoordinator.WarmupProfile.FIRST_BITMAP, ReaderWarmupCoordinator.tapProfileForTest("wfwf"));
         assertEquals(ReaderWarmupCoordinator.WarmupProfile.LAUNCH_WINDOW, ReaderWarmupCoordinator.launchProfileForTest(false));
+        assertEquals(ReaderWarmupCoordinator.WarmupProfile.FIRST_BITMAP, ReaderWarmupCoordinator.launchProfileForTest(false, "wfwf"));
+        assertEquals(ReaderWarmupCoordinator.WarmupProfile.LAUNCH_WINDOW, ReaderWarmupCoordinator.launchProfileForTest(false, "ntk"));
         assertEquals(ReaderWarmupCoordinator.WarmupProfile.URL_ONLY, ReaderWarmupCoordinator.launchProfileForTest(true));
         assertEquals(12, ReaderWarmupCoordinator.adjacentByteLimitForTest("ntk"));
         assertEquals(3, ReaderWarmupCoordinator.adjacentByteLimitForTest("wfwf"));

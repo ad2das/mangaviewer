@@ -479,6 +479,7 @@ public class EpisodeActivity extends AppCompatActivity {
         });
         markFirstContent();
         scheduleInitialEpisodeWarmups(initialViewerTargetWarmupDelayMs());
+        scheduleVisibleEpisodeWarmup(initialVisibleEpisodeWarmupDelayMs());
     }
 
     private void warmupInitialViewerTargets() {
@@ -740,8 +741,6 @@ public class EpisodeActivity extends AppCompatActivity {
             }
         }
         int firstEpisodeIndex = firstReadableEpisodeIndexForTest(episodes);
-        if(isWfwfTitle())
-            firstEpisodeIndex = 0;
         Manga episode = safeGet(episodes, firstEpisodeIndex);
         return episode != null ? episode : safeGet(episodes, 0);
     }

@@ -137,9 +137,10 @@ public class ViewerWarmupManagerTest {
     }
 
     @Test
-    public void backgroundWarmupAllowsWolfFallbackButKeepsNtkDirectOnly() {
-        assertFalse(ViewerWarmupManager.shouldUseDirectOnlyBackgroundWarmupForTest("wfwf"));
+    public void backgroundWarmupUsesDirectOnlyForSpeculativeFetches() {
+        assertTrue(ViewerWarmupManager.shouldUseDirectOnlyBackgroundWarmupForTest("wfwf"));
         assertTrue(ViewerWarmupManager.shouldUseDirectOnlyBackgroundWarmupForTest("ntk"));
+        assertTrue(ViewerWarmupManager.shouldUseDirectOnlyBackgroundWarmupForTest(""));
     }
 
     @Test

@@ -142,14 +142,14 @@ public final class PrefetchCoordinator {
             addTarget(targets, episodes, current + 2, limit);
             return targets;
         }
+        int firstEpisode = firstEpisodeIndex(episodes);
+        addTarget(targets, episodes, firstEpisode, limit);
         if(preferScreenTop) {
             addTarget(targets, episodes, 0, limit);
             addTarget(targets, episodes, 1, limit);
             addTarget(targets, episodes, 2, limit);
             return targets;
         }
-        int firstEpisode = firstEpisodeIndex(episodes);
-        addTarget(targets, episodes, firstEpisode, limit);
         addTarget(targets, episodes, 0, limit);
         addTarget(targets, episodes, firstEpisode - 1, limit);
         addTarget(targets, episodes, 1, limit);

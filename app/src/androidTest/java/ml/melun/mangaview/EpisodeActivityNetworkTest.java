@@ -158,6 +158,36 @@ public class EpisodeActivityNetworkTest {
     }
 
     @Test
+    public void wfwfQuickReadOpensStartEpisode() throws Exception {
+        ActivityScenario<EpisodeActivity> scenario = launchWfwfSummertimeTitle();
+        try {
+            UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+            UiObject2 quickReadButton = device.wait(Until.findObject(By.res(PACKAGE_NAME, "HeaderFirst")), 60000L);
+            assertNotNull("Expected WFWF quick read button to render", quickReadButton);
+
+            AtomicReference<String> expectedStartEpisode = new AtomicReference<>("");
+            scenario.onActivity(activity -> {
+                List<Manga> episodes = readEpisodes(activity);
+                if(episodes != null && episodes.size() > 0) {
+                    Manga start = episodes.get(episodes.size() - 1);
+                    expectedStartEpisode.set(start == null ? "" : start.getName());
+                }
+            });
+
+            quickReadButton.click();
+
+            assertReaderOpened(device, "WFWF quick read");
+            showReaderToolbar(device);
+            UiObject2 toolbarTitle = device.wait(Until.findObject(By.res(PACKAGE_NAME, "toolbar_title")), 10000L);
+            assertNotNull("Expected WFWF quick read toolbar title", toolbarTitle);
+            assertEquals("Quick read without a bookmark should open the readable start episode",
+                    expectedStartEpisode.get(), toolbarTitle.getText());
+        } finally {
+            scenario.close();
+        }
+    }
+
+    @Test
     public void wfwfComicViewerSurvivesFastScrollStress() throws Exception {
         ActivityScenario<EpisodeActivity> scenario = launchWfwfSummertimeTitle();
         try {
