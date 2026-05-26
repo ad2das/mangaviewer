@@ -159,13 +159,17 @@ public class EpisodeActivityNetworkTest {
 
     @Test
     public void wfwfComicViewerSurvivesFastScrollStress() throws Exception {
-        launchWfwfComicTitle();
-        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
-        UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 60000L);
-        assertNotNull("Expected WFWF title to render at least one episode", episodeRow);
-        episodeRow.click();
-        assertReaderOpened(device, "WFWF scroll stress");
-        stressScrollViewer(device, "wfwf");
+        ActivityScenario<EpisodeActivity> scenario = launchWfwfSummertimeTitle();
+        try {
+            UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+            UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 60000L);
+            assertNotNull("Expected WFWF title to render at least one episode", episodeRow);
+            episodeRow.click();
+            assertReaderOpened(device, "WFWF scroll stress");
+            stressScrollViewer(device, "wfwf");
+        } finally {
+            scenario.close();
+        }
     }
 
     @Test
