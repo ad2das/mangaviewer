@@ -659,7 +659,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         Log.d(TAG, "open_adjacent next=$next sourceId=${source.id} sourceName=${source.name}")
         if (adjacentNavigationInFlight) return
         adjacentNavigationInFlight = true
-        setAdjacentButtonState(false, false)
         statusHandler.removeCallbacks(showAdjacentStatusRunnable)
         statusHandler.postDelayed(showAdjacentStatusRunnable, ADJACENT_STATUS_DELAY_MS)
         AppDispatchers.submitUserAction {
@@ -696,7 +695,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         adjacentNavigationInFlight = false
         statusHandler.removeCallbacks(showAdjacentStatusRunnable)
         if (destroyed || isFinishing) return
-        if (resolved.fetchedEpisodes) episodeListFetchAttempted = true
+        if (resolved.fetchedEpisodes && resolved.target == null) {
+            episodeListFetchAttempted = hasStableAdjacentResolutionSource(source, resolved.title)
+        }
         currentTitle = resolved.title ?: currentTitle
         if (resolved.target != null) {
             if (next && MissingEpisodeNavigator.maybePromptNextEpisode(
@@ -879,7 +880,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val title = currentTitle ?: manga?.title
         if (manga != null) attachEpisodeList(title, manga)
         if (adjacentNavigationInFlight) {
-            setAdjacentButtonState(false, false)
             return
         }
         val previous = if (manga == null) null else adjacentEpisode(manga, false)
@@ -1010,6 +1010,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun canFetchMissingAdjacent(manga: Manga?, title: Title?, target: Manga?): Boolean {
         return target == null && !episodeListFetchAttempted && manga?.isOnline == true && title != null
+    }
+
+    private fun hasStableAdjacentResolutionSource(manga: Manga?, title: Title?): Boolean {
+        if (manga == null) return false
+        val episodes = ViewerEpisodeResolver.episodeListFor(manga, null, title)
+        if (ViewerEpisodeResolver.findEpisodeIndex(episodes, manga, this::sameManga) >= 0) return true
+        return Manga.visibleEpisodeNumberKey(manga.name).isNotBlank()
     }
 
     private fun restoreTitleEpisodes(title: Title?, target: Manga?) {
