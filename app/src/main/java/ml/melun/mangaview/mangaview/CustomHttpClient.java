@@ -60,8 +60,8 @@ import ml.melun.mangaview.runtime.PerfTrace;
 import static ml.melun.mangaview.MainApplication.p;
 public class CustomHttpClient {
     private static final String TAG = "ViewerPerf";
-    public static final String DEFAULT_COMIC_URL = "https://wfwf454.com/cm";
-    public static final String WEBTOON_URL = "https://wfwf454.com";
+    public static final String DEFAULT_COMIC_URL = "https://wfwf455.com/cm";
+    public static final String WEBTOON_URL = "https://wfwf455.com";
     public static final String NTK_COMIC_URL = "https://sbxh2.com/manhwa";
     public static final String NTK_WEBTOON_URL = "https://sbxh2.com";
     public static final String NTK_REACHABLE_FALLBACK_URL = "https://ntk01.com";

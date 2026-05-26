@@ -40,8 +40,8 @@ public class PreferenceTest {
 
     @Test
     public void siteUrlNormalizationRepairsWolfManhwaPath() {
-        assertEquals("https://wfwf454.com/cm", Preference.normalizeComicUrlForTest("https://wfwf454.com/manhwa"));
-        assertEquals("https://wfwf454.com", Preference.normalizeWebtoonUrlForTest("https://wfwf454.com/manhwa"));
+        assertEquals("https://wfwf455.com/cm", Preference.normalizeComicUrlForTest("https://wfwf455.com/manhwa"));
+        assertEquals("https://wfwf455.com", Preference.normalizeWebtoonUrlForTest("https://wfwf455.com/manhwa"));
     }
 
     @Test
@@ -61,8 +61,8 @@ public class PreferenceTest {
 
     @Test
     public void forcedWfwfPresetKeepsRememberedResolvedRoot() {
-        assertEquals("https://wfwf454.com",
-                Preference.resolvedWfwfRootForTest("https://wfwf454.com", NTK_WEBTOON_URL, NTK_COMIC_URL, NTK_COMIC_URL));
+        assertEquals("https://wfwf455.com",
+                Preference.resolvedWfwfRootForTest("https://wfwf455.com", NTK_WEBTOON_URL, NTK_COMIC_URL, NTK_COMIC_URL));
     }
 
     @Test

@@ -345,6 +345,7 @@ class ReaderSession(
     private fun requestInitialFanout(startPage: Int) {
         if (shouldDeferInitialFanoutUntilAnchor()) {
             pendingInitialFanoutPage.set(startPage)
+            prefetchImageFilesAround(startPage)
             return
         }
         startInitialFanout(startPage)

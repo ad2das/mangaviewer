@@ -24,7 +24,7 @@ public class WfwfDomainResolver {
     private static final Pattern WFWF_PATTERN = Pattern.compile("^https?://wfwf(\\d+)\\.com(?:/cm)?/?$");
     private static final Pattern NUMBERED_DOMAIN_PATTERN = Pattern.compile("^https?://(wfwf|ntk)(\\d+)\\.com(?:/(?:cm|manhwa))?/?$");
     private static final Pattern NUMBERED_ROOT_PATTERN = Pattern.compile("https?://(?:www\\.)?(wfwf|ntk)(\\d+)\\.com", Pattern.CASE_INSENSITIVE);
-    private static final int DEFAULT_NUMBER = 454;
+    private static final int DEFAULT_NUMBER = 455;
     private static final int DEFAULT_NTK_NUMBER = 1;
     private static final int FORWARD_SCAN_LIMIT = 300;
     private static final int BACKWARD_SCAN_LIMIT = 30;

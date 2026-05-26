@@ -29,12 +29,14 @@ object ReaderWarmupCoordinator {
         LAUNCH_WINDOW
     }
 
-    private const val DEFAULT_LAUNCH_WINDOW_DECODE_PAGES = 3
+    private const val DEFAULT_LAUNCH_WINDOW_DECODE_PAGES = 8
     private const val DEFAULT_LAUNCH_WINDOW_BYTE_PAGES = 16
     private const val NTK_LAUNCH_WINDOW_DECODE_PAGES = 4
     private const val NTK_LAUNCH_WINDOW_BYTE_PAGES = 20
-    private const val WFWF_LAUNCH_WINDOW_DECODE_PAGES = 1
-    private const val WFWF_LAUNCH_WINDOW_BYTE_PAGES = 1
+    private const val WFWF_LAUNCH_WINDOW_DECODE_PAGES = 32
+    private const val WFWF_LAUNCH_WINDOW_BYTE_PAGES = 48
+    private const val DEFAULT_LAUNCH_WINDOW_SCREENFULS = 3f
+    private const val WFWF_LAUNCH_WINDOW_SCREENFULS = 4f
     private val inFlight = ConcurrentHashMap<String, AtomicBoolean>()
     private val entryLocks = Array(4096) { Any() }
 
@@ -44,7 +46,8 @@ object ReaderWarmupCoordinator {
         val tapProfile: WarmupProfile,
         val launchDecodePages: Int,
         val launchBytePages: Int,
-        val adjacentBytePages: Int
+        val adjacentBytePages: Int,
+        val launchDecodeScreenfuls: Float
     )
 
     @JvmStatic
@@ -139,7 +142,19 @@ object ReaderWarmupCoordinator {
         val entry = createEntry(context, manga, title, viewerWidth, exactEpisode, profile) ?: return null
         BackgroundPrefetchBudget.suppressForUserNavigation()
         prepareEntry(context.applicationContext, entry, exactEpisode, profile)
+        backfillLaunchWindowAfterFirstBitmap(context.applicationContext, entry, exactEpisode, profile)
         return readyKey(context, manga, title, viewerWidth, exactEpisode)
+    }
+
+    private fun backfillLaunchWindowAfterFirstBitmap(
+        appContext: Context,
+        entry: ReaderPreparedStore.Entry,
+        exactEpisode: Boolean,
+        profile: WarmupProfile
+    ) {
+        if (profile != WarmupProfile.FIRST_BITMAP) return
+        if (p != null && p.getDataSave()) return
+        schedule(appContext, entry, exactEpisode, WarmupProfile.LAUNCH_WINDOW)
     }
 
     private fun createEntry(
@@ -309,17 +324,58 @@ object ReaderWarmupCoordinator {
             }
             WarmupProfile.LAUNCH_WINDOW -> {
                 val sourceProfile = sourceProfile(entry.title ?: manga.title)
-                val decodeOrder = decodeOrder(startPage, urls.size, sourceProfile.launchDecodePages)
+                val decodeOrder = launchDecodeOrder(startPage, urls.size, sourceProfile.launchDecodePages)
+                val byteOrder = launchDecodeOrder(startPage, urls.size, sourceProfile.launchBytePages)
                 val decoded = HashSet<Int>()
+                val existingBitmaps = entry.snapshot().bitmaps
+                var decodedHeightPx = 0f
+                val targetHeightPx = viewportHeightPx(appContext) * sourceProfile.launchDecodeScreenfuls
+                prefetchLaunchBytes(appContext, manga, urls, byteOrder)
                 for ((position, index) in decodeOrder.withIndex()) {
+                    val existing = existingBitmaps[index]
+                    if (existing != null && !existing.isRecycled) {
+                        decoded.add(index)
+                        decodedHeightPx += drawnHeight(width, existing.width, existing.height)
+                        val complete = position == decodeOrder.lastIndex || (decodedHeightPx >= targetHeightPx && index != startPage)
+                        if (complete) entry.putBitmap(index, existing, index == startPage, true)
+                        if (complete) break
+                        continue
+                    }
                     val bitmap = decodePage(appContext, manga, urls[index], width)
                     decoded.add(index)
-                    entry.putBitmap(index, bitmap, index == startPage, position == decodeOrder.lastIndex)
+                    decodedHeightPx += drawnHeight(width, bitmap.width, bitmap.height)
+                    val complete = position == decodeOrder.lastIndex || (decodedHeightPx >= targetHeightPx && index != startPage)
+                    entry.putBitmap(index, bitmap, index == startPage, complete)
+                    if (complete) break
                 }
-                val byteOrder = decodeOrder(startPage, urls.size, sourceProfile.launchBytePages)
                 for (index in byteOrder) {
                     if (!decoded.contains(index)) fetchImageFile(appContext, manga, urls[index])
                 }
+            }
+        }
+    }
+
+    private fun prefetchLaunchBytes(
+        appContext: Context,
+        manga: Manga,
+        urls: List<String>,
+        order: List<Int>
+    ) {
+        if (order.isEmpty()) return
+        val completion = AppDispatchers.ioCompletionService<Boolean>()
+        var submitted = 0
+        for (index in order) {
+            val image = urls.getOrNull(index) ?: continue
+            completion.submit(AppDispatchers.safeCallable {
+                fetchImageFile(appContext, manga, image)
+                true
+            })
+            submitted++
+        }
+        repeat(minOf(submitted, 2)) {
+            try {
+                completion.poll()
+            } catch (_: Exception) {
             }
         }
     }
@@ -336,6 +392,22 @@ object ReaderWarmupCoordinator {
             add(startPage + distance)
             add(startPage - distance)
             distance++
+        }
+        return result
+    }
+
+    private fun launchDecodeOrder(startPage: Int, count: Int, limit: Int): List<Int> {
+        if (count <= 0 || limit <= 0) return emptyList()
+        val result = ArrayList<Int>(minOf(count, limit))
+        val anchor = startPage.coerceIn(0, count - 1)
+        for (index in anchor until count) {
+            if (result.size >= limit) return result
+            result.add(index)
+        }
+        var index = anchor - 1
+        while (index >= 0 && result.size < limit) {
+            result.add(index)
+            index--
         }
         return result
     }
@@ -382,7 +454,8 @@ object ReaderWarmupCoordinator {
                 tapProfile = WarmupProfile.FIRST_BITMAP,
                 launchDecodePages = NTK_LAUNCH_WINDOW_DECODE_PAGES,
                 launchBytePages = NTK_LAUNCH_WINDOW_BYTE_PAGES,
-                adjacentBytePages = 12
+                adjacentBytePages = 12,
+                launchDecodeScreenfuls = DEFAULT_LAUNCH_WINDOW_SCREENFULS
             )
             "wfwf" -> SourcePreloadProfile(
                 visibleProfile = WarmupProfile.URL_ONLY,
@@ -390,7 +463,8 @@ object ReaderWarmupCoordinator {
                 tapProfile = WarmupProfile.FIRST_BITMAP,
                 launchDecodePages = WFWF_LAUNCH_WINDOW_DECODE_PAGES,
                 launchBytePages = WFWF_LAUNCH_WINDOW_BYTE_PAGES,
-                adjacentBytePages = 3
+                adjacentBytePages = 3,
+                launchDecodeScreenfuls = WFWF_LAUNCH_WINDOW_SCREENFULS
             )
             else -> SourcePreloadProfile(
                 visibleProfile = WarmupProfile.URL_ONLY,
@@ -398,9 +472,19 @@ object ReaderWarmupCoordinator {
                 tapProfile = WarmupProfile.FIRST_BITMAP,
                 launchDecodePages = DEFAULT_LAUNCH_WINDOW_DECODE_PAGES,
                 launchBytePages = DEFAULT_LAUNCH_WINDOW_BYTE_PAGES,
-                adjacentBytePages = 10
+                adjacentBytePages = 10,
+                launchDecodeScreenfuls = DEFAULT_LAUNCH_WINDOW_SCREENFULS
             )
         }
+    }
+
+    private fun drawnHeight(targetWidth: Int, sourceWidth: Int, sourceHeight: Int): Float {
+        if (targetWidth <= 0 || sourceWidth <= 0 || sourceHeight <= 0) return 0f
+        return targetWidth * (sourceHeight / sourceWidth.toFloat())
+    }
+
+    private fun viewportHeightPx(context: Context): Int {
+        return max(1, context.resources.displayMetrics.heightPixels)
     }
 
     private fun attachTitle(manga: Manga, title: Title?) {

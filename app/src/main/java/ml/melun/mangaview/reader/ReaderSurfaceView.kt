@@ -520,6 +520,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
         super.onSizeChanged(width, height, oldWidth, oldHeight)
         val request = synchronized(stateLock) {
+            if (width != oldWidth || height != oldHeight) {
+                materializeLayoutDeltasLocked()
+                layoutDirty = true
+            }
             clampScrollLocked()
             lastAnchor = -1
             renderRequested = pages.isNotEmpty()
@@ -840,7 +844,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val top = pageTopLocked(index) - scrollOffset
             val pageHeight = pageDrawHeightLocked(page)
             val bottom = top + pageHeight
-            if (bottom >= 0f && top <= viewHeight) {
+            if (bottom > 0f && top < viewHeight) {
                 if (page.loading || (page.bitmap == null && page.tiles.isEmpty() && page.cardText == null)) {
                     visibleLoading++
                 }
@@ -1102,11 +1106,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun pageDrawHeightLocked(page: Page): Float {
-        val viewWidth = width
-        if (viewWidth <= 0) return 1f
-        if (page.cardText != null) return max(1f, height * TRANSITION_CARD_PAGE_HEIGHT_RATIO)
-        if (page.width > 0 && page.height > 0) return max(1f, viewWidth * (page.height / page.width.toFloat()))
-        return max(height * 1.4f, viewWidth * 1.35f)
+        val viewWidth = max(1, width)
+        val viewHeight = max(1, height)
+        if (page.cardText != null) return max(1f, viewHeight * TRANSITION_CARD_PAGE_HEIGHT_RATIO)
+        if (page.bitmap != null || page.tiles.isNotEmpty()) {
+            if (page.width > 0 && page.height > 0) return max(1f, viewWidth * (page.height / page.width.toFloat()))
+        }
+        return max(viewHeight * 1.4f, viewWidth * 1.35f)
     }
 
     private fun rebuildLayoutLocked() {

@@ -13,7 +13,7 @@ public class ReaderWarmupCoordinatorTest {
         assertEquals(0, ReaderWarmupCoordinator.decodeLimitForTest(ReaderWarmupCoordinator.WarmupProfile.FIRST_BYTE));
         assertEquals(0, ReaderWarmupCoordinator.decodeLimitForTest(ReaderWarmupCoordinator.WarmupProfile.ADJACENT_BYTES));
         assertEquals(1, ReaderWarmupCoordinator.decodeLimitForTest(ReaderWarmupCoordinator.WarmupProfile.FIRST_BITMAP));
-        assertEquals(3, ReaderWarmupCoordinator.decodeLimitForTest(ReaderWarmupCoordinator.WarmupProfile.LAUNCH_WINDOW));
+        assertEquals(8, ReaderWarmupCoordinator.decodeLimitForTest(ReaderWarmupCoordinator.WarmupProfile.LAUNCH_WINDOW));
     }
 
     @Test
@@ -24,9 +24,9 @@ public class ReaderWarmupCoordinatorTest {
         assertEquals(5, ReaderWarmupCoordinator.byteLimitForTest(ReaderWarmupCoordinator.WarmupProfile.ADJACENT_BYTES));
         assertEquals(16, ReaderWarmupCoordinator.byteLimitForTest(ReaderWarmupCoordinator.WarmupProfile.LAUNCH_WINDOW));
         assertEquals(20, ReaderWarmupCoordinator.launchByteLimitForTest("ntk"));
-        assertEquals(1, ReaderWarmupCoordinator.launchByteLimitForTest("wfwf"));
+        assertEquals(48, ReaderWarmupCoordinator.launchByteLimitForTest("wfwf"));
         assertEquals(4, ReaderWarmupCoordinator.launchDecodeLimitForTest("ntk"));
-        assertEquals(1, ReaderWarmupCoordinator.launchDecodeLimitForTest("wfwf"));
+        assertEquals(32, ReaderWarmupCoordinator.launchDecodeLimitForTest("wfwf"));
     }
 
     @Test
