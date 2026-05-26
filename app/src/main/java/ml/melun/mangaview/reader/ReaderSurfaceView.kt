@@ -131,6 +131,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private val minVelocity = ViewConfiguration.get(context).scaledMinimumFlingVelocity
     private val maxVelocity = ViewConfiguration.get(context).scaledMaximumFlingVelocity
     private var pageGapPx = DEFAULT_PAGE_GAP_PX
+    private var placeholderPageHeightRatio = DEFAULT_PLACEHOLDER_PAGE_HEIGHT_RATIO
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var velocityTracker: VelocityTracker? = null
@@ -142,6 +143,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var downY = 0f
     private var pendingDragY = Float.NaN
     private var lastVelocitySampleMs = 0L
+    private var lastScrollInteractionMs = 0L
     private var pointerDown = false
     private var dragging = false
     private var scrollOffset = 0f
@@ -215,7 +217,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             scroller.forceFinished(true)
             pages.clear()
             repeat(max(0, count)) { pages.add(Page()) }
-            scrollOffset = 0f
+            setScrollOffsetLocked(0f)
             boundaryArmedDirection = 0
             lastAnchor = -1
             hasDrawnContentFrame = false
@@ -268,10 +270,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (lockedRestorePage >= 0 && SystemClock.uptimeMillis() <= lockedRestoreUntilMs) {
                 applyLockedRestorePositionLocked()
             } else if (revealPrependedBoundary) {
-                scrollOffset = max(0f, shiftedFirstTop - height * PREPENDED_BOUNDARY_REVEAL_SCREEN_RATIO)
+                setScrollOffsetLocked(max(0f, shiftedFirstTop - height * PREPENDED_BOUNDARY_REVEAL_SCREEN_RATIO))
             } else {
-                scrollOffset += shiftedFirstTop - oldFirstTop
+                setScrollOffsetLocked(scrollOffset + shiftedFirstTop - oldFirstTop)
             }
+            if (!scroller.isFinished) scroller.forceFinished(true)
             boundaryArmedDirection = 0
             clampScrollLocked()
             renderRequested = true
@@ -306,6 +309,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.tiles = emptyList()
             page.width = max(1, bitmap.width)
             page.height = max(1, bitmap.height)
+            noteResolvedPageAspectLocked(page.width, page.height)
             page.loading = false
             page.cardText = null
             deferInitialEmptyDraw = false
@@ -337,6 +341,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.tiles = tiles
             page.width = max(1, pageWidth)
             page.height = max(1, pageHeight)
+            noteResolvedPageAspectLocked(page.width, page.height)
             page.loading = false
             page.cardText = null
             deferInitialEmptyDraw = false
@@ -468,7 +473,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val request = synchronized(stateLock) {
             val target = index.coerceIn(0, pages.lastIndex)
             rebuildLayoutLocked()
-            scrollOffset = pageTopOrElseLocked(target, 0f) - offset
+            setScrollOffsetLocked(pageTopOrElseLocked(target, 0f) - offset)
             clampScrollLocked()
             lastAnchor = -1
             renderRequested = true
@@ -562,6 +567,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 velocityTracker = VelocityTracker.obtain().also { it.addMovement(event) }
                 synchronized(stateLock) {
                     noteInputLocked(event)
+                    lastScrollInteractionMs = event.eventTime
                     clearLockedRestorePositionLocked()
                     scroller.forceFinished(true)
                     lastY = event.y
@@ -631,14 +637,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     pointerDown = false
                     dragging = false
                     pendingDragY = Float.NaN
+                    val dragDistance = abs(event.y - downY)
+                    val canFling = dragDistance >= height * MIN_FLING_DRAG_DISTANCE_RATIO
                     if (wasTap) {
                         boundaryArmedDirection = 0
                         setBusyLocked(false) to null
-                    } else if (wasReleased && abs(velocityY) > minVelocity) {
+                    } else if (wasReleased && canFling && abs(velocityY) > minVelocity) {
                         val flingVelocity = (velocityY * FLING_SCROLL_MULTIPLIER)
                             .coerceIn(-maxVelocity.toFloat(), maxVelocity.toFloat())
                             .toInt()
                         boundaryArmedDirection = directionForDelta(flingVelocity.toFloat())
+                        if (boundaryArmedDirection != 0) lastScrollInteractionMs = event.eventTime
                         val busyRequest = setBusyLocked(true)
                         scroller.fling(
                             0,
@@ -694,7 +703,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 false
             }
             if (scrolling) {
-                scrollOffset = scroller.currY.toFloat()
+                setScrollOffsetLocked(scroller.currY.toFloat())
                 clampScrollLocked()
                 renderRequested = true
                 request = windowRequestLocked(true)
@@ -1093,7 +1102,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             return
         }
         rebuildLayoutLocked()
-        scrollOffset = pageTopOrElseLocked(lockedRestorePage, 0f) - lockedRestoreOffset
+        setScrollOffsetLocked(pageTopOrElseLocked(lockedRestorePage, 0f) - lockedRestoreOffset)
     }
 
     private fun clearLockedRestorePositionLocked() {
@@ -1114,7 +1123,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun clampScrollLocked() {
-        scrollOffset = scrollOffset.coerceIn(0f, max(0f, totalHeightLocked() - height))
+        val maxScroll = max(0f, totalHeightLocked() - height)
+        setScrollOffsetLocked(scrollOffset.coerceIn(0f, maxScroll))
     }
 
     private fun boundaryRequestLocked(): BoundaryRequest? {
@@ -1143,7 +1153,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (page.bitmap != null || page.tiles.isNotEmpty()) {
             if (page.width > 0 && page.height > 0) return max(1f, viewWidth * (page.height / page.width.toFloat()))
         }
-        return max(viewHeight * 1.4f, viewWidth * 1.35f)
+        return max(1f, viewWidth * placeholderPageHeightRatio)
+    }
+
+    private fun noteResolvedPageAspectLocked(pageWidth: Int, pageHeight: Int) {
+        if (pageWidth <= 0 || pageHeight <= 0) return
+        val ratio = (pageHeight / pageWidth.toFloat()).coerceIn(
+            MIN_PLACEHOLDER_PAGE_HEIGHT_RATIO,
+            MAX_PLACEHOLDER_PAGE_HEIGHT_RATIO
+        )
+        placeholderPageHeightRatio =
+            placeholderPageHeightRatio * (1f - PLACEHOLDER_RATIO_LEARNING_RATE) +
+                ratio * PLACEHOLDER_RATIO_LEARNING_RATE
     }
 
     private fun rebuildLayoutLocked() {
@@ -1189,8 +1210,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val bottomBoundaryVisible = oldTop <= scrollOffset &&
             oldBottom > scrollOffset &&
             oldBottom - scrollOffset <= height
-        if (oldBottom <= scrollOffset || (!lastBusy && bottomBoundaryVisible)) {
-            scrollOffset += delta
+        val recentScroll = SystemClock.uptimeMillis() - lastScrollInteractionMs <= HEIGHT_ADJUST_SUPPRESS_AFTER_SCROLL_MS
+        if (!lastBusy && !pointerDown && !dragging && scroller.isFinished && !recentScroll &&
+            (oldBottom <= scrollOffset || bottomBoundaryVisible)
+        ) {
+            setScrollOffsetLocked(scrollOffset + delta)
         }
     }
 
@@ -1229,6 +1253,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         pageTopDeltas.clear()
     }
 
+    private fun setScrollOffsetLocked(next: Float) {
+        scrollOffset = next
+    }
+
     private fun directionForDelta(delta: Float): Int {
         return when {
             delta > 0f -> DIRECTION_NEXT
@@ -1250,8 +1278,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (!dragging) dragging = true
         setBusyLocked(true)
         val direction = directionForDelta(dy)
-        if (direction != 0) boundaryArmedDirection = direction
-        scrollOffset += dy * DRAG_SCROLL_MULTIPLIER
+        if (direction != 0) {
+            boundaryArmedDirection = direction
+            lastScrollInteractionMs = SystemClock.uptimeMillis()
+        }
+        setScrollOffsetLocked(scrollOffset + dy * DRAG_SCROLL_MULTIPLIER)
         clampScrollLocked()
         lastY = y
         return true
@@ -1507,6 +1538,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val TILE_SEAM_OVERLAP_PX = 1f
         private const val TRANSITION_CARD_WIDTH_RATIO = 0.82f
         private const val TRANSITION_CARD_PAGE_HEIGHT_RATIO = 0.20f
+        private const val DEFAULT_PLACEHOLDER_PAGE_HEIGHT_RATIO = 1.45f
+        private const val MIN_PLACEHOLDER_PAGE_HEIGHT_RATIO = 0.85f
+        private const val MAX_PLACEHOLDER_PAGE_HEIGHT_RATIO = 2.35f
+        private const val PLACEHOLDER_RATIO_LEARNING_RATE = 0.25f
         private const val NEAR_BOUNDARY_SCREENFULS = 10
         private const val NEAR_BOUNDARY_PAGE_THRESHOLD = 16
         private const val BUSY_WINDOW_ANCHOR_STEP = 2
@@ -1517,8 +1552,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val PREPENDED_BOUNDARY_REVEAL_SCREEN_RATIO = 0.72f
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
+        private const val MIN_FLING_DRAG_DISTANCE_RATIO = 0.16f
         private const val RESTORE_POSITION_LOCK_MS = 4000L
         private const val INITIAL_RENDER_HOLD_MS = 700L
+        private const val HEIGHT_ADJUST_SUPPRESS_AFTER_SCROLL_MS = 2500L
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
     }
