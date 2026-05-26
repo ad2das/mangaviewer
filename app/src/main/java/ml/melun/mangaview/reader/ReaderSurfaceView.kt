@@ -68,6 +68,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val items: List<DrawItem>
     )
 
+    private data class CoverageStats(
+        val drawablePx: Int,
+        val missingPx: Int,
+        val placeholderPx: Int,
+        val drawableItems: Int,
+        val totalItems: Int
+    )
+
     private data class WindowRequest(
         val firstPage: Int,
         val lastPage: Int,
@@ -175,6 +183,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var pendingWindowRequest: WindowRequest? = null
     private var windowDispatchPosted = false
     private var boundaryArmedDirection = 0
+    private var lastCoverageLog: CoverageStats? = null
 
     init {
         isFocusable = true
@@ -710,9 +719,19 @@ class ReaderSurfaceView @JvmOverloads constructor(
         dispatchBoundaryRequest(work.boundary)
         val state = work.state ?: return
         val timing = drawState(frameTimeNanos, callbackStartNs, state, canvas)
+        val coverage = coverageStats(state)
         if (lastVisibleLoading != state.visibleLoading) {
             lastVisibleLoading = state.visibleLoading
             Log.i(TAG, "reader_visible_loading=${state.visibleLoading} busy=${state.busy} items=${state.items.size}")
+        }
+        if (coverage != lastCoverageLog) {
+            lastCoverageLog = coverage
+            Log.i(
+                TAG,
+                "reader_visible_coverage drawablePx=${coverage.drawablePx} " +
+                    "missingPx=${coverage.missingPx} placeholderPx=${coverage.placeholderPx} " +
+                    "drawableItems=${coverage.drawableItems} items=${coverage.totalItems}"
+            )
         }
         if (timing.posted) synchronized(stateLock) { lastPostedFrameEndNs = timing.postEndNs }
         recordFrameStats(timing, state.busy)
@@ -834,7 +853,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (shouldHoldInitialRenderLocked()) {
             renderRequested = true
             scheduleFrameLocked()
-            return heldRestoreDrawStateLocked(viewWidth, viewHeight, busy)
+            return null
         }
         val items = ArrayList<DrawItem>()
         var visibleLoading = 0
@@ -862,20 +881,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return state
     }
 
-    private fun heldRestoreDrawStateLocked(viewWidth: Int, viewHeight: Int, busy: Boolean): DrawState? {
-        val index = initialRenderHoldPage
-        val page = pages.getOrNull(index) ?: return null
-        if (!pageHasDrawableContentLocked(index)) return null
-        val top = if (lockedRestorePage == index) {
-            lockedRestoreOffset.toFloat()
-        } else {
-            pageTopOrElseLocked(index, 0f) - scrollOffset
-        }
-        val pageHeight = pageDrawHeightLocked(page)
-        val item = DrawItem(page.bitmap, page.tiles, false, page.cardText, top, pageHeight)
-        return DrawState(viewWidth, viewHeight, busy, false, 0, listOf(item))
-    }
-
     private fun stateHasDrawableContent(state: DrawState): Boolean {
         for (item in state.items) {
             if (item.cardText != null) return true
@@ -884,6 +889,45 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (item.tiles.any { !it.bitmap.isRecycled }) return true
         }
         return false
+    }
+
+    private fun coverageStats(state: DrawState): CoverageStats {
+        if (state.empty) return CoverageStats(0, state.height, 0, 0, 0)
+        var drawablePx = 0f
+        var missingPx = 0f
+        var placeholderPx = 0f
+        var drawableItems = 0
+        var coveredPx = 0f
+        for (item in state.items) {
+            val top = max(0f, item.top)
+            val bottom = min(state.height.toFloat(), item.top + item.pageHeight)
+            if (bottom <= top) continue
+            val px = bottom - top
+            coveredPx += px
+            if (itemHasDrawable(item)) {
+                drawablePx += px
+                drawableItems++
+            } else if (item.loading) {
+                placeholderPx += px
+            } else {
+                missingPx += px
+            }
+        }
+        missingPx += max(0f, state.height - coveredPx)
+        return CoverageStats(
+            drawablePx = drawablePx.toInt(),
+            missingPx = missingPx.toInt(),
+            placeholderPx = placeholderPx.toInt(),
+            drawableItems = drawableItems,
+            totalItems = state.items.size
+        )
+    }
+
+    private fun itemHasDrawable(item: DrawItem): Boolean {
+        if (item.cardText != null) return true
+        val bitmap = item.bitmap
+        if (bitmap != null && !bitmap.isRecycled) return true
+        return item.tiles.any { !it.bitmap.isRecycled }
     }
 
     private fun shouldHoldInitialRenderLocked(): Boolean {
@@ -895,11 +939,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             return false
         }
         if (!pageHasDrawableContentLocked(page)) return true
-        val first = max(0, page - INITIAL_RENDER_HOLD_BEFORE)
-        val last = min(pages.lastIndex, page + INITIAL_RENDER_HOLD_AFTER)
-        for (index in first..last) {
-            if (!pageHasStableLayoutLocked(index)) return true
-        }
         clearInitialRenderHoldLocked()
         return false
     }
@@ -925,14 +964,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
         }
         return true
-    }
-
-    private fun pageHasStableLayoutLocked(index: Int): Boolean {
-        val page = pages.getOrNull(index) ?: return false
-        return page.cardText != null ||
-            page.bitmap != null ||
-            page.tiles.isNotEmpty() ||
-            (page.width > 0 && page.height > 0)
     }
 
     private fun pageHasDrawableContentLocked(index: Int): Boolean {
@@ -1488,8 +1519,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
         private const val RESTORE_POSITION_LOCK_MS = 4000L
         private const val INITIAL_RENDER_HOLD_MS = 700L
-        private const val INITIAL_RENDER_HOLD_BEFORE = 2
-        private const val INITIAL_RENDER_HOLD_AFTER = 2
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
     }

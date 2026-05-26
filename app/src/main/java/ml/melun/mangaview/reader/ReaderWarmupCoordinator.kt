@@ -35,9 +35,12 @@ object ReaderWarmupCoordinator {
     private const val NTK_LAUNCH_WINDOW_BYTE_PAGES = 20
     private const val WFWF_LAUNCH_WINDOW_DECODE_PAGES = 32
     private const val WFWF_LAUNCH_WINDOW_BYTE_PAGES = 48
+    private const val FIRST_BITMAP_BACKFILL_PAGES = 6
+    private const val FIRST_BITMAP_BACKFILL_SCREENFULS = 2.5f
     private const val DEFAULT_LAUNCH_WINDOW_SCREENFULS = 3f
     private const val WFWF_LAUNCH_WINDOW_SCREENFULS = 4f
     private val inFlight = ConcurrentHashMap<String, AtomicBoolean>()
+    private val firstBitmapBackfillInFlight = ConcurrentHashMap.newKeySet<String>()
     private val entryLocks = Array(4096) { Any() }
 
     private data class SourcePreloadProfile(
@@ -312,6 +315,7 @@ object ReaderWarmupCoordinator {
                 return
             }
             WarmupProfile.FIRST_BITMAP -> {
+                startFirstBitmapBackfill(appContext, entry, manga, urls, startPage, width)
                 val bitmap = decodePage(appContext, manga, urls[startPage], width)
                 entry.putBitmap(startPage, bitmap, true, false)
                 return
@@ -330,7 +334,6 @@ object ReaderWarmupCoordinator {
                 val existingBitmaps = entry.snapshot().bitmaps
                 var decodedHeightPx = 0f
                 val targetHeightPx = viewportHeightPx(appContext) * sourceProfile.launchDecodeScreenfuls
-                prefetchLaunchBytes(appContext, manga, urls, byteOrder)
                 for ((position, index) in decodeOrder.withIndex()) {
                     val existing = existingBitmaps[index]
                     if (existing != null && !existing.isRecycled) {
@@ -355,28 +358,63 @@ object ReaderWarmupCoordinator {
         }
     }
 
-    private fun prefetchLaunchBytes(
+    private fun startFirstBitmapBackfill(
         appContext: Context,
+        entry: ReaderPreparedStore.Entry,
         manga: Manga,
         urls: List<String>,
-        order: List<Int>
+        startPage: Int,
+        width: Int
     ) {
-        if (order.isEmpty()) return
-        val completion = AppDispatchers.ioCompletionService<Boolean>()
-        var submitted = 0
-        for (index in order) {
-            val image = urls.getOrNull(index) ?: continue
-            completion.submit(AppDispatchers.safeCallable {
-                fetchImageFile(appContext, manga, image)
-                true
-            })
-            submitted++
-        }
-        repeat(minOf(submitted, 2)) {
-            try {
-                completion.poll()
-            } catch (_: Exception) {
+        if (p != null && p.getDataSave()) return
+        if (!firstBitmapBackfillInFlight.add(entry.key)) return
+        try {
+            val sourceProfile = sourceProfile(entry.title ?: manga.title)
+            val decodeOrder = launchDecodeOrder(
+                startPage,
+                urls.size,
+                minOf(sourceProfile.launchDecodePages, FIRST_BITMAP_BACKFILL_PAGES)
+            ).filter { it != startPage }
+            val byteOrder = launchDecodeOrder(startPage, urls.size, sourceProfile.launchBytePages)
+            val targetHeightPx = viewportHeightPx(appContext) * FIRST_BITMAP_BACKFILL_SCREENFULS
+            val completion = AppDispatchers.ioCompletionService<Unit>()
+            var submitted = 0
+            var plannedHeightPx = 0f
+            for (index in decodeOrder) {
+                val image = urls.getOrNull(index) ?: continue
+                val existing = entry.snapshot().bitmaps[index]
+                if (existing != null && !existing.isRecycled) {
+                    plannedHeightPx += drawnHeight(width, existing.width, existing.height)
+                    continue
+                }
+                completion.submit(AppDispatchers.safeCallable {
+                    val bitmap = decodePage(appContext, manga, image, width)
+                    entry.putBitmap(index, bitmap, false, false)
+                })
+                submitted++
+                plannedHeightPx += viewportHeightPx(appContext).toFloat()
+                if (plannedHeightPx >= targetHeightPx) break
             }
+            AppDispatchers.submitImageWarmup {
+                try {
+                    if (submitted > 0) {
+                        repeat(submitted) {
+                            try {
+                                completion.take()
+                            } catch (_: Exception) {
+                            }
+                        }
+                    }
+                    for (index in byteOrder) {
+                        if (index != startPage && index !in decodeOrder) fetchImageFile(appContext, manga, urls[index])
+                    }
+                } finally {
+                    firstBitmapBackfillInFlight.remove(entry.key)
+                }
+            }
+        } catch (e: Exception) {
+            firstBitmapBackfillInFlight.remove(entry.key)
+            ml.melun.mangaview.report.CrashReporter.record(e)
         }
     }
 

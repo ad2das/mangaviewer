@@ -156,9 +156,11 @@ public class EpisodeActivityNetworkTest {
         UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 60000L);
         assertNotNull("Expected WFWF title to render at least one episode", episodeRow);
 
+        executeShell("logcat -c");
         episodeRow.click();
 
         assertReaderOpened(device, "WFWF");
+        assertNoInitialVisibleCoverageGap("WFWF");
     }
 
     @Test
@@ -555,6 +557,51 @@ public class EpisodeActivityNetworkTest {
         assertEquals("Expected zero reader render frame debt during " + source + " scroll stress: " + metrics.rawLine,
                 0, metrics.droppedFrameDebt);
         Log.d("ViewerPerf", "viewer_scroll_stress_end source=" + source);
+    }
+
+    private static void assertNoInitialVisibleCoverageGap(String source) throws Exception {
+        long deadline = System.currentTimeMillis() + 5000L;
+        String latestOutput = "";
+        while(System.currentTimeMillis() < deadline) {
+            latestOutput = executeShellOutput("logcat -d -s ReaderSurfaceStats:I *:S");
+            String loadingLine = firstLineContaining(latestOutput, "reader_visible_loading=");
+            String coverageLine = firstLineContaining(latestOutput, "reader_visible_coverage");
+            if(loadingLine != null && coverageLine != null) {
+                assertEquals("Expected no visible loading on initial " + source + " reader frame: " + loadingLine,
+                        0, parseMetricInt(loadingLine, "reader_visible_loading", -1));
+                assertEquals("Expected no placeholder pixels on initial " + source + " reader frame: " + coverageLine,
+                        0, parseMetricInt(coverageLine, "placeholderPx", -1));
+                assertEquals("Expected no missing pixels on initial " + source + " reader frame: " + coverageLine,
+                        0, parseMetricInt(coverageLine, "missingPx", -1));
+                assertTrue("Expected drawable pixels on initial " + source + " reader frame: " + coverageLine,
+                        parseMetricInt(coverageLine, "drawablePx", 0) > 0);
+                return;
+            }
+            Thread.sleep(100L);
+        }
+        assertTrue("Expected initial reader coverage metrics for " + source + ": " + latestOutput, false);
+    }
+
+    private static String firstLineContaining(String text, String needle) {
+        for(String line : text.split("\\R")) {
+            if(line.contains(needle))
+                return line;
+        }
+        return null;
+    }
+
+    private static int parseMetricInt(String line, String key, int defaultValue) {
+        String prefix = key + "=";
+        int start = line.indexOf(prefix);
+        if(start < 0)
+            return defaultValue;
+        start += prefix.length();
+        int end = start;
+        while(end < line.length() && line.charAt(end) >= '0' && line.charAt(end) <= '9')
+            end++;
+        if(end == start)
+            return defaultValue;
+        return Integer.parseInt(line.substring(start, end));
     }
 
     private static SurfaceJankMetrics readSurfaceJankMetrics(String source) throws Exception {

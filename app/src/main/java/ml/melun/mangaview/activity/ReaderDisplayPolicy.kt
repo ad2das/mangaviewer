@@ -5,7 +5,7 @@ import ml.melun.mangaview.mangaview.MTitle
 import ml.melun.mangaview.mangaview.Title
 
 object ReaderDisplayPolicy {
-    private const val DEFAULT_PAGE_GAP_PX = 2
+    private const val DEFAULT_PAGE_GAP_PX = 0
     private const val WEBTOON_PAGE_GAP_PX = 0
 
     @JvmStatic

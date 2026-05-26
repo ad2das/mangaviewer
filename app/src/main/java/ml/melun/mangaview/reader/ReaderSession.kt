@@ -365,7 +365,7 @@ class ReaderSession(
     }
 
     private fun shouldDeferInitialFanoutUntilAnchor(): Boolean {
-        return isWfwfSource(manga, title)
+        return false
     }
 
     private fun prefetchImageFilesAround(startPage: Int) {
