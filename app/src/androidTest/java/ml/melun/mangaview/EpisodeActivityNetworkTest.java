@@ -23,11 +23,15 @@ import org.junit.Test;
 import org.junit.Before;
 import org.junit.runner.RunWith;
 
+import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
 import java.io.FileInputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import ml.melun.mangaview.activity.EpisodeActivity;
@@ -500,6 +504,7 @@ public class EpisodeActivityNetworkTest {
         int middle = height / 2;
         int bottom = Math.min(height - 96, height * 6 / 7);
 
+        executeShell("logcat -c");
         Log.d("ViewerPerf", "viewer_scroll_stress_start source=" + source);
         Thread.sleep(2500L);
 
@@ -522,17 +527,133 @@ public class EpisodeActivityNetworkTest {
         device.waitForIdle(5000L);
         Thread.sleep(1500L);
         assertReaderOpened(device, source + " scroll stress");
+        SurfaceJankMetrics metrics = readSurfaceJankMetrics(source);
+        assertTrue("Expected enough reader surface frame samples during " + source + " scroll stress: " + metrics.rawLine,
+                metrics.samples >= 8);
+        assertEquals("Expected zero reader render frame drops during " + source + " scroll stress: " + metrics.rawLine,
+                0, metrics.droppedFrames);
+        assertEquals("Expected zero reader render frame debt during " + source + " scroll stress: " + metrics.rawLine,
+                0, metrics.droppedFrameDebt);
         Log.d("ViewerPerf", "viewer_scroll_stress_end source=" + source);
     }
 
+    private static SurfaceJankMetrics readSurfaceJankMetrics(String source) throws Exception {
+        String output = executeShellOutput("logcat -d -s ReaderSurfaceStats:I *:S");
+        SurfaceJankMetrics aggregate = new SurfaceJankMetrics("aggregate", Collections.<String, String>emptyMap());
+        int sessions = 0;
+        for(String line : output.split("\\R")) {
+            if(!line.contains("surface_jank_v3"))
+                continue;
+            aggregate = aggregate.plus(SurfaceJankMetrics.parse(line));
+            sessions++;
+        }
+        assertTrue("Expected ReaderSurfaceStats surface_jank_v3 metrics during " + source + " scroll stress", sessions > 0);
+        Log.d("ViewerPerf", "viewer_scroll_jank_assert source=" + source
+                + " sessions=" + sessions
+                + " samples=" + aggregate.samples
+                + " missedIntervals=" + aggregate.missedIntervals
+                + " missedFrames=" + aggregate.missedFrames
+                + " droppedFrames=" + aggregate.droppedFrames
+                + " droppedFrameDebt=" + aggregate.droppedFrameDebt
+                + " strictOverBudget=" + aggregate.strictOverBudget
+                + " totalP95Max=" + aggregate.totalP95
+                + " raw=" + aggregate.rawLine);
+        return aggregate;
+    }
+
     private static void executeShell(String command) throws Exception {
+        executeShellOutput(command);
+    }
+
+    private static String executeShellOutput(String command) throws Exception {
         ParcelFileDescriptor descriptor =
                 InstrumentationRegistry.getInstrumentation().getUiAutomation().executeShellCommand(command);
-        try(FileInputStream input = new FileInputStream(descriptor.getFileDescriptor())) {
-            byte[] buffer = new byte[256];
-            while(input.read(buffer) >= 0) {
-                // Drain command output so the shell command completes before the next motion event.
+        try(FileInputStream input = new FileInputStream(descriptor.getFileDescriptor());
+            ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[1024];
+            int read;
+            while((read = input.read(buffer)) >= 0) {
+                output.write(buffer, 0, read);
             }
+            return output.toString(StandardCharsets.UTF_8.name());
+        }
+    }
+
+    private static final class SurfaceJankMetrics {
+        final String rawLine;
+        final int samples;
+        final int strictOverBudget;
+        final int missedIntervals;
+        final int missedFrames;
+        final int droppedFrames;
+        final int droppedFrameDebt;
+        final float totalP95;
+
+        private SurfaceJankMetrics(String rawLine, Map<String, String> values) {
+            this.rawLine = rawLine;
+            samples = parseInt(values, "samples", 0);
+            strictOverBudget = parseInt(values, "strictOverBudget", 0);
+            missedIntervals = parseInt(values, "missedIntervals", 0);
+            missedFrames = parseInt(values, "missedFrames", 0);
+            droppedFrames = parseInt(values, "droppedFrames", 0);
+            droppedFrameDebt = parseInt(values, "droppedFrameDebt", 0);
+            totalP95 = parseFloat(values, "totalP95", 0f);
+        }
+
+        private SurfaceJankMetrics(
+                String rawLine,
+                int samples,
+                int strictOverBudget,
+                int missedIntervals,
+                int missedFrames,
+                int droppedFrames,
+                int droppedFrameDebt,
+                float totalP95) {
+            this.rawLine = rawLine;
+            this.samples = samples;
+            this.strictOverBudget = strictOverBudget;
+            this.missedIntervals = missedIntervals;
+            this.missedFrames = missedFrames;
+            this.droppedFrames = droppedFrames;
+            this.droppedFrameDebt = droppedFrameDebt;
+            this.totalP95 = totalP95;
+        }
+
+        static SurfaceJankMetrics parse(String line) {
+            Map<String, String> values = new HashMap<>();
+            for(String token : line.split("\\s+")) {
+                int separator = token.indexOf('=');
+                if(separator <= 0 || separator == token.length() - 1)
+                    continue;
+                values.put(token.substring(0, separator), token.substring(separator + 1));
+            }
+            return new SurfaceJankMetrics(line, values);
+        }
+
+        SurfaceJankMetrics plus(SurfaceJankMetrics other) {
+            return new SurfaceJankMetrics(
+                    rawLine + "\n" + other.rawLine,
+                    samples + other.samples,
+                    strictOverBudget + other.strictOverBudget,
+                    missedIntervals + other.missedIntervals,
+                    missedFrames + other.missedFrames,
+                    droppedFrames + other.droppedFrames,
+                    droppedFrameDebt + other.droppedFrameDebt,
+                    Math.max(totalP95, other.totalP95));
+        }
+
+        private static int parseInt(Map<String, String> values, String key, int defaultValue) {
+            String value = values.get(key);
+            if(value == null)
+                return defaultValue;
+            return Integer.parseInt(value);
+        }
+
+        private static float parseFloat(Map<String, String> values, String key, float defaultValue) {
+            String value = values.get(key);
+            if(value == null)
+                return defaultValue;
+            return Float.parseFloat(value);
         }
     }
 

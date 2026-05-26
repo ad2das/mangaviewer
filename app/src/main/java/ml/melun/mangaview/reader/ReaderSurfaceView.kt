@@ -1332,13 +1332,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val missedIntervals = frameSamples.count { it > missedThreshold }
         var missedFrames = 0
         for (interval in frameSamples) missedFrames += max(0, kotlin.math.floor(interval / measuredBudget - 0.5f).toInt())
+        val droppedFrames = total.count { it > nominalBudget }
+        var droppedFrameDebt = 0
+        for (duration in total) droppedFrameDebt += max(0, kotlin.math.floor(duration / nominalBudget).toInt())
         val strictPercent = if (frameSamples.isEmpty()) 0f else strictOverBudget * 100f / frameSamples.size
         val missedPercent = if (frameSamples.isEmpty()) 0f else missedIntervals * 100f / frameSamples.size
+        val droppedPercent = if (total.isEmpty()) 0f else droppedFrames * 100f / total.size
         Log.i(
             TAG,
             "surface_jank_v3 samples=${frameSamples.size} nominalBudget=${fmt(nominalBudget)} measuredBudget=${fmt(measuredBudget)} " +
                 "strictOverBudget=$strictOverBudget strictPct=${fmt(strictPercent)} " +
                 "missedIntervals=$missedIntervals missedFrames=$missedFrames missedPct=${fmt(missedPercent)} " +
+                "droppedFrames=$droppedFrames droppedFrameDebt=$droppedFrameDebt droppedPct=${fmt(droppedPercent)} " +
                 "callbackP95=${fmt(percentile(callbackIntervals, 0.95f))} callbackMax=${fmt(maxOrZero(callbackIntervals))} " +
                 "postP95=${fmt(percentile(postIntervals, 0.95f))} postMax=${fmt(maxOrZero(postIntervals))} " +
                 "lockP95=${fmt(percentile(lockWait, 0.95f))} drawP95=${fmt(percentile(draw, 0.95f))} " +
