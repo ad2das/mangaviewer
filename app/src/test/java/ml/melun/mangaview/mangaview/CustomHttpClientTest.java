@@ -425,6 +425,18 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void wfwfDomainThrottleDoesNotHidePresetRootChanges() {
+        long now = 10_000L;
+
+        assertTrue(CustomHttpClient.shouldSkipRecentWfwfDomainCheckForTest(
+                false, "https://wfwf453.com", "https://wfwf453.com", now - 1_000L, now));
+        assertFalse(CustomHttpClient.shouldSkipRecentWfwfDomainCheckForTest(
+                false, "https://wfwf454.com", "https://wfwf453.com", now - 1_000L, now));
+        assertFalse(CustomHttpClient.shouldSkipRecentWfwfDomainCheckForTest(
+                true, "https://wfwf453.com", "https://wfwf453.com", now - 1_000L, now));
+    }
+
+    @Test
     public void ntkDnsProtectionCoversRootAndImageSubdomains() {
         assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("sbxh1.com"));
         assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("www.sbxh1.com"));

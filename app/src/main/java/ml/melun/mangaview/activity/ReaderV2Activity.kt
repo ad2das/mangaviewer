@@ -300,15 +300,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         titleView.text = displayEpisodeTitle(manga, title)
         updateAdjacentButtons()
         status.text = displayEpisodeTitle(manga, title)
-        root.post {
-            if (destroyed || isFinishing) return@post
-            startReaderSession(
-                manga,
-                title,
-                intent.getStringExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY),
-                intent.getBooleanExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, false)
-            )
-        }
+        startReaderSession(
+            manga,
+            title,
+            intent.getStringExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY),
+            intent.getBooleanExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, false)
+        )
         updateResultEpisode(manga)
         if (!manga.isOnline) p?.removeViewerBookmark(manga)
     }

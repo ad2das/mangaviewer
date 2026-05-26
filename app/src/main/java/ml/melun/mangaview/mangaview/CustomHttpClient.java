@@ -60,8 +60,8 @@ import ml.melun.mangaview.runtime.PerfTrace;
 import static ml.melun.mangaview.MainApplication.p;
 public class CustomHttpClient {
     private static final String TAG = "ViewerPerf";
-    public static final String DEFAULT_COMIC_URL = "https://wfwf450.com/cm";
-    public static final String WEBTOON_URL = "https://wfwf450.com";
+    public static final String DEFAULT_COMIC_URL = "https://wfwf454.com/cm";
+    public static final String WEBTOON_URL = "https://wfwf454.com";
     public static final String NTK_COMIC_URL = "https://sbxh2.com/manhwa";
     public static final String NTK_WEBTOON_URL = "https://sbxh2.com";
     public static final String NTK_REACHABLE_FALLBACK_URL = "https://ntk01.com";
@@ -1671,10 +1671,14 @@ public class CustomHttpClient {
                     resolveState = wfwfDomainResolveState;
                 } else {
                     long lastCheck = pref.getLong("wfwfDomainLastCheck", 0);
-                    if(!force && now - lastCheck < WFWF_DOMAIN_CHECK_INTERVAL_MS)
+                    String lastRoot = pref.getString("wfwfDomainLastRoot", "");
+                    if(shouldSkipRecentWfwfDomainCheck(force, root, lastRoot, lastCheck, now))
                         return false;
                     wfwfDomainResolveState = new DomainResolveState();
-                    pref.edit().putLong("wfwfDomainLastCheck", now).apply();
+                    pref.edit()
+                            .putLong("wfwfDomainLastCheck", now)
+                            .putString("wfwfDomainLastRoot", root)
+                            .apply();
                     shouldResolve = true;
                     resolveState = wfwfDomainResolveState;
                 }
@@ -1917,6 +1921,22 @@ public class CustomHttpClient {
             if(response != null)
                 response.close();
         }
+    }
+
+    private static boolean shouldSkipRecentWfwfDomainCheck(boolean force, String currentRoot,
+                                                           String lastCheckedRoot, long lastCheck, long now) {
+        if(force || lastCheck <= 0)
+            return false;
+        String current = WfwfDomainResolver.toRoot(currentRoot);
+        String last = WfwfDomainResolver.toRoot(lastCheckedRoot);
+        if(current.length() == 0 || !current.equals(last))
+            return false;
+        return now - lastCheck < WFWF_DOMAIN_CHECK_INTERVAL_MS;
+    }
+
+    static boolean shouldSkipRecentWfwfDomainCheckForTest(boolean force, String currentRoot,
+                                                          String lastCheckedRoot, long lastCheck, long now) {
+        return shouldSkipRecentWfwfDomainCheck(force, currentRoot, lastCheckedRoot, lastCheck, now);
     }
 
     private boolean waitForWfwfDomainResolve(DomainResolveState resolveState) {

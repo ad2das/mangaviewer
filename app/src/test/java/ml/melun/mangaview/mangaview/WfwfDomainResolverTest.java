@@ -16,7 +16,7 @@ public class WfwfDomainResolverTest {
 
     @Test
     public void toRootStripsKnownPathSuffixes() {
-        assertEquals("https://wfwf450.com", WfwfDomainResolver.toRoot("https://wfwf450.com/cm/"));
+        assertEquals("https://wfwf454.com", WfwfDomainResolver.toRoot("https://wfwf454.com/cm/"));
         assertEquals("https://ntk1.com", WfwfDomainResolver.toRoot("https://ntk1.com/manhwa/"));
     }
 

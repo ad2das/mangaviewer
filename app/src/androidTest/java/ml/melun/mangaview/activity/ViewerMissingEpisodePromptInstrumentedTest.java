@@ -313,7 +313,7 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
 
     private Title fetchWfwfSummertimeRendering() {
         LiveNetworkAssume.assumeEnabled();
-        MainApplication.p.setSitePreset("https://wfwf453.com/cm", "https://wfwf453.com");
+        MainApplication.p.setSitePreset(CustomHttpClient.DEFAULT_COMIC_URL, CustomHttpClient.WEBTOON_URL);
         MainApplication.p.setBaseMode(MTitle.base_comic);
 
         Title title = new Title(

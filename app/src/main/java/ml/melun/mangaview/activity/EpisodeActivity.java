@@ -524,7 +524,7 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     private long initialVisibleEpisodeWarmupDelayMs() {
-        return initialVisibleEpisodeWarmupDelayMsForTest(p.isNtkSite() || getHttpClient().isNtk());
+        return initialVisibleEpisodeWarmupDelayMsForTest(p.isNtkSite() || getHttpClient().isNtk(), isWfwfTitle());
     }
 
     private void scheduleVisibleEpisodeWarmup(long delayMs) {
@@ -597,6 +597,10 @@ public class EpisodeActivity extends AppCompatActivity {
 
     static long initialVisibleEpisodeWarmupDelayMsForTest(boolean ntkSite) {
         return EpisodeWarmupPolicy.initialVisibleDelay(ntkSite);
+    }
+
+    static long initialVisibleEpisodeWarmupDelayMsForTest(boolean ntkSite, boolean wfwfSite) {
+        return EpisodeWarmupPolicy.initialVisibleDelay(ntkSite, wfwfSite);
     }
 
     private void warmupLikelyNtkViewerPage() {
@@ -736,8 +740,15 @@ public class EpisodeActivity extends AppCompatActivity {
             }
         }
         int firstEpisodeIndex = firstReadableEpisodeIndexForTest(episodes);
+        if(isWfwfTitle())
+            firstEpisodeIndex = 0;
         Manga episode = safeGet(episodes, firstEpisodeIndex);
         return episode != null ? episode : safeGet(episodes, 0);
+    }
+
+    private boolean isWfwfTitle() {
+        String source = title == null ? "" : title.getSourceSite();
+        return source != null && "wfwf".equals(source.trim().toLowerCase(java.util.Locale.ROOT));
     }
 
     static int firstReadableEpisodeIndexForTest(List<Manga> episodes) {
@@ -808,6 +819,7 @@ public class EpisodeActivity extends AppCompatActivity {
         ntkLoadTimeoutHandled = true;
         attachLoadedEpisodesToTitle(episodes);
         saveEpisodeCache(episodes);
+        warmupInitialViewerTargets();
         episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
         afterLoad();
         hideProgress();
@@ -993,6 +1005,7 @@ public class EpisodeActivity extends AppCompatActivity {
         if(episodes.size() == 0)
             return false;
         attachLoadedEpisodesToTitle(episodes);
+        warmupInitialViewerTargets();
         episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
         afterLoad();
         ntkLoadTimeoutHandled = true;

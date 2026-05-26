@@ -36,9 +36,12 @@ public final class PrefetchCoordinator {
         if(shouldSkipWolfBackgroundPrefetchForTest(title == null ? null : title.getSourceSite(), p != null && p.isNtkSite(), getHttpClient().isNtk()))
             return;
         Context appContext = context.getApplicationContext();
+        String sourceSite = title == null ? null : title.getSourceSite();
+        boolean wfwfContext = isWfwfPrefetchContext(sourceSite);
         int limit = episodePrefetchLimitForTest(p.getDataSave(), aggressiveAllowed(appContext),
-                isNtkPrefetchContext(title == null ? null : title.getSourceSite()));
-        List<Integer> targets = viewerTargets(episodes, bookmarkIndex, limit);
+                isNtkPrefetchContext(sourceSite), wfwfContext);
+        List<Integer> targets = viewerTargets(episodes, bookmarkIndex, limit,
+                wfwfContext);
         int resumeIndex = bookmarkIndex > 0 && bookmarkIndex <= episodes.size() ? bookmarkIndex - 1 : -1;
         warmTargets(appContext, title, episodes, targets, mode, resumeIndex);
     }
@@ -125,7 +128,8 @@ public final class PrefetchCoordinator {
         ReaderWarmupCoordinator.primeAdjacent(context, manga, title);
     }
 
-    private static List<Integer> viewerTargets(List<Manga> episodes, int bookmarkIndex, int limit) {
+    private static List<Integer> viewerTargets(List<Manga> episodes, int bookmarkIndex, int limit,
+                                               boolean preferScreenTop) {
         ArrayList<Integer> targets = new ArrayList<>();
         if(bookmarkIndex > 0 && bookmarkIndex <= episodes.size()) {
             int current = bookmarkIndex - 1;
@@ -136,6 +140,12 @@ public final class PrefetchCoordinator {
             addTarget(targets, episodes, 0, limit);
             addTarget(targets, episodes, current - 2, limit);
             addTarget(targets, episodes, current + 2, limit);
+            return targets;
+        }
+        if(preferScreenTop) {
+            addTarget(targets, episodes, 0, limit);
+            addTarget(targets, episodes, 1, limit);
+            addTarget(targets, episodes, 2, limit);
             return targets;
         }
         int firstEpisode = firstEpisodeIndex(episodes);
@@ -155,7 +165,13 @@ public final class PrefetchCoordinator {
     }
 
     static int episodePrefetchLimitForTest(boolean dataSave, boolean aggressiveAllowed, boolean ntkSite) {
+        return episodePrefetchLimitForTest(dataSave, aggressiveAllowed, ntkSite, false);
+    }
+
+    static int episodePrefetchLimitForTest(boolean dataSave, boolean aggressiveAllowed, boolean ntkSite, boolean wfwfSite) {
         if(dataSave)
+            return 1;
+        if(wfwfSite)
             return 1;
         return aggressiveAllowed ? 3 : 2;
     }
@@ -204,6 +220,10 @@ public final class PrefetchCoordinator {
         if(getHttpClient() != null && getHttpClient().isNtk())
             return true;
         return sourceSite != null && "ntk".equals(sourceSite.trim().toLowerCase(java.util.Locale.ROOT));
+    }
+
+    private static boolean isWfwfPrefetchContext(String sourceSite) {
+        return sourceSite != null && "wfwf".equals(sourceSite.trim().toLowerCase(java.util.Locale.ROOT));
     }
 
     public static boolean shouldSkipNtkPrefetchForTest(String sourceSite, boolean ntkPreference, boolean ntkClient) {

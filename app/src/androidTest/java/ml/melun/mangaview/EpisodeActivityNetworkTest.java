@@ -272,7 +272,7 @@ public class EpisodeActivityNetworkTest {
 
     private void launchWfwfComicTitle() {
         Context context = ApplicationProvider.getApplicationContext();
-        MainApplication.p.setSitePreset("https://wfwf452.com/cm", "https://wfwf452.com");
+        MainApplication.p.setSitePreset(CustomHttpClient.DEFAULT_COMIC_URL, CustomHttpClient.WEBTOON_URL);
         MainApplication.p.setBaseMode(MTitle.base_comic);
 
         Title title = new Title(
@@ -340,7 +340,7 @@ public class EpisodeActivityNetworkTest {
 
     private ActivityScenario<EpisodeActivity> launchWfwfSummertimeTitle() {
         Context context = ApplicationProvider.getApplicationContext();
-        MainApplication.p.setSitePreset("https://wfwf453.com/cm", "https://wfwf453.com");
+        MainApplication.p.setSitePreset(CustomHttpClient.DEFAULT_COMIC_URL, CustomHttpClient.WEBTOON_URL);
         MainApplication.p.setBaseMode(MTitle.base_comic);
 
         Title title = new Title(
