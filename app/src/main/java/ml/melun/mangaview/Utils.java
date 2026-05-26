@@ -700,7 +700,7 @@ public class Utils {
     }
 
     public static synchronized boolean consumeFocusedDestinationLaunch(Activity activity, long debounceMs) {
-        if(!canUseActivity(activity) || !activity.hasWindowFocus())
+        if(!canUseActivity(activity))
             return false;
         long now = SystemClock.uptimeMillis();
         Long lastLaunchAt = focusedDestinationLaunchTimes.get(activity);

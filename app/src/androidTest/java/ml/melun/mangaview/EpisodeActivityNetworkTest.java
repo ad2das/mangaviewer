@@ -68,6 +68,43 @@ public class EpisodeActivityNetworkTest {
     }
 
     @Test
+    public void ntkComicToolbarPreviousButtonSwitchesEpisode() throws Exception {
+        launchNtkComicTitle();
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 60000L);
+        assertNotNull("Expected NTK title to render at least one episode", episodeRow);
+
+        episodeRow.click();
+        assertReaderOpened(device, "NTK");
+        showReaderToolbar(device);
+
+        UiObject2 toolbarTitle = device.wait(Until.findObject(By.res(PACKAGE_NAME, "toolbar_title")), 10000L);
+        assertNotNull("Expected viewer toolbar title to render", toolbarTitle);
+        String originalTitle = toolbarTitle.getText();
+
+        UiObject2 previousButton = device.wait(Until.findObject(By.res(PACKAGE_NAME, "toolbar_previous")), 10000L);
+        assertNotNull("Expected previous episode button to render", previousButton);
+        previousButton.click();
+
+        UiObject2 changedTitle = device.wait(Until.findObject(By.res(PACKAGE_NAME, "toolbar_title")), 20000L);
+        assertNotNull("Expected viewer toolbar title after previous episode tap", changedTitle);
+        long deadline = System.currentTimeMillis() + 20000L;
+        while(originalTitle != null && originalTitle.equals(changedTitle.getText()) && System.currentTimeMillis() < deadline) {
+            Thread.sleep(250L);
+            changedTitle = device.findObject(By.res(PACKAGE_NAME, "toolbar_title"));
+            if(changedTitle == null) {
+                showReaderToolbar(device);
+                changedTitle = device.wait(Until.findObject(By.res(PACKAGE_NAME, "toolbar_title")), 3000L);
+            }
+        }
+        assertNotNull("Expected viewer toolbar title to remain visible", changedTitle);
+        assertTrue("Expected previous episode button to switch the viewer episode",
+                originalTitle == null || !originalTitle.equals(changedTitle.getText()));
+        assertReaderOpened(device, "NTK previous episode");
+    }
+
+    @Test
     public void wfwfComicTitleOpensEpisodeList() throws Exception {
         launchWfwfComicTitle();
 

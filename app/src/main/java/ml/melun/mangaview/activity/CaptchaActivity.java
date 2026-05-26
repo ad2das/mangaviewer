@@ -207,8 +207,8 @@ public class CaptchaActivity extends AppCompatActivity {
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         settings.setLoadsImagesAutomatically(true);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
-        settings.setJavaScriptCanOpenWindowsAutomatically(true);
-        settings.setSupportMultipleWindows(true);
+        settings.setJavaScriptCanOpenWindowsAutomatically(false);
+        settings.setSupportMultipleWindows(false);
 
         // Use real Chrome Mobile UA, remove "wv" indicator
         String realChromeUA = getHttpClient().agent;
@@ -249,6 +249,19 @@ public class CaptchaActivity extends AppCompatActivity {
         });
 
         WebViewClient client = new WebViewClient() {
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                if(request == null || !request.isForMainFrame())
+                    return false;
+                String targetUrl = request.getUrl() == null ? null : request.getUrl().toString();
+                return shouldBlockCaptchaNavigation(targetUrl);
+            }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                return shouldBlockCaptchaNavigation(url);
+            }
 
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
@@ -857,6 +870,27 @@ public class CaptchaActivity extends AppCompatActivity {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    private boolean shouldBlockCaptchaNavigation(String url) {
+        if(url == null || url.length() == 0)
+            return false;
+        String lower = url.toLowerCase(java.util.Locale.ROOT);
+        if(lower.startsWith("about:") || lower.startsWith("data:") || lower.startsWith("blob:"))
+            return false;
+        if(isAllowedCaptchaNavigationUrl(lower))
+            return false;
+        android.util.Log.d("CaptchaActivity", "Blocked external captcha navigation: " + url);
+        return true;
+    }
+
+    private boolean isAllowedCaptchaNavigationUrl(String lowerUrl) {
+        return lowerUrl.contains("://ntk")
+                || lowerUrl.contains("://sbxh")
+                || lowerUrl.contains("://toonflix")
+                || lowerUrl.contains("challenges.cloudflare.com")
+                || lowerUrl.contains("cloudflare.com/turnstile")
+                || lowerUrl.contains("turnstile");
     }
 
     static boolean shouldSuppressNtkLoadErrorPopupForTest(boolean ntkSite, String requestUrl, String captchaUrl) {

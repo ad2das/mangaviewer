@@ -1739,10 +1739,10 @@ class ReaderSession(
         private const val PREPARED_FALLBACK_MS = 250L
         private const val PREPARED_BITMAP_RELEASE_DELAY_MS = 12000L
         private const val PRIME_FORWARD_EPISODES = 40
-        private const val BOUNDARY_DECODE_AHEAD_PAGES = 6
-        private const val BOUNDARY_BYTE_AHEAD_PAGES = 24
-        private const val BOUNDARY_BUSY_DECODE_AHEAD_PAGES = 5
-        private const val BOUNDARY_BUSY_BYTE_AHEAD_PAGES = 18
+        private const val BOUNDARY_DECODE_AHEAD_PAGES = 8
+        private const val BOUNDARY_BYTE_AHEAD_PAGES = 32
+        private const val BOUNDARY_BUSY_DECODE_AHEAD_PAGES = 10
+        private const val BOUNDARY_BUSY_BYTE_AHEAD_PAGES = 28
         private const val BUSY_DELIVERY_DISCARD_LIMIT = 16
         private const val BUSY_DELIVERY_RETAIN_LIMIT = 8
         private const val BUSY_VISIBLE_DECODE_RADIUS = 2

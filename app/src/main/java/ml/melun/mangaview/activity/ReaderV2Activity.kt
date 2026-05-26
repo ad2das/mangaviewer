@@ -752,6 +752,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             startAtFirstPage = true,
             clearViewImmediately = false
         )
+        primeAdjacentLaunchWindow(currentTitle, adjacentEpisode(target, false))
         primeAdjacentLaunchWindow(currentTitle, adjacentEpisode(target, true))
         statusHandler.postDelayed({
             if (!destroyed && !isFinishing) updateAdjacentButtons()
@@ -883,6 +884,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
         val previous = if (manga == null) null else adjacentEpisode(manga, false)
         val next = if (manga == null) null else adjacentEpisode(manga, true)
+        primeAdjacentLaunchWindow(title, previous)
         primeAdjacentLaunchWindow(title, next)
         prevButton.isEnabled = shouldEnableAdjacentButton(
             previous != null,

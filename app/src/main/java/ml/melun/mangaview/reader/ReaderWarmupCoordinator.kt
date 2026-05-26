@@ -31,8 +31,8 @@ object ReaderWarmupCoordinator {
 
     private const val DEFAULT_LAUNCH_WINDOW_DECODE_PAGES = 3
     private const val DEFAULT_LAUNCH_WINDOW_BYTE_PAGES = 16
-    private const val NTK_LAUNCH_WINDOW_DECODE_PAGES = 3
-    private const val NTK_LAUNCH_WINDOW_BYTE_PAGES = 14
+    private const val NTK_LAUNCH_WINDOW_DECODE_PAGES = 4
+    private const val NTK_LAUNCH_WINDOW_BYTE_PAGES = 20
     private const val WFWF_LAUNCH_WINDOW_DECODE_PAGES = 3
     private const val WFWF_LAUNCH_WINDOW_BYTE_PAGES = 18
     private val inFlight = ConcurrentHashMap<String, AtomicBoolean>()
@@ -371,7 +371,7 @@ object ReaderWarmupCoordinator {
                 tapProfile = WarmupProfile.FIRST_BITMAP,
                 launchDecodePages = NTK_LAUNCH_WINDOW_DECODE_PAGES,
                 launchBytePages = NTK_LAUNCH_WINDOW_BYTE_PAGES,
-                adjacentBytePages = 8
+                adjacentBytePages = 12
             )
             "wfwf" -> SourcePreloadProfile(
                 visibleProfile = WarmupProfile.URL_ONLY,
