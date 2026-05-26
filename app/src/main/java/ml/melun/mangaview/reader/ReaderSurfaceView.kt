@@ -611,6 +611,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         sampleVelocity = true
                     }
                     if (frameScheduled) {
+                        noteInputLocked(event)
                         pendingDragY = event.y
                         null
                     } else {
@@ -1150,13 +1151,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun applyLockedRestorePositionLocked() {
-        if (lockedRestorePage !in 0 until pages.size) return
+        val target = lockedRestorePage
+        if (target !in 0 until pages.size) return
         if (SystemClock.uptimeMillis() > lockedRestoreUntilMs) {
             clearLockedRestorePositionLocked()
             return
         }
         rebuildLayoutLocked()
-        setScrollOffsetLocked(pageTopOrElseLocked(lockedRestorePage, 0f) - lockedRestoreOffset)
+        setScrollOffsetLocked(pageTopOrElseLocked(target, 0f) - lockedRestoreOffset)
+        if (pageHasDrawableContentLocked(target)) {
+            clearLockedRestorePositionLocked()
+        }
     }
 
     private fun clearLockedRestorePositionLocked() {
@@ -1312,6 +1317,21 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun setScrollOffsetLocked(next: Float) {
+        if (height > 0) {
+            val delta = next - scrollOffset
+            if (
+                abs(delta) >= height * SCROLL_JUMP_LOG_SCREEN_RATIO &&
+                !pointerDown &&
+                !dragging &&
+                scroller.isFinished
+            ) {
+                Log.w(
+                    TAG,
+                    "reader_scroll_jump delta=${delta.toInt()} from=${scrollOffset.toInt()} to=${next.toInt()} " +
+                        "anchor=${if (pages.isEmpty()) -1 else anchorPageLocked()} busy=$lastBusy lockedRestore=$lockedRestorePage"
+                )
+            }
+        }
         scrollOffset = next
     }
 
@@ -1624,6 +1644,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val RESTORE_POSITION_LOCK_MS = 4000L
         private const val INITIAL_RENDER_HOLD_MS = 700L
         private const val HEIGHT_ADJUST_SUPPRESS_AFTER_SCROLL_MS = 2500L
+        private const val SCROLL_JUMP_LOG_SCREEN_RATIO = 0.75f
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
 
