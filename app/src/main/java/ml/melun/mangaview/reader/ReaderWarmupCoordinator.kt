@@ -90,12 +90,17 @@ object ReaderWarmupCoordinator {
         val snapshot = entry.snapshot()
         val startBitmap = snapshot.bitmaps[snapshot.startPage]
         val hasStartBitmap = startBitmap != null && !startBitmap.isRecycled
-        if (hasStartBitmap) ml.melun.mangaview.glide.ViewerWarmupManager.logMetric("prepared_ready_bitmap_hit", 1L)
-        else ml.melun.mangaview.glide.ViewerWarmupManager.logMetric(
+        if (hasStartBitmap) {
+            ml.melun.mangaview.glide.ViewerWarmupManager.logMetric("prepared_ready_bitmap_hit", 1L)
+            return key
+        }
+        ml.melun.mangaview.glide.ViewerWarmupManager.logMetric(
             "prepared_miss_" + snapshot.status.name.lowercase(Locale.ROOT),
             1L
         )
-        return if (hasStartBitmap) key else null
+        if (snapshot.status == ReaderPreparedStore.Status.FAILED) return null
+        schedule(context.applicationContext, entry, exactEpisode, launchProfile(launchTitle))
+        return key
     }
 
     @JvmStatic
@@ -568,13 +573,16 @@ object ReaderWarmupCoordinator {
             if (!it.isRecycled) return it
         }
         val startedAt = android.os.SystemClock.elapsedRealtime()
+        val metric = index == 0 && manga.isOnline
         val source = fetchImageFile(context, manga, image)
+        val fetchedAt = android.os.SystemClock.elapsedRealtime()
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         if (source != null) {
             BitmapFactory.decodeFile(source.absolutePath, bounds)
         } else {
             decodeLocal(context, image, bounds)
         }
+        val boundsAt = android.os.SystemClock.elapsedRealtime()
         val options = BitmapFactory.Options().apply {
             inPreferredConfig = Bitmap.Config.RGB_565
             inSampleSize = sampleSize(bounds.outWidth, width)
@@ -584,13 +592,18 @@ object ReaderWarmupCoordinator {
         } else {
             decodeLocal(context, image, options)
         } ?: throw java.io.IOException("Bitmap decode failed")
+        val rawAt = android.os.SystemClock.elapsedRealtime()
         if (!manga.isOnline) return raw
         val decoded = Decoder(manga.seed, manga.id).decode(raw, width)
         if (decoded !== raw && !raw.isRecycled) raw.recycle()
-        if (index == 0) ViewerWarmupManager.logMetric(
-            "reader_warmup_first_decode_ms",
-            android.os.SystemClock.elapsedRealtime() - startedAt
-        )
+        if (metric) {
+            val finishedAt = android.os.SystemClock.elapsedRealtime()
+            ViewerWarmupManager.logMetric("reader_warmup_first_fetch_ms", fetchedAt - startedAt)
+            ViewerWarmupManager.logMetric("reader_warmup_first_bounds_ms", boundsAt - fetchedAt)
+            ViewerWarmupManager.logMetric("reader_warmup_first_raw_decode_ms", rawAt - boundsAt)
+            ViewerWarmupManager.logMetric("reader_warmup_first_transform_ms", finishedAt - rawAt)
+            ViewerWarmupManager.logMetric("reader_warmup_first_decode_ms", finishedAt - startedAt)
+        }
         return decoded
     }
 

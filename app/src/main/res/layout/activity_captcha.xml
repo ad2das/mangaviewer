@@ -12,6 +12,8 @@
         android:id="@+id/captchaWebView"
         android:layout_width="match_parent"
         android:layout_height="0dp"
+        android:contentDescription="captcha-web-view"
+        android:importantForAccessibility="yes"
         android:visibility="visible"
         app:layout_constraintBottom_toTopOf="@+id/captchaText"
         app:layout_constraintEnd_toEndOf="parent"

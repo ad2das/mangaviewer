@@ -4,8 +4,6 @@ import android.content.Context;
 import android.net.ConnectivityManager;
 import android.net.NetworkCapabilities;
 
-import androidx.recyclerview.widget.RecyclerView;
-
 import com.bumptech.glide.Priority;
 
 import java.util.ArrayList;
@@ -160,7 +158,57 @@ public final class PrefetchCoordinator {
     }
 
     public static int firstEpisodeIndex(List<Manga> episodes) {
-        return episodes == null || episodes.size() == 0 ? -1 : episodes.size() - 1;
+        if(episodes == null || episodes.size() == 0)
+            return -1;
+        int fallback = episodes.size() - 1;
+        int bestIndex = -1;
+        double bestNumber = Double.MAX_VALUE;
+        for(int i = 0; i < episodes.size(); i++) {
+            Manga episode = episodes.get(i);
+            if(episode == null || !episode.isOnline())
+                continue;
+            double number = readableEpisodeNumber(episode);
+            if(number >= 0 && number < bestNumber) {
+                bestNumber = number;
+                bestIndex = i;
+            }
+        }
+        return bestIndex >= 0 ? bestIndex : fallback;
+    }
+
+    private static double readableEpisodeNumber(Manga episode) {
+        if(episode == null)
+            return -1;
+        double named = firstVisibleEpisodeNumber(Manga.visibleEpisodeNumberKey(episode.getName()));
+        if(named >= 0)
+            return named;
+        return episode.getId() > 0 ? episode.getId() : -1;
+    }
+
+    private static double firstVisibleEpisodeNumber(String key) {
+        if(key == null || key.length() == 0)
+            return -1;
+        if(key.contains("-") && !key.contains(",")) {
+            String[] parts = key.split("-", 2);
+            try {
+                double major = Double.parseDouble(parts[0]);
+                double part = Double.parseDouble(parts[1]);
+                return major > 0 ? major + Math.min(part, 9999.0d) / 10000.0d : -1;
+            } catch (Exception ignored) {
+                return -1;
+            }
+        }
+        double result = -1;
+        String[] parts = key.split(",");
+        for(String part : parts) {
+            try {
+                double value = Double.parseDouble(part);
+                if(value > 0 && (result < 0 || value < result))
+                    result = value;
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return result;
     }
 
     static int episodePrefetchLimitForTest(boolean dataSave, boolean aggressiveAllowed) {
@@ -177,23 +225,6 @@ public final class PrefetchCoordinator {
         if(wfwfSite)
             return 1;
         return aggressiveAllowed ? 3 : 2;
-    }
-
-    public static List<Integer> visibleEpisodeTargets(List<Manga> episodes, int firstAdapterPosition,
-                                                      int lastAdapterPosition, int ahead, int limit) {
-        ArrayList<Integer> targets = new ArrayList<>();
-        if(episodes == null || episodes.size() == 0 || limit <= 0)
-            return targets;
-        if(firstAdapterPosition == RecyclerView.NO_POSITION || lastAdapterPosition == RecyclerView.NO_POSITION)
-            return targets;
-        int firstEpisode = Math.max(0, firstAdapterPosition - 1);
-        int lastEpisode = Math.max(firstEpisode, lastAdapterPosition - 1 + Math.max(0, ahead));
-        lastEpisode = Math.min(lastEpisode, episodes.size() - 1);
-        for(int i = firstEpisode; i <= lastEpisode && targets.size() < limit; i++)
-            addTarget(targets, episodes, i, limit);
-        if(targets.size() < limit && firstEpisode > 0)
-            addTarget(targets, episodes, firstEpisode - 1, limit);
-        return targets;
     }
 
     private static void addTarget(List<Integer> targets, List<Manga> episodes, int index, int limit) {

@@ -44,6 +44,11 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void pageAndImageClientsShareConnectionPool() {
+        assertTrue(CustomHttpClient.clientsShareConnectionPoolForTest());
+    }
+
+    @Test
     public void restoredClearanceIsAppliedOnlyWhenFreshAndChanged() {
         long now = 10_000L;
 

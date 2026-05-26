@@ -85,13 +85,35 @@ public class MangaRepositoryTest {
         title.setSourceSite("wfwf");
         title.setEps(Arrays.asList(
                 new Manga(144, "144", "", MTitle.base_comic),
-                new Manga(143, "143", "", MTitle.base_comic)));
+                new Manga(143, "143", "", MTitle.base_comic),
+                new Manga(1, "1", "", MTitle.base_comic)));
 
-        assertEquals(1, MangaRepository.foregroundWfwfPrimeIndexForTest(title, true));
+        assertEquals(2, MangaRepository.foregroundWfwfPrimeIndexForTest(title, true));
+        title.setEps(Arrays.asList(
+                new Manga(1, "1", "", MTitle.base_comic),
+                new Manga(143, "143", "", MTitle.base_comic),
+                new Manga(144, "144", "", MTitle.base_comic)));
+        assertEquals(0, MangaRepository.foregroundWfwfPrimeIndexForTest(title, true));
         assertEquals(-1, MangaRepository.foregroundWfwfPrimeIndexForTest(title, false));
 
         title.setSourceSite("ntk");
         assertEquals(-1, MangaRepository.foregroundWfwfPrimeIndexForTest(title, true));
+    }
+
+    @Test
+    public void foregroundWfwfPrimeSynthesizesFirstEpisodeWhenListStartsLater() {
+        Title title = new Title("wfwf", "", "", null, "", 10017, MTitle.base_comic);
+        title.setSourceSite("wfwf");
+        title.setEps(Arrays.asList(
+                new Manga(144, "144", "", MTitle.base_comic),
+                new Manga(143, "143", "", MTitle.base_comic),
+                new Manga(2, "2", "", MTitle.base_comic)));
+
+        Manga episode = MangaRepository.foregroundWfwfPrimeEpisodeForTest(title, true);
+
+        assertEquals(1, episode.getId());
+        assertEquals(10017, episode.getTitleId());
+        assertEquals(title, episode.getTitle());
     }
 
     @Test

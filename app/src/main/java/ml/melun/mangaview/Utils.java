@@ -618,7 +618,8 @@ public class Utils {
             ViewerWarmupManager.logMetric("viewer_launch_abort_activity_after", manga.getId());
             return;
         }
-        Intent viewer = viewerIntent(context, manga, false, false, true, false);
+        boolean includeMangaEpisodes = launchTitle == null;
+        Intent viewer = viewerIntent(context, manga, false, false, includeMangaEpisodes, false);
         viewer.putExtra("online", online);
         if(preparedKey != null)
             viewer.putExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY, preparedKey);

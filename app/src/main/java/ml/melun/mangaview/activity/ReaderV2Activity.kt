@@ -90,6 +90,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var pendingProgressOffset = 0
     private var pendingBoundaryStatus = false
     private var pendingBoundaryCaptchaRetry = false
+    private var readerWindowBusy = false
+    private var deferredBoundaryDirection = 0
+    private var deferredBoundaryAnchor = -1
+    private var lastReaderInteractionMs = 0L
+    private var lastReaderBusyMs = 0L
     private val missingEpisodePromptState = MissingEpisodeNavigator.PromptState()
     private var pendingCaptchaRetryManga: Manga? = null
     private var pendingCaptchaRetryTitle: Title? = null
@@ -134,6 +139,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (adjacentNavigationInFlight && !destroyed && !isFinishing) {
             status.visibility = TextView.VISIBLE
             status.text = "회차 확인 중"
+        }
+    }
+    private val deferredBoundaryAppendRunnable: Runnable = Runnable {
+        val remainingQuietMs = boundaryAppendQuietRemainingMs()
+        if (remainingQuietMs > 0L) {
+            statusHandler.postDelayed(deferredBoundaryAppendRunnable, remainingQuietMs)
+        } else {
+            flushDeferredBoundaryAppend()
         }
     }
 
@@ -393,12 +406,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         statusHandler.removeCallbacks(showAdjacentStatusRunnable)
         statusHandler.removeCallbacks(initialDrawGateTimeoutRunnable)
+        statusHandler.removeCallbacks(deferredBoundaryAppendRunnable)
         missingEpisodePromptState.dismiss()
         removeInitialDrawGateListener()
         saveCurrentReadingProgress()
         pendingProgressInfo = null
         pendingBoundaryStatus = false
         pendingBoundaryCaptchaRetry = false
+        deferredBoundaryDirection = 0
+        deferredBoundaryAnchor = -1
         renderView.setWindowListener(null)
         renderView.stopRenderingAndClearPages()
         session?.cancel()
@@ -598,9 +614,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 session?.requestWindowAsync(firstPage, lastPage, anchorPage, busy)
             }
             if (busy) {
+                readerWindowBusy = true
+                lastReaderBusyMs = SystemClock.uptimeMillis()
+                statusHandler.removeCallbacks(deferredBoundaryAppendRunnable)
                 pendingAnchorAfterBusy = progressPage
                 return@trace
             }
+            readerWindowBusy = false
+            statusHandler.removeCallbacks(deferredBoundaryAppendRunnable)
+            statusHandler.postDelayed(deferredBoundaryAppendRunnable, BOUNDARY_APPEND_QUIET_MS)
             pendingAnchorAfterBusy = -1
             MainThreadStallMonitor.trace("reader_update_current_episode") {
                 updateCurrentEpisode(progressPage, progressOffset, saveProgress = true)
@@ -631,12 +653,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             ev.actionMasked == MotionEvent.ACTION_CANCEL
         ) {
             session?.noteUserInteraction()
+            lastReaderInteractionMs = SystemClock.uptimeMillis()
         }
         return super.dispatchTouchEvent(ev)
     }
 
     override fun onNearBoundary(direction: Int, anchorPage: Int) {
-        session?.prepareAdjacentEpisode(anchorPage, direction)
+        // Near-boundary callbacks must not mutate the active page list. During a fast
+        // fling this used to insert adjacent-episode pages before the user actually
+        // crossed the boundary, which created visible placeholders and frame debt.
     }
 
     override fun onBoundaryReached(direction: Int, anchorPage: Int) {
@@ -645,6 +670,39 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         session?.pageInfo(anchorPage)?.let {
             if (!it.transitionCard) currentManga = it.manga
         }
+        if (boundaryAppendQuietRemainingMs() > 0L) {
+            deferredBoundaryDirection = direction
+            deferredBoundaryAnchor = anchorPage
+            statusHandler.removeCallbacks(deferredBoundaryAppendRunnable)
+            statusHandler.postDelayed(deferredBoundaryAppendRunnable, boundaryAppendQuietRemainingMs())
+            return
+        }
+        startBoundaryAppend(direction, anchorPage)
+    }
+
+    private fun flushDeferredBoundaryAppend() {
+        val direction = deferredBoundaryDirection
+        val anchor = deferredBoundaryAnchor
+        if (direction == 0 || anchor < 0 || destroyed || isFinishing) return
+        val remainingQuietMs = boundaryAppendQuietRemainingMs()
+        if (remainingQuietMs > 0L) {
+            statusHandler.postDelayed(deferredBoundaryAppendRunnable, remainingQuietMs)
+            return
+        }
+        deferredBoundaryDirection = 0
+        deferredBoundaryAnchor = -1
+        startBoundaryAppend(direction, anchor)
+    }
+
+    private fun boundaryAppendQuietRemainingMs(): Long {
+        if (readerWindowBusy) return BOUNDARY_APPEND_QUIET_MS
+        val lastActiveMs = maxOf(lastReaderInteractionMs, lastReaderBusyMs)
+        if (lastActiveMs <= 0L) return 0L
+        val quietForMs = SystemClock.uptimeMillis() - lastActiveMs
+        return (BOUNDARY_APPEND_QUIET_MS - quietForMs).coerceAtLeast(0L)
+    }
+
+    private fun startBoundaryAppend(direction: Int, anchorPage: Int) {
         pendingBoundaryStatus = true
         pendingBoundaryCaptchaRetry = true
         pendingCaptchaRetryDirection = direction
@@ -1415,6 +1473,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val PROGRESS_SAVE_DEBOUNCE_MS = 1000L
         private const val INITIAL_STATUS_DELAY_MS = 450L
         private const val BOUNDARY_STATUS_DELAY_MS = 250L
+        private const val BOUNDARY_APPEND_QUIET_MS = 900L
         private const val ADJACENT_BUTTON_REFRESH_DELAY_MS = 350L
         private const val ADJACENT_STATUS_DELAY_MS = 180L
         private const val INITIAL_DRAW_GATE_TIMEOUT_MS = 1600L

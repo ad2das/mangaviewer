@@ -4,16 +4,20 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertEquals;
 
+import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Rect;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
+import android.view.View;
 
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry;
+import androidx.test.runner.lifecycle.Stage;
 import androidx.test.uiautomator.By;
 import androidx.test.uiautomator.UiDevice;
 import androidx.test.uiautomator.UiObject2;
@@ -29,11 +33,13 @@ import java.io.FileInputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
+import ml.melun.mangaview.activity.CaptchaActivity;
 import ml.melun.mangaview.activity.EpisodeActivity;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.Manga;
@@ -133,7 +139,10 @@ public class EpisodeActivityNetworkTest {
         }
         episodeRow.click();
         assertReaderOpenedOrCaptchaShown(device, "NTK scroll stress");
-        if(device.findObject(By.res(PACKAGE_NAME, "captchaContainer")) != null) return;
+        if(isCaptchaShown(device)) {
+            finishCaptchaActivities();
+            return;
+        }
         stressScrollViewer(device, "ntk");
     }
 
@@ -388,6 +397,7 @@ public class EpisodeActivityNetworkTest {
                 10017,
                 MTitle.base_comic);
         title.setSourceSite("wfwf");
+        MainApplication.p.setBookmark(title, -1);
 
         Intent intent = new Intent(context, EpisodeActivity.class);
         intent.putExtra("title", Utils.toViewerTitleJson(title, true));
@@ -490,14 +500,69 @@ public class EpisodeActivityNetworkTest {
         assertCaptchaShown(device, label);
     }
 
+    private static boolean isCaptchaShown(UiDevice device) {
+        if(device.findObject(By.res(PACKAGE_NAME, "captchaContainer")) != null)
+            return true;
+        final boolean[] found = new boolean[1];
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            Collection<Activity> activities = ActivityLifecycleMonitorRegistry.getInstance()
+                    .getActivitiesInStage(Stage.RESUMED);
+            for(Activity activity : activities) {
+                if(activity instanceof CaptchaActivity) {
+                    found[0] = true;
+                    return;
+                }
+            }
+        });
+        return found[0];
+    }
+
+    private static void finishCaptchaActivities() {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            Collection<Activity> activities = ActivityLifecycleMonitorRegistry.getInstance()
+                    .getActivitiesInStage(Stage.RESUMED);
+            for(Activity activity : activities) {
+                if(activity instanceof CaptchaActivity)
+                    activity.finish();
+            }
+        });
+    }
+
     private static void assertCaptchaShown(UiDevice device, String label) {
         UiObject2 captcha = device.wait(Until.findObject(By.res(PACKAGE_NAME, "captchaContainer")), 5000L);
         assertNotNull("Expected " + label + " to open the in-app captcha screen when NTK requires verification", captcha);
         assertEquals("Captcha must stay inside the app package", PACKAGE_NAME, device.getCurrentPackageName());
-        assertNotNull("Expected captcha WebView", device.wait(Until.findObject(By.res(PACKAGE_NAME, "captchaWebView")), 5000L));
-        assertNotNull("Expected captcha reload action", device.wait(Until.findObject(By.res(PACKAGE_NAME, "captchaReload")), 5000L));
-        assertNotNull("Expected captcha cookie check action", device.wait(Until.findObject(By.res(PACKAGE_NAME, "captchaCheckCookie")), 5000L));
-        assertNotNull("Expected captcha close action", device.wait(Until.findObject(By.res(PACKAGE_NAME, "captchaClose")), 5000L));
+        assertTrue("Expected captcha WebView", waitForCaptchaView(R.id.captchaWebView, 5000L));
+        assertTrue("Expected captcha reload action", waitForCaptchaView(R.id.captchaReload, 5000L));
+        assertTrue("Expected captcha cookie check action", waitForCaptchaView(R.id.captchaCheckCookie, 5000L));
+        assertTrue("Expected captcha close action", waitForCaptchaView(R.id.captchaClose, 5000L));
+    }
+
+    private static boolean waitForCaptchaView(int viewId, long timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while(System.currentTimeMillis() < deadline) {
+            final boolean[] found = new boolean[1];
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+                Collection<Activity> activities = ActivityLifecycleMonitorRegistry.getInstance()
+                        .getActivitiesInStage(Stage.RESUMED);
+                for(Activity activity : activities) {
+                    if(activity instanceof CaptchaActivity) {
+                        View view = activity.findViewById(viewId);
+                        found[0] = view != null && view.getVisibility() == View.VISIBLE;
+                        return;
+                    }
+                }
+            });
+            if(found[0])
+                return true;
+            try {
+                Thread.sleep(100L);
+            } catch(InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return false;
     }
 
     private static UiObject2 waitForToolbarTitleChange(UiDevice device, String originalTitle, long timeoutMs) throws Exception {

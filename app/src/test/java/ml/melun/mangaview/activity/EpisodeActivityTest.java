@@ -44,33 +44,6 @@ public class EpisodeActivityTest {
     }
 
     @Test
-    public void visibleEpisodeWarmupLimitWarmsTapTargetsWhenDataSaverIsOff() {
-        assertEquals(1, EpisodeActivity.visibleEpisodeWarmupLimitForTest(true, false));
-        assertEquals(4, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, false));
-        assertEquals(5, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, true));
-        assertEquals(5, EpisodeActivity.visibleEpisodeWarmupLimitForTest(false, true, true));
-    }
-
-    @Test
-    public void visibleEpisodeWarmupStartsRightAfterEpisodeListSettles() {
-        assertEquals(0L, EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest());
-        assertTrue(EpisodeActivity.visibleEpisodeWarmupIdleDelayMsForTest() <= 100L);
-    }
-
-    @Test
-    public void ntkVisibleEpisodeWarmupStartsWithoutLongColdDelay() {
-        assertEquals(0L, EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(false));
-        assertEquals(0L, EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(true));
-        assertTrue(EpisodeActivity.initialViewerTargetWarmupDelayMsForTest(false) <= EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(false));
-    }
-
-    @Test
-    public void wfwfVisibleWarmupStartsAfterPrimaryTargetIsScheduled() {
-        assertEquals(0L, EpisodeActivity.initialViewerTargetWarmupDelayMsForTest(false));
-        assertEquals(0L, EpisodeActivity.initialVisibleEpisodeWarmupDelayMsForTest(false, true));
-    }
-
-    @Test
     public void diskEpisodeCacheLoadsOnlyAfterMemoryMiss() {
         assertFalse(EpisodeActivity.shouldLoadDiskEpisodeCacheAsyncForTest(true));
         assertTrue(EpisodeActivity.shouldLoadDiskEpisodeCacheAsyncForTest(false));

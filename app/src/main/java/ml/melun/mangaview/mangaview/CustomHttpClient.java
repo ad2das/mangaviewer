@@ -41,6 +41,7 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
 import okhttp3.Call;
+import okhttp3.ConnectionPool;
 import okhttp3.ConnectionSpec;
 import okhttp3.Dispatcher;
 import okhttp3.Dns;
@@ -99,6 +100,7 @@ public class CustomHttpClient {
     private static final String CLOUDFLARE_DOH_HOST = "cloudflare-dns.com";
     private static final String NTK_EDGE_IP = "104.16.219.55";
     private static final Gson GSON = new Gson();
+    private static final ConnectionPool SHARED_CONNECTION_POOL = new ConnectionPool(12, 5, TimeUnit.MINUTES);
     private static final Object NTK_DNS_CACHE_LOCK = new Object();
     private static final Map<String, CachedDns> NTK_DNS_CACHE = new HashMap<>();
     private static final Set<String> NTK_DNS_WARMING = new java.util.HashSet<>();
@@ -3496,6 +3498,7 @@ public class CustomHttpClient {
                 .readTimeout(20, TimeUnit.SECONDS)
                 .writeTimeout(20, TimeUnit.SECONDS)
                 .callTimeout(25, TimeUnit.SECONDS)
+                .connectionPool(SHARED_CONNECTION_POOL)
                 .dns(NETWORK_RESILIENT_DNS);
         return configured;
     }
@@ -3536,6 +3539,12 @@ public class CustomHttpClient {
     static boolean imageDispatcherIsWiderForTest() {
         return MAX_IMAGE_HTTP_REQUESTS > MAX_HTTP_REQUESTS
                 && MAX_IMAGE_HTTP_REQUESTS_PER_HOST > MAX_HTTP_REQUESTS_PER_HOST;
+    }
+
+    static boolean clientsShareConnectionPoolForTest() {
+        OkHttpClient page = fastWolfPageClient(new OkHttpClient.Builder()).build();
+        OkHttpClient image = imageClient(new OkHttpClient.Builder()).build();
+        return page.connectionPool() == image.connectionPool();
     }
 
 }

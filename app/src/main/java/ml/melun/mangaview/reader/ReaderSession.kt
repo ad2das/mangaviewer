@@ -33,6 +33,7 @@ import java.util.concurrent.ThreadFactory
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.abs
 import kotlin.math.max
 
 class ReaderSession(
@@ -158,10 +159,12 @@ class ReaderSession(
     private val pages = ArrayList<PageRef>()
     private val pagesLock = Object()
     private val loading = ConcurrentHashMap.newKeySet<Int>()
+    private val urgentLoading = ConcurrentHashMap.newKeySet<Int>()
     private val bytePrefetching = ConcurrentHashMap.newKeySet<Int>()
     private val decodedWidths = ConcurrentHashMap<Int, Int>()
     private val desiredWidths = ConcurrentHashMap<Int, Int>()
     private val inFlightWidths = ConcurrentHashMap<Int, Int>()
+    private val pendingDeliveryWidths = ConcurrentHashMap<Int, Int>()
     private val sourceWidths = ConcurrentHashMap<Int, Int>()
     private val achievableWidths = ConcurrentHashMap<Int, Int>()
     private val deliveryQueue = ConcurrentLinkedQueue<Delivery>()
@@ -175,6 +178,7 @@ class ReaderSession(
     private val deliveredOwned = HashSet<Int>()
     private var retainedFirstPage = 0
     private var retainedLastPage = 0
+    private var retainedAnchorPage = 0
     private val firstBitmapLogged = AtomicBoolean(false)
     private val initialFanoutStarted = AtomicBoolean(false)
     private val pendingInitialFanoutPage = AtomicInteger(-1)
@@ -212,6 +216,19 @@ class ReaderSession(
 
         override fun onBitmapReady(index: Int, bitmap: Bitmap) {
             if (!pagesInstalled.get()) {
+                val snapshot = preparedEntry?.snapshot()
+                val urls = snapshot?.images
+                if (!urls.isNullOrEmpty()) {
+                    val resolvedStartPage = resolvePreparedStartPage(snapshot.startPage)
+                    installImages(urls, resolvedStartPage, false)
+                    ViewerWarmupManager.logMetric("reader_prepared_bitmap_installed_pages", 1L)
+                    deliverPreparedBitmap(index, bitmap)
+                    flushEarlyPreparedBitmaps()
+                    releasePreparedStoreBitmapsSoon()
+                    requestPageForeground(resolvedStartPage)
+                    requestInitialFanout(resolvedStartPage)
+                    return
+                }
                 if (!bitmap.isRecycled) earlyPreparedBitmaps[index] = bitmap
                 return
             }
@@ -499,6 +516,7 @@ class ReaderSession(
             synchronized(deliveredBitmaps) {
                 retainedFirstPage = safeFirst
                 retainedLastPage = safeLast
+                retainedAnchorPage = anchor.coerceIn(safeFirst, safeLast)
             }
         }
         if (busy) {
@@ -529,6 +547,7 @@ class ReaderSession(
         viewportBusy.set(false)
         deliveryResumeAtMs.set(0L)
         lastUserInteractionMs.set(0L)
+        urgentLoading.clear()
         main.removeCallbacks(clearPreparedBitmapsRunnable)
         main.removeCallbacks(deliveryDrainRunnable)
         recycleQueuedDeliveries()
@@ -900,11 +919,13 @@ class ReaderSession(
         if (delta <= 0) return
         shiftConcurrentMap(decodedWidths, delta)
         shiftConcurrentMap(desiredWidths, delta)
+        shiftConcurrentMap(pendingDeliveryWidths, delta)
         shiftConcurrentMap(sourceWidths, delta)
         shiftConcurrentMap(achievableWidths, delta)
         shiftConcurrentMap(earlyPreparedBitmaps, delta)
         inFlightWidths.clear()
         loading.clear()
+        urgentLoading.clear()
         bytePrefetching.clear()
         synchronized(deliveredBitmaps) {
             val oldEntries = deliveredBitmaps.entries.toList()
@@ -950,30 +971,37 @@ class ReaderSession(
         val effectiveTargetWidth = achievableWidth(index, targetWidth)
         val decodedWidth = decodedWidths[index] ?: 0
         if (decodedWidth >= effectiveTargetWidth) return
+        val pendingWidth = pendingDeliveryWidths[index] ?: 0
+        if (pendingWidth >= effectiveTargetWidth) return
         val activeWidth = inFlightWidths[index] ?: 0
-        if (!loading.add(index)) {
+        val ownsLoading = loading.add(index)
+        val urgent = !ownsLoading &&
+            busy &&
+            activeWidth > targetWidth &&
+            !hasDeliveredBitmap(index) &&
+            urgentLoading.add(index)
+        if (!ownsLoading && !urgent) {
             if (targetWidth > activeWidth)
                 ViewerWarmupManager.logMetric("busy_to_idle_upgrade_pending", targetWidth.toLong())
             return
         }
-        inFlightWidths[index] = targetWidth
-        if (!busy || anchor) {
+        if (ownsLoading) inFlightWidths[index] = targetWidth
+        if (ownsLoading && (!busy || anchor)) {
             main.post { if (!cancelled.get()) listener.onPageLoading(index) }
         }
-        val networkExecutor = if (anchor) anchorNetwork else network
-        val decodeExecutor = if (anchor) anchorDecode else decode
+        if (urgent) ViewerWarmupManager.logMetric("reader_urgent_visible_decode", index.toLong())
+        val networkExecutor = if (anchor || urgent) anchorNetwork else network
+        val decodeExecutor = if (anchor || urgent) anchorDecode else decode
         try {
             networkExecutor.execute {
             try {
                 if (shouldSkipStalePage(index, generation, anchor)) {
-                    loading.remove(index)
-                    inFlightWidths.remove(index)
+                    clearPageLoadState(index, ownsLoading, urgent)
                     return@execute
                 }
                 val originalPage = page
                 cachedDecodedResult(originalPage, targetWidth)?.let { cached ->
-                    loading.remove(index)
-                    inFlightWidths.remove(index)
+                    clearPageLoadState(index, ownsLoading, urgent)
                     postDecodeResult(Delivery(index, originalPage, cached, SystemClock.elapsedRealtime(), targetWidth))
                     ViewerWarmupManager.logMetric("reader_decoded_cache_hit", index.toLong())
                     return@execute
@@ -1004,25 +1032,29 @@ class ReaderSession(
                         recordIfUnexpected(e)
                     } finally {
                         if (acquired) gate.release()
-                        loading.remove(index)
-                        inFlightWidths.remove(index)
+                        clearPageLoadState(index, ownsLoading, urgent)
                         if (delivered) ViewerWarmupManager.logMetric("reader_delivery_posted", index.toLong())
                     }
                 }
                 } catch (_: RejectedExecutionException) {
-                    loading.remove(index)
-                    inFlightWidths.remove(index)
+                    clearPageLoadState(index, ownsLoading, urgent)
                 }
             } catch (e: Exception) {
-                loading.remove(index)
-                inFlightWidths.remove(index)
+                clearPageLoadState(index, ownsLoading, urgent)
                 recordIfUnexpected(e)
             }
             }
         } catch (_: RejectedExecutionException) {
+            clearPageLoadState(index, ownsLoading, urgent)
+        }
+    }
+
+    private fun clearPageLoadState(index: Int, ownsLoading: Boolean, urgent: Boolean) {
+        if (ownsLoading) {
             loading.remove(index)
             inFlightWidths.remove(index)
         }
+        if (urgent) urgentLoading.remove(index)
     }
 
     private fun prefetchBusyPage(index: Int, page: PageRef, generation: Int) {
@@ -1070,6 +1102,8 @@ class ReaderSession(
             ViewerWarmupManager.logMetric("busy_to_idle_upgrade_miss", wanted.toLong())
             return
         }
+        val effectiveWanted = achievableWidth(index, wanted)
+        if ((pendingDeliveryWidths[index] ?: 0) >= effectiveWanted) return
         ViewerWarmupManager.logMetric("busy_to_idle_upgrade_retry", wanted.toLong())
         requestPage(index, false, false, windowGeneration.get())
     }
@@ -1129,7 +1163,12 @@ class ReaderSession(
 
     private fun decodePageWithLease(index: Int, page: PageRef, targetWidth: Int): PageDecodeResult {
         cachedDecodedResult(page, targetWidth)?.let { return it }
+        val leaseStart = if (index == requestedStartPage() && page.manga.isOnline) SystemClock.elapsedRealtime() else 0L
         leaseImageFile(index, page).use { lease ->
+            if (leaseStart > 0L) ViewerWarmupManager.logMetric(
+                "reader_first_fetch_wait_ms",
+                SystemClock.elapsedRealtime() - leaseStart
+            )
             return decodePage(index, page, lease.file, targetWidth)
         }
     }
@@ -1147,12 +1186,15 @@ class ReaderSession(
     }
 
     private fun decodePage(index: Int, page: PageRef, file: File, targetWidth: Int): PageDecodeResult {
+        val metric = index == requestedStartPage() && page.manga.isOnline
+        val startedAt = if (metric) SystemClock.elapsedRealtime() else 0L
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         if (page.manga.isOnline || file.exists()) {
             BitmapFactory.decodeFile(file.absolutePath, bounds)
         } else {
             decodeLocal(page.image ?: "", bounds)
         }
+        val boundsAt = if (metric) SystemClock.elapsedRealtime() else 0L
         val displayBounds = displayBounds(bounds.outWidth, bounds.outHeight, page.side, page.allowAutoSplit)
         postPageBounds(index, displayBounds.width(), displayBounds.height())
         if (!autoCut && shouldDecodeTiles(page, file, bounds)) {
@@ -1170,10 +1212,20 @@ class ReaderSession(
             decodeLocal(page.image ?: "", options)
         }
             ?: throw java.io.IOException("Bitmap decode failed")
+        val rawAt = if (metric) SystemClock.elapsedRealtime() else 0L
         if (!page.manga.isOnline) return PageDecodeResult.Full(applyAutoSplit(raw, page.side, page.allowAutoSplit))
         val decoded = Decoder(page.manga.seed, page.manga.id).decode(raw, decodeTargetWidth)
         if (decoded !== raw && !raw.isRecycled) raw.recycle()
-        return PageDecodeResult.Full(applyAutoSplit(decoded, page.side, page.allowAutoSplit))
+        val transformedAt = if (metric) SystemClock.elapsedRealtime() else 0L
+        val result = PageDecodeResult.Full(applyAutoSplit(decoded, page.side, page.allowAutoSplit))
+        if (metric) {
+            val finishedAt = SystemClock.elapsedRealtime()
+            ViewerWarmupManager.logMetric("reader_first_bounds_ms", boundsAt - startedAt)
+            ViewerWarmupManager.logMetric("reader_first_raw_decode_ms", rawAt - boundsAt)
+            ViewerWarmupManager.logMetric("reader_first_transform_ms", transformedAt - rawAt)
+            ViewerWarmupManager.logMetric("reader_first_decode_total_ms", finishedAt - startedAt)
+        }
+        return result
     }
 
     private fun decodeTargetWidth(sourceWidth: Int, sourceHeight: Int, targetWidth: Int, allowSplit: Boolean): Int {
@@ -1395,6 +1447,7 @@ class ReaderSession(
     }
 
     private fun postDecodeResult(delivery: Delivery) {
+        pendingDeliveryWidths.merge(delivery.index, delivery.result.width, ::max)
         deliveryQueue.add(delivery)
         scheduleDeliveryDrain()
     }
@@ -1415,13 +1468,7 @@ class ReaderSession(
             }
             val busy = viewportBusy.get()
             if (busy) {
-                discardBusyStaleDeliveries()
-                var deliveredCount = 0
-                while (deliveredCount < BUSY_DELIVERY_DRAIN_LIMIT) {
-                    val delivery = deliveryQueue.poll() ?: break
-                    deliverDecodeResultOnMain(delivery, true)
-                    deliveredCount++
-                }
+                deliverBusyDecodeResults()
                 if (deliveryQueue.isNotEmpty() && deliveryDrainPosted.compareAndSet(false, true)) {
                     main.postDelayed(deliveryDrainRunnable, BUSY_DELIVERY_DRAIN_DELAY_MS)
                 }
@@ -1460,30 +1507,46 @@ class ReaderSession(
         return max(idleDelay, inputDelay)
     }
 
-    private fun discardBusyStaleDeliveries() {
+    private fun deliverBusyDecodeResults() {
         val retainedFirst: Int
         val retainedLast: Int
+        val retainedAnchor: Int
         synchronized(deliveredBitmaps) {
             retainedFirst = retainedFirstPage
             retainedLast = retainedLastPage
+            retainedAnchor = retainedAnchorPage
         }
-        val retained = ArrayList<Delivery>(BUSY_DELIVERY_RETAIN_LIMIT)
+        val retained = ArrayList<Delivery>(BUSY_DELIVERY_SCAN_LIMIT)
         var checked = 0
-        while (checked < BUSY_DELIVERY_DISCARD_LIMIT) {
+        while (checked < BUSY_DELIVERY_SCAN_LIMIT) {
             val delivery = deliveryQueue.poll() ?: break
             checked++
             val index = delivery.page.pageIndex
-            if (index in retainedFirst..retainedLast && retained.size < BUSY_DELIVERY_RETAIN_LIMIT) {
+            if (index in retainedFirst..retainedLast) {
                 retained.add(delivery)
             } else {
+                pendingDeliveryWidths.remove(delivery.index)
                 recycleDecodeResult(delivery.result)
             }
         }
-        retained.forEach { deliveryQueue.add(it) }
+        retained.sortWith(
+            compareBy<Delivery> { abs(it.page.pageIndex - retainedAnchor) }
+                .thenBy { it.startedAt }
+        )
+        var deliveredCount = 0
+        for (delivery in retained) {
+            if (deliveredCount < BUSY_DELIVERY_DRAIN_LIMIT) {
+                deliverDecodeResultOnMain(delivery, true)
+                deliveredCount++
+            } else {
+                deliveryQueue.add(delivery)
+            }
+        }
     }
 
     private fun deliverDecodeResultOnMain(delivery: Delivery, busy: Boolean) {
         if (cancelled.get()) {
+            pendingDeliveryWidths.remove(delivery.index)
             recycleDecodeResult(delivery.result)
             return
         }
@@ -1495,6 +1558,7 @@ class ReaderSession(
         }
         val knownIndex = delivery.page.pageIndex
         if (busy && knownIndex !in retainedFirst..retainedLast) {
+            pendingDeliveryWidths.remove(delivery.index)
             recycleDecodeResult(delivery.result)
             return
         }
@@ -1528,15 +1592,18 @@ class ReaderSession(
             index
         }
         if (currentIndex < 0 || (busy && currentIndex !in retainedFirst..retainedLast)) {
+            pendingDeliveryWidths.remove(delivery.index)
             recycleDecodeResult(delivery.result)
             return
         }
         if (droppedLowerWidth) {
             ViewerWarmupManager.logMetric("reader_drop_stale_lower_width", delivery.result.width.toLong())
+            pendingDeliveryWidths.remove(delivery.index)
             recycleDecodeResult(delivery.result)
             retryPendingWidthIfNeeded(currentIndex)
             return
         }
+        pendingDeliveryWidths.remove(delivery.index)
         logFirstBitmapIfNeeded(delivery.startedAt)
         when (val result = delivery.result) {
             is PageDecodeResult.Full -> listener.onPageReady(currentIndex, result.bitmap)
@@ -1549,6 +1616,7 @@ class ReaderSession(
     private fun recycleQueuedDeliveries() {
         while (true) {
             val delivery = deliveryQueue.poll() ?: return
+            pendingDeliveryWidths.remove(delivery.index)
             recycleDecodeResult(delivery.result)
         }
     }
@@ -1830,9 +1898,8 @@ class ReaderSession(
         private const val BOUNDARY_BYTE_AHEAD_PAGES = 32
         private const val BOUNDARY_BUSY_DECODE_AHEAD_PAGES = 10
         private const val BOUNDARY_BUSY_BYTE_AHEAD_PAGES = 28
-        private const val BUSY_DELIVERY_DISCARD_LIMIT = 16
-        private const val BUSY_DELIVERY_RETAIN_LIMIT = 16
-        private const val BUSY_VISIBLE_DECODE_RADIUS = 2
+        private const val BUSY_DELIVERY_SCAN_LIMIT = 64
+        private const val BUSY_VISIBLE_DECODE_RADIUS = 5
         private const val BUSY_DELIVERY_DRAIN_LIMIT = 4
         private const val IDLE_DELIVERY_DRAIN_LIMIT = 3
         private const val BUSY_DELIVERY_DRAIN_DELAY_MS = 0L
@@ -1840,7 +1907,7 @@ class ReaderSession(
         private const val IDLE_DELIVERY_FRAME_DELAY_MS = 8L
         private const val INPUT_PRIORITY_QUIET_MS = 24L
         private const val START_SOURCE_PREFETCH_BEFORE = 2
-        private const val START_SOURCE_PREFETCH_AFTER = 24
+        private const val START_SOURCE_PREFETCH_AFTER = 36
         private const val ACTIVE_BITMAP_BYTES = 128L * 1024L * 1024L
         private const val TILE_PAGE_MAX_BYTES = 24L * 1024L * 1024L
         private const val REPLACED_BITMAP_RECYCLE_DELAY_MS = 750L

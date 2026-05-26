@@ -76,6 +76,12 @@ public class PrefetchCoordinatorTest {
     }
 
     @Test
+    public void firstEpisodeIndexUsesLowestReadableEpisodeIndependentOfListDirection() {
+        assertEquals(2, PrefetchCoordinator.firstEpisodeIndex(episodes(144, 143, 1)));
+        assertEquals(0, PrefetchCoordinator.firstEpisodeIndex(episodes(1, 143, 144)));
+    }
+
+    @Test
     public void viewerTargetsIncludeVisibleRowsEvenWithDeepBookmark() throws Exception {
         List<Manga> episodes = episodes(90, 80, 70, 60, 50, 40, 30, 20, 10);
         Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class, boolean.class);
@@ -97,15 +103,6 @@ public class PrefetchCoordinatorTest {
         List<Integer> targets = (List<Integer>) method.invoke(null, episodes, 2, 4, false);
 
         assertEquals(asList(1, 0, 2, 4), targets);
-    }
-
-    @Test
-    public void visibleEpisodeTargetsIncludeVisibleRowsAndAhead() {
-        List<Manga> episodes = episodes(122, 121, 120, 119, 118, 117);
-
-        List<Integer> targets = PrefetchCoordinator.visibleEpisodeTargets(episodes, 1, 4, 2, 5);
-
-        assertEquals(asList(0, 1, 2, 3, 4), targets);
     }
 
     @Test

@@ -31,9 +31,7 @@ import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.R;
@@ -74,12 +72,8 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_ERROR;
 public class EpisodeActivity extends AppCompatActivity {
     private static final long DESTINATION_LAUNCH_DEBOUNCE_MS = 1500L;
     private static final long VIEWER_PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
-    private static final long VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS = EpisodeWarmupPolicy.VISIBLE_IDLE_DELAY_MS;
     private static final long EPISODE_REFRESH_AFTER_CACHE_PROBE_MS = EpisodeWarmupPolicy.REFRESH_AFTER_CACHE_PROBE_MS;
     private static final long INITIAL_VIEWER_TARGET_WARMUP_DELAY_MS = EpisodeWarmupPolicy.INITIAL_VIEWER_TARGET_DELAY_MS;
-    private static final long INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = EpisodeWarmupPolicy.INITIAL_VISIBLE_DELAY_MS;
-    private static final long NTK_INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS = EpisodeWarmupPolicy.NTK_INITIAL_VISIBLE_DELAY_MS;
-    private static final int VISIBLE_EPISODE_WARMUP_AHEAD = EpisodeWarmupPolicy.VISIBLE_AHEAD;
     //global variables
     Title title;
     EpisodeAdapter episodeAdapter;
@@ -104,28 +98,20 @@ public class EpisodeActivity extends AppCompatActivity {
     boolean firstContentLogged = false;
     boolean ntkLoadTimeoutHandled = false;
     boolean ntkCaptchaLaunchInFlight = false;
-    boolean visibleEpisodeWarmupScheduled = false;
     boolean destroyed = false;
     boolean compatibleCacheLookupInFlight = false;
     boolean pendingLoadErrorAfterCacheLookup = false;
     Runnable ntkEpisodeLoadWatchdogRunnable;
     Runnable episodeRefreshRunnable;
     String originalTitleName = "";
-    final Set<Integer> requestedVisibleWarmups = new HashSet<>();
     final Runnable initialEpisodeWarmupRunnable = () -> {
         if(!isUiAlive())
             return;
         if(episodeList != null && episodeList.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
-            scheduleInitialEpisodeWarmups(VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS);
+            scheduleInitialEpisodeWarmups(EpisodeWarmupPolicy.VIEWER_TARGET_IDLE_DELAY_MS);
             return;
         }
         warmupInitialViewerTargets();
-    };
-    final Runnable visibleEpisodeWarmupRunnable = () -> {
-        visibleEpisodeWarmupScheduled = false;
-        if(!isUiAlive())
-            return;
-        warmupVisibleEpisodeRows();
     };
 
 
@@ -298,8 +284,6 @@ public class EpisodeActivity extends AppCompatActivity {
             @Override
             public void onScrolled(@NonNull RecyclerView recyclerView, int dx, int dy) {
                 super.onScrolled(recyclerView, dx, dy);
-                if(dy != 0)
-                    cancelVisibleEpisodeWarmup();
             }
 
             @Override
@@ -308,8 +292,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
                 if(newState == RecyclerView.SCROLL_STATE_IDLE) {
                     PerformanceMonitor.reportNow("episode_scroll_idle");
-                } else
-                    cancelVisibleEpisodeWarmup();
+                }
             }
         });
         homeDir = p.getHomeDir();
@@ -363,7 +346,6 @@ public class EpisodeActivity extends AppCompatActivity {
 //    }
 
     public void afterLoad(){
-        requestedVisibleWarmups.clear();
         if(fab_container != null)
             fab_container.setVisibility(View.GONE);
         //find bookmark
@@ -477,7 +459,7 @@ public class EpisodeActivity extends AppCompatActivity {
             startActivity(i);
         });
         markFirstContent();
-        scheduleInitialEpisodeWarmups(initialViewerTargetWarmupDelayMs());
+        warmupInitialViewerTargets();
     }
 
     private void warmupInitialViewerTargets() {
@@ -485,6 +467,10 @@ public class EpisodeActivity extends AppCompatActivity {
             return;
         if(!online || episodes == null || episodes.size() == 0)
             return;
+        if(isWfwfTitle()) {
+            warmupLikelyWfwfViewerPage();
+            return;
+        }
         PrefetchCoordinator.prefetchEpisodeList(context, title, episodes, bookmarkIndex, mode);
         warmupLikelyNtkViewerPage();
     }
@@ -522,80 +508,12 @@ public class EpisodeActivity extends AppCompatActivity {
         return initialViewerTargetWarmupDelayMsForTest(p.isNtkSite() || getHttpClient().isNtk());
     }
 
-    private long initialVisibleEpisodeWarmupDelayMs() {
-        return initialVisibleEpisodeWarmupDelayMsForTest(p.isNtkSite() || getHttpClient().isNtk(), isWfwfTitle());
-    }
-
-    private void scheduleVisibleEpisodeWarmup(long delayMs) {
-        cancelVisibleEpisodeWarmup();
-    }
-
-    private void cancelVisibleEpisodeWarmup() {
-        if(episodeList != null)
-            episodeList.removeCallbacks(visibleEpisodeWarmupRunnable);
-        visibleEpisodeWarmupScheduled = false;
-    }
-
-    private void warmupVisibleEpisodeRows() {
-        if(!online || episodeList == null || episodes == null || episodes.size() == 0 || title == null)
-            return;
-        RecyclerView.LayoutManager manager = episodeList.getLayoutManager();
-        if(!(manager instanceof LinearLayoutManager))
-            return;
-        LinearLayoutManager layoutManager = (LinearLayoutManager) manager;
-        int first = layoutManager.findFirstVisibleItemPosition();
-        int last = layoutManager.findLastVisibleItemPosition();
-        int limit = visibleEpisodeWarmupLimitForTest(p.getDataSave(), PrefetchCoordinator.aggressiveAllowed(context),
-                p.isNtkSite() || getHttpClient().isNtk());
-        List<Integer> targets = PrefetchCoordinator.visibleEpisodeTargets(episodes, first, last,
-                VISIBLE_EPISODE_WARMUP_AHEAD, limit);
-        if(targets.size() == 0)
-            return;
-        ArrayList<Integer> fresh = new ArrayList<>();
-        for(Integer index : targets) {
-            Manga episode = index == null ? null : safeGet(episodes, index);
-            if(episode == null)
-                continue;
-            int key = episode.getId() >= 0 ? episode.getId() : (String.valueOf(episode.getName()) + ":" + index).hashCode();
-            if(requestedVisibleWarmups.add(key))
-                fresh.add(index);
-        }
-        if(fresh.size() == 0)
-            return;
-        ViewerWarmupManager.logMetric("episode_visible_warmup_count", fresh.size());
-        PrefetchCoordinator.prefetchEpisodeIndexes(context, title, episodes, fresh, mode);
-    }
-
-    static int visibleEpisodeWarmupLimitForTest(boolean dataSave, boolean aggressiveAllowed) {
-        return visibleEpisodeWarmupLimitForTest(dataSave, aggressiveAllowed, false);
-    }
-
-    static int visibleEpisodeWarmupLimitForTest(boolean dataSave, boolean aggressiveAllowed, boolean ntkSite) {
-        return EpisodeWarmupPolicy.visibleLimit(dataSave, aggressiveAllowed, ntkSite);
-    }
-
-    static long visibleEpisodeWarmupIdleDelayMsForTest() {
-        return VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS;
-    }
-
-    static long initialVisibleEpisodeWarmupDelayMsForTest() {
-        return INITIAL_VISIBLE_EPISODE_WARMUP_DELAY_MS;
-    }
-
     static long episodeRefreshAfterCacheProbeMsForTest() {
         return EPISODE_REFRESH_AFTER_CACHE_PROBE_MS;
     }
 
     static long initialViewerTargetWarmupDelayMsForTest(boolean ntkSite) {
         return EpisodeWarmupPolicy.initialViewerTargetDelay(ntkSite);
-    }
-
-    static long initialVisibleEpisodeWarmupDelayMsForTest(boolean ntkSite) {
-        return EpisodeWarmupPolicy.initialVisibleDelay(ntkSite);
-    }
-
-    static long initialVisibleEpisodeWarmupDelayMsForTest(boolean ntkSite, boolean wfwfSite) {
-        return EpisodeWarmupPolicy.initialVisibleDelay(ntkSite, wfwfSite);
     }
 
     private void warmupLikelyNtkViewerPage() {
@@ -626,6 +544,25 @@ public class EpisodeActivity extends AppCompatActivity {
                 ml.melun.mangaview.report.CrashReporter.record(e);
             }
         });
+    }
+
+    private void warmupLikelyWfwfViewerPage() {
+        if(!isWfwfTitle())
+            return;
+        Manga target = quickReadEpisode();
+        if(target != null && target.getId() > 1 && title != null && title.getId() > 0) {
+            Manga firstEpisode = new Manga(1, "1", "", target.getBaseMode());
+            firstEpisode.setMode(mode);
+            firstEpisode.setTitle(title);
+            firstEpisode.setTitleId(title.getId());
+            target = firstEpisode;
+        }
+        if(target == null)
+            return;
+        target.setMode(mode);
+        target.setTitle(title);
+        target.setTitleId(title == null ? target.getTitleId() : title.getId());
+        ReaderWarmupCoordinator.primeExactImmediate(context, target, title);
     }
 
     static boolean shouldDirectWarmupNtkViewerPageForTest(boolean ntkPreference, boolean ntkClient, String episodePath) {
@@ -743,7 +680,8 @@ public class EpisodeActivity extends AppCompatActivity {
 
     private boolean isWfwfTitle() {
         String source = title == null ? "" : title.getSourceSite();
-        return source != null && "wfwf".equals(source.trim().toLowerCase(java.util.Locale.ROOT));
+        String normalized = source == null ? "" : source.trim().toLowerCase(java.util.Locale.ROOT);
+        return "wfwf".equals(normalized) || (normalized.length() == 0 && !getHttpClient().isNtk());
     }
 
     static int firstReadableEpisodeIndexForTest(List<Manga> episodes) {
@@ -1293,7 +1231,6 @@ public class EpisodeActivity extends AppCompatActivity {
         cancelEpisodeRefresh();
         if(episodeList != null)
             episodeList.removeCallbacks(initialEpisodeWarmupRunnable);
-        cancelVisibleEpisodeWarmup();
         cancelNtkEpisodeLoadWatchdog();
         if(episodeViewModel != null && !isChangingConfigurations())
             episodeViewModel.cancelActiveLoad();

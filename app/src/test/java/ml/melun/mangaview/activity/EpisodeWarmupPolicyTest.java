@@ -8,15 +8,6 @@ import static org.junit.Assert.assertTrue;
 
 public class EpisodeWarmupPolicyTest {
     @Test
-    public void visibleLimitPreservesDataSaverAndAggressiveBudgets() {
-        assertEquals(1, EpisodeWarmupPolicy.visibleLimit(true, false, false));
-        assertEquals(4, EpisodeWarmupPolicy.visibleLimit(false, false, false));
-        assertEquals(5, EpisodeWarmupPolicy.visibleLimit(false, true, false));
-        assertEquals(4, EpisodeWarmupPolicy.visibleLimit(false, false, true));
-        assertEquals(5, EpisodeWarmupPolicy.visibleLimit(false, true, true));
-    }
-
-    @Test
     public void ntkDirectWarmupRequiresNtkContextAndConcretePath() {
         assertTrue(EpisodeWarmupPolicy.shouldDirectWarmupNtkViewerPage(true, false, "/manhwa/1/2"));
         assertTrue(EpisodeWarmupPolicy.shouldDirectWarmupNtkViewerPage(false, true, "/webtoon/1/2"));

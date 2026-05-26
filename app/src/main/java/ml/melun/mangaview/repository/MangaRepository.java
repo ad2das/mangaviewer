@@ -160,16 +160,14 @@ public final class MangaRepository {
     }
 
     private static void primeForegroundWfwfEntry(Title title, boolean allowWolfWebViewFallback) {
-        int index = foregroundWfwfPrimeIndex(title, allowWolfWebViewFallback);
-        if(index < 0 || appContext == null)
+        if(appContext == null)
             return;
-        List<Manga> episodes = Title.orderedEpisodeSnapshot(title.getEps());
-        if(episodes == null || index >= episodes.size())
-            return;
-        title.setEps(episodes);
-        Manga episode = episodes.get(index);
+        Manga episode = foregroundWfwfPrimeEpisode(title, allowWolfWebViewFallback);
         if(episode == null)
             return;
+        List<Manga> episodes = Title.orderedEpisodeSnapshot(title.getEps());
+        if(episodes != null)
+            title.setEps(episodes);
         episode.setMode(title.getBaseMode());
         episode.setTitle(title);
         episode.setTitleId(title.getId());
@@ -186,8 +184,32 @@ public final class MangaRepository {
         return PrefetchCoordinator.firstEpisodeIndex(episodes);
     }
 
+    private static Manga foregroundWfwfPrimeEpisode(Title title, boolean allowWolfWebViewFallback) {
+        int index = foregroundWfwfPrimeIndex(title, allowWolfWebViewFallback);
+        if(index < 0 || title == null)
+            return null;
+        List<Manga> episodes = Title.orderedEpisodeSnapshot(title.getEps());
+        if(episodes == null || index >= episodes.size())
+            return null;
+        Manga episode = episodes.get(index);
+        if(episode == null)
+            return null;
+        if(episode.getId() > 1 && title.getId() > 0) {
+            Manga firstEpisode = new Manga(1, "1", "", episode.getBaseMode());
+            firstEpisode.setMode(title.getBaseMode());
+            firstEpisode.setTitle(title);
+            firstEpisode.setTitleId(title.getId());
+            return firstEpisode;
+        }
+        return episode;
+    }
+
     static int foregroundWfwfPrimeIndexForTest(Title title, boolean allowWolfWebViewFallback) {
         return foregroundWfwfPrimeIndex(title, allowWolfWebViewFallback);
+    }
+
+    static Manga foregroundWfwfPrimeEpisodeForTest(Title title, boolean allowWolfWebViewFallback) {
+        return foregroundWfwfPrimeEpisode(title, allowWolfWebViewFallback);
     }
 
     static boolean shouldReportEpisodeFetchFailure(Throwable failure) {
