@@ -171,6 +171,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var statsLastCallbackStartNs = 0L
     private var statsLastPostEndNs = 0L
     private var lastPostedFrameEndNs = 0L
+    private var lastSlowFrameLogMs = 0L
     private var statsCoalescedRequests = 0
     private var statsNoCanvasFrames = 0
     private var hasDrawnContentFrame = false
@@ -744,7 +745,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         dispatchBoundaryRequest(work.boundary)
         val state = work.state ?: return
         val timing = drawState(frameTimeNanos, callbackStartNs, state, canvas)
-        if (timing.totalMs > frameBudgetMs()) {
+        val nowMs = SystemClock.uptimeMillis()
+        if (timing.totalMs > frameBudgetMs() && nowMs - lastSlowFrameLogMs >= SLOW_FRAME_LOG_INTERVAL_MS) {
+            lastSlowFrameLogMs = nowMs
             Log.d(
                 TAG,
                 "reader_slow_frame busy=${state.busy} items=${state.items.size} " +
@@ -848,11 +851,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val visibleBottom = min(state.height.toFloat(), item.top + item.pageHeight)
         if (visibleBottom <= visibleTop) return
         paint.isFilterBitmap = !state.busy
+        val sourceHeight = item.tiles.firstOrNull()?.sourceHeight?.takeIf { it > 0 } ?: return
+        val pageScale = item.pageHeight / sourceHeight.toFloat()
         for (tile in item.tiles) {
+            val tileTop = item.top + tile.sourceTop * pageScale
+            val tileBottom = item.top + tile.sourceBottom * pageScale
+            if (tileBottom < visibleTop) continue
+            if (tileTop > visibleBottom) break
             val bitmap = tile.bitmap
             if (bitmap.isRecycled || tile.sourceHeight <= 0) continue
-            val tileTop = item.top + item.pageHeight * (tile.sourceTop / tile.sourceHeight.toFloat())
-            val tileBottom = item.top + item.pageHeight * (tile.sourceBottom / tile.sourceHeight.toFloat())
             val drawTop = max(visibleTop, tileTop)
             val drawBottom = min(visibleBottom, tileBottom)
             if (drawBottom <= drawTop || tileBottom <= tileTop) continue
@@ -931,7 +938,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun logCoverageIfNeeded(state: DrawState, force: Boolean) {
         if (!force && state.busy) {
             val now = SystemClock.uptimeMillis()
-            if (state.visibleLoading == 0 && now - lastCoverageLogMs < BUSY_COVERAGE_LOG_INTERVAL_MS) return
+            if (now - lastCoverageLogMs < BUSY_COVERAGE_LOG_INTERVAL_MS) return
         }
         val coverage = coverageStats(state)
         if (force || coverage != lastCoverageLog) {
@@ -1254,12 +1261,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun adjustScrollForChangedPageHeightLocked(oldTop: Float, oldHeight: Float, delta: Float) {
         if (abs(delta) <= 0.01f) return
         val oldBottom = oldTop + oldHeight
-        val bottomBoundaryVisible = oldTop <= scrollOffset &&
-            oldBottom > scrollOffset &&
-            oldBottom - scrollOffset <= height
         val recentScroll = SystemClock.uptimeMillis() - lastScrollInteractionMs <= HEIGHT_ADJUST_SUPPRESS_AFTER_SCROLL_MS
-        if (!lastBusy && !pointerDown && !dragging && scroller.isFinished && !recentScroll &&
-            (oldBottom <= scrollOffset || bottomBoundaryVisible)
+        if (shouldAdjustScrollForChangedPageHeight(
+                lastBusy = lastBusy,
+                pointerDown = pointerDown,
+                dragging = dragging,
+                scrollerFinished = scroller.isFinished,
+                recentScroll = recentScroll,
+                oldBottom = oldBottom,
+                scrollOffset = scrollOffset
+            )
         ) {
             setScrollOffsetLocked(scrollOffset + delta)
         }
@@ -1601,6 +1612,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val BUSY_WINDOW_ANCHOR_STEP = 2
         private const val BUSY_WINDOW_MIN_DISPATCH_MS = 48L
         private const val BUSY_COVERAGE_LOG_INTERVAL_MS = 250L
+        private const val SLOW_FRAME_LOG_INTERVAL_MS = 500L
         private const val COVERAGE_EDGE_FILL_PX = 8
         private const val BOUNDARY_EPSILON_PX = 2f
         private const val BOUNDARY_FLING_EXTEND_EPSILON_PX = 4
@@ -1614,5 +1626,43 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val HEIGHT_ADJUST_SUPPRESS_AFTER_SCROLL_MS = 2500L
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
+
+        private fun shouldAdjustScrollForChangedPageHeight(
+            lastBusy: Boolean,
+            pointerDown: Boolean,
+            dragging: Boolean,
+            scrollerFinished: Boolean,
+            recentScroll: Boolean,
+            oldBottom: Float,
+            scrollOffset: Float
+        ): Boolean {
+            return !lastBusy &&
+                !pointerDown &&
+                !dragging &&
+                scrollerFinished &&
+                !recentScroll &&
+                oldBottom <= scrollOffset
+        }
+
+        @JvmStatic
+        fun shouldAdjustScrollForChangedPageHeightForTest(
+            lastBusy: Boolean,
+            pointerDown: Boolean,
+            dragging: Boolean,
+            scrollerFinished: Boolean,
+            recentScroll: Boolean,
+            oldBottom: Float,
+            scrollOffset: Float
+        ): Boolean {
+            return shouldAdjustScrollForChangedPageHeight(
+                lastBusy,
+                pointerDown,
+                dragging,
+                scrollerFinished,
+                recentScroll,
+                oldBottom,
+                scrollOffset
+            )
+        }
     }
 }

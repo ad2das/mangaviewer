@@ -3,6 +3,7 @@ package ml.melun.mangaview.reader;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class ReaderPipelinePolicyTest {
@@ -20,5 +21,17 @@ public class ReaderPipelinePolicyTest {
         assertTrue(ReaderPipelinePolicy.windowAfter(false) <= ReaderPipelinePolicy.windowAfter(true));
         assertEquals(2, ReaderPipelinePolicy.decodeParallelism(false));
         assertTrue(ReaderPipelinePolicy.IDLE_WINDOW_AFTER <= 10);
+    }
+
+    @Test
+    public void heightResolveAdjustsOnlyPagesFullyAboveViewport() {
+        assertTrue(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+                false, false, false, true, false, 900f, 1000f));
+        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+                false, false, false, true, false, 1200f, 1000f));
+        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+                false, false, false, true, true, 900f, 1000f));
+        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+                true, false, false, true, false, 900f, 1000f));
     }
 }
