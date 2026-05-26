@@ -208,10 +208,6 @@ object ReaderWarmupCoordinator {
                 AppDispatchers.submitUserAction {
                     prepareEntry(appContext, entry, exactEpisode, WarmupProfile.LAUNCH_WINDOW)
                 }
-            } else if (profile == WarmupProfile.FIRST_BITMAP) {
-                AppDispatchers.submitUserAction {
-                    prepareEntry(appContext, entry, exactEpisode, WarmupProfile.FIRST_BITMAP)
-                }
             }
             return
         }
