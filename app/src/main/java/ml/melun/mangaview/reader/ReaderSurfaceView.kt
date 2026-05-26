@@ -1189,7 +1189,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val bottomBoundaryVisible = oldTop <= scrollOffset &&
             oldBottom > scrollOffset &&
             oldBottom - scrollOffset <= height
-        if (oldBottom <= scrollOffset || bottomBoundaryVisible) {
+        if (oldBottom <= scrollOffset || (!lastBusy && bottomBoundaryVisible)) {
             scrollOffset += delta
         }
     }
