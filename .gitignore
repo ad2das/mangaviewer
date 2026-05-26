@@ -78,6 +78,8 @@ debuggerd-*.txt
 /*.db
 /*.html
 /*.json
+ntk-js-*.js
+ntk-*-page.js
 /*.log
 /*.md
 /*.pbtxt
