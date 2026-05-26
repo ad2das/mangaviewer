@@ -70,6 +70,7 @@ public class CustomHttpClient {
     private static final String LEGACY_NTK_HOST = "ntk01.com";
     private static final long WFWF_DOMAIN_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L;
     private static final long WFWF_DOMAIN_FORCE_RETRY_INTERVAL_MS = 5 * 1000L;
+    private static final long WFWF_FAILED_ROOT_RECHECK_INTERVAL_MS = 30 * 60 * 1000L;
     private static final long WFWF_DOMAIN_CANCELED_LOG_INTERVAL_MS = 2 * 1000L;
     private static final long WFWF_DOMAIN_WAIT_TIMEOUT_MS = 6 * 1000L;
     private static final long NTK_DOMAIN_CHECK_INTERVAL_MS = 15 * 60 * 1000L;
@@ -1483,6 +1484,7 @@ public class CustomHttpClient {
             }
             storeResponseCookies(response);
         } catch (Exception e){
+            rememberFailedWfwfRoot(url, e);
             if(shouldRecordRequestFailure(url, e, requestGroup, fastNtkPageDirect))
                 ml.melun.mangaview.report.CrashReporter.record(e);
             return null;
@@ -1497,6 +1499,49 @@ public class CustomHttpClient {
         return shouldRecordRequestFailureForState(url, e,
                 requestGroup != null && requestGroup.isCancelled(),
                 fastNtkPageDirect);
+    }
+
+    private void rememberFailedWfwfRoot(String url, Exception e) {
+        if(!isLikelyStaleWfwfRootFailure(url, e))
+            return;
+        String root = numberedRootFromUrl(url);
+        if(!WfwfDomainResolver.isSupportedNumberedUrl(root))
+            return;
+        try {
+            context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
+                    .edit()
+                    .putString("wfwfDomainFailedRoot", root)
+                    .putLong("wfwfDomainFailedAt", System.currentTimeMillis())
+                    .apply();
+            synchronized (wfwfDomainLock) {
+                wfwfDomainLastForcedRetry = 0;
+            }
+            PerfTrace.mark("wfwf_domain_root_failed", "root=" + root + ",error=" + e.getClass().getSimpleName());
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static boolean isLikelyStaleWfwfRootFailure(String url, Exception e) {
+        String root = numberedRootFromUrl(url);
+        if(!WfwfDomainResolver.isSupportedNumberedUrl(root))
+            return false;
+        return e instanceof SSLException ||
+                e instanceof UnknownHostException ||
+                e instanceof java.net.SocketTimeoutException ||
+                e instanceof java.net.ConnectException ||
+                e instanceof java.io.IOException;
+    }
+
+    private static String numberedRootFromUrl(String url) {
+        if(url == null)
+            return "";
+        try {
+            HttpUrl parsed = HttpUrl.parse(url);
+            if(parsed != null)
+                return parsed.scheme() + "://" + parsed.host();
+        } catch (Exception ignored) {
+        }
+        return WfwfDomainResolver.toRoot(url);
     }
 
     private static boolean shouldRecordRequestFailureForState(String url, Exception e,
@@ -1672,7 +1717,9 @@ public class CustomHttpClient {
                 } else {
                     long lastCheck = pref.getLong("wfwfDomainLastCheck", 0);
                     String lastRoot = pref.getString("wfwfDomainLastRoot", "");
-                    if(shouldSkipRecentWfwfDomainCheck(force, root, lastRoot, lastCheck, now))
+                    String failedRoot = pref.getString("wfwfDomainFailedRoot", "");
+                    long failedAt = pref.getLong("wfwfDomainFailedAt", 0);
+                    if(shouldSkipRecentWfwfDomainCheck(force, root, lastRoot, lastCheck, failedRoot, failedAt, now))
                         return false;
                     wfwfDomainResolveState = new DomainResolveState();
                     pref.edit()
@@ -1709,6 +1756,12 @@ public class CustomHttpClient {
                     resetCookie();
                     clearPageCache();
                     changed = true;
+                }
+                if(resolved != null) {
+                    pref.edit()
+                            .remove("wfwfDomainFailedRoot")
+                            .remove("wfwfDomainFailedAt")
+                            .apply();
                 }
                 PerfTrace.mark("wfwf_domain_resolve_ms", (System.currentTimeMillis() - started)
                         + ",force=" + force
@@ -1925,11 +1978,19 @@ public class CustomHttpClient {
 
     private static boolean shouldSkipRecentWfwfDomainCheck(boolean force, String currentRoot,
                                                            String lastCheckedRoot, long lastCheck, long now) {
+        return shouldSkipRecentWfwfDomainCheck(force, currentRoot, lastCheckedRoot, lastCheck, "", 0, now);
+    }
+
+    private static boolean shouldSkipRecentWfwfDomainCheck(boolean force, String currentRoot,
+                                                           String lastCheckedRoot, long lastCheck,
+                                                           String failedRoot, long failedAt, long now) {
         if(force || lastCheck <= 0)
             return false;
         String current = WfwfDomainResolver.toRoot(currentRoot);
         String last = WfwfDomainResolver.toRoot(lastCheckedRoot);
         if(current.length() == 0 || !current.equals(last))
+            return false;
+        if(hasRecentFailedWfwfRoot(current, failedRoot, failedAt, now))
             return false;
         return now - lastCheck < WFWF_DOMAIN_CHECK_INTERVAL_MS;
     }
@@ -1937,6 +1998,24 @@ public class CustomHttpClient {
     static boolean shouldSkipRecentWfwfDomainCheckForTest(boolean force, String currentRoot,
                                                           String lastCheckedRoot, long lastCheck, long now) {
         return shouldSkipRecentWfwfDomainCheck(force, currentRoot, lastCheckedRoot, lastCheck, now);
+    }
+
+    static boolean shouldSkipRecentWfwfDomainCheckForTest(boolean force, String currentRoot,
+                                                          String lastCheckedRoot, long lastCheck,
+                                                          String failedRoot, long failedAt, long now) {
+        return shouldSkipRecentWfwfDomainCheck(force, currentRoot, lastCheckedRoot, lastCheck, failedRoot, failedAt, now);
+    }
+
+    static boolean isLikelyStaleWfwfRootFailureForTest(String url, Exception e) {
+        return isLikelyStaleWfwfRootFailure(url, e);
+    }
+
+    private static boolean hasRecentFailedWfwfRoot(String currentRoot, String failedRoot, long failedAt, long now) {
+        if(failedAt <= 0 || now < failedAt || now - failedAt > WFWF_FAILED_ROOT_RECHECK_INTERVAL_MS)
+            return false;
+        String current = WfwfDomainResolver.toRoot(currentRoot);
+        String failed = WfwfDomainResolver.toRoot(failedRoot);
+        return current.length() > 0 && current.equals(failed);
     }
 
     private boolean waitForWfwfDomainResolve(DomainResolveState resolveState) {
@@ -2224,9 +2303,11 @@ public class CustomHttpClient {
     }
 
     private static boolean shouldResolveWfwfBeforeCachedPage(String path, boolean hasStaleCache, FetchMode fetchMode) {
+        if(fetchMode == FetchMode.CACHE_ONLY)
+            return false;
         if(!isWfwfDocumentPath(path))
             return true;
-        return shouldResolveWolfDocumentBeforeNetwork(isWolfEpisodeDocumentPath(path), hasStaleCache, fetchMode);
+        return !hasStaleCache;
     }
 
     static boolean shouldForceResolveWfwfOnRetryForTest(String path) {
@@ -2234,11 +2315,11 @@ public class CustomHttpClient {
     }
 
     private static boolean shouldForceResolveWfwfOnRetry(String path, boolean wolfEpisodeDocumentPath) {
-        return (wolfEpisodeDocumentPath || isWfwfSearchPath(path)) && isWfwfDocumentPath(path);
+        return isWfwfDocumentPath(path);
     }
 
     private static boolean shouldResolveWfwfBeforeMget(String path) {
-        return !isWfwfDocumentPath(path);
+        return true;
     }
 
     static boolean shouldWaitForActivePageLoadForTest(boolean hasStaleCache) {

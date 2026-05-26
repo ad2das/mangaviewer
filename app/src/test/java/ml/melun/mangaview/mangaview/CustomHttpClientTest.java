@@ -80,10 +80,10 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void wfwfListAndSearchSkipBlockingDomainResolve() {
-        assertFalse(CustomHttpClient.shouldResolveWfwfBeforeCachedPageForTest("/search.html?q=onepunch", false,
+    public void wfwfDocumentsResolveBeforeNetworkMiss() {
+        assertTrue(CustomHttpClient.shouldResolveWfwfBeforeCachedPageForTest("/search.html?q=onepunch", false,
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-        assertFalse(CustomHttpClient.shouldResolveWfwfBeforeCachedPageForTest("/cm?type1=genre", false,
+        assertTrue(CustomHttpClient.shouldResolveWfwfBeforeCachedPageForTest("/cm?type1=genre", false,
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
         assertTrue(CustomHttpClient.shouldResolveWfwfBeforeCachedPageForTest("/cl?toon=10007", false,
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
@@ -98,7 +98,7 @@ public class CustomHttpClientTest {
         assertTrue(CustomHttpClient.shouldForceResolveWfwfOnRetryForTest("/cl?toon=10007"));
         assertTrue(CustomHttpClient.shouldForceResolveWfwfOnRetryForTest("/cv?toon=10007&num=1"));
         assertTrue(CustomHttpClient.shouldForceResolveWfwfOnRetryForTest("/search.html?q=onepunch"));
-        assertFalse(CustomHttpClient.shouldForceResolveWfwfOnRetryForTest("/cm?type1=genre"));
+        assertTrue(CustomHttpClient.shouldForceResolveWfwfOnRetryForTest("/cm?type1=genre"));
     }
 
     @Test
@@ -434,6 +434,28 @@ public class CustomHttpClientTest {
                 false, "https://wfwf454.com", "https://wfwf453.com", now - 1_000L, now));
         assertFalse(CustomHttpClient.shouldSkipRecentWfwfDomainCheckForTest(
                 true, "https://wfwf453.com", "https://wfwf453.com", now - 1_000L, now));
+    }
+
+    @Test
+    public void wfwfRecentFailureBypassesDomainThrottle() {
+        long now = 10_000L;
+
+        assertFalse(CustomHttpClient.shouldSkipRecentWfwfDomainCheckForTest(
+                false, "https://wfwf454.com", "https://wfwf454.com", now - 1_000L,
+                "https://wfwf454.com", now - 500L, now));
+        assertTrue(CustomHttpClient.shouldSkipRecentWfwfDomainCheckForTest(
+                false, "https://wfwf454.com", "https://wfwf454.com", now - 1_000L,
+                "https://wfwf453.com", now - 500L, now));
+    }
+
+    @Test
+    public void wfwfSslFailureMarksNumberedRootStale() {
+        assertTrue(CustomHttpClient.isLikelyStaleWfwfRootFailureForTest(
+                "https://wfwf454.com/cl?toon=18714",
+                new javax.net.ssl.SSLException("failed")));
+        assertFalse(CustomHttpClient.isLikelyStaleWfwfRootFailureForTest(
+                "https://example.com/cl?toon=18714",
+                new javax.net.ssl.SSLException("failed")));
     }
 
     @Test
