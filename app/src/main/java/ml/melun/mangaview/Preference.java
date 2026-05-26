@@ -116,8 +116,24 @@ public class Preference {
     }
 
     private void notifySync(String scope) {
-        if(!syncSuppressed && syncManager != null)
-            syncManager.onLocalPreferencesChanged(scope);
+        if(syncSuppressed)
+            return;
+        FirebaseSyncManager manager = syncManager;
+        if(manager == null)
+            manager = ensureFirebaseSyncManager();
+        if(manager != null)
+            manager.onLocalPreferencesChanged(scope);
+    }
+
+    private FirebaseSyncManager ensureFirebaseSyncManager() {
+        if(MainApplication.appContext == null || MainApplication.p != this)
+            return null;
+        try {
+            return MainApplication.getFirebaseSyncManager();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return null;
+        }
     }
 
     public void reset(){
