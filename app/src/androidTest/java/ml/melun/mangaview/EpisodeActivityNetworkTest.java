@@ -459,7 +459,27 @@ public class EpisodeActivityNetworkTest {
     }
 
     private static void assertReaderOpenedOrCaptchaShown(UiDevice device, String label) {
-        UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 60000L);
+        long deadline = System.currentTimeMillis() + 60000L;
+        while(System.currentTimeMillis() < deadline) {
+            UiObject2 strip = device.findObject(By.res(PACKAGE_NAME, "strip"));
+            if(strip != null) {
+                UiObject2 firstDrawable = device.wait(Until.findObject(By.desc("reader-drawable-ready")), 60000L);
+                assertNotNull("Expected tapping a " + label + " episode to render the first reader image", firstDrawable);
+                return;
+            }
+            UiObject2 captcha = device.findObject(By.res(PACKAGE_NAME, "captchaContainer"));
+            if(captcha != null) {
+                assertCaptchaShown(device, label);
+                return;
+            }
+            try {
+                Thread.sleep(250L);
+            } catch(InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        UiObject2 strip = device.findObject(By.res(PACKAGE_NAME, "strip"));
         if(strip != null) {
             UiObject2 firstDrawable = device.wait(Until.findObject(By.desc("reader-drawable-ready")), 60000L);
             assertNotNull("Expected tapping a " + label + " episode to render the first reader image", firstDrawable);
