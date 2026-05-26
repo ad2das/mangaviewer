@@ -100,20 +100,18 @@ public class EpisodeActivityNetworkTest {
         assertNotNull("Expected previous episode button to render", previousButton);
         previousButton.click();
 
-        UiObject2 changedTitle = device.wait(Until.findObject(By.res(PACKAGE_NAME, "toolbar_title")), 20000L);
-        assertNotNull("Expected viewer toolbar title after previous episode tap", changedTitle);
-        long deadline = System.currentTimeMillis() + 20000L;
-        while(originalTitle != null && originalTitle.equals(changedTitle.getText()) && System.currentTimeMillis() < deadline) {
-            Thread.sleep(250L);
-            changedTitle = device.findObject(By.res(PACKAGE_NAME, "toolbar_title"));
-            if(changedTitle == null) {
-                showReaderToolbar(device);
-                changedTitle = device.wait(Until.findObject(By.res(PACKAGE_NAME, "toolbar_title")), 3000L);
-            }
-        }
-        assertNotNull("Expected viewer toolbar title to remain visible", changedTitle);
+        UiObject2 changedTitle = waitForToolbarTitleChange(device, originalTitle, 3000L);
         assertTrue("Expected previous episode button to switch the viewer episode",
                 originalTitle == null || !originalTitle.equals(changedTitle.getText()));
+
+        String previousTitle = changedTitle.getText();
+        UiObject2 nextButton = device.wait(Until.findObject(By.res(PACKAGE_NAME, "toolbar_next")), 10000L);
+        assertNotNull("Expected next episode button to render", nextButton);
+        nextButton.click();
+
+        UiObject2 restoredTitle = waitForToolbarTitleChange(device, previousTitle, 3000L);
+        assertTrue("Expected next episode button to switch the viewer episode",
+                previousTitle == null || !previousTitle.equals(restoredTitle.getText()));
         assertReaderOpened(device, "NTK previous episode");
     }
 
@@ -406,6 +404,24 @@ public class EpisodeActivityNetworkTest {
         assertNotNull("Expected captcha reload action", device.wait(Until.findObject(By.res(PACKAGE_NAME, "captchaReload")), 5000L));
         assertNotNull("Expected captcha cookie check action", device.wait(Until.findObject(By.res(PACKAGE_NAME, "captchaCheckCookie")), 5000L));
         assertNotNull("Expected captcha close action", device.wait(Until.findObject(By.res(PACKAGE_NAME, "captchaClose")), 5000L));
+    }
+
+    private static UiObject2 waitForToolbarTitleChange(UiDevice device, String originalTitle, long timeoutMs) throws Exception {
+        UiObject2 title = device.wait(Until.findObject(By.res(PACKAGE_NAME, "toolbar_title")), 5000L);
+        assertNotNull("Expected viewer toolbar title after episode tap", title);
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while(originalTitle != null && originalTitle.equals(title.getText()) && System.currentTimeMillis() < deadline) {
+            Thread.sleep(50L);
+            title = device.findObject(By.res(PACKAGE_NAME, "toolbar_title"));
+            if(title == null) {
+                showReaderToolbar(device);
+                title = device.wait(Until.findObject(By.res(PACKAGE_NAME, "toolbar_title")), 500L);
+            }
+        }
+        assertNotNull("Expected viewer toolbar title to remain visible", title);
+        assertTrue("Expected toolbar title to change quickly after episode tap",
+                originalTitle == null || !originalTitle.equals(title.getText()));
+        return title;
     }
 
     private static void showReaderToolbar(UiDevice device) {

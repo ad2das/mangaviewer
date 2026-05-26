@@ -76,6 +76,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var lastDisplayedEpisodeTitle = ""
     private var pendingAnchorAfterBusy = -1
     private var adjacentNavigationInFlight = false
+    private var cachedPreviousEpisode: Manga? = null
+    private var cachedNextEpisode: Manga? = null
     private var episodeListFetchAttempted = false
     private var destroyed = false
     private var progressSaveArmed = false
@@ -658,10 +660,19 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val source = currentManga ?: return
         Log.d(TAG, "open_adjacent next=$next sourceId=${source.id} sourceName=${source.name}")
         if (adjacentNavigationInFlight) return
+        val localTarget = cachedAdjacentEpisode(source, next) ?: adjacentEpisodeFast(source, next)
+        if (localTarget != null) {
+            val title = currentTitle ?: source.title
+            localTarget.mode = source.mode
+            attachEpisodeList(title, localTarget)
+            launchAdjacent(source, localTarget, title, null)
+            return
+        }
         adjacentNavigationInFlight = true
         setAdjacentButtonState(false, false)
         statusHandler.removeCallbacks(showAdjacentStatusRunnable)
-        statusHandler.postDelayed(showAdjacentStatusRunnable, ADJACENT_STATUS_DELAY_MS)
+        status.visibility = TextView.VISIBLE
+        status.text = if (next) "다음 회차 확인 중" else "이전 회차 확인 중"
         AppDispatchers.submitUserAction {
             val resolved = resolveAdjacent(source, next, true).let { resolution ->
                 val target = resolution.target
@@ -747,6 +758,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         updateResultEpisode(target)
         adjacentNavigationInFlight = false
         setAdjacentButtonState(false, false)
+        cachedPreviousEpisode = adjacentEpisodeFast(target, false)
+        cachedNextEpisode = adjacentEpisodeFast(target, true)
         startReaderSession(
             target,
             currentTitle,
@@ -754,8 +767,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             startAtFirstPage = true,
             clearViewImmediately = false
         )
-        primeAdjacentLaunchWindow(currentTitle, adjacentEpisode(target, false))
-        primeAdjacentLaunchWindow(currentTitle, adjacentEpisode(target, true))
+        primeAdjacentLaunchWindow(currentTitle, cachedPreviousEpisode)
+        primeAdjacentLaunchWindow(currentTitle, cachedNextEpisode)
         statusHandler.postDelayed({
             if (!destroyed && !isFinishing) updateAdjacentButtons()
         }, ADJACENT_BUTTON_REFRESH_DELAY_MS)
@@ -886,6 +899,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
         val previous = if (manga == null) null else adjacentEpisode(manga, false)
         val next = if (manga == null) null else adjacentEpisode(manga, true)
+        cachedPreviousEpisode = previous
+        cachedNextEpisode = next
         primeAdjacentLaunchWindow(title, previous)
         primeAdjacentLaunchWindow(title, next)
         prevButton.isEnabled = shouldEnableAdjacentButton(
@@ -1000,6 +1015,28 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         } else {
             ViewerEpisodeResolver.previousCandidate(manga, null, title, this::sameManga)
         }
+    }
+
+    private fun adjacentEpisodeFast(manga: Manga, next: Boolean): Manga? {
+        val title = currentTitle ?: manga.title
+        restoreTitleEpisodes(title, manga)
+        attachEpisodeList(title, manga)
+        return if (next) {
+            ViewerEpisodeResolver.nextCandidate(manga, null, title, this::sameMangaFast)
+        } else {
+            ViewerEpisodeResolver.previousCandidate(manga, null, title, this::sameMangaFast)
+        }
+    }
+
+    private fun cachedAdjacentEpisode(source: Manga, next: Boolean): Manga? {
+        val target = if (next) cachedNextEpisode else cachedPreviousEpisode
+        if (target == null || sameMangaFast(target, source)) return null
+        return target
+    }
+
+    private fun sameMangaFast(first: Manga?, second: Manga?): Boolean {
+        if (Manga.sameEpisodeIdentity(first, second)) return true
+        return first === second
     }
 
     private fun sameManga(first: Manga?, second: Manga?): Boolean {
