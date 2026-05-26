@@ -46,4 +46,14 @@ public class NtkWebViewFallbackManagerTest {
         assertTrue(NtkWebViewFallbackManager.callerWaitTimeoutMsForTest()
                 > NtkWebViewFallbackManager.webViewLoadTimeoutMsForTest());
     }
+
+    @Test
+    public void priorityWolfDocumentFallbackFailsFastOnBlankWebView() {
+        assertTrue(NtkWebViewFallbackManager.documentReadyWaitMsForTest(true, true)
+                < NtkWebViewFallbackManager.documentReadyWaitMsForTest());
+        assertTrue(NtkWebViewFallbackManager.webViewLoadTimeoutMsForTest(true, true)
+                < NtkWebViewFallbackManager.webViewLoadTimeoutMsForTest());
+        assertEquals(NtkWebViewFallbackManager.documentReadyWaitMsForTest(),
+                NtkWebViewFallbackManager.documentReadyWaitMsForTest(false, true));
+    }
 }

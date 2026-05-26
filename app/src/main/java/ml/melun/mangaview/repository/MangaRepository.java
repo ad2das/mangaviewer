@@ -7,6 +7,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
@@ -41,7 +42,7 @@ public final class MangaRepository {
     private static final int VIEWER_FETCH_CACHE_LIMIT = 96;
     private static final ConcurrentHashMap<String, CacheEntry> CACHE = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, FutureTask<Object>> IN_FLIGHT = new ConcurrentHashMap<>();
-    private static final ConcurrentHashMap<String, FutureTask<ViewerFetchResult>> VIEWER_FETCH_IN_FLIGHT = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, ViewerFetchTask> VIEWER_FETCH_IN_FLIGHT = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, ViewerFetchCacheEntry> VIEWER_FETCH_CACHE = new ConcurrentHashMap<>();
 
     private MangaRepository() {
@@ -162,9 +163,10 @@ public final class MangaRepository {
         int index = foregroundWfwfPrimeIndex(title, allowWolfWebViewFallback);
         if(index < 0 || appContext == null)
             return;
-        List<Manga> episodes = title.getEps();
+        List<Manga> episodes = Title.orderedEpisodeSnapshot(title.getEps());
         if(episodes == null || index >= episodes.size())
             return;
+        title.setEps(episodes);
         Manga episode = episodes.get(index);
         if(episode == null)
             return;
@@ -181,7 +183,7 @@ public final class MangaRepository {
         String source = title.getSourceSite();
         if(source == null || !"wfwf".equals(source.trim().toLowerCase(Locale.ROOT)))
             return -1;
-        List<Manga> episodes = title.getEps();
+        List<Manga> episodes = Title.orderedEpisodeSnapshot(title.getEps());
         return episodes == null || episodes.size() == 0 ? -1 : 0;
     }
 
@@ -253,13 +255,15 @@ public final class MangaRepository {
             }
             return new ViewerFetchResult(result, manga);
         });
-        FutureTask<ViewerFetchResult> running = VIEWER_FETCH_IN_FLIGHT.putIfAbsent(key, task);
-        if(running == null) {
-            running = task;
+        boolean foreground = requestGroup != null && requestGroup.isUserVisible();
+        boolean wfwf = !client.isNtk();
+        ViewerFetchTask candidate = new ViewerFetchTask(task, requestGroup, foreground);
+        ViewerFetchTask running = reserveViewerFetch(key, candidate, foreground, wfwf);
+        if(running == candidate) {
             task.run();
         }
         try {
-            ViewerFetchResult fetched = running.get();
+            ViewerFetchResult fetched = running.task.get();
             if(fetched != null && fetched.manga != manga)
                 manga.copyViewerStateFrom(fetched.manga);
             cacheViewerFetch(key, fetched);
@@ -269,9 +273,36 @@ public final class MangaRepository {
             if(cause instanceof Exception)
                 throw (Exception) cause;
             throw new RuntimeException(cause);
+        } catch (CancellationException e) {
+            return Title.LOAD_ERROR;
         } finally {
             VIEWER_FETCH_IN_FLIGHT.remove(key, running);
         }
+    }
+
+    private static ViewerFetchTask reserveViewerFetch(String key, ViewerFetchTask candidate,
+                                                      boolean foreground, boolean wfwf) {
+        while(true) {
+            ViewerFetchTask existing = VIEWER_FETCH_IN_FLIGHT.putIfAbsent(key, candidate);
+            if(existing == null)
+                return candidate;
+            if(!shouldReplaceViewerFetchForPriority(foreground, existing.foreground, wfwf))
+                return existing;
+            existing.cancel();
+            VIEWER_FETCH_IN_FLIGHT.remove(key, existing);
+        }
+    }
+
+    static boolean shouldReplaceViewerFetchForPriorityForTest(boolean foreground,
+                                                              boolean existingForeground,
+                                                              boolean wfwf) {
+        return shouldReplaceViewerFetchForPriority(foreground, existingForeground, wfwf);
+    }
+
+    private static boolean shouldReplaceViewerFetchForPriority(boolean foreground,
+                                                               boolean existingForeground,
+                                                               boolean wfwf) {
+        return wfwf && foreground && !existingForeground;
     }
 
     public static Ranking<Title> loadWebtoonSection(MainPageWebtoon parser, String title, String path, int baseMode,
@@ -420,6 +451,11 @@ public final class MangaRepository {
             return this;
         }
 
+        public Cancellation userVisible() {
+            group.userVisible();
+            return this;
+        }
+
         public boolean isCancelled() {
             return group.isCancelled();
         }
@@ -545,6 +581,26 @@ public final class MangaRepository {
         ViewerFetchCacheEntry(ViewerFetchResult result, long loadedAt) {
             this.result = result;
             this.loadedAt = loadedAt;
+        }
+    }
+
+    private static final class ViewerFetchTask {
+        final FutureTask<ViewerFetchResult> task;
+        final CustomHttpClient.RequestGroup requestGroup;
+        final boolean foreground;
+
+        ViewerFetchTask(FutureTask<ViewerFetchResult> task,
+                        CustomHttpClient.RequestGroup requestGroup,
+                        boolean foreground) {
+            this.task = task;
+            this.requestGroup = requestGroup;
+            this.foreground = foreground;
+        }
+
+        void cancel() {
+            if(requestGroup != null)
+                requestGroup.cancel();
+            task.cancel(true);
         }
     }
 }

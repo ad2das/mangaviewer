@@ -24,8 +24,9 @@ public class ReaderWarmupCoordinatorTest {
         assertEquals(5, ReaderWarmupCoordinator.byteLimitForTest(ReaderWarmupCoordinator.WarmupProfile.ADJACENT_BYTES));
         assertEquals(16, ReaderWarmupCoordinator.byteLimitForTest(ReaderWarmupCoordinator.WarmupProfile.LAUNCH_WINDOW));
         assertEquals(20, ReaderWarmupCoordinator.launchByteLimitForTest("ntk"));
-        assertEquals(18, ReaderWarmupCoordinator.launchByteLimitForTest("wfwf"));
+        assertEquals(1, ReaderWarmupCoordinator.launchByteLimitForTest("wfwf"));
         assertEquals(4, ReaderWarmupCoordinator.launchDecodeLimitForTest("ntk"));
+        assertEquals(1, ReaderWarmupCoordinator.launchDecodeLimitForTest("wfwf"));
     }
 
     @Test
@@ -35,7 +36,7 @@ public class ReaderWarmupCoordinatorTest {
         assertEquals(ReaderWarmupCoordinator.WarmupProfile.LAUNCH_WINDOW, ReaderWarmupCoordinator.launchProfileForTest(false));
         assertEquals(ReaderWarmupCoordinator.WarmupProfile.URL_ONLY, ReaderWarmupCoordinator.launchProfileForTest(true));
         assertEquals(12, ReaderWarmupCoordinator.adjacentByteLimitForTest("ntk"));
-        assertEquals(10, ReaderWarmupCoordinator.adjacentByteLimitForTest("wfwf"));
+        assertEquals(3, ReaderWarmupCoordinator.adjacentByteLimitForTest("wfwf"));
     }
 
     @Test

@@ -175,6 +175,8 @@ class ReaderSession(
     private var retainedFirstPage = 0
     private var retainedLastPage = 0
     private val firstBitmapLogged = AtomicBoolean(false)
+    private val initialFanoutStarted = AtomicBoolean(false)
+    private val pendingInitialFanoutPage = AtomicInteger(-1)
     private val windowGeneration = AtomicInteger(0)
     private val nextLoading = AtomicBoolean(false)
     private val previousAppendLoading = AtomicBoolean(false)
@@ -204,8 +206,7 @@ class ReaderSession(
             flushEarlyPreparedBitmaps()
             releasePreparedStoreBitmapsSoon()
             requestPageForeground(resolvedStartPage)
-            requestInitialWindow(resolvedStartPage, false)
-            prefetchImageFilesAround(resolvedStartPage)
+            requestInitialFanout(resolvedStartPage)
         }
 
         override fun onBitmapReady(index: Int, bitmap: Bitmap) {
@@ -243,7 +244,7 @@ class ReaderSession(
                 attachTitle()
                 var urls = imageRepository.imageUrls(manga, appContext)
                 if (urls.isNullOrEmpty()) {
-                    val cancellation = MangaRepository.cancellation()
+                    val cancellation = MangaRepository.cancellation().userVisible()
                     if (isWfwfSource(manga, title)) cancellation.prioritizeWebViewFallback()
                     val result = imageRepository.fetchViewerInitial(manga, cancellation)
                     if (result != Title.LOAD_OK) {
@@ -264,8 +265,7 @@ class ReaderSession(
                 installImages(urls, startPage, false)
                 flushEarlyPreparedBitmaps()
                 requestPageForeground(startPage)
-                requestInitialWindow(startPage, false)
-                prefetchImageFilesAround(startPage)
+                requestInitialFanout(startPage)
             } catch (e: Exception) {
                 recordIfUnexpected(e)
                 if (!isExpectedCancellation(e)) postMessage("이미지를 불러오지 못했습니다")
@@ -287,8 +287,7 @@ class ReaderSession(
             }
             releasePreparedStoreBitmapsSoon()
             requestPageForeground(resolvedStartPage)
-            requestInitialWindow(resolvedStartPage, false)
-            prefetchImageFilesAround(resolvedStartPage)
+            requestInitialFanout(resolvedStartPage)
             return true
         }
         for (entry in snapshot.bitmaps.entries) {
@@ -343,6 +342,31 @@ class ReaderSession(
         )
     }
 
+    private fun requestInitialFanout(startPage: Int) {
+        if (shouldDeferInitialFanoutUntilAnchor()) {
+            pendingInitialFanoutPage.set(startPage)
+            return
+        }
+        startInitialFanout(startPage)
+    }
+
+    private fun startInitialFanout(startPage: Int) {
+        if (!initialFanoutStarted.compareAndSet(false, true)) return
+        requestInitialWindow(startPage, false)
+        prefetchImageFilesAround(startPage)
+    }
+
+    private fun releaseInitialFanoutIfAnchorReady(index: Int) {
+        val pending = pendingInitialFanoutPage.get()
+        if (pending < 0 || index != pending) return
+        if (!pendingInitialFanoutPage.compareAndSet(pending, -1)) return
+        startInitialFanout(index)
+    }
+
+    private fun shouldDeferInitialFanoutUntilAnchor(): Boolean {
+        return isWfwfSource(manga, title)
+    }
+
     private fun prefetchImageFilesAround(startPage: Int) {
         val refs = synchronized(pagesLock) { pages.toList() }
         if (refs.isEmpty()) return
@@ -384,7 +408,10 @@ class ReaderSession(
         trackDeliveredBitmap(index, bitmap, false)
         markFirstPreparedBitmapDelivered()
         main.post {
-            if (!cancelled.get()) listener.onPageReady(index, bitmap)
+            if (!cancelled.get()) {
+                listener.onPageReady(index, bitmap)
+                main.post { releaseInitialFanoutIfAnchorReady(index) }
+            }
         }
     }
 
@@ -601,7 +628,7 @@ class ReaderSession(
                 if (episodes.isNotEmpty()) target.setEps(episodes)
                 if (hasEpisode(target)) return@execute
                 if (imageRepository.imageUrls(target, appContext).isNullOrEmpty()) {
-                    val result = imageRepository.fetchViewerInitial(target, MangaRepository.cancellation())
+                    val result = imageRepository.fetchViewerInitial(target, MangaRepository.cancellation().userVisible())
                     if (result != Title.LOAD_OK) {
                         if (result == Title.LOAD_CAPTCHA) {
                             if (silentMissing) {
@@ -1493,6 +1520,7 @@ class ReaderSession(
             is PageDecodeResult.Full -> listener.onPageReady(currentIndex, result.bitmap)
             is PageDecodeResult.Tiles -> listener.onPageTilesReady(currentIndex, result.pageWidth, result.pageHeight, result.tiles)
         }
+        main.post { releaseInitialFanoutIfAnchorReady(currentIndex) }
         retryPendingWidthIfNeeded(currentIndex)
     }
 
@@ -1737,7 +1765,8 @@ class ReaderSession(
         val source = (title?.sourceSite ?: manga?.title?.sourceSite ?: "")
             .trim()
             .lowercase(java.util.Locale.ROOT)
-        return source == "wfwf"
+        return source == "wfwf" ||
+            (source.isBlank() && !ml.melun.mangaview.MainApplication.getHttpClient().isNtk)
     }
 
     private fun requestedStartPage(): Int {

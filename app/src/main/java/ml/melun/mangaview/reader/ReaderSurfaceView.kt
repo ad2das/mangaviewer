@@ -203,6 +203,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     fun setPageCount(count: Int) {
         val request = synchronized(stateLock) {
+            scroller.forceFinished(true)
             pages.clear()
             repeat(max(0, count)) { pages.add(Page()) }
             scrollOffset = 0f

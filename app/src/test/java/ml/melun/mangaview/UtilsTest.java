@@ -148,12 +148,12 @@ public class UtilsTest {
     }
 
     @Test
-    public void exactViewerLaunchDoesNotGateOnPreparedFirstFrame() {
-        assertFalse(Utils.shouldWaitForExactFirstFrameForTest("wfwf", false));
-        assertFalse(Utils.shouldWaitForExactFirstFrameForTest("ntk", true));
-        assertFalse(Utils.shouldWaitForExactFirstFrameForTest("ntk", false));
+    public void exactViewerLaunchGatesOnPreparedFirstFrameForOnlineSources() {
+        assertTrue(Utils.shouldWaitForExactFirstFrameForTest("wfwf", false));
+        assertTrue(Utils.shouldWaitForExactFirstFrameForTest("ntk", true));
+        assertTrue(Utils.shouldWaitForExactFirstFrameForTest("ntk", false));
         assertFalse(Utils.shouldWaitForExactFirstFrameForTest("", false));
-        assertFalse(Utils.shouldWaitForExactFirstFrameForTest("", true));
+        assertTrue(Utils.shouldWaitForExactFirstFrameForTest("", true));
     }
 
     @Test

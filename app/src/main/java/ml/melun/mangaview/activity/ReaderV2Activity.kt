@@ -473,9 +473,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             if (pagesReady) {
                 hideBoundaryStatus()
                 renderView.setPageBitmap(index, bitmap)
-                logFirstDrawableMetric(index, "bitmap")
+                val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
+                if (visibleInitialDrawable) logFirstDrawableMetric(index, "bitmap")
                 if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
-                releaseInitialDrawGate("page")
+                if (visibleInitialDrawable) releaseInitialDrawGate("page")
             }
         }
     }
@@ -485,9 +486,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             if (pagesReady) {
                 hideBoundaryStatus()
                 renderView.setPageTiles(index, pageWidth, pageHeight, tiles)
-                logFirstDrawableMetric(index, "tiles")
+                val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
+                if (visibleInitialDrawable) logFirstDrawableMetric(index, "tiles")
                 if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
-                releaseInitialDrawGate("tiles")
+                if (visibleInitialDrawable) releaseInitialDrawGate("tiles")
             }
         }
     }
@@ -526,6 +528,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         renderView.contentDescription = READER_DRAWABLE_READY_DESCRIPTION
         val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
         Log.d("ViewerPerf", "reader_open_to_first_drawable source=$viewerLaunchSourceSite kind=$kind page=$index ms=$elapsed")
+    }
+
+    private fun shouldMarkFirstDrawable(index: Int, currentPage: Int): Boolean {
+        return shouldMarkFirstDrawableForTest(index, currentPage)
     }
 
     override fun onMessage(message: String) {
@@ -1425,6 +1431,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         @JvmStatic
         fun shouldEnableAdjacentButtonForTest(hasAdjacent: Boolean, canFetchMissingAdjacent: Boolean): Boolean {
             return shouldEnableAdjacentButton(hasAdjacent, canFetchMissingAdjacent)
+        }
+
+        @JvmStatic
+        fun shouldMarkFirstDrawableForTest(index: Int, currentPage: Int): Boolean {
+            return index == currentPage
         }
 
         private fun pageGapForBaseMode(baseMode: Int): Int {

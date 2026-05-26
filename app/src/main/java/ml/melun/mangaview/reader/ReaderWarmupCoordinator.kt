@@ -33,8 +33,8 @@ object ReaderWarmupCoordinator {
     private const val DEFAULT_LAUNCH_WINDOW_BYTE_PAGES = 16
     private const val NTK_LAUNCH_WINDOW_DECODE_PAGES = 4
     private const val NTK_LAUNCH_WINDOW_BYTE_PAGES = 20
-    private const val WFWF_LAUNCH_WINDOW_DECODE_PAGES = 3
-    private const val WFWF_LAUNCH_WINDOW_BYTE_PAGES = 18
+    private const val WFWF_LAUNCH_WINDOW_DECODE_PAGES = 1
+    private const val WFWF_LAUNCH_WINDOW_BYTE_PAGES = 1
     private val inFlight = ConcurrentHashMap<String, AtomicBoolean>()
     private val entryLocks = Array(4096) { Any() }
 
@@ -364,7 +364,10 @@ object ReaderWarmupCoordinator {
     }
 
     private fun sourceProfile(sourceSite: String?): SourcePreloadProfile {
-        return when ((sourceSite ?: "").trim().lowercase(Locale.ROOT)) {
+        val source = (sourceSite ?: "").trim().lowercase(Locale.ROOT).ifEmpty {
+            if (getHttpClient()?.isNtk == false) "wfwf" else ""
+        }
+        return when (source) {
             "ntk" -> SourcePreloadProfile(
                 visibleProfile = WarmupProfile.URL_ONLY,
                 exactVisibleProfile = WarmupProfile.FIRST_BYTE,
@@ -379,7 +382,7 @@ object ReaderWarmupCoordinator {
                 tapProfile = WarmupProfile.FIRST_BITMAP,
                 launchDecodePages = WFWF_LAUNCH_WINDOW_DECODE_PAGES,
                 launchBytePages = WFWF_LAUNCH_WINDOW_BYTE_PAGES,
-                adjacentBytePages = 10
+                adjacentBytePages = 3
             )
             else -> SourcePreloadProfile(
                 visibleProfile = WarmupProfile.URL_ONLY,

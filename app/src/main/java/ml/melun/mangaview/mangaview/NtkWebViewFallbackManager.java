@@ -29,6 +29,8 @@ final class NtkWebViewFallbackManager {
     private static final long WEBVIEW_LOAD_TIMEOUT_MS = 22_000L;
     private static final long CALLER_WAIT_TIMEOUT_MS = 30_000L;
     private static final long DOCUMENT_READY_WAIT_MS = 18_000L;
+    private static final long PRIORITY_WOLF_DOCUMENT_READY_WAIT_MS = 2_500L;
+    private static final long PRIORITY_WOLF_LOAD_TIMEOUT_MS = 6_000L;
     private static final Object INSTANCE_LOCK = new Object();
     private static WeakReference<NtkWebViewFallbackManager> instanceRef;
 
@@ -137,6 +139,14 @@ final class NtkWebViewFallbackManager {
         return DOCUMENT_READY_WAIT_MS;
     }
 
+    static long documentReadyWaitMsForTest(boolean highPriority, boolean wolfDocument) {
+        return documentReadyWaitMs(highPriority, wolfDocument);
+    }
+
+    static long webViewLoadTimeoutMsForTest(boolean highPriority, boolean wolfDocument) {
+        return webViewLoadTimeoutMs(highPriority, wolfDocument);
+    }
+
     private static boolean shouldStopWaitingForCaller(boolean requestCancelled, long now, long deadline) {
         return requestCancelled || now >= deadline;
     }
@@ -219,7 +229,7 @@ final class NtkWebViewFallbackManager {
                 webView.loadDataWithBaseURL(task.baseUrl, "<!doctype html><html><body></body></html>",
                         "text/html", "UTF-8", null);
             }
-            mainHandler.postDelayed(() -> timeoutOnMain(task), WEBVIEW_LOAD_TIMEOUT_MS);
+            mainHandler.postDelayed(() -> timeoutOnMain(task), webViewLoadTimeoutMs(task));
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
             finishOnMain(task, 0, "", true);
@@ -303,7 +313,7 @@ final class NtkWebViewFallbackManager {
             return;
         task.requested = true;
         task.loadStartedAt = SystemClock.elapsedRealtime();
-        webView.evaluateJavascript(buildDocumentHtmlScript(task.token), null);
+        webView.evaluateJavascript(buildDocumentHtmlScript(task.token, documentReadyWaitMs(task)), null);
     }
 
     private void onBridgeResult(String token, String value) {
@@ -444,9 +454,27 @@ final class NtkWebViewFallbackManager {
             target.put(key, value);
     }
 
-    private static String buildDocumentHtmlScript(String token) {
+    private static long documentReadyWaitMs(FetchTask task) {
+        return task == null ? DOCUMENT_READY_WAIT_MS :
+                documentReadyWaitMs(task.highPriority, CustomHttpClient.isWolfEpisodeDocumentPath(task.path));
+    }
+
+    private static long documentReadyWaitMs(boolean highPriority, boolean wolfDocument) {
+        return highPriority && wolfDocument ? PRIORITY_WOLF_DOCUMENT_READY_WAIT_MS : DOCUMENT_READY_WAIT_MS;
+    }
+
+    private static long webViewLoadTimeoutMs(FetchTask task) {
+        return task == null ? WEBVIEW_LOAD_TIMEOUT_MS :
+                webViewLoadTimeoutMs(task.highPriority, CustomHttpClient.isWolfEpisodeDocumentPath(task.path));
+    }
+
+    private static long webViewLoadTimeoutMs(boolean highPriority, boolean wolfDocument) {
+        return highPriority && wolfDocument ? PRIORITY_WOLF_LOAD_TIMEOUT_MS : WEBVIEW_LOAD_TIMEOUT_MS;
+    }
+
+    private static String buildDocumentHtmlScript(String token, long readyWaitMsValue) {
         String quotedToken = jsonQuote(token);
-        String readyWaitMs = String.valueOf(DOCUMENT_READY_WAIT_MS);
+        String readyWaitMs = String.valueOf(Math.max(0L, readyWaitMsValue));
         return "(function(){var token=" + quotedToken + ";var started=Date.now();"
                 + "function html(){return document.documentElement?document.documentElement.outerHTML:(document.body?document.body.innerHTML:'');}"
                 + "function lower(v){return (v||'').toLowerCase();}"

@@ -95,6 +95,14 @@ public class MangaRepositoryTest {
     }
 
     @Test
+    public void foregroundViewerFetchReplacesBackgroundWfwfFetchOnly() {
+        assertTrue(MangaRepository.shouldReplaceViewerFetchForPriorityForTest(true, false, true));
+        assertFalse(MangaRepository.shouldReplaceViewerFetchForPriorityForTest(true, true, true));
+        assertFalse(MangaRepository.shouldReplaceViewerFetchForPriorityForTest(false, false, true));
+        assertFalse(MangaRepository.shouldReplaceViewerFetchForPriorityForTest(true, false, false));
+    }
+
+    @Test
     public void searchExpectedNetworkMissesDoNotReportAsCrashes() {
         assertFalse(MangaRepository.shouldReportSearchFailure(
                 new Exception("Request failed: /search.html?q=one")));
@@ -111,5 +119,13 @@ public class MangaRepositoryTest {
         assertFalse(cancellation.isCancelled());
         cancellation.cancel();
         assertTrue(cancellation.isCancelled());
+    }
+
+    @Test
+    public void cancellationCanMarkUserVisibleViewerWork() {
+        assertFalse(new ml.melun.mangaview.mangaview.CustomHttpClient.RequestGroup().isUserVisible());
+        ml.melun.mangaview.mangaview.CustomHttpClient.RequestGroup group =
+                new ml.melun.mangaview.mangaview.CustomHttpClient.RequestGroup().userVisible();
+        assertTrue(group.isUserVisible());
     }
 }

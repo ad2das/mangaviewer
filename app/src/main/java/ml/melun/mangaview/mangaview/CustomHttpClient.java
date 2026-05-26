@@ -3287,6 +3287,7 @@ public class CustomHttpClient {
         private volatile boolean cancelled = false;
         private volatile boolean wolfWebViewFallback = false;
         private volatile boolean priorityWebViewFallback = false;
+        private volatile boolean userVisible = false;
 
         public RequestGroup allowWolfWebViewFallback() {
             wolfWebViewFallback = true;
@@ -3305,6 +3306,15 @@ public class CustomHttpClient {
 
         public boolean prioritizesWebViewFallback() {
             return priorityWebViewFallback;
+        }
+
+        public RequestGroup userVisible() {
+            userVisible = true;
+            return this;
+        }
+
+        public boolean isUserVisible() {
+            return userVisible;
         }
 
         void add(Call call) {

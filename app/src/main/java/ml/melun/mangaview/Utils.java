@@ -336,7 +336,8 @@ public class Utils {
     }
 
     private static boolean shouldWaitForExactFirstFrame(String sourceSite, boolean ntkSite) {
-        return false;
+        String source = sourceSite == null ? "" : sourceSite.trim().toLowerCase(Locale.ROOT);
+        return "wfwf".equals(source) || "ntk".equals(source) || ntkSite;
     }
 
     private static boolean shouldWaitForContinueFirstFrame(boolean waitForFirstFrame, boolean recent, Title title) {
@@ -369,6 +370,12 @@ public class Utils {
                 ? getScreenWidth(((Activity) context).getWindowManager().getDefaultDisplay())
                 : context.getResources().getDisplayMetrics().widthPixels;
         AppDispatchers.submitNavigation(() -> {
+            String readerPreparedKey = ReaderLaunchPreparer.prepareFirstFrame(appContext, manga, title, width, true);
+            if(readerPreparedKey != null) {
+                AppDispatchers.runOnMain(() -> launchPreparedViewer(context, manga, code, returnToEpisodes,
+                        online, recent, title, includeTitleEpisodes, launchToken, true));
+                return;
+            }
             PreparedViewerLaunch prepared = ViewerPreparationCoordinator.prepareExact(appContext, manga, title, 0,
                     width, false, p.getReverse(), MangaRepository.cancellation(), exactFirstFrameWaitMs(title),
                     shouldAllowExactForegroundFallback(title));
