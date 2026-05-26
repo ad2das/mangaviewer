@@ -904,6 +904,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (top > viewHeight) break
             index++
         }
+        val last = items.lastOrNull()
+        if (last != null && visibleLoading == 0 && itemHasDrawable(last)) {
+            val bottomGap = viewHeight - ceil(last.top + last.pageHeight).toInt()
+            if (bottomGap in 1..COVERAGE_EDGE_FILL_PX) {
+                items[items.lastIndex] = last.copy(pageHeight = last.pageHeight + bottomGap)
+            }
+        }
         val state = DrawState(viewWidth, viewHeight, busy, false, visibleLoading, hasDrawableContent, items)
         if (!hasDrawnContentFrame && state.visibleLoading > 0 && shouldHoldInitialViewportRenderLocked()) {
             renderRequested = true
@@ -1594,6 +1601,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val BUSY_WINDOW_ANCHOR_STEP = 2
         private const val BUSY_WINDOW_MIN_DISPATCH_MS = 48L
         private const val BUSY_COVERAGE_LOG_INTERVAL_MS = 250L
+        private const val COVERAGE_EDGE_FILL_PX = 8
         private const val BOUNDARY_EPSILON_PX = 2f
         private const val BOUNDARY_FLING_EXTEND_EPSILON_PX = 4
         private const val BOUNDARY_FLING_MIN_VELOCITY_MULTIPLIER = 2f

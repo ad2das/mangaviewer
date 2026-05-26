@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
+import com.bumptech.glide.Glide
 import ml.melun.mangaview.Utils
 import ml.melun.mangaview.glide.ViewerWarmupManager
 import ml.melun.mangaview.mangaview.Decoder
@@ -1214,7 +1215,7 @@ class ReaderSession(
             ?: throw java.io.IOException("Bitmap decode failed")
         val rawAt = if (metric) SystemClock.elapsedRealtime() else 0L
         if (!page.manga.isOnline) return PageDecodeResult.Full(applyAutoSplit(raw, page.side, page.allowAutoSplit))
-        val decoded = Decoder(page.manga.seed, page.manga.id).decode(raw, decodeTargetWidth)
+        val decoded = Decoder(page.manga.seed, page.manga.id).decode(raw, decodeTargetWidth, Glide.get(appContext).bitmapPool)
         if (decoded !== raw && !raw.isRecycled) raw.recycle()
         val transformedAt = if (metric) SystemClock.elapsedRealtime() else 0L
         val result = PageDecodeResult.Full(applyAutoSplit(decoded, page.side, page.allowAutoSplit))

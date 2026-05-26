@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import com.bumptech.glide.Glide
 import ml.melun.mangaview.MainApplication.p
 import ml.melun.mangaview.MainApplication.getHttpClient
 import ml.melun.mangaview.Utils
@@ -594,7 +595,7 @@ object ReaderWarmupCoordinator {
         } ?: throw java.io.IOException("Bitmap decode failed")
         val rawAt = android.os.SystemClock.elapsedRealtime()
         if (!manga.isOnline) return raw
-        val decoded = Decoder(manga.seed, manga.id).decode(raw, width)
+        val decoded = Decoder(manga.seed, manga.id).decode(raw, width, Glide.get(context).bitmapPool)
         if (decoded !== raw && !raw.isRecycled) raw.recycle()
         if (metric) {
             val finishedAt = android.os.SystemClock.elapsedRealtime()
