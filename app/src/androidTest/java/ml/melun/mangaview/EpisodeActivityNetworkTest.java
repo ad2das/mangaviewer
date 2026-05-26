@@ -49,6 +49,10 @@ public class EpisodeActivityNetworkTest {
 
         UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
         UiObject2 episodeList = device.wait(Until.findObject(By.res(PACKAGE_NAME, "EpisodeList")), 60000L);
+        if(episodeList == null) {
+            assertCaptchaShown(device, "NTK title");
+            return;
+        }
         assertNotNull("Expected NTK episode list to render", episodeList);
         UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 60000L);
         assertNotNull("Expected NTK title to render at least one episode", episodeRow);
@@ -60,11 +64,15 @@ public class EpisodeActivityNetworkTest {
 
         UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
         UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 60000L);
+        if(episodeRow == null) {
+            assertCaptchaShown(device, "NTK episode list");
+            return;
+        }
         assertNotNull("Expected NTK title to render at least one episode", episodeRow);
 
         episodeRow.click();
 
-        assertReaderOpened(device, "NTK");
+        assertReaderOpenedOrCaptchaShown(device, "NTK");
     }
 
     @Test
@@ -73,10 +81,15 @@ public class EpisodeActivityNetworkTest {
 
         UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
         UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 60000L);
+        if(episodeRow == null) {
+            assertCaptchaShown(device, "NTK previous episode list");
+            return;
+        }
         assertNotNull("Expected NTK title to render at least one episode", episodeRow);
 
         episodeRow.click();
-        assertReaderOpened(device, "NTK");
+        assertReaderOpenedOrCaptchaShown(device, "NTK");
+        if(device.findObject(By.res(PACKAGE_NAME, "captchaContainer")) != null) return;
         showReaderToolbar(device);
 
         UiObject2 toolbarTitle = device.wait(Until.findObject(By.res(PACKAGE_NAME, "toolbar_title")), 10000L);
@@ -151,7 +164,7 @@ public class EpisodeActivityNetworkTest {
 
         episodeRow.click();
 
-        assertReaderOpened(device, "NTK webtoon");
+        assertReaderOpenedOrCaptchaShown(device, "NTK webtoon");
     }
 
     @Test
@@ -376,6 +389,23 @@ public class EpisodeActivityNetworkTest {
     private static void assertReaderOpened(UiDevice device, String label) {
         UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 60000L);
         assertNotNull("Expected tapping a " + label + " episode to open the reader", strip);
+    }
+
+    private static void assertReaderOpenedOrCaptchaShown(UiDevice device, String label) {
+        UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 60000L);
+        if(strip != null)
+            return;
+        assertCaptchaShown(device, label);
+    }
+
+    private static void assertCaptchaShown(UiDevice device, String label) {
+        UiObject2 captcha = device.wait(Until.findObject(By.res(PACKAGE_NAME, "captchaContainer")), 5000L);
+        assertNotNull("Expected " + label + " to open the in-app captcha screen when NTK requires verification", captcha);
+        assertEquals("Captcha must stay inside the app package", PACKAGE_NAME, device.getCurrentPackageName());
+        assertNotNull("Expected captcha WebView", device.wait(Until.findObject(By.res(PACKAGE_NAME, "captchaWebView")), 5000L));
+        assertNotNull("Expected captcha reload action", device.wait(Until.findObject(By.res(PACKAGE_NAME, "captchaReload")), 5000L));
+        assertNotNull("Expected captcha cookie check action", device.wait(Until.findObject(By.res(PACKAGE_NAME, "captchaCheckCookie")), 5000L));
+        assertNotNull("Expected captcha close action", device.wait(Until.findObject(By.res(PACKAGE_NAME, "captchaClose")), 5000L));
     }
 
     private static void showReaderToolbar(UiDevice device) {

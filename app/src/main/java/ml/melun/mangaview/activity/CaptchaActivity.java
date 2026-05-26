@@ -873,6 +873,10 @@ public class CaptchaActivity extends AppCompatActivity {
     }
 
     private boolean shouldBlockCaptchaNavigation(String url) {
+        return shouldBlockCaptchaNavigationForTest(url);
+    }
+
+    static boolean shouldBlockCaptchaNavigationForTest(String url) {
         if(url == null || url.length() == 0)
             return false;
         String lower = url.toLowerCase(java.util.Locale.ROOT);
@@ -880,17 +884,36 @@ public class CaptchaActivity extends AppCompatActivity {
             return false;
         if(isAllowedCaptchaNavigationUrl(lower))
             return false;
-        android.util.Log.d("CaptchaActivity", "Blocked external captcha navigation: " + url);
+        logBlockedCaptchaNavigation(url);
         return true;
     }
 
-    private boolean isAllowedCaptchaNavigationUrl(String lowerUrl) {
-        return lowerUrl.contains("://ntk")
-                || lowerUrl.contains("://sbxh")
-                || lowerUrl.contains("://toonflix")
-                || lowerUrl.contains("challenges.cloudflare.com")
-                || lowerUrl.contains("cloudflare.com/turnstile")
-                || lowerUrl.contains("turnstile");
+    private static void logBlockedCaptchaNavigation(String url) {
+        try {
+            android.util.Log.d("CaptchaActivity", "Blocked external captcha navigation: " + url);
+        } catch (RuntimeException ignored) {
+        }
+    }
+
+    private static boolean isAllowedCaptchaNavigationUrl(String lowerUrl) {
+        try {
+            java.net.URI uri = new java.net.URI(lowerUrl);
+            String host = uri.getHost();
+            if(host == null || host.length() == 0)
+                return false;
+            host = host.toLowerCase(java.util.Locale.ROOT);
+            if(host.startsWith("ntk") || host.startsWith("sbxh") || host.startsWith("toonflix")
+                    || host.endsWith(".toonflix.app") || "sbxh1.com".equals(host) || "sbxh2.com".equals(host))
+                return true;
+            if("challenges.cloudflare.com".equals(host) || host.endsWith(".challenges.cloudflare.com"))
+                return true;
+            String path = uri.getPath();
+            return ("cloudflare.com".equals(host) || host.endsWith(".cloudflare.com"))
+                    && path != null
+                    && path.toLowerCase(java.util.Locale.ROOT).contains("turnstile");
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     static boolean shouldSuppressNtkLoadErrorPopupForTest(boolean ntkSite, String requestUrl, String captchaUrl) {
