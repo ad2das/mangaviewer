@@ -420,12 +420,17 @@ public class EpisodeActivityNetworkTest {
     private static void assertReaderOpened(UiDevice device, String label) {
         UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 60000L);
         assertNotNull("Expected tapping a " + label + " episode to open the reader", strip);
+        UiObject2 firstDrawable = device.wait(Until.findObject(By.desc("reader-drawable-ready")), 60000L);
+        assertNotNull("Expected tapping a " + label + " episode to render the first reader image", firstDrawable);
     }
 
     private static void assertReaderOpenedOrCaptchaShown(UiDevice device, String label) {
         UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 60000L);
-        if(strip != null)
+        if(strip != null) {
+            UiObject2 firstDrawable = device.wait(Until.findObject(By.desc("reader-drawable-ready")), 60000L);
+            assertNotNull("Expected tapping a " + label + " episode to render the first reader image", firstDrawable);
             return;
+        }
         assertCaptchaShown(device, label);
     }
 

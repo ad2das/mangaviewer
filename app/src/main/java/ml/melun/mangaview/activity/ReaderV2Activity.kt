@@ -153,6 +153,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         renderView = ReaderSurfaceView(this).also {
             it.id = R.id.strip
             it.isClickable = true
+            it.contentDescription = READER_LOADING_DESCRIPTION
             it.setWindowListener(this)
         }
         topBar = LinearLayout(this).apply {
@@ -522,6 +523,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun logFirstDrawableMetric(index: Int, kind: String) {
         if (firstDrawableMetricLogged || viewerLaunchStartedAtMs <= 0L) return
         firstDrawableMetricLogged = true
+        renderView.contentDescription = READER_DRAWABLE_READY_DESCRIPTION
         val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
         Log.d("ViewerPerf", "reader_open_to_first_drawable source=$viewerLaunchSourceSite kind=$kind page=$index ms=$elapsed")
     }
@@ -1410,6 +1412,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val ADJACENT_BUTTON_REFRESH_DELAY_MS = 350L
         private const val ADJACENT_STATUS_DELAY_MS = 180L
         private const val INITIAL_DRAW_GATE_TIMEOUT_MS = 1600L
+        private const val READER_LOADING_DESCRIPTION = "reader-loading"
+        private const val READER_DRAWABLE_READY_DESCRIPTION = "reader-drawable-ready"
         private const val CAPTCHA_RETRY_READER = 0
         private const val CAPTCHA_RETRY_TOOLBAR_ADJACENT = 1
         private const val CAPTCHA_RETRY_BOUNDARY = 2
