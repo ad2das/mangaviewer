@@ -1192,6 +1192,8 @@ public class EpisodeActivity extends AppCompatActivity {
         manga.setMode(mode);
         manga.setTitle(title);
         manga.setTitleId(title == null ? manga.getTitleId() : title.getId());
+        if(exactEpisode)
+            ReaderWarmupCoordinator.primeExactImmediate(context, manga, title);
         if(!exactEpisode && getHttpClient().isNtk())
             ViewerWarmupManager.warmup(context, manga, title);
         openViewerPrepared(context, manga, code, false, online, true, title, !manga.isOnline(), exactEpisode);

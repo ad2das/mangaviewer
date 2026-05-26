@@ -166,20 +166,25 @@ object ReaderWarmupCoordinator {
         profile: WarmupProfile
     ) {
         val snapshot = entry.snapshot()
-        val immediate = profile == WarmupProfile.LAUNCH_WINDOW
+        val launchWindow = profile == WarmupProfile.LAUNCH_WINDOW
+        val userPriority = launchWindow || profile == WarmupProfile.FIRST_BITMAP
         if (snapshot.status == ReaderPreparedStore.Status.WINDOW_READY ||
-            snapshot.status == ReaderPreparedStore.Status.FIRST_BITMAP_READY && !immediate ||
+            snapshot.status == ReaderPreparedStore.Status.FIRST_BITMAP_READY && !launchWindow ||
             snapshot.status == ReaderPreparedStore.Status.URLS_READY && profile == WarmupProfile.URL_ONLY ||
             snapshot.status == ReaderPreparedStore.Status.BYTES_READY && isByteReadyProfile(profile)
         ) {
             return
         }
-        val immediateFlag = AtomicBoolean(immediate)
+        val immediateFlag = AtomicBoolean(launchWindow)
         val existing = inFlight.putIfAbsent(entry.key, immediateFlag)
         if (existing != null) {
-            if (immediate && existing.compareAndSet(false, true)) {
+            if (launchWindow && existing.compareAndSet(false, true)) {
                 AppDispatchers.submitUserAction {
                     prepareEntry(appContext, entry, exactEpisode, WarmupProfile.LAUNCH_WINDOW)
+                }
+            } else if (profile == WarmupProfile.FIRST_BITMAP) {
+                AppDispatchers.submitUserAction {
+                    prepareEntry(appContext, entry, exactEpisode, WarmupProfile.FIRST_BITMAP)
                 }
             }
             return
@@ -191,7 +196,7 @@ object ReaderWarmupCoordinator {
                 inFlight.remove(entry.key, immediateFlag)
             }
         }
-        if (immediate) AppDispatchers.submitUserAction(task) else AppDispatchers.submitImageWarmup(task)
+        if (userPriority) AppDispatchers.submitUserAction(task) else AppDispatchers.submitImageWarmup(task)
     }
 
     private fun prepareEntry(
