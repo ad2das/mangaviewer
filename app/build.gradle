@@ -60,6 +60,7 @@ android {
 
 afterEvaluate {
     def debugJavaClasses = layout.buildDirectory.dir("intermediates/javac/debug/compileDebugJavaWithJavac/classes")
+    def debugKotlinClasses = layout.buildDirectory.dir("tmp/kotlin-classes/debug")
     tasks.matching { it.name == "compileDebugUnitTestJavaWithJavac" }.configureEach {
         dependsOn("compileDebugJavaWithJavac")
         classpath += files(debugJavaClasses)
@@ -67,6 +68,10 @@ afterEvaluate {
     tasks.matching { it.name == "testDebugUnitTest" }.configureEach {
         dependsOn("compileDebugJavaWithJavac")
         classpath += files(debugJavaClasses)
+    }
+    tasks.matching { it.name == "compileDebugAndroidTestJavaWithJavac" }.configureEach {
+        dependsOn("compileDebugKotlin")
+        classpath += files(debugJavaClasses, debugKotlinClasses)
     }
 }
 
