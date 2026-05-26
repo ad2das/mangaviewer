@@ -29,12 +29,12 @@ object ReaderWarmupCoordinator {
         LAUNCH_WINDOW
     }
 
-    private const val DEFAULT_LAUNCH_WINDOW_DECODE_PAGES = 1
-    private const val DEFAULT_LAUNCH_WINDOW_BYTE_PAGES = 10
-    private const val NTK_LAUNCH_WINDOW_DECODE_PAGES = 1
-    private const val NTK_LAUNCH_WINDOW_BYTE_PAGES = 8
-    private const val WFWF_LAUNCH_WINDOW_DECODE_PAGES = 1
-    private const val WFWF_LAUNCH_WINDOW_BYTE_PAGES = 12
+    private const val DEFAULT_LAUNCH_WINDOW_DECODE_PAGES = 3
+    private const val DEFAULT_LAUNCH_WINDOW_BYTE_PAGES = 16
+    private const val NTK_LAUNCH_WINDOW_DECODE_PAGES = 3
+    private const val NTK_LAUNCH_WINDOW_BYTE_PAGES = 14
+    private const val WFWF_LAUNCH_WINDOW_DECODE_PAGES = 3
+    private const val WFWF_LAUNCH_WINDOW_BYTE_PAGES = 18
     private val inFlight = ConcurrentHashMap<String, AtomicBoolean>()
     private val entryLocks = Array(4096) { Any() }
 
@@ -122,7 +122,7 @@ object ReaderWarmupCoordinator {
 
     @JvmStatic
     fun primeAdjacent(context: Context?, manga: Manga?, title: Title?) {
-        val profile = if (p != null && p.getDataSave()) WarmupProfile.FIRST_BYTE else WarmupProfile.ADJACENT_BYTES
+        val profile = if (p != null && p.getDataSave()) WarmupProfile.FIRST_BYTE else WarmupProfile.LAUNCH_WINDOW
         val entry = createEntry(context, manga, title, 0, true, profile) ?: return
         schedule(context!!.applicationContext, entry, true, profile)
     }
@@ -368,26 +368,26 @@ object ReaderWarmupCoordinator {
             "ntk" -> SourcePreloadProfile(
                 visibleProfile = WarmupProfile.URL_ONLY,
                 exactVisibleProfile = WarmupProfile.FIRST_BYTE,
-                tapProfile = WarmupProfile.FIRST_BYTE,
+                tapProfile = WarmupProfile.FIRST_BITMAP,
                 launchDecodePages = NTK_LAUNCH_WINDOW_DECODE_PAGES,
                 launchBytePages = NTK_LAUNCH_WINDOW_BYTE_PAGES,
-                adjacentBytePages = 3
+                adjacentBytePages = 8
             )
             "wfwf" -> SourcePreloadProfile(
                 visibleProfile = WarmupProfile.URL_ONLY,
                 exactVisibleProfile = WarmupProfile.FIRST_BYTE,
-                tapProfile = WarmupProfile.FIRST_BYTE,
+                tapProfile = WarmupProfile.FIRST_BITMAP,
                 launchDecodePages = WFWF_LAUNCH_WINDOW_DECODE_PAGES,
                 launchBytePages = WFWF_LAUNCH_WINDOW_BYTE_PAGES,
-                adjacentBytePages = 5
+                adjacentBytePages = 10
             )
             else -> SourcePreloadProfile(
                 visibleProfile = WarmupProfile.URL_ONLY,
                 exactVisibleProfile = WarmupProfile.FIRST_BYTE,
-                tapProfile = WarmupProfile.FIRST_BYTE,
+                tapProfile = WarmupProfile.FIRST_BITMAP,
                 launchDecodePages = DEFAULT_LAUNCH_WINDOW_DECODE_PAGES,
                 launchBytePages = DEFAULT_LAUNCH_WINDOW_BYTE_PAGES,
-                adjacentBytePages = 5
+                adjacentBytePages = 10
             )
         }
     }

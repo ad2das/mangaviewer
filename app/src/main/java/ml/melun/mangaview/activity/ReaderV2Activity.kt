@@ -128,6 +128,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             status.text = "회차 연결 중"
         }
     }
+    private val showAdjacentStatusRunnable = Runnable {
+        if (adjacentNavigationInFlight && !destroyed && !isFinishing) {
+            status.visibility = TextView.VISIBLE
+            status.text = "회차 확인 중"
+        }
+    }
 
     private data class AdjacentResolution(
         val target: Manga?,
@@ -385,6 +391,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         progressHandler.removeCallbacks(saveProgressRunnable)
         statusHandler.removeCallbacks(showInitialStatusRunnable)
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
+        statusHandler.removeCallbacks(showAdjacentStatusRunnable)
         statusHandler.removeCallbacks(initialDrawGateTimeoutRunnable)
         missingEpisodePromptState.dismiss()
         removeInitialDrawGateListener()
@@ -653,8 +660,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (adjacentNavigationInFlight) return
         adjacentNavigationInFlight = true
         setAdjacentButtonState(false, false)
-        status.visibility = TextView.VISIBLE
-        status.text = "회차 확인 중"
+        statusHandler.removeCallbacks(showAdjacentStatusRunnable)
+        statusHandler.postDelayed(showAdjacentStatusRunnable, ADJACENT_STATUS_DELAY_MS)
         AppDispatchers.submitUserAction {
             val resolved = resolveAdjacent(source, next, true).let { resolution ->
                 val target = resolution.target
@@ -687,6 +694,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun finishAdjacentResolution(source: Manga, next: Boolean, resolved: AdjacentResolution) {
         adjacentNavigationInFlight = false
+        statusHandler.removeCallbacks(showAdjacentStatusRunnable)
         if (destroyed || isFinishing) return
         if (resolved.fetchedEpisodes) episodeListFetchAttempted = true
         currentTitle = resolved.title ?: currentTitle
@@ -723,6 +731,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun launchAdjacent(source: Manga, target: Manga, title: Title?, preparedKey: String? = null) {
         Log.d(TAG, "launch_adjacent sourceId=${source.id} targetId=${target.id} targetName=${target.name}")
+        statusHandler.removeCallbacks(showAdjacentStatusRunnable)
         saveCurrentReadingProgress()
         target.mode = source.mode
         attachEpisodeList(title, target)
@@ -771,7 +780,20 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 dialog.dismiss()
                 val target = episodes.getOrNull(which) ?: return@setSingleChoiceItems
                 if (Manga.sameEpisodeIdentity(source, target)) return@setSingleChoiceItems
-                launchAdjacent(source, target, title)
+                val preparedKey = ReaderWarmupCoordinator.readyKey(
+                    applicationContext,
+                    target,
+                    title,
+                    readerWidthPx(),
+                    true
+                ) ?: ReaderWarmupCoordinator.openKey(
+                    applicationContext,
+                    target,
+                    title,
+                    readerWidthPx(),
+                    true
+                )
+                launchAdjacent(source, target, title, preparedKey)
             }
             .create()
         dialog.setOnShowListener {
@@ -829,6 +851,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         initialStatusPending = false
         statusHandler.removeCallbacks(showInitialStatusRunnable)
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
+        statusHandler.removeCallbacks(showAdjacentStatusRunnable)
         status.visibility = TextView.GONE
         status.text = displayEpisodeTitle(manga, title)
         if (clearViewImmediately) renderView.setPageCount(0)
@@ -1340,6 +1363,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val INITIAL_STATUS_DELAY_MS = 450L
         private const val BOUNDARY_STATUS_DELAY_MS = 250L
         private const val ADJACENT_BUTTON_REFRESH_DELAY_MS = 350L
+        private const val ADJACENT_STATUS_DELAY_MS = 180L
         private const val INITIAL_DRAW_GATE_TIMEOUT_MS = 1600L
         private const val CAPTCHA_RETRY_READER = 0
         private const val CAPTCHA_RETRY_TOOLBAR_ADJACENT = 1
