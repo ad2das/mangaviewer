@@ -179,6 +179,10 @@ object ReaderPreparedStore {
             return (title?.sourceSite ?: "").trim().lowercase(Locale.ROOT)
         }
 
+        internal fun isFailed(): Boolean = synchronized(lock) {
+            currentStatus == Status.FAILED
+        }
+
         private fun usableBitmapLocked(bitmap: Bitmap?): Boolean {
             return bitmap != null && !bitmap.isRecycled
         }
@@ -197,8 +201,12 @@ object ReaderPreparedStore {
     fun createOrGet(key: String, manga: Manga, title: Title?, startPage: Int, width: Int, pinStartBitmap: Boolean): Entry {
         val existing = entries[key]
         if (existing != null) {
-            existing.updateStartPin(pinStartBitmap)
-            return existing
+            if (shouldReplaceExistingEntry(existing)) {
+                entries.remove(key)
+            } else {
+                existing.updateStartPin(pinStartBitmap)
+                return existing
+            }
         }
         val entry = Entry(key, manga, title, startPage, width, pinStartBitmap)
         entries[key] = entry
@@ -222,6 +230,15 @@ object ReaderPreparedStore {
     @JvmStatic
     fun clearBitmaps(key: String?) {
         get(key)?.clearBitmaps()
+    }
+
+    private fun shouldReplaceExistingEntry(entry: Entry): Boolean {
+        return entry.isFailed()
+    }
+
+    @JvmStatic
+    fun shouldReplaceExistingEntryForTest(failed: Boolean): Boolean {
+        return failed
     }
 
     @JvmStatic

@@ -8,6 +8,7 @@ import java.util.List;
 
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
+import ml.melun.mangaview.mangaview.Title;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -76,6 +77,21 @@ public class MangaRepositoryTest {
                 new IOException("Network is unreachable")));
         assertTrue(MangaRepository.shouldReportEpisodeFetchFailure(
                 new IllegalStateException("parser invariant failed")));
+    }
+
+    @Test
+    public void foregroundWfwfPrimeStartsAtScreenTopEpisode() {
+        Title title = new Title("wfwf", "", "", null, "", 10017, MTitle.base_comic);
+        title.setSourceSite("wfwf");
+        title.setEps(Arrays.asList(
+                new Manga(144, "144", "", MTitle.base_comic),
+                new Manga(143, "143", "", MTitle.base_comic)));
+
+        assertEquals(0, MangaRepository.foregroundWfwfPrimeIndexForTest(title, true));
+        assertEquals(-1, MangaRepository.foregroundWfwfPrimeIndexForTest(title, false));
+
+        title.setSourceSite("ntk");
+        assertEquals(-1, MangaRepository.foregroundWfwfPrimeIndexForTest(title, true));
     }
 
     @Test

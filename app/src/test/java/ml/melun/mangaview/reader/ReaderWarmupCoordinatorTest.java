@@ -3,6 +3,9 @@ package ml.melun.mangaview.reader;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+
 public class ReaderWarmupCoordinatorTest {
     @Test
     public void speculativeProfilesAvoidWindowDecode() {
@@ -42,5 +45,11 @@ public class ReaderWarmupCoordinatorTest {
         assertEquals(24L * 1024L * 1024L, ReaderPreparedStore.hardBitmapBytesForTest(""));
         assertEquals(12L * 1024L * 1024L, ReaderPreparedStore.softBitmapBytesForTest("ntk"));
         assertEquals(16L * 1024L * 1024L, ReaderPreparedStore.hardBitmapBytesForTest("ntk"));
+    }
+
+    @Test
+    public void preparedStoreReplacesFailedEntriesOnly() {
+        assertTrue(ReaderPreparedStore.shouldReplaceExistingEntryForTest(true));
+        assertFalse(ReaderPreparedStore.shouldReplaceExistingEntryForTest(false));
     }
 }

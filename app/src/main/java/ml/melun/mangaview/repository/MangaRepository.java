@@ -24,8 +24,11 @@ import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.mangaview.UpdatedList;
 import ml.melun.mangaview.mangaview.UpdatedManga;
 import ml.melun.mangaview.mangaview.WfwfDomainResolver;
+import ml.melun.mangaview.glide.ViewerWarmupManager;
+import ml.melun.mangaview.reader.ReaderWarmupCoordinator;
 import okhttp3.Response;
 
+import static ml.melun.mangaview.MainApplication.appContext;
 import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
 
@@ -144,12 +147,46 @@ public final class MangaRepository {
         if(requestGroup.isCancelled())
             return Title.LOAD_ERROR;
         try {
-            return getHttpClient().runWithRequestGroup(requestGroup, () -> title.fetchEps(getHttpClient()));
+            int result = getHttpClient().runWithRequestGroup(requestGroup, () -> title.fetchEps(getHttpClient()));
+            if(result == Title.LOAD_OK && !requestGroup.isCancelled())
+                primeForegroundWfwfEntry(title, allowWolfWebViewFallback);
+            return result;
         } catch (Exception e) {
             if(reportFailure && shouldReportEpisodeFetchFailure(e))
                 ml.melun.mangaview.report.CrashReporter.record(e);
             return Title.LOAD_ERROR;
         }
+    }
+
+    private static void primeForegroundWfwfEntry(Title title, boolean allowWolfWebViewFallback) {
+        int index = foregroundWfwfPrimeIndex(title, allowWolfWebViewFallback);
+        if(index < 0 || appContext == null)
+            return;
+        List<Manga> episodes = title.getEps();
+        if(episodes == null || index >= episodes.size())
+            return;
+        Manga episode = episodes.get(index);
+        if(episode == null)
+            return;
+        episode.setMode(title.getBaseMode());
+        episode.setTitle(title);
+        episode.setTitleId(title.getId());
+        ReaderWarmupCoordinator.primeExactImmediate(appContext, episode, title);
+        ViewerWarmupManager.warmupEntry(appContext, episode, title, 0);
+    }
+
+    private static int foregroundWfwfPrimeIndex(Title title, boolean allowWolfWebViewFallback) {
+        if(!allowWolfWebViewFallback || title == null)
+            return -1;
+        String source = title.getSourceSite();
+        if(source == null || !"wfwf".equals(source.trim().toLowerCase(Locale.ROOT)))
+            return -1;
+        List<Manga> episodes = title.getEps();
+        return episodes == null || episodes.size() == 0 ? -1 : 0;
+    }
+
+    static int foregroundWfwfPrimeIndexForTest(Title title, boolean allowWolfWebViewFallback) {
+        return foregroundWfwfPrimeIndex(title, allowWolfWebViewFallback);
     }
 
     static boolean shouldReportEpisodeFetchFailure(Throwable failure) {
