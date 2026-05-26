@@ -1094,12 +1094,43 @@ public class Preference {
             episodeCount = title.getEpisodeCount();
         if(episodeIndex <= 0 && recentTitle.getBookmarkEpisodeId() == episodeId)
             episodeIndex = recentTitle.getBookmarkEpisodeIndex();
+        if(episodeIndex <= 0)
+            episodeIndex = inferEpisodeIndexFromEpisodeId(title, episodeId, episodeCount);
         recentTitle.setReadingProgress(episodeId, episodeIndex, episodeCount);
         String resumePath = title.getResumeNtkEpisodePath();
         if(resumePath.length() > 0)
             recentTitle.setResumeNtkEpisodePath(resumePath);
         normalizeNtkProgressFromRelease(recentTitle);
         writeRecent();
+    }
+
+    private static int inferEpisodeIndexFromEpisodeId(MTitle title, int episodeId, int episodeCount) {
+        if(title == null || episodeId <= 0 || episodeCount <= 0)
+            return -1;
+        String source = canonicalSourceSiteForProgress(title.getSourceSite());
+        if("ntk".equals(source))
+            return -1;
+        if(episodeId > episodeCount)
+            return -1;
+        return episodeCount - episodeId + 1;
+    }
+
+    private static String canonicalSourceSiteForProgress(String source) {
+        if(source == null)
+            return "";
+        String lower = source.trim().toLowerCase(Locale.ROOT);
+        if(lower.length() == 0)
+            return "";
+        if(lower.contains("ntk") || lower.contains("sbxh") || lower.contains("toonflix"))
+            return "ntk";
+        if(lower.contains("wfwf") || lower.contains("wolf") || lower.contains("vcloud")
+                || lower.contains("v12st") || lower.contains("ao9cloud"))
+            return "wfwf";
+        return "";
+    }
+
+    static int inferEpisodeIndexFromEpisodeIdForTest(MTitle title, int episodeId, int episodeCount) {
+        return inferEpisodeIndexFromEpisodeId(title, episodeId, episodeCount);
     }
 
     private static void normalizeNtkProgressFromRelease(MTitle title) {

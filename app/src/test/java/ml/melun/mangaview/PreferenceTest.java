@@ -74,4 +74,20 @@ public class PreferenceTest {
         assertEquals(13, Preference.normalizedNtkEpisodeCountForTest(title));
         assertEquals(7, title.getBookmarkEpisodeIndex());
     }
+
+    @Test
+    public void wfwfProgressInfersListIndexFromEpisodeNumber() {
+        MTitle title = new MTitle("서머타임 렌더링", 10017, "", "", null, "", MTitle.base_comic);
+        title.setSourceSite("wfwf");
+
+        assertEquals(132, Preference.inferEpisodeIndexFromEpisodeIdForTest(title, 74, 205));
+    }
+
+    @Test
+    public void ntkProgressDoesNotInferIndexFromSourceId() {
+        MTitle title = new MTitle("서머타임 렌더링", 7843, "", "", null, "", MTitle.base_comic);
+        title.setSourceSite("ntk");
+
+        assertEquals(-1, Preference.inferEpisodeIndexFromEpisodeIdForTest(title, 74, 205));
+    }
 }

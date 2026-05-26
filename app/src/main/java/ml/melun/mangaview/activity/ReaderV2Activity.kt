@@ -1107,6 +1107,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (title.sourceSite == "ntk" && ntkPath.isNotBlank()) {
             title.resumeNtkEpisodePath = ntkPath
         }
+        val episodes = Utils.snapshotEpisodes(title).ifEmpty { Utils.snapshotEpisodes(info.manga) }
+        val episodeIndex = episodes.indexOfFirst { it != null && it.id == info.manga.id }
+            .takeIf { it >= 0 }
+            ?.plus(1)
+            ?: title.bookmarkEpisodeIndex
+        val episodeCount = episodes.size.takeIf { it > 0 } ?: title.episodeCount
+        if (episodeCount > 0) {
+            title.setReadingProgress(info.manga.id, episodeIndex, episodeCount)
+        }
         val zeroBasedPage = info.sourcePageIndex.coerceAtLeast(0)
         if (
             lastSavedEpisodeId == info.manga.id &&
