@@ -659,6 +659,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         Log.d(TAG, "open_adjacent next=$next sourceId=${source.id} sourceName=${source.name}")
         if (adjacentNavigationInFlight) return
         adjacentNavigationInFlight = true
+        setAdjacentButtonState(false, false)
         statusHandler.removeCallbacks(showAdjacentStatusRunnable)
         statusHandler.postDelayed(showAdjacentStatusRunnable, ADJACENT_STATUS_DELAY_MS)
         AppDispatchers.submitUserAction {
@@ -880,6 +881,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val title = currentTitle ?: manga?.title
         if (manga != null) attachEpisodeList(title, manga)
         if (adjacentNavigationInFlight) {
+            setAdjacentButtonState(false, false)
             return
         }
         val previous = if (manga == null) null else adjacentEpisode(manga, false)
