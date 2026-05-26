@@ -17,6 +17,7 @@ import ml.melun.mangaview.glide.ViewerWarmupManager
 import ml.melun.mangaview.mangaview.Decoder
 import ml.melun.mangaview.mangaview.Manga
 import ml.melun.mangaview.mangaview.Title
+import ml.melun.mangaview.model.PageItem
 import ml.melun.mangaview.repository.MangaRepository
 import ml.melun.mangaview.runtime.MainThreadStallMonitor
 import java.io.File
@@ -970,6 +971,13 @@ class ReaderSession(
                     return@execute
                 }
                 val originalPage = page
+                cachedDecodedResult(originalPage, targetWidth)?.let { cached ->
+                    loading.remove(index)
+                    inFlightWidths.remove(index)
+                    postDecodeResult(Delivery(index, originalPage, cached, SystemClock.elapsedRealtime(), targetWidth))
+                    ViewerWarmupManager.logMetric("reader_decoded_cache_hit", index.toLong())
+                    return@execute
+                }
                 prefetchImageFile(index, originalPage)
                 try {
                     decodeExecutor.execute {
@@ -1120,9 +1128,22 @@ class ReaderSession(
     }
 
     private fun decodePageWithLease(index: Int, page: PageRef, targetWidth: Int): PageDecodeResult {
+        cachedDecodedResult(page, targetWidth)?.let { return it }
         leaseImageFile(index, page).use { lease ->
             return decodePage(index, page, lease.file, targetWidth)
         }
+    }
+
+    private fun cachedDecodedResult(page: PageRef, targetWidth: Int): PageDecodeResult? {
+        val image = page.image ?: return null
+        val bitmap = ViewerWarmupManager.getDecodedBitmap(
+            PageItem(page.sourceIndex, image, page.manga, page.side),
+            autoCut,
+            reverse,
+            targetWidth
+        ) ?: return null
+        if (bitmap.isRecycled) return null
+        return PageDecodeResult.Full(bitmap)
     }
 
     private fun decodePage(index: Int, page: PageRef, file: File, targetWidth: Int): PageDecodeResult {

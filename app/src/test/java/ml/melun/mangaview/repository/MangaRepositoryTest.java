@@ -80,14 +80,14 @@ public class MangaRepositoryTest {
     }
 
     @Test
-    public void foregroundWfwfPrimeStartsAtScreenTopEpisode() {
+    public void foregroundWfwfPrimeStartsAtFirstReadableEpisode() {
         Title title = new Title("wfwf", "", "", null, "", 10017, MTitle.base_comic);
         title.setSourceSite("wfwf");
         title.setEps(Arrays.asList(
                 new Manga(144, "144", "", MTitle.base_comic),
                 new Manga(143, "143", "", MTitle.base_comic)));
 
-        assertEquals(0, MangaRepository.foregroundWfwfPrimeIndexForTest(title, true));
+        assertEquals(1, MangaRepository.foregroundWfwfPrimeIndexForTest(title, true));
         assertEquals(-1, MangaRepository.foregroundWfwfPrimeIndexForTest(title, false));
 
         title.setSourceSite("ntk");

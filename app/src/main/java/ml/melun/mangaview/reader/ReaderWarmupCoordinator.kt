@@ -7,10 +7,12 @@ import android.net.Uri
 import ml.melun.mangaview.MainApplication.p
 import ml.melun.mangaview.MainApplication.getHttpClient
 import ml.melun.mangaview.Utils
+import ml.melun.mangaview.glide.ViewerWarmupManager
 import ml.melun.mangaview.mangaview.Decoder
 import ml.melun.mangaview.mangaview.Manga
 import ml.melun.mangaview.mangaview.Title
 import ml.melun.mangaview.mangaview.CustomHttpClient
+import ml.melun.mangaview.model.PageItem
 import ml.melun.mangaview.repository.MangaRepository
 import ml.melun.mangaview.runtime.AppDispatchers
 import ml.melun.mangaview.runtime.BackgroundPrefetchBudget
@@ -315,9 +317,9 @@ object ReaderWarmupCoordinator {
                 return
             }
             WarmupProfile.FIRST_BITMAP -> {
-                startFirstBitmapBackfill(appContext, entry, manga, urls, startPage, width)
-                val bitmap = decodePage(appContext, manga, urls[startPage], width)
+                val bitmap = decodePage(appContext, manga, startPage, urls[startPage], width)
                 entry.putBitmap(startPage, bitmap, true, false)
+                startFirstBitmapBackfill(appContext, entry, manga, urls, startPage, width)
                 return
             }
             WarmupProfile.ADJACENT_BYTES -> {
@@ -344,7 +346,7 @@ object ReaderWarmupCoordinator {
                         if (complete) break
                         continue
                     }
-                    val bitmap = decodePage(appContext, manga, urls[index], width)
+                    val bitmap = decodePage(appContext, manga, index, urls[index], width)
                     decoded.add(index)
                     decodedHeightPx += drawnHeight(width, bitmap.width, bitmap.height)
                     val complete = position == decodeOrder.lastIndex || (decodedHeightPx >= targetHeightPx && index != startPage)
@@ -388,7 +390,7 @@ object ReaderWarmupCoordinator {
                     continue
                 }
                 completion.submit(AppDispatchers.safeCallable {
-                    val bitmap = decodePage(appContext, manga, image, width)
+                    val bitmap = decodePage(appContext, manga, index, image, width)
                     entry.putBitmap(index, bitmap, false, false)
                 })
                 submitted++
@@ -497,7 +499,7 @@ object ReaderWarmupCoordinator {
             )
             "wfwf" -> SourcePreloadProfile(
                 visibleProfile = WarmupProfile.URL_ONLY,
-                exactVisibleProfile = WarmupProfile.FIRST_BYTE,
+                exactVisibleProfile = WarmupProfile.URL_ONLY,
                 tapProfile = WarmupProfile.FIRST_BITMAP,
                 launchDecodePages = WFWF_LAUNCH_WINDOW_DECODE_PAGES,
                 launchBytePages = WFWF_LAUNCH_WINDOW_BYTE_PAGES,
@@ -561,7 +563,11 @@ object ReaderWarmupCoordinator {
         return if (manga.isOnline) ReaderImageCache.getOrFetchFile(context, manga, image) else null
     }
 
-    private fun decodePage(context: Context, manga: Manga, image: String, width: Int): Bitmap {
+    private fun decodePage(context: Context, manga: Manga, index: Int, image: String, width: Int): Bitmap {
+        ViewerWarmupManager.getDecodedBitmap(PageItem(index, image, manga), false, p?.reverse ?: false, width)?.let {
+            if (!it.isRecycled) return it
+        }
+        val startedAt = android.os.SystemClock.elapsedRealtime()
         val source = fetchImageFile(context, manga, image)
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         if (source != null) {
@@ -581,6 +587,10 @@ object ReaderWarmupCoordinator {
         if (!manga.isOnline) return raw
         val decoded = Decoder(manga.seed, manga.id).decode(raw, width)
         if (decoded !== raw && !raw.isRecycled) raw.recycle()
+        if (index == 0) ViewerWarmupManager.logMetric(
+            "reader_warmup_first_decode_ms",
+            android.os.SystemClock.elapsedRealtime() - startedAt
+        )
         return decoded
     }
 
@@ -633,6 +643,11 @@ object ReaderWarmupCoordinator {
     @JvmStatic
     fun visibleProfileForTest(sourceSite: String?): WarmupProfile {
         return sourceProfile(sourceSite).visibleProfile
+    }
+
+    @JvmStatic
+    fun exactVisibleProfileForTest(sourceSite: String?): WarmupProfile {
+        return sourceProfile(sourceSite).exactVisibleProfile
     }
 
     @JvmStatic

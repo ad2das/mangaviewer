@@ -39,6 +39,7 @@ public class ReaderWarmupCoordinatorTest {
         assertEquals(ReaderWarmupCoordinator.WarmupProfile.URL_ONLY, ReaderWarmupCoordinator.launchProfileForTest(true));
         assertEquals(12, ReaderWarmupCoordinator.adjacentByteLimitForTest("ntk"));
         assertEquals(3, ReaderWarmupCoordinator.adjacentByteLimitForTest("wfwf"));
+        assertEquals(ReaderWarmupCoordinator.WarmupProfile.URL_ONLY, ReaderWarmupCoordinator.exactVisibleProfileForTest("wfwf"));
     }
 
     @Test

@@ -25,8 +25,8 @@ import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.mangaview.UpdatedList;
 import ml.melun.mangaview.mangaview.UpdatedManga;
 import ml.melun.mangaview.mangaview.WfwfDomainResolver;
-import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.reader.ReaderWarmupCoordinator;
+import ml.melun.mangaview.runtime.PrefetchCoordinator;
 import okhttp3.Response;
 
 import static ml.melun.mangaview.MainApplication.appContext;
@@ -174,7 +174,6 @@ public final class MangaRepository {
         episode.setTitle(title);
         episode.setTitleId(title.getId());
         ReaderWarmupCoordinator.primeExactImmediate(appContext, episode, title);
-        ViewerWarmupManager.warmupEntry(appContext, episode, title, 0);
     }
 
     private static int foregroundWfwfPrimeIndex(Title title, boolean allowWolfWebViewFallback) {
@@ -184,7 +183,7 @@ public final class MangaRepository {
         if(source == null || !"wfwf".equals(source.trim().toLowerCase(Locale.ROOT)))
             return -1;
         List<Manga> episodes = Title.orderedEpisodeSnapshot(title.getEps());
-        return episodes == null || episodes.size() == 0 ? -1 : 0;
+        return PrefetchCoordinator.firstEpisodeIndex(episodes);
     }
 
     static int foregroundWfwfPrimeIndexForTest(Title title, boolean allowWolfWebViewFallback) {

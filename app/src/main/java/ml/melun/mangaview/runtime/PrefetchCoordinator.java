@@ -65,6 +65,7 @@ public final class PrefetchCoordinator {
         if(appContext == null || title == null || episodes == null || targets == null)
             return;
         int entryIndex = resumeIndex >= 0 ? resumeIndex : firstTarget(targets);
+        boolean wfwfContext = isWfwfPrefetchContext(title.getSourceSite());
         for(Integer index : targets) {
             if(index == null || index < 0 || index >= episodes.size())
                 continue;
@@ -80,7 +81,9 @@ public final class PrefetchCoordinator {
                 ReaderWarmupCoordinator.primeExactImmediate(appContext, manga, title);
             else
                 ReaderWarmupCoordinator.primeExactVisible(appContext, manga, title);
-            if(lightOnly)
+            if(wfwfContext) {
+                continue;
+            } else if(lightOnly)
                 ViewerWarmupManager.warmupLight(appContext, manga, title, 0);
             else if(index == resumeIndex)
                 ViewerWarmupManager.warmupEntry(appContext, manga, title);

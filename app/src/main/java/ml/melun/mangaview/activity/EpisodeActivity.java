@@ -308,7 +308,6 @@ public class EpisodeActivity extends AppCompatActivity {
                 PerformanceMonitor.phase(newState == RecyclerView.SCROLL_STATE_IDLE ? "idle" : "scrolling");
                 if(newState == RecyclerView.SCROLL_STATE_IDLE) {
                     PerformanceMonitor.reportNow("episode_scroll_idle");
-                    scheduleVisibleEpisodeWarmup(VISIBLE_EPISODE_WARMUP_IDLE_DELAY_MS);
                 } else
                     cancelVisibleEpisodeWarmup();
             }
@@ -479,7 +478,6 @@ public class EpisodeActivity extends AppCompatActivity {
         });
         markFirstContent();
         scheduleInitialEpisodeWarmups(initialViewerTargetWarmupDelayMs());
-        scheduleVisibleEpisodeWarmup(initialVisibleEpisodeWarmupDelayMs());
     }
 
     private void warmupInitialViewerTargets() {
@@ -529,11 +527,7 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     private void scheduleVisibleEpisodeWarmup(long delayMs) {
-        if(!online || episodeList == null || episodes == null || episodes.size() == 0)
-            return;
-        episodeList.removeCallbacks(visibleEpisodeWarmupRunnable);
-        visibleEpisodeWarmupScheduled = true;
-        episodeList.postDelayed(visibleEpisodeWarmupRunnable, Math.max(0L, delayMs));
+        cancelVisibleEpisodeWarmup();
     }
 
     private void cancelVisibleEpisodeWarmup() {
@@ -605,6 +599,8 @@ public class EpisodeActivity extends AppCompatActivity {
     }
 
     private void warmupLikelyNtkViewerPage() {
+        if(!p.isNtkSite() && !getHttpClient().isNtk())
+            return;
         Manga target = quickReadEpisode();
         if(target == null)
             return;
