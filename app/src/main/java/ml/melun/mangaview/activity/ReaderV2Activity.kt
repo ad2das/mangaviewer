@@ -72,7 +72,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var lastSavedOffset = Int.MIN_VALUE
     private var lastSavedSide = -1
     private var lastDisplayedPageText = ""
-    private var lastDisplayedEpisodeId = -1
+    private var lastDisplayedEpisodeKey = ""
     private var lastDisplayedEpisodeTitle = ""
     private var pendingAnchorAfterBusy = -1
     private var adjacentNavigationInFlight = false
@@ -728,10 +728,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         attachEpisodeList(title, target)
         currentManga = target
         currentTitle = title ?: target.title ?: currentTitle
-        val displayTitle = fastDisplayEpisodeTitle(target, currentTitle)
+        val displayTitle = displayEpisodeTitle(target, currentTitle)
         titleView.text = displayTitle
         status.text = displayTitle
-        lastDisplayedEpisodeId = target.id
+        lastDisplayedEpisodeKey = displayEpisodeKey(target, currentTitle)
         lastDisplayedEpisodeTitle = displayTitle
         updateResultEpisode(target)
         adjacentNavigationInFlight = false
@@ -1037,16 +1037,17 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 Log.d(TAG, "current_episode page=$anchorPage offset=$anchorOffset transition=${info.transitionCard} mangaId=${info.manga.id} title=${info.title}")
             }
             updateResultEpisode(info.manga, info.transitionCard)
-            val displayTitle = if (!episodeChanged && lastDisplayedEpisodeId == info.manga.id) {
+            val displayKey = displayEpisodeKey(info.manga, currentTitle)
+            val displayTitle = if (!episodeChanged && lastDisplayedEpisodeKey == displayKey) {
                 lastDisplayedEpisodeTitle
             } else {
-                info.title.takeIf { it.isNotBlank() }
-                    ?: displayEpisodeTitle(info.manga, currentTitle).takeIf { it.isNotBlank() }
+                displayEpisodeTitle(info.manga, currentTitle).takeIf { it.isNotBlank() }
+                    ?: info.title.takeIf { it.isNotBlank() }
                     ?: "회차"
             }
             if (episodeChanged || titleView.text.toString() != displayTitle) {
                 titleView.text = displayTitle
-                lastDisplayedEpisodeId = info.manga.id
+                lastDisplayedEpisodeKey = displayKey
                 lastDisplayedEpisodeTitle = displayTitle
             }
             setPageText(if (info.transitionCard) {
@@ -1140,8 +1141,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             ?: "회차"
     }
 
-    private fun fastDisplayEpisodeTitle(manga: Manga?, title: Title?): String {
-        return ReaderDisplayPolicy.fastDisplayEpisodeTitle(manga, title)
+    private fun displayEpisodeKey(manga: Manga?, title: Title?): String {
+        if (manga == null) return ""
+        return listOf(
+            title?.sourceSite ?: manga.title?.sourceSite ?: "",
+            (title?.id ?: manga.titleId).toString(),
+            manga.baseMode.toString(),
+            manga.id.toString(),
+            manga.ntkEpisodePath ?: "",
+            manga.name ?: ""
+        ).joinToString("|")
     }
 
     private fun installToolbarTouchForwarder(vararg views: View) {
