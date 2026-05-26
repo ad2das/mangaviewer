@@ -336,8 +336,7 @@ public class Utils {
     }
 
     private static boolean shouldWaitForExactFirstFrame(String sourceSite, boolean ntkSite) {
-        String source = sourceSite == null ? "" : sourceSite.trim().toLowerCase(Locale.ROOT);
-        return "wfwf".equals(source) || "ntk".equals(source) || ntkSite;
+        return false;
     }
 
     private static boolean shouldWaitForContinueFirstFrame(boolean waitForFirstFrame, boolean recent, Title title) {
