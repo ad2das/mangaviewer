@@ -205,6 +205,7 @@ class ReaderSession(
             releasePreparedStoreBitmapsSoon()
             requestPageForeground(resolvedStartPage)
             requestInitialWindow(resolvedStartPage, false)
+            prefetchImageFilesAround(resolvedStartPage)
         }
 
         override fun onBitmapReady(index: Int, bitmap: Bitmap) {
@@ -242,7 +243,9 @@ class ReaderSession(
                 attachTitle()
                 var urls = imageRepository.imageUrls(manga, appContext)
                 if (urls.isNullOrEmpty()) {
-                    val result = imageRepository.fetchViewerInitial(manga, MangaRepository.cancellation())
+                    val cancellation = MangaRepository.cancellation()
+                    if (isWfwfSource(manga, title)) cancellation.prioritizeWebViewFallback()
+                    val result = imageRepository.fetchViewerInitial(manga, cancellation)
                     if (result != Title.LOAD_OK) {
                         if (result == Title.LOAD_CAPTCHA) {
                             postCaptchaRequired(manga)
@@ -262,6 +265,7 @@ class ReaderSession(
                 flushEarlyPreparedBitmaps()
                 requestPageForeground(startPage)
                 requestInitialWindow(startPage, false)
+                prefetchImageFilesAround(startPage)
             } catch (e: Exception) {
                 recordIfUnexpected(e)
                 if (!isExpectedCancellation(e)) postMessage("이미지를 불러오지 못했습니다")
@@ -284,6 +288,7 @@ class ReaderSession(
             releasePreparedStoreBitmapsSoon()
             requestPageForeground(resolvedStartPage)
             requestInitialWindow(resolvedStartPage, false)
+            prefetchImageFilesAround(resolvedStartPage)
             return true
         }
         for (entry in snapshot.bitmaps.entries) {
@@ -336,6 +341,31 @@ class ReaderSession(
             startPage,
             busy
         )
+    }
+
+    private fun prefetchImageFilesAround(startPage: Int) {
+        val refs = synchronized(pagesLock) { pages.toList() }
+        if (refs.isEmpty()) return
+        val first = max(0, startPage - START_SOURCE_PREFETCH_BEFORE)
+        val last = minOf(refs.lastIndex, startPage + START_SOURCE_PREFETCH_AFTER)
+        val ordered = ArrayList<Int>(last - first + 1)
+        val anchor = startPage.coerceIn(first, last)
+        ordered.add(anchor)
+        for (offset in 1..max(last - anchor, anchor - first)) {
+            val ahead = anchor + offset
+            if (ahead <= last) ordered.add(ahead)
+            val behind = anchor - offset
+            if (behind >= first) ordered.add(behind)
+        }
+        for (index in ordered) {
+            val page = refs.getOrNull(index) ?: continue
+            if (page.transitionTitle != null) continue
+            try {
+                network.execute { prefetchImageFileQuietly(index, page) }
+            } catch (_: RejectedExecutionException) {
+                return
+            }
+        }
     }
 
     private fun resolvePreparedStartPage(preparedStartPage: Int): Int {
@@ -1703,6 +1733,13 @@ class ReaderSession(
         }
     }
 
+    private fun isWfwfSource(manga: Manga?, title: Title?): Boolean {
+        val source = (title?.sourceSite ?: manga?.title?.sourceSite ?: "")
+            .trim()
+            .lowercase(java.util.Locale.ROOT)
+        return source == "wfwf"
+    }
+
     private fun requestedStartPage(): Int {
         if (startAtFirstPage) return 0
         val page = if (manga.useBookmark() && ml.melun.mangaview.MainApplication.p != null) {
@@ -1743,15 +1780,17 @@ class ReaderSession(
         private const val BOUNDARY_BUSY_DECODE_AHEAD_PAGES = 10
         private const val BOUNDARY_BUSY_BYTE_AHEAD_PAGES = 28
         private const val BUSY_DELIVERY_DISCARD_LIMIT = 16
-        private const val BUSY_DELIVERY_RETAIN_LIMIT = 8
+        private const val BUSY_DELIVERY_RETAIN_LIMIT = 16
         private const val BUSY_VISIBLE_DECODE_RADIUS = 2
-        private const val BUSY_DELIVERY_DRAIN_LIMIT = 2
+        private const val BUSY_DELIVERY_DRAIN_LIMIT = 4
         private const val IDLE_DELIVERY_DRAIN_LIMIT = 3
-        private const val BUSY_DELIVERY_DRAIN_DELAY_MS = 8L
+        private const val BUSY_DELIVERY_DRAIN_DELAY_MS = 0L
         private const val IDLE_DELIVERY_RESUME_DELAY_MS = 24L
         private const val IDLE_DELIVERY_FRAME_DELAY_MS = 8L
         private const val INPUT_PRIORITY_QUIET_MS = 24L
-        private const val ACTIVE_BITMAP_BYTES = 96L * 1024L * 1024L
+        private const val START_SOURCE_PREFETCH_BEFORE = 2
+        private const val START_SOURCE_PREFETCH_AFTER = 24
+        private const val ACTIVE_BITMAP_BYTES = 128L * 1024L * 1024L
         private const val TILE_PAGE_MAX_BYTES = 24L * 1024L * 1024L
         private const val REPLACED_BITMAP_RECYCLE_DELAY_MS = 750L
         private const val TILE_PAGE_ASPECT_RATIO = 3.0f

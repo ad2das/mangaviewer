@@ -1489,7 +1489,10 @@ public class ViewerWarmupManager {
     }
 
     private static boolean shouldUseDirectOnlyBackgroundWarmup(String sourceSite) {
-        return true;
+        if(sourceSite == null)
+            return true;
+        String normalized = sourceSite.trim().toLowerCase(Locale.ROOT);
+        return !"wfwf".equals(normalized);
     }
 
     private static boolean isCurrentNtkSite() {

@@ -2513,7 +2513,14 @@ public class CustomHttpClient {
         boolean ntkBaseUrl = isNtkUrl(baseUrl);
         boolean fastNtkPageDirect = shouldUseFastNtkPageDirect(ntkBaseUrl, url, fetchMode);
         boolean wolfWebViewFallbackAllowed = allowsWolfWebViewFallback();
-        Response response = get(baseUrl + url, headers, fastNtkPageDirect);
+        RequestGroup requestGroup = currentRequestGroup.get();
+        boolean prioritizeWolfWebView = requestGroup != null
+                && requestGroup.prioritizesWebViewFallback()
+                && !ntkBaseUrl
+                && shouldUseWolfWebViewFallback(ntkBaseUrl, true, url, fetchMode, true);
+        Response response = prioritizeWolfWebView ? getWithNtkWebViewFallback(baseUrl, url, headers) : null;
+        if(response == null)
+            response = get(baseUrl + url, headers, fastNtkPageDirect);
         if(ntkBaseUrl && shouldRetryWithResolvedDomain(response)) {
             boolean appliedRedirectRoot = applyNtkRedirectRoot(response, baseUrl);
             if(response != null) {
@@ -3271,6 +3278,7 @@ public class CustomHttpClient {
         }
 
         public RequestGroup prioritizeWebViewFallback() {
+            wolfWebViewFallback = true;
             priorityWebViewFallback = true;
             return this;
         }

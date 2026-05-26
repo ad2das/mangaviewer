@@ -211,6 +211,8 @@ final class NtkWebViewFallbackManager {
             task.requested = false;
             if(shouldNavigateDocument(task.path)) {
                 webView.loadUrl(task.baseUrl + task.path, webViewHeaders(task.headers));
+                mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task), 250L);
+                mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task), 700L);
                 mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task), 1500L);
                 mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task), 4000L);
             } else {
@@ -359,6 +361,7 @@ final class NtkWebViewFallbackManager {
         if(Log.isLoggable(TAG, Log.DEBUG)) {
             Log.d(TAG, "ntk_webview_fallback path=" + task.path
                     + ",reused=" + (task.waiters > 1)
+                    + ",priority=" + task.highPriority
                     + ",result=" + code
                     + ",htmlLen=" + task.body.length()
                     + ",queueMs=" + Math.max(0L, task.startedOnMainAt - task.enqueuedAt)

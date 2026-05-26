@@ -194,7 +194,10 @@ public final class MangaRepository {
         if(requestGroup != null && requestGroup.isCancelled())
             return Title.LOAD_ERROR;
         CustomHttpClient client = getHttpClient();
-        String key = viewerFetchKey(client, manga, viewerInitial && !client.isNtk());
+        boolean forceDirectKey = viewerInitial
+                && !client.isNtk()
+                && (requestGroup == null || !requestGroup.allowsWolfWebViewFallback());
+        String key = viewerFetchKey(client, manga, forceDirectKey);
         ViewerFetchResult cached = cachedViewerFetch(key);
         if(cached != null) {
             if(cached.manga != manga)
@@ -205,7 +208,7 @@ public final class MangaRepository {
             int result;
             if(requestGroup == null) {
                 result = manga.fetchForViewerInitial(client);
-            } else if(!client.isNtk()) {
+            } else if(!client.isNtk() && !requestGroup.allowsWolfWebViewFallback()) {
                 result = client.runWithFetchMode(CustomHttpClient.FetchMode.DIRECT_ONLY,
                         () -> client.runWithRequestGroup(requestGroup, () -> manga.fetchForViewerInitial(client)));
             } else {
@@ -372,6 +375,11 @@ public final class MangaRepository {
 
         public Cancellation prioritizeWebViewFallback() {
             group.prioritizeWebViewFallback();
+            return this;
+        }
+
+        public Cancellation allowWolfWebViewFallback() {
+            group.allowWolfWebViewFallback();
             return this;
         }
 

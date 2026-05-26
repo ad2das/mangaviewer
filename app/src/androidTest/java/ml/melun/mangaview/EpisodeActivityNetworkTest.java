@@ -7,6 +7,8 @@ import static org.junit.Assert.assertEquals;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Rect;
+import android.os.ParcelFileDescriptor;
+import android.util.Log;
 
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.core.app.ApplicationProvider;
@@ -22,6 +24,7 @@ import org.junit.Before;
 import org.junit.runner.RunWith;
 
 import java.lang.reflect.Field;
+import java.io.FileInputStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -116,6 +119,21 @@ public class EpisodeActivityNetworkTest {
     }
 
     @Test
+    public void ntkComicViewerSurvivesFastScrollStress() throws Exception {
+        launchNtkComicTitle();
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 60000L);
+        if(episodeRow == null) {
+            assertCaptchaShown(device, "NTK scroll stress episode list");
+            return;
+        }
+        episodeRow.click();
+        assertReaderOpenedOrCaptchaShown(device, "NTK scroll stress");
+        if(device.findObject(By.res(PACKAGE_NAME, "captchaContainer")) != null) return;
+        stressScrollViewer(device, "ntk");
+    }
+
+    @Test
     public void wfwfComicTitleOpensEpisodeList() throws Exception {
         launchWfwfComicTitle();
 
@@ -137,6 +155,17 @@ public class EpisodeActivityNetworkTest {
         episodeRow.click();
 
         assertReaderOpened(device, "WFWF");
+    }
+
+    @Test
+    public void wfwfComicViewerSurvivesFastScrollStress() throws Exception {
+        launchWfwfComicTitle();
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 60000L);
+        assertNotNull("Expected WFWF title to render at least one episode", episodeRow);
+        episodeRow.click();
+        assertReaderOpened(device, "WFWF scroll stress");
+        stressScrollViewer(device, "wfwf");
     }
 
     @Test
@@ -422,6 +451,50 @@ public class EpisodeActivityNetworkTest {
         assertTrue("Expected toolbar title to change quickly after episode tap",
                 originalTitle == null || !originalTitle.equals(title.getText()));
         return title;
+    }
+
+    private static void stressScrollViewer(UiDevice device, String source) throws Exception {
+        int width = device.getDisplayWidth();
+        int height = device.getDisplayHeight();
+        int x = width / 2;
+        int top = Math.max(96, height / 7);
+        int middle = height / 2;
+        int bottom = Math.min(height - 96, height * 6 / 7);
+
+        Log.d("ViewerPerf", "viewer_scroll_stress_start source=" + source);
+        Thread.sleep(2500L);
+
+        executeShell("input motionevent DOWN " + x + " " + middle);
+        for(int i = 0; i < 24; i++) {
+            int y = (i % 2 == 0) ? top : bottom;
+            executeShell("input motionevent MOVE " + x + " " + y);
+            Thread.sleep(18L);
+        }
+        executeShell("input motionevent UP " + x + " " + middle);
+
+        for(int i = 0; i < 28; i++) {
+            device.swipe(x, bottom, x, top, 4);
+            Thread.sleep(35L);
+        }
+        for(int i = 0; i < 12; i++) {
+            device.swipe(x, top, x, bottom, 4);
+            Thread.sleep(35L);
+        }
+        device.waitForIdle(5000L);
+        Thread.sleep(1500L);
+        assertReaderOpened(device, source + " scroll stress");
+        Log.d("ViewerPerf", "viewer_scroll_stress_end source=" + source);
+    }
+
+    private static void executeShell(String command) throws Exception {
+        ParcelFileDescriptor descriptor =
+                InstrumentationRegistry.getInstrumentation().getUiAutomation().executeShellCommand(command);
+        try(FileInputStream input = new FileInputStream(descriptor.getFileDescriptor())) {
+            byte[] buffer = new byte[256];
+            while(input.read(buffer) >= 0) {
+                // Drain command output so the shell command completes before the next motion event.
+            }
+        }
     }
 
     private static void showReaderToolbar(UiDevice device) {
