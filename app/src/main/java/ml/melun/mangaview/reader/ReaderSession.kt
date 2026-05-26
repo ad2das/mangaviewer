@@ -805,7 +805,6 @@ class ReaderSession(
         val busy = viewportBusy.get()
         val decodeAhead = if (busy) BOUNDARY_BUSY_DECODE_AHEAD_PAGES else BOUNDARY_DECODE_AHEAD_PAGES
         val byteAhead = if (busy) BOUNDARY_BUSY_BYTE_AHEAD_PAGES else BOUNDARY_BYTE_AHEAD_PAGES
-        requestPage(0, busy = busy, anchor = false, generation = generation)
         val firstDecoded = max(1, inserted - decodeAhead)
         for (index in (inserted - 1) downTo firstDecoded) {
             requestPage(index, busy = busy, anchor = false, generation = generation)
