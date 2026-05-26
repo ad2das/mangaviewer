@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-05-25",
+  "updated": "2026-05-26",
   "sourceRoot": "https://wfwf454.com",
   "sources": [
     "source-comic-genre"
@@ -6678,7 +6678,7 @@
       "thumb": "https://i2.imgcloud18.com/10714/0c5cf315.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "드라마"
       ]
     },
     "10715": {
@@ -12800,7 +12800,7 @@
       "thumb": "https://i4.imgcloud18.com/11388/c279f020.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "11389": {
@@ -13267,8 +13267,8 @@
       "thumb": "https://i0.imgcloud18.com/11439/7db7cb9f.jpg?v=1",
       "release": "",
       "sourceTags": [
-        "학원",
         "러브코미디",
+        "학원",
         "판타지",
         "개그"
       ]
@@ -14056,7 +14056,7 @@
       "thumb": "https://i4.imgcloud18.com/11525/80f23440.jpg",
       "release": "",
       "inferredTags": [
-        "판타지"
+        "순정"
       ]
     },
     "11526": {
@@ -19679,7 +19679,7 @@
       "thumb": "https://i6.imgcloud18.com/12149/3f4da450.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12150": {
@@ -20889,7 +20889,7 @@
       "thumb": "https://i6.imgcloud18.com/12286/62b67e3a.jpg",
       "release": "",
       "inferredTags": [
-        "일상"
+        "성인"
       ]
     },
     "12287": {
@@ -22243,7 +22243,7 @@
       "thumb": "https://i6.imgcloud18.com/12441/82af3261.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12442": {
@@ -22251,7 +22251,7 @@
       "thumb": "https://i6.imgcloud18.com/12442/7b2779fd.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12443": {
@@ -22509,7 +22509,7 @@
       "thumb": "https://i6.imgcloud18.com/12471/8133da97.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12472": {
@@ -22718,8 +22718,7 @@
       "release": "",
       "inferredTags": [
         "러브코미디",
-        "백합",
-        "학원"
+        "백합"
       ]
     },
     "12496": {
@@ -23521,7 +23520,7 @@
       "thumb": "https://i0.imgcloud18.com/12586/71f2d602.jpg?v=1",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "12587": {
@@ -78257,7 +78256,7 @@
       "thumb": "https://c11cm.net/18667/grp0svhx6y4wnuecurltzljmdam9gvpo5a.jpg",
       "release": "",
       "inferredTags": [
-        "개그"
+        "러브코미디"
       ]
     },
     "18668": {
@@ -78532,6 +78531,34 @@
       "sourceTags": [
         "드라마",
         "일상"
+      ]
+    },
+    "18766": {
+      "name": "밤폭풍에 웃는다",
+      "thumb": "https://c11cm.net/18766/e1bcrqxmotksoj1avrbd8dggkgqk6raytj.jpg",
+      "release": "",
+      "sourceTags": [
+        "학원",
+        "드라마",
+        "스릴러"
+      ]
+    },
+    "18767": {
+      "name": "너와 잇는 물거품",
+      "thumb": "https://c11cm.net/18767/kedvucvywt8ppk4kgnhju0ohbpdj0zcssh.jpg",
+      "release": "",
+      "sourceTags": [
+        "백합",
+        "학원"
+      ]
+    },
+    "18768": {
+      "name": "나는 모든 것을 【패리】한다",
+      "thumb": "https://c11cm.net/18768/ycabjffo5efiuotyf3n4vemvfummlbcgcv.jpg",
+      "release": "",
+      "sourceTags": [
+        "라노벨",
+        "판타지"
       ]
     }
   }
