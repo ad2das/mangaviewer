@@ -813,7 +813,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val cardText = item.cardText
         if (cardText != null) {
             val cardWidth = state.width * TRANSITION_CARD_WIDTH_RATIO
-            val cardHeight = min(item.pageHeight * 0.74f, state.height * 0.17f)
+            val cardHeight = min(item.pageHeight, TRANSITION_CARD_BODY_HEIGHT_PX)
             val centerY = item.top + item.pageHeight / 2f
             val top = max(0f, centerY - cardHeight / 2f)
             val bottom = min(state.height.toFloat(), top + cardHeight)
@@ -825,12 +825,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
             )
             paint.color = Color.rgb(14, 14, 14)
             canvas.drawRoundRect(dst, 8f, 8f, paint)
-            textPaint.textSize = 38f
+            textPaint.textSize = 24f
             textPaint.color = Color.rgb(160, 160, 160)
-            canvas.drawText("회차 전환", state.width / 2f, dst.centerY() - 28f, textPaint)
-            textPaint.textSize = 54f
+            canvas.drawText("회차 전환", state.width / 2f, dst.centerY() - 18f, textPaint)
+            textPaint.textSize = 34f
             textPaint.color = Color.WHITE
-            canvas.drawText(cardText, state.width / 2f, dst.centerY() + 40f, textPaint)
+            canvas.drawText(cardText, state.width / 2f, dst.centerY() + 28f, textPaint)
             textPaint.textSize = 34f
             textPaint.color = Color.rgb(190, 190, 190)
             return
@@ -1225,8 +1225,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun pageDrawHeightLocked(page: Page): Float {
         val viewWidth = max(1, width)
-        val viewHeight = max(1, height)
-        if (page.cardText != null) return max(1f, viewHeight * TRANSITION_CARD_PAGE_HEIGHT_RATIO)
+        if (page.cardText != null) return TRANSITION_CARD_PAGE_HEIGHT_PX
         if (page.bitmap != null || page.tiles.isNotEmpty()) {
             if (page.width > 0 && page.height > 0) return max(1f, viewWidth * (page.height / page.width.toFloat()))
         }
@@ -1629,7 +1628,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         const val DIRECTION_NEXT = 1
 
         @JvmStatic
-        fun transitionCardPageHeightRatioForTest(): Float = TRANSITION_CARD_PAGE_HEIGHT_RATIO
+        fun transitionCardPageHeightForTest(): Float = TRANSITION_CARD_PAGE_HEIGHT_PX
 
         private const val TAG = "ReaderSurfaceStats"
         private const val DEFAULT_FRAME_BUDGET_MS = 16.67f
@@ -1638,7 +1637,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val DEFAULT_PAGE_GAP_PX = 0
         private const val TILE_SEAM_OVERLAP_PX = 1f
         private const val TRANSITION_CARD_WIDTH_RATIO = 0.82f
-        private const val TRANSITION_CARD_PAGE_HEIGHT_RATIO = 0.50f
+        private const val TRANSITION_CARD_PAGE_HEIGHT_PX = 128f
+        private const val TRANSITION_CARD_BODY_HEIGHT_PX = 104f
         private const val DEFAULT_PLACEHOLDER_PAGE_HEIGHT_RATIO = 1.45f
         private const val MIN_PLACEHOLDER_PAGE_HEIGHT_RATIO = 0.85f
         private const val MAX_PLACEHOLDER_PAGE_HEIGHT_RATIO = 2.35f

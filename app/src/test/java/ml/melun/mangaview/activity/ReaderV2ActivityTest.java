@@ -54,8 +54,8 @@ public class ReaderV2ActivityTest {
     }
 
     @Test
-    public void transitionCardRatioIsCompactButSeparate() {
-        assertEquals(0.50f, ReaderSurfaceView.transitionCardPageHeightRatioForTest(), 0.001f);
+    public void transitionCardHeightIsOnlySlightlyLargerThanText() {
+        assertEquals(128f, ReaderSurfaceView.transitionCardPageHeightForTest(), 0.001f);
     }
 
     @Test
