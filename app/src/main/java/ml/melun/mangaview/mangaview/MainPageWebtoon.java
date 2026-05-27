@@ -8,10 +8,12 @@ import org.jsoup.select.Elements;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.InterruptedIOException;
 import java.net.URLDecoder;
 import java.nio.charset.Charset;
@@ -76,6 +78,8 @@ public class MainPageWebtoon {
     private static final String INFERRED_TAG_CACHE_KEY = "webtoonInferredTagCacheV1";
     private static final int INFERRED_TAG_CACHE_LIMIT = 800;
     private static final long MAX_CLASSIFICATION_DB_READ_BYTES = 8L * 1024L * 1024L;
+    public static final String WEBTOON_CLASSIFICATION_INDEX_FILE = "webtoon-classification.index.jsonl";
+    public static final String COMIC_CLASSIFICATION_INDEX_FILE = "comic-classification.index.jsonl";
     private static final LinkedHashMap<String, List<String>> inferredTagCache = new LinkedHashMap<>();
     private static boolean inferredTagCacheLoaded = false;
     private static int inferredTagCacheWrites = 0;
@@ -1189,21 +1193,25 @@ public class MainPageWebtoon {
 
     private static DbTitle findClassificationDbTitle(String name, int id, int baseMode) {
         if(baseMode == base_comic) {
-            loadComicClassificationDb();
             synchronized (comicClassificationDbLock) {
                 DbTitle byId = comicClassificationTitleDb.get(id);
                 if(byId != null)
                     return byId;
-                return findClassificationDbTitleByName(comicClassificationTitleNameDb, name);
+                DbTitle byName = findClassificationDbTitleByName(comicClassificationTitleNameDb, name);
+                if(byName != null)
+                    return byName;
             }
+            return scanClassificationIndexTitle(true, name, id);
         }
-        loadClassificationDb();
         synchronized (classificationDbLock) {
             DbTitle byId = classificationTitleDb.get(id);
             if(byId != null)
                 return byId;
-            return findClassificationDbTitleByName(classificationTitleNameDb, name);
+            DbTitle byName = findClassificationDbTitleByName(classificationTitleNameDb, name);
+            if(byName != null)
+                return byName;
         }
+        return scanClassificationIndexTitle(false, name, id);
     }
 
     private static DbTitle findClassificationDbTitleIfLoaded(String name, int id, int baseMode) {
@@ -1490,25 +1498,24 @@ public class MainPageWebtoon {
         ArrayList<Title> result = new ArrayList<>();
         if(genre == null)
             return result;
-        loadClassificationDb();
         synchronized (classificationDbLock) {
             List<DbTitle> titles = classificationGenreDb.get(normalizeClassificationTag(genre));
-            if(titles == null)
+            if(titles != null) {
+                int start = Math.max(0, offset);
+                for(int i = start; i < titles.size(); i++) {
+                    DbTitle dbTitle = titles.get(i);
+                    result.add(classificationTitle(dbTitle, base_webtoon));
+                    if(limit > 0 && result.size() >= limit)
+                        break;
+                }
                 return result;
-            int start = Math.max(0, offset);
-            for(int i = start; i < titles.size(); i++) {
-                DbTitle dbTitle = titles.get(i);
-                result.add(classificationTitle(dbTitle, base_webtoon));
-                if(limit > 0 && result.size() >= limit)
-                    break;
             }
         }
-        return result;
+        return scanClassificationIndexTitlesByGenre(false, genre, offset, limit);
     }
 
     private static ArrayList<Title> getClassificationDbTitles(int limit) {
         ArrayList<Title> result = new ArrayList<>();
-        loadClassificationDb();
         synchronized (classificationDbLock) {
             for(DbTitle dbTitle : classificationTitleDb.values()) {
                 result.add(classificationTitle(dbTitle, base_webtoon));
@@ -1516,7 +1523,9 @@ public class MainPageWebtoon {
                     break;
             }
         }
-        return result;
+        if(result.size() > 0)
+            return result;
+        return scanClassificationIndexTitles(false, limit);
     }
 
     private static ArrayList<Title> getClassificationDbTitlesIfLoaded(int limit) {
@@ -1553,11 +1562,12 @@ public class MainPageWebtoon {
     public static int getClassificationDbGenreCount(String genre) {
         if(genre == null)
             return 0;
-        loadClassificationDb();
         synchronized (classificationDbLock) {
             List<DbTitle> titles = classificationGenreDb.get(normalizeClassificationTag(genre));
-            return titles == null ? 0 : titles.size();
+            if(titles != null)
+                return titles.size();
         }
+        return scanClassificationIndexGenreCount(false, genre);
     }
 
     public static ArrayList<Title> getComicClassificationDbTitlesByGenre(String genre, int limit) {
@@ -1568,20 +1578,20 @@ public class MainPageWebtoon {
         ArrayList<Title> result = new ArrayList<>();
         if(genre == null)
             return result;
-        loadComicClassificationDb();
         synchronized (comicClassificationDbLock) {
             List<DbTitle> titles = comicClassificationGenreDb.get(normalizeClassificationTag(genre));
-            if(titles == null)
+            if(titles != null) {
+                int start = Math.max(0, offset);
+                for(int i = start; i < titles.size(); i++) {
+                    DbTitle dbTitle = titles.get(i);
+                    result.add(classificationTitle(dbTitle, base_comic));
+                    if(limit > 0 && result.size() >= limit)
+                        break;
+                }
                 return result;
-            int start = Math.max(0, offset);
-            for(int i = start; i < titles.size(); i++) {
-                DbTitle dbTitle = titles.get(i);
-                result.add(classificationTitle(dbTitle, base_comic));
-                if(limit > 0 && result.size() >= limit)
-                    break;
             }
         }
-        return result;
+        return scanClassificationIndexTitlesByGenre(true, genre, offset, limit);
     }
 
     private static Title classificationTitle(DbTitle dbTitle, int baseMode) {
@@ -1593,11 +1603,12 @@ public class MainPageWebtoon {
     public static int getComicClassificationDbGenreCount(String genre) {
         if(genre == null)
             return 0;
-        loadComicClassificationDb();
         synchronized (comicClassificationDbLock) {
             List<DbTitle> titles = comicClassificationGenreDb.get(normalizeClassificationTag(genre));
-            return titles == null ? 0 : titles.size();
+            if(titles != null)
+                return titles.size();
         }
+        return scanClassificationIndexGenreCount(true, genre);
     }
 
     private static List<String> inferWebtoonTags(Title title) {
@@ -1660,11 +1671,13 @@ public class MainPageWebtoon {
     }
 
     private static List<String> getClassificationDbTags(int titleId) {
-        loadClassificationDb();
         synchronized (classificationDbLock) {
             List<String> tags = classificationDb.get(titleId);
-            return tags == null ? null : new ArrayList<>(tags);
+            if(tags != null)
+                return new ArrayList<>(tags);
         }
+        DbTitle title = scanClassificationIndexTitle(false, null, titleId);
+        return title == null ? null : new ArrayList<>(title.tags);
     }
 
     private static List<String> getClassificationDbTagsIfLoaded(int titleId) {
@@ -1677,14 +1690,16 @@ public class MainPageWebtoon {
     }
 
     private static List<String> getClassificationDbTags(String titleName) {
-        loadClassificationDb();
         String key = normalizeClassificationName(titleName);
         if(key.length() == 0)
             return null;
         synchronized (classificationDbLock) {
             List<String> tags = classificationNameDb.get(key);
-            return tags == null ? null : new ArrayList<>(tags);
+            if(tags != null)
+                return new ArrayList<>(tags);
         }
+        DbTitle title = scanClassificationIndexTitle(false, titleName, 0);
+        return title == null ? null : new ArrayList<>(title.tags);
     }
 
     private static List<String> getClassificationDbTagsIfLoaded(String titleName) {
@@ -1700,11 +1715,13 @@ public class MainPageWebtoon {
     }
 
     private static List<String> getComicClassificationDbTags(int titleId) {
-        loadComicClassificationDb();
         synchronized (comicClassificationDbLock) {
             List<String> tags = comicClassificationDb.get(titleId);
-            return tags == null ? null : new ArrayList<>(tags);
+            if(tags != null)
+                return new ArrayList<>(tags);
         }
+        DbTitle title = scanClassificationIndexTitle(true, null, titleId);
+        return title == null ? null : new ArrayList<>(title.tags);
     }
 
     private static List<String> getComicClassificationDbTagsIfLoaded(int titleId) {
@@ -1717,14 +1734,16 @@ public class MainPageWebtoon {
     }
 
     private static List<String> getComicClassificationDbTags(String titleName) {
-        loadComicClassificationDb();
         String key = normalizeClassificationName(titleName);
         if(key.length() == 0)
             return null;
         synchronized (comicClassificationDbLock) {
             List<String> tags = comicClassificationNameDb.get(key);
-            return tags == null ? null : new ArrayList<>(tags);
+            if(tags != null)
+                return new ArrayList<>(tags);
         }
+        DbTitle title = scanClassificationIndexTitle(true, titleName, 0);
+        return title == null ? null : new ArrayList<>(title.tags);
     }
 
     private static List<String> getComicClassificationDbTagsIfLoaded(String titleName) {
@@ -1749,6 +1768,133 @@ public class MainPageWebtoon {
         if(value == null)
             return "";
         return value.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private static DbTitle scanClassificationIndexTitle(boolean comic, String name, int id) {
+        String nameKey = normalizeClassificationName(name);
+        if(id <= 0 && nameKey.length() == 0)
+            return null;
+        try(BufferedReader reader = openClassificationIndexReader(comic)) {
+            if(reader == null)
+                return null;
+            String line;
+            while((line = reader.readLine()) != null) {
+                DbTitle dbTitle = readClassificationIndexTitle(line);
+                if(dbTitle == null)
+                    continue;
+                if(id > 0 && dbTitle.id == id)
+                    return dbTitle;
+                if(nameKey.length() > 0 && nameKey.equals(normalizeClassificationName(dbTitle.name)))
+                    return dbTitle;
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private static ArrayList<Title> scanClassificationIndexTitles(boolean comic, int limit) {
+        ArrayList<Title> result = new ArrayList<>();
+        int baseMode = comic ? base_comic : base_webtoon;
+        try(BufferedReader reader = openClassificationIndexReader(comic)) {
+            if(reader == null)
+                return result;
+            String line;
+            while((line = reader.readLine()) != null) {
+                DbTitle dbTitle = readClassificationIndexTitle(line);
+                if(dbTitle == null)
+                    continue;
+                result.add(classificationTitle(dbTitle, baseMode));
+                if(limit > 0 && result.size() >= limit)
+                    break;
+            }
+        } catch (Exception ignored) {
+        }
+        return result;
+    }
+
+    private static ArrayList<Title> scanClassificationIndexTitlesByGenre(boolean comic, String genre, int offset, int limit) {
+        ArrayList<Title> result = new ArrayList<>();
+        String genreKey = normalizeClassificationTag(genre);
+        if(genreKey.length() == 0)
+            return result;
+        int baseMode = comic ? base_comic : base_webtoon;
+        int skipped = 0;
+        int start = Math.max(0, offset);
+        try(BufferedReader reader = openClassificationIndexReader(comic)) {
+            if(reader == null)
+                return result;
+            String line;
+            while((line = reader.readLine()) != null) {
+                DbTitle dbTitle = readClassificationIndexTitle(line);
+                if(dbTitle == null || !dbTitle.hasTag(genreKey))
+                    continue;
+                if(skipped++ < start)
+                    continue;
+                result.add(classificationTitle(dbTitle, baseMode));
+                if(limit > 0 && result.size() >= limit)
+                    break;
+            }
+        } catch (Exception ignored) {
+        }
+        return result;
+    }
+
+    private static int scanClassificationIndexGenreCount(boolean comic, String genre) {
+        String genreKey = normalizeClassificationTag(genre);
+        if(genreKey.length() == 0)
+            return 0;
+        int count = 0;
+        try(BufferedReader reader = openClassificationIndexReader(comic)) {
+            if(reader == null)
+                return 0;
+            String line;
+            while((line = reader.readLine()) != null) {
+                DbTitle dbTitle = readClassificationIndexTitle(line);
+                if(dbTitle != null && dbTitle.hasTag(genreKey))
+                    count++;
+            }
+        } catch (Exception ignored) {
+        }
+        return count;
+    }
+
+    private static BufferedReader openClassificationIndexReader(boolean comic) {
+        if(appContext == null)
+            return null;
+        String fileName = comic ? COMIC_CLASSIFICATION_INDEX_FILE : WEBTOON_CLASSIFICATION_INDEX_FILE;
+        try {
+            File dir = classificationDbCacheDir(appContext);
+            if(dir != null) {
+                File cached = new File(dir, fileName);
+                if(cached.exists() && cached.isFile() && cached.length() > 0 && cached.length() <= MAX_CLASSIFICATION_DB_READ_BYTES)
+                    return new BufferedReader(new InputStreamReader(new FileInputStream(cached), StandardCharsets.UTF_8));
+            }
+        } catch (Exception ignored) {
+        }
+        try {
+            return new BufferedReader(new InputStreamReader(appContext.getAssets().open(fileName), StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static DbTitle readClassificationIndexTitle(String line) {
+        try {
+            if(line == null || line.length() == 0)
+                return null;
+            JSONObject item = new JSONObject(line);
+            int titleId = item.optInt("id", 0);
+            String name = item.optString("name", "");
+            if(titleId <= 0 || name.length() == 0)
+                return null;
+            ArrayList<String> tags = new ArrayList<>();
+            appendJsonTags(tags, item.optJSONArray("tags"));
+            if(tags.size() == 0)
+                return null;
+            return new DbTitle(titleId, name, item.optString("thumb", ""), item.optString("release", ""), tags);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private static void loadClassificationDb() {

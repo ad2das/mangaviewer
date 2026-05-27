@@ -4,12 +4,10 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 
-import org.json.JSONObject;
-
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
+import java.io.InputStream;
 import java.util.concurrent.TimeUnit;
 
 import ml.melun.mangaview.mangaview.MainPageWebtoon;
@@ -22,9 +20,10 @@ import okhttp3.ResponseBody;
 public final class ClassificationDbUpdater {
     private static final long CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L;
     private static final long FAILURE_RETRY_MS = 60 * 60 * 1000L;
+    private static final long MAX_INDEX_BYTES = 8L * 1024L * 1024L;
     private static final String PREF = "classificationDbUpdater";
-    private static final String WEBTOON_URL = "https://raw.githubusercontent.com/ad2das/mangaviewer/main/webtoon-classification.json";
-    private static final String COMIC_URL = "https://raw.githubusercontent.com/ad2das/mangaviewer/main/comic-classification.json";
+    private static final String WEBTOON_URL = "https://raw.githubusercontent.com/ad2das/mangaviewer/main/webtoon-classification.index.jsonl";
+    private static final String COMIC_URL = "https://raw.githubusercontent.com/ad2das/mangaviewer/main/comic-classification.index.jsonl";
     private static final OkHttpClient CLIENT = new OkHttpClient.Builder()
             .connectTimeout(4, TimeUnit.SECONDS)
             .readTimeout(8, TimeUnit.SECONDS)
@@ -39,8 +38,8 @@ public final class ClassificationDbUpdater {
             return;
         Context appContext = context.getApplicationContext();
         clearCachedDbAfterAppUpdate(appContext);
-        updateOne(appContext, false, WEBTOON_URL, "webtoon-classification.json");
-        updateOne(appContext, true, COMIC_URL, "comic-classification.json");
+        updateOne(appContext, false, WEBTOON_URL, MainPageWebtoon.WEBTOON_CLASSIFICATION_INDEX_FILE);
+        updateOne(appContext, true, COMIC_URL, MainPageWebtoon.COMIC_CLASSIFICATION_INDEX_FILE);
     }
 
     private static void clearCachedDbAfterAppUpdate(Context context) {
@@ -51,6 +50,8 @@ public final class ClassificationDbUpdater {
             return;
         deleteCachedDb(context, "webtoon-classification.json");
         deleteCachedDb(context, "comic-classification.json");
+        deleteCachedDb(context, MainPageWebtoon.WEBTOON_CLASSIFICATION_INDEX_FILE);
+        deleteCachedDb(context, MainPageWebtoon.COMIC_CLASSIFICATION_INDEX_FILE);
         pref.edit()
                 .remove("webtoon.checkedAt")
                 .remove("webtoon.etag")
@@ -110,12 +111,7 @@ public final class ClassificationDbUpdater {
                     editor.apply();
                     return;
                 }
-                String json = body.string();
-                if(!isValidDb(json)) {
-                    editor.apply();
-                    return;
-                }
-                if(writeCachedDb(context, fileName, json)) {
+                if(writeCachedDb(context, fileName, body.byteStream())) {
                     String newEtag = response.header("ETag", "");
                     String newLastModified = response.header("Last-Modified", "");
                     if(newEtag != null && newEtag.length() > 0)
@@ -134,30 +130,38 @@ public final class ClassificationDbUpdater {
         }
     }
 
-    private static boolean isValidDb(String json) {
-        try {
-            if(json == null || json.length() == 0)
-                return false;
-            JSONObject titles = new JSONObject(json).optJSONObject("titles");
-            return titles != null && titles.length() > 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean writeCachedDb(Context context, String fileName, String json) {
+    private static boolean writeCachedDb(Context context, String fileName, InputStream input) {
         File dir = MainPageWebtoon.classificationDbCacheDir(context);
-        if(dir == null)
+        if(dir == null || input == null)
             return false;
         if(!dir.exists() && !dir.mkdirs())
             return false;
         File target = new File(dir, fileName);
         File tmp = new File(dir, fileName + ".tmp");
         try(FileOutputStream output = new FileOutputStream(tmp)) {
-            output.write(json.getBytes(StandardCharsets.UTF_8));
+            byte[] buffer = new byte[8192];
+            long total = 0;
+            while(true) {
+                int read = input.read(buffer);
+                if(read < 0)
+                    break;
+                total += read;
+                if(total > MAX_INDEX_BYTES) {
+                    output.close();
+                    deleteIfExists(tmp);
+                    return false;
+                }
+                output.write(buffer, 0, read);
+            }
+            if(total == 0) {
+                output.close();
+                deleteIfExists(tmp);
+                return false;
+            }
             output.flush();
         } catch (Exception e) {
             CrashReporter.record(e);
+            deleteIfExists(tmp);
             return false;
         }
         if(target.exists())
