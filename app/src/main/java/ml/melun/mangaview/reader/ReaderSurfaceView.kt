@@ -1284,7 +1284,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 pointerDown = pointerDown,
                 dragging = dragging,
                 scrollerFinished = scroller.isFinished,
-                recentScroll = hasUserScrolledLocked(),
                 oldBottom = oldBottom,
                 scrollOffset = scrollOffset
             )
@@ -1293,10 +1292,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             setScrollOffsetLocked(scrollOffset + delta)
         }
         updatePageHeightDeltaLocked(index, delta)
-    }
-
-    private fun hasUserScrolledLocked(): Boolean {
-        return lastScrollInteractionMs > 0L
     }
 
     private fun firstVisiblePageLocked(position: Float): Int {
@@ -1684,22 +1679,19 @@ class ReaderSurfaceView @JvmOverloads constructor(
             pointerDown: Boolean,
             dragging: Boolean,
             scrollerFinished: Boolean,
-            recentScroll: Boolean,
             oldBottom: Float,
             scrollOffset: Float
         ): Boolean {
-            if (lastBusy || pointerDown || dragging || !scrollerFinished || recentScroll) return false
+            if (lastBusy || pointerDown || dragging || !scrollerFinished) return false
             return oldBottom <= scrollOffset
         }
 
         @JvmStatic
-        @Suppress("UNUSED_PARAMETER")
         fun shouldAdjustScrollForChangedPageHeightForTest(
             lastBusy: Boolean,
             pointerDown: Boolean,
             dragging: Boolean,
             scrollerFinished: Boolean,
-            recentScroll: Boolean,
             oldBottom: Float,
             scrollOffset: Float
         ): Boolean {
@@ -1708,7 +1700,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 pointerDown,
                 dragging,
                 scrollerFinished,
-                recentScroll,
                 oldBottom,
                 scrollOffset
             )
