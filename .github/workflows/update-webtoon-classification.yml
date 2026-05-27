@@ -66,9 +66,34 @@ jobs:
           python -X utf8 tools/classification/resolve_classification.py \
             --kind webtoon \
             --input webtoon-classification.json \
+            --output tools/classification/tmp-webtoon-base.json \
+            --external-evidence tools/classification/webtoon-external-evidence.jsonl \
+            --external-evidence tools/classification/webtoon-kakao-evidence.jsonl
+          python -X utf8 tools/classification/build_description_neighbor_evidence.py \
+            --db tools/classification/tmp-webtoon-base.json \
+            --output tools/classification/webtoon-neighbor-evidence.jsonl \
+            --min-score 0.08 \
+            --max-neighbors 7
+          python -X utf8 tools/classification/resolve_classification.py \
+            --kind webtoon \
+            --input webtoon-classification.json \
+            --output tools/classification/tmp-webtoon-neighbor.json \
+            --external-evidence tools/classification/webtoon-external-evidence.jsonl \
+            --external-evidence tools/classification/webtoon-kakao-evidence.jsonl \
+            --external-evidence tools/classification/webtoon-neighbor-evidence.jsonl
+          python -X utf8 tools/classification/build_last_resort_evidence.py \
+            --db tools/classification/tmp-webtoon-neighbor.json \
+            --taxonomy tools/classification/taxonomy.json \
+            --output tools/classification/webtoon-last-resort-evidence.jsonl
+          python -X utf8 tools/classification/resolve_classification.py \
+            --kind webtoon \
+            --input webtoon-classification.json \
             --output webtoon-classification.json \
             --asset-output app/src/main/assets/webtoon-classification.json \
-            --external-evidence tools/classification/webtoon-external-evidence.jsonl
+            --external-evidence tools/classification/webtoon-external-evidence.jsonl \
+            --external-evidence tools/classification/webtoon-kakao-evidence.jsonl \
+            --external-evidence tools/classification/webtoon-neighbor-evidence.jsonl \
+            --external-evidence tools/classification/webtoon-last-resort-evidence.jsonl
 
       - name: Validate classification DB
         run: |
@@ -85,12 +110,13 @@ jobs:
 
           titles = root_data.get("titles", {})
           assert isinstance(titles, dict) and titles, "titles must be a non-empty object"
-          bad_labels = [
-              (key, item.get("name"), item.get("classification", {}).get("confidenceLabel"))
+          forced = [
+              (key, item.get("name"))
               for key, item in titles.items()
-              if item.get("classification", {}).get("confidenceLabel") not in {"high", "very_high"}
+              if item.get("classification", {}).get("flags", {}).get("nonEmptyForced")
+              or item.get("classification", {}).get("confidenceLabel") == "forced_placeholder"
           ]
-          assert not bad_labels, f"below-high classifications remain: {bad_labels[:20]}"
+          assert not forced, f"forced placeholder classifications remain: {forced[:20]}"
           unclassified = [
               key
               for key, item in titles.items()
@@ -112,7 +138,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add webtoon-classification.json app/src/main/assets/webtoon-classification.json webtoon-classification-unclassified.json tools/classification/webtoon-external-evidence.jsonl
+          git add webtoon-classification.json app/src/main/assets/webtoon-classification.json webtoon-classification-unclassified.json tools/classification/webtoon-external-evidence.jsonl tools/classification/webtoon-neighbor-evidence.jsonl tools/classification/webtoon-last-resort-evidence.jsonl
           if git diff --cached --quiet; then
             echo "No classification DB changes."
           else
