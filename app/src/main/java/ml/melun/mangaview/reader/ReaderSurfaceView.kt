@@ -95,12 +95,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val anchorPage: Int
     )
 
-    private data class DeferredHeightDelta(
-        val startIndex: Int,
-        val oldBottom: Float,
-        val delta: Float
-    )
-
     private data class DrawTiming(
         val frameTimeNs: Long,
         val callbackStartNs: Long,
@@ -173,8 +167,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var layoutDirty = true
     private var pageTops = FloatArrayList(0)
     private var pageTopDeltas = RangeAddPointQuery(0)
-    private val deferredHeightDeltas = ArrayList<DeferredHeightDelta>()
-    private var deferredHeightDeltaApplyPosted = false
     private var contentHeight = 0f
     private var statsActive = false
     private var statsLastCallbackStartNs = 0L
@@ -233,8 +225,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             scroller.forceFinished(true)
             activeScrollerOffsetShift = 0f
             pages.clear()
-            deferredHeightDeltas.clear()
-            deferredHeightDeltaApplyPosted = false
             repeat(max(0, count)) { pages.add(Page()) }
             setScrollOffsetLocked(0f)
             boundaryArmedDirection = 0
@@ -1078,10 +1068,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun setBusyLocked(busy: Boolean): WindowRequest? {
         if (lastBusy == busy) return null
         lastBusy = busy
-        if (!busy) {
-            applyDeferredHeightDeltasLocked()
-            clampScrollLocked()
-        }
         renderRequested = true
         return windowRequestLocked(busy)
     }
@@ -1293,17 +1279,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun applyPageHeightChangeLocked(index: Int, oldTop: Float, oldHeight: Float, delta: Float) {
         if (abs(delta) <= 0.01f) return
         val oldBottom = oldTop + oldHeight
-        if (shouldDeferHeightDeltaForBusyScrollLocked(oldBottom, delta)) {
-            deferredHeightDeltas.add(DeferredHeightDelta(index + 1, oldBottom, delta))
-            scheduleDeferredHeightDeltaApplyLocked()
-            return
-        }
         if (shouldAdjustScrollForChangedPageHeight(
                 lastBusy = lastBusy,
                 pointerDown = pointerDown,
                 dragging = dragging,
                 scrollerFinished = scroller.isFinished,
-                recentScroll = isRecentScrollInteractionLocked(),
+                recentScroll = hasUserScrolledLocked(),
                 oldBottom = oldBottom,
                 scrollOffset = scrollOffset
             )
@@ -1314,50 +1295,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         updatePageHeightDeltaLocked(index, delta)
     }
 
-    private fun shouldDeferHeightDeltaForBusyScrollLocked(oldBottom: Float, delta: Float): Boolean {
-        if (abs(delta) <= 0.01f || oldBottom > scrollOffset) return false
-        return lastBusy || pointerDown || dragging || !scroller.isFinished || isRecentScrollInteractionLocked()
-    }
-
-    private fun isRecentScrollInteractionLocked(): Boolean {
-        return lastScrollInteractionMs > 0L &&
-            SystemClock.uptimeMillis() - lastScrollInteractionMs <= HEIGHT_DELTA_SCROLL_QUIET_MS
-    }
-
-    private fun applyDeferredHeightDeltasLocked() {
-        if (deferredHeightDeltas.isEmpty()) return
-        deferredHeightDeltaApplyPosted = false
-        var correction = 0f
-        for (change in deferredHeightDeltas) {
-            pageTopDeltas.add(change.startIndex, change.delta)
-            contentHeight = max(0f, contentHeight + change.delta)
-            if (change.oldBottom <= scrollOffset) correction += change.delta
-        }
-        deferredHeightDeltas.clear()
-        if (abs(correction) > 0.01f) setScrollOffsetLocked(scrollOffset + correction)
-    }
-
-    private fun scheduleDeferredHeightDeltaApplyLocked() {
-        if (deferredHeightDeltaApplyPosted) return
-        deferredHeightDeltaApplyPosted = true
-        mainHandler.postDelayed({
-            val request = synchronized(stateLock) {
-                deferredHeightDeltaApplyPosted = false
-                if (deferredHeightDeltas.isEmpty()) return@postDelayed
-                if (lastBusy || pointerDown || dragging || !scroller.isFinished || isRecentScrollInteractionLocked()) {
-                    scheduleDeferredHeightDeltaApplyLocked()
-                    return@postDelayed
-                }
-                applyDeferredHeightDeltasLocked()
-                clampScrollLocked()
-                renderRequested = true
-                scheduleFrameLocked()
-                stateLock.notifyAll()
-                windowRequestLocked(false)
-            }
-            dispatchWindowRequest(request)
-            requestRender()
-        }, HEIGHT_DELTA_SCROLL_QUIET_MS)
+    private fun hasUserScrolledLocked(): Boolean {
+        return lastScrollInteractionMs > 0L
     }
 
     private fun firstVisiblePageLocked(position: Float): Int {
@@ -1738,7 +1677,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val INITIAL_RENDER_HOLD_MS = 700L
         private const val SCROLL_JUMP_LOG_SCREEN_RATIO = 0.75f
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
-        private const val HEIGHT_DELTA_SCROLL_QUIET_MS = 220L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
 
         private fun shouldAdjustScrollForChangedPageHeight(
