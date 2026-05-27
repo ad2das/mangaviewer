@@ -1,0 +1,269 @@
+name: Update classification DB
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_publish:
+        description: "Upload SQLite release assets even when the JSON DB did not change"
+        required: false
+        default: "false"
+  schedule:
+    - cron: "0 19 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: classification-db-writer
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASE_TAG: main-latest
+      CLASSIFICATION_CHANGED: "false"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore webtoon source detail cache
+        uses: actions/cache@v4
+        with:
+          path: .webtoon-source-detail-cache.json
+          key: webtoon-source-detail-cache-${{ github.run_id }}
+          restore-keys: |
+            webtoon-source-detail-cache-
+
+      - name: Restore comic source detail cache
+        uses: actions/cache@v4
+        with:
+          path: .comic-source-detail-cache.json
+          key: comic-source-detail-cache-${{ github.run_id }}
+          restore-keys: |
+            comic-source-detail-cache-
+
+      - name: Rebuild webtoon classification DB
+        run: |
+          python -X utf8 tools/build_webtoon_classification.py \
+            --max-naver-pages 20 \
+            --delay 0.05 \
+            --naver-workers 16 \
+            --source-workers 16 \
+            --source-detail-workers 16 \
+            --source-detail-mode all \
+            --no-resolve \
+            --review-output webtoon-classification-review.json \
+            --unclassified-output webtoon-classification-unclassified.json
+
+      - name: Apply webtoon source-detail audit
+        run: |
+          python -X utf8 tools/audit_webtoon_classification.py \
+            --apply \
+            --detail-cache .webtoon-source-detail-cache.json \
+            --report webtoon-classification-audit.json
+          python -X utf8 tools/audit_webtoon_classification.py \
+            --detail-cache .webtoon-source-detail-cache.json \
+            --report webtoon-classification-audit.json
+
+      - name: Resolve webtoon classification DB
+        run: |
+          python -X utf8 tools/classification/collect_external_evidence.py infer-descriptions \
+            --db webtoon-classification.json \
+            --output tools/classification/webtoon-external-evidence.jsonl
+          python -X utf8 tools/classification/resolve_classification.py \
+            --kind webtoon \
+            --input webtoon-classification.json \
+            --output tools/classification/tmp-webtoon-base.json \
+            --external-evidence tools/classification/webtoon-external-evidence.jsonl \
+            --external-evidence tools/classification/webtoon-kakao-evidence.jsonl
+          python -X utf8 tools/classification/build_description_neighbor_evidence.py \
+            --db tools/classification/tmp-webtoon-base.json \
+            --output tools/classification/webtoon-neighbor-evidence.jsonl \
+            --min-score 0.08 \
+            --max-neighbors 7
+          python -X utf8 tools/classification/resolve_classification.py \
+            --kind webtoon \
+            --input webtoon-classification.json \
+            --output tools/classification/tmp-webtoon-neighbor.json \
+            --external-evidence tools/classification/webtoon-external-evidence.jsonl \
+            --external-evidence tools/classification/webtoon-kakao-evidence.jsonl \
+            --external-evidence tools/classification/webtoon-neighbor-evidence.jsonl
+          python -X utf8 tools/classification/build_last_resort_evidence.py \
+            --db tools/classification/tmp-webtoon-neighbor.json \
+            --taxonomy tools/classification/taxonomy.json \
+            --output tools/classification/webtoon-last-resort-evidence.jsonl
+          python -X utf8 tools/classification/resolve_classification.py \
+            --kind webtoon \
+            --input webtoon-classification.json \
+            --output webtoon-classification.json \
+            --strip-source-tags \
+            --external-evidence tools/classification/webtoon-external-evidence.jsonl \
+            --external-evidence tools/classification/webtoon-kakao-evidence.jsonl \
+            --external-evidence tools/classification/webtoon-neighbor-evidence.jsonl \
+            --external-evidence tools/classification/webtoon-last-resort-evidence.jsonl
+
+      - name: Rebuild comic classification DB
+        run: |
+          python -X utf8 tools/build_comic_classification.py \
+            --delay 0.05 \
+            --source-workers 16 \
+            --source-detail-workers 16 \
+            --no-resolve \
+            --unclassified-output comic-classification-unclassified.json
+
+      - name: Resolve comic classification DB
+        run: |
+          python -X utf8 tools/classification/collect_external_evidence.py infer-descriptions \
+            --db comic-classification.json \
+            --output tools/classification/comic-external-evidence.jsonl
+          python -X utf8 tools/classification/resolve_classification.py \
+            --kind comic \
+            --input comic-classification.json \
+            --output tools/classification/tmp-comic-base.json \
+            --external-evidence tools/classification/comic-external-evidence.jsonl \
+            --external-evidence tools/classification/comic-kitsu-evidence.jsonl \
+            --external-evidence tools/classification/comic-mangadex-evidence.sample.jsonl \
+            --external-evidence tools/classification/comic-mangaupdates-evidence.jsonl \
+            --external-evidence tools/classification/comic-naver-book-evidence.jsonl \
+            --external-evidence tools/classification/comic-kyobo-evidence.jsonl
+          python -X utf8 tools/classification/build_description_neighbor_evidence.py \
+            --db tools/classification/tmp-comic-base.json \
+            --output tools/classification/comic-neighbor-evidence.jsonl \
+            --min-score 0.08 \
+            --max-neighbors 7
+          python -X utf8 tools/classification/resolve_classification.py \
+            --kind comic \
+            --input comic-classification.json \
+            --output tools/classification/tmp-comic-neighbor.json \
+            --external-evidence tools/classification/comic-external-evidence.jsonl \
+            --external-evidence tools/classification/comic-neighbor-evidence.jsonl \
+            --external-evidence tools/classification/comic-kitsu-evidence.jsonl \
+            --external-evidence tools/classification/comic-mangadex-evidence.sample.jsonl \
+            --external-evidence tools/classification/comic-mangaupdates-evidence.jsonl \
+            --external-evidence tools/classification/comic-naver-book-evidence.jsonl \
+            --external-evidence tools/classification/comic-kyobo-evidence.jsonl
+          python -X utf8 tools/classification/build_last_resort_evidence.py \
+            --db tools/classification/tmp-comic-neighbor.json \
+            --taxonomy tools/classification/taxonomy.json \
+            --output tools/classification/comic-last-resort-evidence.jsonl
+          python -X utf8 tools/classification/resolve_classification.py \
+            --kind comic \
+            --input comic-classification.json \
+            --output comic-classification.json \
+            --strip-source-tags \
+            --external-evidence tools/classification/comic-external-evidence.jsonl \
+            --external-evidence tools/classification/comic-neighbor-evidence.jsonl \
+            --external-evidence tools/classification/comic-kitsu-evidence.jsonl \
+            --external-evidence tools/classification/comic-mangadex-evidence.sample.jsonl \
+            --external-evidence tools/classification/comic-mangaupdates-evidence.jsonl \
+            --external-evidence tools/classification/comic-naver-book-evidence.jsonl \
+            --external-evidence tools/classification/comic-kyobo-evidence.jsonl \
+            --external-evidence tools/classification/comic-last-resort-evidence.jsonl
+
+      - name: Validate classification DBs
+        run: |
+          python -X utf8 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          for name in ("webtoon-classification.json", "comic-classification.json"):
+              root = Path(name)
+              root_data = json.loads(root.read_text(encoding="utf-8"))
+              titles = root_data.get("titles", {})
+              assert isinstance(titles, dict) and titles, f"{name}: titles must be a non-empty object"
+              forced = [
+                  (key, item.get("name"))
+                  for key, item in titles.items()
+                  if item.get("classification", {}).get("flags", {}).get("nonEmptyForced")
+                  or item.get("classification", {}).get("confidenceLabel") == "forced_placeholder"
+              ]
+              assert not forced, f"{name}: forced placeholder classifications remain: {forced[:20]}"
+              unclassified = [key for key, item in titles.items() if not item.get("resolvedTags")]
+              assert not unclassified, f"{name}: unclassified titles remain: {unclassified[:20]}"
+              print(name, "titles", len(titles))
+              print(name, "manual", sum(1 for item in titles.values() if item.get("manual")))
+              print(name, "sha256", hashlib.sha256(root.read_bytes()).hexdigest())
+
+          audit_path = Path("webtoon-classification-audit.json")
+          if audit_path.exists():
+              audit = json.loads(audit_path.read_text(encoding="utf-8"))
+              assert audit == [], f"audit candidates remain: {len(audit)}"
+          PY
+          python -X utf8 tools/classification/audit_classification.py
+          python -X utf8 tools/audit_genre_result_coverage.py
+
+      - name: Commit classification DB changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            webtoon-classification.json \
+            webtoon-classification-unclassified.json \
+            comic-classification.json \
+            comic-classification-unclassified.json \
+            tools/classification/webtoon-external-evidence.jsonl \
+            tools/classification/webtoon-kakao-evidence.jsonl \
+            tools/classification/webtoon-neighbor-evidence.jsonl \
+            tools/classification/webtoon-last-resort-evidence.jsonl \
+            tools/classification/comic-external-evidence.jsonl \
+            tools/classification/comic-neighbor-evidence.jsonl \
+            tools/classification/comic-kitsu-evidence.jsonl \
+            tools/classification/comic-mangaupdates-evidence.jsonl \
+            tools/classification/comic-naver-book-evidence.jsonl \
+            tools/classification/comic-kyobo-evidence.jsonl \
+            tools/classification/comic-last-resort-evidence.jsonl
+          echo "CLASSIFICATION_VERSION=classification-$(git rev-parse --short=12 HEAD)" >> "$GITHUB_ENV"
+          if git diff --cached --quiet; then
+            echo "No classification DB changes."
+            echo "CLASSIFICATION_CHANGED=false" >> "$GITHUB_ENV"
+          else
+            git commit -m "Update classification DB [skip ci]"
+            for attempt in 1 2 3; do
+              git fetch origin main
+              git rebase origin/main
+              if git push origin HEAD:main; then
+                echo "CLASSIFICATION_CHANGED=true" >> "$GITHUB_ENV"
+                echo "CLASSIFICATION_VERSION=classification-$(git rev-parse --short=12 HEAD)" >> "$GITHUB_ENV"
+                exit 0
+              fi
+              sleep $((attempt * 5))
+            done
+            echo "Failed to push classification DB update after retries." >&2
+            exit 1
+          fi
+
+      - name: Build SQLite release assets
+        if: env.CLASSIFICATION_CHANGED == 'true' || github.event.inputs.force_publish == 'true'
+        run: |
+          python -X utf8 tools/classification/build_sqlite_release.py \
+            --version "$CLASSIFICATION_VERSION" \
+            --output release/classification-base.sqlite \
+            --gzip-output release/classification-base.sqlite.gz \
+            --manifest-output release/classification-manifest.json
+
+      - name: Upload SQLite release assets
+        if: env.CLASSIFICATION_CHANGED == 'true' || github.event.inputs.force_publish == 'true'
+        run: |
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target main \
+              --title "Main Latest" \
+              --notes "Latest main branch debug APK and classification DB."
+          gh release upload "$RELEASE_TAG" \
+            release/classification-manifest.json \
+            release/classification-base.sqlite.gz \
+            --clobber \
+            --repo "$GITHUB_REPOSITORY"
