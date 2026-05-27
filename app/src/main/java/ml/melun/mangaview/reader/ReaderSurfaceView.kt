@@ -668,7 +668,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     dragging = false
                     pendingDragY = Float.NaN
                     val dragDistance = abs(event.y - downY)
-                    val canFling = dragDistance >= height * MIN_FLING_DRAG_DISTANCE_RATIO
+                    val canFling = shouldStartFling(dragDistance, velocityY, minVelocity, touchSlop)
                     if (wasTap) {
                         boundaryArmedDirection = 0
                         setBusyLocked(false) to null
@@ -1630,6 +1630,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
         @JvmStatic
         fun transitionCardPageHeightForTest(): Float = TRANSITION_CARD_PAGE_HEIGHT_PX
 
+        @JvmStatic
+        fun shouldStartFlingForTest(dragDistance: Float, velocityY: Int, minVelocity: Int, touchSlop: Int): Boolean {
+            return shouldStartFling(dragDistance, velocityY, minVelocity, touchSlop)
+        }
+
+        private fun shouldStartFling(dragDistance: Float, velocityY: Int, minVelocity: Int, touchSlop: Int): Boolean {
+            return dragDistance > touchSlop * FLING_MIN_DRAG_TOUCH_SLOP_MULTIPLIER && abs(velocityY) > minVelocity
+        }
+
         private const val TAG = "ReaderSurfaceStats"
         private const val DEFAULT_FRAME_BUDGET_MS = 16.67f
         private const val MISSED_VSYNC_FACTOR = 1.5f
@@ -1656,7 +1665,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val PREPENDED_BOUNDARY_REVEAL_SCREEN_RATIO = 0.72f
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
-        private const val MIN_FLING_DRAG_DISTANCE_RATIO = 0.16f
+        private const val FLING_MIN_DRAG_TOUCH_SLOP_MULTIPLIER = 1.0f
         private const val RESTORE_POSITION_LOCK_MS = 4000L
         private const val RESTORE_POSITION_EPSILON_PX = 2f
         private const val INITIAL_RENDER_HOLD_MS = 700L
