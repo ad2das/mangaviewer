@@ -245,7 +245,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         dispatchWindowRequest(request)
     }
 
-    fun appendPageCount(count: Int) {
+    fun appendPageCount(count: Int, revealAppendedBoundary: Boolean = false) {
         val request = synchronized(stateLock) {
             if (count <= pages.size) return
             rebuildLayoutLocked()
@@ -253,9 +253,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val shouldExtendActiveFling = !scroller.isFinished &&
                 boundaryArmedDirection == DIRECTION_NEXT &&
                 scroller.finalY >= oldMaxScroll - BOUNDARY_FLING_EXTEND_EPSILON_PX
+            val firstAppendedPage = pages.size
             appendEmptyPagesLocked(count - pages.size)
             val newMaxScroll = max(0f, contentHeight - height).toInt()
-            if (shouldExtendActiveFling && newMaxScroll > oldMaxScroll) {
+            if (revealAppendedBoundary && newMaxScroll > oldMaxScroll) {
+                lockedRestorePage = min(pages.lastIndex, firstAppendedPage + 1)
+                lockedRestoreOffset = 0
+                lockedRestoreUntilMs = SystemClock.uptimeMillis() + RESTORE_POSITION_LOCK_MS
+                applyLockedRestorePositionLocked()
+                if (!scroller.isFinished) scroller.forceFinished(true)
+            } else if (shouldExtendActiveFling && newMaxScroll > oldMaxScroll) {
                 val velocity = scroller.currVelocity
                     .coerceAtLeast(minVelocity.toFloat() * BOUNDARY_FLING_MIN_VELOCITY_MULTIPLIER)
                     .coerceAtMost(maxVelocity.toFloat())

@@ -169,6 +169,62 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
     }
 
     @Test
+    public void wfwfScrollDownFromEpisode1AppendsEpisode2() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        Title title = new Title(
+                "WFWF Scroll Boundary",
+                "",
+                "",
+                Collections.singletonList("test"),
+                "",
+                100002,
+                MTitle.base_comic);
+        title.setSourceSite("wfwf");
+
+        Manga episodeTwo = new Manga(2, "WFWF Scroll Boundary 2화", "", MTitle.base_comic);
+        episodeTwo.setTitle(title);
+        episodeTwo.setTitleId(title.getId());
+        episodeTwo.setImgs(Collections.singletonList(testImagePath(context, "wfwf-boundary-tall-2.png", Color.rgb(30, 90, 170))));
+        Manga episodeOne = new Manga(1, "WFWF Scroll Boundary 1화", "", MTitle.base_comic);
+        episodeOne.setTitle(title);
+        episodeOne.setTitleId(title.getId());
+        episodeOne.setImgs(Collections.singletonList(testImagePath(context, "wfwf-boundary-tall-1.png", Color.rgb(170, 70, 30))));
+
+        ArrayList<Manga> episodes = new ArrayList<>();
+        episodes.add(episodeTwo);
+        episodes.add(episodeOne);
+        title.setEps(episodes);
+        episodeOne.setEps(episodes);
+        episodeTwo.setEps(episodes);
+
+        Activity activity = InstrumentationRegistry.getInstrumentation().startActivitySync(viewerIntent(episodeOne, title));
+        try {
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            assertTrue("Expected viewer to start on WFWF 1화",
+                    waitForToolbarTitle(activity, "1화", 10000));
+            assertTrue("Expected viewer backing list to include WFWF 2화",
+                    setViewerEpisodeImages(activity, 2, Collections.singletonList(
+                            testImagePath(context, "wfwf-boundary-tall-2.png", Color.rgb(30, 90, 170)))));
+
+            UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+            int width = device.getDisplayWidth();
+            int height = device.getDisplayHeight();
+            int x = width / 2;
+            int fromY = Math.min(height - 160, height * 3 / 4);
+            int toY = Math.max(120, height / 4);
+            for(int swipe = 0; swipe < 8 && !toolbarTitle(activity).contains("2화"); swipe++) {
+                device.swipe(x, fromY, x, toY, 36);
+                SystemClock.sleep(450);
+            }
+
+            assertTrue("Expected downward scroll at bottom to move into next WFWF episode 2화",
+                    waitForToolbarTitle(activity, "2화", 10000));
+        } finally {
+            activity.finish();
+        }
+    }
+
+    @Test
     public void wfwfSummertimeRenderingPromptsFrom74To80() {
         Title title = fetchWfwfSummertimeRendering();
         ArrayList<Manga> episodes = Utils.snapshotEpisodes(title);
@@ -422,7 +478,8 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
         File file = new File(context.getCacheDir(), name);
         if(file.isFile() && file.length() > 0)
             return file.getAbsolutePath();
-        Bitmap bitmap = Bitmap.createBitmap(720, 1440, Bitmap.Config.RGB_565);
+        int imageHeight = name.contains("tall") ? 2200 : 1440;
+        Bitmap bitmap = Bitmap.createBitmap(720, imageHeight, Bitmap.Config.RGB_565);
         Canvas canvas = new Canvas(bitmap);
         canvas.drawColor(color);
         try(FileOutputStream output = new FileOutputStream(file)) {

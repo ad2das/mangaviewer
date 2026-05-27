@@ -436,9 +436,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     override fun onPagesAppended(count: Int) {
         MainThreadStallMonitor.trace("reader_on_pages_appended") {
             if (pagesReady) {
+                val revealAppendedBoundary = pendingBoundaryStatus &&
+                    pendingCaptchaRetryDirection == ReaderSurfaceView.DIRECTION_NEXT
                 hideBoundaryStatus()
                 pageCount = count
-                renderView.appendPageCount(count)
+                renderView.appendPageCount(count, revealAppendedBoundary)
                 updateCurrentEpisode(currentPage)
             }
         }
@@ -675,13 +677,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         Log.d(TAG, "boundary_reached direction=$direction anchorPage=$anchorPage")
         session?.pageInfo(anchorPage)?.let {
             if (!it.transitionCard) currentManga = it.manga
-        }
-        if (direction != ReaderSurfaceView.DIRECTION_PREVIOUS && boundaryAppendQuietRemainingMs() > 0L) {
-            deferredBoundaryDirection = direction
-            deferredBoundaryAnchor = anchorPage
-            statusHandler.removeCallbacks(deferredBoundaryAppendRunnable)
-            statusHandler.postDelayed(deferredBoundaryAppendRunnable, boundaryAppendQuietRemainingMs())
-            return
         }
         startBoundaryAppend(direction, anchorPage)
     }
