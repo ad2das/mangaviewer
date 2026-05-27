@@ -195,8 +195,8 @@ class ReaderSession(
     private val controlLock = Object()
     private var pendingWindowCommand: WindowCommand? = null
     private var windowCommandPosted = false
-    private val preparedEntry = if (autoCut) null else ReaderPreparedStore.get(preparedKey)
-    private val preparedStoreKey = if (autoCut) null else preparedKey
+    private val preparedEntry = ReaderPreparedStore.findReadyCompatible(preparedKey) ?: ReaderPreparedStore.get(preparedKey)
+    private val preparedStoreKey = preparedEntry?.key ?: preparedKey
     private val clearPreparedBitmapsRunnable = Runnable {
         val key = preparedStoreKey ?: return@Runnable
         if (!cancelled.get() && ReaderPreparedStore.get(key) === preparedEntry) {
@@ -223,7 +223,7 @@ class ReaderSession(
                     val resolvedStartPage = resolvePreparedStartPage(snapshot.startPage)
                     installImages(urls, resolvedStartPage, false)
                     ViewerWarmupManager.logMetric("reader_prepared_bitmap_installed_pages", 1L)
-                    deliverPreparedBitmap(index, bitmap)
+                    deliverPreparedSourceBitmap(index, bitmap)
                     flushEarlyPreparedBitmaps()
                     releasePreparedStoreBitmapsSoon()
                     requestPageForeground(resolvedStartPage)
@@ -233,7 +233,7 @@ class ReaderSession(
                 if (!bitmap.isRecycled) earlyPreparedBitmaps[index] = bitmap
                 return
             }
-            deliverPreparedBitmap(index, bitmap)
+            deliverPreparedSourceBitmap(index, bitmap)
         }
 
         override fun onFailed() {
@@ -245,6 +245,10 @@ class ReaderSession(
         val entry = preparedEntry
         if (entry != null) {
             val snapshot = entry.addListener(preparedListener)
+            ViewerWarmupManager.logMetric(
+                "reader_prepared_start_" + snapshot.status.name.lowercase(java.util.Locale.ROOT),
+                snapshot.bitmaps.size.toLong()
+            )
             if (installPreparedSnapshot(snapshot)) return
             if (snapshot.status != ReaderPreparedStore.Status.FAILED) {
                 main.postDelayed({
@@ -252,6 +256,8 @@ class ReaderSession(
                 }, PREPARED_FALLBACK_MS)
                 return
             }
+        } else if (!preparedStoreKey.isNullOrEmpty()) {
+            ViewerWarmupManager.logMetric("reader_prepared_start_missing", 1L)
         }
         loadFromRepository()
     }
@@ -299,7 +305,7 @@ class ReaderSession(
         if (!urls.isNullOrEmpty()) {
             val resolvedStartPage = resolvePreparedStartPage(snapshot.startPage)
             val startPage = installImages(urls, resolvedStartPage, false, notifyInitialPage = false)
-            for (entry in snapshot.bitmaps.entries) deliverPreparedBitmap(entry.key, entry.value)
+            for (entry in snapshot.bitmaps.entries) deliverPreparedSourceBitmap(entry.key, entry.value)
             flushEarlyPreparedBitmaps()
             main.post {
                 if (!cancelled.get() && startPage >= 0) listener.onInitialPage(startPage)
@@ -384,7 +390,7 @@ class ReaderSession(
     }
 
     private fun shouldDeferInitialFanoutUntilAnchor(): Boolean {
-        return false
+        return true
     }
 
     private fun prefetchImageFilesAround(startPage: Int) {
@@ -421,11 +427,52 @@ class ReaderSession(
         requestPage(index, busy = false, anchor = true, generation = windowGeneration.get())
     }
 
-    private fun deliverPreparedBitmap(index: Int, bitmap: Bitmap) {
+    private fun deliverPreparedSourceBitmap(sourceIndex: Int, bitmap: Bitmap) {
+        if (!autoCut) {
+            deliverPreparedBitmap(sourceIndex, bitmap, false)
+            return
+        }
+        val refs = synchronized(pagesLock) {
+            pages.withIndex()
+                .filter { it.value.sourceIndex == sourceIndex && it.value.transitionTitle == null }
+                .map { it.index to it.value }
+        }
+        if (refs.isEmpty()) {
+            if (!bitmap.isRecycled) earlyPreparedBitmaps[sourceIndex] = bitmap
+            return
+        }
+        for ((pageIndex, page) in refs) {
+            val prepared = preparedBitmapForPage(bitmap, page) ?: continue
+            deliverPreparedBitmap(pageIndex, prepared.first, prepared.second)
+        }
+    }
+
+    private fun preparedBitmapForPage(bitmap: Bitmap, page: PageRef): Pair<Bitmap, Boolean>? {
+        if (bitmap.isRecycled) return null
+        if (!shouldSplitPreparedBitmapForPage(autoCut, page.allowAutoSplit, bitmap.width, bitmap.height)) {
+            return if (page.side == PAGE_SIDE_FIRST) bitmap to false else null
+        }
+        val cropWidth = max(1, bitmap.width / 2)
+        val cropX = if (page.side == PAGE_SIDE_FIRST) {
+            if (reverse) 0 else bitmap.width - cropWidth
+        } else {
+            if (reverse) bitmap.width - cropWidth else 0
+        }
+        val displayBitmap = Bitmap.createBitmap(cropWidth, bitmap.height, displayConfig(bitmap))
+        Canvas(displayBitmap).drawBitmap(
+            bitmap,
+            Rect(cropX, 0, cropX + cropWidth, bitmap.height),
+            Rect(0, 0, cropWidth, bitmap.height),
+            null
+        )
+        return displayBitmap to true
+    }
+
+    private fun deliverPreparedBitmap(index: Int, bitmap: Bitmap, owned: Boolean) {
         if (cancelled.get() || index < 0 || bitmap.isRecycled) return
         decodedWidths[index] = max(decodedWidths[index] ?: 0, bitmap.width)
         loading.remove(index)
-        trackDeliveredBitmap(index, bitmap, false)
+        trackDeliveredBitmap(index, bitmap, owned)
         markFirstPreparedBitmapDelivered()
         main.post {
             if (!cancelled.get()) {
@@ -445,7 +492,7 @@ class ReaderSession(
     private fun flushEarlyPreparedBitmaps() {
         val pending = earlyPreparedBitmaps.entries.toList()
         earlyPreparedBitmaps.clear()
-        for (entry in pending) deliverPreparedBitmap(entry.key, entry.value)
+        for (entry in pending) deliverPreparedSourceBitmap(entry.key, entry.value)
     }
 
     fun requestWindow(first: Int, last: Int, anchor: Int, busy: Boolean) {
@@ -1918,6 +1965,21 @@ class ReaderSession(
         private const val SPREAD_ASPECT_RATIO = 0.90f
         private const val PAGE_SIDE_FIRST = 0
         private const val PAGE_SIDE_SECOND = 1
+
+        @JvmStatic
+        fun shouldSplitPreparedBitmapForTest(autoCut: Boolean, allowSplit: Boolean, width: Int, height: Int): Boolean {
+            return shouldSplitPreparedBitmapForPage(autoCut, allowSplit, width, height)
+        }
+
+        private fun shouldSplitPreparedBitmapForPage(
+            autoCut: Boolean,
+            allowSplit: Boolean,
+            width: Int,
+            height: Int
+        ): Boolean {
+            if (!autoCut || !allowSplit || width <= 0 || height <= 0) return false
+            return width / height.toFloat() >= SPREAD_ASPECT_RATIO
+        }
 
         private fun readerThreadFactory(name: String, priority: Int): ThreadFactory {
             val counter = AtomicInteger(1)

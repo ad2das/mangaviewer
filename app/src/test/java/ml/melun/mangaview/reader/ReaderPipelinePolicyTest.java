@@ -29,9 +29,17 @@ public class ReaderPipelinePolicyTest {
                 false, false, false, true, false, 900f, 1000f));
         assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
                 false, false, false, true, false, 1200f, 1000f));
-        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+        assertTrue(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
                 false, false, false, true, true, 900f, 1000f));
-        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+        assertTrue(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
                 true, false, false, true, false, 900f, 1000f));
+    }
+
+    @Test
+    public void preparedAutoCutOnlySplitsWideSpreadPages() {
+        assertFalse(ReaderSession.shouldSplitPreparedBitmapForTest(true, true, 720, 1600));
+        assertFalse(ReaderSession.shouldSplitPreparedBitmapForTest(true, false, 1600, 1200));
+        assertFalse(ReaderSession.shouldSplitPreparedBitmapForTest(false, true, 1600, 1200));
+        assertTrue(ReaderSession.shouldSplitPreparedBitmapForTest(true, true, 1600, 1200));
     }
 }

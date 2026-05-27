@@ -108,6 +108,20 @@ object ReaderPreparedStore {
         }
 
         fun putBitmap(index: Int, bitmap: Bitmap, first: Boolean, windowComplete: Boolean) {
+            putBitmapInternal(index, bitmap, first, windowComplete, true)
+        }
+
+        internal fun putBitmapFromCompatible(index: Int, bitmap: Bitmap, first: Boolean, windowComplete: Boolean) {
+            putBitmapInternal(index, bitmap, first, windowComplete, false)
+        }
+
+        private fun putBitmapInternal(
+            index: Int,
+            bitmap: Bitmap,
+            first: Boolean,
+            windowComplete: Boolean,
+            mirrorCompatible: Boolean
+        ) {
             val callbacks: List<Listener>
             synchronized(lock) {
                 bitmapMap[index] = bitmap
@@ -120,6 +134,7 @@ object ReaderPreparedStore {
             }
             trimBitmapBudget()
             for (listener in callbacks) listener.onBitmapReady(index, bitmap)
+            if (mirrorCompatible) mirrorCompatibleBitmap(key, index, bitmap, first, windowComplete)
         }
 
         fun fail() {
@@ -223,6 +238,21 @@ object ReaderPreparedStore {
 
     @JvmStatic
     @Synchronized
+    fun findReadyCompatible(key: String?): Entry? {
+        if (key.isNullOrEmpty()) return null
+        entries[key]?.let { entry ->
+            if (entry.hasBitmap()) return entry
+        }
+        val prefix = compatiblePrefix(key) ?: return null
+        return entries.entries
+            .asSequence()
+            .filter { it.key.startsWith(prefix) && it.value.hasBitmap() }
+            .map { it.value }
+            .firstOrNull()
+    }
+
+    @JvmStatic
+    @Synchronized
     fun remove(key: String?) {
         if (!key.isNullOrEmpty()) entries.remove(key)
     }
@@ -234,6 +264,25 @@ object ReaderPreparedStore {
 
     private fun shouldReplaceExistingEntry(entry: Entry): Boolean {
         return entry.isFailed()
+    }
+
+    private fun compatiblePrefix(key: String): String? {
+        val marker = key.lastIndexOf(':')
+        if (marker <= 0) return null
+        val startMarker = key.lastIndexOf(':', marker - 1)
+        if (startMarker <= 0) return null
+        return key.substring(0, startMarker + 1)
+    }
+
+    @Synchronized
+    private fun mirrorCompatibleBitmap(sourceKey: String, index: Int, bitmap: Bitmap, first: Boolean, windowComplete: Boolean) {
+        val prefix = compatiblePrefix(sourceKey) ?: return
+        val targets = entries.entries
+            .filter { it.key != sourceKey && it.key.startsWith(prefix) }
+            .map { it.value }
+        for (entry in targets) {
+            entry.putBitmapFromCompatible(index, bitmap, first, windowComplete)
+        }
     }
 
     @JvmStatic

@@ -151,6 +151,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var pointerDown = false
     private var dragging = false
     private var scrollOffset = 0f
+    private var activeScrollerOffsetShift = 0f
     private var lockedRestorePage = -1
     private var lockedRestoreOffset = 0
     private var lockedRestoreUntilMs = 0L
@@ -222,6 +223,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun setPageCount(count: Int) {
         val request = synchronized(stateLock) {
             scroller.forceFinished(true)
+            activeScrollerOffsetShift = 0f
             pages.clear()
             repeat(max(0, count)) { pages.add(Page()) }
             setScrollOffsetLocked(0f)
@@ -287,6 +289,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 setScrollOffsetLocked(scrollOffset + shiftedFirstTop - oldFirstTop)
             }
             if (!scroller.isFinished) scroller.forceFinished(true)
+            activeScrollerOffsetShift = 0f
             boundaryArmedDirection = 0
             clampScrollLocked()
             renderRequested = true
@@ -488,6 +491,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val request = synchronized(stateLock) {
             val target = index.coerceIn(0, pages.lastIndex)
             rebuildLayoutLocked()
+            activeScrollerOffsetShift = 0f
             setScrollOffsetLocked(pageTopOrElseLocked(target, 0f) - offset)
             clampScrollLocked()
             lastAnchor = -1
@@ -587,6 +591,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     lastScrollInteractionMs = event.eventTime
                     clearLockedRestorePositionLocked()
                     scroller.forceFinished(true)
+                    activeScrollerOffsetShift = 0f
                     lastY = event.y
                     downY = event.y
                     pendingDragY = Float.NaN
@@ -667,6 +672,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         boundaryArmedDirection = directionForDelta(flingVelocity.toFloat())
                         if (boundaryArmedDirection != 0) lastScrollInteractionMs = event.eventTime
                         val busyRequest = setBusyLocked(true)
+                        activeScrollerOffsetShift = 0f
                         scroller.fling(
                             0,
                             scrollOffset.toInt(),
@@ -721,10 +727,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 false
             }
             if (scrolling) {
-                setScrollOffsetLocked(scroller.currY.toFloat())
+                setScrollOffsetLocked(scroller.currY.toFloat() + activeScrollerOffsetShift)
                 clampScrollLocked()
                 renderRequested = true
                 request = windowRequestLocked(true)
+            } else if (scroller.isFinished && activeScrollerOffsetShift != 0f) {
+                activeScrollerOffsetShift = 0f
             }
             val wasBusy = lastBusy
             val busyNow = pointerDown || dragging || scrolling || !scroller.isFinished
@@ -1266,17 +1274,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun adjustScrollForChangedPageHeightLocked(oldTop: Float, oldHeight: Float, delta: Float) {
         if (abs(delta) <= 0.01f) return
         val oldBottom = oldTop + oldHeight
-        val recentScroll = SystemClock.uptimeMillis() - lastScrollInteractionMs <= HEIGHT_ADJUST_SUPPRESS_AFTER_SCROLL_MS
         if (shouldAdjustScrollForChangedPageHeight(
-                lastBusy = lastBusy,
-                pointerDown = pointerDown,
-                dragging = dragging,
-                scrollerFinished = scroller.isFinished,
-                recentScroll = recentScroll,
                 oldBottom = oldBottom,
                 scrollOffset = scrollOffset
             )
         ) {
+            if (!scroller.isFinished) activeScrollerOffsetShift += delta
             setScrollOffsetLocked(scrollOffset + delta)
         }
     }
@@ -1643,29 +1646,19 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val MIN_FLING_DRAG_DISTANCE_RATIO = 0.16f
         private const val RESTORE_POSITION_LOCK_MS = 4000L
         private const val INITIAL_RENDER_HOLD_MS = 700L
-        private const val HEIGHT_ADJUST_SUPPRESS_AFTER_SCROLL_MS = 2500L
         private const val SCROLL_JUMP_LOG_SCREEN_RATIO = 0.75f
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
 
         private fun shouldAdjustScrollForChangedPageHeight(
-            lastBusy: Boolean,
-            pointerDown: Boolean,
-            dragging: Boolean,
-            scrollerFinished: Boolean,
-            recentScroll: Boolean,
             oldBottom: Float,
             scrollOffset: Float
         ): Boolean {
-            return !lastBusy &&
-                !pointerDown &&
-                !dragging &&
-                scrollerFinished &&
-                !recentScroll &&
-                oldBottom <= scrollOffset
+            return oldBottom <= scrollOffset
         }
 
         @JvmStatic
+        @Suppress("UNUSED_PARAMETER")
         fun shouldAdjustScrollForChangedPageHeightForTest(
             lastBusy: Boolean,
             pointerDown: Boolean,
@@ -1676,11 +1669,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             scrollOffset: Float
         ): Boolean {
             return shouldAdjustScrollForChangedPageHeight(
-                lastBusy,
-                pointerDown,
-                dragging,
-                scrollerFinished,
-                recentScroll,
                 oldBottom,
                 scrollOffset
             )

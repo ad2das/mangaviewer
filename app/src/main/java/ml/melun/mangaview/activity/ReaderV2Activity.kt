@@ -942,7 +942,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             readerWidthPx(),
             autoCut,
             p?.getReverse() == true,
-            if (autoCut) null else preparedKey,
+            preparedKey,
             startAtFirstPage,
             this
         ).also {
