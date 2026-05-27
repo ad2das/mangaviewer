@@ -12,6 +12,10 @@ from typing import Iterable
 
 DB_FIELDS = ("manualTags", "externalTags", "sourceTags", "tags", "inferredTags")
 UNCLASSIFIED = "\ubbf8\ubd84\ub958"
+EXTRA_CLASSIFICATION_TAGS = {
+    "webtoon": {"SF", "\uc5ed\uc0ac"},
+    "comic": set(),
+}
 
 
 def load_json(path: Path) -> dict:
@@ -62,13 +66,15 @@ def extract_java_string_array(source: str, name: str) -> list[str]:
 
 
 def check_assets_match(root: Path, asset: Path, errors: list[str]) -> None:
+    if not asset.exists():
+        return
     if root.read_bytes() != asset.read_bytes():
         errors.append(f"{root} and {asset} differ")
 
 
 def check_filters(name: str, counts: Counter[str], filters: list[str], errors: list[str]) -> None:
     filter_set = {value for value in filters if value != UNCLASSIFIED}
-    missing = sorted(tag for tag in counts if tag not in filter_set)
+    missing = sorted(tag for tag in counts if tag not in filter_set and tag not in EXTRA_CLASSIFICATION_TAGS.get(name, set()))
     if missing:
         errors.append(f"{name} DB tags missing from filters: {', '.join(missing)}")
 

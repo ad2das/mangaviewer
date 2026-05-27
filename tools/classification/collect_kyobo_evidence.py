@@ -17,6 +17,14 @@ from typing import Any
 KYBO_SEARCH = "https://search.kyobobook.co.kr/search"
 
 
+def write_text_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    target = path.resolve()
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(target)
+
+
 TAG_RULES: list[tuple[tuple[str, ...], list[str]]] = [
     (("판타지", "마왕", "마족", "마법", "용사", "엘프", "드래곤", "이세계", "전생", "던전"), ["판타지"]),
     (("액션", "배틀", "전투", "격투", "히어로", "헌터", "싸움", "전쟁", "모험"), ["액션"]),
@@ -239,7 +247,7 @@ def collect(
         rows = rows[:limit]
     results = list(existing)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in results) + ("\n" if results else ""), encoding="utf-8")
+    write_text_atomic(output, "\n".join(json.dumps(row, ensure_ascii=False) for row in results) + ("\n" if results else ""))
     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
         futures = [executor.submit(search_one, key, item, timeout) for key, item in rows]
         future_keys = {future: key for future, (key, _) in zip(futures, rows)}
@@ -253,11 +261,11 @@ def collect(
                 cache[key] = None
             if index % flush_every == 0 or index == len(futures):
                 results.sort(key=lambda item: int(item["id"]) if str(item["id"]).isdigit() else 0)
-                output.write_text(
+                write_text_atomic(
+                    output,
                     "\n".join(json.dumps(item, ensure_ascii=False) for item in results) + ("\n" if results else ""),
-                    encoding="utf-8",
                 )
-                cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+                write_text_atomic(cache_path, json.dumps(dict(cache), ensure_ascii=False, indent=2))
                 print(f"processed {index}/{len(futures)} matched {len(results)}")
         time.sleep(0.05)
 

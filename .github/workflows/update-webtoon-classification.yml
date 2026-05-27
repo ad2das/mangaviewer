@@ -89,7 +89,6 @@ jobs:
             --kind webtoon \
             --input webtoon-classification.json \
             --output webtoon-classification.json \
-            --asset-output app/src/main/assets/webtoon-classification.json \
             --strip-source-tags \
             --external-evidence tools/classification/webtoon-external-evidence.jsonl \
             --external-evidence tools/classification/webtoon-kakao-evidence.jsonl \
@@ -104,10 +103,7 @@ jobs:
           from pathlib import Path
 
           root = Path("webtoon-classification.json")
-          asset = Path("app/src/main/assets/webtoon-classification.json")
           root_data = json.loads(root.read_text(encoding="utf-8"))
-          asset_data = json.loads(asset.read_text(encoding="utf-8"))
-          assert root_data == asset_data, "root DB and APK asset DB differ"
 
           titles = root_data.get("titles", {})
           assert isinstance(titles, dict) and titles, "titles must be a non-empty object"
@@ -139,7 +135,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add webtoon-classification.json app/src/main/assets/webtoon-classification.json webtoon-classification-unclassified.json tools/classification/webtoon-external-evidence.jsonl tools/classification/webtoon-neighbor-evidence.jsonl tools/classification/webtoon-last-resort-evidence.jsonl
+          git add webtoon-classification.json webtoon-classification-unclassified.json tools/classification/webtoon-external-evidence.jsonl tools/classification/webtoon-kakao-evidence.jsonl tools/classification/webtoon-neighbor-evidence.jsonl tools/classification/webtoon-last-resort-evidence.jsonl
           if git diff --cached --quiet; then
             echo "No classification DB changes."
           else

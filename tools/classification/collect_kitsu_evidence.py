@@ -46,6 +46,14 @@ CATEGORY_MAP = {
 }
 
 
+def write_text_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    target = path.resolve()
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(target)
+
+
 def normalize_title(value: str) -> str:
     text = re.sub(r"\([^)]*\)", "", value or "")
     return re.sub(r"[\W_]+", "", text, flags=re.UNICODE).casefold()
@@ -116,8 +124,7 @@ def load_cache(path: Path | None) -> dict[str, Any]:
 def save_cache(path: Path | None, cache: dict[str, Any]) -> None:
     if not path:
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(cache, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_text_atomic(path, json.dumps(dict(cache), ensure_ascii=False, indent=2) + "\n")
 
 
 def request_json(url: str, timeout: float) -> dict[str, Any]:
@@ -274,7 +281,7 @@ def main() -> int:
     cache_lock = Lock()
     results = list(existing_rows)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in results) + ("\n" if results else ""), encoding="utf-8")
+    write_text_atomic(output, "\n".join(json.dumps(row, ensure_ascii=False) for row in results) + ("\n" if results else ""))
     with ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
         futures = [executor.submit(fetch_one, key, item, args.timeout, args.delay, cache, cache_lock) for key, item in rows]
         for index, future in enumerate(as_completed(futures), 1):
@@ -283,13 +290,15 @@ def main() -> int:
                 results.append(row)
             if index % args.flush_every == 0 or index == len(futures):
                 results.sort(key=lambda item: int(item["id"]) if str(item["id"]).isdigit() else 0)
-                output.write_text(
+                write_text_atomic(
+                    output,
                     "\n".join(json.dumps(item, ensure_ascii=False) for item in results) + ("\n" if results else ""),
-                    encoding="utf-8",
                 )
-                save_cache(cache_path, cache)
+                with cache_lock:
+                    save_cache(cache_path, dict(cache))
                 print(f"processed {index}/{len(futures)} matched {len(results)} cache {len(cache)}")
-    save_cache(cache_path, cache)
+    with cache_lock:
+        save_cache(cache_path, dict(cache))
     print(f"wrote {len(results)} evidence rows to {output}")
     return 0
 

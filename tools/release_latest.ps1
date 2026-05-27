@@ -4,6 +4,7 @@ param(
     [string]$TargetBranch = "",
     [string]$JavaHome = "",
     [string]$CommitMessage = "",
+    [string]$PythonExe = "",
     [int]$ReleasePatch = -1,
     [switch]$SkipTests,
     [switch]$NoCommit,
@@ -46,6 +47,31 @@ function Invoke-Gradle([string[]]$GradleArgs) {
     if ($LASTEXITCODE -ne 0) {
         throw "Gradle failed: $($GradleArgs -join ' ')"
     }
+}
+
+function Resolve-PythonExe() {
+    if (-not [string]::IsNullOrWhiteSpace($PythonExe)) {
+        return $PythonExe
+    }
+    $candidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($env:PYTHON)) {
+        $candidates += $env:PYTHON
+    }
+    $candidates += @("python", "python3")
+    $codexPython = "C:\Users\Administrator\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
+    if (Test-Path $codexPython) {
+        $candidates += $codexPython
+    }
+    foreach ($candidate in $candidates) {
+        try {
+            & $candidate --version *> $null
+            if ($LASTEXITCODE -eq 0) {
+                return $candidate
+            }
+        } catch {
+        }
+    }
+    throw "Python not found. Pass -PythonExe or set PYTHON."
 }
 
 function Add-SkipCiToken([string]$message) {
@@ -104,6 +130,8 @@ if ([string]::IsNullOrWhiteSpace($ReleaseTag)) {
 }
 $apkName = "mangaViewer_${versionCode}-debug.apk"
 $downloadUrl = "https://github.com/$Repo/releases/download/$ReleaseTag/$apkName"
+$classificationManifestPath = "release/classification-manifest.json"
+$classificationBasePath = "release/classification-base.sqlite.gz"
 
 Write-Step "Preparing version $versionCode"
 Write-Host "releasePatch: $currentPatch -> $nextPatch"
@@ -131,6 +159,17 @@ if (-not $SkipTests) {
 $builtApk = "app/build/outputs/apk/debug/$apkName"
 if (-not (Test-Path $builtApk)) {
     throw "Built APK not found: $builtApk"
+}
+
+Write-Step "Building classification SQLite release assets"
+$python = Resolve-PythonExe
+& $python -X utf8 tools/classification/build_sqlite_release.py `
+    --version "$versionCode" `
+    --output "release/classification-base.sqlite" `
+    --gzip-output $classificationBasePath `
+    --manifest-output $classificationManifestPath
+if ($LASTEXITCODE -ne 0) {
+    throw "classification SQLite build failed"
 }
 
 $buildGradle = [regex]::Replace($buildGradle, "def\s+defaultReleasePatch\s*=\s*\d+", "def defaultReleasePatch = $nextPatch", 1)
@@ -189,6 +228,12 @@ if (-not $NoUpload) {
     gh release upload $ReleaseTag $versionJsonPath --clobber --repo $Repo
     if ($LASTEXITCODE -ne 0) {
         throw "gh release upload version metadata failed"
+    }
+
+    Write-Step "Uploading classification DB release assets"
+    gh release upload $ReleaseTag $classificationManifestPath $classificationBasePath --clobber --repo $Repo
+    if ($LASTEXITCODE -ne 0) {
+        throw "gh release upload classification DB assets failed"
     }
 
     if ($DeleteOldReleaseApks) {

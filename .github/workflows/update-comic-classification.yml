@@ -83,7 +83,6 @@ jobs:
             --kind comic \
             --input comic-classification.json \
             --output comic-classification.json \
-            --asset-output app/src/main/assets/comic-classification.json \
             --strip-source-tags \
             --external-evidence tools/classification/comic-external-evidence.jsonl \
             --external-evidence tools/classification/comic-neighbor-evidence.jsonl \
@@ -102,10 +101,7 @@ jobs:
           from pathlib import Path
 
           root = Path("comic-classification.json")
-          asset = Path("app/src/main/assets/comic-classification.json")
           root_data = json.loads(root.read_text(encoding="utf-8"))
-          asset_data = json.loads(asset.read_text(encoding="utf-8"))
-          assert root_data == asset_data, "root DB and APK asset DB differ"
 
           titles = root_data.get("titles", {})
           assert isinstance(titles, dict) and titles, "titles must be a non-empty object"
@@ -131,7 +127,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add comic-classification.json app/src/main/assets/comic-classification.json comic-classification-unclassified.json tools/classification/comic-external-evidence.jsonl tools/classification/comic-neighbor-evidence.jsonl tools/classification/comic-last-resort-evidence.jsonl
+          git add comic-classification.json comic-classification-unclassified.json tools/classification/comic-external-evidence.jsonl tools/classification/comic-neighbor-evidence.jsonl tools/classification/comic-kitsu-evidence.jsonl tools/classification/comic-mangaupdates-evidence.jsonl tools/classification/comic-naver-book-evidence.jsonl tools/classification/comic-kyobo-evidence.jsonl tools/classification/comic-last-resort-evidence.jsonl
           if git diff --cached --quiet; then
             echo "No classification DB changes."
           else
