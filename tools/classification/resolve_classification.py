@@ -499,6 +499,7 @@ def resolve_item(
     overrides: dict[str, Any],
     external_evidence: list[dict[str, Any]],
     include_source_tags: bool = False,
+    strip_source_tags: bool = False,
 ) -> dict[str, Any]:
     canonical, facets_by_tag = taxonomy_sets(taxonomy)
     sources = item_sources(item, canonical, include_source_tags=include_source_tags)
@@ -620,6 +621,9 @@ def resolve_item(
             facets[facet].append(tag)
 
     next_item = dict(item)
+    if strip_source_tags:
+        next_item.pop("sourceTags", None)
+        next_item.pop("tags", None)
     next_item["resolvedTags"] = resolved_tags
     next_item["canonicalTags"] = resolved_tags
     next_item["classification"] = {
@@ -669,6 +673,7 @@ def resolve_db(
     overrides: dict[str, Any],
     external_evidence_by_id: dict[str, list[dict[str, Any]]] | None = None,
     include_source_tags: bool = False,
+    strip_source_tags: bool = False,
 ) -> dict[str, Any]:
     titles = db.get("titles", {}) if isinstance(db.get("titles"), dict) else {}
     resolved_titles: dict[str, Any] = {}
@@ -684,6 +689,7 @@ def resolve_db(
             overrides,
             (external_evidence_by_id or {}).get(str(key), []),
             include_source_tags=include_source_tags,
+            strip_source_tags=strip_source_tags,
         )
         status = next_item.get("classification", {}).get("reviewStatus", "unknown")
         counts[str(status)] += 1
@@ -737,6 +743,7 @@ def main() -> int:
     parser.add_argument("--manual-overrides", default="tools/classification/manual_overrides.json")
     parser.add_argument("--external-evidence", action="append", default=[])
     parser.add_argument("--include-source-tags", action="store_true", help="Trust WFWF/source genre tags as classification evidence.")
+    parser.add_argument("--strip-source-tags", action="store_true", help="Remove raw sourceTags/tags from the final resolved DB output.")
     parser.add_argument("--low-confidence-output", default="")
     args = parser.parse_args()
 
@@ -751,6 +758,7 @@ def main() -> int:
         overrides,
         external_evidence,
         include_source_tags=args.include_source_tags,
+        strip_source_tags=args.strip_source_tags,
     )
     output = Path(args.output)
     output.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

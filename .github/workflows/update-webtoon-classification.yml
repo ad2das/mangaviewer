@@ -90,6 +90,7 @@ jobs:
             --input webtoon-classification.json \
             --output webtoon-classification.json \
             --asset-output app/src/main/assets/webtoon-classification.json \
+            --strip-source-tags \
             --external-evidence tools/classification/webtoon-external-evidence.jsonl \
             --external-evidence tools/classification/webtoon-kakao-evidence.jsonl \
             --external-evidence tools/classification/webtoon-neighbor-evidence.jsonl \

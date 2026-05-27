@@ -2,6 +2,7 @@ package ml.melun.mangaview;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
 
 import org.json.JSONObject;
 
@@ -37,8 +38,41 @@ public final class ClassificationDbUpdater {
         if(context == null)
             return;
         Context appContext = context.getApplicationContext();
+        clearCachedDbAfterAppUpdate(appContext);
         updateOne(appContext, false, WEBTOON_URL, "webtoon-classification.json");
         updateOne(appContext, true, COMIC_URL, "comic-classification.json");
+    }
+
+    private static void clearCachedDbAfterAppUpdate(Context context) {
+        SharedPreferences pref = context.getSharedPreferences(PREF, Context.MODE_PRIVATE);
+        int previousVersionCode = pref.getInt("app.versionCode", -1);
+        int currentVersionCode = currentAppVersionCode(context);
+        if(previousVersionCode == currentVersionCode)
+            return;
+        deleteCachedDb(context, "webtoon-classification.json");
+        deleteCachedDb(context, "comic-classification.json");
+        pref.edit()
+                .remove("webtoon.checkedAt")
+                .remove("webtoon.etag")
+                .remove("webtoon.lastModified")
+                .remove("comic.checkedAt")
+                .remove("comic.etag")
+                .remove("comic.lastModified")
+                .putInt("app.versionCode", currentVersionCode)
+                .apply();
+        MainPageWebtoon.invalidateClassificationDbs();
+    }
+
+    private static int currentAppVersionCode(Context context) {
+        try {
+            PackageInfo packageInfo = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
+            if(android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P)
+                return (int) packageInfo.getLongVersionCode();
+            return packageInfo.versionCode;
+        } catch (Exception e) {
+            CrashReporter.record(e);
+            return -1;
+        }
     }
 
     private static void updateOne(Context context, boolean comic, String url, String fileName) {
@@ -129,6 +163,24 @@ public final class ClassificationDbUpdater {
         if(target.exists())
             return replaceWithBackup(target, tmp);
         return tmp.renameTo(target);
+    }
+
+    private static void deleteCachedDb(Context context, String fileName) {
+        File dir = MainPageWebtoon.classificationDbCacheDir(context);
+        if(dir == null)
+            return;
+        deleteIfExists(new File(dir, fileName));
+        deleteIfExists(new File(dir, fileName + ".tmp"));
+        deleteIfExists(new File(dir, fileName + ".bak"));
+    }
+
+    private static void deleteIfExists(File file) {
+        try {
+            if(file.exists() && !file.delete())
+                CrashReporter.record(new IOException("Failed to delete cached classification DB: " + file.getName()));
+        } catch (Exception e) {
+            CrashReporter.record(e);
+        }
     }
 
     private static boolean replaceWithBackup(File target, File tmp) {

@@ -84,6 +84,7 @@ jobs:
             --input comic-classification.json \
             --output comic-classification.json \
             --asset-output app/src/main/assets/comic-classification.json \
+            --strip-source-tags \
             --external-evidence tools/classification/comic-external-evidence.jsonl \
             --external-evidence tools/classification/comic-neighbor-evidence.jsonl \
             --external-evidence tools/classification/comic-kitsu-evidence.jsonl \
