@@ -1625,6 +1625,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         const val DIRECTION_PREVIOUS = -1
         const val DIRECTION_NEXT = 1
 
+        @JvmStatic
+        fun transitionCardPageHeightRatioForTest(): Float = TRANSITION_CARD_PAGE_HEIGHT_RATIO
+
         private const val TAG = "ReaderSurfaceStats"
         private const val DEFAULT_FRAME_BUDGET_MS = 16.67f
         private const val MISSED_VSYNC_FACTOR = 1.5f
@@ -1632,7 +1635,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val DEFAULT_PAGE_GAP_PX = 0
         private const val TILE_SEAM_OVERLAP_PX = 1f
         private const val TRANSITION_CARD_WIDTH_RATIO = 0.82f
-        private const val TRANSITION_CARD_PAGE_HEIGHT_RATIO = 0.72f
+        private const val TRANSITION_CARD_PAGE_HEIGHT_RATIO = 0.50f
         private const val DEFAULT_PLACEHOLDER_PAGE_HEIGHT_RATIO = 1.45f
         private const val MIN_PLACEHOLDER_PAGE_HEIGHT_RATIO = 0.85f
         private const val MAX_PLACEHOLDER_PAGE_HEIGHT_RATIO = 2.35f

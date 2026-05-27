@@ -1223,10 +1223,24 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun saveCurrentReadingProgress() {
         val currentPosition = renderView.currentProgressPosition()
-        val currentInfo = currentPosition?.let { session?.pageInfo(it.page) }
+        val currentInfo = currentPosition?.let { position ->
+            nearestSaveablePageInfo(position.page)
+        }
         val info = currentInfo ?: pendingProgressInfo ?: return
         if (!info.layoutReady) return
         saveReadingProgressNow(info, currentPosition?.offset ?: pendingProgressOffset)
+    }
+
+    private fun nearestSaveablePageInfo(page: Int): ReaderSession.PageInfo? {
+        val readerSession = session ?: return null
+        readerSession.pageInfo(page)?.takeIf { !it.transitionCard && it.manga.useBookmark() }?.let { return it }
+        var distance = 1
+        while (distance <= 3) {
+            readerSession.pageInfo(page + distance)?.takeIf { !it.transitionCard && it.manga.useBookmark() }?.let { return it }
+            readerSession.pageInfo(page - distance)?.takeIf { !it.transitionCard && it.manga.useBookmark() }?.let { return it }
+            distance++
+        }
+        return null
     }
 
     private fun saveReadingProgressNow(info: ReaderSession.PageInfo, offset: Int) {

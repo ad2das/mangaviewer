@@ -54,6 +54,11 @@ public class ReaderV2ActivityTest {
     }
 
     @Test
+    public void transitionCardRatioIsCompactButSeparate() {
+        assertEquals(0.50f, ReaderSurfaceView.transitionCardPageHeightRatioForTest(), 0.001f);
+    }
+
+    @Test
     public void displayPolicyCleansEpisodeNamesForPickerLabels() {
         Manga episode = new Manga(7, "Some Title 12화", "", MTitle.base_comic);
         assertEquals("Some Title 12화", ReaderDisplayPolicy.INSTANCE.fastDisplayEpisodeTitle(episode, null));
