@@ -30,6 +30,7 @@ import java.util.concurrent.Executor;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
+import ml.melun.mangaview.mangaview.MainPageWebtoon;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.ContinueReadinessCoordinator;
@@ -630,6 +631,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             return BindMeta.EMPTY;
         if(deferThumbnails)
             return fastInitialBindMeta(title);
+        refreshClassificationTags(title);
         String key = titleContentKey(title) + "|" + title.getBookmark() + "|" + p.getLocalDataVersion();
         BindMeta cached = bindMetaCache.get(key);
         if(cached != null)
@@ -644,6 +646,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     }
 
     private BindMeta fastInitialBindMeta(Title title) {
+        refreshClassificationTags(title);
         int progressPercent = readingProgressPercent(title);
         String source = title.getSourceSite();
         if(source == null || source.length() == 0)
@@ -678,10 +681,23 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     private String displayTags(Title title) {
         if(title == null)
             return "";
+        refreshClassificationTags(title);
         String key = titleContentKey(title) + "|tags";
         String cached = tagTextCache.get(key);
         if(cached != null)
             return cached;
+        String value = displayTagsText(title);
+        if(tagTextCache.size() > 512)
+            tagTextCache.clear();
+        tagTextCache.put(key, value);
+        return value;
+    }
+
+    private static void refreshClassificationTags(Title title) {
+        MainPageWebtoon.applyInferredSearchTags(title);
+    }
+
+    private static String displayTagsText(Title title) {
         StringBuilder tags = new StringBuilder();
         for(String s : title.getTags()) {
             if(s == null || s.length() == 0)
@@ -690,11 +706,14 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
                 tags.append(" / ");
             tags.append(s);
         }
-        String value = tags.toString();
-        if(tagTextCache.size() > 512)
-            tagTextCache.clear();
-        tagTextCache.put(key, value);
-        return value;
+        return tags.toString();
+    }
+
+    public static String displayTagsForTest(Title title) {
+        if(title == null)
+            return "";
+        refreshClassificationTags(title);
+        return displayTagsText(title);
     }
 
     int dp(int value) {

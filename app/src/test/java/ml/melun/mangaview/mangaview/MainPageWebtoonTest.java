@@ -7,6 +7,8 @@ import org.junit.Test;
 import java.util.ArrayList;
 import java.util.List;
 
+import ml.melun.mangaview.adapter.TitleAdapter;
+
 import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
 import static org.junit.Assert.assertEquals;
@@ -38,6 +40,18 @@ public class MainPageWebtoonTest {
                 "{\"resolvedTags\":[],\"sourceTags\":[\"source\"],\"inferredTags\":[\"guess\"]}"));
 
         assertEquals(0, tags.size());
+    }
+
+    @Test
+    public void bookshelfDisplayTagsPreferCurrentClassificationDbOverStoredTags() {
+        MainPageWebtoon.clearClassificationDbForTest();
+        MainPageWebtoon.putClassificationDbTitleForTest(41, "귀신이 싼다", false, "공포", "로맨스", "성인");
+        Title stored = new Title("귀신이 싼다", "", "", new ArrayList<>(), "", 41, base_webtoon);
+        stored.getTags().add("판타지");
+
+        assertEquals("공포 / 로맨스 / 성인", TitleAdapter.displayTagsForTest(stored));
+        assertEquals("공포", stored.getTags().get(0));
+        assertFalse(stored.getTags().contains("판타지"));
     }
 
     @Test
