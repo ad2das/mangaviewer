@@ -257,7 +257,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             appendEmptyPagesLocked(count - pages.size)
             val newMaxScroll = max(0f, contentHeight - height).toInt()
             if (revealAppendedBoundary && newMaxScroll > oldMaxScroll) {
-                lockedRestorePage = min(pages.lastIndex, firstAppendedPage + 1)
+                lockedRestorePage = firstAppendedPage
                 lockedRestoreOffset = 0
                 lockedRestoreUntilMs = SystemClock.uptimeMillis() + RESTORE_POSITION_LOCK_MS
                 applyLockedRestorePositionLocked()
@@ -1632,7 +1632,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val DEFAULT_PAGE_GAP_PX = 0
         private const val TILE_SEAM_OVERLAP_PX = 1f
         private const val TRANSITION_CARD_WIDTH_RATIO = 0.82f
-        private const val TRANSITION_CARD_PAGE_HEIGHT_RATIO = 0.20f
+        private const val TRANSITION_CARD_PAGE_HEIGHT_RATIO = 0.72f
         private const val DEFAULT_PLACEHOLDER_PAGE_HEIGHT_RATIO = 1.45f
         private const val MIN_PLACEHOLDER_PAGE_HEIGHT_RATIO = 0.85f
         private const val MAX_PLACEHOLDER_PAGE_HEIGHT_RATIO = 2.35f
