@@ -812,43 +812,21 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val bitmap = item.bitmap
         val cardText = item.cardText
         if (cardText != null) {
-            val cardWidth = state.width * TRANSITION_CARD_WIDTH_RATIO
             val cardHeight = min(item.pageHeight, TRANSITION_CARD_BODY_HEIGHT_PX)
             val centerY = item.top + item.pageHeight / 2f
             val top = max(0f, centerY - cardHeight / 2f)
             val bottom = min(state.height.toFloat(), top + cardHeight)
             dst.set(
-                (state.width - cardWidth) / 2f,
+                0f,
                 top,
-                (state.width + cardWidth) / 2f,
+                state.width.toFloat(),
                 bottom
             )
-            paint.color = Color.rgb(26, 30, 44)
-            canvas.drawRoundRect(dst, 8f, 8f, paint)
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = 5f
-            paint.color = Color.rgb(104, 142, 255)
-            canvas.drawRoundRect(dst, 8f, 8f, paint)
-            paint.strokeWidth = 1f
-            paint.color = Color.rgb(178, 197, 255)
-            canvas.drawRoundRect(dst, 8f, 8f, paint)
             paint.style = Paint.Style.FILL
-            paint.color = Color.rgb(104, 142, 255)
-            canvas.drawRoundRect(
-                RectF(dst.left, dst.top, dst.left + 10f, dst.bottom),
-                8f,
-                8f,
-                paint
-            )
-            paint.color = Color.rgb(134, 166, 255)
-            canvas.drawRoundRect(
-                RectF(dst.left + 12f, dst.top + 10f, dst.right - 12f, dst.top + 14f),
-                2f,
-                2f,
-                paint
-            )
+            paint.color = Color.BLACK
+            canvas.drawRect(dst, paint)
             textPaint.textSize = 38f
-            textPaint.color = Color.rgb(214, 224, 255)
+            textPaint.color = Color.rgb(190, 190, 190)
             canvas.drawText("회차 전환", state.width / 2f, dst.centerY() - 28f, textPaint)
             textPaint.textSize = 54f
             textPaint.color = Color.WHITE
