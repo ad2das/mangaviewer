@@ -355,10 +355,7 @@ public class Utils {
 
     private static boolean shouldWaitForContinueFirstFrame(boolean waitForFirstFrame, boolean recent,
                                                            String sourceSite, boolean ntkSite) {
-        if(!waitForFirstFrame)
-            return false;
-        String source = sourceSite == null ? "" : sourceSite.trim().toLowerCase(Locale.ROOT);
-        return "ntk".equals(source) || ntkSite;
+        return false;
     }
 
     private static void launchExactWhenFirstFrameReady(Context context, Manga manga, int code, boolean returnToEpisodes,
