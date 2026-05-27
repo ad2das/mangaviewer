@@ -825,12 +825,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
             )
             paint.color = Color.rgb(14, 14, 14)
             canvas.drawRoundRect(dst, 8f, 8f, paint)
-            textPaint.textSize = 24f
+            textPaint.textSize = 38f
             textPaint.color = Color.rgb(160, 160, 160)
-            canvas.drawText("회차 전환", state.width / 2f, dst.centerY() - 18f, textPaint)
-            textPaint.textSize = 34f
+            canvas.drawText("회차 전환", state.width / 2f, dst.centerY() - 28f, textPaint)
+            textPaint.textSize = 54f
             textPaint.color = Color.WHITE
-            canvas.drawText(cardText, state.width / 2f, dst.centerY() + 28f, textPaint)
+            canvas.drawText(cardText, state.width / 2f, dst.centerY() + 40f, textPaint)
             textPaint.textSize = 34f
             textPaint.color = Color.rgb(190, 190, 190)
             return
@@ -1637,8 +1637,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val DEFAULT_PAGE_GAP_PX = 0
         private const val TILE_SEAM_OVERLAP_PX = 1f
         private const val TRANSITION_CARD_WIDTH_RATIO = 0.82f
-        private const val TRANSITION_CARD_PAGE_HEIGHT_PX = 128f
-        private const val TRANSITION_CARD_BODY_HEIGHT_PX = 104f
+        private const val TRANSITION_CARD_PAGE_HEIGHT_PX = 168f
+        private const val TRANSITION_CARD_BODY_HEIGHT_PX = 144f
         private const val DEFAULT_PLACEHOLDER_PAGE_HEIGHT_RATIO = 1.45f
         private const val MIN_PLACEHOLDER_PAGE_HEIGHT_RATIO = 0.85f
         private const val MAX_PLACEHOLDER_PAGE_HEIGHT_RATIO = 2.35f

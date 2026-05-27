@@ -55,7 +55,7 @@ public class ReaderV2ActivityTest {
 
     @Test
     public void transitionCardHeightIsOnlySlightlyLargerThanText() {
-        assertEquals(128f, ReaderSurfaceView.transitionCardPageHeightForTest(), 0.001f);
+        assertEquals(168f, ReaderSurfaceView.transitionCardPageHeightForTest(), 0.001f);
     }
 
     @Test
