@@ -17,60 +17,60 @@ public class PrefetchCoordinatorTest {
     @Test
     public void viewerTargetsFavorResumeAndNextEpisodesOnly() throws Exception {
         List<Manga> episodes = episodes(60, 50, 40, 30, 20, 10);
-        Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class, boolean.class);
+        Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class);
         method.setAccessible(true);
 
         @SuppressWarnings("unchecked")
-        List<Integer> targets = (List<Integer>) method.invoke(null, episodes, 3, 4, false);
+        List<Integer> targets = (List<Integer>) method.invoke(null, episodes, 3, 4);
 
-        assertEquals(asList(2, 1, 3, 5), targets);
+        assertEquals(asList(2, 1, 0, 3), targets);
     }
 
     @Test
     public void viewerTargetsSkipMissingEpisodes() throws Exception {
         List<Manga> episodes = episodes(60, 50, 40, 30, 20, 10);
         episodes.set(1, null);
-        Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class, boolean.class);
+        Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class);
         method.setAccessible(true);
 
         @SuppressWarnings("unchecked")
-        List<Integer> targets = (List<Integer>) method.invoke(null, episodes, 3, 4, false);
+        List<Integer> targets = (List<Integer>) method.invoke(null, episodes, 3, 4);
 
-        assertEquals(asList(2, 3, 5, 0), targets);
+        assertEquals(asList(2, 0, 3, 4), targets);
     }
 
     @Test
-    public void viewerTargetsWarmVisibleFirstEpisodeWithoutBookmark() throws Exception {
+    public void viewerTargetsWarmStartAndNextEpisodesWithoutBookmark() throws Exception {
         List<Manga> episodes = episodes(60, 50, 40, 30, 20, 10);
-        Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class, boolean.class);
+        Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class);
         method.setAccessible(true);
 
         @SuppressWarnings("unchecked")
-        List<Integer> targets = (List<Integer>) method.invoke(null, episodes, -1, 3, false);
+        List<Integer> targets = (List<Integer>) method.invoke(null, episodes, -1, 3);
 
-        assertEquals(asList(5, 0, 4), targets);
+        assertEquals(asList(5, 4, 3), targets);
     }
 
     @Test
-    public void viewerTargetsPreferStartEpisodeBeforeScreenTopRows() throws Exception {
+    public void viewerTargetsIgnoreScreenTopRowsWithoutBookmark() throws Exception {
         List<Manga> episodes = episodes(60, 50, 40, 30, 20, 10);
-        Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class, boolean.class);
+        Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class);
         method.setAccessible(true);
 
         @SuppressWarnings("unchecked")
-        List<Integer> targets = (List<Integer>) method.invoke(null, episodes, -1, 3, true);
+        List<Integer> targets = (List<Integer>) method.invoke(null, episodes, -1, 3);
 
-        assertEquals(asList(5, 0, 1), targets);
+        assertEquals(asList(5, 4, 3), targets);
     }
 
     @Test
     public void wfwfSingleWarmupStillTargetsStartEpisodeFirst() throws Exception {
         List<Manga> episodes = episodes(60, 50, 40, 30, 20, 10);
-        Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class, boolean.class);
+        Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class);
         method.setAccessible(true);
 
         @SuppressWarnings("unchecked")
-        List<Integer> targets = (List<Integer>) method.invoke(null, episodes, -1, 1, true);
+        List<Integer> targets = (List<Integer>) method.invoke(null, episodes, -1, 1);
 
         assertEquals(asList(5), targets);
     }
@@ -82,27 +82,27 @@ public class PrefetchCoordinatorTest {
     }
 
     @Test
-    public void viewerTargetsIncludeVisibleRowsEvenWithDeepBookmark() throws Exception {
+    public void viewerTargetsFavorNextEpisodesWithDeepBookmark() throws Exception {
         List<Manga> episodes = episodes(90, 80, 70, 60, 50, 40, 30, 20, 10);
-        Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class, boolean.class);
+        Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class);
         method.setAccessible(true);
 
         @SuppressWarnings("unchecked")
-        List<Integer> targets = (List<Integer>) method.invoke(null, episodes, 7, 4, false);
+        List<Integer> targets = (List<Integer>) method.invoke(null, episodes, 7, 4);
 
-        assertEquals(asList(6, 5, 7, 8), targets);
+        assertEquals(asList(6, 5, 4, 3), targets);
     }
 
     @Test
-    public void viewerTargetsIncludeOlderAdjacentRowsNearTopBookmark() throws Exception {
+    public void viewerTargetsUsePreviousEpisodesOnlyAfterNextEpisodes() throws Exception {
         List<Manga> episodes = episodes(122, 121, 120, 119, 118);
-        Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class, boolean.class);
+        Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class);
         method.setAccessible(true);
 
         @SuppressWarnings("unchecked")
-        List<Integer> targets = (List<Integer>) method.invoke(null, episodes, 2, 4, false);
+        List<Integer> targets = (List<Integer>) method.invoke(null, episodes, 2, 4);
 
-        assertEquals(asList(1, 0, 2, 4), targets);
+        assertEquals(asList(1, 0, 2, 3), targets);
     }
 
     @Test

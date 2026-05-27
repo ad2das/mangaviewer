@@ -38,8 +38,7 @@ public final class PrefetchCoordinator {
         boolean wfwfContext = isWfwfPrefetchContext(sourceSite);
         int limit = episodePrefetchLimitForTest(p.getDataSave(), aggressiveAllowed(appContext),
                 isNtkPrefetchContext(sourceSite), wfwfContext);
-        List<Integer> targets = viewerTargets(episodes, bookmarkIndex, limit,
-                wfwfContext);
+        List<Integer> targets = viewerTargets(episodes, bookmarkIndex, limit);
         int resumeIndex = bookmarkIndex > 0 && bookmarkIndex <= episodes.size() ? bookmarkIndex - 1 : -1;
         warmTargets(appContext, title, episodes, targets, mode, resumeIndex);
     }
@@ -129,31 +128,21 @@ public final class PrefetchCoordinator {
         ReaderWarmupCoordinator.primeAdjacent(context, manga, title);
     }
 
-    private static List<Integer> viewerTargets(List<Manga> episodes, int bookmarkIndex, int limit,
-                                               boolean preferScreenTop) {
+    private static List<Integer> viewerTargets(List<Manga> episodes, int bookmarkIndex, int limit) {
         ArrayList<Integer> targets = new ArrayList<>();
         if(bookmarkIndex > 0 && bookmarkIndex <= episodes.size()) {
             int current = bookmarkIndex - 1;
             addTarget(targets, episodes, current, limit);
-            addTarget(targets, episodes, current - 1, limit);
-            addTarget(targets, episodes, current + 1, limit);
+            addReadingForwardTargets(targets, episodes, current, limit);
+            addReadingBackwardTargets(targets, episodes, current, limit);
             addTarget(targets, episodes, firstEpisodeIndex(episodes), limit);
             addTarget(targets, episodes, 0, limit);
-            addTarget(targets, episodes, current - 2, limit);
-            addTarget(targets, episodes, current + 2, limit);
             return targets;
         }
         int firstEpisode = firstEpisodeIndex(episodes);
         addTarget(targets, episodes, firstEpisode, limit);
-        if(preferScreenTop) {
-            addTarget(targets, episodes, 0, limit);
-            addTarget(targets, episodes, 1, limit);
-            addTarget(targets, episodes, 2, limit);
-            return targets;
-        }
+        addReadingForwardTargets(targets, episodes, firstEpisode, limit);
         addTarget(targets, episodes, 0, limit);
-        addTarget(targets, episodes, firstEpisode - 1, limit);
-        addTarget(targets, episodes, 1, limit);
         return targets;
     }
 
@@ -183,6 +172,48 @@ public final class PrefetchCoordinator {
         if(named >= 0)
             return named;
         return episode.getId() > 0 ? episode.getId() : -1;
+    }
+
+    private static void addReadingForwardTargets(List<Integer> targets, List<Manga> episodes, int current, int limit) {
+        addReadingTargets(targets, episodes, current, limit, true);
+    }
+
+    private static void addReadingBackwardTargets(List<Integer> targets, List<Manga> episodes, int current, int limit) {
+        addReadingTargets(targets, episodes, current, limit, false);
+    }
+
+    private static void addReadingTargets(List<Integer> targets, List<Manga> episodes, int current, int limit,
+                                          boolean forward) {
+        if(episodes == null || current < 0 || current >= episodes.size())
+            return;
+        double currentNumber = readableEpisodeNumber(episodes.get(current));
+        if(currentNumber < 0)
+            return;
+        while(targets.size() < limit) {
+            int next = closestEpisodeIndex(episodes, currentNumber, targets, forward);
+            if(next < 0)
+                return;
+            addTarget(targets, episodes, next, limit);
+        }
+    }
+
+    private static int closestEpisodeIndex(List<Manga> episodes, double currentNumber, List<Integer> targets,
+                                           boolean forward) {
+        int bestIndex = -1;
+        double bestDistance = Double.MAX_VALUE;
+        for(int i = 0; i < episodes.size(); i++) {
+            if(targets.contains(i))
+                continue;
+            double number = readableEpisodeNumber(episodes.get(i));
+            if(number < 0)
+                continue;
+            double distance = forward ? number - currentNumber : currentNumber - number;
+            if(distance > 0 && distance < bestDistance) {
+                bestDistance = distance;
+                bestIndex = i;
+            }
+        }
+        return bestIndex;
     }
 
     private static double firstVisibleEpisodeNumber(String key) {

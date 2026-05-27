@@ -823,14 +823,24 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 (state.width + cardWidth) / 2f,
                 bottom
             )
-            paint.color = Color.rgb(24, 24, 24)
+            paint.color = Color.rgb(26, 30, 44)
             canvas.drawRoundRect(dst, 8f, 8f, paint)
             paint.style = Paint.Style.STROKE
-            paint.strokeWidth = 2f
-            paint.color = Color.rgb(82, 82, 82)
+            paint.strokeWidth = 5f
+            paint.color = Color.rgb(104, 142, 255)
+            canvas.drawRoundRect(dst, 8f, 8f, paint)
+            paint.strokeWidth = 1f
+            paint.color = Color.rgb(178, 197, 255)
             canvas.drawRoundRect(dst, 8f, 8f, paint)
             paint.style = Paint.Style.FILL
-            paint.color = Color.rgb(88, 132, 255)
+            paint.color = Color.rgb(104, 142, 255)
+            canvas.drawRoundRect(
+                RectF(dst.left, dst.top, dst.left + 10f, dst.bottom),
+                8f,
+                8f,
+                paint
+            )
+            paint.color = Color.rgb(134, 166, 255)
             canvas.drawRoundRect(
                 RectF(dst.left + 12f, dst.top + 10f, dst.right - 12f, dst.top + 14f),
                 2f,
@@ -838,7 +848,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 paint
             )
             textPaint.textSize = 38f
-            textPaint.color = Color.rgb(190, 190, 190)
+            textPaint.color = Color.rgb(214, 224, 255)
             canvas.drawText("회차 전환", state.width / 2f, dst.centerY() - 28f, textPaint)
             textPaint.textSize = 54f
             textPaint.color = Color.WHITE
