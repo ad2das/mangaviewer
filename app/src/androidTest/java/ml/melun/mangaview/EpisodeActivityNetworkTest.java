@@ -41,11 +41,13 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import ml.melun.mangaview.activity.CaptchaActivity;
 import ml.melun.mangaview.activity.EpisodeActivity;
+import ml.melun.mangaview.activity.ReaderV2Activity;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.reader.ReaderSurfaceView;
 
 @RunWith(AndroidJUnit4.class)
 public class EpisodeActivityNetworkTest {
@@ -214,6 +216,69 @@ public class EpisodeActivityNetworkTest {
             stressScrollViewer(device, "wfwf");
         } finally {
             scenario.close();
+        }
+    }
+
+    @Test
+    public void wfwfActualViewerSavesAndRestoresScrolledPosition() throws Exception {
+        ActivityScenario<EpisodeActivity> scenario = launchWfwfSummertimeTitle();
+        try {
+            UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+            UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 60000L);
+            assertNotNull("Expected WFWF title to render at least one episode", episodeRow);
+
+            AtomicReference<Manga> selectedRef = new AtomicReference<>();
+            AtomicReference<Title> titleRef = new AtomicReference<>();
+            scenario.onActivity(activity -> {
+                List<Manga> episodes = readEpisodes(activity);
+                Title title = readTitle(activity);
+                assertTrue("Expected live WFWF episodes", episodes != null && episodes.size() > 0);
+                Manga selected = episodes.get(0);
+                selected.setTitle(title);
+                selected.setTitleId(title.getId());
+                selectedRef.set(selected);
+                titleRef.set(title);
+                MainApplication.p.resetViewerBookmark();
+                MainApplication.p.setBookmark(title, -1);
+                activity.openViewer(selected, 0, true);
+            });
+
+            assertReaderOpened(device, "actual WFWF resume save");
+            ReaderV2Activity firstReader = waitForReaderActivity(10000L);
+            assertNotNull("Expected actual WFWF reader activity", firstReader);
+
+            ReaderSurfaceView.ProgressPosition moved = scrollActualReaderUntilProgressChanges(device, firstReader);
+            assertTrue("Expected actual WFWF reader scroll to leave the initial position, page="
+                            + moved.getPage() + " offset=" + moved.getOffset(),
+                    moved.getPage() > 0 || moved.getOffset() != 0);
+
+            Thread.sleep(1500L);
+            Manga selected = selectedRef.get();
+            Title title = titleRef.get();
+            int savedPage = MainApplication.p.getViewerBookmark(selected);
+            int savedOffset = MainApplication.p.getViewerBookmarkOffset(selected);
+            assertTrue("Expected actual WFWF scroll position to be saved, page="
+                            + savedPage + " offset=" + savedOffset,
+                    savedPage > 0 || savedOffset != 0);
+            assertEquals("Expected actual WFWF title bookmark to point at the read episode",
+                    selected.getId(), MainApplication.p.getBookmark(title));
+
+            device.pressBack();
+            device.wait(Until.gone(By.res(PACKAGE_NAME, "strip")), 10000L);
+
+            scenario.onActivity(activity -> activity.openViewer(selected, 0, false));
+            assertReaderOpened(device, "actual WFWF resume restore");
+            ReaderV2Activity resumedReader = waitForReaderActivity(10000L);
+            assertNotNull("Expected actual WFWF resumed reader activity", resumedReader);
+            ReaderSurfaceView.ProgressPosition restored = waitForReaderProgress(resumedReader, 10000L);
+            assertTrue("Expected actual WFWF continue-read to restore saved position, savedPage="
+                            + savedPage + " savedOffset=" + savedOffset
+                            + " restoredPage=" + restored.getPage()
+                            + " restoredOffset=" + restored.getOffset(),
+                    restored.getPage() > 0 || Math.abs(restored.getOffset()) > 100);
+        } finally {
+            scenario.close();
+            finishReaderActivities();
         }
     }
 
@@ -526,6 +591,70 @@ public class EpisodeActivityNetworkTest {
                     activity.finish();
             }
         });
+    }
+
+    private static void finishReaderActivities() {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            Collection<Activity> activities = ActivityLifecycleMonitorRegistry.getInstance()
+                    .getActivitiesInStage(Stage.RESUMED);
+            for(Activity activity : activities) {
+                if(activity instanceof ReaderV2Activity)
+                    activity.finish();
+            }
+        });
+    }
+
+    private static ReaderV2Activity waitForReaderActivity(long timeoutMs) throws Exception {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while(System.currentTimeMillis() < deadline) {
+            AtomicReference<ReaderV2Activity> result = new AtomicReference<>();
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+                Collection<Activity> activities = ActivityLifecycleMonitorRegistry.getInstance()
+                        .getActivitiesInStage(Stage.RESUMED);
+                for(Activity activity : activities) {
+                    if(activity instanceof ReaderV2Activity) {
+                        result.set((ReaderV2Activity) activity);
+                        return;
+                    }
+                }
+            });
+            if(result.get() != null)
+                return result.get();
+            Thread.sleep(100L);
+        }
+        return null;
+    }
+
+    private static ReaderSurfaceView.ProgressPosition scrollActualReaderUntilProgressChanges(
+            UiDevice device, ReaderV2Activity reader) throws Exception {
+        int width = device.getDisplayWidth();
+        int height = device.getDisplayHeight();
+        int x = width / 2;
+        int fromY = Math.min(height - 160, height * 3 / 4);
+        int toY = Math.max(120, height / 4);
+        ReaderSurfaceView.ProgressPosition latest = waitForReaderProgress(reader, 10000L);
+        for(int i = 0; i < 8; i++) {
+            device.swipe(x, fromY, x, toY, 36);
+            Thread.sleep(650L);
+            latest = waitForReaderProgress(reader, 3000L);
+            if(latest.getPage() > 0 || latest.getOffset() != 0)
+                return latest;
+        }
+        return latest;
+    }
+
+    private static ReaderSurfaceView.ProgressPosition waitForReaderProgress(
+            ReaderV2Activity reader, long timeoutMs) throws Exception {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        AtomicReference<ReaderSurfaceView.ProgressPosition> result = new AtomicReference<>();
+        while(System.currentTimeMillis() < deadline) {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                    result.set(reader.testCurrentProgressPosition()));
+            if(result.get() != null)
+                return result.get();
+            Thread.sleep(100L);
+        }
+        return result.get();
     }
 
     private static void assertCaptchaShown(UiDevice device, String label) {

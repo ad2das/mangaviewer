@@ -471,13 +471,22 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     override fun onInitialPage(index: Int) {
         if (pagesReady) {
             currentPage = index
-            val initialManga = session?.pageInfo(index)?.manga ?: currentManga
+            val initialManga = restoreBookmarkManga(session?.pageInfo(index)?.manga ?: currentManga)
             pendingInitialRestorePage = index
             pendingInitialRestoreOffset = p?.getViewerBookmarkOffset(initialManga) ?: 0
             renderView.holdInitialRestoreRender(index)
             renderView.lockRestoredPageOffset(index, pendingInitialRestoreOffset)
             updateCurrentEpisode(index, pendingInitialRestoreOffset, saveProgress = false)
             applyPendingInitialRestoreIfReady()
+        }
+    }
+
+    private fun restoreBookmarkManga(manga: Manga?): Manga? {
+        val title = currentTitle ?: manga?.title ?: return manga
+        return manga?.also {
+            it.title = title
+            it.titleId = title.id
+            title.eps?.let { episodes -> it.setEps(episodes) }
         }
     }
 
@@ -1456,6 +1465,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     fun testOpenEpisode(episode: Manga) {
         val source = currentManga ?: episode
         launchAdjacent(source, episode, currentTitle ?: episode.title)
+    }
+
+    fun testCurrentProgressPosition(): ReaderSurfaceView.ProgressPosition? {
+        return renderView.currentProgressPosition()
     }
 
     private fun findTestEpisode(predicate: (Manga) -> Boolean): Manga? {

@@ -1173,8 +1173,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
             return
         }
         rebuildLayoutLocked()
-        setScrollOffsetLocked(pageTopOrElseLocked(target, 0f) - lockedRestoreOffset)
-        if (pageHasDrawableContentLocked(target)) {
+        val desiredScroll = pageTopOrElseLocked(target, 0f) - lockedRestoreOffset
+        val maxScroll = max(0f, contentHeight - height)
+        val restoredScroll = desiredScroll.coerceIn(0f, maxScroll)
+        setScrollOffsetLocked(restoredScroll)
+        if (pageHasDrawableContentLocked(target) && abs(restoredScroll - desiredScroll) <= RESTORE_POSITION_EPSILON_PX) {
             clearLockedRestorePositionLocked()
         }
     }
@@ -1655,6 +1658,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
         private const val MIN_FLING_DRAG_DISTANCE_RATIO = 0.16f
         private const val RESTORE_POSITION_LOCK_MS = 4000L
+        private const val RESTORE_POSITION_EPSILON_PX = 2f
         private const val INITIAL_RENDER_HOLD_MS = 700L
         private const val SCROLL_JUMP_LOG_SCREEN_RATIO = 0.75f
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
