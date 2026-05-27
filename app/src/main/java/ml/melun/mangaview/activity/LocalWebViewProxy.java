@@ -7,6 +7,8 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -73,9 +75,7 @@ final class LocalWebViewProxy {
                 host = target.substring(0, colon);
                 port = Integer.parseInt(target.substring(colon + 1));
             }
-            Socket upstream = new Socket();
-            String connectHost = CustomHttpClient.resolveDirectHostForNtkProxy(host);
-            upstream.connect(new InetSocketAddress(InetAddress.getByName(connectHost), port), 10000);
+            Socket upstream = connectUpstream(host, port);
             output.write("HTTP/1.1 200 Connection Established\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
             output.flush();
             pipeBoth(client, upstream);
@@ -84,6 +84,38 @@ final class LocalWebViewProxy {
                 android.util.Log.d("CaptchaActivity", "NTK WebView proxy connection failed", e);
             closeQuietly(client);
         }
+    }
+
+    private Socket connectUpstream(String host, int port) throws Exception {
+        Exception lastError = null;
+        for(String connectHost : proxyConnectCandidates(host)) {
+            Socket upstream = new Socket();
+            try {
+                upstream.bind(new InetSocketAddress(InetAddress.getByName("0.0.0.0"), 0));
+                upstream.connect(new InetSocketAddress(InetAddress.getByName(connectHost), port), 10000);
+                return upstream;
+            } catch (Exception e) {
+                lastError = e;
+                closeQuietly(upstream);
+                android.util.Log.d("CaptchaActivity", "NTK WebView proxy upstream failed: " + connectHost, e);
+            }
+        }
+        if(lastError != null)
+            throw lastError;
+        throw new java.net.UnknownHostException(host);
+    }
+
+    private static List<String> proxyConnectCandidates(String host) {
+        ArrayList<String> candidates = new ArrayList<>();
+        addCandidate(candidates, CustomHttpClient.resolveDirectHostForNtkProxy(host));
+        addCandidate(candidates, host);
+        return candidates;
+    }
+
+    private static void addCandidate(List<String> candidates, String candidate) {
+        if(candidate == null || candidate.length() == 0 || candidates.contains(candidate))
+            return;
+        candidates.add(candidate);
     }
 
     private void pipeBoth(Socket a, Socket b) {
