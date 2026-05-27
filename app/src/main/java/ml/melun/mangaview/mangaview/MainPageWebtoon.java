@@ -1257,6 +1257,8 @@ public class MainPageWebtoon {
         List<String> dbTags = getClassificationDbTags(title.getId(), sourceSite);
         if(dbTags == null)
             dbTags = getClassificationDbTags(title.getName(), sourceSite);
+        if(dbTags == null && "ntk".equals(sourceSite))
+            dbTags = getClassificationDbTags(title.getName(), "wfwf");
         if(hasMeaningfulClassificationTags(dbTags)) {
             title.setTags(new ArrayList<>(dbTags));
             return;
@@ -1280,6 +1282,8 @@ public class MainPageWebtoon {
         List<String> dbTags = getComicClassificationDbTags(title.getId(), sourceSite);
         if(dbTags == null)
             dbTags = getComicClassificationDbTags(title.getName(), sourceSite);
+        if(dbTags == null && "ntk".equals(sourceSite))
+            dbTags = getComicClassificationDbTags(title.getName(), "wfwf");
         if(dbTags != null) {
             title.setTags(new ArrayList<>(dbTags));
             return;
