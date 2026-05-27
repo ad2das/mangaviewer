@@ -9,6 +9,7 @@ import androidx.work.Configuration;
 import androidx.work.WorkManager;
 
 import ml.melun.mangaview.ClassificationDbUpdater;
+import ml.melun.mangaview.ClassificationDbStore;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.report.CrashReporter;
 import ml.melun.mangaview.repository.room.MangaRoomStore;
@@ -53,6 +54,7 @@ public class MainApplication extends MultiDexApplication {
         long preferenceStartedAt = PerfTrace.start("app_preference_init_ms");
         p = new Preference(this);
         PerfTrace.end("app_preference_init_ms", preferenceStartedAt);
+        AppDispatchers.runIo(() -> ClassificationDbStore.cleanupLegacyFiles(appContext));
         long superStartedAt = PerfTrace.start("app_super_on_create_ms");
         super.onCreate();
         PerfTrace.end("app_super_on_create_ms", superStartedAt);
@@ -124,7 +126,7 @@ public class MainApplication extends MultiDexApplication {
             if(!deferredServicesStarted) {
                 deferredServicesStarted = true;
                 AppDispatchers.runIoDelayed(() -> MangaRoomStore.prime(appContext), 1800);
-                AppDispatchers.runIoDelayed(() -> ClassificationDbUpdater.updateInBackground(appContext), 7000);
+                AppDispatchers.runIoDelayed(() -> ClassificationDbUpdater.start(appContext), 7000);
             }
         }
     }

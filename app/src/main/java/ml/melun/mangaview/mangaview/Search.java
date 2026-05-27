@@ -634,7 +634,7 @@ public class Search {
                 } else {
                     String genre = genreFromCategoryPath(query, base_webtoon);
                     if(genre.length() > 0) {
-                        last = appendNextClassificationDbGenreResults(webtoonResults, genre);
+                        last = appendNextClassificationDbGenreResults(client, webtoonResults, genre);
                         if(webtoonResults.size() == 0 && !classificationSourceFetched) {
                             appendWebtoonResults(client, webtoonResults, query, 0);
                             classificationSourceFetched = true;
@@ -654,7 +654,7 @@ public class Search {
                     appendWebtoonResults(client, webtoonResults, webtoonGenrePath("end", query), 80);
                     classificationSourceFetched = true;
                 }
-                last = appendNextClassificationDbGenreResults(webtoonResults, query);
+                last = appendNextClassificationDbGenreResults(client, webtoonResults, query);
             } else if(mode == 3) {
                 String alphabet = percentEncode(alphabetValue(query), Charset.forName("EUC-KR"));
                 appendWebtoonResults(client, webtoonResults, ntkPath(client, "/ing?letter=" + alphabet, "/ing?type1=alphabet&type2=" + alphabet + "&o=n"), 80);
@@ -697,7 +697,7 @@ public class Search {
                 } else {
                     String genre = genreFromCategoryPath(query, base_comic);
                     if(genre.length() > 0) {
-                        last = appendNextClassificationDbGenreResults(comicResults, genre);
+                        last = appendNextClassificationDbGenreResults(client, comicResults, genre);
                         if(comicResults.size() == 0 && !classificationSourceFetched) {
                             appendWebtoonResults(client, comicResults, query, 0);
                             classificationSourceFetched = true;
@@ -716,7 +716,7 @@ public class Search {
                     appendWebtoonResults(client, comicResults, comicRoot(client) + "?type1=genre&type2=" + percentEncode(query, Charset.forName("EUC-KR")) + "&o=n", 120);
                     classificationSourceFetched = true;
                 }
-                last = appendNextClassificationDbGenreResults(comicResults, query);
+                last = appendNextClassificationDbGenreResults(client, comicResults, query);
             } else if(mode == 3) {
                 String alphabet = percentEncode(alphabetValue(query), Charset.forName("EUC-KR"));
                 appendWebtoonResults(client, comicResults, ntkPath(client, "/manhwa?letter=" + alphabet, comicRoot(client) + "?type1=alphabet&type2=" + alphabet + "&o=n"), 120);
@@ -2062,16 +2062,17 @@ public class Search {
         return client != null && client.isNtk() ? "/manhwa" : "/cm";
     }
 
-    private boolean appendNextClassificationDbGenreResults(ArrayList<Title> target, String genre) {
+    private boolean appendNextClassificationDbGenreResults(CustomHttpClient client, ArrayList<Title> target, String genre) {
         if(genre == null || genre.trim().length() == 0)
             return true;
         ArrayList<Title> dbResults;
+        String sourceSite = client != null && client.isNtk() ? "ntk" : "wfwf";
         if(baseMode == base_comic) {
-            classificationDbTotalCount = MainPageWebtoon.getComicClassificationDbGenreCount(genre.trim());
-            dbResults = MainPageWebtoon.getComicClassificationDbTitlesByGenre(genre.trim(), classificationDbOffset, CLASSIFICATION_DB_PAGE_SIZE);
+            classificationDbTotalCount = MainPageWebtoon.getComicClassificationDbGenreCount(genre.trim(), sourceSite);
+            dbResults = MainPageWebtoon.getComicClassificationDbTitlesByGenre(genre.trim(), classificationDbOffset, CLASSIFICATION_DB_PAGE_SIZE, sourceSite);
         } else {
-            classificationDbTotalCount = MainPageWebtoon.getClassificationDbGenreCount(genre.trim());
-            dbResults = MainPageWebtoon.getClassificationDbTitlesByGenre(genre.trim(), classificationDbOffset, CLASSIFICATION_DB_PAGE_SIZE);
+            classificationDbTotalCount = MainPageWebtoon.getClassificationDbGenreCount(genre.trim(), sourceSite);
+            dbResults = MainPageWebtoon.getClassificationDbTitlesByGenre(genre.trim(), classificationDbOffset, CLASSIFICATION_DB_PAGE_SIZE, sourceSite);
         }
         classificationDbOffset += dbResults.size();
         target.addAll(dbResults);
