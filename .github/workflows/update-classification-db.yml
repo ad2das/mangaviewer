@@ -7,8 +7,6 @@ on:
         description: "Upload SQLite release assets even when the JSON DB did not change"
         required: false
         default: "false"
-  schedule:
-    - cron: "0 19 * * *"
 
 permissions:
   contents: write
