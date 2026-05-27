@@ -1279,7 +1279,7 @@ public class MainPageWebtoon {
         if(title == null)
             return;
         if(title.getBaseMode() == base_webtoon) {
-            List<String> tags = new ArrayList<>(title.getTags());
+            List<String> tags = new ArrayList<>();
             List<String> dbTags = getClassificationDbTagsIfLoaded(title.getId());
             if(dbTags == null)
                 dbTags = getClassificationDbTagsIfLoaded(title.getName());
@@ -1287,6 +1287,7 @@ public class MainPageWebtoon {
                 title.setTags(new ArrayList<>(dbTags));
                 return;
             }
+            title.setTags(new ArrayList<>());
             for(String inferredTag : inferWebtoonTags(title))
                 addUnique(tags, inferredTag);
             title.setTags(tags);
@@ -1294,7 +1295,7 @@ public class MainPageWebtoon {
         }
         if(title.getBaseMode() != base_comic)
             return;
-        List<String> tags = new ArrayList<>(title.getTags());
+        List<String> tags = new ArrayList<>();
         List<String> dbTags = getComicClassificationDbTagsIfLoaded(title.getId());
         if(dbTags == null)
             dbTags = getComicClassificationDbTagsIfLoaded(title.getName());
@@ -1302,6 +1303,7 @@ public class MainPageWebtoon {
             title.setTags(new ArrayList<>(dbTags));
             return;
         }
+        title.setTags(new ArrayList<>());
         for(String inferredTag : inferComicTags(title))
             addUnique(tags, inferredTag);
         title.setTags(tags);
