@@ -60,13 +60,25 @@ public class MainPageWebtoonTest {
         MainPageWebtoon.putClassificationDbTitleForTest(41, "귀신이 싼다", false, "공포", "로맨스", "성인");
         Title ntk = new Title("귀신이 싼다", "", "", new ArrayList<>(), "", 900041, base_webtoon);
         ntk.setSourceSite("ntk");
-        ntk.getTags().add("판타지");
 
         MainPageWebtoon.applyInferredSearchTags(ntk);
 
         assertEquals("공포", ntk.getTags().get(0));
         assertTrue(ntk.getTags().contains("성인"));
-        assertFalse(ntk.getTags().contains("판타지"));
+    }
+
+    @Test
+    public void ntkTitleKeepsSiteGenresWhenTheyExist() {
+        MainPageWebtoon.clearClassificationDbForTest();
+        MainPageWebtoon.putClassificationDbTitleForTest(41, "귀신이 싼다", false, "공포", "로맨스", "성인");
+        Title ntk = new Title("귀신이 싼다", "", "", new ArrayList<>(), "", 900041, base_webtoon);
+        ntk.setSourceSite("ntk");
+        ntk.getTags().add("판타지");
+
+        MainPageWebtoon.applyInferredSearchTags(ntk);
+
+        assertEquals(1, ntk.getTags().size());
+        assertEquals("판타지", ntk.getTags().get(0));
     }
 
     @Test

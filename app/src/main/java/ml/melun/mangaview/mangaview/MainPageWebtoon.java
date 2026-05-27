@@ -1254,6 +1254,8 @@ public class MainPageWebtoon {
             return;
         List<String> tags = new ArrayList<>(title.getTags());
         String sourceSite = classificationSourceSite(title);
+        if("ntk".equals(sourceSite) && hasMeaningfulClassificationTags(tags))
+            return;
         List<String> dbTags = getClassificationDbTags(title.getId(), sourceSite);
         if(dbTags == null)
             dbTags = getClassificationDbTags(title.getName(), sourceSite);
@@ -1279,6 +1281,8 @@ public class MainPageWebtoon {
             return;
         List<String> tags = new ArrayList<>(title.getTags());
         String sourceSite = classificationSourceSite(title);
+        if("ntk".equals(sourceSite) && hasMeaningfulClassificationTags(tags))
+            return;
         List<String> dbTags = getComicClassificationDbTags(title.getId(), sourceSite);
         if(dbTags == null)
             dbTags = getComicClassificationDbTags(title.getName(), sourceSite);
@@ -1295,6 +1299,9 @@ public class MainPageWebtoon {
 
     public static void applyInferredSearchTagsIfLoaded(Title title) {
         if(title == null)
+            return;
+        String sourceSite = classificationSourceSite(title);
+        if("ntk".equals(sourceSite) && hasMeaningfulClassificationTags(title.getTags()))
             return;
         if(title.getBaseMode() == base_webtoon) {
             List<String> tags = new ArrayList<>();
