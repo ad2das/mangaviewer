@@ -48,7 +48,7 @@ public class MainPageWebtoon {
     private static final String[] WEBTOON_STATUS_LABELS = {"연재웹툰", "완결웹툰"};
     private static final String[] WEBTOON_DAY_LABELS = {"최신", "신작", "월", "화", "수", "목", "금", "토", "일", "열흘"};
     private static final String[] WEBTOON_DAY_VALUES = {"recent", "new", "1", "2", "3", "4", "5", "6", "7", "10"};
-    private static final String[] WEBTOON_GENRES = {"성인", "드라마", "판타지", "액션", "로맨스", "일상", "개그", "미스터리", "순정", "스포츠", "BL", "스릴러", "무협", "학원", "공포", "스토리"};
+    private static final String[] WEBTOON_GENRES = {"성인", "드라마", "판타지", "액션", "로맨스", "일상", "개그", "미스터리", "순정", "스포츠", "BL", "스릴러", "무협", "학원", "공포", "스토리", "백합", "요리", "시대", "게임", "음악"};
     private static final String[][] NTK_WEBTOON_ING_GENRES = {
             {"학원", "1"}, {"액션", "2"}, {"SF", "3"}, {"스토리", "4"}, {"판타지", "5"},
             {"BL", "6"}, {"개그", "7"}, {"연애", "8"}, {"드라마", "9"}, {"로맨스", "10"},
@@ -70,7 +70,7 @@ public class MainPageWebtoon {
 
     private static final String[] COMIC_DAY_LABELS = {"최신", "주간", "격주", "월간", "단편", "완결", "단행본", "비정기", "미분류"};
     private static final String[] COMIC_DAY_VALUES = {"recent", "10", "11", "12", "14", "16", "15", "13", "20"};
-    private static final String[] COMIC_GENRES = {"드라마", "액션", "SF", "TS", "개그", "게임", "공포", "도박", "호러", "라노벨", "러브코미디", "로맨스", "먹방", "미스터리", "백합", "붕탁", "성인", "순정", "스릴러", "스포츠", "시대", "애니화", "판타지", "학원", "BL", "여장", "역사", "요리", "음악", "이세계", "일상", "전생", "추리"};
+    private static final String[] COMIC_GENRES = {"드라마", "액션", "SF", "TS", "개그", "게임", "공포", "도박", "호러", "라노벨", "러브코미디", "로맨스", "먹방", "미스터리", "백합", "붕탁", "성인", "순정", "스릴러", "스포츠", "시대", "애니화", "판타지", "학원", "BL", "여장", "역사", "요리", "음악", "이세계", "일상", "전생", "추리", "무협"};
     private static final String[] NTK_COMIC_GENRES = {"순정", "판타지", "러브코미디", "드라마", "17", "학원", "라노벨", "개그", "액션", "백합", "SF", "이세계", "일상", "스릴러", "애니화", "전생", "스포츠", "TS", "소년", "먹방", "붕탁", "게임", "호러", "시대", "로맨스", "추리", "무협", "음악", "BL", "하렘", "라이트노벨", "전이", "코미디", "일상+치유", "도박", "역사", "배틀", "다크 판타지", "요리", "추방", "미스터리", "보추", "서스펜스", "소년만화", "학원 배틀"};
     private static final String[] NTK_COMPLETED_COMIC_GENRES = {"순정", "판타지", "러브코미디", "드라마", "17", "학원", "라노벨", "개그", "액션", "백합", "SF", "이세계", "일상", "스릴러", "애니화", "전생", "스포츠", "TS", "소년", "먹방", "붕탁", "게임", "호러", "시대", "로맨스", "추리", "무협", "음악", "BL", "코미디", "일상+치유", "모험", "배틀", "라이트노벨", "라이트 노벨", "미스터리", "소년만화", "역사", "코믹", "능력자 배틀", "도박", "전이", "전쟁", "하렘", "다크 판타지", "요리", "청춘", "범죄", "학원 배틀"};
     private static final String INFERRED_TAG_CACHE_KEY = "webtoonInferredTagCacheV1";
@@ -2055,13 +2055,26 @@ public class MainPageWebtoon {
         return output.toString(StandardCharsets.UTF_8.name());
     }
 
-    private static ArrayList<String> readClassificationTags(JSONObject item) {
+    static ArrayList<String> readClassificationTags(JSONObject item) {
         ArrayList<String> tags = new ArrayList<>();
+        if(item.has("resolvedTags")) {
+            appendJsonTags(tags, item.optJSONArray("resolvedTags"));
+            return tags;
+        }
+        if(item.has("canonicalTags")) {
+            appendJsonTags(tags, item.optJSONArray("canonicalTags"));
+            return tags;
+        }
+        JSONObject classification = item.optJSONObject("classification");
+        if(classification != null && classification.has("resolvedTags")) {
+            appendJsonTags(tags, classification.optJSONArray("resolvedTags"));
+            return tags;
+        }
         appendJsonTags(tags, item.optJSONArray("manualTags"));
         appendJsonTags(tags, item.optJSONArray("externalTags"));
         appendJsonTags(tags, item.optJSONArray("sourceTags"));
-        appendJsonTags(tags, item.optJSONArray("inferredTags"));
         appendJsonTags(tags, item.optJSONArray("tags"));
+        appendJsonTags(tags, item.optJSONArray("inferredTags"));
         return tags;
     }
 

@@ -1,6 +1,7 @@
 package ml.melun.mangaview.mangaview;
 
 import org.jsoup.Jsoup;
+import org.json.JSONObject;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -13,6 +14,32 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class MainPageWebtoonTest {
+    @Test
+    public void readClassificationTagsPrefersResolvedTagsOverLegacySources() throws Exception {
+        ArrayList<String> tags = MainPageWebtoon.readClassificationTags(new JSONObject(
+                "{\"resolvedTags\":[\"verified\"],\"sourceTags\":[\"source\"],\"inferredTags\":[\"guess\"],\"tags\":[\"legacy\"]}"));
+
+        assertEquals(1, tags.size());
+        assertEquals("verified", tags.get(0));
+    }
+
+    @Test
+    public void readClassificationTagsUsesNestedResolvedTagsBeforeLegacySources() throws Exception {
+        ArrayList<String> tags = MainPageWebtoon.readClassificationTags(new JSONObject(
+                "{\"classification\":{\"resolvedTags\":[\"nested\"]},\"externalTags\":[\"external\"],\"sourceTags\":[\"source\"]}"));
+
+        assertEquals(1, tags.size());
+        assertEquals("nested", tags.get(0));
+    }
+
+    @Test
+    public void readClassificationTagsDoesNotFallbackWhenResolvedTagsAreEmpty() throws Exception {
+        ArrayList<String> tags = MainPageWebtoon.readClassificationTags(new JSONObject(
+                "{\"resolvedTags\":[],\"sourceTags\":[\"source\"],\"inferredTags\":[\"guess\"]}"));
+
+        assertEquals(0, tags.size());
+    }
+
     @Test
     public void parseWolfTitles_filtersMixedSearchResultsForWebtoon() {
         ArrayList<Title> titles = MainPageWebtoon.parseWolfTitles(
@@ -480,12 +507,12 @@ public class MainPageWebtoonTest {
         String[] webtoonGenres = MainPageWebtoon.WEBTOON_FILTER_GROUPS[3];
         String[] comicGenres = MainPageWebtoon.COMIC_FILTER_GROUPS[2];
 
-        assertEquals(16, webtoonGenres.length);
+        assertEquals(21, webtoonGenres.length);
         assertTrue(containsFilter(webtoonGenres, "성인", "/ing?type1=genre&o=n"));
         assertTrue(containsFilter(webtoonGenres, "스토리", "/ing?type1=genre&type2=%BD%BA%C5%E4%B8%AE&o=n"));
         assertTrue(!containsLabel(webtoonGenres, "미분류"));
 
-        assertEquals(33, comicGenres.length);
+        assertEquals(34, comicGenres.length);
         assertTrue(!containsLabel(comicGenres, "17"));
         assertTrue(containsFilter(comicGenres, "성인", "/cm?type1=genre&type2=%BC%BA%C0%CE&o=n"));
         assertTrue(containsFilter(comicGenres, "호러", "/cm?type1=genre&type2=%C8%A3%B7%AF&o=n"));

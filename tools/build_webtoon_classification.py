@@ -13,6 +13,7 @@ import html as html_lib
 import json
 import re
 import sys
+import subprocess
 import time
 import unicodedata
 from dataclasses import dataclass, field
@@ -839,6 +840,7 @@ def build_output(
                 "name": source.name,
                 "thumb": source.thumb or previous.get("thumb", ""),
                 "release": source.release or previous.get("release", ""),
+                "description": source.description or previous.get("description", ""),
             }
         )
         if merged_source_tags:
@@ -859,6 +861,7 @@ def build_output(
             "name": source.name,
             "thumb": source.thumb,
             "release": source.release,
+            "description": source.description,
             "externalTags": merge_tags(existing_external, naver.tags),
             "sourceTags": source_tags,
             "tags": merge_tags(naver.tags, source_tags),
@@ -921,9 +924,31 @@ def write_unclassified(path: Path, data: Dict[str, object]) -> None:
     path.write_text(json.dumps(unclassified, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def resolve_output(output: Path, asset_output: Path, external_evidence: str = "") -> None:
+    resolver = Path(__file__).resolve().parent / "classification" / "resolve_classification.py"
+    command = [
+            sys.executable,
+            str(resolver),
+            "--kind",
+            "webtoon",
+            "--input",
+            str(output),
+            "--output",
+            str(output),
+            "--asset-output",
+            str(asset_output),
+    ]
+    if external_evidence:
+        command.extend(["--external-evidence", external_evidence])
+    subprocess.run(command, check=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build webtoon-classification.json from Naver genres.")
     parser.add_argument("--output", default="webtoon-classification.json")
+    parser.add_argument("--asset-output", default="app/src/main/assets/webtoon-classification.json")
+    parser.add_argument("--no-resolve", action="store_true")
+    parser.add_argument("--external-evidence", default="tools/classification/webtoon-external-evidence.jsonl")
     parser.add_argument("--source-root", default=DEFAULT_SOURCE_ROOT)
     parser.add_argument("--no-source-root-resolve", action="store_true")
     parser.add_argument("--max-naver-pages", type=int, default=10)
@@ -944,6 +969,7 @@ def main() -> int:
     parser.add_argument("--auto-fuzzy-score", type=float, default=0.955)
     parser.add_argument("--review-fuzzy-score", type=float, default=0.90)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--allow-empty-source", action="store_true")
     args = parser.parse_args()
 
     output = Path(args.output)
@@ -966,6 +992,8 @@ def main() -> int:
     print("fetching source titles...", file=sys.stderr)
     source_titles = fetch_source_titles(source_root, args.delay, args.max_source_paths, args.source_workers)
     print(f"source titles: {len(source_titles)}", file=sys.stderr)
+    if not source_titles and not args.allow_empty_source:
+        raise RuntimeError("source title fetch returned 0 titles; refusing to overwrite classification DB")
     if not args.no_source_detail_fetch:
         detail_targets = len(source_titles) if args.source_detail_mode == "all" else sum(1 for title in source_titles.values() if not title.source_tags)
         print(f"fetching source detail genres ({args.source_detail_mode}): {detail_targets}", file=sys.stderr)
@@ -992,6 +1020,8 @@ def main() -> int:
         print(text)
     else:
         output.write_text(text, encoding="utf-8")
+        if not args.no_resolve:
+            resolve_output(output, Path(args.asset_output), args.external_evidence if Path(args.external_evidence).exists() else "")
         if args.unmatched_output:
             write_unmatched(Path(args.unmatched_output), unmatched)
         if args.review_output:

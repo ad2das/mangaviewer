@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Iterable
 
 
-DB_FIELDS = ("manualTags", "externalTags", "sourceTags", "inferredTags", "tags")
+DB_FIELDS = ("manualTags", "externalTags", "sourceTags", "tags", "inferredTags")
 UNCLASSIFIED = "\ubbf8\ubd84\ub958"
 
 
@@ -27,6 +27,15 @@ def unique(values: Iterable[str]) -> list[str]:
 
 
 def item_tags(item: dict) -> list[str]:
+    resolved = item.get("resolvedTags")
+    if isinstance(resolved, list):
+        return [tag for tag in unique(str(value).strip() for value in resolved if str(value).strip()) if tag != UNCLASSIFIED]
+    classification = item.get("classification")
+    if isinstance(classification, dict):
+        nested = classification.get("resolvedTags")
+        if isinstance(nested, list):
+            return [tag for tag in unique(str(value).strip() for value in nested if str(value).strip()) if tag != UNCLASSIFIED]
+
     tags: list[str] = []
     for field in DB_FIELDS:
         values = item.get(field)

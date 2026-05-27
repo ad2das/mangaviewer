@@ -44,6 +44,7 @@ jobs:
             --source-workers 16 \
             --source-detail-workers 16 \
             --source-detail-mode all \
+            --no-resolve \
             --review-output webtoon-classification-review.json \
             --unclassified-output webtoon-classification-unclassified.json
 
@@ -56,6 +57,18 @@ jobs:
           python -X utf8 tools/audit_webtoon_classification.py \
             --detail-cache .webtoon-source-detail-cache.json \
             --report webtoon-classification-audit.json
+
+      - name: Resolve classification DB
+        run: |
+          python -X utf8 tools/classification/collect_external_evidence.py infer-descriptions \
+            --db webtoon-classification.json \
+            --output tools/classification/webtoon-external-evidence.jsonl
+          python -X utf8 tools/classification/resolve_classification.py \
+            --kind webtoon \
+            --input webtoon-classification.json \
+            --output webtoon-classification.json \
+            --asset-output app/src/main/assets/webtoon-classification.json \
+            --external-evidence tools/classification/webtoon-external-evidence.jsonl
 
       - name: Validate classification DB
         run: |
@@ -72,10 +85,16 @@ jobs:
 
           titles = root_data.get("titles", {})
           assert isinstance(titles, dict) and titles, "titles must be a non-empty object"
+          bad_labels = [
+              (key, item.get("name"), item.get("classification", {}).get("confidenceLabel"))
+              for key, item in titles.items()
+              if item.get("classification", {}).get("confidenceLabel") not in {"high", "very_high"}
+          ]
+          assert not bad_labels, f"below-high classifications remain: {bad_labels[:20]}"
           unclassified = [
               key
               for key, item in titles.items()
-              if not any(item.get(field) for field in ("manualTags", "externalTags", "sourceTags", "tags"))
+              if not item.get("resolvedTags")
           ]
           assert not unclassified, f"unclassified titles remain: {unclassified[:20]}"
 
@@ -86,16 +105,18 @@ jobs:
           print("manual", sum(1 for item in titles.values() if item.get("manual")))
           print("sha256", hashlib.sha256(root.read_bytes()).hexdigest())
           PY
+          python -X utf8 tools/classification/audit_classification.py
+          python -X utf8 tools/audit_genre_result_coverage.py
 
       - name: Commit DB changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add webtoon-classification.json app/src/main/assets/webtoon-classification.json webtoon-classification-unclassified.json
+          git add webtoon-classification.json app/src/main/assets/webtoon-classification.json webtoon-classification-unclassified.json tools/classification/webtoon-external-evidence.jsonl
           if git diff --cached --quiet; then
             echo "No classification DB changes."
           else
-            git commit -m "Update webtoon classification DB [skip ci]"
+            git commit -m "Update webtoon classification DB"
             for attempt in 1 2 3; do
               git fetch origin main
               git rebase origin/main

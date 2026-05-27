@@ -41,7 +41,20 @@ jobs:
             --delay 0.05 \
             --source-workers 16 \
             --source-detail-workers 16 \
+            --no-resolve \
             --unclassified-output comic-classification-unclassified.json
+
+      - name: Resolve classification DB
+        run: |
+          python -X utf8 tools/classification/collect_external_evidence.py infer-descriptions \
+            --db comic-classification.json \
+            --output tools/classification/comic-external-evidence.jsonl
+          python -X utf8 tools/classification/resolve_classification.py \
+            --kind comic \
+            --input comic-classification.json \
+            --output comic-classification.json \
+            --asset-output app/src/main/assets/comic-classification.json \
+            --external-evidence tools/classification/comic-external-evidence.jsonl
 
       - name: Validate classification DB
         run: |
@@ -58,24 +71,32 @@ jobs:
 
           titles = root_data.get("titles", {})
           assert isinstance(titles, dict) and titles, "titles must be a non-empty object"
-          unclassified = json.loads(Path("comic-classification-unclassified.json").read_text(encoding="utf-8"))
-          assert unclassified == [], f"unclassified titles remain: {len(unclassified)}"
+          bad_labels = [
+              (key, item.get("name"), item.get("classification", {}).get("confidenceLabel"))
+              for key, item in titles.items()
+              if item.get("classification", {}).get("confidenceLabel") not in {"high", "very_high"}
+          ]
+          assert not bad_labels, f"below-high classifications remain: {bad_labels[:20]}"
+          unclassified = [key for key, item in titles.items() if not item.get("resolvedTags")]
+          assert not unclassified, f"unclassified titles remain: {len(unclassified)}"
 
           print("titles", len(titles))
           print("unclassified", len(unclassified))
           print("manual", sum(1 for item in titles.values() if item.get("manual")))
           print("sha256", hashlib.sha256(root.read_bytes()).hexdigest())
           PY
+          python -X utf8 tools/classification/audit_classification.py
+          python -X utf8 tools/audit_genre_result_coverage.py
 
       - name: Commit DB changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add comic-classification.json app/src/main/assets/comic-classification.json comic-classification-unclassified.json
+          git add comic-classification.json app/src/main/assets/comic-classification.json comic-classification-unclassified.json tools/classification/comic-external-evidence.jsonl
           if git diff --cached --quiet; then
             echo "No classification DB changes."
           else
-            git commit -m "Update comic classification DB [skip ci]"
+            git commit -m "Update comic classification DB"
             for attempt in 1 2 3; do
               git fetch origin main
               git rebase origin/main

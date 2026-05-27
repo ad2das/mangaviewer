@@ -10,12 +10,6 @@ on:
       - "releases.html"
       - "version.json"
       - "tools/README_RELEASE.md"
-      - "webtoon-classification.json"
-      - "comic-classification.json"
-      - "webtoon-classification-unclassified.json"
-      - "comic-classification-unclassified.json"
-      - "app/src/main/assets/webtoon-classification.json"
-      - "app/src/main/assets/comic-classification.json"
       - "*.png"
       - "*.xml"
 

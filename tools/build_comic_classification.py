@@ -13,6 +13,7 @@ import html as html_lib
 import json
 import math
 import re
+import subprocess
 import sys
 import unicodedata
 from collections import Counter, defaultdict
@@ -579,6 +580,7 @@ def build_output(existing: Dict[str, object], source_titles: Dict[int, SourceTit
                 "name": source.name,
                 "thumb": source.thumb or previous.get("thumb", ""),
                 "release": source.release or previous.get("release", ""),
+                "description": source.description or previous.get("description", ""),
             }
         )
         if manual_tags:
@@ -618,10 +620,31 @@ def copy_outputs(output: Path, asset_output: Path) -> None:
     asset_output.write_text(output.read_text(encoding="utf-8"), encoding="utf-8")
 
 
+def resolve_output(output: Path, asset_output: Path, external_evidence: str = "") -> None:
+    resolver = Path(__file__).resolve().parent / "classification" / "resolve_classification.py"
+    command = [
+            sys.executable,
+            str(resolver),
+            "--kind",
+            "comic",
+            "--input",
+            str(output),
+            "--output",
+            str(output),
+            "--asset-output",
+            str(asset_output),
+    ]
+    if external_evidence:
+        command.extend(["--external-evidence", external_evidence])
+    subprocess.run(command, check=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build comic-classification.json from source comic genres.")
     parser.add_argument("--output", default="comic-classification.json")
     parser.add_argument("--asset-output", default="app/src/main/assets/comic-classification.json")
+    parser.add_argument("--no-resolve", action="store_true")
+    parser.add_argument("--external-evidence", default="tools/classification/comic-external-evidence.jsonl")
     parser.add_argument("--source-root", default=DEFAULT_SOURCE_ROOT)
     parser.add_argument("--no-source-root-resolve", action="store_true")
     parser.add_argument("--max-source-paths", type=int, default=0, help="0 means all configured source paths")
@@ -633,6 +656,7 @@ def main() -> int:
     parser.add_argument("--no-source-detail-cache", action="store_true")
     parser.add_argument("--unclassified-output", default="")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--allow-empty-source", action="store_true")
     args = parser.parse_args()
 
     output = Path(args.output)
@@ -644,6 +668,8 @@ def main() -> int:
     print("fetching comic source titles...", file=sys.stderr)
     source_titles = fetch_source_titles(source_root, args.delay, args.max_source_paths, args.source_workers)
     print(f"source titles: {len(source_titles)}", file=sys.stderr)
+    if not source_titles and not args.allow_empty_source:
+        raise RuntimeError("source title fetch returned 0 titles; refusing to overwrite classification DB")
     if not args.no_source_detail_fetch:
         print(f"fetching comic detail genres: {len(source_titles)}", file=sys.stderr)
         enrich_source_details(
@@ -660,7 +686,9 @@ def main() -> int:
         print(text)
     else:
         output.write_text(text, encoding="utf-8")
-        if args.asset_output:
+        if args.asset_output and not args.no_resolve:
+            resolve_output(output, Path(args.asset_output), args.external_evidence if Path(args.external_evidence).exists() else "")
+        elif args.asset_output:
             copy_outputs(output, Path(args.asset_output))
         if args.unclassified_output:
             write_unclassified(Path(args.unclassified_output), data)

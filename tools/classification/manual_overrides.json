@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "description": "Optional correction overrides. This file is not required for the automated resolver and is only for emergency data corrections.",
+  "overrides": {}
+}
