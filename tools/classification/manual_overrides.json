@@ -1,5 +1,19 @@
 {
   "schemaVersion": 1,
   "description": "Optional correction overrides. This file is not required for the automated resolver and is only for emergency data corrections.",
-  "overrides": {}
+  "overrides": {
+    "75417": {
+      "title": "드렁큰 매니악",
+      "acceptedTags": [
+        "성인",
+        "드라마"
+      ],
+      "rejectedTags": [
+        "스릴러"
+      ],
+      "reviewedAt": "2026-05-27",
+      "reviewedBy": "codex",
+      "note": "Synopsis describes adult alcohol-related episodic drama; no thriller/crime/suspense premise."
+    }
+  }
 }

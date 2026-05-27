@@ -157,6 +157,7 @@ public class Title extends MTitle {
 
                     }catch (Exception e2){continue;}
                 }
+                MainPageWebtoon.applyInferredSearchTags(this);
 
                 eps = WfwfEpisodeParser.parseLegacyEpisodes(d, baseMode);
                 for(Manga episode : eps)
@@ -220,6 +221,7 @@ public class Title extends MTitle {
                 if(text.length() > 0 && !tags.contains(text))
                     tags.add(text);
             }
+            MainPageWebtoon.applyInferredSearchTags(this);
 
             Element img = NtkEpisodeParser.firstTitleImage(d, titleKey, name);
             if(img != null)

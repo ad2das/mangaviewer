@@ -11,6 +11,31 @@ from typing import Any, Iterable
 
 LEGACY_FIELDS = ("manualTags", "externalTags", "sourceTags", "inferredTags", "tags")
 EXTERNAL_EVIDENCE_FIELD = "externalEvidenceTags"
+RELIABLE_EXTERNAL_FAMILIES = {"official_platform", "external_metadata"}
+RISKY_INFERRED_TAG_SUPPORT = {
+    "\uc2a4\ub9b4\ub7ec": (
+        "\uc2a4\ub9b4\ub7ec", "\ubc94\uc8c4", "\uc0b4\uc778", "\uc0b4\ud574", "\ub0a9\uce58", "\uac10\uae08", "\ubcf5\uc218", "\uc218\uc0ac", "\ud615\uc0ac",
+        "\uc758\ubb38\uc758 \uc8fd\uc74c", "\uc2dc\uccb4", "\uc0dd\uc874\uac8c\uc784", "\ud0c8\ucd9c", "\uc0ac\uc774\ucf54", "\uc0b4\uc778\ub9c8",
+        "\ud611\ubc15", "\uc704\ud611", "\uc870\uc9c1", "\ub9c8\ud53c\uc544", "\ud3ed\ub825", "\uc794\ud639", "\uc2e4\uc885",
+    ),
+    "\ubbf8\uc2a4\ud130\ub9ac": (
+        "\ubbf8\uc2a4\ud130\ub9ac", "\ucd94\ub9ac", "\uc758\ubb38", "\uc218\uc218\uaed8\ub07c", "\ubbf8\uc2a4\ud14c\ub9ac", "\uc815\uccb4", "\uc9c4\uc2e4",
+        "\ub2e8\uc11c", "\ubc94\uc778", "\uc218\uc0ac", "\uc2e4\uc885", "\uc54c \uc218 \uc5c6\ub294",
+    ),
+    "\uacf5\ud3ec": (
+        "\uacf5\ud3ec", "\ud638\ub7ec", "\uadc0\uc2e0", "\uc720\ub839", "\uc545\ub839", "\uad34\ub2f4", "\uc624\uceec\ud2b8", "\uc800\uc8fc",
+        "\uc18c\ub984", "\ud749\uac00", "\uc880\ube44", "\uc545\ub9c8", "\uad34\ubb3c", "\uc12c\ub729",
+    ),
+    "\ud310\ud0c0\uc9c0": (
+        "\ud310\ud0c0\uc9c0", "\ub9c8\ubc95", "\uc774\uc138\uacc4", "\uc804\uc0dd", "\ud68c\uadc0", "\ub9c8\uc655", "\uc545\ub9c8", "\ucc9c\uc0ac",
+        "\uc5d8\ud504", "\ub4dc\ub798\uace4", "\ub9c8\ub140", "\ub9c8\ubc95\uc0ac", "\ub2a5\ub825\uc790", "\ucd08\ub2a5\ub825", "\uc800\uc2b9",
+        "\uc694\uad34", "\uc815\ub839", "\ub9c8\uc871", "\ub358\uc804",
+    ),
+    "\uc561\uc158": (
+        "\uc561\uc158", "\uc804\ud22c", "\uc2f8\uc6c0", "\uaca9\ud22c", "\uc804\uc7c1", "\ubb34\ub9bc", "\ubb34\ud611", "\uac80", "\ud5cc\ud130",
+        "\ucd5c\uac15", "\ud0ac\ub7ec", "\uc554\uc0b4", "\ub300\uacb0", "\ubc30\ud2c0", "\uaca9\uc804", "\ubb34\uc30d", "\ud65c\uadf9", "\uc0ac\ud22c",
+    ),
+}
 UNCLASSIFIED = "미분류"
 
 SOURCE_WEIGHTS = {
@@ -241,12 +266,21 @@ def add_external_evidence_sources(
     canonical: dict[str, str],
 ) -> None:
     tags: list[str] = []
+    weak_tags: list[str] = []
     for entry in external_evidence:
+        if str(entry.get("field", "")) == "ai.title":
+            continue
         values = entry.get("normalizedTags") or entry.get("mappedTags") or entry.get("tags")
         if isinstance(values, list):
-            tags.extend(normalize_tag(tag, canonical) for tag in values)
+            normalized = [normalize_tag(tag, canonical) for tag in values]
+            if str(entry.get("sourceFamily", "")) in RELIABLE_EXTERNAL_FAMILIES:
+                tags.extend(normalized)
+            else:
+                weak_tags.extend(normalized)
     if tags:
         sources[EXTERNAL_EVIDENCE_FIELD] = unique([*sources.get(EXTERNAL_EVIDENCE_FIELD, []), *tags])
+    if weak_tags:
+        sources["inferredTags"] = unique([*sources.get("inferredTags", []), *weak_tags])
     inferred = text_inference_tags(item, canonical)
     if inferred:
         sources["inferredTags"] = unique([*sources.get("inferredTags", []), *inferred])
@@ -413,6 +447,22 @@ def rank_candidate_tags(candidate_tags: list[str], tag_scores: dict[str, dict[st
     return sorted(candidates, key=lambda tag: (-float(tag_scores.get(tag, {}).get("score", 0.0)), candidates.index(tag)))
 
 
+def has_inferred_risky_tag_support(item: dict[str, Any], tag: str) -> bool:
+    needles = RISKY_INFERRED_TAG_SUPPORT.get(tag)
+    if not needles:
+        return True
+    text = str(item.get("description", "")).casefold()
+    return any(needle.casefold() in text for needle in needles)
+
+
+def filter_unsupported_inferred_risky_tags(item: dict[str, Any], tags: list[str], canonical: dict[str, str]) -> list[str]:
+    filtered = [tag for tag in tags if has_inferred_risky_tag_support(item, tag)]
+    if filtered:
+        return filtered
+    fallback = normalize_tag("\ub4dc\ub77c\ub9c8", canonical)
+    return [fallback] if fallback else tags
+
+
 def fallback_tags(item: dict[str, Any], kind: str, canonical: dict[str, str]) -> tuple[list[str], str, float, dict[str, Any]]:
     resolved = unique(normalize_tag(tag, canonical) for tag in GLOBAL_PRIORS.get(kind, ["드라마"]))
     return resolved, "forced_placeholder_non_empty", 0.05, {
@@ -531,6 +581,8 @@ def resolve_item(
         for field in source_order:
             candidate_tags.extend(sources.get(field, []))
     resolved_tags = [tag for tag in rank_candidate_tags(candidate_tags, tag_scores) if tag.casefold() not in rejected_keys]
+    if not accepted and not external and not external_evidence_tags:
+        resolved_tags = filter_unsupported_inferred_risky_tags(item, resolved_tags, canonical)
     if not accepted and len(resolved_tags) > 4:
         resolved_tags = resolved_tags[:4]
 
@@ -701,7 +753,7 @@ def resolve_db(
     result["updated"] = date.today().isoformat()
     result["resolver"] = {
         "name": "tools/classification/resolve_classification.py",
-        "policy": "external/official evidence > description/title inference > forced fallback; WFWF source genre ignored by default; forceNonEmpty=true",
+        "policy": "official/external metadata > description-only inference > forced fallback; title-only AI evidence and WFWF source genre ignored by default; forceNonEmpty=true",
         "statusCounts": dict(sorted(counts.items())),
     }
     result["titles"] = dict(sorted(resolved_titles.items(), key=lambda item: int(item[0])))
