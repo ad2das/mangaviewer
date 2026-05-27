@@ -4,6 +4,7 @@ import org.junit.Test;
 
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
+import ml.melun.mangaview.reader.ReaderSurfaceView;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -29,6 +30,27 @@ public class ReaderV2ActivityTest {
         assertTrue(ReaderV2Activity.shouldMarkFirstDrawableForTest(5, 5));
         assertFalse(ReaderV2Activity.shouldMarkFirstDrawableForTest(5, 0));
         assertFalse(ReaderV2Activity.shouldMarkFirstDrawableForTest(1, 0));
+    }
+
+    @Test
+    public void delayedPreviousPrependDoesNotRevealAfterNewInteraction() {
+        long boundaryInteraction = 1000L;
+
+        assertTrue(ReaderV2Activity.shouldRevealPrependedBoundaryForTest(
+                true,
+                ReaderSurfaceView.DIRECTION_PREVIOUS,
+                boundaryInteraction,
+                boundaryInteraction));
+        assertFalse(ReaderV2Activity.shouldRevealPrependedBoundaryForTest(
+                true,
+                ReaderSurfaceView.DIRECTION_PREVIOUS,
+                boundaryInteraction,
+                boundaryInteraction + 1L));
+        assertFalse(ReaderV2Activity.shouldRevealPrependedBoundaryForTest(
+                true,
+                ReaderSurfaceView.DIRECTION_NEXT,
+                boundaryInteraction,
+                boundaryInteraction));
     }
 
     @Test

@@ -93,6 +93,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var readerWindowBusy = false
     private var deferredBoundaryDirection = 0
     private var deferredBoundaryAnchor = -1
+    private var pendingBoundaryStartInteractionMs = 0L
     private var lastReaderInteractionMs = 0L
     private var lastReaderBusyMs = 0L
     private val missingEpisodePromptState = MissingEpisodeNavigator.PromptState()
@@ -445,8 +446,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPagesPrepended(count: Int, insertedCount: Int) {
         if (pagesReady) {
-            val revealPrependedBoundary = pendingBoundaryStatus &&
-                pendingCaptchaRetryDirection == ReaderSurfaceView.DIRECTION_PREVIOUS
+            val revealPrependedBoundary = shouldRevealPrependedBoundary(
+                pendingBoundaryStatus,
+                pendingCaptchaRetryDirection,
+                pendingBoundaryStartInteractionMs,
+                lastReaderInteractionMs
+            )
+            pendingBoundaryStartInteractionMs = 0L
             hideBoundaryStatus()
             pageCount = count
             currentPage += insertedCount
@@ -670,7 +676,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         session?.pageInfo(anchorPage)?.let {
             if (!it.transitionCard) currentManga = it.manga
         }
-        if (boundaryAppendQuietRemainingMs() > 0L) {
+        if (direction != ReaderSurfaceView.DIRECTION_PREVIOUS && boundaryAppendQuietRemainingMs() > 0L) {
             deferredBoundaryDirection = direction
             deferredBoundaryAnchor = anchorPage
             statusHandler.removeCallbacks(deferredBoundaryAppendRunnable)
@@ -707,6 +713,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingBoundaryCaptchaRetry = true
         pendingCaptchaRetryDirection = direction
         pendingCaptchaRetryAnchor = anchorPage
+        pendingBoundaryStartInteractionMs = lastReaderInteractionMs
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         statusHandler.postDelayed(showBoundaryStatusRunnable, BOUNDARY_STATUS_DELAY_MS)
         val startResult = session?.appendAdjacentEpisode(anchorPage, direction)
@@ -1497,12 +1504,39 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             return index == currentPage
         }
 
+        @JvmStatic
+        fun shouldRevealPrependedBoundaryForTest(
+            pendingBoundaryStatus: Boolean,
+            direction: Int,
+            boundaryStartInteractionMs: Long,
+            lastInteractionMs: Long
+        ): Boolean {
+            return shouldRevealPrependedBoundary(
+                pendingBoundaryStatus,
+                direction,
+                boundaryStartInteractionMs,
+                lastInteractionMs
+            )
+        }
+
         private fun pageGapForBaseMode(baseMode: Int): Int {
             return ReaderDisplayPolicy.pageGapForBaseMode(baseMode)
         }
 
         private fun shouldEnableAdjacentButton(hasAdjacent: Boolean, canFetchMissingAdjacent: Boolean): Boolean {
             return ReaderDisplayPolicy.shouldEnableAdjacentButton(hasAdjacent, canFetchMissingAdjacent)
+        }
+
+        private fun shouldRevealPrependedBoundary(
+            pendingBoundaryStatus: Boolean,
+            direction: Int,
+            boundaryStartInteractionMs: Long,
+            lastInteractionMs: Long
+        ): Boolean {
+            return pendingBoundaryStatus &&
+                direction == ReaderSurfaceView.DIRECTION_PREVIOUS &&
+                boundaryStartInteractionMs > 0L &&
+                lastInteractionMs <= boundaryStartInteractionMs
         }
     }
 }

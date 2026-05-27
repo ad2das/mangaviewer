@@ -3,6 +3,9 @@ package ml.melun.mangaview.activity;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
 import android.os.SystemClock;
 import android.view.View;
 import android.widget.TextView;
@@ -22,6 +25,8 @@ import androidx.test.runner.lifecycle.Stage;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -102,6 +107,62 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
                     toolbarTitle(activity).contains("11-2화"));
             assertTrue("Expected no missing episode dialog while 2화 exists",
                     device.wait(Until.findObject(By.text("회차 누락")), 1000) == null);
+        } finally {
+            activity.finish();
+        }
+    }
+
+    @Test
+    public void wfwfScrollUpFromEpisode2PrependsEpisode1() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        Title title = new Title(
+                "WFWF Scroll Boundary",
+                "",
+                "",
+                Collections.singletonList("test"),
+                "",
+                100001,
+                MTitle.base_comic);
+        title.setSourceSite("wfwf");
+
+        Manga episodeTwo = new Manga(2, "WFWF Scroll Boundary 2화", "", MTitle.base_comic);
+        episodeTwo.setTitle(title);
+        episodeTwo.setTitleId(title.getId());
+        episodeTwo.setImgs(Collections.singletonList(testImagePath(context, "wfwf-boundary-2.png", Color.rgb(30, 90, 170))));
+        Manga episodeOne = new Manga(1, "WFWF Scroll Boundary 1화", "", MTitle.base_comic);
+        episodeOne.setTitle(title);
+        episodeOne.setTitleId(title.getId());
+        episodeOne.setImgs(Collections.singletonList(testImagePath(context, "wfwf-boundary-1.png", Color.rgb(170, 70, 30))));
+
+        ArrayList<Manga> episodes = new ArrayList<>();
+        episodes.add(episodeTwo);
+        episodes.add(episodeOne);
+        title.setEps(episodes);
+        episodeTwo.setEps(episodes);
+        episodeOne.setEps(episodes);
+
+        Activity activity = InstrumentationRegistry.getInstrumentation().startActivitySync(viewerIntent(episodeTwo, title));
+        try {
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            assertTrue("Expected viewer to start on WFWF 2화",
+                    waitForToolbarTitle(activity, "2화", 10000));
+            assertTrue("Expected viewer backing list to include WFWF 1화",
+                    setViewerEpisodeImages(activity, 1, Collections.singletonList(
+                            testImagePath(context, "wfwf-boundary-1.png", Color.rgb(170, 70, 30)))));
+
+            UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+            int width = device.getDisplayWidth();
+            int height = device.getDisplayHeight();
+            int x = width / 2;
+            int fromY = Math.max(120, height / 4);
+            int toY = Math.min(height - 160, height * 3 / 4);
+            for(int swipe = 0; swipe < 4 && !toolbarTitle(activity).contains("1화"); swipe++) {
+                device.swipe(x, fromY, x, toY, 36);
+                SystemClock.sleep(700);
+            }
+
+            assertTrue("Expected upward scroll at top to move into previous WFWF episode 1화",
+                    waitForToolbarTitle(activity, "1화", 10000));
         } finally {
             activity.finish();
         }
@@ -355,6 +416,21 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
     private Intent viewerIntent(Manga episode, Title title) {
         Context context = ApplicationProvider.getApplicationContext();
         return viewerIntent(context, episode, title, true);
+    }
+
+    private static String testImagePath(Context context, String name, int color) throws Exception {
+        File file = new File(context.getCacheDir(), name);
+        if(file.isFile() && file.length() > 0)
+            return file.getAbsolutePath();
+        Bitmap bitmap = Bitmap.createBitmap(720, 1440, Bitmap.Config.RGB_565);
+        Canvas canvas = new Canvas(bitmap);
+        canvas.drawColor(color);
+        try(FileOutputStream output = new FileOutputStream(file)) {
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, output);
+        } finally {
+            bitmap.recycle();
+        }
+        return file.getAbsolutePath();
     }
 
     private Intent viewerIntent(Context context, Manga episode, Title title, boolean newTask) {
