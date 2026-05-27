@@ -10,7 +10,6 @@ import androidx.work.WorkManager;
 
 import ml.melun.mangaview.ClassificationDbUpdater;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
-import ml.melun.mangaview.mangaview.MainPageWebtoon;
 import ml.melun.mangaview.report.CrashReporter;
 import ml.melun.mangaview.repository.room.MangaRoomStore;
 import ml.melun.mangaview.runtime.AppDispatchers;
@@ -125,7 +124,6 @@ public class MainApplication extends MultiDexApplication {
             if(!deferredServicesStarted) {
                 deferredServicesStarted = true;
                 AppDispatchers.runIoDelayed(() -> MangaRoomStore.prime(appContext), 1800);
-                AppDispatchers.runIoDelayed(MainPageWebtoon::preloadClassificationDbs, 3800);
                 AppDispatchers.runIoDelayed(() -> ClassificationDbUpdater.updateInBackground(appContext), 7000);
             }
         }

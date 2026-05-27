@@ -75,6 +75,7 @@ public class MainPageWebtoon {
     private static final String[] NTK_COMPLETED_COMIC_GENRES = {"순정", "판타지", "러브코미디", "드라마", "17", "학원", "라노벨", "개그", "액션", "백합", "SF", "이세계", "일상", "스릴러", "애니화", "전생", "스포츠", "TS", "소년", "먹방", "붕탁", "게임", "호러", "시대", "로맨스", "추리", "무협", "음악", "BL", "코미디", "일상+치유", "모험", "배틀", "라이트노벨", "라이트 노벨", "미스터리", "소년만화", "역사", "코믹", "능력자 배틀", "도박", "전이", "전쟁", "하렘", "다크 판타지", "요리", "청춘", "범죄", "학원 배틀"};
     private static final String INFERRED_TAG_CACHE_KEY = "webtoonInferredTagCacheV1";
     private static final int INFERRED_TAG_CACHE_LIMIT = 800;
+    private static final long MAX_CLASSIFICATION_DB_READ_BYTES = 8L * 1024L * 1024L;
     private static final LinkedHashMap<String, List<String>> inferredTagCache = new LinkedHashMap<>();
     private static boolean inferredTagCacheLoaded = false;
     private static int inferredTagCacheWrites = 0;
@@ -628,7 +629,7 @@ public class MainPageWebtoon {
     }
 
     static ArrayList<Title> parseWolfTitles(Document d, int baseMode, int limit, String sourceSite){
-        return parseWolfTitles(d, baseMode, limit, sourceSite, true);
+        return parseWolfTitles(d, baseMode, limit, sourceSite, false);
     }
 
     static ArrayList<Title> parseWolfTitles(Document d, int baseMode, int limit, String sourceSite, boolean enrichClassification){
@@ -2020,6 +2021,8 @@ public class MainPageWebtoon {
         File file = new File(dir, fileName);
         if(!file.exists() || !file.isFile() || file.length() <= 0)
             return "";
+        if(file.length() > MAX_CLASSIFICATION_DB_READ_BYTES)
+            return "";
         try(InputStream input = new FileInputStream(file)) {
             return readUtf8(input);
         } catch (Exception e) {
@@ -2040,10 +2043,14 @@ public class MainPageWebtoon {
     private static String readUtf8(InputStream input) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         byte[] buffer = new byte[8192];
+        long total = 0;
         while(true) {
             int read = input.read(buffer);
             if(read < 0)
                 break;
+            total += read;
+            if(total > MAX_CLASSIFICATION_DB_READ_BYTES)
+                return "";
             output.write(buffer, 0, read);
         }
         return output.toString(StandardCharsets.UTF_8.name());
