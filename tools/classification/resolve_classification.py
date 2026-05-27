@@ -74,28 +74,67 @@ TITLE_KEYWORD_PRIORS = [
 STRICT_DESCRIPTION_PRIORS = [
     (("회귀", "환생", "빙의", "악녀", "공작", "황녀", "마왕", "용사", "마법", "공녀", "후궁", "악마", "천사"), ["판타지"]),
     (("던전", "헌터", "각성", "레벨", "랭커", "SSS", "퀘스트"), ["액션", "판타지"]),
-    (("전투", "격투", "싸움", "전쟁", "생존을 건 사투"), ["액션"]),
-    (("무림", "검신", "천마", "소림", "강호", "무협", "검객", "검왕"), ["무협", "액션"]),
-    (("학교", "학원", "동아리", "교실", "고등학교", "대학교"), ["학원"]),
+    (("전투", "격투", "싸움", "전쟁", "생존을 건 사투", "액션", "파이터", "스트리트파이터", "대결전", "조직", "행동대장", "사투", "반격"), ["액션"]),
+    (("무림", "검신", "천마", "소림", "강호", "무협", "검객", "검왕", "고수"), ["무협", "액션"]),
+    (("학교", "학원", "동아리", "교실", "고등학교", "대학교", "고교", "고교생활", "동급생", "같은반", "같은 반"), ["학원"]),
     (("살인", "범인", "탐정", "저주", "실종", "복수", "범죄", "형사", "사건"), ["스릴러", "미스터리"]),
-    (("귀신", "괴담", "악몽", "공포", "좀비", "유령", "악령", "오싹"), ["공포", "스릴러"]),
-    (("요리", "셰프", "식당", "먹방"), ["요리"]),
-    (("야구", "축구", "농구", "복싱", "골프", "테니스", "스포츠"), ["스포츠"]),
-    (("연애", "신부", "남친", "여친", "결혼", "키스", "첫사랑", "로맨스"), ["로맨스"]),
-    (("개그", "코미디", "웃음", "병맛"), ["개그"]),
-    (("BL", "비엘", "오메가버스", "보이즈러브"), ["BL"]),
+    (("귀신", "괴담", "악몽", "공포", "좀비", "유령", "악령", "오싹", "처녀귀신", "퇴마", "쫓아내"), ["공포", "스릴러"]),
+    (("요리", "셰프", "식당", "먹방", "맛집", "주방"), ["요리"]),
+    (("야구", "축구", "농구", "복싱", "골프", "테니스", "스포츠", "라이딩", "자전거", "군대", "군인"), ["스포츠"]),
+    (("연애", "신부", "남친", "여친", "여자친구", "남자친구", "결혼", "키스", "첫사랑", "로맨스", "짝사랑", "고백", "연인", "사랑이야기", "러브스토리"), ["로맨스"]),
+    (("개그", "코미디", "웃음", "병맛", "엉뚱", "황당", "좌충우돌"), ["개그"]),
+    (("BL", "비엘", "오메가버스", "보이즈러브", "남자를 좋아", "게이", "남자와", "남자에게"), ["BL"]),
     (("백합", "GL", "그녀들"), ["백합"]),
-    (("일상물", "소소한 일상"), ["일상"]),
-    (("시대", "조선", "황제", "역사"), ["시대"]),
+    (("일상물", "소소한 일상", "일상", "회사", "직장", "백수", "하숙집", "관리사무소"), ["일상"]),
+    (("조선", "왕조", "황제", "역사", "사극"), ["시대"]),
     (("히어로", "괴인", "악당", "빌런", "초능력", "능력자", "구해야", "구한다"), ["액션", "판타지"]),
     (("드래곤", "용족", "마족", "마녀", "요괴", "괴물", "신비", "이능", "마계", "천계"), ["판타지"]),
     (("조직", "건달", "야쿠자", "마피아", "갱", "폭력", "대결", "복수극", "추격", "암살"), ["액션", "스릴러"]),
-    (("저승", "사자", "수호령", "영혼", "귀", "빙의", "환생", "전생"), ["판타지"]),
+    (("저승사자", "수호령", "영혼", "빙의", "환생", "전생"), ["판타지"]),
     (("RPG", "게임", "플레이어", "스테이지", "랭킹", "랭크", "스킬", "아이템"), ["게임", "판타지"]),
     (("아이돌", "배우", "연예계", "오케스트라", "밴드", "가수", "음악", "연주"), ["음악", "드라마"]),
     (("자전거", "라이딩", "군대", "군인", "농구부", "축구부", "야구부", "시합", "대회"), ["스포츠"]),
     (("동거", "짝사랑", "사랑", "고백", "연인", "남편", "아내", "신혼", "스캔들"), ["로맨스"]),
     (("펜션", "감금", "납치", "살해", "죽음", "피", "잔혹", "인터넷 방송", "스토킹"), ["스릴러"]),
+    (("성생활", "섹스", "성욕", "밤일", "스와핑", "하룻밤", "관계", "29금", "야릇", "에로", "음란", "욕망", "성인", "성 중독", "포르노", "야동", "쾌락"), ["성인"]),
+    (("병맛", "엉뚱", "황당", "개그", "코미디", "웃음", "바보", "웃긴", "좌충우돌"), ["개그"]),
+    (("유부녀", "속옷", "은밀", "아찔", "발칙", "야근", "노예", "첩으로", "여자탐방", "스폰", "페티시", "벗게", "탐욕", "성적 충동", "최음", "AV"), ["성인"]),
+    (("딱풀녀", "천 원짜리", "H를", "불끈", "몸은", "원나잇", "호스트바", "교미", "거유", "야한 말", "섹시", "팜므파탈", "중독되어", "첫경험", "몸을 팔", "하룻밤", "원초적인 즐거움", "썰만화"), ["성인"]),
+    (("싸웠노라", "이겼노라", "최강", "맞장", "전사들", "사냥꾼", "살아남", "분쟁", "음모", "모험", "선택받은 자", "반란", "전국구", "행동대장", "핏줄", "건드리지마라", "까불지도", "싸워라", "영웅담", "활약"), ["액션"]),
+    (("세상 아닌 세상", "다른 세상", "이세계", "악마", "도깨비", "수인", "신이 인간에게 준 힘", "카발라", "투명 인간", "사람이 되어", "안드로이드", "메르헨 판타지", "후천적 금수저", "구미호", "괴력", "몬스터", "새로운 세상", "저승", "신내림", "무당", "주신", "변신", "가면으로"), ["판타지"]),
+    (("충격적인 비밀", "쫓는 시선", "비밀을 밝혀", "도망칠 곳", "죽이려는", "쫓고 쫓기는", "기억상실", "범죄", "브로커", "스파이", "경매시장", "감옥", "법이 적용되지", "무인도", "황폐한 세상"), ["스릴러", "미스터리"]),
+    (("타인의 기억", "특별한 능력", "감정을 알 수", "미래", "저승", "악령", "강령", "심판하기 위해", "부모님을 선택", "기생충", "의식을 지배"), ["판타지", "미스터리"]),
+    (("흉부외과", "의사", "인턴", "병원", "간병", "수의사", "기생충 섬멸"), ["드라마"]),
+    (("오디션", "싱어송라이터", "스타", "배우", "공연자", "노래", "밴드", "음악", "오케스트라", "프로듀서"), ["음악", "드라마"]),
+    (("PC방", "RPG", "플레이어", "던전", "퀘스트", "게임", "레벨", "LV", "스테이터스"), ["게임", "판타지"]),
+    (("좋아하는 그 사람", "첫사랑", "고백", "연애", "계약연애", "여자친구", "남자친구", "사랑", "입맞춤", "키스", "심장이", "반했습니다", "가짜 커플", "짝사랑", "밀당", "스캔들", "그녀와의 만남", "좋아도 너무 좋은"), ["로맨스"]),
+    (("남자가 다가오", "남자에게", "소년을 첩", "이사에게 입맞춤", "보이즈 러브", "남첩", "주인님", "남자와", "남자 둘", "그 남자", "명란젓 같은 입술", "커밍아웃", "집주인의 부탁", "남자가 등장", "형에게", "동네 형", "그와", "그를 본 순간"), ["BL"]),
+    (("고등학교", "같은반", "교실", "여고생", "남고생", "동아리", "학교", "선배", "후배", "제자", "공고", "전학", "과외", "합숙", "반 친구", "3반", "수꿉친구"), ["학원"]),
+    (("사막", "해적", "어드벤쳐", "여정", "표류", "대해", "배에", "섬", "모험가", "잃어버린 과거", "운명", "시험이 시작"), ["판타지", "액션"]),
+    (("고시원", "취준생", "취업", "회사", "출판사", "직장", "대기업 직원", "공무원", "창업", "정리해고", "신문사", "슈퍼", "일상", "하숙", "한 집에서 살"), ["일상", "드라마"]),
+    (("벼랑 끝", "아귀떼", "미스테리어스", "후원자", "재앙", "조사를 시작", "수상함", "금지 구역", "위험한", "심리", "트라우마", "위태롭던", "사람배달", "배달알바", "범죄"), ["스릴러", "미스터리"]),
+    (("옴니버스", "스토리가 펼쳐", "이야기가 펼쳐", "인생 대역전극", "본격 창업", "기업극화", "웹툰", "스토리"), ["드라마"]),
+    (("배구", "야구", "축구", "농구", "복싱", "시합", "합숙", "대표결정전", "세터", "블로킹", "리시브"), ["스포츠"]),
+    (("유성이 떨어졌다", "날개 달린", "영웅들", "왕이 될", "원시시대", "부족 생활", "왕국", "황실", "보물", "약혼자", "동양환타지", "요물", "둔갑", "신의 능력", "결계", "불사의 몸", "불사", "돌연변이", "기묘한 능력"), ["판타지"]),
+    (("우주력", "성간이동", "별과 별", "괴수와 싸우", "판타지 SF", "대기상태", "지하도시", "바이러스", "초대형", "인간들의 세계", "다른 종족"), ["SF", "액션"]),
+    (("연산군", "왕에게 상납", "내시", "고려", "무신정권", "노비", "양반가", "황제", "궁녀", "중전"), ["시대", "역사"]),
+    (("사채", "조폭", "괴롭힘", "호빠", "공사", "재벌딸", "조건만남", "뒷세계", "총알받이", "지옥", "10명 안에", "파헤친다", "비밀을 파헤친다", "감금"), ["스릴러", "액션"]),
+    (("청춘", "여행", "로드무비", "혼자 외롭게", "가정이 있고", "과거가 공개", "세 남자", "내면", "어긋난", "가족", "부회장", "비서", "비서직", "선언"), ["드라마"]),
+    (("봄처럼", "설레는", "애틋한", "간질간질", "달달", "소개팅", "강하게 이끌린", "여행을 함께", "서로에게", "둘만의 시간", "감정이 싹트", "그대"), ["로맨스"]),
+    (("남자들 사이", "남자가 나타", "남자들에게", "남자...?", "그를 불러낸", "태이", "요한", "세민", "민재", "태화", "료가", "토오루", "남자… 그리고", "두 사람의 사이는"), ["BL"]),
+    (("여군", "부대", "특수부대", "여자들만의 국가", "남자들의 탄압", "국가", "검은늑대"), ["액션", "성인"]),
+    (("먹지", "음식", "맛보고 싶다", "케이크", "푸드", "레시피", "식성", "먹을수"), ["요리", "일상"]),
+    (("밝히는", "렌탈 아저씨", "야한", "러브호텔", "섹시한", "몸에 좋은", "자야만", "치료제는", "금단의 기술", "처녀귀신", "덮치려고", "가슴도 크다", "음란 계획", "변태클럽"), ["성인"]),
+    (("3D 업조", "전성시대", "노동", "대학 생활", "복학", "마을", "평범한", "특이한 사람", "사람들의 이야기", "성장기", "찌질이", "미모", "우리들의 이야기", "대학 일기", "찌질한 이야기"), ["일상", "드라마"]),
+    (("모쏠", "꿈의 이상형", "첫경험", "첫사랑", "좋아했다", "그녀가 다시", "저마다의 봄", "좋아하는 사람이", "썸", "유혹", "도화살", "소꿉친구", "남과 여", "설레", "러브 러브"), ["로맨스"]),
+    (("봉변", "쓰레기같은", "감당할 수 없는 빚", "빚", "되돌아왔다", "목을 조르는", "치명적인 약점", "위험수위", "돌이킬 수 없는 하루", "망치러", "비밀이 숨겨", "수상하다", "파헤쳐본다", "갖히게", "교도소"), ["스릴러"]),
+    (("프로젝트", "게임", "플레이어", "서바이벌", "스테이지", "재건설", "타락게임", "버튼", "10억", "인생 역전"), ["게임", "스릴러"]),
+    (("주먹", "킬러", "총성", "부산 주먹", "전설", "서울 진출기", "어둠의 세계", "대행자", "파이널", "통이라", "쌉니다 천리마마트", "유배지"), ["액션", "드라마"]),
+    (("달빛조각사", "용이 산다", "용이", "이무기", "신선", "왕세자", "부활", "신의 손", "링만 끼우면", "능력을 지니고", "특수한 능력", "다른 존재들", "기회. 잠들어 있던 능력"), ["판타지"]),
+    (("지구가 멸망", "혼자 달", "폐허가 된 서울", "문명의 이기", "공격 받고", "멸망", "세상이 무너지고", "절망의 세상", "고립시킨"), ["SF", "스릴러"]),
+    (("먹느냐 먹히느냐", "맛의 비법", "저녁식사", "공복", "목욕관리사", "때밀이", "목욕"), ["요리", "일상"]),
+    (("군", "국군", "탈영병", "D.P", "잡으러", "수영부", "낚시", "베이스 투 베이스"), ["스포츠", "드라마"]),
+    (("청나라", "환관", "궁궐", "19세기", "5,18", "공모전 대상작", "민감한 소재"), ["역사", "드라마"]),
 ]
 
 GLOBAL_PRIORS = {
@@ -174,9 +213,11 @@ def normalize_tag(tag: str, canonical: dict[str, str]) -> str:
     return canonical.get(raw.casefold(), raw)
 
 
-def item_sources(item: dict[str, Any], canonical: dict[str, str]) -> dict[str, list[str]]:
+def item_sources(item: dict[str, Any], canonical: dict[str, str], include_source_tags: bool = False) -> dict[str, list[str]]:
     sources: dict[str, list[str]] = {}
     for field in LEGACY_FIELDS:
+        if not include_source_tags and field in {"sourceTags", "tags"}:
+            continue
         values = item.get(field)
         if isinstance(values, list):
             sources[field] = unique(normalize_tag(value, canonical) for value in values)
@@ -184,7 +225,7 @@ def item_sources(item: dict[str, Any], canonical: dict[str, str]) -> dict[str, l
 
 
 def text_inference_tags(item: dict[str, Any], canonical: dict[str, str]) -> list[str]:
-    text = " ".join(str(item.get(field, "")) for field in ("name", "naverName", "release", "description"))
+    text = str(item.get("description", ""))
     lower = text.casefold()
     tags: list[str] = []
     for needles, mapped_tags in STRICT_DESCRIPTION_PRIORS:
@@ -219,13 +260,6 @@ def external_identity_score(item: dict[str, Any], external_source_conflict: bool
         match_score = 0.0
     if external_source_conflict:
         return min(match_score, 0.40)
-    source_tags = item.get("sourceTags")
-    external_tags = item.get("externalTags")
-    if isinstance(source_tags, list) and isinstance(external_tags, list):
-        source_keys = {str(tag).casefold() for tag in source_tags}
-        external_keys = {str(tag).casefold() for tag in external_tags}
-        if source_keys & external_keys:
-            return min(max(match_score, 0.88), 0.96)
     if item.get("naverTitleId") or item.get("naverName"):
         return min(match_score or 0.70, 0.70)
     return 0.0
@@ -316,6 +350,23 @@ def item_evidence(
     return evidence
 
 
+def external_evidence_confidence(external_evidence: list[dict[str, Any]], default: float = 0.66) -> float:
+    best = default
+    for entry in external_evidence:
+        if not isinstance(entry, dict):
+            continue
+        identity = entry.get("identityScore", 0.0)
+        source_reliability = entry.get("sourceReliability", 0.0)
+        field_reliability = entry.get("fieldReliability", 0.0)
+        if not isinstance(identity, (int, float)) or not isinstance(source_reliability, (int, float)) or not isinstance(field_reliability, (int, float)):
+            continue
+        score = float(identity) * max(float(source_reliability), float(field_reliability))
+        if str(entry.get("field", "")).endswith(".genre"):
+            score += 0.04
+        best = max(best, min(score, 0.86))
+    return best
+
+
 def tag_specificity(tag: str) -> float:
     return SPECIFICITY.get(tag, 1.0)
 
@@ -363,25 +414,14 @@ def rank_candidate_tags(candidate_tags: list[str], tag_scores: dict[str, dict[st
 
 
 def fallback_tags(item: dict[str, Any], kind: str, canonical: dict[str, str]) -> tuple[list[str], str, float, dict[str, Any]]:
-    text = " ".join(str(item.get(field, "")) for field in ("name", "naverName", "release"))
-    lower = text.casefold()
-    for needles, tags in TITLE_KEYWORD_PRIORS:
-        if any(needle.casefold() in lower for needle in needles):
-            resolved = unique(normalize_tag(tag, canonical) for tag in tags)
-            return resolved, "title_keyword_prior_forced_non_empty", 0.74, {
-                "source": "automated-title-keyword-prior",
-                "field": "name",
-                "mappedTags": resolved,
-                "confidence": 0.74,
-                "forced": True,
-            }
     resolved = unique(normalize_tag(tag, canonical) for tag in GLOBAL_PRIORS.get(kind, ["드라마"]))
-    return resolved, "global_prior_forced_non_empty", 0.74, {
-        "source": "automated-global-prior",
+    return resolved, "forced_placeholder_non_empty", 0.05, {
+        "source": "forced-placeholder",
         "field": "kind",
         "mappedTags": resolved,
-        "confidence": 0.74,
+        "confidence": 0.05,
         "forced": True,
+        "reason": "No reliable evidence found; non-empty DB invariant only.",
     }
 
 
@@ -395,8 +435,8 @@ def confidence_label(confidence: float) -> str:
     if confidence >= 0.35:
         return "low"
     if confidence > 0:
-        return "low"
-    return "forced_fallback"
+        return "very_low"
+    return "none"
 
 
 def has_rich_source_tags(tags: list[str], sensitive: set[str]) -> bool:
@@ -458,9 +498,10 @@ def resolve_item(
     taxonomy: dict[str, Any],
     overrides: dict[str, Any],
     external_evidence: list[dict[str, Any]],
+    include_source_tags: bool = False,
 ) -> dict[str, Any]:
     canonical, facets_by_tag = taxonomy_sets(taxonomy)
-    sources = item_sources(item, canonical)
+    sources = item_sources(item, canonical, include_source_tags=include_source_tags)
     add_external_evidence_sources(sources, item, external_evidence, canonical)
     accepted, rejected, override = apply_override(title_id, item, overrides, canonical)
     rejected_keys = {tag.casefold() for tag in rejected}
@@ -525,19 +566,19 @@ def resolve_item(
     elif has_external_evidence and has_source:
         if external_evidence_keys & source_keys:
             review_status = "auto_evidence_supported"
-            confidence = 0.78
+            confidence = external_evidence_confidence(external_evidence, 0.78)
             resolution_method = "source_description_evidence_agreement"
         else:
             review_status = "auto_source_with_auxiliary_evidence"
-            confidence = 0.74
+            confidence = external_evidence_confidence(external_evidence, 0.70)
             resolution_method = "source_plus_description_evidence"
     elif has_external_evidence:
         review_status = "auto_evidence_only"
-        confidence = 0.74
+        confidence = external_evidence_confidence(external_evidence, 0.66)
         resolution_method = "description_evidence_only"
     elif has_inferred_only:
         review_status = "auto_inferred_low_confidence"
-        confidence = 0.74
+        confidence = 0.62
         resolution_method = "heuristic_inference"
     else:
         review_status = "auto_source_only"
@@ -555,7 +596,7 @@ def resolve_item(
         resolved_tags, resolution_method, confidence, fallback_evidence = fallback_tags(item, kind, canonical)
         review_status = "auto_forced_fallback"
         non_empty_forced = True
-        title_only_fallback = resolution_method == "title_keyword_prior_forced_non_empty"
+        title_only_fallback = False
         for tag in resolved_tags:
             tag_scores[tag] = {
                 "score": confidence,
@@ -563,15 +604,6 @@ def resolve_item(
                 "sourceFamilies": ["forced_fallback"],
                 "evidenceRefs": ["fallback"],
             }
-    weak_sensitive_statuses = {
-        "auto_source_only",
-        "auto_inferred_low_confidence",
-        "auto_evidence_only",
-        "auto_forced_fallback",
-    }
-    if has_sensitive and review_status in weak_sensitive_statuses:
-        review_status = "auto_sensitive_high_confidence"
-        confidence = max(confidence, 0.74)
 
     facets: dict[str, list[str]] = {
         "genre": [],
@@ -594,7 +626,8 @@ def resolve_item(
         "resolvedTags": resolved_tags,
         "facets": facets,
         "confidence": round(confidence, 2),
-        "confidenceLabel": confidence_label(confidence),
+        "confidenceLabel": "forced_placeholder" if non_empty_forced else confidence_label(confidence),
+        "evidenceQuality": "none" if non_empty_forced else confidence_label(confidence),
         "reviewStatus": review_status,
         "resolutionMethod": resolution_method,
         "taxonomyVersion": taxonomy.get("taxonomyVersion", "unknown"),
@@ -635,6 +668,7 @@ def resolve_db(
     taxonomy: dict[str, Any],
     overrides: dict[str, Any],
     external_evidence_by_id: dict[str, list[dict[str, Any]]] | None = None,
+    include_source_tags: bool = False,
 ) -> dict[str, Any]:
     titles = db.get("titles", {}) if isinstance(db.get("titles"), dict) else {}
     resolved_titles: dict[str, Any] = {}
@@ -642,7 +676,15 @@ def resolve_db(
     for key, item in titles.items():
         if not isinstance(item, dict):
             continue
-        next_item = resolve_item(str(key), item, kind, taxonomy, overrides, (external_evidence_by_id or {}).get(str(key), []))
+        next_item = resolve_item(
+            str(key),
+            item,
+            kind,
+            taxonomy,
+            overrides,
+            (external_evidence_by_id or {}).get(str(key), []),
+            include_source_tags=include_source_tags,
+        )
         status = next_item.get("classification", {}).get("reviewStatus", "unknown")
         counts[str(status)] += 1
         resolved_titles[str(key)] = next_item
@@ -653,7 +695,7 @@ def resolve_db(
     result["updated"] = date.today().isoformat()
     result["resolver"] = {
         "name": "tools/classification/resolve_classification.py",
-        "policy": "official/external evidence > WFWF source > inference > title keyword prior > global prior; forceNonEmpty=true",
+        "policy": "external/official evidence > description/title inference > forced fallback; WFWF source genre ignored by default; forceNonEmpty=true",
         "statusCounts": dict(sorted(counts.items())),
     }
     result["titles"] = dict(sorted(resolved_titles.items(), key=lambda item: int(item[0])))
@@ -694,6 +736,7 @@ def main() -> int:
     parser.add_argument("--taxonomy", default="tools/classification/taxonomy.json")
     parser.add_argument("--manual-overrides", default="tools/classification/manual_overrides.json")
     parser.add_argument("--external-evidence", action="append", default=[])
+    parser.add_argument("--include-source-tags", action="store_true", help="Trust WFWF/source genre tags as classification evidence.")
     parser.add_argument("--low-confidence-output", default="")
     args = parser.parse_args()
 
@@ -701,7 +744,14 @@ def main() -> int:
     override_root = load_json(Path(args.manual_overrides), {"overrides": {}})
     overrides = override_root.get("overrides", {}) if isinstance(override_root.get("overrides"), dict) else {}
     external_evidence = load_evidence_jsonl([Path(path) for path in args.external_evidence]) if args.external_evidence else {}
-    data = resolve_db(load_json(Path(args.input), {}), args.kind, taxonomy, overrides, external_evidence)
+    data = resolve_db(
+        load_json(Path(args.input), {}),
+        args.kind,
+        taxonomy,
+        overrides,
+        external_evidence,
+        include_source_tags=args.include_source_tags,
+    )
     output = Path(args.output)
     output.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if args.asset_output:
