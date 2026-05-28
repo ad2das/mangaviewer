@@ -135,12 +135,30 @@ function Upload-ReleaseAsset([string]$RepoName, [string]$ReleaseId, [string]$Ass
     $assetName = Split-Path $AssetPath -Leaf
     Delete-ReleaseAssetByName $RepoName $ReleaseId $assetName
     $escapedName = [System.Uri]::EscapeDataString($assetName)
-    gh api --hostname uploads.github.com -X POST `
-        "repos/$RepoName/releases/$ReleaseId/assets?name=$escapedName" `
-        -H "Content-Type: application/octet-stream" `
-        --input $AssetPath `
-        --silent
-    if ($LASTEXITCODE -ne 0) {
+    $token = $env:GH_TOKEN
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        $token = $env:GITHUB_TOKEN
+    }
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        $token = gh auth token
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($token)) {
+            throw "GitHub token not available for release asset upload"
+        }
+    }
+    $headers = @{
+        Accept = "application/vnd.github+json"
+        Authorization = "Bearer $($token.Trim())"
+        "X-GitHub-Api-Version" = "2022-11-28"
+    }
+    $uploadUrl = "https://uploads.github.com/repos/$RepoName/releases/$ReleaseId/assets?name=$escapedName"
+    try {
+        Invoke-RestMethod -Method Post `
+            -Uri $uploadUrl `
+            -Headers $headers `
+            -ContentType "application/octet-stream" `
+            -InFile $AssetPath | Out-Null
+    } catch {
+        Write-Host $_
         throw "release asset upload failed: $assetName"
     }
 }
