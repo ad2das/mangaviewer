@@ -27,16 +27,23 @@ public class ReaderPipelinePolicyTest {
     public void heightResolveAdjustsOnlyPagesFullyAboveViewport() {
         assertTrue(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
                 false, false, false, true, 900f, 1000f));
-        assertTrue(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
-                true, false, false, true, 900f, 1000f));
-        assertTrue(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
-                false, false, false, false, 900f, 1000f));
         assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
                 false, false, false, true, 1200f, 1000f));
+        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+                true, false, false, true, 900f, 1000f));
         assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
                 false, true, false, true, 900f, 1000f));
         assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
                 false, false, true, true, 900f, 1000f));
+        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+                false, false, false, false, 900f, 1000f));
+    }
+
+    @Test
+    public void heightResolveScrollAdjustmentIsBounded() {
+        assertEquals(280f, ReaderSurfaceView.boundedHeightResolveScrollDeltaForTest(900f, 1000), 0.001f);
+        assertEquals(-280f, ReaderSurfaceView.boundedHeightResolveScrollDeltaForTest(-900f, 1000), 0.001f);
+        assertEquals(120f, ReaderSurfaceView.boundedHeightResolveScrollDeltaForTest(120f, 1000), 0.001f);
     }
 
     @Test
