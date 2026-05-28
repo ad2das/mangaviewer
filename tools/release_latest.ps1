@@ -81,6 +81,70 @@ function Add-SkipCiToken([string]$message) {
     return "$message [skip ci]"
 }
 
+function Get-ReleaseId([string]$RepoName, [string]$TagName) {
+    $releaseId = gh api "repos/$RepoName/releases/tags/$TagName" --jq ".id" 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($releaseId)) {
+        return $null
+    }
+    return $releaseId.Trim()
+}
+
+function Ensure-ReleaseId([string]$RepoName, [string]$TagName, [string]$Target) {
+    $releaseId = Get-ReleaseId $RepoName $TagName
+    if (-not [string]::IsNullOrWhiteSpace($releaseId)) {
+        return $releaseId
+    }
+
+    Write-Step "Creating release $TagName"
+    $createOutput = gh api -X POST "repos/$RepoName/releases" `
+        -f "tag_name=$TagName" `
+        -f "target_commitish=$Target" `
+        -f "name=Main Latest" `
+        -f "body=Latest main branch debug APK." `
+        -f "make_latest=true" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $createText = $createOutput | Out-String
+        if ($createText -notmatch 'already_exists|already exists') {
+            Write-Host $createText
+            throw "release create failed"
+        }
+    }
+
+    $releaseId = Get-ReleaseId $RepoName $TagName
+    if ([string]::IsNullOrWhiteSpace($releaseId)) {
+        throw "release not found after create: $TagName"
+    }
+    return $releaseId
+}
+
+function Delete-ReleaseAssetByName([string]$RepoName, [string]$ReleaseId, [string]$AssetName) {
+    $assetId = gh api "repos/$RepoName/releases/$ReleaseId/assets" --jq ".[] | select(.name==`"$AssetName`") | .id" 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($assetId)) {
+        return
+    }
+    gh api -X DELETE "repos/$RepoName/releases/assets/$($assetId.Trim())" --silent
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to delete existing release asset: $AssetName"
+    }
+}
+
+function Upload-ReleaseAsset([string]$RepoName, [string]$ReleaseId, [string]$AssetPath) {
+    if (-not (Test-Path $AssetPath)) {
+        throw "Release asset not found: $AssetPath"
+    }
+    $assetName = Split-Path $AssetPath -Leaf
+    Delete-ReleaseAssetByName $RepoName $ReleaseId $assetName
+    $escapedName = [System.Uri]::EscapeDataString($assetName)
+    gh api --hostname uploads.github.com -X POST `
+        "repos/$RepoName/releases/$ReleaseId/assets?name=$escapedName" `
+        -H "Content-Type: application/octet-stream" `
+        --input $AssetPath `
+        --silent
+    if ($LASTEXITCODE -ne 0) {
+        throw "release asset upload failed: $assetName"
+    }
+}
+
 Set-Location (Resolve-Path (Join-Path $PSScriptRoot ".."))
 
 Require-Command git
@@ -203,54 +267,30 @@ if (-not $NoCommit) {
 }
 
 if (-not $NoUpload) {
-    gh release view $ReleaseTag --repo $Repo *> $null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Step "Creating release $ReleaseTag"
-        $createOutput = gh release create $ReleaseTag --repo $Repo --target $TargetBranch --title "Main Latest" --notes "Latest main branch debug APK." --latest 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            $createText = $createOutput | Out-String
-            if ($createText -match 'already exists') {
-                Write-Host "Release $ReleaseTag already exists; reusing it."
-            } else {
-                Write-Host $createText
-                throw "gh release create failed"
-            }
-        }
-    }
+    $releaseId = Ensure-ReleaseId $Repo $ReleaseTag $TargetBranch
 
     Write-Step "Uploading APK release asset"
-    gh release upload $ReleaseTag $builtApk --clobber --repo $Repo
-    if ($LASTEXITCODE -ne 0) {
-        throw "gh release upload failed"
-    }
+    Upload-ReleaseAsset $Repo $releaseId $builtApk
 
     Write-Step "Uploading version metadata release asset"
-    gh release upload $ReleaseTag $versionJsonPath --clobber --repo $Repo
-    if ($LASTEXITCODE -ne 0) {
-        throw "gh release upload version metadata failed"
-    }
+    Upload-ReleaseAsset $Repo $releaseId $versionJsonPath
 
     Write-Step "Uploading classification DB release assets"
-    gh release upload $ReleaseTag $classificationManifestPath $classificationBasePath --clobber --repo $Repo
-    if ($LASTEXITCODE -ne 0) {
-        throw "gh release upload classification DB assets failed"
-    }
+    Upload-ReleaseAsset $Repo $releaseId $classificationManifestPath
+    Upload-ReleaseAsset $Repo $releaseId $classificationBasePath
 
     if ($DeleteOldReleaseApks) {
         Write-Step "Deleting old APK release assets"
-        $assetNames = gh release view $ReleaseTag --repo $Repo --json assets --jq ".assets[].name"
+        $assetNames = gh api "repos/$Repo/releases/$releaseId/assets" --jq ".[].name"
         foreach ($asset in $assetNames) {
             if ($asset -match '^mangaViewer_\d+-debug\.apk$' -and $asset -ne $apkName) {
-                gh release delete-asset $ReleaseTag $asset --repo $Repo --yes
-                if ($LASTEXITCODE -ne 0) {
-                    throw "Failed to delete old release asset: $asset"
-                }
+                Delete-ReleaseAssetByName $Repo $releaseId $asset
             }
         }
     }
 
     Write-Step "Verifying release asset"
-    gh release view $ReleaseTag --repo $Repo --json assets --jq ".assets[] | select(.name==`"$apkName`") | {name: .name, size: .size, updatedAt: .updatedAt, url: .url}"
+    gh api "repos/$Repo/releases/$releaseId/assets" --jq ".[] | select(.name==`"$apkName`") | {name: .name, size: .size, updatedAt: .updated_at, url: .browser_download_url}"
 }
 
 Write-Step "Done"
