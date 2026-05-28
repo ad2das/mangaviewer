@@ -1412,7 +1412,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 scrollOffset = scrollOffset
             )
         ) {
-            setScrollOffsetLocked(scrollOffset + boundedHeightResolveScrollDelta(delta, height))
+            setScrollOffsetLocked(scrollOffset + delta)
         }
         updatePageHeightDeltaLocked(index, delta)
     }
@@ -1794,7 +1794,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val RESTORE_POSITION_EPSILON_PX = 2f
         private const val INITIAL_RENDER_HOLD_MS = 700L
         private const val SCROLL_JUMP_LOG_SCREEN_RATIO = 0.75f
-        private const val HEIGHT_RESOLVE_MAX_SCROLL_ADJUST_SCREEN_RATIO = 0.28f
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
         private const val PENDING_NONE = 0
@@ -1802,12 +1801,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val PENDING_TILES = 2
         private const val PENDING_BOUNDS = 3
         private const val PENDING_SIZE = 4
-
-        private fun boundedHeightResolveScrollDelta(delta: Float, viewportHeight: Int): Float {
-            if (viewportHeight <= 0) return delta
-            val limit = viewportHeight * HEIGHT_RESOLVE_MAX_SCROLL_ADJUST_SCREEN_RATIO
-            return delta.coerceIn(-limit, limit)
-        }
 
         private fun shouldAdjustScrollForChangedPageHeight(
             lastBusy: Boolean,
@@ -1819,11 +1812,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         ): Boolean {
             if (lastBusy || pointerDown || dragging || !scrollerFinished) return false
             return oldBottom <= scrollOffset
-        }
-
-        @JvmStatic
-        fun boundedHeightResolveScrollDeltaForTest(delta: Float, viewportHeight: Int): Float {
-            return boundedHeightResolveScrollDelta(delta, viewportHeight)
         }
 
         @JvmStatic

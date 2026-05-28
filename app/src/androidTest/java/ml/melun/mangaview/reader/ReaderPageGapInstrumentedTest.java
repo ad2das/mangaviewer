@@ -104,6 +104,15 @@ public class ReaderPageGapInstrumentedTest {
         view.draw(new Canvas(after));
         assertTrue("Expected current page pixels to remain stable while scrolling",
                 isGreen(after.getPixel(500, 100)));
+
+        MotionEvent up = MotionEvent.obtain(0, 16, MotionEvent.ACTION_UP, 500f, 300f, 0);
+        view.onTouchEvent(up);
+        up.recycle();
+
+        Bitmap afterRelease = Bitmap.createBitmap(1000, 600, Bitmap.Config.ARGB_8888);
+        view.draw(new Canvas(afterRelease));
+        assertTrue("Expected deferred height resolve to keep the current page anchored",
+                isGreen(afterRelease.getPixel(500, 100)));
     }
 
     private static Bitmap solidBitmap(int color) {

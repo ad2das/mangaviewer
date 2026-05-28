@@ -40,13 +40,6 @@ public class ReaderPipelinePolicyTest {
     }
 
     @Test
-    public void heightResolveScrollAdjustmentIsBounded() {
-        assertEquals(280f, ReaderSurfaceView.boundedHeightResolveScrollDeltaForTest(900f, 1000), 0.001f);
-        assertEquals(-280f, ReaderSurfaceView.boundedHeightResolveScrollDeltaForTest(-900f, 1000), 0.001f);
-        assertEquals(120f, ReaderSurfaceView.boundedHeightResolveScrollDeltaForTest(120f, 1000), 0.001f);
-    }
-
-    @Test
     public void preparedAutoCutOnlySplitsWideSpreadPages() {
         assertFalse(ReaderSession.shouldSplitPreparedBitmapForTest(true, true, 720, 1600));
         assertFalse(ReaderSession.shouldSplitPreparedBitmapForTest(true, false, 1600, 1200));
