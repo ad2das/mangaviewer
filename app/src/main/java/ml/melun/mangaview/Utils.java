@@ -88,6 +88,7 @@ import static ml.melun.mangaview.activity.SettingsActivity.urlSettingPopup;
 public class Utils {
     private static final Map<Context, Integer> viewerLaunchTokens = new WeakHashMap<>();
     private static final Map<Context, Long> viewerLaunchTimes = new WeakHashMap<>();
+    private static final Map<Context, String> viewerLaunchKeys = new WeakHashMap<>();
     private static final Map<Activity, Long> focusedDestinationLaunchTimes = new WeakHashMap<>();
     private static int viewerLaunchSequence = 0;
     private static final long VIEWER_LAUNCH_DEBOUNCE_MS = 450L;
@@ -607,7 +608,7 @@ public class Utils {
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
-        if(!consumeViewerLaunchToken(context, launchToken)) {
+        if(!consumeViewerLaunchToken(context, launchToken, viewerLaunchDebounceKey(manga, title, exactEpisode))) {
             ViewerWarmupManager.logMetric("viewer_launch_abort_token", manga.getId());
             return;
         }
@@ -660,19 +661,21 @@ public class Utils {
         viewerLaunchTokens.put(launchTokenKey(context), ++viewerLaunchSequence);
     }
 
-    private static synchronized boolean consumeViewerLaunchToken(Context context, int token) {
+    private static synchronized boolean consumeViewerLaunchToken(Context context, int token, String launchKey) {
         Context key = launchTokenKey(context);
         Integer latest = viewerLaunchTokens.get(key);
         if(latest == null || latest != token)
             return false;
         long now = SystemClock.uptimeMillis();
         Long lastLaunchAt = viewerLaunchTimes.get(key);
-        if(lastLaunchAt != null && !shouldAllowViewerLaunch(now, lastLaunchAt)) {
+        String lastLaunchKey = viewerLaunchKeys.get(key);
+        if(lastLaunchAt != null && !shouldAllowViewerLaunch(now, lastLaunchAt, launchKey, lastLaunchKey)) {
             viewerLaunchTokens.put(key, ++viewerLaunchSequence);
             return false;
         }
         viewerLaunchTokens.put(key, ++viewerLaunchSequence);
         viewerLaunchTimes.put(key, now);
+        viewerLaunchKeys.put(key, launchKey);
         return true;
     }
 
@@ -686,11 +689,37 @@ public class Utils {
     }
 
     static boolean shouldAllowViewerLaunchForTest(long now, long lastLaunchAt) {
-        return shouldAllowViewerLaunch(now, lastLaunchAt);
+        return shouldAllowViewerLaunch(now, lastLaunchAt, "same", "same");
     }
 
-    private static boolean shouldAllowViewerLaunch(long now, long lastLaunchAt) {
+    static boolean shouldAllowViewerLaunchForTest(long now, long lastLaunchAt,
+                                                  String launchKey, String lastLaunchKey) {
+        return shouldAllowViewerLaunch(now, lastLaunchAt, launchKey, lastLaunchKey);
+    }
+
+    private static boolean shouldAllowViewerLaunch(long now, long lastLaunchAt,
+                                                   String launchKey, String lastLaunchKey) {
+        if(!sameViewerLaunchKey(launchKey, lastLaunchKey))
+            return true;
         return now - lastLaunchAt >= VIEWER_LAUNCH_DEBOUNCE_MS;
+    }
+
+    private static boolean sameViewerLaunchKey(String launchKey, String lastLaunchKey) {
+        if(launchKey == null || launchKey.length() == 0 || lastLaunchKey == null || lastLaunchKey.length() == 0)
+            return true;
+        return launchKey.equals(lastLaunchKey);
+    }
+
+    private static String viewerLaunchDebounceKey(Manga manga, Title title, boolean exactEpisode) {
+        if(manga == null)
+            return "";
+        Title launchTitle = title != null ? title : manga.getTitle();
+        return (launchTitle == null ? -1 : launchTitle.getId())
+                + ":" + manga.getBaseMode()
+                + ":" + manga.getId()
+                + ":" + manga.getTitleId()
+                + ":" + Manga.safeUrl(manga)
+                + ":" + exactEpisode;
     }
 
     private static Context launchTokenKey(Context context) {

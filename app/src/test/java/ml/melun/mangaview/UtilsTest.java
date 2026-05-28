@@ -244,6 +244,8 @@ public class UtilsTest {
     public void viewerLaunchDebounceRejectsRapidDuplicateStarts() {
         assertFalse(Utils.shouldAllowViewerLaunchForTest(1_400L, 1_000L));
         assertTrue(Utils.shouldAllowViewerLaunchForTest(1_450L, 1_000L));
+        assertTrue(Utils.shouldAllowViewerLaunchForTest(1_100L, 1_000L, "episode-2", "episode-1"));
+        assertFalse(Utils.shouldAllowViewerLaunchForTest(1_100L, 1_000L, "episode-1", "episode-1"));
     }
 
     @Test
