@@ -11,6 +11,9 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import ml.melun.mangaview.glide.ViewerBitmapTrim;
+
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 @RunWith(AndroidJUnit4.class)
@@ -34,6 +37,22 @@ public class ReaderPageGapInstrumentedTest {
         assertTrue("Expected red first page and green second page with no black rows between them. "
                         + boundarySummary(frame),
                 hasDirectRedGreenBoundary(frame));
+    }
+
+    @Test
+    public void trimBlankVerticalEdgesRemovesSourceGutters() {
+        Bitmap bitmap = Bitmap.createBitmap(20, 30, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bitmap);
+        canvas.drawColor(Color.WHITE);
+        android.graphics.Paint paint = new android.graphics.Paint();
+        paint.setColor(Color.rgb(90, 120, 180));
+        canvas.drawRect(0, 8, 20, 24, paint);
+
+        Bitmap trimmed = ViewerBitmapTrim.trimBlankVerticalEdges(bitmap);
+
+        assertEquals(16, trimmed.getHeight());
+        assertEquals(Color.rgb(90, 120, 180), trimmed.getPixel(10, 0));
+        assertEquals(Color.rgb(90, 120, 180), trimmed.getPixel(10, trimmed.getHeight() - 1));
     }
 
     private static Bitmap solidBitmap(int color) {

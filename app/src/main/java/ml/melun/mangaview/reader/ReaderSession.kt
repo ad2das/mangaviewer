@@ -14,6 +14,7 @@ import android.os.Process
 import android.os.SystemClock
 import com.bumptech.glide.Glide
 import ml.melun.mangaview.Utils
+import ml.melun.mangaview.glide.ViewerBitmapTrim
 import ml.melun.mangaview.glide.ViewerWarmupManager
 import ml.melun.mangaview.mangaview.Decoder
 import ml.melun.mangaview.mangaview.Manga
@@ -1230,7 +1231,7 @@ class ReaderSession(
             targetWidth
         ) ?: return null
         if (bitmap.isRecycled) return null
-        return PageDecodeResult.Full(bitmap)
+        return PageDecodeResult.Full(ViewerBitmapTrim.trimBlankVerticalEdges(bitmap))
     }
 
     private fun decodePage(index: Int, page: PageRef, file: File, targetWidth: Int): PageDecodeResult {
@@ -1261,11 +1262,23 @@ class ReaderSession(
         }
             ?: throw java.io.IOException("Bitmap decode failed")
         val rawAt = if (metric) SystemClock.elapsedRealtime() else 0L
-        if (!page.manga.isOnline) return PageDecodeResult.Full(applyAutoSplit(raw, page.side, page.allowAutoSplit))
+        if (!page.manga.isOnline) {
+            return PageDecodeResult.Full(
+                ViewerBitmapTrim.trimBlankVerticalEdges(
+                    applyAutoSplit(raw, page.side, page.allowAutoSplit),
+                    true
+                )
+            )
+        }
         val decoded = Decoder(page.manga.seed, page.manga.id).decode(raw, decodeTargetWidth, Glide.get(appContext).bitmapPool)
         if (decoded !== raw && !raw.isRecycled) raw.recycle()
         val transformedAt = if (metric) SystemClock.elapsedRealtime() else 0L
-        val result = PageDecodeResult.Full(applyAutoSplit(decoded, page.side, page.allowAutoSplit))
+        val result = PageDecodeResult.Full(
+            ViewerBitmapTrim.trimBlankVerticalEdges(
+                applyAutoSplit(decoded, page.side, page.allowAutoSplit),
+                true
+            )
+        )
         if (metric) {
             val finishedAt = SystemClock.elapsedRealtime()
             ViewerWarmupManager.logMetric("reader_first_bounds_ms", boundsAt - startedAt)

@@ -66,7 +66,7 @@ public class ViewerPageTransformation extends BitmapTransformation {
             displayBitmap = pool.get(Math.max(decodedWidth, 1), 1, displayConfig(decoded));
             new Canvas(displayBitmap).drawColor(android.graphics.Color.TRANSPARENT);
         }
-        return displayBitmap;
+        return ViewerBitmapTrim.trimBlankVerticalEdges(displayBitmap);
     }
 
     private static Bitmap.Config displayConfig(Bitmap bitmap) {
