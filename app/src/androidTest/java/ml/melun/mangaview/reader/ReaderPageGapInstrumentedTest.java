@@ -55,6 +55,28 @@ public class ReaderPageGapInstrumentedTest {
         assertEquals(Color.rgb(90, 120, 180), trimmed.getPixel(10, trimmed.getHeight() - 1));
     }
 
+    @Test
+    public void transitionCardDoesNotDrawOverFollowingPageWhenPartiallyVisible() throws Exception {
+        ReaderSurfaceView view = new ReaderSurfaceView(ApplicationProvider.getApplicationContext());
+        attachForTest(view);
+        view.measure(
+                android.view.View.MeasureSpec.makeMeasureSpec(1080, android.view.View.MeasureSpec.EXACTLY),
+                android.view.View.MeasureSpec.makeMeasureSpec(600, android.view.View.MeasureSpec.EXACTLY));
+        view.layout(0, 0, 1080, 600);
+        view.setPageGapPx(0);
+        view.setPageCount(3);
+        view.setPageBitmap(0, solidBitmap(Color.rgb(220, 32, 32)));
+        view.setPageCard(1, "next episode");
+        view.setPageBitmap(2, solidBitmap(Color.rgb(32, 200, 80)));
+        view.scrollToPage(2, 8);
+
+        Bitmap frame = Bitmap.createBitmap(1080, 600, Bitmap.Config.ARGB_8888);
+        view.draw(new Canvas(frame));
+
+        assertTrue("Expected following page to remain visible below the clipped transition card",
+                isGreen(frame.getPixel(frame.getWidth() / 2, 100)));
+    }
+
     private static Bitmap solidBitmap(int color) {
         Bitmap bitmap = Bitmap.createBitmap(720, 360, Bitmap.Config.RGB_565);
         bitmap.eraseColor(color);

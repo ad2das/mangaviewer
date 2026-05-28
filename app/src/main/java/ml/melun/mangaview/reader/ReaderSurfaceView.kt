@@ -808,10 +808,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val bitmap = item.bitmap
         val cardText = item.cardText
         if (cardText != null) {
-            val cardHeight = min(item.pageHeight, TRANSITION_CARD_BODY_HEIGHT_PX)
+            val visibleTop = max(0f, item.top)
+            val visibleBottom = min(state.height.toFloat(), item.top + item.pageHeight)
+            if (visibleBottom <= visibleTop) return
             val centerY = item.top + item.pageHeight / 2f
-            val top = max(0f, centerY - cardHeight / 2f)
-            val bottom = min(state.height.toFloat(), top + cardHeight)
+            val cardHeight = min(item.pageHeight, TRANSITION_CARD_BODY_HEIGHT_PX)
+            val top = centerY - cardHeight / 2f
+            val bottom = top + cardHeight
+            val save = canvas.save()
+            canvas.clipRect(0f, visibleTop, state.width.toFloat(), visibleBottom)
             dst.set(
                 0f,
                 top,
@@ -829,6 +834,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             canvas.drawText(cardText, state.width / 2f, dst.centerY() + 40f, textPaint)
             textPaint.textSize = 34f
             textPaint.color = Color.rgb(190, 190, 190)
+            canvas.restoreToCount(save)
             return
         }
         if (bitmap != null && !bitmap.isRecycled) {
