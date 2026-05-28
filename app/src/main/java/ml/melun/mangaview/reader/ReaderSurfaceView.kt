@@ -50,6 +50,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var height: Int = 0,
         var loading: Boolean = false,
         var cardText: String? = null,
+        var errorText: String? = null,
         var pendingResolveType: Int = PENDING_NONE,
         var pendingBitmap: Bitmap? = null,
         var pendingTiles: List<ReaderTile> = emptyList(),
@@ -62,6 +63,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val tiles: List<ReaderTile>,
         val loading: Boolean,
         val cardText: String?,
+        val errorText: String?,
         val top: Float,
         val pageHeight: Float
     )
@@ -315,7 +317,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun setPageLoading(index: Int) {
         synchronized(stateLock) {
             pages.getOrNull(index)?.let {
-                if (it.cardText == null && it.bitmap == null && it.tiles.isEmpty()) it.loading = true
+                if (it.cardText == null && it.errorText == null && it.bitmap == null && it.tiles.isEmpty()) it.loading = true
             }
             if (shouldSuppressInitialEmptyRenderLocked() || shouldDeferInitialEmptyDrawLocked()) return
             if (!lastBusy || isNearVisibleLocked(index, 1)) {
@@ -338,6 +340,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 page.tiles = emptyList()
                 page.loading = false
                 page.cardText = null
+                page.errorText = null
                 page.pendingResolveType = PENDING_SIZE
                 page.pendingBitmap = null
                 page.pendingTiles = emptyList()
@@ -354,6 +357,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             noteResolvedPageAspectLocked(page.width, page.height)
             page.loading = false
             page.cardText = null
+            page.errorText = null
             deferInitialEmptyDraw = false
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
             val belowVisible = oldTop > scrollOffset + height
@@ -383,6 +387,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 page.tiles = tiles
                 page.loading = false
                 page.cardText = null
+                page.errorText = null
                 page.pendingResolveType = PENDING_SIZE
                 page.pendingBitmap = null
                 page.pendingTiles = emptyList()
@@ -399,6 +404,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             noteResolvedPageAspectLocked(page.width, page.height)
             page.loading = false
             page.cardText = null
+            page.errorText = null
             deferInitialEmptyDraw = false
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
             val belowVisible = oldTop > scrollOffset + height
@@ -423,6 +429,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.tiles = emptyList()
             page.loading = false
             page.cardText = null
+            page.errorText = null
             clearPendingResolveLocked(page)
             layoutDirty = true
             renderRequested = true
@@ -438,6 +445,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 page.tiles = emptyList()
                 page.loading = false
                 page.cardText = null
+                page.errorText = null
                 clearPendingResolveLocked(page)
             }
             hasDrawnContentFrame = false
@@ -458,6 +466,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 page.tiles = emptyList()
                 page.loading = false
                 page.cardText = null
+                page.errorText = null
                 clearPendingResolveLocked(page)
             }
             hasDrawnContentFrame = false
@@ -471,7 +480,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun setPageBounds(index: Int, pageWidth: Int, pageHeight: Int) {
         val request = synchronized(stateLock) {
             val page = pages.getOrNull(index) ?: return
-            if (page.bitmap != null || page.tiles.isNotEmpty() || page.cardText != null || pageWidth <= 0 || pageHeight <= 0) return
+            if (page.bitmap != null || page.tiles.isNotEmpty() || page.cardText != null || page.errorText != null || pageWidth <= 0 || pageHeight <= 0) return
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
@@ -518,6 +527,34 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.height = max(1, (height * 0.38f).toInt())
             page.loading = false
             page.cardText = title
+            page.errorText = null
+            clearPendingResolveLocked(page)
+            deferInitialEmptyDraw = false
+            val newHeight = pageDrawHeightLocked(page)
+            applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
+            applyLockedRestorePositionLocked()
+            clampScrollLocked()
+            renderRequested = true
+            scheduleFrameLocked()
+            stateLock.notifyAll()
+            windowRequestLocked(lastBusy)
+        }
+        dispatchWindowRequest(request)
+    }
+
+    fun setPageError(index: Int, message: String) {
+        val request = synchronized(stateLock) {
+            val page = pages.getOrNull(index) ?: return
+            rebuildLayoutLocked()
+            val oldHeight = pageDrawHeightLocked(page)
+            val oldTop = pageTopOrElseLocked(index, 0f)
+            page.bitmap = null
+            page.tiles = emptyList()
+            page.width = width
+            page.height = max(1, (height * 0.38f).toInt())
+            page.loading = false
+            page.cardText = null
+            page.errorText = message
             clearPendingResolveLocked(page)
             deferInitialEmptyDraw = false
             val newHeight = pageDrawHeightLocked(page)
@@ -883,6 +920,22 @@ class ReaderSurfaceView @JvmOverloads constructor(
             canvas.restoreToCount(save)
             return
         }
+        val errorText = item.errorText
+        if (errorText != null) {
+            val visibleTop = max(0f, item.top)
+            val visibleBottom = min(state.height.toFloat(), item.top + item.pageHeight)
+            if (visibleBottom <= visibleTop) return
+            val save = canvas.save()
+            canvas.clipRect(0f, visibleTop, state.width.toFloat(), visibleBottom)
+            paint.style = Paint.Style.FILL
+            paint.color = PAGE_PLACEHOLDER_COLOR
+            canvas.drawRect(0f, visibleTop, state.width.toFloat(), visibleBottom, paint)
+            textPaint.textSize = 42f
+            textPaint.color = Color.rgb(90, 90, 90)
+            canvas.drawText(errorText, state.width / 2f, item.top + item.pageHeight / 2f + 15f, textPaint)
+            canvas.restoreToCount(save)
+            return
+        }
         if (bitmap != null && !bitmap.isRecycled) {
             val visibleTop = max(0f, item.top)
             val visibleBottom = min(state.height.toFloat(), item.top + item.pageHeight)
@@ -965,12 +1018,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val pageHeight = pageDrawHeightLocked(page)
             val bottom = top + pageHeight
             if (bottom > 0f && top < viewHeight) {
-                if (page.bitmap == null && page.tiles.isEmpty() && page.cardText == null) {
+                if (page.bitmap == null && page.tiles.isEmpty() && page.cardText == null && page.errorText == null) {
                     visibleLoading++
                 } else {
                     hasDrawableContent = true
                 }
-                items.add(DrawItem(page.bitmap, page.tiles, page.loading, page.cardText, top, pageHeight))
+                items.add(DrawItem(page.bitmap, page.tiles, page.loading, page.cardText, page.errorText, top, pageHeight))
             }
             if (top > viewHeight) break
             index++
@@ -1048,6 +1101,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun itemHasDrawable(item: DrawItem): Boolean {
         if (item.cardText != null) return true
+        if (item.errorText != null) return true
         val bitmap = item.bitmap
         if (bitmap != null && !bitmap.isRecycled) return true
         return item.tiles.any { !it.bitmap.isRecycled }
@@ -1095,7 +1149,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun pageHasDrawableContentLocked(index: Int): Boolean {
         val page = pages.getOrNull(index) ?: return false
-        return page.cardText != null || page.bitmap != null || page.tiles.isNotEmpty()
+        return page.cardText != null || page.errorText != null || page.bitmap != null || page.tiles.isNotEmpty()
     }
 
     fun requestRender() {
@@ -1275,6 +1329,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun pageDrawHeightLocked(page: Page): Float {
         val viewWidth = max(1, width)
         if (page.cardText != null) return TRANSITION_CARD_PAGE_HEIGHT_PX
+        if (page.errorText != null) return TRANSITION_CARD_PAGE_HEIGHT_PX
         if (page.bitmap != null || page.tiles.isNotEmpty()) {
             if (page.width > 0 && page.height > 0) return max(1f, viewWidth * (page.height / page.width.toFloat()))
         }
@@ -1335,7 +1390,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     page.tiles = page.pendingTiles
                 }
                 PENDING_BOUNDS -> {
-                    if (page.bitmap != null || page.tiles.isNotEmpty() || page.cardText != null) {
+                    if (page.bitmap != null || page.tiles.isNotEmpty() || page.cardText != null || page.errorText != null) {
                         clearPendingResolveLocked(page)
                         continue
                     }
@@ -1345,6 +1400,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.height = max(1, pendingHeight)
             page.loading = false
             page.cardText = null
+            page.errorText = null
             clearPendingResolveLocked(page)
             noteResolvedPageAspectLocked(page.width, page.height)
             val newHeight = pageDrawHeightLocked(page)

@@ -537,6 +537,20 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
     }
 
+    override fun onPageError(index: Int, message: String) {
+        MainThreadStallMonitor.trace("reader_on_page_error") {
+            if (pagesReady) {
+                hideBoundaryStatus()
+                status.visibility = TextView.VISIBLE
+                status.text = message
+                renderView.setPageError(index, message)
+                val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
+                if (visibleInitialDrawable) logFirstDrawableMetric(index, "error")
+                if (visibleInitialDrawable) releaseInitialDrawGate("error")
+            }
+        }
+    }
+
     override fun onPageCleared(index: Int) {
         if (pagesReady) renderView.clearPageBitmap(index)
     }

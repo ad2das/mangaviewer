@@ -225,30 +225,7 @@ public class EpisodeActivityNetworkTest {
 
     @Test
     public void wfwfJagaanEpisode40HasNoWideBlackImageGaps() throws Exception {
-        Context context = ApplicationProvider.getApplicationContext();
-        MainApplication.p.setSitePreset(CustomHttpClient.DEFAULT_COMIC_URL, CustomHttpClient.WEBTOON_URL);
-        MainApplication.p.setBaseMode(MTitle.base_comic);
-
-        Title title = findWfwfJagaanTitle();
-        int status = title.fetchEps(MainApplication.getHttpClient());
-        assertEquals("Expected Jagaan episodes to load", Title.LOAD_OK, status);
-        List<Manga> episodes = Title.orderedEpisodeSnapshot(title.getEps());
-        assertTrue("Expected Jagaan episode list", episodes != null && episodes.size() > 0);
-        Manga episode40 = null;
-        for(Manga episode : episodes) {
-            String number = Manga.visibleEpisodeNumberKey(episode == null ? null : episode.getName());
-            if("40".equals(number)) {
-                episode40 = episode;
-                break;
-            }
-        }
-        assertNotNull("Expected Jagaan episode 40 in " + firstEpisodeNames(episodes, Math.min(8, episodes.size())), episode40);
-        episode40.setTitle(title);
-        episode40.setTitleId(title.getId());
-        MainApplication.p.resetViewerBookmark();
-        MainApplication.p.setBookmark(title, -1);
-
-        Utils.openViewerPrepared(context, episode40, 0, false, true, false, title, true, true);
+        Manga episode40 = openWfwfJagaanEpisode("40");
         UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
         assertReaderOpened(device, "Jagaan 40");
 
@@ -260,12 +237,12 @@ public class EpisodeActivityNetworkTest {
         BlackGapReport worst = BlackGapReport.none();
         for(int i = 0; i < 8; i++) {
             Thread.sleep(900L);
-            File screenshot = new File(context.getCacheDir(), "jagaan40_reader_" + i + ".png");
+            File screenshot = new File(ApplicationProvider.getApplicationContext().getCacheDir(), "jagaan40_reader_" + i + ".png");
             assertTrue("Expected reader screenshot", device.takeScreenshot(screenshot));
             Bitmap bitmap = BitmapFactory.decodeFile(screenshot.getAbsolutePath());
             if(bitmap != null) {
                 BlackGapReport report = findWideBlackGap(bitmap, 180, 96);
-                Log.d("ViewerPerf", "jagaan40_gap_sample index=" + i + " " + report);
+                Log.d("ViewerPerf", "jagaan40_gap_sample index=" + i + " " + report + " episode=" + episode40.getName());
                 if(report.length > worst.length)
                     worst = report;
                 bitmap.recycle();
@@ -274,6 +251,52 @@ public class EpisodeActivityNetworkTest {
         }
         assertTrue("Expected no wide black image gaps in Jagaan 40; worst=" + worst,
                 worst.length < 32);
+    }
+
+    @Test
+    public void wfwfJagaanEpisode42ShowsFailureStateForBrokenSourceImages() throws Exception {
+        openWfwfJagaanEpisode("42");
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        assertReaderOpened(device, "Jagaan 42");
+
+        Thread.sleep(1500L);
+        File screenshot = new File(ApplicationProvider.getApplicationContext().getCacheDir(), "jagaan42_reader.png");
+        assertTrue("Expected reader screenshot", device.takeScreenshot(screenshot));
+        Bitmap bitmap = BitmapFactory.decodeFile(screenshot.getAbsolutePath());
+        assertNotNull("Expected readable Jagaan 42 screenshot", bitmap);
+        try {
+            assertTrue("Expected Jagaan 42 to leave the blank/loading state", countNonBlankPixels(bitmap, 180, 96) > 1000);
+        } finally {
+            bitmap.recycle();
+        }
+    }
+
+    private Manga openWfwfJagaanEpisode(String episodeNumber) throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        MainApplication.p.setSitePreset(CustomHttpClient.DEFAULT_COMIC_URL, CustomHttpClient.WEBTOON_URL);
+        MainApplication.p.setBaseMode(MTitle.base_comic);
+
+        Title title = findWfwfJagaanTitle();
+        int status = title.fetchEps(MainApplication.getHttpClient());
+        assertEquals("Expected Jagaan episodes to load", Title.LOAD_OK, status);
+        List<Manga> episodes = Title.orderedEpisodeSnapshot(title.getEps());
+        assertTrue("Expected Jagaan episode list", episodes != null && episodes.size() > 0);
+        Manga targetEpisode = null;
+        for(Manga episode : episodes) {
+            String number = Manga.visibleEpisodeNumberKey(episode == null ? null : episode.getName());
+            if(episodeNumber.equals(number)) {
+                targetEpisode = episode;
+                break;
+            }
+        }
+        assertNotNull("Expected Jagaan episode " + episodeNumber + " in " + firstEpisodeNames(episodes, Math.min(8, episodes.size())), targetEpisode);
+        targetEpisode.setTitle(title);
+        targetEpisode.setTitleId(title.getId());
+        MainApplication.p.resetViewerBookmark();
+        MainApplication.p.setBookmark(title, -1);
+
+        Utils.openViewerPrepared(context, targetEpisode, 0, false, true, false, title, true, true);
+        return targetEpisode;
     }
 
     @Test
@@ -929,6 +952,27 @@ public class EpisodeActivityNetworkTest {
                 black++;
         }
         return black >= samples - 1;
+    }
+
+    private static int countNonBlankPixels(Bitmap bitmap, int ignoredTopPx, int ignoredBottomPx) {
+        int width = bitmap.getWidth();
+        int top = Math.max(0, ignoredTopPx);
+        int bottom = Math.max(top, bitmap.getHeight() - Math.max(0, ignoredBottomPx));
+        int step = 4;
+        int count = 0;
+        for(int y = top; y < bottom; y += step) {
+            for(int x = 0; x < width; x += step) {
+                int pixel = bitmap.getPixel(x, y);
+                int red = Color.red(pixel);
+                int green = Color.green(pixel);
+                int blue = Color.blue(pixel);
+                boolean nearWhite = red > 246 && green > 246 && blue > 246;
+                boolean nearBlack = red < 16 && green < 16 && blue < 16;
+                if(!nearWhite && !nearBlack)
+                    count++;
+            }
+        }
+        return count * step * step;
     }
 
     private static final class BlackGapReport {

@@ -60,6 +60,7 @@ class ReaderSession(
         fun onPageReady(index: Int, bitmap: Bitmap)
         fun onPageTilesReady(index: Int, pageWidth: Int, pageHeight: Int, tiles: List<ReaderTile>)
         fun onPageCard(index: Int, title: String)
+        fun onPageError(index: Int, message: String)
         fun onPageCleared(index: Int)
         fun onMessage(message: String)
         fun onCaptchaRequired(manga: Manga)
@@ -163,6 +164,7 @@ class ReaderSession(
     private val loading = ConcurrentHashMap.newKeySet<Int>()
     private val urgentLoading = ConcurrentHashMap.newKeySet<Int>()
     private val bytePrefetching = ConcurrentHashMap.newKeySet<Int>()
+    private val failedPages = ConcurrentHashMap.newKeySet<Int>()
     private val decodedWidths = ConcurrentHashMap<Int, Int>()
     private val desiredWidths = ConcurrentHashMap<Int, Int>()
     private val inFlightWidths = ConcurrentHashMap<Int, Int>()
@@ -1090,6 +1092,7 @@ class ReaderSession(
                         postDecodeResult(Delivery(index, originalPage, result, startedAt, targetWidth))
                     } catch (e: Exception) {
                         recordIfUnexpected(e)
+                        postPageError(index, originalPage, e)
                     } finally {
                         if (acquired) gate.release()
                         clearPageLoadState(index, ownsLoading, urgent)
@@ -1102,6 +1105,7 @@ class ReaderSession(
             } catch (e: Exception) {
                 clearPageLoadState(index, ownsLoading, urgent)
                 recordIfUnexpected(e)
+                postPageError(index, page, e)
             }
             }
         } catch (_: RejectedExecutionException) {
@@ -1209,6 +1213,15 @@ class ReaderSession(
     private fun recordIfUnexpected(e: Exception) {
         if (!cancelled.get() && !isExpectedCancellation(e)) {
             ml.melun.mangaview.report.CrashReporter.record(e)
+        }
+    }
+
+    private fun postPageError(index: Int, page: PageRef, e: Exception) {
+        if (cancelled.get() || isExpectedCancellation(e) || !failedPages.add(index)) return
+        main.post {
+            if (!cancelled.get() && pageRef(index) == page) {
+                listener.onPageError(index, "Image load failed")
+            }
         }
     }
 
