@@ -1688,7 +1688,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             oldBottom: Float,
             scrollOffset: Float
         ): Boolean {
-            if (lastBusy || pointerDown || dragging || !scrollerFinished) return false
+            if (pointerDown || dragging) return false
             return oldBottom <= scrollOffset
         }
 
