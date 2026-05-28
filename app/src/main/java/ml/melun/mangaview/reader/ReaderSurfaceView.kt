@@ -49,7 +49,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var width: Int = 0,
         var height: Int = 0,
         var loading: Boolean = false,
-        var cardText: String? = null
+        var cardText: String? = null,
+        var pendingResolveType: Int = PENDING_NONE,
+        var pendingBitmap: Bitmap? = null,
+        var pendingTiles: List<ReaderTile> = emptyList(),
+        var pendingWidth: Int = 0,
+        var pendingHeight: Int = 0
     )
 
     private data class DrawItem(
@@ -327,15 +332,29 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
+            val newHeight = resolvedPageDrawHeightLocked(bitmap.width, bitmap.height)
+            if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight)) {
+                page.bitmap = bitmap
+                page.tiles = emptyList()
+                page.loading = false
+                page.cardText = null
+                page.pendingResolveType = PENDING_SIZE
+                page.pendingBitmap = null
+                page.pendingTiles = emptyList()
+                page.pendingWidth = max(1, bitmap.width)
+                page.pendingHeight = max(1, bitmap.height)
+                deferInitialEmptyDraw = false
+                return@synchronized null
+            }
             page.bitmap = bitmap
             page.tiles = emptyList()
             page.width = max(1, bitmap.width)
             page.height = max(1, bitmap.height)
+            clearPendingResolveLocked(page)
             noteResolvedPageAspectLocked(page.width, page.height)
             page.loading = false
             page.cardText = null
             deferInitialEmptyDraw = false
-            val newHeight = pageDrawHeightLocked(page)
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
             val belowVisible = oldTop > scrollOffset + height
             applyLockedRestorePositionLocked()
@@ -358,15 +377,29 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
+            val newHeight = resolvedPageDrawHeightLocked(pageWidth, pageHeight)
+            if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight)) {
+                page.bitmap = null
+                page.tiles = tiles
+                page.loading = false
+                page.cardText = null
+                page.pendingResolveType = PENDING_SIZE
+                page.pendingBitmap = null
+                page.pendingTiles = emptyList()
+                page.pendingWidth = max(1, pageWidth)
+                page.pendingHeight = max(1, pageHeight)
+                deferInitialEmptyDraw = false
+                return@synchronized null
+            }
             page.bitmap = null
             page.tiles = tiles
             page.width = max(1, pageWidth)
             page.height = max(1, pageHeight)
+            clearPendingResolveLocked(page)
             noteResolvedPageAspectLocked(page.width, page.height)
             page.loading = false
             page.cardText = null
             deferInitialEmptyDraw = false
-            val newHeight = pageDrawHeightLocked(page)
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
             val belowVisible = oldTop > scrollOffset + height
             applyLockedRestorePositionLocked()
@@ -390,6 +423,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.tiles = emptyList()
             page.loading = false
             page.cardText = null
+            clearPendingResolveLocked(page)
             layoutDirty = true
             renderRequested = true
             scheduleFrameLocked()
@@ -404,6 +438,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 page.tiles = emptyList()
                 page.loading = false
                 page.cardText = null
+                clearPendingResolveLocked(page)
             }
             hasDrawnContentFrame = false
             layoutDirty = true
@@ -423,6 +458,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 page.tiles = emptyList()
                 page.loading = false
                 page.cardText = null
+                clearPendingResolveLocked(page)
             }
             hasDrawnContentFrame = false
             layoutDirty = true
@@ -439,9 +475,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
+            val newHeight = resolvedPageDrawHeightLocked(pageWidth, pageHeight)
+            if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight)) {
+                page.pendingResolveType = PENDING_BOUNDS
+                page.pendingBitmap = null
+                page.pendingTiles = emptyList()
+                page.pendingWidth = max(1, pageWidth)
+                page.pendingHeight = max(1, pageHeight)
+                return@synchronized null
+            }
             page.width = pageWidth
             page.height = pageHeight
-            val newHeight = pageDrawHeightLocked(page)
+            clearPendingResolveLocked(page)
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
             val belowVisible = oldTop > scrollOffset + height
             applyLockedRestorePositionLocked()
@@ -473,6 +518,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.height = max(1, (height * 0.38f).toInt())
             page.loading = false
             page.cardText = title
+            clearPendingResolveLocked(page)
             deferInitialEmptyDraw = false
             val newHeight = pageDrawHeightLocked(page)
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
@@ -1074,6 +1120,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun setBusyLocked(busy: Boolean): WindowRequest? {
         if (lastBusy == busy) return null
         lastBusy = busy
+        if (!busy) applyPendingPageResolvesLocked()
         renderRequested = true
         return windowRequestLocked(busy)
     }
@@ -1232,6 +1279,77 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (page.width > 0 && page.height > 0) return max(1f, viewWidth * (page.height / page.width.toFloat()))
         }
         return max(1f, viewWidth * placeholderPageHeightRatio)
+    }
+
+    private fun resolvedPageDrawHeightLocked(pageWidth: Int, pageHeight: Int): Float {
+        val viewWidth = max(1, width)
+        if (pageWidth > 0 && pageHeight > 0) {
+            return max(1f, viewWidth * (pageHeight / pageWidth.toFloat()))
+        }
+        return max(1f, viewWidth * placeholderPageHeightRatio)
+    }
+
+    private fun shouldDeferHeightChangingResolveLocked(oldTop: Float, oldHeight: Float, newHeight: Float): Boolean {
+        if (!isScrollMovingLocked()) return false
+        if (abs(newHeight - oldHeight) <= 0.01f) return false
+        return oldTop < scrollOffset + height
+    }
+
+    private fun isScrollMovingLocked(): Boolean {
+        return lastBusy || pointerDown || dragging || !scroller.isFinished
+    }
+
+    private fun clearPendingResolveLocked(page: Page) {
+        page.pendingResolveType = PENDING_NONE
+        page.pendingBitmap = null
+        page.pendingTiles = emptyList()
+        page.pendingWidth = 0
+        page.pendingHeight = 0
+    }
+
+    private fun applyPendingPageResolvesLocked() {
+        if (pages.isEmpty()) return
+        rebuildLayoutLocked()
+        for (index in pages.indices) {
+            val page = pages[index]
+            val type = page.pendingResolveType
+            if (type == PENDING_NONE) continue
+            val oldHeight = pageDrawHeightLocked(page)
+            val oldTop = pageTopOrElseLocked(index, 0f)
+            val pendingWidth = page.pendingWidth
+            val pendingHeight = page.pendingHeight
+            when (type) {
+                PENDING_SIZE -> {
+                    if (page.bitmap == null && page.tiles.isEmpty()) {
+                        clearPendingResolveLocked(page)
+                        continue
+                    }
+                }
+                PENDING_BITMAP -> {
+                    val bitmap = page.pendingBitmap ?: continue
+                    page.bitmap = bitmap
+                    page.tiles = emptyList()
+                }
+                PENDING_TILES -> {
+                    page.bitmap = null
+                    page.tiles = page.pendingTiles
+                }
+                PENDING_BOUNDS -> {
+                    if (page.bitmap != null || page.tiles.isNotEmpty() || page.cardText != null) {
+                        clearPendingResolveLocked(page)
+                        continue
+                    }
+                }
+            }
+            page.width = max(1, pendingWidth)
+            page.height = max(1, pendingHeight)
+            page.loading = false
+            page.cardText = null
+            clearPendingResolveLocked(page)
+            noteResolvedPageAspectLocked(page.width, page.height)
+            val newHeight = pageDrawHeightLocked(page)
+            applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
+        }
     }
 
     private fun noteResolvedPageAspectLocked(pageWidth: Int, pageHeight: Int) {
@@ -1679,6 +1797,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val HEIGHT_RESOLVE_MAX_SCROLL_ADJUST_SCREEN_RATIO = 0.28f
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
+        private const val PENDING_NONE = 0
+        private const val PENDING_BITMAP = 1
+        private const val PENDING_TILES = 2
+        private const val PENDING_BOUNDS = 3
+        private const val PENDING_SIZE = 4
 
         private fun boundedHeightResolveScrollDelta(delta: Float, viewportHeight: Int): Float {
             if (viewportHeight <= 0) return delta

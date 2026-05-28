@@ -3,6 +3,7 @@ package ml.melun.mangaview.reader;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.view.MotionEvent;
 import android.view.View;
 
 import androidx.test.core.app.ApplicationProvider;
@@ -77,8 +78,42 @@ public class ReaderPageGapInstrumentedTest {
                 isGreen(frame.getPixel(frame.getWidth() / 2, 100)));
     }
 
+    @Test
+    public void heightChangingPageResolveIsDeferredDuringScroll() throws Exception {
+        ReaderSurfaceView view = new ReaderSurfaceView(ApplicationProvider.getApplicationContext());
+        attachForTest(view);
+        view.measure(
+                android.view.View.MeasureSpec.makeMeasureSpec(1000, android.view.View.MeasureSpec.EXACTLY),
+                android.view.View.MeasureSpec.makeMeasureSpec(600, android.view.View.MeasureSpec.EXACTLY));
+        view.layout(0, 0, 1000, 600);
+        view.setPageGapPx(0);
+        view.setPageCount(2);
+        view.setPageBitmap(0, bitmapOfSize(1000, 300, Color.rgb(220, 32, 32)));
+        view.setPageBitmap(1, bitmapOfSize(1000, 600, Color.rgb(32, 200, 80)));
+        view.scrollToPage(1, 0);
+        Bitmap before = Bitmap.createBitmap(1000, 600, Bitmap.Config.ARGB_8888);
+        view.draw(new Canvas(before));
+        assertTrue(isGreen(before.getPixel(500, 100)));
+
+        MotionEvent down = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, 500f, 300f, 0);
+        view.onTouchEvent(down);
+        down.recycle();
+        view.setPageBitmap(0, bitmapOfSize(1000, 2000, Color.rgb(220, 32, 32)));
+
+        Bitmap after = Bitmap.createBitmap(1000, 600, Bitmap.Config.ARGB_8888);
+        view.draw(new Canvas(after));
+        assertTrue("Expected current page pixels to remain stable while scrolling",
+                isGreen(after.getPixel(500, 100)));
+    }
+
     private static Bitmap solidBitmap(int color) {
         Bitmap bitmap = Bitmap.createBitmap(720, 360, Bitmap.Config.RGB_565);
+        bitmap.eraseColor(color);
+        return bitmap;
+    }
+
+    private static Bitmap bitmapOfSize(int width, int height, int color) {
+        Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565);
         bitmap.eraseColor(color);
         return bitmap;
     }
