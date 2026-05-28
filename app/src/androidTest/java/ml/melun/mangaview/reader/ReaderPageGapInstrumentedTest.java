@@ -73,6 +73,25 @@ public class ReaderPageGapInstrumentedTest {
     }
 
     @Test
+    public void trimBlankVerticalEdgesRemovesInternalBlackSeparators() {
+        Bitmap bitmap = Bitmap.createBitmap(20, 42, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bitmap);
+        android.graphics.Paint paint = new android.graphics.Paint();
+        paint.setColor(Color.rgb(90, 120, 180));
+        canvas.drawRect(0, 0, 20, 16, paint);
+        paint.setColor(Color.BLACK);
+        canvas.drawRect(0, 16, 20, 26, paint);
+        paint.setColor(Color.rgb(170, 120, 90));
+        canvas.drawRect(0, 26, 20, 42, paint);
+
+        Bitmap trimmed = ViewerBitmapTrim.trimBlankVerticalEdges(bitmap);
+
+        assertEquals(32, trimmed.getHeight());
+        assertEquals(Color.rgb(90, 120, 180), trimmed.getPixel(10, 15));
+        assertEquals(Color.rgb(170, 120, 90), trimmed.getPixel(10, 16));
+    }
+
+    @Test
     public void transitionCardDoesNotDrawOverFollowingPageWhenPartiallyVisible() throws Exception {
         ReaderSurfaceView view = new ReaderSurfaceView(ApplicationProvider.getApplicationContext());
         attachForTest(view);

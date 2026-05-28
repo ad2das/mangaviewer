@@ -828,7 +828,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var drawEndNs = drawStartNs
         try {
             Trace.beginSection("RSV.draw")
-            canvas.drawColor(Color.BLACK)
+            canvas.drawColor(PAGE_PLACEHOLDER_COLOR)
             if (!state.empty) {
                 for (item in state.items) drawItem(canvas, state, item)
             }
@@ -905,7 +905,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             drawTiles(canvas, state, item)
             return
         }
-        paint.color = Color.rgb(18, 18, 18)
+        paint.color = PAGE_PLACEHOLDER_COLOR
         dst.set(0f, max(0f, item.top), state.width.toFloat(), min(state.height.toFloat(), item.top + item.pageHeight))
         canvas.drawRect(dst, paint)
     }
@@ -1801,6 +1801,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val PENDING_TILES = 2
         private const val PENDING_BOUNDS = 3
         private const val PENDING_SIZE = 4
+        private val PAGE_PLACEHOLDER_COLOR = Color.WHITE
 
         private fun shouldAdjustScrollForChangedPageHeight(
             lastBusy: Boolean,

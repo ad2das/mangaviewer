@@ -448,6 +448,17 @@ class ReaderSession(
         }
     }
 
+    private data class PendingTile(
+        val sourceTop: Int,
+        val sourceBottom: Int,
+        val bitmap: Bitmap
+    )
+
+    private data class TileTrimResult(
+        val tiles: List<PendingTile>,
+        val removedSourceHeight: Int
+    )
+
     private fun preparedBitmapForPage(bitmap: Bitmap, page: PageRef): Pair<Bitmap, Boolean>? {
         if (bitmap.isRecycled) return null
         if (!shouldSplitPreparedBitmapForPage(autoCut, page.allowAutoSplit, bitmap.width, bitmap.height)) {
@@ -1381,8 +1392,9 @@ class ReaderSession(
         val sample = max(sampleSize(sourceWidth, targetWidth), sampleSizeForByteBudget(sourceWidth, sourceHeight, TILE_PAGE_MAX_BYTES))
         val decoder = BitmapRegionDecoder.newInstance(file.absolutePath, false)
             ?: throw java.io.IOException("Bitmap region decode failed")
-        val tiles = ArrayList<ReaderTile>()
+        val pendingTiles = ArrayList<PendingTile>()
         val rect = Rect()
+        var removedSourceHeight = 0
         var success = false
         try {
             var top = 0
@@ -1395,20 +1407,125 @@ class ReaderSession(
                 }
                 val bitmap = decoder.decodeRegion(rect, options)
                     ?: throw java.io.IOException("Bitmap tile decode failed")
-                tiles.add(ReaderTile(top, bottom, sourceWidth, sourceHeight, bitmap))
+                val trimmed = trimTileInternalBlankBands(bitmap, top, bottom, removedSourceHeight)
+                pendingTiles.addAll(trimmed.tiles)
+                removedSourceHeight += trimmed.removedSourceHeight
                 top = bottom
             }
             success = true
         } finally {
             if (!success) {
-                for (tile in tiles) {
+                for (tile in pendingTiles) {
                     if (!tile.bitmap.isRecycled) tile.bitmap.recycle()
                 }
             }
             decoder.recycle()
         }
         val decodedWidth = max(1, (sourceWidth + sample - 1) / sample)
-        return PageDecodeResult.Tiles(sourceWidth, sourceHeight, decodedWidth, tiles)
+        val pageHeight = max(1, sourceHeight - removedSourceHeight)
+        val tiles = pendingTiles.map { tile ->
+            val clampedTop = tile.sourceTop.coerceIn(0, pageHeight - 1)
+            val clampedBottom = tile.sourceBottom.coerceIn(clampedTop + 1, pageHeight)
+            ReaderTile(
+                clampedTop,
+                clampedBottom,
+                sourceWidth,
+                pageHeight,
+                tile.bitmap
+            )
+        }
+        return PageDecodeResult.Tiles(sourceWidth, pageHeight, decodedWidth, tiles)
+    }
+
+    private fun trimTileInternalBlankBands(
+        bitmap: Bitmap,
+        sourceTop: Int,
+        sourceBottom: Int,
+        removedSourceBefore: Int
+    ): TileTrimResult {
+        val decodedHeight = bitmap.height
+        val sourceSpan = max(1, sourceBottom - sourceTop)
+        val keptSegments = ArrayList<Pair<Int, Int>>()
+        var removedSourceHeight = 0
+        var keepTop = 0
+        var row = 0
+        while (row < decodedHeight) {
+            if (!isBlankTileRow(bitmap, row)) {
+                row++
+                continue
+            }
+            val bandTop = row
+            while (row < decodedHeight && isBlankTileRow(bitmap, row)) row++
+            val bandBottom = row
+            val bandHeight = bandBottom - bandTop
+            if (bandHeight >= TILE_MIN_INTERNAL_BLANK_BAND_PX) {
+                if (bandTop > keepTop) keptSegments.add(Pair(keepTop, bandTop))
+                removedSourceHeight += sourceYForDecodedRow(sourceTop, sourceBottom, decodedHeight, bandBottom) -
+                    sourceYForDecodedRow(sourceTop, sourceBottom, decodedHeight, bandTop)
+                keepTop = bandBottom
+            }
+        }
+        if (removedSourceHeight <= 0) {
+            return TileTrimResult(
+                listOf(PendingTile(sourceTop - removedSourceBefore, sourceBottom - removedSourceBefore, bitmap)),
+                0
+            )
+        }
+        if (keepTop < decodedHeight) keptSegments.add(Pair(keepTop, decodedHeight))
+        if (keptSegments.isEmpty()) {
+            if (!bitmap.isRecycled) bitmap.recycle()
+            return TileTrimResult(emptyList(), sourceSpan)
+        }
+        val tiles = ArrayList<PendingTile>(keptSegments.size)
+        var removedWithinTile = 0
+        var previousBottom = 0
+        for ((segmentTop, segmentBottom) in keptSegments) {
+            removedWithinTile += sourceYForDecodedRow(sourceTop, sourceBottom, decodedHeight, segmentTop) -
+                sourceYForDecodedRow(sourceTop, sourceBottom, decodedHeight, previousBottom)
+            val segmentSourceTop = sourceYForDecodedRow(sourceTop, sourceBottom, decodedHeight, segmentTop)
+            val segmentSourceBottom = sourceYForDecodedRow(sourceTop, sourceBottom, decodedHeight, segmentBottom)
+            val compressedTop = segmentSourceTop - removedSourceBefore - removedWithinTile
+            val compressedBottom = segmentSourceBottom - removedSourceBefore - removedWithinTile
+            if (compressedBottom > compressedTop) {
+                val segmentBitmap = Bitmap.createBitmap(bitmap, 0, segmentTop, bitmap.width, segmentBottom - segmentTop)
+                tiles.add(PendingTile(compressedTop, compressedBottom, segmentBitmap))
+            }
+            previousBottom = segmentBottom
+        }
+        if (!bitmap.isRecycled) bitmap.recycle()
+        return TileTrimResult(tiles, removedSourceHeight)
+    }
+
+    private fun sourceYForDecodedRow(sourceTop: Int, sourceBottom: Int, decodedHeight: Int, decodedY: Int): Int {
+        if (decodedY <= 0) return sourceTop
+        if (decodedY >= decodedHeight) return sourceBottom
+        val sourceSpan = max(1, sourceBottom - sourceTop)
+        return sourceTop + ((decodedY.toLong() * sourceSpan) / decodedHeight).toInt()
+    }
+
+    private fun isBlankTileRow(bitmap: Bitmap, row: Int): Boolean {
+        val width = bitmap.width
+        val samples = minOf(TILE_BLANK_ROW_SAMPLES, width)
+        var nonBlank = 0
+        for (i in 0 until samples) {
+            val x = if (samples == 1) width / 2 else (i * (width - 1)) / (samples - 1)
+            if (!isBlankTilePixel(bitmap.getPixel(x, row))) {
+                nonBlank++
+                if (nonBlank > TILE_MAX_NON_BLANK_SAMPLES) return false
+            }
+        }
+        return true
+    }
+
+    private fun isBlankTilePixel(pixel: Int): Boolean {
+        val alpha = Color.alpha(pixel)
+        if (alpha < TILE_ALPHA_BLANK_THRESHOLD) return true
+        val red = Color.red(pixel)
+        val green = Color.green(pixel)
+        val blue = Color.blue(pixel)
+        val nearBlack = red <= TILE_BLACK_THRESHOLD && green <= TILE_BLACK_THRESHOLD && blue <= TILE_BLACK_THRESHOLD
+        val nearWhite = red >= TILE_WHITE_THRESHOLD && green >= TILE_WHITE_THRESHOLD && blue >= TILE_WHITE_THRESHOLD
+        return nearBlack || nearWhite
     }
 
     private fun postPageBounds(index: Int, width: Int, height: Int) {
@@ -1975,6 +2092,12 @@ class ReaderSession(
         private const val TILE_PAGE_ASPECT_RATIO = 3.0f
         private const val TILE_PAGE_MIN_ESTIMATED_BYTES = 12L * 1024L * 1024L
         private const val TILE_SOURCE_HEIGHT = 2048
+        private const val TILE_MIN_INTERNAL_BLANK_BAND_PX = 4
+        private const val TILE_BLANK_ROW_SAMPLES = 72
+        private const val TILE_MAX_NON_BLANK_SAMPLES = 1
+        private const val TILE_BLACK_THRESHOLD = 24
+        private const val TILE_WHITE_THRESHOLD = 246
+        private const val TILE_ALPHA_BLANK_THRESHOLD = 8
         private const val SPREAD_ASPECT_RATIO = 0.90f
         private const val PAGE_SIDE_FIRST = 0
         private const val PAGE_SIDE_SECOND = 1
