@@ -14,7 +14,7 @@ public class ReaderV2ActivityTest {
     @Test
     public void pageGapForBaseMode_removesWebtoonSeparator() {
         assertEquals(0, ReaderV2Activity.pageGapForBaseModeForTest(MTitle.base_webtoon));
-        assertEquals(2, ReaderV2Activity.pageGapForBaseModeForTest(MTitle.base_comic));
+        assertEquals(0, ReaderV2Activity.pageGapForBaseModeForTest(MTitle.base_comic));
     }
 
     @Test
