@@ -151,15 +151,25 @@ function Upload-ReleaseAsset([string]$RepoName, [string]$ReleaseId, [string]$Ass
         "X-GitHub-Api-Version" = "2022-11-28"
     }
     $uploadUrl = "https://uploads.github.com/repos/$RepoName/releases/$ReleaseId/assets?name=$escapedName"
-    try {
-        Invoke-RestMethod -Method Post `
-            -Uri $uploadUrl `
-            -Headers $headers `
-            -ContentType "application/octet-stream" `
-            -InFile $AssetPath | Out-Null
-    } catch {
-        Write-Host $_
-        throw "release asset upload failed: $assetName"
+    $maxAttempts = 4
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        try {
+            Invoke-RestMethod -Method Post `
+                -Uri $uploadUrl `
+                -Headers $headers `
+                -ContentType "application/octet-stream" `
+                -InFile $AssetPath `
+                -TimeoutSec 180 | Out-Null
+            return
+        } catch {
+            Write-Host "release asset upload failed on attempt $attempt/${maxAttempts}: $assetName"
+            Write-Host $_
+            if ($attempt -ge $maxAttempts) {
+                throw "release asset upload failed: $assetName"
+            }
+            Start-Sleep -Seconds (10 * $attempt)
+            Delete-ReleaseAssetByName $RepoName $ReleaseId $assetName
+        }
     }
 }
 
