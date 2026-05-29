@@ -129,8 +129,9 @@ object ReaderImageCache {
     private fun downloadAtomically(context: Context, manga: Manga, image: String, finalFile: File): File {
         val tmp = File(finalFile.parentFile, "${finalFile.name}.part.${System.nanoTime()}")
         try {
+            val requestUrl = Utils.viewerImageRequestUrl(image, manga.baseMode)
             request(context, manga, image).use { response ->
-                if (!response.isSuccessful) throw java.io.IOException("Image request failed: ${response.code}")
+                if (!response.isSuccessful) throw java.io.IOException("Image request failed: ${response.code} url=$requestUrl")
                 val body = response.body ?: throw java.io.IOException("Empty image body")
                 FileOutputStream(tmp).use { out -> body.byteStream().copyTo(out) }
             }

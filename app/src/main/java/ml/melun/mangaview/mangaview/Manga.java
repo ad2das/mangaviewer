@@ -409,21 +409,6 @@ public class Manga {
                 path = "/" + segment + "/" + tid + "/" + id;
                 setNtkEpisodePath(path);
             }
-            if(addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount())) {
-                logNtkViewerParse("generated-path", null, path, 0, 0);
-                List<Manga> titleEpisodes = title == null ? null : safeEpisodeCopy(title.getEps());
-                if(titleEpisodes != null && titleEpisodes.size() > 0) {
-                    eps = titleEpisodes;
-                    for(Manga ep : eps) {
-                        ep.setMode(0);
-                        ep.setTitle(title);
-                        ep.setTitleId(tid);
-                    }
-                }
-                restoreBetterEpisodeList(previousEpisodes);
-                attachEpisodeSeriesMetadata();
-                return LOAD_OK;
-            }
             CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
             boolean blockedPage = client.isCloudflareChallengeResponse(page.code, page.body)
                     || looksLikeNtkBlockedPage(page.body);

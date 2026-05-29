@@ -3,6 +3,7 @@ package ml.melun.mangaview;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.fail;
 
 import android.app.Activity;
 import android.content.Context;
@@ -138,17 +139,9 @@ public class EpisodeActivityNetworkTest {
     public void ntkComicViewerSurvivesFastScrollStress() throws Exception {
         launchNtkComicTitle();
         UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
-        UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 60000L);
-        if(episodeRow == null) {
-            assertCaptchaShown(device, "NTK scroll stress episode list");
-            return;
-        }
+        UiObject2 episodeRow = waitForEpisodeRowThroughAutoCaptcha(device, "NTK scroll stress episode list");
         clickFreshEpisodeRow(device, episodeRow);
-        assertReaderOpenedOrCaptchaShown(device, "NTK scroll stress");
-        if(isCaptchaShown(device)) {
-            finishCaptchaActivities();
-            return;
-        }
+        assertReaderOpenedThroughAutoCaptcha(device, "NTK scroll stress");
         stressScrollViewer(device, "ntk");
     }
 
@@ -662,6 +655,41 @@ public class EpisodeActivityNetworkTest {
                 Thread.sleep(250L);
             }
         }
+    }
+
+    private static UiObject2 waitForEpisodeRowThroughAutoCaptcha(UiDevice device, String label) throws Exception {
+        long deadline = System.currentTimeMillis() + 180000L;
+        boolean sawCaptcha = false;
+        while(System.currentTimeMillis() < deadline) {
+            UiObject2 row = device.findObject(By.res(PACKAGE_NAME, "episode"));
+            if(row != null)
+                return row;
+            if(isCaptchaShown(device))
+                sawCaptcha = true;
+            Thread.sleep(500L);
+        }
+        UiObject2 row = device.findObject(By.res(PACKAGE_NAME, "episode"));
+        assertNotNull("Expected " + label + " to resolve after NTK auto captcha"
+                + (sawCaptcha ? " flow" : ""), row);
+        return row;
+    }
+
+    private static void assertReaderOpenedThroughAutoCaptcha(UiDevice device, String label) throws Exception {
+        long deadline = System.currentTimeMillis() + 180000L;
+        boolean sawCaptcha = false;
+        while(System.currentTimeMillis() < deadline) {
+            UiObject2 strip = device.findObject(By.res(PACKAGE_NAME, "strip"));
+            if(strip != null) {
+                UiObject2 firstDrawable = device.wait(Until.findObject(By.desc("reader-drawable-ready")), 60000L);
+                assertNotNull("Expected tapping a " + label + " episode to render the first reader image", firstDrawable);
+                return;
+            }
+            if(isCaptchaShown(device))
+                sawCaptcha = true;
+            Thread.sleep(500L);
+        }
+        fail("Expected tapping a " + label + " episode to open the reader after NTK auto captcha"
+                + (sawCaptcha ? " flow" : ""));
     }
 
     private static void assertReaderOpenedOrCaptchaShown(UiDevice device, String label) {

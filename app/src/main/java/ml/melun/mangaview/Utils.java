@@ -1377,8 +1377,10 @@ public class Utils {
         Preference source = preference != null ? preference : p;
         if(source != null)
             getHttpClient().clearCloudflareWebViewCookies(source.getWebtoonUrl(), source.getUrl());
-        else
+        else {
             getHttpClient().clearCloudflareCookies();
+            getHttpClient().clearNtkAccessVerification();
+        }
     }
 
     private static boolean isNtkAccessChallengeActive() {

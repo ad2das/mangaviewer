@@ -1046,6 +1046,17 @@ public class CustomHttpClient {
         }
     }
 
+    public void clearNtkAccessVerification() {
+        try {
+            context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
+                    .edit()
+                    .remove("ntkAccessVerifiedAt")
+                    .apply();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
     public synchronized boolean hasFreshCloudflareClearance() {
         if(!hasCloudflareClearance())
             return false;
@@ -1132,7 +1143,6 @@ public class CustomHttpClient {
                 .edit()
                 .remove("cfClearanceValue")
                 .remove("cfClearanceExpireAt")
-                .remove("ntkAccessVerifiedAt")
                 .apply();
     }
 
@@ -1165,6 +1175,7 @@ public class CustomHttpClient {
             }
             manager.flush();
             clearCloudflareCookies();
+            clearNtkAccessVerification();
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }

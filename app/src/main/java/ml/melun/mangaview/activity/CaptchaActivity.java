@@ -18,6 +18,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Base64;
+import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -502,8 +503,13 @@ public class CaptchaActivity extends AppCompatActivity {
 
     private String resolveCaptchaUrl(Intent intent, String purl) {
         String path = intent == null ? null : intent.getStringExtra("url");
-        if(p != null && p.isNtkSite())
-            return ntkCaptchaLoadUrl(path, purl);
+        if(p != null && p.isNtkSite()) {
+            String resolved = ntkCaptchaLoadUrl(path, purl);
+            Log.d("CaptchaActivity", "resolve NTK captcha path=" + path
+                    + " purl=" + purl
+                    + " resolved=" + resolved);
+            return resolved;
+        }
         if(path == null)
             return purl;
         if(path.startsWith("http://") || path.startsWith("https://"))
@@ -1466,6 +1472,11 @@ public class CaptchaActivity extends AppCompatActivity {
         detachCaptchaWebView();
         getHttpClient().saveClearanceToDisk();
         getHttpClient().markNtkAccessVerified();
+        Log.d("CaptchaActivity", "finished with verified NTK clearance proof="
+                + getHttpClient().hasNtkAccessProof()
+                + " recent=" + getHttpClient().hasRecentNtkAccessVerification()
+                + " loadUrl=" + captchaLoadUrl
+                + " currentUrl=" + currentWebViewUrl);
         isFinishing = true;
         handler.removeCallbacksAndMessages(null);
         Intent resultIntent = new Intent();
