@@ -611,8 +611,8 @@ public class CaptchaActivity extends AppCompatActivity {
                     if(normalNtkPageCount >= 1 && elapsed > 400L)
                         finished = readCookiesAndFinish(CookieManager.getInstance(), p.getUrl(), webView == null ? null : webView.getUrl());
                     if(!finished && shouldFinishNormalNtkPageForTest(normalNtkPageCount, elapsed)) {
-                        android.util.Log.d("CaptchaActivity", "NTK normal page stable; verifying app access before finishing captcha");
-                        verifyNtkAccessAndFinish(p.getUrl(), webView == null ? null : webView.getUrl(), null);
+                        android.util.Log.d("CaptchaActivity", "NTK normal page stable; finishing captcha after cookie sync");
+                        finishAfterNormalNtkPage(p.getUrl(), webView == null ? null : webView.getUrl());
                     }
                 } else {
                     isFirstAttempt = false;
@@ -812,14 +812,28 @@ public class CaptchaActivity extends AppCompatActivity {
                 if(verified) {
                     android.util.Log.d("CaptchaActivity", "NTK clearance verified by app HTTP client");
                     finishWithVerifiedClearance();
+                } else if(shouldFinishAfterVisibleNormalNtkPage()) {
+                    android.util.Log.d("CaptchaActivity", "NTK app HTTP verification failed, but visible normal page is stable; finishing captcha");
+                    finishAfterNormalNtkPage(purl, currentUrl);
                 } else {
                     android.util.Log.d("CaptchaActivity", "NTK clearance failed app HTTP verification; keeping captcha open");
                     if(clearanceValue != null)
                         rejectedClearanceValues.add(clearanceValue);
-                    resetInvalidNtkClearanceAndReload(purl, currentUrl);
                 }
             });
         });
+    }
+
+    private boolean shouldFinishAfterVisibleNormalNtkPage() {
+        long elapsed = System.currentTimeMillis() - pageFinishedTime;
+        return shouldFinishNormalNtkPageForTest(normalNtkPageCount, elapsed);
+    }
+
+    private void finishAfterNormalNtkPage(String purl, String currentUrl) {
+        if(isFinishing)
+            return;
+        syncCaptchaCookiesToHttpClient(purl, currentUrl);
+        finishWithVerifiedClearance();
     }
 
     private boolean verifyNtkAccess(String purl, String currentUrl) {

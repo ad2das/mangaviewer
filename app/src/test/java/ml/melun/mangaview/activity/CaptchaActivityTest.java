@@ -17,7 +17,7 @@ public class CaptchaActivityTest {
     }
 
     @Test
-    public void stableNtkNormalPageRequiresAppAccessVerificationBeforeFinish() {
+    public void stableNtkNormalPageCanFinishCaptchaAfterCookieSync() {
         assertFalse(CaptchaActivity.shouldFinishNormalNtkPageForTest(1, 2000L));
         assertFalse(CaptchaActivity.shouldFinishNormalNtkPageForTest(2, 1200L));
         assertTrue(CaptchaActivity.shouldFinishNormalNtkPageForTest(2, 1201L));
