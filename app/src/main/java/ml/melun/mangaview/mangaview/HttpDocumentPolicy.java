@@ -43,6 +43,10 @@ final class HttpDocumentPolicy {
         return path.startsWith("/webtoon/") || path.startsWith("/manhwa/") || path.startsWith("/api/");
     }
 
+    static boolean isNtkSearchNoWebViewPath(String path) {
+        return isNtkApiPath(path) || isNtkSearchPath(path);
+    }
+
     static boolean isNtkEpisodeDocumentPath(String path) {
         return path != null && path.matches("^/(?:webtoon|manhwa)/[^/?#]+/[^/?#]+.*");
     }

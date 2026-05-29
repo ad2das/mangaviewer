@@ -107,6 +107,15 @@ public class SearchTest {
     }
 
     @Test
+    public void ntkKeywordSearchSuppressesWebViewFallbackOnlyForSearchRequests() {
+        assertTrue(Search.isNtkSearchNoWebViewPathForTest("/api/works?keyword=hero"));
+        assertTrue(Search.isNtkSearchNoWebViewPathForTest("/api/manhwa-list?keyword=hero"));
+        assertTrue(Search.isNtkSearchNoWebViewPathForTest("/search?q=hero&kind=manhwa"));
+        assertEquals(false, Search.isNtkSearchNoWebViewPathForTest("/manhwa/8252"));
+        assertEquals(false, Search.isNtkSearchNoWebViewPathForTest("/manhwa/8252/64225"));
+    }
+
+    @Test
     public void ntkKeywordSearchMergesFilteredApiBeforeHtmlResults() {
         ArrayList<Title> html = new ArrayList<>();
         html.add(ntkTitle("One Piece", 100, base_comic, "/manhwa/100"));

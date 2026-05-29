@@ -627,6 +627,24 @@ public class Search {
                 + (metadata == null || metadata.length() == 0 ? "" : metadata));
     }
 
+    private static CustomHttpClient.PageResponse fetchSearchPage(CustomHttpClient client, String path,
+                                                                 boolean suppressWebViewFallback) throws Exception {
+        if(client == null)
+            throw new Exception("Missing HTTP client");
+        if(!suppressWebViewFallback)
+            return client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+        return client.runWithFetchMode(CustomHttpClient.FetchMode.SEARCH_NO_WEBVIEW,
+                () -> client.mgetCachedPage(path, PAGE_CACHE_TTL_MS));
+    }
+
+    static boolean isNtkSearchNoWebViewPathForTest(String path) {
+        return isNtkSearchNoWebViewPath(path);
+    }
+
+    private static boolean isNtkSearchNoWebViewPath(String path) {
+        return HttpDocumentPolicy.isNtkSearchNoWebViewPath(path);
+    }
+
     private int fetchWebtoon(CustomHttpClient client) {
         try {
             ArrayList<Title> webtoonResults = new ArrayList<>();
@@ -1592,9 +1610,11 @@ public class Search {
 
     private PageTitles fetchNtkHtmlSearchResultsPage(CustomHttpClient client, String path, int targetBaseMode, int limit, int currentPage) throws Exception {
         long fetchStartedAt = PerfTrace.start("ntk_search_html_fetch_ms");
-        CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+        boolean suppressWebViewFallback = client != null && client.isNtk() && isNtkSearchNoWebViewPath(path);
+        CustomHttpClient.PageResponse page = fetchSearchPage(client, path, suppressWebViewFallback);
         traceSearchMetric("ntk_search_html_fetch_ms", fetchStartedAt,
                 ",path=" + ntkMetricPath(path)
+                        + ",searchNoWebView=" + suppressWebViewFallback
                         + ",fromCache=" + page.fromCache
                         + ",code=" + page.code
                         + ",bodyLen=" + (page.body == null ? 0 : page.body.length()));
@@ -1913,9 +1933,11 @@ public class Search {
                                                                   int limit, int currentPage, long totalStartedAt) {
         try {
             long fetchStartedAt = PerfTrace.start("ntk_search_api_fetch_ms");
-            CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+            boolean suppressWebViewFallback = client != null && client.isNtk() && isNtkSearchNoWebViewPath(path);
+            CustomHttpClient.PageResponse page = fetchSearchPage(client, path, suppressWebViewFallback);
             traceSearchMetric("ntk_search_api_fetch_ms", fetchStartedAt,
                     ",path=" + ntkMetricPath(path)
+                            + ",searchNoWebView=" + suppressWebViewFallback
                             + ",fromCache=" + page.fromCache
                             + ",code=" + page.code
                             + ",bodyLen=" + (page.body == null ? 0 : page.body.length()));

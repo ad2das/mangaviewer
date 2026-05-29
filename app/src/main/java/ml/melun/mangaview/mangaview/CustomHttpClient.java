@@ -903,6 +903,7 @@ public class CustomHttpClient {
     public enum FetchMode {
         CACHE_ONLY,
         DIRECT_ONLY,
+        SEARCH_NO_WEBVIEW,
         ALLOW_SHARED_WEBVIEW
     }
 
