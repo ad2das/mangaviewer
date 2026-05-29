@@ -168,6 +168,7 @@ public class CaptchaActivity extends AppCompatActivity {
     private boolean captchaLoadErrorVisible = false;
     private LocalWebViewProxy localWebViewProxy;
     private WebView releasedWebView;
+    private boolean retriedCaptchaWithoutProxy = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -284,6 +285,8 @@ public class CaptchaActivity extends AppCompatActivity {
                 if(request != null && !request.isForMainFrame())
                     return;
                 String failingUrl = request != null && request.getUrl() != null ? request.getUrl().toString() : (view == null ? null : view.getUrl());
+                if(retryCaptchaLoadWithoutProxyIfNeeded(failingUrl))
+                    return;
                 if(shouldSuppressNtkLoadErrorPopupForTest(p != null && p.isNtkSite(), failingUrl, purl)) {
                     android.util.Log.d("CaptchaActivity", "Suppressing NTK captcha WebView load error popup: " + failingUrl);
                     showCaptchaLoadError(failingUrl);
@@ -367,6 +370,7 @@ public class CaptchaActivity extends AppCompatActivity {
         setIntent(intent);
         String purl = p.getUrl();
         captchaLoadUrl = resolveCaptchaUrl(intent, purl);
+        retriedCaptchaWithoutProxy = false;
         hideCaptchaLoadError();
         clearWebViewProxy();
         if(webView != null)
@@ -389,6 +393,7 @@ public class CaptchaActivity extends AppCompatActivity {
         View close = findViewById(R.id.captchaClose);
         if(reload != null)
             reload.setOnClickListener(v -> {
+                retriedCaptchaWithoutProxy = false;
                 hideCaptchaLoadError();
                 clearWebViewProxy();
                 loadCaptchaUrl(captchaLoadUrl);
@@ -452,8 +457,40 @@ public class CaptchaActivity extends AppCompatActivity {
             if(loadCaptchaUrlWithProxy(url))
                 return;
         }
+        loadCaptchaUrlDirect(url);
+    }
+
+    private void loadCaptchaUrlDirect(String url) {
         webView.loadUrl(url);
         webView.evaluateJavascript(SHADOW_HOOK_JS, null);
+    }
+
+    private boolean retryCaptchaLoadWithoutProxyIfNeeded(String failingUrl) {
+        if(!shouldRetryCaptchaLoadWithoutProxyForTest(p != null && p.isNtkSite(),
+                localWebViewProxy != null,
+                retriedCaptchaWithoutProxy,
+                failingUrl))
+            return false;
+        retriedCaptchaWithoutProxy = true;
+        String retryUrl = failingUrl != null && failingUrl.length() > 0 ? failingUrl : captchaLoadUrl;
+        android.util.Log.d("CaptchaActivity", "Retrying NTK captcha WebView without proxy: " + retryUrl);
+        clearWebViewProxy();
+        handler.postDelayed(() -> {
+            if(isFinishing || isDestroyed() || webView == null)
+                return;
+            hideCaptchaLoadError();
+            loadCaptchaUrlDirect(retryUrl);
+        }, 250L);
+        return true;
+    }
+
+    static boolean shouldRetryCaptchaLoadWithoutProxyForTest(boolean ntkSite, boolean proxyActive,
+                                                              boolean alreadyRetried, String failingUrl) {
+        return ntkSite
+                && proxyActive
+                && !alreadyRetried
+                && failingUrl != null
+                && failingUrl.toLowerCase(java.util.Locale.ROOT).startsWith("https://");
     }
 
     @SuppressLint("RequiresFeature")

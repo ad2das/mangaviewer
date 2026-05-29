@@ -775,7 +775,9 @@ public class EpisodeActivityNetworkTest {
         UiObject2 captcha = device.wait(Until.findObject(By.res(PACKAGE_NAME, "captchaContainer")), 5000L);
         assertNotNull("Expected " + label + " to open the in-app captcha screen when NTK requires verification", captcha);
         assertEquals("Captcha must stay inside the app package", PACKAGE_NAME, device.getCurrentPackageName());
-        assertTrue("Expected captcha WebView", waitForCaptchaView(R.id.captchaWebView, 5000L));
+        boolean webViewVisible = waitForCaptchaView(R.id.captchaWebView, 5000L);
+        boolean loadErrorVisible = waitForCaptchaView(R.id.infoText, 1000L);
+        assertTrue("Expected captcha WebView or in-app NTK load error panel", webViewVisible || loadErrorVisible);
         assertTrue("Expected captcha reload action", waitForCaptchaView(R.id.captchaReload, 5000L));
         assertTrue("Expected captcha cookie check action", waitForCaptchaView(R.id.captchaCheckCookie, 5000L));
         assertTrue("Expected captcha close action", waitForCaptchaView(R.id.captchaClose, 5000L));

@@ -303,16 +303,16 @@ public class CustomHttpClientTest {
 
     @Test
     public void ntkRedirectRootUsesTelegramOfficialRootInsteadOfRedirectHost() {
-        List<String> officialRoots = Arrays.asList("https://sbxh2.com/");
+        List<String> officialRoots = Arrays.asList("https://sbxh3.com/");
 
         assertEquals("https://nicelink53.com",
                 CustomHttpClient.ntkRedirectRootForTest("https://nicelink53.com"));
         assertEquals("https://nicelink53.com",
                 CustomHttpClient.ntkRedirectRootForTest("https://nicelink53.com/manhwa/7843"));
-        assertEquals("https://sbxh2.com", CustomHttpClient.officialNtkRootForRedirectForTest(
-                "https://sbxh1.com", "https://nicelink53.com/manhwa/7843", officialRoots));
-        assertEquals("https://sbxh2.com", CustomHttpClient.officialNtkRootForRedirectForTest(
+        assertEquals("https://sbxh3.com", CustomHttpClient.officialNtkRootForRedirectForTest(
                 "https://sbxh2.com", "https://nicelink53.com/manhwa/7843", officialRoots));
+        assertEquals("https://sbxh3.com", CustomHttpClient.officialNtkRootForRedirectForTest(
+                "https://sbxh3.com", "https://nicelink53.com/manhwa/7843", officialRoots));
         assertNull(CustomHttpClient.officialNtkRootForRedirectForTest(
                 "https://sbxh1.com", "https://nicelink53.com/manhwa/7843", Arrays.<String>asList()));
         assertNull(CustomHttpClient.ntkRedirectRootForTest("https://t.me/something"));
@@ -403,18 +403,50 @@ public class CustomHttpClientTest {
 
     @Test
     public void ntkDomainResolverTrustsOfficialRootBeforeProbe() {
-        List<String> officialRoots = Arrays.asList("https://sbxh2.com/");
+        List<String> officialRoots = Arrays.asList("https://sbxh3.com/");
         List<String> unusualRoots = Arrays.asList("https://odd-address.example/");
 
-        assertEquals("https://sbxh2.com", CustomHttpClient.firstTrustedResolvedNtkRootForTest(officialRoots));
+        assertEquals("https://sbxh3.com", CustomHttpClient.firstTrustedResolvedNtkRootForTest(officialRoots));
         assertTrue(CustomHttpClient.shouldApplyResolvedNtkRootForTest(
-                "https://sbxh1.com", "https://sbxh2.com", officialRoots));
+                "https://sbxh2.com", "https://sbxh3.com", officialRoots));
         assertTrue(CustomHttpClient.shouldApplyResolvedNtkRootForTest(
                 "https://sbxh1.com", "https://odd-address.example", unusualRoots));
         assertFalse(CustomHttpClient.shouldApplyResolvedNtkRootForTest(
                 "https://sbxh1.com", "https://odd-address.example", officialRoots));
         assertFalse(CustomHttpClient.shouldApplyResolvedNtkRootForTest(
-                "https://sbxh2.com", "https://sbxh2.com", officialRoots));
+                "https://sbxh3.com", "https://sbxh3.com", officialRoots));
+    }
+
+    @Test
+    public void ntkOfficialRootOverridesStaleDefaultRoot() {
+        String staleDefaultRoot = "https://sbxh2.com";
+        List<String> officialRoots = Arrays.asList("https://sbxh3.com/");
+
+        assertEquals("https://sbxh3.com", CustomHttpClient.firstTrustedResolvedNtkRootForTest(officialRoots));
+        assertTrue(CustomHttpClient.shouldApplyResolvedNtkRootForTest(
+                staleDefaultRoot, "https://sbxh3.com", officialRoots));
+    }
+
+    @Test
+    public void ntkForbiddenResponsesTriggerOfficialAddressRefresh() {
+        String challenge = "<!DOCTYPE html><html><head><title>Just a moment...</title></head>"
+                + "<body><script src=\"https://challenges.cloudflare.com/turnstile/v0/api.js\"></script></body></html>";
+
+        assertTrue(CustomHttpClient.shouldRetryNtkWithResolvedDomainForTest(403, challenge));
+        assertTrue(CustomHttpClient.shouldRetryNtkWithResolvedDomainForTest(
+                403,
+                "<html><body>plain forbidden</body></html>"));
+        assertTrue(CustomHttpClient.shouldRetryNtkWithResolvedDomainForTest(404, ""));
+    }
+
+    @Test
+    public void ntkProbeDoesNotTreatCloudflareChallengeAsReachable() {
+        String challenge = "<!DOCTYPE html><html><head><title>Just a moment...</title></head>"
+                + "<body>checking your browser</body></html>";
+
+        assertFalse(CustomHttpClient.isReachableNtkProbeResponseForTest(403, "", challenge));
+        assertFalse(CustomHttpClient.isReachableNtkProbeResponseForTest(302, "https://t.me/newtoki_url", ""));
+        assertTrue(CustomHttpClient.isReachableNtkProbeResponseForTest(200, "", "<html></html>"));
     }
 
     @Test

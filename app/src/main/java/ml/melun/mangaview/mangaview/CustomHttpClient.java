@@ -63,11 +63,12 @@ public class CustomHttpClient {
     private static final String TAG = "ViewerPerf";
     public static final String DEFAULT_COMIC_URL = "https://wfwf455.com/cm";
     public static final String WEBTOON_URL = "https://wfwf455.com";
-    public static final String NTK_COMIC_URL = "https://sbxh2.com/manhwa";
-    public static final String NTK_WEBTOON_URL = "https://sbxh2.com";
+    public static final String NTK_COMIC_URL = "https://sbxh3.com/manhwa";
+    public static final String NTK_WEBTOON_URL = "https://sbxh3.com";
     public static final String NTK_REACHABLE_FALLBACK_URL = "https://ntk01.com";
-    private static final String NTK_HOST = "sbxh2.com";
-    private static final String PREVIOUS_NTK_HOST = "sbxh1.com";
+    private static final String NTK_HOST = "sbxh3.com";
+    private static final String PREVIOUS_NTK_HOST = "sbxh2.com";
+    private static final String OLDER_NTK_HOST = "sbxh1.com";
     private static final String LEGACY_NTK_HOST = "ntk01.com";
     private static final long WFWF_DOMAIN_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L;
     private static final long WFWF_DOMAIN_FORCE_RETRY_INTERVAL_MS = 5 * 1000L;
@@ -171,27 +172,41 @@ public class CustomHttpClient {
 
     private static List<InetAddress> lookupNetworkResilientDns(String hostname) throws UnknownHostException {
         if(isNtkDnsProtectedHost(hostname)) {
-            List<InetAddress> protectedAddresses = ipv4OnlyOrEmpty(lookupCachedOrFallbackNtkDns(hostname));
+            List<InetAddress> protectedAddresses = ipv4OnlyOrEmpty(lookupCachedNtkDns(hostname, true));
             if(!protectedAddresses.isEmpty())
                 return protectedAddresses;
             List<InetAddress> systemAddresses = lookupSystemDns(hostname, false);
             if(!systemAddresses.isEmpty())
                 return ipv4OnlyOrThrow(hostname, mergeIpv4First(hostname, systemAddresses, null, null));
+            protectedAddresses = ipv4OnlyOrEmpty(lookupFallbackNtkDns(hostname));
+            if(!protectedAddresses.isEmpty())
+                return protectedAddresses;
             throw new UnknownHostException(hostname);
         }
         return selectNetworkResilientAddresses(hostname, lookupSystemDns(hostname, true));
     }
 
     private static List<InetAddress> lookupCachedOrFallbackNtkDns(String hostname) {
+        List<InetAddress> cached = lookupCachedNtkDns(hostname, true);
+        if(!cached.isEmpty())
+            return cached;
+        return lookupFallbackNtkDns(hostname);
+    }
+
+    private static List<InetAddress> lookupCachedNtkDns(String hostname, boolean allowStale) {
         DnsCacheEntry cached = readFreshCachedNtkDns(hostname);
         if(cached != null && cached.addresses != null && !cached.addresses.isEmpty())
             return cached.addresses;
-        DnsCacheEntry stale = readDiskCachedNtkDns(hostname, true);
+        DnsCacheEntry stale = readDiskCachedNtkDns(hostname, allowStale);
         if(stale != null && stale.addresses != null && !stale.addresses.isEmpty()) {
             warmNtkDohAsync(hostname);
             ViewerWarmupManager.logMetric("ntk_dns_disk_stale_count", stale.addresses.size());
             return stale.addresses;
         }
+        return new ArrayList<>();
+    }
+
+    private static List<InetAddress> lookupFallbackNtkDns(String hostname) {
         warmNtkDohAsync(hostname);
         List<InetAddress> fallback = ntkFallbackAddresses(hostname);
         if(!fallback.isEmpty()) {
@@ -513,7 +528,15 @@ public class CustomHttpClient {
     public static String resolveDirectHostForNtkProxy(String hostname) {
         if(!isNtkDnsProtectedHost(hostname))
             return hostname;
-        List<InetAddress> addresses = lookupCachedOrFallbackNtkDns(hostname);
+        List<InetAddress> addresses = lookupCachedNtkDns(hostname, true);
+        if(addresses.isEmpty()) {
+            try {
+                if(!lookupSystemDns(hostname, false).isEmpty())
+                    return hostname;
+            } catch (Exception ignored) {
+            }
+            addresses = lookupFallbackNtkDns(hostname);
+        }
         if(addresses.isEmpty())
             return hostname;
         return addresses.get(0).getHostAddress();
@@ -597,6 +620,7 @@ public class CustomHttpClient {
         String normalized = normalizeDnsHost(hostname);
         return isNtkProtectedHostSuffix(normalized, NTK_HOST)
                 || isNtkProtectedHostSuffix(normalized, PREVIOUS_NTK_HOST)
+                || isNtkProtectedHostSuffix(normalized, OLDER_NTK_HOST)
                 || normalized.matches("(?:[a-z0-9-]+\\.)?sbxh\\d+\\.com")
                 || normalized.matches("(?:[a-z0-9-]+\\.)?newto(?:ki)?\\d*\\.com")
                 || isNtkProtectedHostSuffix(normalized, "toonflix.app")
@@ -1124,6 +1148,8 @@ public class CustomHttpClient {
                 manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=." + NTK_HOST);
                 manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=" + PREVIOUS_NTK_HOST);
                 manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=." + PREVIOUS_NTK_HOST);
+                manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=" + OLDER_NTK_HOST);
+                manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=." + OLDER_NTK_HOST);
                 manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=" + LEGACY_NTK_HOST);
                 manager.setCookie(url, "cf_clearance=; Max-Age=0; Path=/; Domain=." + LEGACY_NTK_HOST);
                 manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/");
@@ -1131,6 +1157,8 @@ public class CustomHttpClient {
                 manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=." + NTK_HOST);
                 manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=" + PREVIOUS_NTK_HOST);
                 manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=." + PREVIOUS_NTK_HOST);
+                manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=" + OLDER_NTK_HOST);
+                manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=." + OLDER_NTK_HOST);
                 manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=" + LEGACY_NTK_HOST);
                 manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=." + LEGACY_NTK_HOST);
             }
@@ -1690,6 +1718,15 @@ public class CustomHttpClient {
         return changed;
     }
 
+    private boolean ensureNtkDomainForRetry() {
+        if(!isNtk())
+            return false;
+        RequestGroup requestGroup = currentRequestGroup.get();
+        if(requestGroup != null && requestGroup.isCancelled())
+            return false;
+        return ensureNumberedDomain(true);
+    }
+
     private void logWfwfDomainCanceledOnce() {
         long now = System.currentTimeMillis();
         synchronized (wfwfDomainLock) {
@@ -1965,9 +2002,14 @@ public class CustomHttpClient {
                 return false;
             int code = response.code();
             String location = response.header("location", "");
-            if(location != null && location.toLowerCase(Locale.ROOT).contains("t.me/"))
-                return false;
-            return code > 0 && code < 500;
+            String body = "";
+            if(code == 403 || code >= 500) {
+                try {
+                    body = response.peekBody(256 * 1024L).string();
+                } catch (Exception ignored) {
+                }
+            }
+            return isReachableNtkProbeResponse(code, location, body);
         } catch (Exception e) {
             return false;
         } finally {
@@ -1976,6 +2018,20 @@ public class CustomHttpClient {
             if(response != null)
                 response.close();
         }
+    }
+
+    private static boolean isReachableNtkProbeResponse(int code, String location, String body) {
+        if(location != null && location.toLowerCase(Locale.ROOT).contains("t.me/"))
+            return false;
+        if(code <= 0 || code >= 500)
+            return false;
+        if(code == 403 && isCloudflareChallenge(code, body))
+            return false;
+        return true;
+    }
+
+    static boolean isReachableNtkProbeResponseForTest(int code, String location, String body) {
+        return isReachableNtkProbeResponse(code, location, body);
     }
 
     private static boolean shouldSkipRecentWfwfDomainCheck(boolean force, String currentRoot,
@@ -2631,7 +2687,7 @@ public class CustomHttpClient {
                 response.close();
             }
             if(!appliedRedirectRoot)
-                ensureWfwfDomainForRetry();
+                ensureNtkDomainForRetry();
             baseUrl = getBaseUrl(url);
             ntkBaseUrl = isNtkUrl(baseUrl);
             headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
@@ -3078,9 +3134,27 @@ public class CustomHttpClient {
         if(response == null)
             return true;
         int code = response.code();
-        if(isNtk())
-            return code == 301 || code == 302 || code == 404 || code >= 500;
+        if(isNtk()) {
+            String body = "";
+            if(code == 403 || code >= 500) {
+                try {
+                    body = response.peekBody(256 * 1024L).string();
+                } catch (Exception ignored) {
+                }
+            }
+            return shouldRetryNtkWithResolvedDomain(code, body);
+        }
         return code == 301 || code == 302 || code == 403 || code == 404 || code >= 500;
+    }
+
+    private static boolean shouldRetryNtkWithResolvedDomain(int code, String body) {
+        if(code == 301 || code == 302 || code == 403 || code == 404 || code >= 500)
+            return true;
+        return false;
+    }
+
+    static boolean shouldRetryNtkWithResolvedDomainForTest(int code, String body) {
+        return shouldRetryNtkWithResolvedDomain(code, body);
     }
 
     private String normalizePath(String url) {
@@ -3209,7 +3283,7 @@ public class CustomHttpClient {
         return false;
     }
 
-    private boolean isCloudflareChallenge(int code, String body) {
+    private static boolean isCloudflareChallenge(int code, String body) {
         if(body == null)
             return false;
         if(code >= 500) {
@@ -3238,7 +3312,7 @@ public class CustomHttpClient {
         return isCloudflareChallenge(code, body);
     }
 
-    private boolean looksLikeNtkNormalPage(String lowerBody) {
+    private static boolean looksLikeNtkNormalPage(String lowerBody) {
         if(lowerBody == null || lowerBody.length() < 500)
             return false;
         return (lowerBody.contains("newtoki") || lowerBody.contains("뉴토끼"))

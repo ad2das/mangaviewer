@@ -48,4 +48,16 @@ public class CaptchaActivityTest {
         assertTrue(CaptchaActivity.shouldBlockCaptchaNavigationForTest("https://buy.m.11st.co.kr/products?turnstile=1"));
         assertTrue(CaptchaActivity.shouldBlockCaptchaNavigationForTest("https://toss.im/"));
     }
+
+    @Test
+    public void ntkCaptchaProxyLoadErrorRetriesDirectOnce() {
+        assertTrue(CaptchaActivity.shouldRetryCaptchaLoadWithoutProxyForTest(
+                true, true, false, "https://sbxh3.com/manhwa/3540"));
+        assertFalse(CaptchaActivity.shouldRetryCaptchaLoadWithoutProxyForTest(
+                true, true, true, "https://sbxh3.com/manhwa/3540"));
+        assertFalse(CaptchaActivity.shouldRetryCaptchaLoadWithoutProxyForTest(
+                true, false, false, "https://sbxh3.com/manhwa/3540"));
+        assertFalse(CaptchaActivity.shouldRetryCaptchaLoadWithoutProxyForTest(
+                false, true, false, "https://sbxh3.com/manhwa/3540"));
+    }
 }

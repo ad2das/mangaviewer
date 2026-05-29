@@ -106,10 +106,18 @@ final class LocalWebViewProxy {
     }
 
     private static List<String> proxyConnectCandidates(String host) {
+        return proxyConnectCandidates(host, CustomHttpClient.resolveDirectHostForNtkProxy(host));
+    }
+
+    private static List<String> proxyConnectCandidates(String host, String directHost) {
         ArrayList<String> candidates = new ArrayList<>();
-        addCandidate(candidates, CustomHttpClient.resolveDirectHostForNtkProxy(host));
         addCandidate(candidates, host);
+        addCandidate(candidates, directHost);
         return candidates;
+    }
+
+    static List<String> proxyConnectCandidatesForTest(String host, String directHost) {
+        return proxyConnectCandidates(host, directHost);
     }
 
     private static void addCandidate(List<String> candidates, String candidate) {
