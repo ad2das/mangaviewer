@@ -3,6 +3,7 @@ package ml.melun.mangaview.mangaview;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.util.Base64;
 import android.util.Log;
 import android.webkit.CookieManager;
 
@@ -17,6 +18,8 @@ import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -34,6 +37,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLSocketFactory;
@@ -56,6 +61,7 @@ import okhttp3.ResponseBody;
 
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.activity.NtkQuicFetcher;
+import ml.melun.mangaview.MainApplication;
 import ml.melun.mangaview.repository.CacheFileStore;
 import ml.melun.mangaview.runtime.PerfTrace;
 
@@ -2127,6 +2133,7 @@ public class CustomHttpClient {
     public PageResponse mgetCachedPage(String url, long ttlMillis) throws Exception {
         String normalized = normalizePath(url);
         boolean wolfDocument = !isNtk() && isWolfEpisodeDocumentPath(normalized);
+        boolean ntkTokenizedViewer = isNtk() && isNtkTokenizedViewerPath(normalized);
         String cacheKey = getBaseUrl(normalized) + normalized;
         long now = System.currentTimeMillis();
         FetchMode fetchMode = effectiveFetchMode(FetchMode.ALLOW_SHARED_WEBVIEW);
@@ -2142,7 +2149,7 @@ public class CustomHttpClient {
                     pageCache.remove(cacheKey);
                 } else {
                     boolean fresh = isPageCacheFresh(cached.time, now, ttlMillis);
-                    if(fresh || shouldServeColdStartCachedPageImmediately(allowColdStartStale, fetchMode, true, fresh))
+                    if(!ntkTokenizedViewer && (fresh || shouldServeColdStartCachedPageImmediately(allowColdStartStale, fetchMode, true, fresh)))
                         return new PageResponse(cached.code, cached.body, true);
                     staleCached = cached;
                 }
@@ -2154,7 +2161,7 @@ public class CustomHttpClient {
                 pageCache.put(cacheKey, diskCached);
             }
             boolean fresh = isPageCacheFresh(diskCached.time, now, ttlMillis);
-            if(fresh || shouldServeColdStartCachedPageImmediately(allowColdStartStale, fetchMode, true, fresh))
+            if(!ntkTokenizedViewer && (fresh || shouldServeColdStartCachedPageImmediately(allowColdStartStale, fetchMode, true, fresh)))
                 return new PageResponse(diskCached.code, diskCached.body, true);
             staleCached = diskCached;
         }
@@ -2292,7 +2299,9 @@ public class CustomHttpClient {
                 return new PageResponse(staleCached.code, staleCached.body, true);
             throw new Exception("Unusable WFWF page: " + normalized);
         }
-        if(code >= 200 && code < 400 && body.length() > 0 && shouldStoreNetworkPageBody(normalized, body)) {
+        if(code >= 200 && code < 400 && body.length() > 0
+                && !(isNtk() && isNtkTokenizedViewerPath(normalized))
+                && shouldStoreNetworkPageBody(normalized, body)) {
             String cacheKey = getBaseUrl(normalized) + normalized;
             CachedPage cachedPage = new CachedPage(code, body, now);
             synchronized (pageCacheLock) {
@@ -2339,16 +2348,17 @@ public class CustomHttpClient {
                 return loadState.response;
         }
         long now = System.currentTimeMillis();
+        boolean ntkTokenizedViewer = isNtk() && isNtkTokenizedViewerPath(normalized);
         synchronized (pageCacheLock) {
             CachedPage cached = pageCache.get(cacheKey);
-            if(cached != null && isUsableCachedPage(cached) && isPageCacheFresh(cached.time, now, ttlMillis))
+            if(!ntkTokenizedViewer && cached != null && isUsableCachedPage(cached) && isPageCacheFresh(cached.time, now, ttlMillis))
                 return new PageResponse(cached.code, cached.body, true);
             if(cached != null && !isUsableCachedPage(cached))
                 pageCache.remove(cacheKey);
             String currentCacheKey = getBaseUrl(normalized) + normalized;
             if(!currentCacheKey.equals(cacheKey)) {
                 cached = pageCache.get(currentCacheKey);
-                if(cached != null && isUsableCachedPage(cached) && isPageCacheFresh(cached.time, now, ttlMillis))
+                if(!ntkTokenizedViewer && cached != null && isUsableCachedPage(cached) && isPageCacheFresh(cached.time, now, ttlMillis))
                     return new PageResponse(cached.code, cached.body, true);
                 if(cached != null && !isUsableCachedPage(cached))
                     pageCache.remove(currentCacheKey);
@@ -2496,7 +2506,24 @@ public class CustomHttpClient {
                 && page != null
                 && page.body != null
                 && page.body.length() > 0
+                && !(ntk && isNtkTokenizedViewerCacheKey(cacheKey, page.body))
                 && isCacheablePageBody(page.body);
+    }
+
+    private static boolean isNtkTokenizedViewerPath(String path) {
+        if(path == null)
+            return false;
+        return path.matches("^/(manhwa|webtoon)/\\d+/[^/?#%]+/?(?:[?#].*)?$");
+    }
+
+    private static boolean isNtkTokenizedViewerCacheKey(String cacheKey, String body) {
+        if(cacheKey == null || body == null)
+            return false;
+        String lower = cacheKey.toLowerCase(Locale.ROOT);
+        if(!lower.matches("^https?://[^/]+/(manhwa|webtoon)/\\d+/[^/?#%]+/?(?:[?#].*)?$"))
+            return false;
+        String normalized = body.replace("\\\\\"", "\"").replace("\\\"", "\"");
+        return normalized.contains("\"imagesToken\"") && normalized.contains("\"imageMetas\"");
     }
 
     private static boolean isWfwfCacheKey(String cacheKey) {
@@ -2721,7 +2748,12 @@ public class CustomHttpClient {
                 && requestGroup.prioritizesWebViewFallback()
                 && !ntkBaseUrl
                 && shouldUseWolfWebViewFallback(ntkBaseUrl, true, url, fetchMode, true);
-        Response response = prioritizeWolfWebView ? getWithNtkWebViewFallback(baseUrl, url, headers) : null;
+        boolean prioritizeNtkEpisodeWebView = ntkBaseUrl
+                && fetchMode == FetchMode.ALLOW_SHARED_WEBVIEW
+                && isNtkEpisodeDocumentPath(url)
+                && MainApplication.currentActivity != null;
+        Response response = (prioritizeWolfWebView || prioritizeNtkEpisodeWebView)
+                ? getWithNtkWebViewFallback(baseUrl, url, headers) : null;
         if(response == null)
             response = get(baseUrl + url, headers, fastNtkPageDirect);
         if(ntkBaseUrl && shouldRetryWithResolvedDomain(response)) {
@@ -3490,6 +3522,131 @@ public class CustomHttpClient {
 
     public Response post(String url, RequestBody body, Map<String,String> headers){
         return post(url,body,headers,false);
+    }
+
+    public List<String> fetchNtkViewerImageUrls(String segment, String workId, String episodeId,
+                                                String imagesToken, String viewerBody) {
+        List<String> urls = new ArrayList<>();
+        if(context == null || !isNtk() || !NtkQuicFetcher.isAvailable()
+                || segment == null || workId == null || episodeId == null || imagesToken == null
+                || imagesToken.length() == 0)
+            return urls;
+        String kind = "webtoon".equals(segment) ? "webtoon" : "manhwa";
+        String endpoint = "webtoon".equals(kind) ? "/api/webtoon-images" : "/api/manhwa-images";
+        String baseUrl = getBaseUrl("/" + kind + "/" + workId + "/" + episodeId);
+        String path = "/" + kind + "/" + workId + "/" + episodeId;
+        try {
+            syncCookiesFromWebView(baseUrl, true);
+            String nv = getCookie("nv");
+            if(nv == null || nv.length() < 40) {
+                issueNtkNvCookie(baseUrl);
+                nv = getCookie("nv");
+            }
+            if(nv == null || nv.length() < 40)
+                return urls;
+            String nonce = base64Url(randomBytes(24));
+            String proof = hmacSha256Base64Url(nv, imagesToken + "." + nonce + "." + agent);
+            JSONObject payload = new JSONObject();
+            payload.put("workId", workId);
+            payload.put("episodeId", episodeId);
+            payload.put("token", imagesToken);
+            payload.put("nonce", nonce);
+            payload.put("proof", proof);
+            Map<String, String> headers = new HashMap<>();
+            headers.put("content-type", "application/json");
+            headers.put("accept", "application/json");
+            headers.put("x-images-client", "viewer-v1");
+            headers.put("origin", baseUrl);
+            headers.put("referer", baseUrl + "/" + kind + "/" + workId + "/" + episodeId);
+            if(MainApplication.currentActivity != null) {
+                urls.addAll(NtkWebViewFallbackManager.get(context).fetchViewerImageUrls(agent, baseUrl,
+                        path, headers, kind, workId, episodeId, imagesToken));
+                if(urls.size() > 0)
+                    return urls;
+            }
+            NtkQuicFetcher.Result result = NtkQuicFetcher.fetch(context, baseUrl + endpoint, agent,
+                    getCookieHeader(), headers, "POST",
+                    payload.toString().getBytes(StandardCharsets.UTF_8), 30000L);
+            ViewerWarmupManager.logMetric("ntk_images_api_code", result.code);
+            if(result.error != null || result.code < 200 || result.code >= 300 || result.body == null)
+                return urls;
+            JSONObject response = new JSONObject(result.body);
+            if(!response.optBoolean("ok", false))
+                return urls;
+            JSONArray images = response.optJSONArray("images");
+            if(images == null)
+                return urls;
+            for(int i = 0; i < images.length(); i++) {
+                JSONObject image = images.optJSONObject(i);
+                String src = image == null ? "" : image.optString("src", "");
+                if(src.length() > 0)
+                    urls.add(src);
+            }
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+        return urls;
+    }
+
+    private void issueNtkNvCookie(String baseUrl) {
+        try {
+            Map<String, String> headers = new HashMap<>();
+            headers.put("accept", "application/json");
+            headers.put("origin", baseUrl);
+            headers.put("referer", baseUrl + "/");
+            NtkQuicFetcher.Result result = NtkQuicFetcher.fetch(context, baseUrl + "/api/nv-issue", agent,
+                    getCookieHeader(), headers, "POST", new byte[0], 15000L);
+            applySetCookieHeaders(result.headers);
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
+    private synchronized void applySetCookieHeaders(Map<String, List<String>> headers) {
+        if(headers == null || headers.size() == 0)
+            return;
+        boolean changed = false;
+        for(String key : headers.keySet()) {
+            if(!"set-cookie".equalsIgnoreCase(key))
+                continue;
+            List<String> values = headers.get(key);
+            if(values == null)
+                continue;
+            for(String value : values) {
+                if(value == null)
+                    continue;
+                int eq = value.indexOf('=');
+                if(eq <= 0)
+                    continue;
+                int end = value.indexOf(';', eq + 1);
+                String name = value.substring(0, eq).trim();
+                String cookieValue = value.substring(eq + 1, end >= 0 ? end : value.length()).trim();
+                if(name.length() > 0 && cookieValue.length() > 0 && !cookieValue.equals(cookies.get(name))) {
+                    cookies.put(name, cookieValue);
+                    changed = true;
+                }
+            }
+        }
+        if(changed) {
+            invalidateCookieHeaderCache();
+            persistCookies();
+        }
+    }
+
+    private static byte[] randomBytes(int length) {
+        byte[] bytes = new byte[length];
+        new SecureRandom().nextBytes(bytes);
+        return bytes;
+    }
+
+    private static String hmacSha256Base64Url(String key, String value) throws Exception {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+        return base64Url(mac.doFinal(value.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private static String base64Url(byte[] bytes) {
+        return Base64.encodeToString(bytes, Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING);
     }
 
     public Response post(String url, RequestBody body, Map<String,String> headers, boolean localCookies){

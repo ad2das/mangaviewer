@@ -1,6 +1,9 @@
 package ml.melun.mangaview;
 
+import android.app.Activity;
+import android.app.Application;
 import android.content.Context;
+import android.os.Bundle;
 import android.util.Log;
 
 import androidx.appcompat.app.AppCompatDelegate;
@@ -26,6 +29,7 @@ public class MainApplication extends MultiDexApplication {
     public static volatile CustomHttpClient httpClient;
     public static Preference p;
     public static Context appContext;
+    public static volatile Activity currentActivity;
     public static volatile FirebaseAccountManager firebaseAccountManager;
     public static volatile FirebaseSyncManager firebaseSyncManager;
     private static volatile boolean deferredServicesStarted = false;
@@ -47,6 +51,27 @@ public class MainApplication extends MultiDexApplication {
         MainThreadStallMonitor.install(Log.isLoggable("MainStall", Log.DEBUG));
         long crashReporterStartedAt = PerfTrace.start("app_crash_reporter_install_ms");
         CrashReporter.install(this);
+        registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
+            @Override
+            public void onActivityResumed(Activity activity) {
+                currentActivity = activity;
+            }
+
+            @Override
+            public void onActivityPaused(Activity activity) {
+                if(currentActivity == activity)
+                    currentActivity = null;
+            }
+
+            @Override public void onActivityCreated(Activity activity, Bundle savedInstanceState) {}
+            @Override public void onActivityStarted(Activity activity) {}
+            @Override public void onActivityStopped(Activity activity) {}
+            @Override public void onActivitySaveInstanceState(Activity activity, Bundle outState) {}
+            @Override public void onActivityDestroyed(Activity activity) {
+                if(currentActivity == activity)
+                    currentActivity = null;
+            }
+        });
         PerfTrace.end("app_crash_reporter_install_ms", crashReporterStartedAt);
         long vectorStartedAt = PerfTrace.start("app_vector_delegate_ms");
         AppCompatDelegate.setCompatVectorFromResourcesEnabled(true);

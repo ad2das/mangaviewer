@@ -292,7 +292,9 @@ public final class PrefetchCoordinator {
     }
 
     public static boolean shouldSkipNtkPrefetchForTest(String sourceSite, boolean ntkPreference, boolean ntkClient) {
-        return (ntkPreference || ntkClient) && (sourceSite == null || sourceSite.trim().length() == 0);
+        if(ntkPreference || ntkClient)
+            return true;
+        return sourceSite != null && "ntk".equals(sourceSite.trim().toLowerCase(java.util.Locale.ROOT));
     }
 
     public static boolean shouldSkipWolfBackgroundPrefetchForTest(String sourceSite, boolean ntkPreference, boolean ntkClient) {

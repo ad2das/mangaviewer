@@ -273,7 +273,7 @@ class ReaderSession(
                 var urls = imageRepository.imageUrls(manga, appContext)
                 if (urls.isNullOrEmpty()) {
                     val cancellation = MangaRepository.cancellation().userVisible()
-                    if (isWfwfSource(manga, title)) cancellation.prioritizeWebViewFallback()
+                    if (isWfwfSource(manga, title) || isNtkSource(manga, title)) cancellation.prioritizeWebViewFallback()
                     val result = imageRepository.fetchViewerInitial(manga, cancellation)
                     if (result != Title.LOAD_OK) {
                         if (result == Title.LOAD_CAPTCHA) {
@@ -354,7 +354,7 @@ class ReaderSession(
                 if (notifyInitialPage) listener.onInitialPage(startPage)
             }
         }
-        if (!autoCut) primeForwardTimeline()
+        if (!autoCut && !isNtkSource(manga, title)) primeForwardTimeline()
         if (requestInitialWindow) requestInitialWindow(startPage, false)
         return startPage
     }
@@ -624,6 +624,7 @@ class ReaderSession(
     }
 
     fun prepareNextEpisode(anchor: Int) {
+        if (isNtkSource(manga, title) && !firstBitmapLogged.get()) return
         if (cancelled.get() || nextLoading.getAndSet(true)) return
         network.execute {
             try {
@@ -666,6 +667,7 @@ class ReaderSession(
     fun appendAdjacentEpisode(anchor: Int, direction: Int, silentMissing: Boolean = false): AppendStartResult {
         val loadingFlag = if (direction < 0) previousAppendLoading else nextAppendLoading
         if (cancelled.get()) return AppendStartResult.CANCELLED
+        if (isNtkSource(manga, title) && !firstBitmapLogged.get()) return AppendStartResult.CANCELLED
         if (loadingFlag.getAndSet(true)) return AppendStartResult.BUSY
         try {
             network.execute {
@@ -2048,6 +2050,14 @@ class ReaderSession(
             .lowercase(java.util.Locale.ROOT)
         return source == "wfwf" ||
             (source.isBlank() && !ml.melun.mangaview.MainApplication.getHttpClient().isNtk)
+    }
+
+    private fun isNtkSource(manga: Manga?, title: Title?): Boolean {
+        val source = (title?.sourceSite ?: manga?.title?.sourceSite ?: "")
+            .trim()
+            .lowercase(java.util.Locale.ROOT)
+        return source == "ntk" ||
+            (source.isBlank() && ml.melun.mangaview.MainApplication.getHttpClient().isNtk)
     }
 
     private fun requestedStartPage(): Int {

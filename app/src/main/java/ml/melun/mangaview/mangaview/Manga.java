@@ -417,7 +417,16 @@ public class Manga {
                 logNtkViewerParse("blocked", page, path, 0, 0);
                 return LOAD_CAPTCHA;
             } else if(missingPage) {
-                if(page.code >= 200 && page.code < 400
+                boolean tokenizedViewer = page.code >= 200 && page.code < 400
+                        && hasNtkViewerImageApiPayload(page.body);
+                if(tokenizedViewer) {
+                    if(addNtkApiViewerImageCandidates(client, page.body, path, seenImages)) {
+                        logNtkViewerParse("api-missing", page, path, 0, 0);
+                    } else {
+                        logNtkViewerParse("api-missing-failed", page, path, 0, 0);
+                        return LOAD_CAPTCHA;
+                    }
+                } else if(page.code >= 200 && page.code < 400
                         && addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount())) {
                     logNtkViewerParse("generated-missing", page, path, 0, 0);
                 } else {
@@ -519,7 +528,7 @@ public class Manga {
     private void addNtkViewerMetaImageCandidates(CustomHttpClient client, String body, String path, Set<String> seenImages) {
         if(body == null || path == null || seenImages == null)
             return;
-        String normalized = normalizeNtkEmbeddedImageText(body).replace("\\\"", "\"");
+        String normalized = normalizeNtkViewerPayloadText(body);
         String lower = normalized.toLowerCase(Locale.ROOT);
         if(!lower.contains("\"imagestoken\"") || !lower.contains("\"imagemetas\""))
             return;
@@ -539,6 +548,36 @@ public class Manga {
                     segment, workId, episodeId, page);
             addImageIfValid(client, seenImages, src);
         }
+    }
+
+    private boolean addNtkApiViewerImageCandidates(CustomHttpClient client, String body, String path, Set<String> seenImages) {
+        if(client == null || body == null || path == null || seenImages == null)
+            return false;
+        String normalized = normalizeNtkViewerPayloadText(body);
+        if(!hasNtkViewerImageApiPayloadNormalized(normalized))
+            return false;
+        Matcher pathMatcher = Pattern.compile("^/(manhwa|webtoon)/(\\d+)/([^/?#]+)").matcher(path);
+        if(!pathMatcher.find())
+            return false;
+        String token = ntkViewerImagesToken(normalized);
+        if(token.length() == 0)
+            return false;
+        int before = imgs == null ? 0 : imgs.size();
+        List<String> urls = client.fetchNtkViewerImageUrls(pathMatcher.group(1), pathMatcher.group(2), pathMatcher.group(3), token, normalized);
+        for(String url : urls)
+            addImageIfValid(client, seenImages, url);
+        return imgs != null && imgs.size() > before;
+    }
+
+    private static boolean hasNtkViewerImageApiPayload(String body) {
+        return hasNtkViewerImageApiPayloadNormalized(normalizeNtkViewerPayloadText(body));
+    }
+
+    private static boolean hasNtkViewerImageApiPayloadNormalized(String normalized) {
+        if(normalized == null || normalized.length() == 0)
+            return false;
+        String lower = normalized.toLowerCase(Locale.ROOT);
+        return lower.contains("\"imagestoken\"") && lower.contains("\"imagemetas\"");
     }
 
     private boolean addNtkGeneratedPathImageCandidates(CustomHttpClient client, String path, Set<String> seenImages, int pageCount) {
@@ -580,6 +619,13 @@ public class Manga {
         return maxPage;
     }
 
+    private static String ntkViewerImagesToken(String body) {
+        if(body == null || body.length() == 0)
+            return "";
+        Matcher matcher = Pattern.compile("\"imagesToken\"\\s*:\\s*\"([^\"]+)\"").matcher(body);
+        return matcher.find() ? matcher.group(1) : "";
+    }
+
     private static String normalizeNtkEmbeddedImageText(String source) {
         if(source == null)
             return "";
@@ -590,6 +636,23 @@ public class Manga {
                 .replace("&#x2f;", "/")
                 .replace("&amp;", "&")
                 .replace("&quot;", "\"");
+    }
+
+    private static String normalizeNtkViewerPayloadText(String source) {
+        String normalized = normalizeNtkEmbeddedImageText(source);
+        for(int i = 0; i < 4; i++) {
+            String next = normalized
+                    .replace("\\\\\"", "\"")
+                    .replace("\\\"", "\"")
+                    .replace("\\\\/", "/")
+                    .replace("\\/", "/")
+                    .replace("\\\\u002F", "/")
+                    .replace("\\\\u002f", "/");
+            if(next.equals(normalized))
+                break;
+            normalized = next;
+        }
+        return normalized;
     }
 
     private void logNtkViewerParse(String reason, CustomHttpClient.PageResponse page, String path, int imgTagCount, int fallbackCount) {

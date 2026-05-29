@@ -283,6 +283,35 @@ public class EpisodeActivityNetworkTest {
         }
     }
 
+    @Test
+    public void ntkJagaanEpisode52RendersReaderImage() throws Exception {
+        assertNtkJagaanEpisodeRendersReaderImage("52");
+    }
+
+    @Test
+    public void ntkJagaanEpisode72RendersReaderImage() throws Exception {
+        assertNtkJagaanEpisodeRendersReaderImage("72");
+    }
+
+    private void assertNtkJagaanEpisodeRendersReaderImage(String episodeNumber) throws Exception {
+        openNtkJagaanEpisode(episodeNumber);
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        assertReaderOpenedThroughAutoCaptcha(device, "NTK Jagaan " + episodeNumber);
+
+        Thread.sleep(1500L);
+        File screenshot = new File(ApplicationProvider.getApplicationContext().getCacheDir(),
+                "ntk_jagaan" + episodeNumber + "_reader.png");
+        assertTrue("Expected NTK Jagaan " + episodeNumber + " reader screenshot", device.takeScreenshot(screenshot));
+        Bitmap bitmap = BitmapFactory.decodeFile(screenshot.getAbsolutePath());
+        assertNotNull("Expected readable NTK Jagaan " + episodeNumber + " screenshot", bitmap);
+        try {
+            assertTrue("Expected NTK Jagaan " + episodeNumber + " to leave the blank/loading state",
+                    countNonBlankPixels(bitmap, 180, 96) > 1000);
+        } finally {
+            bitmap.recycle();
+        }
+    }
+
     private Manga openWfwfJagaanEpisode(String episodeNumber) throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         MainApplication.p.setSitePreset(CustomHttpClient.DEFAULT_COMIC_URL, CustomHttpClient.WEBTOON_URL);

@@ -603,7 +603,7 @@ public class Utils {
         String preparedKey = null;
         try {
             preparedKey = ReaderWarmupCoordinator.readyKey(appContext, manga, launchTitle, width, exactEpisode);
-            if(preparedKey == null)
+            if(preparedKey == null && !isNtkLaunchSource(launchTitle))
                 preparedKey = ReaderWarmupCoordinator.openKey(appContext, manga, launchTitle, width, exactEpisode);
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
@@ -647,6 +647,12 @@ public class Utils {
             ViewerWarmupManager.logMetric("viewer_launch_exception", manga.getId());
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
+    }
+
+    private static boolean isNtkLaunchSource(Title title) {
+        String source = title == null ? "" : title.getSourceSite();
+        return "ntk".equals(source == null ? "" : source.trim().toLowerCase(Locale.ROOT))
+                || (p != null && p.isNtkSite());
     }
 
     private static synchronized int nextViewerLaunchToken(Context context) {

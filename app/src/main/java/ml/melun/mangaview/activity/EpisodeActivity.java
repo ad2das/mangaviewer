@@ -520,31 +520,7 @@ public class EpisodeActivity extends AppCompatActivity {
     private void warmupLikelyNtkViewerPage() {
         if(!p.isNtkSite() && !getHttpClient().isNtk())
             return;
-        Manga target = quickReadEpisode();
-        if(target == null)
-            return;
-        target.setMode(mode);
-        target.setTitle(title);
-        target.setTitleId(title == null ? target.getTitleId() : title.getId());
-        ViewerWarmupManager.warmupUserSelectedEpisode(context, target, title, 0);
-        ReaderWarmupCoordinator.primeExactImmediate(context, target, title);
-        if(!shouldDirectWarmupNtkViewerPageForTest(p.isNtkSite(), getHttpClient().isNtk(), target == null ? null : target.getNtkEpisodePath()))
-            return;
-        String path = target.getNtkEpisodePath();
-        Context appContext = context.getApplicationContext();
-        Title currentTitle = title;
-        int width = Math.max(1, getResources().getDisplayMetrics().widthPixels);
-        AppDispatchers.submitImageWarmup(() -> {
-            boolean warmed = getHttpClient().warmupCachedPageDirect(path, VIEWER_PAGE_CACHE_TTL_MS);
-            if(!shouldPreloadNtkFirstFrameAfterDirectWarmupForTest(warmed))
-                return;
-            try {
-                ViewerWarmupManager.prepareFirstFrameBackgroundDirectOnly(appContext, target, currentTitle, 0, width,
-                        false, p.getReverse(), MangaRepository.cancellation());
-            } catch (Exception e) {
-                ml.melun.mangaview.report.CrashReporter.record(e);
-            }
-        });
+        ViewerWarmupManager.logMetric("ntk_initial_viewer_warmup_skipped", 1L);
     }
 
     private void warmupLikelyWfwfViewerPage() {
@@ -1192,7 +1168,7 @@ public class EpisodeActivity extends AppCompatActivity {
         manga.setMode(mode);
         manga.setTitle(title);
         manga.setTitleId(title == null ? manga.getTitleId() : title.getId());
-        if(exactEpisode)
+        if(exactEpisode && !isNtkTitle())
             ReaderWarmupCoordinator.primeExactImmediate(context, manga, title);
         if(!exactEpisode && getHttpClient().isNtk())
             ViewerWarmupManager.warmup(context, manga, title);
@@ -1201,6 +1177,8 @@ public class EpisodeActivity extends AppCompatActivity {
 
     private void warmupUserSelectedEpisode(Manga manga) {
         if(!online || manga == null || title == null)
+            return;
+        if(isNtkTitle())
             return;
         manga.setMode(mode);
         manga.setTitle(title);

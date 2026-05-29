@@ -122,6 +122,7 @@ object ReaderWarmupCoordinator {
 
     @JvmStatic
     fun primeExactVisible(context: Context?, manga: Manga?, title: Title?) {
+        if (isNtkWarmup(title ?: manga?.title)) return
         val profile = exactVisibleProfile(title ?: manga?.title)
         val entry = createEntry(context, manga, title, 0, true, profile) ?: return
         schedule(context!!.applicationContext, entry, true, profile)
@@ -129,6 +130,7 @@ object ReaderWarmupCoordinator {
 
     @JvmStatic
     fun primeExactImmediate(context: Context?, manga: Manga?, title: Title?) {
+        if (isNtkWarmup(title ?: manga?.title)) return
         val profile = launchProfile(title ?: manga?.title)
         val entry = createEntry(context, manga, title, 0, true, profile) ?: return
         BackgroundPrefetchBudget.suppressForUserNavigation()
@@ -137,6 +139,7 @@ object ReaderWarmupCoordinator {
 
     @JvmStatic
     fun primeAdjacent(context: Context?, manga: Manga?, title: Title?) {
+        if (isNtkWarmup(title ?: manga?.title)) return
         val profile = if (p != null && p.getDataSave()) WarmupProfile.FIRST_BYTE else WarmupProfile.LAUNCH_WINDOW
         val entry = createEntry(context, manga, title, 0, true, profile) ?: return
         schedule(context!!.applicationContext, entry, true, profile)
@@ -488,6 +491,11 @@ object ReaderWarmupCoordinator {
 
     private fun sourceProfile(title: Title?): SourcePreloadProfile {
         return sourceProfile(title?.sourceSite)
+    }
+
+    private fun isNtkWarmup(title: Title?): Boolean {
+        val source = (title?.sourceSite ?: "").trim().lowercase(Locale.ROOT)
+        return source == "ntk" || p?.isNtkSite == true || getHttpClient()?.isNtk == true
     }
 
     private fun sourceProfile(sourceSite: String?): SourcePreloadProfile {
