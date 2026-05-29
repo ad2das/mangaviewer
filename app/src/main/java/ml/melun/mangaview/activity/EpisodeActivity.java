@@ -98,6 +98,7 @@ public class EpisodeActivity extends AppCompatActivity {
     boolean firstContentLogged = false;
     boolean ntkLoadTimeoutHandled = false;
     boolean ntkCaptchaLaunchInFlight = false;
+    boolean ntkCaptchaRetryAfterVerifiedAttempted = false;
     boolean destroyed = false;
     boolean compatibleCacheLookupInFlight = false;
     boolean pendingLoadErrorAfterCacheLookup = false;
@@ -715,6 +716,8 @@ public class EpisodeActivity extends AppCompatActivity {
         if(result.getResultCode() == LOAD_CAPTCHA){
             ntkLoadTimeoutHandled = true;
             cancelNtkEpisodeLoadWatchdog();
+            if(retryNtkEpisodeLoadAfterRecentCaptcha())
+                return;
             if(p != null && p.isNtkSite())
                 openNtkCaptchaDirect();
             else
@@ -757,8 +760,22 @@ public class EpisodeActivity extends AppCompatActivity {
         afterLoad();
         hideProgress();
         loaded = true;
+        ntkCaptchaRetryAfterVerifiedAttempted = false;
         fab_container.setVisibility(View.GONE);
         invalidateOptionsMenu();
+    }
+
+    private boolean retryNtkEpisodeLoadAfterRecentCaptcha() {
+        if(!online || title == null || episodeViewModel == null || ntkCaptchaRetryAfterVerifiedAttempted)
+            return false;
+        if(p == null || !p.isNtkSite())
+            return false;
+        if(!getHttpClient().hasNtkAccessProof() && !getHttpClient().hasRecentNtkAccessVerification())
+            return false;
+        ntkCaptchaRetryAfterVerifiedAttempted = true;
+        getHttpClient().clearPageCache();
+        startEpisodeRefresh(true);
+        return true;
     }
 
     private void scheduleNtkEpisodeLoadWatchdog() {
@@ -798,6 +815,8 @@ public class EpisodeActivity extends AppCompatActivity {
                 String url = title == null ? null : title.getUrl();
                 if(url != null && url.startsWith("/"))
                     url = getHttpClient().getUrl(url) + url;
+                else if(url != null && url.length() > 0 && !getHttpClient().isNtkUrl(url))
+                    url = null;
                 if(url == null || url.length() == 0)
                     url = p == null ? CustomHttpClient.NTK_WEBTOON_URL : p.getWebtoonUrl();
                 captchaIntent.putExtra("url", url);

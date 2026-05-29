@@ -46,6 +46,7 @@ final class EpisodeCachePolicy {
             copy.setMode(episode.getMode());
             copy.setTitleId(episode.getTitleId());
             copy.setNtkEpisodePath(episode.getNtkEpisodePath());
+            copy.setNtkImageCount(episode.getNtkImageCount());
             copy.setOfflinePath(episode.getOfflinePath());
             snapshot.add(copy);
         }

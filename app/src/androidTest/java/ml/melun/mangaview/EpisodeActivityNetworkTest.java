@@ -143,7 +143,7 @@ public class EpisodeActivityNetworkTest {
             assertCaptchaShown(device, "NTK scroll stress episode list");
             return;
         }
-        episodeRow.click();
+        clickFreshEpisodeRow(device, episodeRow);
         assertReaderOpenedOrCaptchaShown(device, "NTK scroll stress");
         if(isCaptchaShown(device)) {
             finishCaptchaActivities();
@@ -647,6 +647,21 @@ public class EpisodeActivityNetworkTest {
         assertNotNull("Expected tapping a " + label + " episode to open the reader", strip);
         UiObject2 firstDrawable = device.wait(Until.findObject(By.desc("reader-drawable-ready")), 60000L);
         assertNotNull("Expected tapping a " + label + " episode to render the first reader image", firstDrawable);
+    }
+
+    private static void clickFreshEpisodeRow(UiDevice device, UiObject2 row) throws Exception {
+        for(int attempt = 0; attempt < 3; attempt++) {
+            UiObject2 target = attempt == 0 ? row : device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 5000L);
+            assertNotNull("Expected NTK episode row to remain clickable", target);
+            try {
+                target.click();
+                return;
+            } catch(androidx.test.uiautomator.StaleObjectException e) {
+                if(attempt == 2)
+                    throw e;
+                Thread.sleep(250L);
+            }
+        }
     }
 
     private static void assertReaderOpenedOrCaptchaShown(UiDevice device, String label) {

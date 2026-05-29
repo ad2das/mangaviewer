@@ -62,10 +62,13 @@ public class Manga {
     private static final Pattern EPISODE_WHITESPACE_PATTERN = Pattern.compile("\\s+");
     private static final Pattern EPISODE_NUMBER_PATTERN = Pattern.compile("(\\d+(?:\\.\\d+)?(?:\\s*[,~～\\-]\\s*\\d+(?:\\.\\d+)?)*)\\s*화");
     private static final Pattern EPISODE_BLOCK_NUMBER_PATTERN = Pattern.compile("\\d+(?:\\.\\d+)?");
+    private static final int NTK_DEFAULT_GENERATED_PAGE_COUNT = 64;
+    private static final int NTK_MAX_GENERATED_PAGE_COUNT = 300;
 
     int baseMode = base_comic;
     int titleId = -1;
     private String ntkEpisodePath = "";
+    private int ntkImageCount;
     private volatile boolean fetchInProgress;
 
     public Manga(int i, String n, String d, int baseMode) {
@@ -122,6 +125,20 @@ public class Manga {
         this.ntkEpisodePath = ntkEpisodePath == null ? "" : ntkEpisodePath.trim();
     }
 
+    public int getNtkImageCount() {
+        if(ntkImageCount > 0)
+            return ntkImageCount;
+        String path = ntkEpisodePath == null ? "" : ntkEpisodePath.trim();
+        int count = matchingNtkImageCount(eps, path);
+        if(count > 0)
+            return count;
+        return title == null ? 0 : matchingNtkImageCount(title.getEps(), path);
+    }
+
+    public void setNtkImageCount(int ntkImageCount) {
+        this.ntkImageCount = ntkImageCount > 0 ? Math.min(ntkImageCount, NTK_MAX_GENERATED_PAGE_COUNT) : 0;
+    }
+
     private String matchingNtkEpisodePath(List<Manga> episodes) {
         if(episodes == null || episodes.size() == 0)
             return "";
@@ -148,6 +165,34 @@ public class Manga {
                 return path;
         }
         return "";
+    }
+
+    private int matchingNtkImageCount(List<Manga> episodes, String currentPath) {
+        if(episodes == null || episodes.size() == 0)
+            return 0;
+        String currentEpisodeNumber = episodeNumberKey(name);
+        List<Manga> snapshot;
+        try {
+            snapshot = new ArrayList<>(episodes);
+        } catch (RuntimeException e) {
+            return 0;
+        }
+        for(Manga episode : snapshot) {
+            if(episode == null || episode == this || !sameSeriesEpisode(episode) || episode.ntkImageCount <= 0)
+                continue;
+            String path = episode.ntkEpisodePath == null ? "" : episode.ntkEpisodePath.trim();
+            if(currentPath.length() > 0 && currentPath.equals(path))
+                return episode.ntkImageCount;
+            String episodeNumber = episodeNumberKey(episode.getName());
+            if(currentEpisodeNumber.length() > 0 && episodeNumber.length() > 0) {
+                if(currentEpisodeNumber.equals(episodeNumber))
+                    return episode.ntkImageCount;
+                continue;
+            }
+            if(episode.getId() == id)
+                return episode.ntkImageCount;
+        }
+        return 0;
     }
 
     public void setImgs(List<String> imgs) {
@@ -186,6 +231,7 @@ public class Manga {
             else
                 setTitleId(sourceTitleId);
             setNtkEpisodePath(sourceNtkEpisodePath);
+            setNtkImageCount(source.getNtkImageCount());
             return true;
         }
     }
@@ -363,7 +409,7 @@ public class Manga {
                 path = "/" + segment + "/" + tid + "/" + id;
                 setNtkEpisodePath(path);
             }
-            if(addNtkGeneratedPathImageCandidates(client, path, seenImages, 300)) {
+            if(addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount())) {
                 logNtkViewerParse("generated-path", null, path, 0, 0);
                 List<Manga> titleEpisodes = title == null ? null : safeEpisodeCopy(title.getEps());
                 if(titleEpisodes != null && titleEpisodes.size() > 0) {
@@ -383,7 +429,7 @@ public class Manga {
                     || looksLikeNtkBlockedPage(page.body);
             boolean missingPage = page.code >= 400 || looksLikeNtkMissingPage(page.body);
             if(blockedPage || missingPage) {
-                if(addNtkGeneratedPathImageCandidates(client, path, seenImages, 300)) {
+                if(addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount())) {
                     logNtkViewerParse(blockedPage ? "generated-blocked" : "generated-missing", page, path, 0, 0);
                 } else if(blockedPage) {
                     logNtkViewerParse("blocked", page, path, 0, 0);
@@ -500,7 +546,7 @@ public class Manga {
         int pageCount = ntkViewerMetaPageCount(normalized);
         if(pageCount <= 0)
             return;
-        pageCount = Math.min(pageCount, 300);
+        pageCount = Math.min(pageCount, NTK_MAX_GENERATED_PAGE_COUNT);
         for(int page = 1; page <= pageCount; page++) {
             String src = String.format(Locale.ROOT,
                     "https://i.toonflix.app/%s/%s/%s/p%03d.jpg",
@@ -519,7 +565,7 @@ public class Manga {
         String workId = pathMatcher.group(2);
         String episodeId = pathMatcher.group(3);
         int before = imgs == null ? 0 : imgs.size();
-        int safePageCount = Math.min(pageCount, 300);
+        int safePageCount = Math.min(pageCount, NTK_MAX_GENERATED_PAGE_COUNT);
         for(int page = 1; page <= safePageCount; page++) {
             String src = String.format(Locale.ROOT,
                     "https://i.toonflix.app/%s/%s/%s/p%03d.jpg",
@@ -527,6 +573,11 @@ public class Manga {
             addImageIfValid(client, seenImages, src);
         }
         return imgs != null && imgs.size() > before;
+    }
+
+    private int ntkGeneratedImageCandidateCount() {
+        int count = getNtkImageCount();
+        return count > 0 ? count : NTK_DEFAULT_GENERATED_PAGE_COUNT;
     }
 
     private static int ntkViewerMetaPageCount(String body) {

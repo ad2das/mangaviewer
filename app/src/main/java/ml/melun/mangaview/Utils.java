@@ -921,6 +921,7 @@ public class Utils {
         copy.setMode(source.getMode());
         copy.setTitleId(source.getTitleId());
         copy.setNtkEpisodePath(source.hasExplicitNtkEpisodePath() ? source.getNtkEpisodePath() : "");
+        copy.setNtkImageCount(source.getNtkImageCount());
         copy.setOfflinePath(source.getOfflinePath());
         if(includeImages) {
             try {
@@ -1487,20 +1488,30 @@ public class Utils {
     }
 
     private static String captchaUrl(String url) {
-        if(url != null && url.length() > 0) {
-            if(url.startsWith("http://") || url.startsWith("https://"))
-                return url;
-            if(url.startsWith("/"))
-                return getHttpClient().getUrl(url) + url;
-            return getHttpClient().getUrl() + "/" + url;
-        }
         if(getHttpClient().isNtk()) {
+            if(url != null && url.length() > 0) {
+                if(url.startsWith("http://") || url.startsWith("https://")) {
+                    if(getHttpClient().isNtkUrl(url) && !isNtkApiUrl(url))
+                        return url;
+                    return ntkCaptchaLandingUrl();
+                }
+                if(url.startsWith("/"))
+                    return getHttpClient().getUrl(url) + url;
+                return getHttpClient().getUrl() + "/" + url;
+            }
             String challengedUrl = getHttpClient().getLastCloudflareChallengeUrl();
             if(challengedUrl != null && challengedUrl.length() > 0
                     && getHttpClient().isNtkUrl(challengedUrl)
                     && !isNtkApiUrl(challengedUrl))
                 return challengedUrl;
             return ntkCaptchaLandingUrl();
+        }
+        if(url != null && url.length() > 0) {
+            if(url.startsWith("http://") || url.startsWith("https://"))
+                return url;
+            if(url.startsWith("/"))
+                return getHttpClient().getUrl(url) + url;
+            return getHttpClient().getUrl() + "/" + url;
         }
         return null;
     }

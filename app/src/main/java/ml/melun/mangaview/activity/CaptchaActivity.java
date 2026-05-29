@@ -53,6 +53,7 @@ import java.util.concurrent.TimeUnit;
 
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
+import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import okhttp3.Response;
 
@@ -501,6 +502,8 @@ public class CaptchaActivity extends AppCompatActivity {
 
     private String resolveCaptchaUrl(Intent intent, String purl) {
         String path = intent == null ? null : intent.getStringExtra("url");
+        if(p != null && p.isNtkSite())
+            return ntkCaptchaLoadUrl(path, purl);
         if(path == null)
             return purl;
         if(path.startsWith("http://") || path.startsWith("https://"))
@@ -1458,6 +1461,8 @@ public class CaptchaActivity extends AppCompatActivity {
     private void finishWithVerifiedClearance() {
         String currentWebViewUrl = webView == null ? null : webView.getUrl();
         syncCaptchaCookiesToHttpClient(captchaLoadUrl, currentWebViewUrl);
+        getHttpClient().clearPageCache();
+        Search.clearNtkResultCaches();
         detachCaptchaWebView();
         getHttpClient().saveClearanceToDisk();
         getHttpClient().markNtkAccessVerified();
@@ -1481,15 +1486,24 @@ public class CaptchaActivity extends AppCompatActivity {
 
     private String ntkCaptchaLoadUrl(String challengeUrl, String purl) {
         if(challengeUrl != null && challengeUrl.length() > 0
-                && getHttpClient().isNtkUrl(challengeUrl)
-                && !isNtkApiUrl(challengeUrl))
-            return challengeUrl;
-        if(purl != null && purl.length() > 0 && !isNtkApiUrl(purl))
+                && !isNtkApiUrl(challengeUrl)) {
+            if(challengeUrl.startsWith("/"))
+                return getHttpClient().getUrl(challengeUrl) + challengeUrl;
+            if(getHttpClient().isNtkUrl(challengeUrl))
+                return challengeUrl;
+        }
+        if(purl != null && purl.length() > 0
+                && getHttpClient().isNtkUrl(purl)
+                && !isNtkApiUrl(purl))
             return purl;
-        String webtoonUrl = p.getWebtoonUrl();
-        if(webtoonUrl != null && webtoonUrl.length() > 0 && !isNtkApiUrl(webtoonUrl))
+        String webtoonUrl = p == null ? null : p.getWebtoonUrl();
+        if(webtoonUrl != null && webtoonUrl.length() > 0
+                && getHttpClient().isNtkUrl(webtoonUrl)
+                && !isNtkApiUrl(webtoonUrl))
             return webtoonUrl;
         String root = getHttpClient().getUrl();
+        if(root == null || root.length() == 0 || !getHttpClient().isNtkUrl(root))
+            root = p == null ? NTK_WEBTOON_URL : p.getNtkResolvedRoot();
         if(root != null && root.endsWith("/manhwa"))
             root = root.substring(0, root.length() - 7);
         return root;

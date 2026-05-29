@@ -9,6 +9,8 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 final class NtkEpisodeParser {
     private NtkEpisodeParser() {
@@ -19,6 +21,7 @@ final class NtkEpisodeParser {
         if(document == null)
             return result;
         int titleId = title == null ? parsePositiveInt(titleKey) : title.getId();
+        String imageCountMetadata = normalizeEmbeddedText(document.html());
         Set<String> seenEpisodePaths = new HashSet<>();
         for(Element link : document.select("a[href]")) {
             if(link.hasClass("cta"))
@@ -41,6 +44,7 @@ final class NtkEpisodeParser {
             manga.setTitle(title);
             manga.setTitleId(titleId);
             manga.setNtkEpisodePath(epPath);
+            manga.setNtkImageCount(extractImageCount(imageCountMetadata, epPath));
             result.episodes.add(manga);
         }
         Collections.sort(result.episodes, (left, right) -> Integer.compare(right.getId(), left.getId()));
@@ -203,6 +207,46 @@ final class NtkEpisodeParser {
         if(sortId > 0)
             return sortId;
         return parsePositiveInt(cleanEpisodeTitle(link));
+    }
+
+    private static int extractImageCount(String html, String epPath) {
+        if(html == null || html.length() == 0 || epPath == null || epPath.length() == 0)
+            return 0;
+        String episodeId = epPath.substring(epPath.lastIndexOf('/') + 1);
+        if(episodeId.length() == 0)
+            return 0;
+        int count = imageCountNearEpisodeId(html, "\"sourceEpisodeId\"\\s*:\\s*\"" + Pattern.quote(episodeId) + "\"");
+        if(count > 0)
+            return count;
+        count = imageCountNearEpisodeId(html, "\"id\"\\s*:\\s*\"" + Pattern.quote(episodeId) + "\"");
+        if(count > 0)
+            return count;
+        return imageCountNearEpisodeId(html, "\"id\"\\s*:\\s*" + Pattern.quote(episodeId));
+    }
+
+    private static int imageCountNearEpisodeId(String html, String idPattern) {
+        Matcher idMatcher = Pattern.compile(idPattern).matcher(html);
+        while(idMatcher.find()) {
+            int end = Math.min(html.length(), idMatcher.end() + 900);
+            Matcher countMatcher = Pattern.compile("\"imageCount\"\\s*:\\s*(\\d{1,4})")
+                    .matcher(html.substring(idMatcher.start(), end));
+            if(countMatcher.find()) {
+                int count = parsePositiveInt(countMatcher.group(1));
+                if(count > 0)
+                    return count;
+            }
+        }
+        return 0;
+    }
+
+    private static String normalizeEmbeddedText(String source) {
+        if(source == null)
+            return "";
+        return source.replace("\\/", "/")
+                .replace("\\u002F", "/")
+                .replace("\\u002f", "/")
+                .replace("\\\"", "\"")
+                .replace("&quot;", "\"");
     }
 
     static int parsePositiveInt(String value) {

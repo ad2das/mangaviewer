@@ -27,6 +27,7 @@ public class DownloadTitle extends MTitle {
             copy.setMode(0);
             copy.setTitleId(t.getId());
             copy.setNtkEpisodePath(episode.getNtkEpisodePath());
+            copy.setNtkImageCount(episode.getNtkImageCount());
             eps.add(copy);
         }
     }

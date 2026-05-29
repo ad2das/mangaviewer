@@ -305,6 +305,23 @@ public class MangaTest {
     }
 
     @Test
+    public void ntkImageCountFallsBackToCanonicalEpisodeListEntry() {
+        Title title = new Title("one punch", "", "", null, "349", 8605, MTitle.base_comic);
+        title.setSourceSite("ntk");
+        Manga canonical = new Manga(349, "275", "", MTitle.base_comic);
+        canonical.setTitle(title);
+        canonical.setNtkEpisodePath("/manhwa/8605/u-mou88jul-3akm");
+        canonical.setNtkImageCount(21);
+        ArrayList<Manga> episodes = new ArrayList<>();
+        episodes.add(canonical);
+        title.setEps(episodes);
+        Manga candidate = new Manga(349, "275", "", MTitle.base_comic);
+        candidate.setTitle(title);
+
+        assertEquals(21, candidate.getNtkImageCount());
+    }
+
+    @Test
     public void ntkEpisodePathIsNotGuessedFromNumericIdentity() {
         Title title = new Title("one piece", "", "", null, "", 2, MTitle.base_comic);
         title.setSourceSite("ntk");

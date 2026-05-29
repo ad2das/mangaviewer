@@ -23,9 +23,9 @@ public class ReaderWarmupCoordinatorTest {
         assertEquals(1, ReaderWarmupCoordinator.byteLimitForTest(ReaderWarmupCoordinator.WarmupProfile.FIRST_BITMAP));
         assertEquals(5, ReaderWarmupCoordinator.byteLimitForTest(ReaderWarmupCoordinator.WarmupProfile.ADJACENT_BYTES));
         assertEquals(16, ReaderWarmupCoordinator.byteLimitForTest(ReaderWarmupCoordinator.WarmupProfile.LAUNCH_WINDOW));
-        assertEquals(20, ReaderWarmupCoordinator.launchByteLimitForTest("ntk"));
+        assertEquals(32, ReaderWarmupCoordinator.launchByteLimitForTest("ntk"));
         assertEquals(48, ReaderWarmupCoordinator.launchByteLimitForTest("wfwf"));
-        assertEquals(4, ReaderWarmupCoordinator.launchDecodeLimitForTest("ntk"));
+        assertEquals(8, ReaderWarmupCoordinator.launchDecodeLimitForTest("ntk"));
         assertEquals(32, ReaderWarmupCoordinator.launchDecodeLimitForTest("wfwf"));
     }
 
@@ -47,8 +47,8 @@ public class ReaderWarmupCoordinatorTest {
         assertEquals(1, ReaderPreparedStore.maxPinnedStartBitmapsForTest());
         assertEquals(16L * 1024L * 1024L, ReaderPreparedStore.softBitmapBytesForTest(""));
         assertEquals(24L * 1024L * 1024L, ReaderPreparedStore.hardBitmapBytesForTest(""));
-        assertEquals(12L * 1024L * 1024L, ReaderPreparedStore.softBitmapBytesForTest("ntk"));
-        assertEquals(16L * 1024L * 1024L, ReaderPreparedStore.hardBitmapBytesForTest("ntk"));
+        assertEquals(16L * 1024L * 1024L, ReaderPreparedStore.softBitmapBytesForTest("ntk"));
+        assertEquals(24L * 1024L * 1024L, ReaderPreparedStore.hardBitmapBytesForTest("ntk"));
     }
 
     @Test

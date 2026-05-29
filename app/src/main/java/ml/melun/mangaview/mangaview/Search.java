@@ -1039,6 +1039,15 @@ public class Search {
         PageTitles load() throws Exception;
     }
 
+    public static void clearNtkResultCaches() {
+        synchronized (NTK_RESULT_CACHE) {
+            NTK_RESULT_CACHE.clear();
+        }
+        synchronized (NTK_KEYWORD_API_RESULT_CACHE) {
+            NTK_KEYWORD_API_RESULT_CACHE.clear();
+        }
+    }
+
     private PageTitles cachedNtkPageTitles(CustomHttpClient client, String kind, String path, int targetBaseMode,
                                            int limit, int currentPage, PageTitleLoader loader) throws Exception {
         if(client == null || !client.isNtk())

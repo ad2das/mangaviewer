@@ -34,13 +34,14 @@ object ReaderWarmupCoordinator {
 
     private const val DEFAULT_LAUNCH_WINDOW_DECODE_PAGES = 8
     private const val DEFAULT_LAUNCH_WINDOW_BYTE_PAGES = 16
-    private const val NTK_LAUNCH_WINDOW_DECODE_PAGES = 4
-    private const val NTK_LAUNCH_WINDOW_BYTE_PAGES = 20
+    private const val NTK_LAUNCH_WINDOW_DECODE_PAGES = 8
+    private const val NTK_LAUNCH_WINDOW_BYTE_PAGES = 32
     private const val WFWF_LAUNCH_WINDOW_DECODE_PAGES = 32
     private const val WFWF_LAUNCH_WINDOW_BYTE_PAGES = 48
     private const val FIRST_BITMAP_BACKFILL_PAGES = 6
     private const val FIRST_BITMAP_BACKFILL_SCREENFULS = 2.5f
     private const val DEFAULT_LAUNCH_WINDOW_SCREENFULS = 3f
+    private const val NTK_LAUNCH_WINDOW_SCREENFULS = 4f
     private const val WFWF_LAUNCH_WINDOW_SCREENFULS = 4f
     private val inFlight = ConcurrentHashMap<String, AtomicBoolean>()
     private val firstBitmapBackfillInFlight = ConcurrentHashMap.newKeySet<String>()
@@ -501,7 +502,7 @@ object ReaderWarmupCoordinator {
                 launchDecodePages = NTK_LAUNCH_WINDOW_DECODE_PAGES,
                 launchBytePages = NTK_LAUNCH_WINDOW_BYTE_PAGES,
                 adjacentBytePages = 12,
-                launchDecodeScreenfuls = DEFAULT_LAUNCH_WINDOW_SCREENFULS
+                launchDecodeScreenfuls = NTK_LAUNCH_WINDOW_SCREENFULS
             )
             "wfwf" -> SourcePreloadProfile(
                 visibleProfile = WarmupProfile.URL_ONLY,

@@ -278,6 +278,23 @@ public class TitleTest {
     }
 
     @Test
+    public void ntkEpisodeParserKeepsImageCountFromNextMetadata() {
+        List<Manga> episodes = Title.parseNtkEpisodesForTest(
+                "<main>"
+                        + ntkEpisodeRow("manhwa", 10017, 44827, "서머타임 렌더링 1화")
+                        + "</main>"
+                        + "<script>self.__next_f.push([1,\"{\\\"sourceEpisodeId\\\":\\\"44827\\\","
+                        + "\\\"imageCount\\\":19}\"])</script>",
+                "manhwa",
+                "10017",
+                MTitle.base_comic);
+
+        assertEquals(1, episodes.size());
+        assertEquals("/manhwa/10017/44827", episodes.get(0).getNtkEpisodePath());
+        assertEquals(19, episodes.get(0).getNtkImageCount());
+    }
+
+    @Test
     public void ntkWebtoonEpisodeParserSortsVisibleEpisodeNumbersInsideMainRuns() {
         List<Manga> episodes = Title.parseNtkEpisodesForTest(
                 "<main>"
