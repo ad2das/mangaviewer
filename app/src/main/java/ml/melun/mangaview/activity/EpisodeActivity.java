@@ -713,6 +713,12 @@ public class EpisodeActivity extends AppCompatActivity {
             hideProgress();
             return;
         }
+        Log.d("EpisodeActivity", "episode load result code=" + result.getResultCode()
+                + " eps=" + (result.getEpisodes() == null ? 0 : result.getEpisodes().size())
+                + " ntk=" + (p != null && p.isNtkSite())
+                + " proof=" + getHttpClient().hasNtkAccessProof()
+                + " recent=" + getHttpClient().hasRecentNtkAccessVerification()
+                + " titleUrl=" + (title == null ? null : title.getUrl()));
         if(result.getResultCode() == LOAD_CAPTCHA){
             ntkLoadTimeoutHandled = true;
             cancelNtkEpisodeLoadWatchdog();
@@ -741,8 +747,12 @@ public class EpisodeActivity extends AppCompatActivity {
             if(this.episodes == null || this.episodes.size() == 0) {
                 ntkLoadTimeoutHandled = true;
                 cancelNtkEpisodeLoadWatchdog();
-                if(title != null)
+                if(p != null && p.isNtkSite() && getHttpClient().hasNtkAccessProof()) {
+                    Log.d("EpisodeActivity", "empty NTK episode result after verified captcha; using error fallback");
+                    handleLoadErrorWithCacheFallback();
+                } else if(title != null) {
                     showCaptchaPopup(title.getUrl(), context, p);
+                }
             }
             return;
         }
@@ -785,14 +795,14 @@ public class EpisodeActivity extends AppCompatActivity {
         }
         boolean hasProof = getHttpClient().hasNtkAccessProof();
         boolean hasRecentVerification = getHttpClient().hasRecentNtkAccessVerification();
-        if(!hasProof && !hasRecentVerification) {
+        if(!hasProof) {
             Log.d("EpisodeActivity", "skip NTK captcha retry: no clearance proof");
             return false;
         }
         Log.d("EpisodeActivity", "retrying NTK episode load after captcha proof="
                 + hasProof + " recent=" + hasRecentVerification);
         ntkCaptchaRetryAfterVerifiedAttempted = true;
-        getHttpClient().clearPageCache();
+        getHttpClient().clearNtkTransientLoads();
         startEpisodeRefresh(true);
         return true;
     }
@@ -808,6 +818,8 @@ public class EpisodeActivity extends AppCompatActivity {
                 return;
             ntkLoadTimeoutHandled = true;
             hideProgress();
+            if(retryNtkEpisodeLoadAfterRecentCaptcha())
+                return;
             openNtkCaptchaDirect();
         };
         episodeList.postDelayed(ntkEpisodeLoadWatchdogRunnable, 3000L);
@@ -823,6 +835,14 @@ public class EpisodeActivity extends AppCompatActivity {
         if(!isUiAlive() || ntkCaptchaLaunchInFlight) {
             Log.d("EpisodeActivity", "skip direct NTK captcha launch alive=" + isUiAlive()
                     + " inFlight=" + ntkCaptchaLaunchInFlight);
+            return;
+        }
+        if(p != null && p.isNtkSite() && getHttpClient().hasNtkAccessProof()) {
+            Log.d("EpisodeActivity", "skip direct NTK captcha launch: clearance already verified proof="
+                    + getHttpClient().hasNtkAccessProof()
+                    + " recent=" + getHttpClient().hasRecentNtkAccessVerification());
+            if(!retryNtkEpisodeLoadAfterRecentCaptcha())
+                handleLoadErrorWithCacheFallback();
             return;
         }
         Log.d("EpisodeActivity", "opening direct NTK captcha proof="

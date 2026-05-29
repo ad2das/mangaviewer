@@ -13,7 +13,7 @@ final class HomeStartupPolicy {
     }
 
     static long autoCaptchaDelayMs(boolean ntk) {
-        return ntk ? 20_000L : 0L;
+        return 0L;
     }
 
     static long inactiveInitialRowsDelayMsForTest(boolean ntk) {

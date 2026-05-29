@@ -1751,11 +1751,11 @@ public class Search {
         CustomHttpClient.RequestGroup requestGroup = client.currentRequestGroup();
         try {
             running.add(completion.submit(AppDispatchers.safeCallable(() -> fetchNtkHybridPart(
-                    client, requestGroup, "html",
-                    () -> fetchNtkSearchResults(client, ntkSearchPath(query, targetBaseMode, currentPage), targetBaseMode, limit, currentPage)))));
-            running.add(completion.submit(AppDispatchers.safeCallable(() -> fetchNtkHybridPart(
                     client, requestGroup, "api",
                     () -> fetchNtkKeywordApiResults(client, targetBaseMode, limit, currentPage)))));
+            running.add(completion.submit(AppDispatchers.safeCallable(() -> fetchNtkHybridPart(
+                    client, requestGroup, "html",
+                    () -> fetchNtkSearchResults(client, ntkSearchPath(query, targetBaseMode, currentPage), targetBaseMode, limit, currentPage)))));
 
             PageTitles htmlResults = new PageTitles(new ArrayList<>(), null, true, false, 0);
             PageTitles apiResults = new PageTitles(new ArrayList<>(), null, true, false, 0);
@@ -1776,6 +1776,8 @@ public class Search {
                     htmlResults = part.pageTitles;
             }
             PageTitles merged = mergeNtkHybridKeywordResults(htmlResults, apiResults);
+            if(merged.titles.size() > 0)
+                publishPartialResults(merged.titles);
             traceSearchMetric("ntk_search_hybrid_total_ms", totalStartedAt,
                     ",success=" + success
                             + ",html=" + htmlResults.titles.size()
@@ -1821,8 +1823,8 @@ public class Search {
         if(apiResults == null)
             apiResults = new PageTitles(new ArrayList<>(), null, true, false, 0);
         ArrayList<Title> merged = new ArrayList<>();
-        appendUnique(merged, htmlResults.titles);
         appendUnique(merged, apiResults.titles);
+        appendUnique(merged, htmlResults.titles);
         boolean hasMore = htmlResults.hasMore || (apiResults.hasMore && apiResults.titles.size() > 0);
         boolean hasMoreKnown = htmlResults.hasMoreKnown || apiResults.hasMoreKnown;
         String nextPath = htmlResults.nextPath != null && htmlResults.nextPath.length() > 0

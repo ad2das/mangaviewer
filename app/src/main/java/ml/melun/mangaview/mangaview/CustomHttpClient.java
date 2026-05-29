@@ -1128,8 +1128,11 @@ public class CustomHttpClient {
     }
     public synchronized void clearCloudflareCookies() {
         boolean changed = false;
+        boolean keepRecentNtkClearance = isNtk() && hasRecentNtkAccessVerification();
         for(String key : new ArrayList<>(cookies.keySet())) {
             String lower = key.toLowerCase(Locale.ROOT);
+            if(keepRecentNtkClearance && "cf_clearance".equals(lower))
+                continue;
             if(lower.startsWith("cf_") || "__cf_bm".equals(lower)) {
                 cookies.remove(key);
                 changed = true;
@@ -1139,11 +1142,13 @@ public class CustomHttpClient {
             invalidateCookieHeaderCache();
             persistCookies();
         }
-        context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
-                .edit()
-                .remove("cfClearanceValue")
-                .remove("cfClearanceExpireAt")
-                .apply();
+        if(!keepRecentNtkClearance) {
+            context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
+                    .edit()
+                    .remove("cfClearanceValue")
+                    .remove("cfClearanceExpireAt")
+                    .apply();
+        }
     }
 
     public void clearCloudflareWebViewCookies(String... urls) {
@@ -2507,6 +2512,21 @@ public class CustomHttpClient {
         }
     }
 
+    public void clearNtkTransientLoads() {
+        clearPageCache();
+        synchronized (pageLoadsLock) {
+            for(PageLoadState loadState : pageLoads.values()) {
+                if(loadState != null) {
+                    loadState.error = new Exception("NTK clearance changed");
+                    loadState.done.countDown();
+                }
+            }
+            pageLoads.clear();
+        }
+        if(context != null)
+            NtkWebViewFallbackManager.get(context).cancelAll();
+    }
+
 
     public String getUrl(){
         return getComicUrl();
@@ -2922,7 +2942,8 @@ public class CustomHttpClient {
         if(code >= 200 && code < 400 && isNtkNavigableDocumentPath(path)) {
             try {
                 String body = response.peekBody(256 * 1024L).string();
-                return looksLikeUnrenderedNtkDocument(path, code, body);
+                return looksLikeUnrenderedNtkDocument(path, code, body)
+                        || looksLikeNtkRecoverableErrorFallbackDocument(path, code, body);
             } catch (Exception ignored) {
             }
         }
@@ -3314,6 +3335,23 @@ public class CustomHttpClient {
 
     static boolean looksLikeUnrenderedNtkDocumentForTest(String path, int code, String body) {
         return looksLikeUnrenderedNtkDocument(path, code, body);
+    }
+
+    static boolean looksLikeNtkRecoverableErrorFallbackDocumentForTest(String path, int code, String body) {
+        return looksLikeNtkRecoverableErrorFallbackDocument(path, code, body);
+    }
+
+    private static boolean looksLikeNtkRecoverableErrorFallbackDocument(String path, int code, String body) {
+        if(code < 200 || code >= 400 || body == null || body.length() == 0)
+            return false;
+        if(!isNtkNavigableDocumentPath(path))
+            return false;
+        String lower = body.toLowerCase(Locale.ROOT);
+        if(!(lower.contains("next_http_error_fallback") || lower.contains("id=\"__next_error__")
+                || lower.contains("id='__next_error__")))
+            return false;
+        return lower.contains("/_next/static/") || lower.contains("self.__next_f")
+                || lower.contains("id=\"__next\"") || lower.contains("id='__next'");
     }
 
     private static boolean looksLikeUnrenderedNtkDocument(String path, int code, String body) {

@@ -413,12 +413,13 @@ public class Manga {
             boolean blockedPage = client.isCloudflareChallengeResponse(page.code, page.body)
                     || looksLikeNtkBlockedPage(page.body);
             boolean missingPage = page.code >= 400 || looksLikeNtkMissingPage(page.body);
-            if(blockedPage || missingPage) {
-                if(addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount())) {
-                    logNtkViewerParse(blockedPage ? "generated-blocked" : "generated-missing", page, path, 0, 0);
-                } else if(blockedPage) {
-                    logNtkViewerParse("blocked", page, path, 0, 0);
-                    return LOAD_CAPTCHA;
+            if(blockedPage) {
+                logNtkViewerParse("blocked", page, path, 0, 0);
+                return LOAD_CAPTCHA;
+            } else if(missingPage) {
+                if(page.code >= 200 && page.code < 400
+                        && addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount())) {
+                    logNtkViewerParse("generated-missing", page, path, 0, 0);
                 } else {
                     logNtkViewerParse("missing", page, path, 0, 0);
                     return LOAD_ERROR;

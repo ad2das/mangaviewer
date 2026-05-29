@@ -373,12 +373,9 @@ public class EpisodeActivityNetworkTest {
         launchSearchWebtoonTitle(true);
 
         UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
-        UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 90000L);
-        assertNotNull("Expected NTK webtoon title to render at least one episode", episodeRow);
-
-        episodeRow.click();
-
-        assertReaderOpenedOrCaptchaShown(device, "NTK webtoon");
+        UiObject2 episodeRow = waitForEpisodeRowThroughAutoCaptcha(device, "NTK webtoon search episode list");
+        clickFreshEpisodeRow(device, episodeRow);
+        assertReaderOpenedThroughAutoCaptcha(device, "NTK webtoon");
     }
 
     @Test
@@ -496,29 +493,70 @@ public class EpisodeActivityNetworkTest {
 
     private Title findLiveWebtoonTitle(boolean ntk) throws Exception {
         String[] queries = {
+                "서툰 연하남의 이상한 계약",
+                "서툰 연하남",
                 "나 혼자만 레벨업",
                 "외모지상주의",
                 "화산귀환",
                 "마왕의 딸은 너무 착해"
         };
+        boolean retriedAfterCaptcha = false;
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
         for(String query : queries) {
-            Search search = new Search(query, 0, MTitle.base_webtoon);
-            int status = search.fetch(MainApplication.getHttpClient());
-            if(status != 0 || search.getResult() == null)
-                continue;
-            for(Title title : search.getResult()) {
-                if(title == null || title.getId() <= 0)
-                    continue;
-                if(title.getBaseMode() != MTitle.base_webtoon)
-                    continue;
-                if(ntk && !"ntk".equals(title.getSourceSite()))
-                    continue;
-                if(!ntk && !"wfwf".equals(title.getSourceSite()))
-                    continue;
+            Title title = searchLiveWebtoonTitle(query, ntk);
+            if(title != null)
                 return title;
+            if(ntk && !retriedAfterCaptcha) {
+                retriedAfterCaptcha = true;
+                openNtkCaptchaAndWaitForAutoVerification(device, "NTK webtoon search");
+                title = searchLiveWebtoonTitle(query, true);
+                if(title != null)
+                    return title;
             }
         }
         throw new AssertionError("Expected live " + (ntk ? "NTK" : "WFWF") + " webtoon search to return a launchable title");
+    }
+
+    private Title searchLiveWebtoonTitle(String query, boolean ntk) throws Exception {
+        Search search = new Search(query, 0, MTitle.base_webtoon);
+        int status = search.fetch(MainApplication.getHttpClient());
+        if(status != 0 || search.getResult() == null)
+            return null;
+        for(Title title : search.getResult()) {
+            if(title == null || title.getId() <= 0)
+                continue;
+            if(title.getBaseMode() != MTitle.base_webtoon)
+                continue;
+            if(ntk && !"ntk".equals(title.getSourceSite()))
+                continue;
+            if(!ntk && !"wfwf".equals(title.getSourceSite()))
+                continue;
+            return title;
+        }
+        return null;
+    }
+
+    private static void openNtkCaptchaAndWaitForAutoVerification(UiDevice device, String label) throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        Intent intent = new Intent(context, CaptchaActivity.class);
+        intent.putExtra("url", MainApplication.getHttpClient().getUrl());
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        context.startActivity(intent);
+
+        long deadline = System.currentTimeMillis() + 180000L;
+        boolean sawCaptcha = false;
+        while(System.currentTimeMillis() < deadline) {
+            if(MainApplication.getHttpClient().hasNtkAccessProof()) {
+                finishCaptchaActivities();
+                Thread.sleep(500L);
+                return;
+            }
+            if(isCaptchaShown(device))
+                sawCaptcha = true;
+            Thread.sleep(500L);
+        }
+        fail("Expected " + label + " auto captcha verification to finish"
+                + (sawCaptcha ? " after showing captcha" : ", but captcha screen was not observed"));
     }
 
     private ActivityScenario<EpisodeActivity> launchWfwfSummertimeTitle() {

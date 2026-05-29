@@ -18,8 +18,8 @@ public class HomeStartupPolicyTest {
     }
 
     @Test
-    public void ntkCaptchaWaitsUntilHomeIsUsable() {
+    public void ntkCaptchaStartsImmediatelyWhenNeeded() {
         assertEquals(0L, HomeStartupPolicy.autoCaptchaDelayMsForTest(false));
-        assertEquals(20_000L, HomeStartupPolicy.autoCaptchaDelayMsForTest(true));
+        assertEquals(0L, HomeStartupPolicy.autoCaptchaDelayMsForTest(true));
     }
 }

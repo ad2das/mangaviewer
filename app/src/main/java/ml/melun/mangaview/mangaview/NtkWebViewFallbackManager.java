@@ -15,6 +15,7 @@ import android.webkit.WebViewClient;
 
 import java.lang.ref.WeakReference;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -141,6 +142,44 @@ final class NtkWebViewFallbackManager {
 
     static long documentReadyWaitMsForTest(boolean highPriority, boolean wolfDocument) {
         return documentReadyWaitMs(highPriority, wolfDocument);
+    }
+
+    void cancelAll() {
+        Runnable cancel = () -> {
+            ArrayList<FetchTask> tasks;
+            synchronized (lock) {
+                tasks = new ArrayList<>(inFlight.values());
+                queue.clear();
+                activeTask = null;
+                inFlight.clear();
+            }
+            for(FetchTask task : tasks) {
+                if(task == null || task.completed)
+                    continue;
+                task.completed = true;
+                task.code = 0;
+                task.body = "";
+                task.done.countDown();
+            }
+            destroyWebView();
+        };
+        if(Looper.myLooper() == Looper.getMainLooper()) {
+            cancel.run();
+            return;
+        }
+        CountDownLatch done = new CountDownLatch(1);
+        mainHandler.post(() -> {
+            try {
+                cancel.run();
+            } finally {
+                done.countDown();
+            }
+        });
+        try {
+            done.await(2, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     static long webViewLoadTimeoutMsForTest(boolean highPriority, boolean wolfDocument) {
@@ -489,11 +528,13 @@ final class NtkWebViewFallbackManager {
                 + "function ntkViewerProps(v){v=lower(v);return v.indexOf('\"imagestoken\"')>=0&&v.indexOf('\"imagemetas\"')>=0;}"
                 + "function ntkRendered(){try{var episode=/^\\/(manhwa|webtoon)\\/[^\\/?#%]+\\/[^\\/?#%]+/.test(location.pathname||'');var ns=document.querySelectorAll('img[src],img[data-src],img[data-original],link[rel=preload][as=image][href]');for(var i=0;i<ns.length;i++){var s=(ns[i].getAttribute('src')||ns[i].getAttribute('data-src')||ns[i].getAttribute('data-original')||ns[i].getAttribute('href')||'').toLowerCase();if(s.indexOf('/webtoon_uploads/')>=0||s.indexOf('/manhwa_uploads/')>=0||s.indexOf('/comic_uploads/')>=0||s.indexOf('/blacktoon/episodes/')>=0)return true;}if(episode)return false;if(document.querySelector('.vw-main,.vw-imgs,.viewer-content,.toon-view,div.image-view,section.webtoon-body'))return true;var as=document.querySelectorAll('a[href]');for(var j=0;j<as.length;j++){var h=(as[j].getAttribute('href')||'').toLowerCase();if(/^\\/(manhwa|webtoon)\\/[^\\/?#%]+\\/[^\\/?#%]+/.test(h)&&h.indexOf('%5b')<0&&h.indexOf('page-')<0)return true;}return false;}catch(e){return false;}}"
                 + "function ntkShell(v){v=lower(v);return (v.indexOf('/_next/static/')>=0||v.indexOf('self.__next_f')>=0||v.indexOf('id=\"__next\"')>=0||v.indexOf(\"id='__next'\")>=0)&&(v.indexOf('%5bsourceworkid%5d')>=0||v.indexOf('[sourceworkid]')>=0||v.indexOf('%5bviewid%5d')>=0||v.indexOf('[viewid]')>=0||v.indexOf('next-route-announcer')>=0||v.indexOf('app-router-announcer')>=0)&&!ntkRendered();}"
+                + "function ntkErrorFallback(v){v=lower(v);return /^\\/(manhwa|webtoon)\\/[^\\/?#%]+\\/[^\\/?#%]+/.test(location.pathname||'')&&(v.indexOf('next_http_error_fallback')>=0||v.indexOf('id=\"__next_error__')>=0||v.indexOf(\"id='__next_error__\")>=0)&&(v.indexOf('/_next/static/')>=0||v.indexOf('self.__next_f')>=0||v.indexOf('id=\"__next\"')>=0||v.indexOf(\"id='__next'\")>=0);}"
                 + "function send(code,body){window.NtkBridge.onFetchResult(token,JSON.stringify({code:code,body:body||''}));}"
                 + "function check(){try{var v=html();"
                 + "if((emptyDoc(v)||webviewError(v))&&Date.now()-started<" + readyWaitMs + "){setTimeout(check,250);return;}"
                 + "if(challenge(v)&&Date.now()-started<" + readyWaitMs + "){setTimeout(check,350);return;}"
                 + "if(ntkViewerProps(v)){send(200,v);return;}"
+                + "if(ntkErrorFallback(v)&&Date.now()-started<" + readyWaitMs + "){setTimeout(check,300);return;}"
                 + "if(ntkShell(v)&&Date.now()-started<" + readyWaitMs + "){setTimeout(check,300);return;}"
                 + "if(emptyDoc(v)||webviewError(v)){send(0,v||'');return;}"
                 + "if(challenge(v)){send(403,v);return;}"

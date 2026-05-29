@@ -285,6 +285,8 @@ public class CaptchaActivity extends AppCompatActivity {
 
         Intent intent = getIntent();
         String url = resolveCaptchaUrl(intent, purl);
+        if(shouldFinishRedundantNtkCaptcha(url, "onCreate"))
+            return;
 
         infoText = this.findViewById(R.id.infoText);
         try {
@@ -491,6 +493,8 @@ public class CaptchaActivity extends AppCompatActivity {
         setIntent(intent);
         String purl = p.getUrl();
         captchaLoadUrl = resolveCaptchaUrl(intent, purl);
+        if(shouldFinishRedundantNtkCaptcha(captchaLoadUrl, "onNewIntent"))
+            return;
         retriedCaptchaWithQuic = false;
         quicCaptchaLoadInFlight = false;
         retriedCaptchaWithProxy = false;
@@ -499,6 +503,24 @@ public class CaptchaActivity extends AppCompatActivity {
         clearWebViewProxy();
         if(webView != null)
             loadCaptchaUrl(captchaLoadUrl);
+    }
+
+    private boolean shouldFinishRedundantNtkCaptcha(String url, String source) {
+        if(p == null || !p.isNtkSite())
+            return false;
+        if(!getHttpClient().hasNtkAccessProof())
+            return false;
+        Log.d("CaptchaActivity", "finish redundant NTK captcha intent source=" + source
+                + " proof=" + getHttpClient().hasNtkAccessProof()
+                + " recent=" + getHttpClient().hasRecentNtkAccessVerification()
+                + " url=" + url);
+        getHttpClient().markNtkAccessVerified();
+        isFinishing = true;
+        handler.removeCallbacksAndMessages(null);
+        Intent resultIntent = new Intent();
+        setResult(RESULT_CAPTCHA, resultIntent);
+        finish();
+        return true;
     }
 
     private String resolveCaptchaUrl(Intent intent, String purl) {
@@ -1467,7 +1489,7 @@ public class CaptchaActivity extends AppCompatActivity {
     private void finishWithVerifiedClearance() {
         String currentWebViewUrl = webView == null ? null : webView.getUrl();
         syncCaptchaCookiesToHttpClient(captchaLoadUrl, currentWebViewUrl);
-        getHttpClient().clearPageCache();
+        getHttpClient().clearNtkTransientLoads();
         Search.clearNtkResultCaches();
         detachCaptchaWebView();
         getHttpClient().saveClearanceToDisk();

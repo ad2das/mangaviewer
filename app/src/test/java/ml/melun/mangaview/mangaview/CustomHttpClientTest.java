@@ -141,6 +141,17 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkNextErrorFallbackCanUseWebViewForEpisode() {
+        String body = "<html><body><div id=\"__next\"></div>"
+                + "<script src=\"/_next/static/chunks/app/manhwa/%5BsourceWorkId%5D/%5BviewId%5D/page-abcd.js\"></script>"
+                + "<script>self.__next_f.push([\"NEXT_HTTP_ERROR_FALLBACK\",404])</script></body></html>";
+
+        assertTrue(CustomHttpClient.looksLikeNtkRecoverableErrorFallbackDocumentForTest("/manhwa/8252/64225", 200, body));
+        assertFalse(CustomHttpClient.looksLikeNtkRecoverableErrorFallbackDocumentForTest("/api/manhwa-list", 200, body));
+        assertFalse(CustomHttpClient.looksLikeNtkRecoverableErrorFallbackDocumentForTest("/manhwa/8252/64225", 404, body));
+    }
+
+    @Test
     public void ntkWebViewFallbackRequiresSharedWebViewMode() {
         assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1/2",
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));

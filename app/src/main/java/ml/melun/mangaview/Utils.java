@@ -1276,7 +1276,7 @@ public class Utils {
         syncNtkCloudflareCookies(preference, false);
         if(isNtkEpisodeUrl(url))
             return false;
-        if(getHttpClient().hasNtkAccessProof() || getHttpClient().hasRecentNtkAccessVerification())
+        if(getHttpClient().hasNtkAccessProof())
             return verifyNtkAccessAndOpenCaptchaIfNeeded(context, code, fragment, preference);
         if(openRecentNtkCloudflareChallenge(context, code, fragment))
             return true;
@@ -1298,20 +1298,18 @@ public class Utils {
         if(shouldBlockCaptchaForOffline(checkConnection(context)))
             return false;
         syncNtkCloudflareCookies(preference, false);
-        if(getHttpClient().hasNtkAccessProof() || getHttpClient().hasRecentNtkAccessVerification()) {
-            verifyNtkAccessAndOpenCaptchaIfNeeded(context, code, fragment, preference);
-            return false;
-        }
-        if(openRecentNtkCloudflareChallenge(context, code, fragment))
+        if(!getHttpClient().hasNtkAccessProof()) {
+            startCaptchaActivity(context, code, fragment, null);
+            captchaCount++;
             return true;
-        String challengedUrl = getHttpClient().getLastCloudflareChallengeUrl();
-        if(challengedUrl == null || challengedUrl.length() == 0 || !getHttpClient().isNtkUrl(challengedUrl))
-            return false;
-        if(!shouldOpenCloudflareCaptchaAutomatically())
-            return false;
-        startCaptchaActivity(context, code, fragment, null);
-        captchaCount++;
-        return true;
+        }
+        verifyNtkAccessAndOpenCaptchaIfNeeded(context, code, fragment, preference);
+        return false;
+    }
+
+    private static boolean shouldSuppressNtkCaptchaAfterRecentVerification() {
+        return getHttpClient().isNtk()
+                && getHttpClient().hasNtkAccessProof();
     }
 
     public static boolean verifyNtkAccessAndOpenCaptchaIfNeeded(Context context, int code, Fragment fragment, Preference preference) {
@@ -1319,13 +1317,21 @@ public class Utils {
             return false;
         if(shouldBlockCaptchaForOffline(checkConnection(context)))
             return false;
+        if(shouldSuppressNtkCaptchaAfterRecentVerification())
+            return false;
         syncNtkCloudflareCookies(preference, false);
+        if(shouldSuppressNtkCaptchaAfterRecentVerification())
+            return false;
         AppDispatchers.runUserAction(() -> {
+            if(shouldSuppressNtkCaptchaAfterRecentVerification())
+                return;
             boolean challenged = isNtkAccessChallengeActive();
             if(challenged) {
+                if(shouldSuppressNtkCaptchaAfterRecentVerification())
+                    return;
                 clearNtkChallengeCookies(preference);
                 AppDispatchers.runOnMain(() -> {
-                    if(!canUseContextForUi(context))
+                    if(!canUseContextForUi(context) || shouldSuppressNtkCaptchaAfterRecentVerification())
                         return;
                     startCaptchaActivity(context, code, fragment, null);
                     captchaCount++;
@@ -1334,7 +1340,7 @@ public class Utils {
                 getHttpClient().markNtkAccessVerified();
             }
         });
-        return true;
+        return false;
     }
 
     private static boolean openRecentNtkCloudflareChallenge(Context context, int code, Fragment fragment) {
@@ -1354,17 +1360,21 @@ public class Utils {
         if(shouldBlockCaptchaForOffline(checkConnection(context)))
             return false;
         syncNtkCloudflareCookies(preference, true);
-        if(!getHttpClient().hasNtkAccessProof() && !getHttpClient().hasRecentNtkAccessVerification()) {
+        if(!getHttpClient().hasNtkAccessProof()) {
             startCaptchaActivity(context, code, fragment, null);
             captchaCount++;
             return true;
         }
         AppDispatchers.runUserAction(() -> {
+            if(shouldSuppressNtkCaptchaAfterRecentVerification())
+                return;
             if(!isNtkAccessChallengeActive())
+                return;
+            if(shouldSuppressNtkCaptchaAfterRecentVerification())
                 return;
             clearNtkChallengeCookies(preference);
             AppDispatchers.runOnMain(() -> {
-                if(!canUseContextForUi(context))
+                if(!canUseContextForUi(context) || shouldSuppressNtkCaptchaAfterRecentVerification())
                     return;
                 startCaptchaActivity(context, code, fragment, null);
                 captchaCount++;
