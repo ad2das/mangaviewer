@@ -23,6 +23,7 @@ import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -3559,12 +3560,52 @@ public class CustomHttpClient {
             headers.put("x-images-client", "viewer-v1");
             headers.put("origin", baseUrl);
             headers.put("referer", baseUrl + "/" + kind + "/" + workId + "/" + episodeId);
+            // Native ACK bypass: try to complete ad/challenge flow natively without WebView
+            boolean nativeAckCompleted = false;
+            try {
+                nativeAckCompleted = performNtkNativeAckBypass(baseUrl, path);
+            } catch(Exception ackEx) {
+                if(Log.isLoggable(TAG, Log.DEBUG))
+                    Log.d(TAG, "ntk_native_ack_bypass_error=" + ackEx);
+            }
+            if(nativeAckCompleted) {
+                if(Log.isLoggable(TAG, Log.DEBUG))
+                    Log.d(TAG, "ntk_native_ack_bypass_success path=" + path);
+                NtkQuicFetcher.Result result = NtkQuicFetcher.fetch(context, baseUrl + endpoint, agent,
+                        getCookieHeader(), headers, "POST",
+                        payload.toString().getBytes(StandardCharsets.UTF_8), 30000L);
+                ViewerWarmupManager.logMetric("ntk_images_api_code", result.code);
+                if(Log.isLoggable(TAG, Log.DEBUG)) {
+                    Log.d(TAG, "ntk_native_images_code=" + (result == null ? "null" : result.code)
+                            + ",error=" + (result == null || result.error == null ? "null" : result.error));
+                    if(result != null && result.body != null)
+                        Log.d(TAG, "ntk_native_images_body=" + result.body.substring(0, Math.min(1200, result.body.length())));
+                }
+                if(result.error == null && result.code >= 200 && result.code < 300 && result.body != null) {
+                    JSONObject response = new JSONObject(result.body);
+                    if(response.optBoolean("ok", false)) {
+                        JSONArray images = response.optJSONArray("images");
+                        if(images != null) {
+                            for(int i = 0; i < images.length(); i++) {
+                                JSONObject image = images.optJSONObject(i);
+                                String src = image == null ? "" : image.optString("src", "");
+                                if(src.length() > 0)
+                                    urls.add(src);
+                            }
+                            if(urls.size() > 0)
+                                return urls;
+                        }
+                    }
+                }
+            }
+            // Fall back to WebView if native ACK bypass failed or returned no images
             if(MainApplication.currentActivity != null) {
                 urls.addAll(NtkWebViewFallbackManager.get(context).fetchViewerImageUrls(agent, baseUrl,
                         path, headers, kind, workId, episodeId, imagesToken));
                 if(urls.size() > 0)
                     return urls;
             }
+            // Last-resort native fallback without ACK
             NtkQuicFetcher.Result result = NtkQuicFetcher.fetch(context, baseUrl + endpoint, agent,
                     getCookieHeader(), headers, "POST",
                     payload.toString().getBytes(StandardCharsets.UTF_8), 30000L);
@@ -3600,6 +3641,78 @@ public class CustomHttpClient {
             applySetCookieHeaders(result.headers);
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
+    private boolean performNtkNativeAckBypass(String baseUrl, String path) {
+        if(baseUrl == null || path == null || baseUrl.length() == 0 || path.length() == 0)
+            return false;
+        try {
+            Map<String, String> h = new HashMap<>();
+            h.put("content-type", "application/json");
+            h.put("accept", "application/json");
+            h.put("origin", baseUrl);
+            h.put("referer", baseUrl + path);
+
+            // 1. POST /api/ad/challenge
+            JSONObject challengePayload = new JSONObject();
+            challengePayload.put("path", path);
+            NtkQuicFetcher.Result challenge = NtkQuicFetcher.fetch(context, baseUrl + "/api/ad/challenge", agent,
+                    getCookieHeader(), h, "POST",
+                    challengePayload.toString().getBytes(StandardCharsets.UTF_8), 15000L);
+            Log.d(TAG, "ntk_native_ack_challenge_code=" + (challenge == null ? "null" : challenge.code));
+            if(challenge == null || challenge.error != null || challenge.code != 200 || challenge.body == null)
+                return false;
+            JSONObject challengeJson = new JSONObject(challenge.body);
+            if(!challengeJson.optBoolean("ok", false))
+                return false;
+            JSONObject challengeObj = challengeJson.optJSONObject("challenge");
+            if(challengeObj == null)
+                return false;
+            String token = challengeObj.optString("token", "");
+            JSONArray impressionUrls = challengeObj.optJSONArray("impressionUrls");
+            Log.d(TAG, "ntk_native_ack_challenge_token_len=" + token.length() + ",impressions=" + (impressionUrls == null ? 0 : impressionUrls.length()));
+
+            // 2. GET impression URLs (ad tracking pixels)
+            if(impressionUrls != null) {
+                for(int i = 0; i < impressionUrls.length(); i++) {
+                    String url = impressionUrls.optString(i, "");
+                    if(url.length() == 0) continue;
+                    if(!url.startsWith("http")) url = baseUrl + url;
+                    NtkQuicFetcher.Result imp = NtkQuicFetcher.fetch(context, url, agent,
+                            getCookieHeader(), Collections.emptyMap(), "GET", null, 10000L);
+                    Log.d(TAG, "ntk_native_ack_imp i=" + i + ",code=" + (imp == null ? "null" : imp.code));
+                }
+            }
+
+            // 3. POST /api/ad/canary with challenge token
+            JSONObject canaryPayload = new JSONObject();
+            canaryPayload.put("path", path);
+            if(token.length() > 0) canaryPayload.put("token", token);
+            NtkQuicFetcher.Result canary = NtkQuicFetcher.fetch(context, baseUrl + "/api/ad/canary", agent,
+                    getCookieHeader(), h, "POST",
+                    canaryPayload.toString().getBytes(StandardCharsets.UTF_8), 10000L);
+            Log.d(TAG, "ntk_native_ack_canary_code=" + (canary == null ? "null" : canary.code));
+            if(canary != null && canary.body != null) {
+                Log.d(TAG, "ntk_native_ack_canary_body=" + canary.body.substring(0, Math.min(300, canary.body.length())));
+            }
+
+            // 4. POST /api/ad/ack with challenge token
+            JSONObject ackPayload = new JSONObject();
+            ackPayload.put("path", path);
+            if(token.length() > 0) ackPayload.put("token", token);
+            NtkQuicFetcher.Result ack = NtkQuicFetcher.fetch(context, baseUrl + "/api/ad/ack", agent,
+                    getCookieHeader(), h, "POST",
+                    ackPayload.toString().getBytes(StandardCharsets.UTF_8), 10000L);
+            Log.d(TAG, "ntk_native_ack_ack_code=" + (ack == null ? "null" : ack.code));
+            if(ack != null && ack.body != null) {
+                Log.d(TAG, "ntk_native_ack_ack_body=" + ack.body.substring(0, Math.min(500, ack.body.length())));
+            }
+
+            return ack != null && ack.code == 200;
+        } catch(Exception e) {
+            Log.d(TAG, "ntk_native_ack_bypass_exception=" + e);
+            return false;
         }
     }
 

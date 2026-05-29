@@ -761,7 +761,8 @@ final class NtkWebViewFallbackManager {
                 + "function acked(){try{return window.__ntk_ad_ack_scope===scope;}catch(e){return false;}}"
                 + "function waitAck(ms,rearm){return new Promise(function(resolve){if(acked())return resolve(true);var done=false;function finish(v){if(done)return;done=true;clearTimeout(to);clearInterval(iv);window.removeEventListener('ntk-ad-ack-ready',ev);resolve(v);}function ev(e){if((e.detail&&e.detail.scope===scope)||acked())finish(true);}var to=setTimeout(function(){finish(acked());},ms);var iv=setInterval(function(){if(acked())finish(true);},80);window.addEventListener('ntk-ad-ack-ready',ev);if(rearm){try{if(window.__ntk_ad_ack_scope===scope)delete window.__ntk_ad_ack_scope;}catch(e){}try{window.dispatchEvent(new CustomEvent('ntk-ack-rearm',{detail:{reason:kind+'-native-403',scope:scope}}));}catch(e){}}});}"
                 + "async function api(){var v=await nv();if(!v)return{status:401,body:{error:'missing session'}};var n=new Uint8Array(24);crypto.getRandomValues(n);var nonce=b64(n);var proof=await hmac(v,token+'.'+nonce+'.'+navigator.userAgent);var r=await fetch(endpoint,{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'content-type':'application/json','x-images-client':'viewer-v1'},body:JSON.stringify({workId:workId,episodeId:episodeId,token:token,nonce:nonce,proof:proof})});var b=await r.json().catch(function(){return {};});return{status:r.status,body:b};}"
-                + "(async function(){try{for(var i=0;i<20;i++){if(document.body)break;await sleep(100);}await waitAck(18000,true);var deadline=Date.now()+45000,r=null;while(Date.now()<deadline){r=await api();if(!(r.status===403&&r.body&&r.body.error==='ad_ack_required'))break;await waitAck(Math.min(1800,Math.max(0,deadline-Date.now())),true);await sleep(180);}send({code:r?r.status:0,body:r?r.body:{error:'timeout'}});}catch(e){send({code:0,error:String(e)});}})();"
+                + "function extractAckState(){try{var ls={},ss={},i,k;for(i=0;i<localStorage.length;i++){k=localStorage.key(i);if(k)ls[k]=localStorage.getItem(k);}for(i=0;i<sessionStorage.length;i++){k=sessionStorage.key(i);if(k)ss[k]=sessionStorage.getItem(k);}return JSON.stringify({cookies:document.cookie,local:ls,session:ss,ackScope:(function(){try{return window.__ntk_ad_ack_scope;}catch(e){return null;}})(),ntkVars:(function(){try{var o={};for(var p in window)if(p.indexOf('__ntk')===0)try{o[p]=String(window[p]);}catch(e){}return o;}catch(e){return{};}})(),ua:navigator.userAgent,ts:Date.now()});}catch(e){return JSON.stringify({error:String(e)});}}"
+                + "(async function(){try{for(var i=0;i<20;i++){if(document.body)break;await sleep(100);}await waitAck(18000,true);try{window.NtkViewerBridge.onAckState(extractAckState());}catch(e){}var deadline=Date.now()+45000,r=null;while(Date.now()<deadline){r=await api();if(!(r.status===403&&r.body&&r.body.error==='ad_ack_required'))break;try{window.NtkViewerBridge.onAckState(extractAckState());}catch(e){}await waitAck(Math.min(1800,Math.max(0,deadline-Date.now())),true);await sleep(180);}send({code:r?r.status:0,body:r?r.body:{error:'timeout'}});}catch(e){send({code:0,error:String(e)});}})();"
                 + "})()";
     }
 
@@ -1015,6 +1016,12 @@ final class NtkWebViewFallbackManager {
             result.body = value == null ? "" : value;
             finish.run();
         }
+
+        @JavascriptInterface
+        public void onAckState(String value) {
+            if(Log.isLoggable(TAG, Log.DEBUG))
+                Log.d(TAG, "ntk_ack_state=" + (value == null ? "" : value));
+        }
     }
 
     private static final class NtkQuicBridge {
@@ -1044,6 +1051,12 @@ final class NtkWebViewFallbackManager {
                             + ",code=" + result.code
                             + ",len=" + result.bodyBytes.length
                             + ",url=" + url);
+                if(Log.isLoggable(TAG, Log.DEBUG) && url != null && url.contains("/api/ad/") && body != null && body.length > 0) {
+                    try {
+                        String bodyStr = new String(body, java.nio.charset.StandardCharsets.UTF_8);
+                        Log.d(TAG, "ntk_bridge_ad_body url=" + url + " body=" + bodyStr.substring(0, Math.min(600, bodyStr.length())));
+                    } catch(Exception ignored) {}
+                }
                 JSONObject object = new JSONObject();
                 object.put("ok", true);
                 object.put("status", result.code);
