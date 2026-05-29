@@ -290,6 +290,8 @@ public class Search {
     private static boolean shouldReportSearchFailure(Exception e) {
         if(e == null)
             return false;
+        if(isCaptchaRequiredException(e))
+            return false;
         String message = e.getMessage();
         if(message != null && message.startsWith("Request failed:"))
             return false;
@@ -1748,12 +1750,14 @@ public class Search {
             PageTitles htmlResults = new PageTitles(new ArrayList<>(), null, true, false, 0);
             PageTitles apiResults = new PageTitles(new ArrayList<>(), null, true, false, 0);
             int success = 0;
+            boolean captchaRequired = false;
             for(int i = 0; i < running.size(); i++) {
                 NtkHybridPart part = completion.take().get();
                 if(part == null)
                     continue;
                 if(part.success)
                     success++;
+                captchaRequired = captchaRequired || part.captchaRequired;
                 if(part.pageTitles != null && part.pageTitles.titles.size() > 0)
                     publishPartialResults(part.pageTitles.titles);
                 if("api".equals(part.kind))
@@ -1768,6 +1772,8 @@ public class Search {
                             + ",api=" + apiResults.titles.size()
                             + ",count=" + merged.titles.size()
                             + ",hasMore=" + merged.hasMore);
+            if(merged.titles.size() == 0 && captchaRequired)
+                throw new NtkCaptchaRequiredException();
             return merged;
         } finally {
             for(Future<NtkHybridPart> future : running)
@@ -1791,6 +1797,8 @@ public class Search {
                     : client.runWithRequestGroup(requestGroup, () -> loader.load());
             return new NtkHybridPart(kind, pageTitles, true);
         } catch (Exception e) {
+            if(isCaptchaRequiredException(e))
+                return new NtkHybridPart(kind, new PageTitles(new ArrayList<>(), null, true, false, 0), false, true);
             if((requestGroup == null || !requestGroup.isCancelled()) && shouldReportSearchFailure(e))
                 ml.melun.mangaview.report.CrashReporter.record(e);
             return new NtkHybridPart(kind, new PageTitles(new ArrayList<>(), null, true, false, 0), false);
@@ -1829,6 +1837,7 @@ public class Search {
         int successfulPaths = 0;
         int parsedCandidates = 0;
         String singleNextPath = null;
+        boolean captchaRequired = false;
         if(shouldFetchNtkKeywordApiPathsInParallel(paths)) {
             CompletionService<NtkApiPathResult> completion = AppDispatchers.ioCompletionService();
             ArrayList<Future<NtkApiPathResult>> running = new ArrayList<>();
@@ -1845,6 +1854,7 @@ public class Search {
                         continue;
                     if(result.success)
                         successfulPaths++;
+                    captchaRequired = captchaRequired || result.captchaRequired;
                     parsedCandidates += Math.max(0, result.parsedCount);
                     appendUnique(titles, result.pageTitles.titles);
                     hasMore = hasMore || result.pageTitles.hasMore;
@@ -1859,6 +1869,7 @@ public class Search {
             NtkApiPathResult result = fetchNtkKeywordApiPathResult(client, paths.get(0), targetBaseMode, limit, currentPage, totalStartedAt);
             if(result.success)
                 successfulPaths++;
+            captchaRequired = result.captchaRequired;
             parsedCandidates += Math.max(0, result.parsedCount);
             appendUnique(titles, result.pageTitles.titles);
             hasMore = result.pageTitles.hasMore;
@@ -1871,6 +1882,8 @@ public class Search {
                         + ",parsedCandidates=" + parsedCandidates
                         + ",count=" + titles.size()
                         + ",total=" + total);
+        if(titles.size() == 0 && captchaRequired)
+            throw new NtkCaptchaRequiredException();
         if(titles.size() == 0)
             return new PageTitles(new ArrayList<>(), null,
                     isNtkKeywordApiEmptyAuthoritative(successfulPaths, paths.size(), total, parsedCandidates),
@@ -1912,6 +1925,8 @@ public class Search {
             traceSearchMetric("ntk_search_api_error_ms", totalStartedAt,
                     ",path=" + ntkMetricPath(path)
                             + ",type=" + e.getClass().getSimpleName());
+            if(isCaptchaRequiredException(e))
+                return new NtkApiPathResult(path, new PageTitles(new ArrayList<>(), null), false, 0, true);
             if(shouldReportSearchFailure(e))
                 ml.melun.mangaview.report.CrashReporter.record(e);
             return new NtkApiPathResult(path, new PageTitles(new ArrayList<>(), null), false, 0);
@@ -1976,7 +1991,8 @@ public class Search {
     private static NtkApiPathResult copyNtkApiPathResult(NtkApiPathResult source) {
         if(source == null)
             return null;
-        return new NtkApiPathResult(source.path, copyPageTitles(source.pageTitles), source.success, source.parsedCount);
+        return new NtkApiPathResult(source.path, copyPageTitles(source.pageTitles), source.success,
+                source.parsedCount, source.captchaRequired);
     }
 
     private static class NtkApiPathResult {
@@ -1984,12 +2000,18 @@ public class Search {
         final PageTitles pageTitles;
         final boolean success;
         final int parsedCount;
+        final boolean captchaRequired;
 
         NtkApiPathResult(String path, PageTitles pageTitles, boolean success, int parsedCount) {
+            this(path, pageTitles, success, parsedCount, false);
+        }
+
+        NtkApiPathResult(String path, PageTitles pageTitles, boolean success, int parsedCount, boolean captchaRequired) {
             this.path = path;
             this.pageTitles = pageTitles == null ? new PageTitles(new ArrayList<>(), null) : pageTitles;
             this.success = success;
             this.parsedCount = parsedCount;
+            this.captchaRequired = captchaRequired;
         }
     }
 
@@ -1997,11 +2019,17 @@ public class Search {
         final String kind;
         final PageTitles pageTitles;
         final boolean success;
+        final boolean captchaRequired;
 
         NtkHybridPart(String kind, PageTitles pageTitles, boolean success) {
+            this(kind, pageTitles, success, false);
+        }
+
+        NtkHybridPart(String kind, PageTitles pageTitles, boolean success, boolean captchaRequired) {
             this.kind = kind == null ? "" : kind;
             this.pageTitles = pageTitles == null ? new PageTitles(new ArrayList<>(), null) : pageTitles;
             this.success = success;
+            this.captchaRequired = captchaRequired;
         }
     }
 
@@ -2148,7 +2176,24 @@ public class Search {
         if(client == null || !client.isCloudflareChallengeResponse(code, body))
             return;
         client.markCloudflareChallenge(resolveChallengeUrl(client, path));
-        throw new Exception("Cloudflare challenge");
+        throw new NtkCaptchaRequiredException();
+    }
+
+    private static boolean isCaptchaRequiredException(Exception e) {
+        if(e instanceof NtkCaptchaRequiredException)
+            return true;
+        String message = e == null ? null : e.getMessage();
+        return message != null && message.toLowerCase(Locale.ROOT).contains("cloudflare challenge");
+    }
+
+    static boolean isCaptchaRequiredExceptionForTest(Exception e) {
+        return isCaptchaRequiredException(e);
+    }
+
+    private static class NtkCaptchaRequiredException extends Exception {
+        NtkCaptchaRequiredException() {
+            super("Cloudflare challenge");
+        }
     }
 
     private static String resolveChallengeUrl(CustomHttpClient client, String path) {

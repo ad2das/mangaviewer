@@ -19,9 +19,18 @@ public class SearchTest {
         assertFalse(Search.shouldReportSearchFailureForTest(
                 new Exception("Request failed: /api/manhwa-list?status=completed")));
         assertFalse(Search.shouldReportSearchFailureForTest(
+                new Exception("Cloudflare challenge")));
+        assertFalse(Search.shouldReportSearchFailureForTest(
                 new IOException("Network is unreachable")));
         assertTrue(Search.shouldReportSearchFailureForTest(
                 new IllegalStateException("parser invariant failed")));
+    }
+
+    @Test
+    public void cloudflareSearchFailuresAreCaptchaRequired() {
+        assertTrue(Search.isCaptchaRequiredExceptionForTest(new Exception("Cloudflare challenge")));
+        assertTrue(Search.isCaptchaRequiredExceptionForTest(new Exception("Cloudflare challenge/cookie issue")));
+        assertFalse(Search.isCaptchaRequiredExceptionForTest(new IOException("Network is unreachable")));
     }
 
     @Test

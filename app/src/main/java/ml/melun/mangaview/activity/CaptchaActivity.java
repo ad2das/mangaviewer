@@ -36,6 +36,7 @@ import android.widget.Toast;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.Executor;
@@ -406,7 +407,10 @@ public class CaptchaActivity extends AppCompatActivity {
         if(pasteCookie != null)
             pasteCookie.setOnClickListener(v -> pasteClearanceCookie(purl));
         if(close != null)
-            close.setOnClickListener(v -> finish());
+            close.setOnClickListener(v -> {
+                syncCaptchaCookiesToHttpClient(purl, webView == null ? null : webView.getUrl());
+                finish();
+            });
     }
 
     private void showCaptchaLoadError(String failingUrl) {
@@ -741,6 +745,8 @@ public class CaptchaActivity extends AppCompatActivity {
             lastCookieReadAt = now;
         }
         try {
+            cookiem.flush();
+            syncCaptchaCookiesToHttpClient(purl, currentUrl);
             boolean hasClearance = false;
             final String[] clearanceValue = new String[1];
             for(String cookieUrl : cookieReadUrls(purl, currentUrl)) {
@@ -774,13 +780,10 @@ public class CaptchaActivity extends AppCompatActivity {
                         && clearanceValue[0].equals(lastVerificationClearanceValue)
                         && now - lastClearanceVerificationAt < 5000L)
                     return false;
-                cookiem.flush();
-                getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
-                getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
-                getHttpClient().syncCookiesFromWebView(purl, true);
-                if(currentUrl != null)
-                    getHttpClient().syncCookiesFromWebView(currentUrl, true);
+                syncCaptchaCookiesToHttpClient(purl, currentUrl);
                 verifyNtkAccessAndFinish(purl, currentUrl, clearanceValue[0]);
+            } else if(getHttpClient().hasCloudflareClearance()) {
+                verifyNtkAccessAndFinish(purl, currentUrl, null);
             }
         }catch (Exception e){
             ml.melun.mangaview.report.CrashReporter.record(e);
@@ -799,6 +802,7 @@ public class CaptchaActivity extends AppCompatActivity {
         lastVerificationClearanceValue = clearanceValue;
         lastClearanceVerificationAt = now;
         accessVerificationInFlight = true;
+        syncCaptchaCookiesToHttpClient(purl, currentUrl);
         AppDispatchers.runIo(() -> {
             boolean verified = verifyNtkAccess(purl, currentUrl);
             AppDispatchers.runOnMain(() -> {
@@ -866,13 +870,8 @@ public class CaptchaActivity extends AppCompatActivity {
 
     private void finishWithVerifiedClearance() {
         String currentWebViewUrl = webView == null ? null : webView.getUrl();
+        syncCaptchaCookiesToHttpClient(captchaLoadUrl, currentWebViewUrl);
         detachCaptchaWebView();
-        CookieManager manager = CookieManager.getInstance();
-        manager.flush();
-        getHttpClient().syncCookiesFromWebView(p.getWebtoonUrl(), true);
-        getHttpClient().syncCookiesFromWebView(p.getUrl(), true);
-        if(currentWebViewUrl != null)
-            getHttpClient().syncCookiesFromWebView(currentWebViewUrl, true);
         getHttpClient().saveClearanceToDisk();
         getHttpClient().markNtkAccessVerified();
         isFinishing = true;
@@ -1007,18 +1006,46 @@ public class CaptchaActivity extends AppCompatActivity {
     }
 
     private String[] cookieReadUrls(String purl, String currentUrl) {
-        return new String[]{
-                currentUrl,
-                purl,
-                p.getWebtoonUrl(),
-                p.getUrl(),
-                NTK_WEBTOON_URL,
-                NTK_COMIC_URL
-        };
+        LinkedHashSet<String> urls = new LinkedHashSet<>();
+        addCookieReadUrl(urls, currentUrl);
+        addCookieReadUrl(urls, purl);
+        addCookieReadUrl(urls, captchaLoadUrl);
+        addCookieReadUrl(urls, p.getWebtoonUrl());
+        addCookieReadUrl(urls, p.getUrl());
+        addCookieReadUrl(urls, getHttpClient().getUrl());
+        addCookieReadUrl(urls, NTK_WEBTOON_URL);
+        addCookieReadUrl(urls, NTK_COMIC_URL);
+        return urls.toArray(new String[0]);
+    }
+
+    private void addCookieReadUrl(Set<String> urls, String url) {
+        if(url == null || url.length() == 0)
+            return;
+        urls.add(url);
+        try {
+            android.net.Uri uri = android.net.Uri.parse(url);
+            String scheme = uri.getScheme();
+            String host = uri.getHost();
+            if(scheme != null && host != null && host.length() > 0)
+                urls.add(scheme + "://" + host);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void syncCaptchaCookiesToHttpClient(String purl, String currentUrl) {
+        try {
+            CookieManager manager = CookieManager.getInstance();
+            manager.flush();
+            for(String cookieUrl : cookieReadUrls(purl, currentUrl))
+                getHttpClient().syncCookiesFromWebView(cookieUrl, true);
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
     }
 
     @Override
     protected void onDestroy() {
+        syncCaptchaCookiesToHttpClient(captchaLoadUrl, webView == null ? null : webView.getUrl());
         isFinishing = true;
         handler.removeCallbacksAndMessages(null);
         getHttpClient().setCloudflareCaptchaActive(false);
@@ -1030,6 +1057,7 @@ public class CaptchaActivity extends AppCompatActivity {
 
     @Override
     public void finish() {
+        syncCaptchaCookiesToHttpClient(captchaLoadUrl, webView == null ? null : webView.getUrl());
         isFinishing = true;
         handler.removeCallbacksAndMessages(null);
         clearWebViewProxy();
