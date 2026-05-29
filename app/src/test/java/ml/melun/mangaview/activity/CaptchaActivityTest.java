@@ -60,4 +60,14 @@ public class CaptchaActivityTest {
         assertFalse(CaptchaActivity.shouldRetryCaptchaLoadWithoutProxyForTest(
                 false, true, false, "https://sbxh3.com/manhwa/3540"));
     }
+
+    @Test
+    public void captchaUserAgentUsesCurrentWebViewVersionWithoutWvMarker() {
+        String ua = CaptchaActivity.captchaUserAgentForTest(
+                "Mozilla/5.0 (Linux; Android 15; sdk_gphone64_x86_64 Build/AE3A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/124.0.6367.219 Mobile Safari/537.36");
+
+        assertTrue(ua.contains("Chrome/124.0.6367.219"));
+        assertFalse(ua.contains("; wv"));
+        assertFalse(ua.contains("Version/4.0"));
+    }
 }

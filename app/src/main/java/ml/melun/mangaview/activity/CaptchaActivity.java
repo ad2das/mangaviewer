@@ -128,6 +128,20 @@ public class CaptchaActivity extends AppCompatActivity {
             "}" +
             "}" +
             "var host=(location.hostname||'').toLowerCase();" +
+            "function normalNtkPage(){" +
+            "if(host.indexOf('ntk')<0&&host.indexOf('sbxh')<0&&host.indexOf('toonflix')<0)return false;" +
+            "var pageText=(document.body&&document.body.innerText||'').replace(/\\s+/g,' ');" +
+            "if(pageText.length>200&&(pageText.indexOf('NEWTOKI')>=0||pageText.indexOf('웹툰')>=0&&pageText.indexOf('만화')>=0))return true;" +
+            "if(document.querySelector('a[href^=\"/manhwa\"],a[href^=\"/webtoon\"],a[href*=\"/manhwa/\"],a[href*=\"/webtoon/\"]'))return true;" +
+            "if(document.querySelector('img[src*=\"/webtoon_uploads/\"],img[src*=\"/manhwa_uploads/\"],img[src*=\"/comic_uploads/\"],img[data-src*=\"/webtoon_uploads/\"],img[data-src*=\"/manhwa_uploads/\"],img[data-src*=\"/comic_uploads/\"]'))return true;" +
+            "if(document.querySelector('main,#__next,.container,.content,.list,.post,.view,.toon')){" +
+            "var links=document.querySelectorAll('a[href]').length;" +
+            "var imgs=document.querySelectorAll('img[src],img[data-src]').length;" +
+            "if(links>=8||imgs>=4)return true;" +
+            "}" +
+            "return false;" +
+            "}" +
+            "if(normalNtkPage())return JSON.stringify({type:'normal'});" +
             "var text=(document.body&&document.body.innerText||'').replace(/\\s+/g,' ');" +
             "if((host.indexOf('ntk')>=0||host.indexOf('sbxh')>=0)&&text.length>200&&(text.indexOf('NEWTOKI')>=0||text.indexOf('실시간 웹툰 랭킹')>=0||text.indexOf('웹툰')>=0&&text.indexOf('만화')>=0))" +
             "return JSON.stringify({type:'normal'});" +
@@ -212,11 +226,7 @@ public class CaptchaActivity extends AppCompatActivity {
         settings.setJavaScriptCanOpenWindowsAutomatically(false);
         settings.setSupportMultipleWindows(false);
 
-        // Use real Chrome Mobile UA, remove "wv" indicator
-        String realChromeUA = getHttpClient().agent;
-        if(realChromeUA == null || realChromeUA.length() == 0) {
-            realChromeUA = "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36";
-        }
+        String realChromeUA = captchaUserAgent(settings.getUserAgentString());
         settings.setUserAgentString(realChromeUA);
         getHttpClient().setUserAgent(settings.getUserAgentString());
 
@@ -413,6 +423,22 @@ public class CaptchaActivity extends AppCompatActivity {
             });
     }
 
+    static String captchaUserAgentForTest(String defaultUserAgent) {
+        return captchaUserAgent(defaultUserAgent);
+    }
+
+    private static String captchaUserAgent(String defaultUserAgent) {
+        if(defaultUserAgent == null || defaultUserAgent.trim().length() == 0)
+            return "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
+        String ua = defaultUserAgent.trim()
+                .replace("; wv", "")
+                .replace(" wv", "")
+                .replace("Version/4.0 ", "");
+        if(!ua.contains("Mobile Safari/"))
+            ua = ua + " Mobile Safari/537.36";
+        return ua;
+    }
+
     private void showCaptchaLoadError(String failingUrl) {
         captchaLoadErrorVisible = true;
         handler.removeCallbacksAndMessages(null);
@@ -457,10 +483,6 @@ public class CaptchaActivity extends AppCompatActivity {
     }
 
     private void loadCaptchaUrl(String url) {
-        if(WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE) && p != null && p.isNtkSite()) {
-            if(loadCaptchaUrlWithProxy(url))
-                return;
-        }
         loadCaptchaUrlDirect(url);
     }
 

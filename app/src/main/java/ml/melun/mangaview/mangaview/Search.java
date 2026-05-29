@@ -1590,6 +1590,7 @@ public class Search {
                         + ",code=" + page.code
                         + ",bodyLen=" + (page.body == null ? 0 : page.body.length()));
         throwIfCloudflareChallenge(client, page.code, page.body, path);
+        throwIfNtkRequestUnavailable(client, page.code, path);
         if(page.code >= 400)
             throw new Exception("NTK search failed: " + page.code);
         long parseStartedAt = PerfTrace.start("ntk_search_html_parse_ms");
@@ -1772,7 +1773,7 @@ public class Search {
                             + ",api=" + apiResults.titles.size()
                             + ",count=" + merged.titles.size()
                             + ",hasMore=" + merged.hasMore);
-            if(merged.titles.size() == 0 && captchaRequired)
+            if(merged.titles.size() == 0 && (captchaRequired || success == 0 && client.hasRecentCloudflareChallenge()))
                 throw new NtkCaptchaRequiredException();
             return merged;
         } finally {
@@ -1882,7 +1883,7 @@ public class Search {
                         + ",parsedCandidates=" + parsedCandidates
                         + ",count=" + titles.size()
                         + ",total=" + total);
-        if(titles.size() == 0 && captchaRequired)
+        if(titles.size() == 0 && (captchaRequired || successfulPaths == 0 && client.hasRecentCloudflareChallenge()))
             throw new NtkCaptchaRequiredException();
         if(titles.size() == 0)
             return new PageTitles(new ArrayList<>(), null,
@@ -1908,6 +1909,7 @@ public class Search {
                             + ",code=" + page.code
                             + ",bodyLen=" + (page.body == null ? 0 : page.body.length()));
             throwIfCloudflareChallenge(client, page.code, page.body, path);
+            throwIfNtkRequestUnavailable(client, page.code, path);
             if(page.code >= 400)
                 return new NtkApiPathResult(path, new PageTitles(new ArrayList<>(), null), false, 0);
             int parsedBaseMode = path.startsWith("/api/manhwa-list") ? base_comic : base_webtoon;
@@ -2177,6 +2179,14 @@ public class Search {
             return;
         client.markCloudflareChallenge(resolveChallengeUrl(client, path));
         throw new NtkCaptchaRequiredException();
+    }
+
+    private static void throwIfNtkRequestUnavailable(CustomHttpClient client, int code, String path) throws Exception {
+        if(code > 0)
+            return;
+        if(client != null && client.isNtk() && client.hasRecentCloudflareChallenge())
+            throw new NtkCaptchaRequiredException();
+        throw new Exception("NTK request failed: " + path);
     }
 
     private static boolean isCaptchaRequiredException(Exception e) {

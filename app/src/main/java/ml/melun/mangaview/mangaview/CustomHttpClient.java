@@ -1515,6 +1515,7 @@ public class CustomHttpClient {
             storeResponseCookies(response);
         } catch (Exception e){
             rememberFailedWfwfRoot(url, e);
+            rememberNtkAccessChallengeFailure(url, e);
             if(shouldRecordRequestFailure(url, e, requestGroup, fastNtkPageDirect))
                 ml.melun.mangaview.report.CrashReporter.record(e);
             return null;
@@ -1523,6 +1524,17 @@ public class CustomHttpClient {
                 requestGroup.remove(call);
         }
         return response;
+    }
+
+    private void rememberNtkAccessChallengeFailure(String url, Exception e) {
+        if(url == null || e == null || !isNtkUrlForTest(url))
+            return;
+        if(!(e instanceof SSLException)
+                && !(e instanceof java.net.SocketException)
+                && !(e instanceof java.net.SocketTimeoutException)
+                && !(e instanceof java.net.ConnectException))
+            return;
+        markCloudflareChallenge(url);
     }
 
     private boolean shouldRecordRequestFailure(String url, Exception e, RequestGroup requestGroup, boolean fastNtkPageDirect) {
