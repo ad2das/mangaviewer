@@ -96,6 +96,8 @@ final class NtkEpisodeParser {
         String lower = body.toLowerCase(java.util.Locale.ROOT);
         if(hasEpisodeListContent(lower))
             return false;
+        if(lower.contains("\"imagestoken\"") && lower.contains("\"imagemetas\""))
+            return false;
         return lower.matches("(?s).*next_http_error_fallback[^\\]]*(?:404|410).*")
                 || lower.matches("(?s).*<html[^>]+id=[\"']__next_error__[\"'].*")
                 || lower.contains("404: this page could not be found")

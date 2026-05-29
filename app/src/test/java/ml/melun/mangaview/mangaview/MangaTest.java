@@ -224,6 +224,18 @@ public class MangaTest {
     }
 
     @Test
+    public void ntkViewerMetaImagesAreDerivedFromEpisodePath() {
+        List<String> images = Manga.ntkViewerMetaPageImagesForTest(
+                "<script>{\\\"imageMetas\\\":[{\\\"page\\\":1},{\\\"page\\\":2}],"
+                        + "\\\"imagesToken\\\":\\\"token\\\"}</script>",
+                "/manhwa/3540/135918");
+
+        assertEquals(2, images.size());
+        assertEquals("https://i.toonflix.app/manhwa/3540/135918/p001.jpg", images.get(0));
+        assertEquals("https://i.toonflix.app/manhwa/3540/135918/p002.jpg", images.get(1));
+    }
+
+    @Test
     public void ntkEmbeddedNumberedPageImagesAllowPlainNumericNames() {
         List<String> images = Manga.ntkEmbeddedPageImagesForTest(
                 "<script>{\"images\":[\"https:\\/\\/i.toonflix.app\\/manhwa\\/25089\\/296849\\/001.jpg\"]}</script>");

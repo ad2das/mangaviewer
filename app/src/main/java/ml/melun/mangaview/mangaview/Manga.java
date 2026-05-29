@@ -363,33 +363,56 @@ public class Manga {
                 path = "/" + segment + "/" + tid + "/" + id;
                 setNtkEpisodePath(path);
             }
+            if(addNtkGeneratedPathImageCandidates(client, path, seenImages, 300)) {
+                logNtkViewerParse("generated-path", null, path, 0, 0);
+                List<Manga> titleEpisodes = title == null ? null : safeEpisodeCopy(title.getEps());
+                if(titleEpisodes != null && titleEpisodes.size() > 0) {
+                    eps = titleEpisodes;
+                    for(Manga ep : eps) {
+                        ep.setMode(0);
+                        ep.setTitle(title);
+                        ep.setTitleId(tid);
+                    }
+                }
+                restoreBetterEpisodeList(previousEpisodes);
+                attachEpisodeSeriesMetadata();
+                return LOAD_OK;
+            }
             CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
-            if(client.isCloudflareChallengeResponse(page.code, page.body) || looksLikeNtkBlockedPage(page.body)) {
-                logNtkViewerParse("blocked", page, path, 0, 0);
-                return LOAD_CAPTCHA;
-            }
-            if(page.code >= 400 || looksLikeNtkMissingPage(page.body)) {
-                logNtkViewerParse("missing", page, path, 0, 0);
-                return LOAD_ERROR;
-            }
-            Document d = Jsoup.parse(page.body);
+            boolean blockedPage = client.isCloudflareChallengeResponse(page.code, page.body)
+                    || looksLikeNtkBlockedPage(page.body);
+            boolean missingPage = page.code >= 400 || looksLikeNtkMissingPage(page.body);
+            if(blockedPage || missingPage) {
+                if(addNtkGeneratedPathImageCandidates(client, path, seenImages, 300)) {
+                    logNtkViewerParse(blockedPage ? "generated-blocked" : "generated-missing", page, path, 0, 0);
+                } else if(blockedPage) {
+                    logNtkViewerParse("blocked", page, path, 0, 0);
+                    return LOAD_CAPTCHA;
+                } else {
+                    logNtkViewerParse("missing", page, path, 0, 0);
+                    return LOAD_ERROR;
+                }
+            } else {
+                Document d = Jsoup.parse(page.body);
 
-            Element h1 = d.selectFirst("h1");
-            String parsedName = h1 == null ? extractNtkViewerEpisodeName(d) : h1.text().trim();
-            if(parsedName.length() > 0)
-                name = parsedName;
+                Element h1 = d.selectFirst("h1");
+                String parsedName = h1 == null ? extractNtkViewerEpisodeName(d) : h1.text().trim();
+                if(parsedName.length() > 0)
+                    name = parsedName;
 
-            Elements pageImages = d.select("img");
-            addNtkDocumentImageCandidates(client, d, seenImages, fallbackBoardImages);
-            addNtkTextImageCandidates(client, page.body, seenImages, fallbackBoardImages);
-            if(imgs.size() == 0) {
-                for(String src : fallbackBoardImages)
-                    addImageIfValid(client, seenImages, src);
+                Elements pageImages = d.select("img");
+                addNtkDocumentImageCandidates(client, d, seenImages, fallbackBoardImages);
+                addNtkTextImageCandidates(client, page.body, seenImages, fallbackBoardImages);
+                addNtkViewerMetaImageCandidates(client, page.body, path, seenImages);
+                if(imgs.size() == 0) {
+                    for(String src : fallbackBoardImages)
+                        addImageIfValid(client, seenImages, src);
+                }
+                if(imgs.size() == 0)
+                    logNtkViewerParse("empty", page, path, pageImages.size(), fallbackBoardImages.size());
+                else
+                    logNtkViewerParse("ok", page, path, pageImages.size(), fallbackBoardImages.size());
             }
-            if(imgs.size() == 0)
-                logNtkViewerParse("empty", page, path, pageImages.size(), fallbackBoardImages.size());
-            else
-                logNtkViewerParse("ok", page, path, pageImages.size(), fallbackBoardImages.size());
 
             List<Manga> titleEpisodes = title == null ? null : safeEpisodeCopy(title.getEps());
             if(titleEpisodes != null && titleEpisodes.size() > 0) {
@@ -459,6 +482,65 @@ public class Manga {
             if(isNtkPageImage(null, url))
                 addImageIfValid(client, seenImages, url);
         }
+    }
+
+    private void addNtkViewerMetaImageCandidates(CustomHttpClient client, String body, String path, Set<String> seenImages) {
+        if(body == null || path == null || seenImages == null)
+            return;
+        String normalized = normalizeNtkEmbeddedImageText(body).replace("\\\"", "\"");
+        String lower = normalized.toLowerCase(Locale.ROOT);
+        if(!lower.contains("\"imagestoken\"") || !lower.contains("\"imagemetas\""))
+            return;
+        Matcher pathMatcher = Pattern.compile("^/(manhwa|webtoon)/(\\d+)/([^/?#]+)").matcher(path);
+        if(!pathMatcher.find())
+            return;
+        String segment = pathMatcher.group(1);
+        String workId = pathMatcher.group(2);
+        String episodeId = pathMatcher.group(3);
+        int pageCount = ntkViewerMetaPageCount(normalized);
+        if(pageCount <= 0)
+            return;
+        pageCount = Math.min(pageCount, 300);
+        for(int page = 1; page <= pageCount; page++) {
+            String src = String.format(Locale.ROOT,
+                    "https://i.toonflix.app/%s/%s/%s/p%03d.jpg",
+                    segment, workId, episodeId, page);
+            addImageIfValid(client, seenImages, src);
+        }
+    }
+
+    private boolean addNtkGeneratedPathImageCandidates(CustomHttpClient client, String path, Set<String> seenImages, int pageCount) {
+        if(path == null || seenImages == null || pageCount <= 0)
+            return false;
+        Matcher pathMatcher = Pattern.compile("^/(manhwa|webtoon)/(\\d+)/([^/?#]+)").matcher(path);
+        if(!pathMatcher.find())
+            return false;
+        String segment = pathMatcher.group(1);
+        String workId = pathMatcher.group(2);
+        String episodeId = pathMatcher.group(3);
+        int before = imgs == null ? 0 : imgs.size();
+        int safePageCount = Math.min(pageCount, 300);
+        for(int page = 1; page <= safePageCount; page++) {
+            String src = String.format(Locale.ROOT,
+                    "https://i.toonflix.app/%s/%s/%s/p%03d.jpg",
+                    segment, workId, episodeId, page);
+            addImageIfValid(client, seenImages, src);
+        }
+        return imgs != null && imgs.size() > before;
+    }
+
+    private static int ntkViewerMetaPageCount(String body) {
+        if(body == null || body.length() == 0)
+            return 0;
+        int maxPage = 0;
+        Matcher matcher = Pattern.compile("\"page\"\\s*:\\s*(\\d{1,4})").matcher(body);
+        while(matcher.find()) {
+            try {
+                maxPage = Math.max(maxPage, Integer.parseInt(matcher.group(1)));
+            } catch (Exception ignored) {
+            }
+        }
+        return maxPage;
     }
 
     private static String normalizeNtkEmbeddedImageText(String source) {
@@ -1018,6 +1100,14 @@ public class Manga {
             for(String src : fallbackImages)
                 manga.addImageIfValid(null, seenImages, src);
         }
+        return manga.imgs;
+    }
+
+    static List<String> ntkViewerMetaPageImagesForTest(String body, String path) {
+        Manga manga = new Manga(1, "test", "", MTitle.base_webtoon);
+        manga.imgs = new ArrayList<>();
+        Set<String> seenImages = new LinkedHashSet<>();
+        manga.addNtkViewerMetaImageCandidates(null, body, path, seenImages);
         return manga.imgs;
     }
 

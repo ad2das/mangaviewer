@@ -25,24 +25,24 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 @TargetApi(34)
-final class NtkQuicFetcher {
+public final class NtkQuicFetcher {
     private NtkQuicFetcher() {
     }
 
-    static boolean isAvailable() {
+    public static boolean isAvailable() {
         return Build.VERSION.SDK_INT >= 34;
     }
 
-    static Result fetch(Context context, String url, String userAgent, String cookieHeader, long timeoutMs) {
+    public static Result fetch(Context context, String url, String userAgent, String cookieHeader, long timeoutMs) {
         return fetch(context, url, userAgent, cookieHeader, Collections.emptyMap(), timeoutMs);
     }
 
-    static Result fetch(Context context, String url, String userAgent, String cookieHeader,
+    public static Result fetch(Context context, String url, String userAgent, String cookieHeader,
                         Map<String, String> requestHeaders, long timeoutMs) {
         return fetch(context, url, userAgent, cookieHeader, requestHeaders, "GET", null, timeoutMs);
     }
 
-    static Result fetch(Context context, String url, String userAgent, String cookieHeader,
+    public static Result fetch(Context context, String url, String userAgent, String cookieHeader,
                         Map<String, String> requestHeaders, String method, byte[] body, long timeoutMs) {
         if(!isAvailable())
             return Result.error(new UnsupportedOperationException("HttpEngine requires API 34"));
@@ -201,12 +201,12 @@ final class NtkQuicFetcher {
                 && !"accept-encoding".equals(lower);
     }
 
-    static final class Result {
-        final int code;
-        final String body;
-        final byte[] bodyBytes;
-        final Map<String, List<String>> headers;
-        final Throwable error;
+    public static final class Result {
+        public final int code;
+        public final String body;
+        public final byte[] bodyBytes;
+        public final Map<String, List<String>> headers;
+        public final Throwable error;
 
         Result(int code, byte[] bodyBytes, Map<String, List<String>> headers, Throwable error) {
             this.code = code;
@@ -220,11 +220,11 @@ final class NtkQuicFetcher {
             return new Result(0, new byte[0], Collections.emptyMap(), error);
         }
 
-        boolean isUsableHtml() {
+        public boolean isUsableHtml() {
             return error == null && code >= 200 && code < 500 && bodyBytes.length > 0;
         }
 
-        String contentType() {
+        public String contentType() {
             for(String key : headers.keySet()) {
                 if("content-type".equalsIgnoreCase(key)) {
                     List<String> values = headers.get(key);
@@ -235,7 +235,7 @@ final class NtkQuicFetcher {
             return "text/html; charset=utf-8";
         }
 
-        List<String> setCookies() {
+        public List<String> setCookies() {
             for(String key : headers.keySet()) {
                 if("set-cookie".equalsIgnoreCase(key)) {
                     List<String> values = headers.get(key);

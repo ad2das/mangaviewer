@@ -18,6 +18,13 @@ public class TitleTest {
     }
 
     @Test
+    public void ntkBlockedPathRefreshFailuresAreCaptchaFailures() {
+        assertTrue(Title.isNtkLoadBlockedForTest(new Exception("Cloudflare challenge")));
+        assertTrue(Title.isNtkLoadBlockedForTest(new Exception("Request failed: /search?q=title&kind=manhwa")));
+        assertFalse(Title.isNtkLoadBlockedForTest(new IllegalStateException("parser invariant failed")));
+    }
+
+    @Test
     public void cleanNtkEpisodeTitleRemovesReadFromFirstEpisodeAction() {
         String title = Title.cleanNtkEpisodeTitleForTest(
                 "<a href=\"/webtoon/10/1\"><span class=\"subject\">1화</span><span>첫화부터 정주행</span></a>");

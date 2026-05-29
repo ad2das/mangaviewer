@@ -55,6 +55,7 @@ import okhttp3.Response;
 import okhttp3.ResponseBody;
 
 import ml.melun.mangaview.glide.ViewerWarmupManager;
+import ml.melun.mangaview.activity.NtkQuicFetcher;
 import ml.melun.mangaview.repository.CacheFileStore;
 import ml.melun.mangaview.runtime.PerfTrace;
 
@@ -2713,6 +2714,9 @@ public class CustomHttpClient {
                 rememberCloudflareChallengeIfPresent(response, baseUrl, url);
                 response.close();
             }
+            response = getWithNtkQuicFallback(baseUrl, url, headers);
+            if(response != null)
+                return response;
             response = getWithNtkWebViewFallback(baseUrl, url, headers);
         }
         if(!ntkBaseUrl && allowWfwfDomainRetry && shouldRetryWithResolvedDomain(response)) {
@@ -2731,6 +2735,9 @@ public class CustomHttpClient {
                     rememberCloudflareChallengeIfPresent(response, baseUrl, url);
                     response.close();
                 }
+                response = getWithNtkQuicFallback(baseUrl, url, headers);
+                if(response != null)
+                    return response;
                 response = getWithNtkWebViewFallback(baseUrl, url, headers);
             }
         }
@@ -2748,6 +2755,53 @@ public class CustomHttpClient {
             response = getWithNtkWebViewFallback(baseUrl, url, headers);
         }
         return response;
+    }
+
+    private Response getWithNtkQuicFallback(String baseUrl, String path, Map<String, String> headers) {
+        if(context == null || !isNtkUrl(baseUrl) || !NtkQuicFetcher.isAvailable())
+            return null;
+        try {
+            String url = baseUrl + path;
+            String cookieHeader = headers == null ? "" : headers.get("Cookie");
+            NtkQuicFetcher.Result result = NtkQuicFetcher.fetch(context, url, agent,
+                    cookieHeader == null ? "" : cookieHeader, headers, 12_000L);
+            if(result == null || result.code <= 0 || result.bodyBytes == null || result.bodyBytes.length == 0)
+                return null;
+            if(isCloudflareChallenge(result.code, result.body))
+                return null;
+            if(looksLikeUnrenderedNtkDocument(path, result.code, result.body)) {
+                if(Log.isLoggable(TAG, Log.DEBUG))
+                    Log.d(TAG, "ntk_quic_fallback_unrendered path=" + path
+                            + ",len=" + result.bodyBytes.length
+                            + ",sample=" + abbreviateLogSample(result.body, 240));
+                return null;
+            }
+            ViewerWarmupManager.logMetric("ntk_quic_fallback_code", result.code);
+            ViewerWarmupManager.logMetric("ntk_quic_fallback_len", result.bodyBytes.length);
+            if(Log.isLoggable(TAG, Log.DEBUG))
+                Log.d(TAG, "ntk_quic_fallback_ok path=" + path
+                        + ",len=" + result.bodyBytes.length
+                        + ",sample=" + abbreviateLogSample(result.body, 240));
+            Request request = new Request.Builder().url(url).build();
+            return new Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_2)
+                    .code(result.code)
+                    .message("HttpEngine")
+                    .body(ResponseBody.create(result.bodyBytes, MediaType.parse(result.contentType())))
+                    .build();
+        } catch (Exception e) {
+            if(Log.isLoggable(TAG, Log.DEBUG))
+                Log.d(TAG, "ntk_quic_fallback_failed path=" + path, e);
+            return null;
+        }
+    }
+
+    private static String abbreviateLogSample(String value, int maxLength) {
+        if(value == null || maxLength <= 0)
+            return "";
+        String sample = value.replace('\n', ' ').replace('\r', ' ');
+        return sample.length() > maxLength ? sample.substring(0, maxLength) : sample;
     }
 
     private boolean applyNtkRedirectRoot(Response response, String currentBaseUrl) {

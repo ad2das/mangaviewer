@@ -180,7 +180,9 @@ public class Title extends MTitle {
             String segment = ntkSegment();
             String titlePath = ntkTitlePath(segment);
             if(allowPathRefresh) {
-                refreshNtkTitlePathFromSearch(client, segment, titlePath);
+                NtkPathRefreshResult refresh = refreshNtkTitlePathFromSearch(client, segment, titlePath);
+                if(refresh.blocked)
+                    return LOAD_CAPTCHA;
                 titlePath = ntkTitlePath(segment);
             }
             String titleKey = ntkTitleKey(segment);
@@ -188,22 +190,37 @@ public class Title extends MTitle {
             try {
                 page = client.mgetCachedPage(titlePath, PAGE_CACHE_TTL_MS);
             } catch(Exception e) {
-                if(allowPathRefresh && refreshNtkTitlePathFromApi(client, segment, titlePath))
-                    return fetchNtkEps(client, false);
+                if(allowPathRefresh) {
+                    NtkPathRefreshResult refresh = refreshNtkTitlePathFromApi(client, segment, titlePath);
+                    if(refresh.refreshed)
+                        return fetchNtkEps(client, false);
+                    if(refresh.blocked)
+                        return LOAD_CAPTCHA;
+                }
                 if(isNtkLoadBlocked(e))
                     return LOAD_CAPTCHA;
                 throw e;
             }
             if(client.isCloudflareChallengeResponse(page.code, page.body) || NtkEpisodeParser.looksLikeErrorPage(page.body)) {
                 logNtkEpisodeParse("challenge_or_error", page, segment, 0, 0);
-                if(allowPathRefresh && refreshNtkTitlePathFromApi(client, segment, titlePath))
-                    return fetchNtkEps(client, false);
+                if(allowPathRefresh) {
+                    NtkPathRefreshResult refresh = refreshNtkTitlePathFromApi(client, segment, titlePath);
+                    if(refresh.refreshed)
+                        return fetchNtkEps(client, false);
+                    if(refresh.blocked)
+                        return LOAD_CAPTCHA;
+                }
                 return LOAD_CAPTCHA;
             }
             if(page.code >= 400 || NtkEpisodeParser.looksLikeMissingPage(page.body)) {
                 logNtkEpisodeParse("missing", page, segment, 0, 0);
-                if(allowPathRefresh && refreshNtkTitlePathFromApi(client, segment, titlePath))
-                    return fetchNtkEps(client, false);
+                if(allowPathRefresh) {
+                    NtkPathRefreshResult refresh = refreshNtkTitlePathFromApi(client, segment, titlePath);
+                    if(refresh.refreshed)
+                        return fetchNtkEps(client, false);
+                    if(refresh.blocked)
+                        return LOAD_CAPTCHA;
+                }
                 return LOAD_ERROR;
             }
             Document d = Jsoup.parse(page.body);
@@ -232,8 +249,13 @@ public class Title extends MTitle {
             eps = parsed.episodes;
             if(eps.size() == 0) {
                 logNtkEpisodeParse("empty", page, segment, parsed.matchedEpisodeLinks, episodeLinks.size());
-                if(allowPathRefresh && refreshNtkTitlePathFromApi(client, segment, titlePath))
-                    return fetchNtkEps(client, false);
+                if(allowPathRefresh) {
+                    NtkPathRefreshResult refresh = refreshNtkTitlePathFromApi(client, segment, titlePath);
+                    if(refresh.refreshed)
+                        return fetchNtkEps(client, false);
+                    if(refresh.blocked)
+                        return LOAD_CAPTCHA;
+                }
                 return LOAD_ERROR;
             }
         }catch(Exception e) {
@@ -279,6 +301,10 @@ public class Title extends MTitle {
                 || lower.contains("connection refused")
                 || lower.contains("connection reset")
                 || lower.contains("timed out");
+    }
+
+    static boolean isNtkLoadBlockedForTest(Exception e) {
+        return isNtkLoadBlocked(e);
     }
 
     static List<Manga> parseLegacyEpisodesForTest(String html, int baseMode) {
@@ -429,13 +455,15 @@ public class Title extends MTitle {
         EpisodeOrderingPolicy.sortByVisibleEpisodeNumber(episodes);
     }
 
-    private boolean refreshNtkTitlePathFromApi(CustomHttpClient client, String segment, String currentPath) {
+    private NtkPathRefreshResult refreshNtkTitlePathFromApi(CustomHttpClient client, String segment, String currentPath) {
         if(client == null || name == null || name.trim().length() == 0)
-            return false;
+            return NtkPathRefreshResult.none();
         try {
             String apiPath = "/api/" + ("webtoon".equals(segment) ? "works" : "manhwa-list")
                     + "?keyword=" + ntkEncodeQuery(name.trim()) + "&page=1&pageSize=10&withTotal=1";
             CustomHttpClient.PageResponse page = client.mgetCachedPage(apiPath, PAGE_CACHE_TTL_MS);
+            if(client.isCloudflareChallengeResponse(page.code, page.body))
+                return NtkPathRefreshResult.blocked();
             if(!client.isCloudflareChallengeResponse(page.code, page.body) && page.code < 400) {
                 JsonElement root = JsonParser.parseString(page.body == null || page.body.length() == 0 ? "{}" : page.body);
                 JsonArray works = root != null && root.isJsonObject()
@@ -453,31 +481,63 @@ public class Title extends MTitle {
                             continue;
                         String sourceWorkId = firstNonEmpty(jsonString(work, "sourceWorkId"), jsonString(work, "id"));
                         if(applyNtkTitlePathRefresh(segment, sourceWorkId, currentPath))
-                            return true;
+                            return NtkPathRefreshResult.refreshed();
                     }
                 }
             }
         } catch(Exception e) {
             Log.d(TAG, "ntk_episode_path_refresh_failed id=" + id + ",name=" + name, e);
+            if(isNtkLoadBlocked(e)) {
+                NtkPathRefreshResult searchRefresh = refreshNtkTitlePathFromSearch(client, segment, currentPath);
+                return searchRefresh.refreshed ? searchRefresh : NtkPathRefreshResult.blocked();
+            }
         }
         return refreshNtkTitlePathFromSearch(client, segment, currentPath);
     }
 
-    private boolean refreshNtkTitlePathFromSearch(CustomHttpClient client, String segment, String currentPath) {
+    private NtkPathRefreshResult refreshNtkTitlePathFromSearch(CustomHttpClient client, String segment, String currentPath) {
         try {
             String searchPath = "/search?q=" + ntkEncodeQuery(name.trim())
                     + "&kind=" + ("webtoon".equals(segment) ? "webtoon" : "manhwa");
             CustomHttpClient.PageResponse page = client.mgetCachedPage(searchPath, PAGE_CACHE_TTL_MS);
-            if(client.isCloudflareChallengeResponse(page.code, page.body) || page.code >= 400)
-                return false;
+            if(client.isCloudflareChallengeResponse(page.code, page.body))
+                return NtkPathRefreshResult.blocked();
+            if(page.code >= 400)
+                return NtkPathRefreshResult.none();
             String refreshedPath = findNtkSearchTitlePath(Jsoup.parse(page.body), segment, name);
             if(refreshedPath.length() == 0)
-                return false;
-            return applyNtkTitlePathRefresh(segment, refreshedPath, currentPath);
+                return NtkPathRefreshResult.none();
+            return applyNtkTitlePathRefresh(segment, refreshedPath, currentPath)
+                    ? NtkPathRefreshResult.refreshed()
+                    : NtkPathRefreshResult.none();
         } catch(Exception e) {
             Log.d(TAG, "ntk_episode_search_refresh_failed id=" + id + ",name=" + name, e);
+            if(isNtkLoadBlocked(e))
+                return NtkPathRefreshResult.blocked();
         }
-        return false;
+        return NtkPathRefreshResult.none();
+    }
+
+    private static class NtkPathRefreshResult {
+        final boolean refreshed;
+        final boolean blocked;
+
+        private NtkPathRefreshResult(boolean refreshed, boolean blocked) {
+            this.refreshed = refreshed;
+            this.blocked = blocked;
+        }
+
+        static NtkPathRefreshResult refreshed() {
+            return new NtkPathRefreshResult(true, false);
+        }
+
+        static NtkPathRefreshResult blocked() {
+            return new NtkPathRefreshResult(false, true);
+        }
+
+        static NtkPathRefreshResult none() {
+            return new NtkPathRefreshResult(false, false);
+        }
     }
 
     private boolean applyNtkTitlePathRefresh(String segment, String sourceWorkId, String currentPath) {

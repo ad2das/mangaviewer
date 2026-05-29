@@ -24,6 +24,8 @@ public class NtkWebViewFallbackManagerTest {
     public void documentFallbackIgnoresStaleBlankPageFinishes() {
         assertTrue(NtkWebViewFallbackManager.isFinishedDocumentUrlForTest(
                 "https://sbxh1.com/webtoon/1/2", "https://sbxh1.com", "/webtoon/1/2"));
+        assertTrue(NtkWebViewFallbackManager.isFinishedDocumentUrlForTest(
+                "https://sbxh1.com/webtoon/1/2/", "https://sbxh1.com", "/webtoon/1/2"));
         assertFalse(NtkWebViewFallbackManager.isFinishedDocumentUrlForTest(
                 "about:blank", "https://sbxh1.com", "/webtoon/1/2"));
         assertFalse(NtkWebViewFallbackManager.isFinishedDocumentUrlForTest(
