@@ -1,11 +1,13 @@
 package ml.melun.mangaview.reader
 
 import android.content.Context
+import android.net.Uri
 import ml.melun.mangaview.MainApplication.getHttpClient
 import ml.melun.mangaview.Utils
 import ml.melun.mangaview.glide.ViewerWarmupManager
 import ml.melun.mangaview.mangaview.Manga
 import okhttp3.Request
+import org.jsoup.Jsoup
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
@@ -132,7 +134,9 @@ object ReaderImageCache {
                 val body = response.body ?: throw java.io.IOException("Empty image body")
                 FileOutputStream(tmp).use { out -> body.byteStream().copyTo(out) }
             }
-            if (!isUsableImage(tmp)) throw java.io.IOException("Invalid image cache file")
+            if (!isUsableImage(tmp) && !replaceWithImageExtractedFromHtml(context, manga, image, tmp)) {
+                throw java.io.IOException("Invalid image cache file")
+            }
             replace(tmp, finalFile)
             finalFile.setLastModified(System.currentTimeMillis())
             scheduleTrim(context)
@@ -149,6 +153,123 @@ object ReaderImageCache {
             requestBuilder.addHeader(entry.key, entry.value)
         }
         return getHttpClient().imageClient.newCall(requestBuilder.build()).execute()
+    }
+
+    private fun replaceWithImageExtractedFromHtml(
+        context: Context,
+        manga: Manga,
+        image: String,
+        htmlFile: File
+    ): Boolean {
+        if (!looksLikeHtml(htmlFile)) return false
+        val html = try {
+            htmlFile.readText(Charsets.UTF_8)
+        } catch (_: Exception) {
+            return false
+        }
+        val sourceUrl = Utils.viewerImageRequestUrl(image, manga.baseMode)
+        for (candidate in extractImageCandidates(html, sourceUrl, manga.baseMode)) {
+            val candidateFile = File(htmlFile.parentFile, "${htmlFile.name}.htmlimg.${System.nanoTime()}")
+            try {
+                request(context, manga, candidate).use { response ->
+                    if (!response.isSuccessful) return@use
+                    val body = response.body ?: return@use
+                    FileOutputStream(candidateFile).use { out -> body.byteStream().copyTo(out) }
+                }
+                if (isUsableImage(candidateFile)) {
+                    if (htmlFile.exists()) htmlFile.delete()
+                    if (!candidateFile.renameTo(htmlFile)) {
+                        candidateFile.copyTo(htmlFile, overwrite = true)
+                        candidateFile.delete()
+                    }
+                    return true
+                }
+            } catch (_: Exception) {
+                // Try the next extracted candidate.
+            } finally {
+                if (candidateFile.exists()) candidateFile.delete()
+            }
+        }
+        return false
+    }
+
+    internal fun extractImageCandidates(html: String, sourceUrl: String, baseMode: Int): List<String> {
+        if (html.isBlank()) return emptyList()
+        val candidates = LinkedHashSet<String>()
+        val document = Jsoup.parse(html)
+        for (img in document.select("img")) {
+            for (attr in HTML_IMAGE_ATTRS) {
+                addHtmlImageCandidate(candidates, img.attr(attr), sourceUrl, baseMode)
+            }
+        }
+        for (match in HTML_IMAGE_URL_PATTERN.findAll(html)) {
+            addHtmlImageCandidate(candidates, match.value, sourceUrl, baseMode)
+        }
+        return candidates.toList()
+    }
+
+    @JvmStatic
+    fun extractImageCandidatesForTest(html: String, sourceUrl: String, baseMode: Int): List<String> {
+        return extractImageCandidates(html, sourceUrl, baseMode)
+    }
+
+    private fun addHtmlImageCandidate(
+        candidates: MutableSet<String>,
+        rawCandidate: String?,
+        sourceUrl: String,
+        baseMode: Int
+    ) {
+        val candidate = normalizeHtmlImageCandidate(rawCandidate, baseMode) ?: return
+        if (candidate == sourceUrl) return
+        if (!isAllowedHtmlImageCandidate(candidate, sourceUrl)) return
+        candidates.add(candidate)
+    }
+
+    private fun normalizeHtmlImageCandidate(candidate: String?, baseMode: Int): String? {
+        val raw = candidate?.trim()?.replace("&amp;", "&") ?: return null
+        if (raw.isEmpty()
+            || raw.startsWith("data:", ignoreCase = true)
+            || raw.startsWith("javascript:", ignoreCase = true)
+            || raw.startsWith("about:", ignoreCase = true)
+        ) return null
+        return Utils.viewerImageRequestUrl(raw, baseMode)
+    }
+
+    private fun isAllowedHtmlImageCandidate(candidate: String, sourceUrl: String): Boolean {
+        val lower = candidate.lowercase()
+        if (!lower.matches(Regex(".*\\.(jpg|jpeg|png|webp|gif)([?#].*)?$"))) return false
+        if (lower.contains("sprite")
+            || lower.contains("logo")
+            || lower.contains("favicon")
+            || lower.contains("banner")
+            || lower.contains("advert")
+            || lower.contains("sponsor")
+            || lower.contains("popup")
+            || lower.contains("/ad/")
+            || lower.contains("/ads/")
+            || lower.contains("/thumb")
+            || lower.contains("/data/member/")
+        ) return false
+
+        val sourceName = fileName(sourceUrl)
+        val candidateName = fileName(candidate)
+        if (sourceName.isNotEmpty() && sourceName == candidateName) return true
+
+        return lower.contains("/webtoon_uploads/")
+            || lower.contains("/manhwa_uploads/")
+            || lower.contains("/comic_uploads/")
+            || lower.contains("/blacktoon/episodes/")
+            || lower.contains("/webtoon/")
+            || lower.contains("/manhwa/")
+            || lower.contains("/comic/")
+    }
+
+    private fun fileName(url: String): String {
+        return try {
+            Uri.parse(url).lastPathSegment?.lowercase().orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
     }
 
     private fun replace(tmp: File, finalFile: File) {
@@ -183,6 +304,24 @@ object ReaderImageCache {
         if (b0 == 0x52 && b1 == 0x49 && b2 == 0x46 && b3 == 0x46) return true
         if (b0 == 0x47 && b1 == 0x49 && b2 == 0x46) return true
         return false
+    }
+
+    private fun looksLikeHtml(file: File): Boolean {
+        if (!file.isFile || file.length() < 16L) return false
+        return try {
+            file.inputStream().use { input ->
+                val header = ByteArray(64)
+                val read = input.read(header)
+                if (read <= 0) return false
+                val text = String(header, 0, read, Charsets.UTF_8).trimStart().lowercase()
+                text.startsWith("<!doctype html")
+                    || text.startsWith("<html")
+                    || text.startsWith("<head")
+                    || text.startsWith("<body")
+            }
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private fun scheduleTrim(context: Context) {
@@ -221,4 +360,10 @@ object ReaderImageCache {
         }
         ViewerWarmupManager.logMetric("reader_cache_trim_ms", System.currentTimeMillis() - startedAt)
     }
+
+    private val HTML_IMAGE_ATTRS = arrayOf("data-original", "data-src", "data-lazy-src", "data-url", "src")
+    private val HTML_IMAGE_URL_PATTERN = Regex(
+        "https?://[^\\\"'<>\\s)]+\\.(?:jpg|jpeg|png|webp|gif)(?:[?#][^\\\"'<>\\s)]*)?",
+        RegexOption.IGNORE_CASE
+    )
 }
