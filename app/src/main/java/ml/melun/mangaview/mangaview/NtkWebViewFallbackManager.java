@@ -260,10 +260,13 @@ final class NtkWebViewFallbackManager {
             task.requested = false;
             if(shouldNavigateDocument(task.path)) {
                 webView.loadUrl(task.baseUrl + task.path, webViewHeaders(task.headers));
-                mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task), 250L);
-                mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task), 700L);
-                mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task), 1500L);
-                mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task), 4000L);
+                boolean episodeDocument = isNtkEpisodeDocumentPath(task.path);
+                if(!episodeDocument)
+                    mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task, false), 1500L);
+                mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task, true), 4000L);
+                mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task, true), 8000L);
+                if(episodeDocument)
+                    mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task, true), 14000L);
             } else {
                 webView.loadDataWithBaseURL(task.baseUrl, "<!doctype html><html><body></body></html>",
                         "text/html", "UTF-8", null);
@@ -316,9 +319,9 @@ final class NtkWebViewFallbackManager {
                     return;
                 if(shouldNavigateDocument(task.path) && !isFinishedDocumentUrl(url, task.baseUrl, task.path))
                     return;
-                if(shouldNavigateDocument(task.path))
-                    requestDocumentHtmlOnMain(task);
-                else
+                if(shouldNavigateDocument(task.path) && !isNtkEpisodeDocumentPath(task.path))
+                    requestDocumentHtmlOnMain(task, false);
+                else if(!shouldNavigateDocument(task.path))
                     view.evaluateJavascript(CustomHttpClient.buildNtkWebViewFetchScript(task.path, task.headers, task.token), null);
             }
 
@@ -344,15 +347,23 @@ final class NtkWebViewFallbackManager {
         });
     }
 
-    private void requestDocumentHtmlOnMain(FetchTask task) {
+    private void requestDocumentHtmlOnMain(FetchTask task, boolean stopLoading) {
         if(task == null || task.completed || task.requested || webView == null)
             return;
         String currentUrl = webView.getUrl();
         if(!isFinishedDocumentUrl(currentUrl, task.baseUrl, task.path))
             return;
+        if(stopLoading) {
+            try {
+                webView.stopLoading();
+            } catch (Exception ignored) {
+            }
+        }
         task.requested = true;
         task.loadStartedAt = SystemClock.elapsedRealtime();
-        webView.evaluateJavascript(buildDocumentHtmlScript(task.token, documentReadyWaitMs(task)), null);
+        webView.evaluateJavascript(stopLoading && isNtkEpisodeDocumentPath(task.path)
+                ? buildImmediateDocumentHtmlScript(task.token)
+                : buildDocumentHtmlScript(task.token, documentReadyWaitMs(task)), null);
     }
 
     private void onBridgeResult(String token, String value) {
@@ -460,6 +471,10 @@ final class NtkWebViewFallbackManager {
                 || CustomHttpClient.isWolfEpisodeDocumentPath(path));
     }
 
+    private static boolean isNtkEpisodeDocumentPath(String path) {
+        return path != null && path.matches("^/(manhwa|webtoon)/[^/?#%]+/[^/?#%]+/?(?:[?#].*)?$");
+    }
+
     private static boolean isFinishedDocumentUrl(String url, String baseUrl, String path) {
         if(url == null || baseUrl == null || path == null)
             return false;
@@ -542,6 +557,13 @@ final class NtkWebViewFallbackManager {
                 + "send(200,v);"
                 + "}catch(e){send(0,String(e));}}"
                 + "check();})()";
+    }
+
+    private static String buildImmediateDocumentHtmlScript(String token) {
+        return "(function(){var token=" + jsonQuote(token) + ";"
+                + "function send(code,body){window.NtkBridge.onFetchResult(token,JSON.stringify({code:code,body:body||''}));}"
+                + "try{var d=document.documentElement;var b=document.body;var v=d?d.outerHTML:(b?b.innerHTML:'');send(v&&v.length>0?200:0,v||'');}"
+                + "catch(e){send(0,String(e));}})()";
     }
 
     private static String jsonQuote(String value) {

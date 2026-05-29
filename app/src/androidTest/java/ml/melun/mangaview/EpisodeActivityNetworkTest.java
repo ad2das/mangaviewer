@@ -264,6 +264,25 @@ public class EpisodeActivityNetworkTest {
         }
     }
 
+    @Test
+    public void ntkJagaanEpisode42RendersReaderImage() throws Exception {
+        openNtkJagaanEpisode("42");
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        assertReaderOpenedThroughAutoCaptcha(device, "NTK Jagaan 42");
+
+        Thread.sleep(1500L);
+        File screenshot = new File(ApplicationProvider.getApplicationContext().getCacheDir(), "ntk_jagaan42_reader.png");
+        assertTrue("Expected NTK Jagaan 42 reader screenshot", device.takeScreenshot(screenshot));
+        Bitmap bitmap = BitmapFactory.decodeFile(screenshot.getAbsolutePath());
+        assertNotNull("Expected readable NTK Jagaan 42 screenshot", bitmap);
+        try {
+            assertTrue("Expected NTK Jagaan 42 to leave the blank/loading state",
+                    countNonBlankPixels(bitmap, 180, 96) > 1000);
+        } finally {
+            bitmap.recycle();
+        }
+    }
+
     private Manga openWfwfJagaanEpisode(String episodeNumber) throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         MainApplication.p.setSitePreset(CustomHttpClient.DEFAULT_COMIC_URL, CustomHttpClient.WEBTOON_URL);
@@ -283,6 +302,39 @@ public class EpisodeActivityNetworkTest {
             }
         }
         assertNotNull("Expected Jagaan episode " + episodeNumber + " in " + firstEpisodeNames(episodes, Math.min(8, episodes.size())), targetEpisode);
+        targetEpisode.setTitle(title);
+        targetEpisode.setTitleId(title.getId());
+        MainApplication.p.resetViewerBookmark();
+        MainApplication.p.setBookmark(title, -1);
+
+        Utils.openViewerPrepared(context, targetEpisode, 0, false, true, false, title, true, true);
+        return targetEpisode;
+    }
+
+    private Manga openNtkJagaanEpisode(String episodeNumber) throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        MainApplication.p.setNtkSitePreset(CustomHttpClient.NTK_COMIC_URL);
+        MainApplication.p.setBaseMode(MTitle.base_comic);
+
+        Title title = findNtkJagaanTitle();
+        int status = title.fetchEps(MainApplication.getHttpClient());
+        if(status == Title.LOAD_CAPTCHA) {
+            openNtkCaptchaAndWaitForAutoVerification(UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()), "NTK Jagaan episode list");
+            status = title.fetchEps(MainApplication.getHttpClient());
+        }
+        assertEquals("Expected NTK Jagaan episodes to load", Title.LOAD_OK, status);
+        List<Manga> episodes = Title.orderedEpisodeSnapshot(title.getEps());
+        assertTrue("Expected NTK Jagaan episode list", episodes != null && episodes.size() > 0);
+        Manga targetEpisode = null;
+        for(Manga episode : episodes) {
+            String number = Manga.visibleEpisodeNumberKey(episode == null ? null : episode.getName());
+            if(episodeNumber.equals(number)) {
+                targetEpisode = episode;
+                break;
+            }
+        }
+        assertNotNull("Expected NTK Jagaan episode " + episodeNumber + " in "
+                + firstEpisodeNames(episodes, Math.min(8, episodes.size())), targetEpisode);
         targetEpisode.setTitle(title);
         targetEpisode.setTitleId(title.getId());
         MainApplication.p.resetViewerBookmark();
@@ -615,6 +667,58 @@ public class EpisodeActivityNetworkTest {
             }
         }
         throw new AssertionError("Expected WFWF Jagaan title search result");
+    }
+
+    private Title findNtkJagaanTitle() throws Exception {
+        String[] queries = {
+                "쟈건",
+                "자건",
+                "Jagaan",
+                "Jagan"
+        };
+        boolean retriedAfterCaptcha = false;
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        for(String query : queries) {
+            Title title = searchLiveComicTitle(query, true);
+            if(title != null)
+                return title;
+            if(!retriedAfterCaptcha) {
+                retriedAfterCaptcha = true;
+                openNtkCaptchaAndWaitForAutoVerification(device, "NTK Jagaan search");
+                title = searchLiveComicTitle(query, true);
+                if(title != null)
+                    return title;
+            }
+        }
+        throw new AssertionError("Expected NTK Jagaan title search result");
+    }
+
+    private Title searchLiveComicTitle(String query, boolean ntk) throws Exception {
+        Search search = new Search(query, 0, MTitle.base_comic);
+        int status = search.fetch(MainApplication.getHttpClient());
+        Log.d("ViewerPerf", "jagaan_ntk_search query=" + query + " status=" + status
+                + " count=" + (search.getResult() == null ? 0 : search.getResult().size()));
+        if(status != 0 || search.getResult() == null)
+            return null;
+        for(Title title : search.getResult()) {
+            if(title == null || title.getId() <= 0)
+                continue;
+            Log.d("ViewerPerf", "jagaan_ntk_search_result query=" + query
+                    + " id=" + title.getId()
+                    + " baseMode=" + title.getBaseMode()
+                    + " source=" + title.getSourceSite()
+                    + " name=" + title.getName());
+            if(title.getBaseMode() != MTitle.base_comic)
+                continue;
+            if(ntk && !"ntk".equals(title.getSourceSite()))
+                continue;
+            if(!ntk && !"wfwf".equals(title.getSourceSite()))
+                continue;
+            String name = title.getName() == null ? "" : title.getName().toLowerCase(java.util.Locale.ROOT);
+            if(name.contains("쟈건") || name.contains("자건") || name.contains("jag"))
+                return title;
+        }
+        return null;
     }
 
     @SuppressWarnings("unchecked")
