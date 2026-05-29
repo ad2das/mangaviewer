@@ -70,4 +70,46 @@ public class CaptchaActivityTest {
         assertFalse(ua.contains("; wv"));
         assertFalse(ua.contains("Version/4.0"));
     }
+
+    @Test
+    public void ntkCaptchaLoadRetriesWithProxyAfterDirectHttpsFailure() {
+        assertTrue(CaptchaActivity.shouldRetryCaptchaLoadWithProxyForTest(
+                true, false, false, "https://sbxh3.com/"));
+        assertFalse(CaptchaActivity.shouldRetryCaptchaLoadWithProxyForTest(
+                true, true, false, "https://sbxh3.com/"));
+        assertFalse(CaptchaActivity.shouldRetryCaptchaLoadWithProxyForTest(
+                true, false, true, "https://sbxh3.com/"));
+        assertFalse(CaptchaActivity.shouldRetryCaptchaLoadWithProxyForTest(
+                false, false, false, "https://sbxh3.com/"));
+    }
+
+    @Test
+    public void ntkCaptchaLoadRetriesWithQuicAfterDirectHttpsFailure() {
+        assertTrue(CaptchaActivity.shouldRetryCaptchaLoadWithQuicForTest(
+                true, false, false, "https://sbxh3.com/", true));
+        assertFalse(CaptchaActivity.shouldRetryCaptchaLoadWithQuicForTest(
+                true, true, false, "https://sbxh3.com/", true));
+        assertFalse(CaptchaActivity.shouldRetryCaptchaLoadWithQuicForTest(
+                true, false, true, "https://sbxh3.com/", true));
+        assertFalse(CaptchaActivity.shouldRetryCaptchaLoadWithQuicForTest(
+                true, false, false, "https://sbxh3.com/", false));
+        assertFalse(CaptchaActivity.shouldRetryCaptchaLoadWithQuicForTest(
+                false, false, false, "https://sbxh3.com/", true));
+    }
+
+    @Test
+    public void ntkQuicInterceptOnlyHandlesSbxh3GetRequests() {
+        assertTrue(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
+                true, "GET", "https://sbxh3.com/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1", true));
+        assertTrue(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
+                true, "GET", "https://img.sbxh3.com/resource.js", true));
+        assertFalse(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
+                true, "POST", "https://sbxh3.com/cdn-cgi/challenge-platform/h/b/flow/ov1", true));
+        assertFalse(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
+                true, "GET", "https://challenges.cloudflare.com/turnstile/v0/api.js", true));
+        assertFalse(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
+                true, "GET", "https://sbxh3.com/", false));
+        assertFalse(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
+                false, "GET", "https://sbxh3.com/", true));
+    }
 }
