@@ -688,9 +688,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     override fun onNearBoundary(direction: Int, anchorPage: Int) {
-        // Near-boundary callbacks must not mutate the active page list. During a fast
-        // fling this used to insert adjacent-episode pages before the user actually
-        // crossed the boundary, which created visible placeholders and frame debt.
+        if (destroyed || isFinishing) return
+        session?.prepareAdjacentEpisode(anchorPage, direction)
     }
 
     override fun onBoundaryReached(direction: Int, anchorPage: Int) {

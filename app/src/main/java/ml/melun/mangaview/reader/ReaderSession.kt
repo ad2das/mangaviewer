@@ -712,7 +712,12 @@ class ReaderSession(
                 target.mode = anchorManga.mode
                 if (episodes.isNotEmpty()) target.setEps(episodes)
                 if (hasEpisode(target)) return@execute
-                if (imageRepository.imageUrls(target, appContext).isNullOrEmpty()) {
+                var urls = imageRepository.imageUrls(target, appContext)
+                if (!urls.isNullOrEmpty() &&
+                    isNtkSource(target, currentTitle) &&
+                    shouldRefreshNtkGeneratedAppendUrls(urls)
+                ) {
+                    target.setImgs(null)
                     val result = imageRepository.fetchViewerInitial(target, MangaRepository.cancellation().userVisible())
                     if (result != Title.LOAD_OK) {
                         if (result == Title.LOAD_CAPTCHA) {
@@ -727,8 +732,25 @@ class ReaderSession(
                         postMessage(if (result == Title.LOAD_CAPTCHA) "캡차 확인이 필요합니다" else "회차를 불러오지 못했습니다")
                         return@execute
                     }
+                    urls = imageRepository.imageUrls(target, appContext)
                 }
-                val urls = imageRepository.imageUrls(target, appContext)
+                if (urls.isNullOrEmpty()) {
+                    val result = imageRepository.fetchViewerInitial(target, MangaRepository.cancellation().userVisible())
+                    if (result != Title.LOAD_OK) {
+                        if (result == Title.LOAD_CAPTCHA) {
+                            if (silentMissing) {
+                                suppressedCaptcha = true
+                                return@execute
+                            }
+                            captchaRequired = true
+                            postCaptchaRequired(target)
+                            return@execute
+                        }
+                        postMessage(if (result == Title.LOAD_CAPTCHA) "캡차 확인이 필요합니다" else "회차를 불러오지 못했습니다")
+                        return@execute
+                    }
+                    urls = imageRepository.imageUrls(target, appContext)
+                }
                 if (urls.isNullOrEmpty()) {
                     postMessage("표시할 이미지가 없습니다")
                     return@execute
@@ -2060,6 +2082,18 @@ class ReaderSession(
             (source.isBlank() && ml.melun.mangaview.MainApplication.getHttpClient().isNtk)
     }
 
+    private fun shouldRefreshNtkGeneratedAppendUrls(urls: List<String>): Boolean {
+        if (urls.size <= NTK_GENERATED_APPEND_REFRESH_MIN_COUNT) return false
+        val first = urls.firstOrNull()?.lowercase(java.util.Locale.ROOT) ?: return false
+        val last = urls.lastOrNull()?.lowercase(java.util.Locale.ROOT) ?: return false
+        if (!first.contains("://i.toonflix.app/")) return false
+        if (!first.contains("/manhwa/") && !first.contains("/webtoon/")) return false
+        val firstMatch = NTK_GENERATED_PAGE_URL.find(first) ?: return false
+        val lastMatch = NTK_GENERATED_PAGE_URL.find(last) ?: return false
+        return firstMatch.groupValues.getOrNull(1) == "001" &&
+            lastMatch.groupValues.getOrNull(1)?.toIntOrNull()?.let { it > NTK_GENERATED_APPEND_REFRESH_MIN_COUNT } == true
+    }
+
     private fun requestedStartPage(): Int {
         if (startAtFirstPage) return 0
         val page = if (manga.useBookmark() && ml.melun.mangaview.MainApplication.p != null) {
@@ -2109,6 +2143,7 @@ class ReaderSession(
         private const val INPUT_PRIORITY_QUIET_MS = 24L
         private const val START_SOURCE_PREFETCH_BEFORE = 2
         private const val START_SOURCE_PREFETCH_AFTER = 36
+        private const val NTK_GENERATED_APPEND_REFRESH_MIN_COUNT = 24
         private const val ACTIVE_BITMAP_BYTES = 128L * 1024L * 1024L
         private const val TILE_PAGE_MAX_BYTES = 24L * 1024L * 1024L
         private const val REPLACED_BITMAP_RECYCLE_DELAY_MS = 750L
@@ -2124,6 +2159,7 @@ class ReaderSession(
         private const val SPREAD_ASPECT_RATIO = 0.90f
         private const val PAGE_SIDE_FIRST = 0
         private const val PAGE_SIDE_SECOND = 1
+        private val NTK_GENERATED_PAGE_URL = Regex("/p(\\d{3})\\.(jpg|png|webp)(?:[?#].*)?$")
 
         @JvmStatic
         fun shouldSplitPreparedBitmapForTest(autoCut: Boolean, allowSplit: Boolean, width: Int, height: Int): Boolean {
