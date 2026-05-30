@@ -439,6 +439,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 hideBoundaryStatus()
                 pageCount = count
                 renderView.appendPageCount(count)
+                Log.d(TAG, "pages_appended total=$count currentPage=$currentPage")
                 updateCurrentEpisode(currentPage)
             }
         }

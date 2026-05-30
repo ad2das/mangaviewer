@@ -59,6 +59,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     )
 
     private data class DrawItem(
+        val index: Int,
         val bitmap: Bitmap?,
         val tiles: List<ReaderTile>,
         val loading: Boolean,
@@ -75,6 +76,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val empty: Boolean,
         val visibleLoading: Int,
         val hasDrawableContent: Boolean,
+        val scrollOffset: Float,
+        val contentHeight: Float,
+        val pageCount: Int,
         val items: List<DrawItem>
     )
 
@@ -343,7 +347,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
             val newHeight = resolvedPageDrawHeightLocked(bitmap.width, bitmap.height)
-            if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight)) {
+            if (shouldDeferHeightChangingResolveLocked()) {
                 page.bitmap = bitmap
                 page.tiles = emptyList()
                 page.loading = false
@@ -390,7 +394,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
             val newHeight = resolvedPageDrawHeightLocked(pageWidth, pageHeight)
-            if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight)) {
+            if (shouldDeferHeightChangingResolveLocked()) {
                 page.bitmap = null
                 page.tiles = tiles
                 page.loading = false
@@ -493,7 +497,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
             val newHeight = resolvedPageDrawHeightLocked(pageWidth, pageHeight)
-            if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight)) {
+            if (shouldDeferHeightChangingResolveLocked()) {
                 page.pendingResolveType = PENDING_BOUNDS
                 page.pendingBitmap = null
                 page.pendingTiles = emptyList()
@@ -1007,7 +1011,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun buildDrawStateLocked(busy: Boolean = lastBusy): DrawState? {
         val viewWidth = max(1, width)
         val viewHeight = max(1, height)
-        if (pages.isEmpty()) return DrawState(viewWidth, viewHeight, busy, true, 1, false, emptyList())
+        if (pages.isEmpty()) {
+            return DrawState(viewWidth, viewHeight, busy, true, 1, false, scrollOffset, contentHeight, 0, emptyList())
+        }
         applyLockedRestorePositionLocked()
         clampScrollLocked()
         rebuildLayoutLocked()
@@ -1029,11 +1035,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val pageHeight = pageDrawHeightLocked(page)
             var top = laidOutTop
             val previousBottom = items.lastOrNull()?.let { it.top + it.pageHeight }
-            if (previousBottom != null &&
-                previousBottom < viewHeight &&
-                laidOutTop > previousBottom + COVERAGE_EDGE_FILL_PX
-            ) {
-                top = previousBottom
+            if (previousBottom == null) {
+                if (top > COVERAGE_EDGE_FILL_PX && top < viewHeight) {
+                    top = 0f
+                }
+            } else {
+                if (previousBottom < viewHeight &&
+                    laidOutTop > previousBottom + COVERAGE_EDGE_FILL_PX
+                ) {
+                    top = previousBottom
+                }
             }
             if (top > viewHeight) break
             val bottom = top + pageHeight
@@ -1043,7 +1054,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 } else {
                     hasDrawableContent = true
                 }
-                items.add(DrawItem(page.bitmap, page.tiles, page.loading, page.cardText, page.errorText, top, pageHeight))
+                items.add(DrawItem(index, page.bitmap, page.tiles, page.loading, page.cardText, page.errorText, top, pageHeight))
             }
             index++
         }
@@ -1054,7 +1065,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 items[items.lastIndex] = last.copy(pageHeight = last.pageHeight + bottomGap)
             }
         }
-        val state = DrawState(viewWidth, viewHeight, busy, false, visibleLoading, hasDrawableContent, items)
+        val state = DrawState(
+            viewWidth,
+            viewHeight,
+            busy,
+            false,
+            visibleLoading,
+            hasDrawableContent,
+            scrollOffset,
+            contentHeight,
+            pages.size,
+            items
+        )
         if (!hasDrawnContentFrame && state.visibleLoading > 0 && shouldHoldInitialViewportRenderLocked()) {
             renderRequested = true
             scheduleFrameLocked()
@@ -1086,7 +1108,33 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     "missingPx=${coverage.missingPx} placeholderPx=${coverage.placeholderPx} " +
                     "drawableItems=${coverage.drawableItems} items=${coverage.totalItems}"
             )
+            if (coverage.missingPx > COVERAGE_EDGE_FILL_PX) {
+                Log.i(
+                    TAG,
+                    "reader_visible_gap scroll=${formatFloat(state.scrollOffset)} " +
+                        "content=${formatFloat(state.contentHeight)} pages=${state.pageCount} " +
+                        "busy=${state.busy} loading=${state.visibleLoading} " +
+                        "items=${formatDrawItems(state.items)}"
+                )
+            }
         }
+    }
+
+    private fun formatDrawItems(items: List<DrawItem>): String {
+        if (items.isEmpty()) return "none"
+        return items.joinToString(separator = "|") { item ->
+            val bottom = item.top + item.pageHeight
+            val state = when {
+                itemHasDrawable(item) -> "draw"
+                item.loading -> "load"
+                else -> "empty"
+            }
+            "${item.index}:${formatFloat(item.top)}-${formatFloat(bottom)}:$state"
+        }
+    }
+
+    private fun formatFloat(value: Float): String {
+        return String.format(Locale.US, "%.1f", value)
     }
 
     private fun coverageStats(state: DrawState): CoverageStats {
@@ -1369,10 +1417,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return max(1f, viewWidth * placeholderPageHeightRatio)
     }
 
-    private fun shouldDeferHeightChangingResolveLocked(oldTop: Float, oldHeight: Float, newHeight: Float): Boolean {
-        if (!isScrollMovingLocked()) return false
-        if (abs(newHeight - oldHeight) <= 0.01f) return false
-        return oldTop < scrollOffset + height
+    private fun shouldDeferHeightChangingResolveLocked(): Boolean {
+        return false
     }
 
     private fun isScrollMovingLocked(): Boolean {
