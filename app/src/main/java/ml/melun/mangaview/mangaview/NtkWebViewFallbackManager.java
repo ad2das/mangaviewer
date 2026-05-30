@@ -325,29 +325,29 @@ final class NtkWebViewFallbackManager {
                 decor.addView(view, 0, params);
             }
             view.loadUrl(baseUrl + path, webViewHeaders(headers));
-            mainHandler.postDelayed(() -> {
-                if(finished[0])
-                    return;
-                view.evaluateJavascript(buildViewerImageFetchScript(path, kind, workId,
-                        episodeId, imagesToken), null);
-            }, 6_000L);
-            mainHandler.postDelayed(() -> {
-                if(!finished[0]) {
-                    view.evaluateJavascript(buildViewerImageFetchScript(path, kind, workId,
-                            episodeId, imagesToken), null);
-                }
-            }, 12_000L);
-            mainHandler.postDelayed(() -> {
-                if(!finished[0]) {
-                    view.evaluateJavascript(buildViewerImageFetchScript(path, kind, workId,
-                            episodeId, imagesToken), null);
-                }
-            }, 20_000L);
+            scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 1_200L);
+            scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 2_500L);
+            scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 5_000L);
+            scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 9_000L);
             mainHandler.postDelayed(finish, 64_000L);
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
             finish.run();
         }
+    }
+
+    private void scheduleViewerImageFetch(WebView view, boolean[] finished, String baseUrl, String path,
+                                          String kind, String workId, String episodeId,
+                                          String imagesToken, long delayMs) {
+        mainHandler.postDelayed(() -> {
+            if(finished[0] || view == null)
+                return;
+            String currentUrl = view.getUrl();
+            if(!isFinishedDocumentUrl(currentUrl, baseUrl, path))
+                return;
+            view.evaluateJavascript(buildViewerImageFetchScript(path, kind, workId,
+                    episodeId, imagesToken), null);
+        }, delayMs);
     }
 
     static long webViewLoadTimeoutMsForTest(boolean highPriority, boolean wolfDocument) {
@@ -763,8 +763,12 @@ final class NtkWebViewFallbackManager {
                 + "function rearm(){try{window.dispatchEvent(new CustomEvent('ntk-ack-rearm',{detail:{reason:kind+'-native-403',scope:scope}}));}catch(e){}}"
                 + "function waitAck(ms){return new Promise(function(resolve){if(acked())return resolve(true);var done=false;function finish(v){if(done)return;done=true;clearTimeout(to);clearInterval(iv);window.removeEventListener('ntk-ad-ack-ready',ev);resolve(v);}function ev(e){if((e.detail&&e.detail.scope===scope)||acked())finish(true);}var to=setTimeout(function(){finish(acked());},ms);var iv=setInterval(function(){if(acked())finish(true);},120);window.addEventListener('ntk-ad-ack-ready',ev);});}"
                 + "async function api(){var v=await nv();if(!v)return{status:401,body:{error:'missing session'}};var n=new Uint8Array(24);crypto.getRandomValues(n);var nonce=b64(n);var proof=await hmac(v,token+'.'+nonce+'.'+navigator.userAgent);var r=await fetch(endpoint,{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'content-type':'application/json','x-images-client':'viewer-v1'},body:JSON.stringify({workId:workId,episodeId:episodeId,token:token,nonce:nonce,proof:proof})});var b=await r.json().catch(function(){return {};});return{status:r.status,body:b};}"
+                + "function decode64(b){try{return decodeURIComponent(escape(atob(b||'')));}catch(e){try{return atob(b||'');}catch(_){return '';}}}"
+                + "function markAck(){try{window.__ntk_ad_ack_scope=scope;window.__ntk_ad_ack_last={scope:scope,ts:Date.now(),native:true};window.dispatchEvent(new CustomEvent('ntk-ad-ack-ready',{detail:{scope:scope,native:true}}));}catch(e){}}"
+                + "async function bridgeReq(url,method,body){var abs=new URL(url,location.href).href,h={'content-type':'application/json','accept':'application/json','origin':location.origin,'referer':location.href};if(window.NtkQuicBridge){var raw=window.NtkQuicBridge.request(abs,method,JSON.stringify(h),body?b64(new TextEncoder().encode(JSON.stringify(body))):'');var o=JSON.parse(raw||'{}');if(!o.ok)throw new Error(o.error||'bridge failed');var text=decode64(o.bodyBase64||''),json={};try{json=JSON.parse(text||'{}');}catch(e){}return{status:o.status||0,body:json,text:text};}var opt={method:method,credentials:'same-origin',cache:'no-store',headers:h};if(body)opt.body=JSON.stringify(body);var r=await fetch(abs,opt);var t=await r.text().catch(function(){return '';});var j={};try{j=JSON.parse(t||'{}');}catch(e){}return{status:r.status,body:j,text:t};}"
+                + "async function directAck(){try{var cRes=await bridgeReq('/api/ad/challenge','POST',{path:scope});var cBody=cRes.body||{};if(cRes.status!==200||!cBody.ok)return false;var ch=cBody.challenge||{},ct=ch.challengeToken||ch.token||'',imps=ch.impressionUrls||[],i,u;if(!ct)return false;for(i=0;i<imps.length;i++){u=imps[i];if(!u)continue;try{await bridgeReq(u,'GET',null);}catch(e){try{await fetch(new URL(u,location.href).href,{credentials:'include',cache:'no-store',mode:'no-cors'});}catch(_){}}}try{await bridgeReq('/api/ad/canary','POST',{adAckCanary:true,challengeToken:ct,token:ct,path:scope});}catch(e){}var aRes=await bridgeReq('/api/ad/ack','POST',{challengeToken:ct,token:ct,total:ch.slotCount||4,visible:ch.minSeen||2,path:scope,td:0,tp:''});var a=aRes.body||{},ok=aRes.status===200&&(a.ok||a.acked||a.status==='ok'||a.status==='acked');if(ok){markAck();return true;}return false;}catch(e){return false;}}"
                 + "function extractAckState(){try{var ls={},ss={},i,k;for(i=0;i<localStorage.length;i++){k=localStorage.key(i);if(k)ls[k]=localStorage.getItem(k);}for(i=0;i<sessionStorage.length;i++){k=sessionStorage.key(i);if(k)ss[k]=sessionStorage.getItem(k);}return JSON.stringify({cookies:document.cookie,local:ls,session:ss,ackScope:(function(){try{return window.__ntk_ad_ack_scope;}catch(e){return null;}})(),ntkVars:(function(){try{var o={};for(var p in window)if(p.indexOf('__ntk')===0)try{o[p]=String(window[p]);}catch(e){}return o;}catch(e){return{};}})(),ua:navigator.userAgent,ts:Date.now()});}catch(e){return JSON.stringify({error:String(e)});}}"
-                + "(async function(){try{for(var i=0;i<20;i++){if(document.body)break;await sleep(100);}var deadline=Date.now()+45000,r=await api(),armed=false;while(Date.now()<deadline&&r&&r.status===403&&r.body&&r.body.error==='ad_ack_required'){try{window.NtkViewerBridge.onAckState(extractAckState());}catch(e){}if(!acked()&&!armed){armed=true;rearm();}await waitAck(Math.min(9000,Math.max(0,deadline-Date.now())));await sleep(250);r=await api();}send({code:r?r.status:0,body:r?r.body:{error:'timeout'}});}catch(e){send({code:0,error:String(e)});}})();"
+                + "(async function(){try{for(var i=0;i<20;i++){if(document.body)break;await sleep(100);}var deadline=Date.now()+18000,r=await api(),armed=false,didDirect=false;while(Date.now()<deadline&&r&&r.status===403&&r.body&&r.body.error==='ad_ack_required'){try{window.NtkViewerBridge.onAckState(extractAckState());}catch(e){}if(!didDirect){didDirect=true;if(await directAck()){r=await api();continue;}}if(!acked()&&!armed){armed=true;rearm();}await waitAck(Math.min(1800,Math.max(0,deadline-Date.now())));await sleep(180);r=await api();}send({code:r?r.status:0,body:r?r.body:{error:'timeout'}});}catch(e){send({code:0,error:String(e)});}})();"
                 + "})()";
     }
 
