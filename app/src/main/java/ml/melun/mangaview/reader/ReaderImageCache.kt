@@ -11,6 +11,7 @@ import ml.melun.mangaview.glide.ViewerWarmupManager
 import ml.melun.mangaview.mangaview.Manga
 import okhttp3.Call
 import okhttp3.Request
+import okhttp3.Response
 import org.jsoup.Jsoup
 import java.io.File
 import java.io.FileOutputStream
@@ -28,13 +29,14 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.max
 
 object ReaderImageCache {
     private const val DIR_NAME = "reader_image_cache_v1"
     private const val MAX_CACHE_BYTES = 512L * 1024L * 1024L
     private const val TARGET_CACHE_BYTES = 384L * 1024L * 1024L
     private const val TRIM_DEBOUNCE_MS = 30_000L
-    private const val FOREGROUND_RACE_DELAY_MS = 0L
+    private const val FOREGROUND_RACE_DELAY_MS = 900L
     private const val MAX_DIRECT_STREAM_DECODE_BYTES = 3L * 1024L * 1024L
     private val flights = ConcurrentHashMap<String, FutureTask<File>>()
     private val activeReads = ConcurrentHashMap<String, AtomicInteger>()
@@ -107,7 +109,14 @@ object ReaderImageCache {
         return if (isUsableImage(file)) file else null
     }
 
-    fun decodeForegroundBitmap(context: Context, manga: Manga, image: String): Bitmap? {
+    fun decodeForegroundBitmap(
+        context: Context,
+        manga: Manga,
+        image: String,
+        targetWidth: Int,
+        autoCut: Boolean,
+        allowSplit: Boolean
+    ): Bitmap? {
         if (!manga.isOnline) return null
         val appContext = context.applicationContext
         if (cachedFile(appContext, manga, image) != null) return null
@@ -118,16 +127,48 @@ object ReaderImageCache {
             val body = response.body ?: return null
             val contentLength = body.contentLength()
             if (contentLength > MAX_DIRECT_STREAM_DECODE_BYTES) return null
+            val bytes = body.bytes()
+            if (bytes.size > MAX_DIRECT_STREAM_DECODE_BYTES) return null
+            val bytesAt = SystemClock.elapsedRealtime()
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            val decodeTargetWidth = foregroundDecodeTargetWidth(bounds.outWidth, bounds.outHeight, targetWidth, autoCut, allowSplit)
             val options = BitmapFactory.Options().apply {
                 inPreferredConfig = Bitmap.Config.RGB_565
+                inSampleSize = foregroundSampleSize(bounds.outWidth, decodeTargetWidth)
             }
-            val bitmap = BitmapFactory.decodeStream(body.byteStream(), null, options) ?: return null
+            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
             val decodedAt = SystemClock.elapsedRealtime()
             ViewerWarmupManager.logMetric("reader_foreground_stream_headers_ms", headersAt - startedAt)
-            ViewerWarmupManager.logMetric("reader_foreground_stream_decode_ms", decodedAt - headersAt)
-            ViewerWarmupManager.logMetric("reader_foreground_stream_bytes", contentLength)
+            ViewerWarmupManager.logMetric("reader_foreground_stream_body_ms", bytesAt - headersAt)
+            ViewerWarmupManager.logMetric("reader_foreground_stream_decode_ms", decodedAt - bytesAt)
+            ViewerWarmupManager.logMetric("reader_foreground_stream_bytes", if (contentLength >= 0L) contentLength else bytes.size.toLong())
             return bitmap
         }
+    }
+
+    private data class ForegroundRaceResult(
+        val call: Call,
+        val response: Response
+    )
+
+    private fun foregroundDecodeTargetWidth(
+        sourceWidth: Int,
+        sourceHeight: Int,
+        targetWidth: Int,
+        autoCut: Boolean,
+        allowSplit: Boolean
+    ): Int {
+        val safeTarget = max(1, targetWidth)
+        if (!autoCut || !allowSplit || sourceWidth <= 0 || sourceHeight <= 0) return safeTarget
+        return if (sourceWidth / sourceHeight.toFloat() >= 0.90f) safeTarget * 2 else safeTarget
+    }
+
+    private fun foregroundSampleSize(sourceWidth: Int, targetWidth: Int): Int {
+        if (sourceWidth <= 0 || targetWidth <= 0) return 1
+        var sample = 1
+        while (sourceWidth / (sample * 2) >= targetWidth) sample *= 2
+        return max(1, sample)
     }
 
     private fun getOrFetch(context: Context, manga: Manga, image: String, foreground: Boolean = false): File {
@@ -252,13 +293,15 @@ object ReaderImageCache {
         val request = requestFor(manga, image)
         val client = getHttpClient().imageClient
         val calls = Collections.synchronizedList(ArrayList<Call>())
-        val completion = ExecutorCompletionService<okhttp3.Response>(foregroundRaceExecutor)
+        val completion = ExecutorCompletionService<ForegroundRaceResult>(foregroundRaceExecutor)
+        val completed = AtomicBoolean(false)
         fun submit(delayMs: Long) {
             completion.submit(Callable {
                 if (delayMs > 0L) Thread.sleep(delayMs)
+                if (completed.get()) throw IOException("Foreground image race already completed")
                 val call = client.newCall(request)
                 calls.add(call)
-                call.execute()
+                ForegroundRaceResult(call, call.execute())
             })
         }
         submit(0L)
@@ -266,9 +309,14 @@ object ReaderImageCache {
         var failure: Throwable? = null
         repeat(2) {
             try {
-                val response = completion.take().get()
+                val result = completion.take().get()
+                val response = result.response
                 if (response.isSuccessful) {
                     if (it > 0) ViewerWarmupManager.logMetric("reader_foreground_image_race_won", it.toLong())
+                    completed.set(true)
+                    for (call in calls) {
+                        if (call !== result.call) call.cancel()
+                    }
                     return response
                 }
                 failure = IOException("Image request failed: ${response.code}")

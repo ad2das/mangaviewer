@@ -3837,21 +3837,6 @@ public class CustomHttpClient {
                 dumpNtkAckDebugArtifacts(baseUrl, path);
             }
 
-            // Fetch encrypted ad_guard_bg.wasm (JS will decrypt it internally)
-            byte[] wasmBytes = null;
-            try {
-                Map<String, String> wasmHeaders = new HashMap<>();
-                wasmHeaders.put("referer", baseUrl + path);
-                NtkQuicFetcher.Result wasmResult = NtkQuicFetcher.fetchWithEngine(engine, baseUrl + "/wasm/ad-guard/ad_guard_bg.wasm", agent,
-                        getCookieHeader(), wasmHeaders, "GET", null, 30000L);
-                int wasmCode = wasmResult == null ? 0 : wasmResult.code;
-                Log.e(TAG, "ntk_wasm_fetch_code=" + wasmCode);
-                if(wasmResult != null && wasmResult.bodyBytes != null && wasmResult.bodyBytes.length > 100) {
-                    wasmBytes = wasmResult.bodyBytes;
-                    Log.e(TAG, "ntk_wasm_body_len=" + wasmBytes.length);
-                }
-            } catch(Exception ignored) {}
-
             // 1. POST /api/ad/challenge
             JSONObject challengePayload = new JSONObject();
             challengePayload.put("path", path);

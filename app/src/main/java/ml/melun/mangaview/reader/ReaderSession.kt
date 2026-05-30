@@ -1298,7 +1298,7 @@ class ReaderSession(
         val image = page.image ?: return null
         val metric = SystemClock.elapsedRealtime()
         val raw = try {
-            ReaderImageCache.decodeForegroundBitmap(appContext, page.manga, image)
+            ReaderImageCache.decodeForegroundBitmap(appContext, page.manga, image, targetWidth, autoCut, page.allowAutoSplit)
         } catch (e: Exception) {
             recordIfUnexpected(e)
             null

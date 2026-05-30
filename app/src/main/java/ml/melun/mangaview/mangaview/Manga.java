@@ -1,6 +1,7 @@
 package ml.melun.mangaview.mangaview;
 
 import java.io.File;
+import java.io.IOException;
 import java.net.URLDecoder;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -22,6 +23,9 @@ import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 
+import okhttp3.Call;
+import okhttp3.Callback;
+import okhttp3.Request;
 import okhttp3.Response;
 
 import static ml.melun.mangaview.Utils.documentFileFromUri;
@@ -412,8 +416,18 @@ public class Manga {
                 path = "/" + segment + "/" + tid + "/" + id;
                 setNtkEpisodePath(path);
             }
-            AsyncNtkPageFetch pageFetch = startAsyncNtkPageFetch(client, path);
-            if(addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount(), true)) {
+            boolean hasKnownGeneratedImages = getNtkImageCount() > 0;
+            AsyncNtkPageFetch pageFetch = null;
+            if(hasKnownGeneratedImages
+                    && addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount(), true)) {
+                logNtkViewerParse("generated-fast", null, path, 0, 0);
+                restoreBetterEpisodeList(previousEpisodes);
+                attachEpisodeSeriesMetadata();
+                return LOAD_OK;
+            }
+            pageFetch = startAsyncNtkPageFetch(client, path);
+            if(!hasKnownGeneratedImages
+                    && addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount(), true)) {
                 logNtkViewerParse("generated-fast", null, path, 0, 0);
                 restoreBetterEpisodeList(previousEpisodes);
                 attachEpisodeSeriesMetadata();
@@ -658,18 +672,47 @@ public class Manga {
         int before = imgs == null ? 0 : imgs.size();
         int safePageCount = Math.min(pageCount, NTK_MAX_GENERATED_PAGE_COUNT);
         String imageEpisodeId = episodeId;
-        String imageExtension = "jpg";
+        boolean hasKnownImageCount = getNtkImageCount() > 0;
+        String imageExtension = "jpeg";
         if(validateFirstImage) {
-            imageExtension = reachableNtkGeneratedImageExtension(client, segment, workId, imageEpisodeId, 1);
-            if(imageExtension.length() == 0)
-                return false;
-            safePageCount = reachableNtkGeneratedPageCount(client, segment, workId, imageEpisodeId, imageExtension, safePageCount);
+            if(!hasKnownImageCount) {
+                imageExtension = reachableNtkGeneratedImageExtension(client, segment, workId, imageEpisodeId, 1);
+                if(imageExtension.length() == 0)
+                    return false;
+                safePageCount = reachableNtkGeneratedPageCount(client, segment, workId, imageEpisodeId, imageExtension, safePageCount);
+            } else {
+                warmNtkGeneratedFirstImageConnection(client, segment, workId, imageEpisodeId, imageExtension);
+            }
         }
         for(int page = 1; page <= safePageCount; page++) {
             String src = ntkGeneratedImageUrl(segment, workId, imageEpisodeId, page, imageExtension);
             addImageIfValid(client, seenImages, src);
         }
         return imgs != null && imgs.size() > before;
+    }
+
+    private void warmNtkGeneratedFirstImageConnection(CustomHttpClient client, String segment, String workId,
+                                                     String episodeId, String extension) {
+        if(client == null || client.imageClient == null)
+            return;
+        try {
+            Request request = new Request.Builder()
+                    .url(ntkGeneratedImageUrl(segment, workId, episodeId, 1, extension))
+                    .header("accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+                    .header("range", "bytes=0-0")
+                    .build();
+            client.imageClient.newCall(request).enqueue(new Callback() {
+                @Override
+                public void onFailure(Call call, IOException e) {
+                }
+
+                @Override
+                public void onResponse(Call call, Response response) {
+                    response.close();
+                }
+            });
+        } catch(Exception ignored) {
+        }
     }
 
     private static String ntkGeneratedImageUrl(String segment, String workId, String episodeId, int page) {
@@ -685,7 +728,7 @@ public class Manga {
 
     private String reachableNtkGeneratedImageExtension(CustomHttpClient client, String segment, String workId,
                                                        String episodeId, int page) {
-        String[] extensions = {"jpg", "jpeg", "png", "webp"};
+        String[] extensions = {"jpeg", "jpg", "png", "webp"};
         for(String extension : extensions) {
             if(isNtkGeneratedImageReachable(client, ntkGeneratedImageUrl(segment, workId, episodeId, page, extension)))
                 return extension;
