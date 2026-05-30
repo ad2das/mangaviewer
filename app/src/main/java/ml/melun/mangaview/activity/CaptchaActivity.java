@@ -181,7 +181,8 @@ public class CaptchaActivity extends AppCompatActivity {
             "function shouldBridge(u,m){" +
             "var x=parseUrl(u);if(!x||x.protocol!=='https:')return false;" +
             "var h=x.hostname.toLowerCase();" +
-            "if(!(h==='sbxh3.com'||h.slice(-10)==='.sbxh3.com'))return false;" +
+            "var r=(location.hostname||'').toLowerCase();if(r.indexOf('www.')===0)r=r.slice(4);if(h.indexOf('www.')===0)h=h.slice(4);" +
+            "if(!r||!(h===r||h.slice(-(r.length+1))==='.'+r))return false;" +
             "if(x.pathname.indexOf('/cdn-cgi/challenge-platform/')!==0)return false;" +
             "return String(m||'GET').toUpperCase()!=='GET';" +
             "}" +
@@ -707,7 +708,7 @@ public class CaptchaActivity extends AppCompatActivity {
 
     private String injectNtkQuicBridgeScript(String url, String html, Map<String, List<String>> headers) {
         if(html == null || html.length() == 0 || p == null || !p.isNtkSite()
-                || !NtkQuicFetcher.isAvailable() || !isSbxh3HttpsUrl(url)
+                || !NtkQuicFetcher.isAvailable() || !isNtkProtectedHttpsUrl(url)
                 || html.contains("__ntkQuicBridgeInstalled"))
             return html;
         String nonce = cspNonce(headers);
@@ -790,7 +791,7 @@ public class CaptchaActivity extends AppCompatActivity {
     private final class NtkQuicJavascriptBridge {
         @JavascriptInterface
         public String request(String url, String method, String headersJson, String bodyBase64) {
-            if(!NtkQuicFetcher.isAvailable() || !isSbxh3HttpsUrl(url))
+            if(!NtkQuicFetcher.isAvailable() || !isNtkProtectedHttpsUrl(url))
                 return bridgeError("unsupported url");
             try {
                 byte[] body = bodyBase64 == null || bodyBase64.length() == 0
@@ -947,7 +948,7 @@ public class CaptchaActivity extends AppCompatActivity {
             return null;
         String method = request.getMethod();
         String url = request.getUrl().toString();
-        if(p != null && p.isNtkSite() && isSbxh3HttpsUrl(url) && method != null && !"GET".equalsIgnoreCase(method))
+        if(p != null && p.isNtkSite() && isNtkProtectedHttpsUrl(url) && method != null && !"GET".equalsIgnoreCase(method))
             android.util.Log.d("CaptchaActivity", "NTK WebView request needs direct WebView transport: method="
                     + method + ",url=" + url);
         if(!shouldInterceptNtkQuicRequestForTest(p != null && p.isNtkSite(), method, url, NtkQuicFetcher.isAvailable()))
@@ -984,28 +985,51 @@ public class CaptchaActivity extends AppCompatActivity {
     static boolean shouldInterceptNtkQuicRequestForTest(boolean ntkSite, String method, String url, boolean quicAvailable) {
         if(!ntkSite || !quicAvailable || method == null || !"GET".equalsIgnoreCase(method))
             return false;
-        return isSbxh3HttpsUrl(url);
+        return isNtkProtectedHttpsUrl(url);
     }
 
-    private static boolean isSbxh3HttpsUrl(String url) {
+    private static boolean isNtkProtectedHttpsUrl(String url) {
         try {
             URI uri = URI.create(url);
             String scheme = uri.getScheme();
             String host = uri.getHost();
             if(!"https".equalsIgnoreCase(scheme) || host == null)
                 return false;
-            host = host.toLowerCase(java.util.Locale.ROOT);
-            return host.equals("sbxh3.com") || host.endsWith(".sbxh3.com");
+            return hostMatchesRoot(host, currentNtkRootHost());
         } catch (Exception e) {
             return false;
         }
+    }
+
+    private static String currentNtkRootHost() {
+        try {
+            String root = p == null ? NTK_WEBTOON_URL : p.getNtkResolvedRoot();
+            URI uri = URI.create(root);
+            return normalizeHost(uri.getHost());
+        } catch (Exception e) {
+            return normalizeHost("sbxh3.com");
+        }
+    }
+
+    private static boolean hostMatchesRoot(String host, String rootHost) {
+        host = normalizeHost(host);
+        rootHost = normalizeHost(rootHost);
+        return host.length() > 0 && rootHost.length() > 0
+                && (host.equals(rootHost) || host.endsWith("." + rootHost));
+    }
+
+    private static String normalizeHost(String host) {
+        if(host == null)
+            return "";
+        host = host.toLowerCase(java.util.Locale.ROOT);
+        return host.startsWith("www.") ? host.substring(4) : host;
     }
 
     private void logNtkSubresourceError(WebResourceRequest request, WebResourceError error) {
         if(p == null || !p.isNtkSite() || request == null || request.getUrl() == null)
             return;
         String url = request.getUrl().toString();
-        if(!isSbxh3HttpsUrl(url))
+        if(!isNtkProtectedHttpsUrl(url))
             return;
         int code = error == null ? 0 : error.getErrorCode();
         CharSequence description = error == null ? "" : error.getDescription();

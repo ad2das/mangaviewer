@@ -50,7 +50,9 @@ final class NtkWebViewFallbackManager {
             + "if(window.__ntkViewerQuicBridgeInstalled||!window.NtkQuicBridge)return;"
             + "window.__ntkViewerQuicBridgeInstalled=1;"
             + "function parseUrl(u){try{return new URL(u,location.href);}catch(e){return null;}}"
-            + "function shouldBridge(u,m){var x=parseUrl(u);if(!x||x.protocol!=='https:')return false;var h=x.hostname.toLowerCase();if(!(h==='sbxh3.com'||h.slice(-10)==='.sbxh3.com'))return false;return String(m||'GET').toUpperCase()!=='GET';}"
+            + "function ntkRootHost(){var h=(location.hostname||'').toLowerCase();return h.indexOf('www.')===0?h.slice(4):h;}"
+            + "function hostMatchesRoot(h){h=String(h||'').toLowerCase();if(h.indexOf('www.')===0)h=h.slice(4);var r=ntkRootHost();return !!r&&(h===r||h.slice(-(r.length+1))==='.'+r);}"
+            + "function shouldBridge(u,m){var x=parseUrl(u);if(!x||x.protocol!=='https:')return false;if(!hostMatchesRoot(x.hostname))return false;return String(m||'GET').toUpperCase()!=='GET';}"
             + "function textBase64(s){return btoa(unescape(encodeURIComponent(s||'')));}"
             + "function bodyBase64(b){try{if(b==null)return '';if(typeof b==='string')return textBase64(b);if(window.URLSearchParams&&b instanceof URLSearchParams)return textBase64(b.toString());if(window.ArrayBuffer&&b instanceof ArrayBuffer){var a=new Uint8Array(b),r='';for(var i=0;i<a.length;i++)r+=String.fromCharCode(a[i]);return btoa(r);}if(window.ArrayBuffer&&ArrayBuffer.isView&&ArrayBuffer.isView(b)){var v=new Uint8Array(b.buffer,b.byteOffset,b.byteLength),o='';for(var j=0;j<v.length;j++)o+=String.fromCharCode(v[j]);return btoa(o);}return textBase64(String(b));}catch(e){return '';}}"
             + "function bodyBase64Async(b){try{if(b&&window.Request&&b instanceof Request&&b.clone)return b.clone().arrayBuffer().then(function(a){return bodyBase64(a);});if(b&&window.Blob&&b instanceof Blob&&b.arrayBuffer)return b.arrayBuffer().then(function(a){return bodyBase64(a);});}catch(e){}return Promise.resolve(bodyBase64(b));}"
@@ -779,7 +781,7 @@ final class NtkWebViewFallbackManager {
             return null;
         String method = request.getMethod();
         String url = request.getUrl().toString();
-        if(method == null || !"GET".equalsIgnoreCase(method) || !isSbxhHttpsUrl(url))
+        if(method == null || !"GET".equalsIgnoreCase(method) || !isNtkProtectedHttpsUrl(url))
             return null;
         try {
             NtkQuicFetcher.Result result = NtkQuicFetcher.fetch(context, url, userAgent,
@@ -809,18 +811,43 @@ final class NtkWebViewFallbackManager {
         }
     }
 
-    private static boolean isSbxhHttpsUrl(String url) {
+    private static boolean isNtkProtectedHttpsUrl(String url) {
         try {
             URI uri = URI.create(url);
             String scheme = uri.getScheme();
             String host = uri.getHost();
             if(!"https".equalsIgnoreCase(scheme) || host == null)
                 return false;
-            host = host.toLowerCase(Locale.ROOT);
-            return host.equals("sbxh3.com") || host.endsWith(".sbxh3.com");
+            return hostMatchesRoot(host, currentNtkRootHost());
         } catch (Exception e) {
             return false;
         }
+    }
+
+    private static String currentNtkRootHost() {
+        try {
+            String root = MainApplication.p == null
+                    ? CustomHttpClient.NTK_WEBTOON_URL
+                    : MainApplication.p.getNtkResolvedRoot();
+            URI uri = URI.create(root);
+            return normalizeHost(uri.getHost());
+        } catch (Exception e) {
+            return normalizeHost("sbxh3.com");
+        }
+    }
+
+    private static boolean hostMatchesRoot(String host, String rootHost) {
+        host = normalizeHost(host);
+        rootHost = normalizeHost(rootHost);
+        return host.length() > 0 && rootHost.length() > 0
+                && (host.equals(rootHost) || host.endsWith("." + rootHost));
+    }
+
+    private static String normalizeHost(String host) {
+        if(host == null)
+            return "";
+        host = host.toLowerCase(Locale.ROOT);
+        return host.startsWith("www.") ? host.substring(4) : host;
     }
 
     private static String webViewCookieHeader(String url) {
@@ -1049,7 +1076,7 @@ final class NtkWebViewFallbackManager {
 
         @JavascriptInterface
         public String request(String url, String method, String headersJson, String bodyBase64) {
-            if(!NtkQuicFetcher.isAvailable() || !isSbxhHttpsUrl(url))
+            if(!NtkQuicFetcher.isAvailable() || !isNtkProtectedHttpsUrl(url))
                 return bridgeError("unsupported url");
             try {
                 byte[] body = bodyBase64 == null || bodyBase64.length() == 0
