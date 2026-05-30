@@ -689,7 +689,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onNearBoundary(direction: Int, anchorPage: Int) {
         if (destroyed || isFinishing) return
-        if (direction != ReaderSurfaceView.DIRECTION_NEXT) return
         session?.prepareAdjacentEpisode(anchorPage, direction)
     }
 

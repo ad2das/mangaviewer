@@ -20,4 +20,12 @@ public class ReaderSurfaceViewTest {
     public void slowDragDoesNotStartFling() {
         assertFalse(ReaderSurfaceView.shouldStartFlingForTest(80f, 30, 50, 16));
     }
+
+    @Test
+    public void pendingHeightResolveWaitsForStableIdle() {
+        assertFalse(ReaderSurfaceView.shouldApplyPendingPageResolvesForTest(true, 2000L, 1000L, 450L));
+        assertFalse(ReaderSurfaceView.shouldApplyPendingPageResolvesForTest(false, 1200L, 1000L, 450L));
+        assertTrue(ReaderSurfaceView.shouldApplyPendingPageResolvesForTest(false, 1450L, 1000L, 450L));
+        assertTrue(ReaderSurfaceView.shouldApplyPendingPageResolvesForTest(false, 100L, 0L, 450L));
+    }
 }
