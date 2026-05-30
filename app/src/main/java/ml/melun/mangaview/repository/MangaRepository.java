@@ -277,9 +277,9 @@ public final class MangaRepository {
             return new ViewerFetchResult(result, manga);
         });
         boolean foreground = requestGroup != null && requestGroup.isUserVisible();
-        boolean wfwf = !client.isNtk();
+        boolean webViewPriority = requestGroup != null && requestGroup.prioritizesWebViewFallback();
         ViewerFetchTask candidate = new ViewerFetchTask(task, requestGroup, foreground);
-        ViewerFetchTask running = reserveViewerFetch(key, candidate, foreground, wfwf);
+        ViewerFetchTask running = reserveViewerFetch(key, candidate, foreground, webViewPriority);
         if(running == candidate) {
             task.run();
         }
@@ -302,12 +302,12 @@ public final class MangaRepository {
     }
 
     private static ViewerFetchTask reserveViewerFetch(String key, ViewerFetchTask candidate,
-                                                      boolean foreground, boolean wfwf) {
+                                                      boolean foreground, boolean webViewPriority) {
         while(true) {
             ViewerFetchTask existing = VIEWER_FETCH_IN_FLIGHT.putIfAbsent(key, candidate);
             if(existing == null)
                 return candidate;
-            if(!shouldReplaceViewerFetchForPriority(foreground, existing.foreground, wfwf))
+            if(!shouldReplaceViewerFetchForPriority(foreground, existing.foreground, webViewPriority))
                 return existing;
             existing.cancel();
             VIEWER_FETCH_IN_FLIGHT.remove(key, existing);
@@ -316,14 +316,14 @@ public final class MangaRepository {
 
     static boolean shouldReplaceViewerFetchForPriorityForTest(boolean foreground,
                                                               boolean existingForeground,
-                                                              boolean wfwf) {
-        return shouldReplaceViewerFetchForPriority(foreground, existingForeground, wfwf);
+                                                              boolean webViewPriority) {
+        return shouldReplaceViewerFetchForPriority(foreground, existingForeground, webViewPriority);
     }
 
     private static boolean shouldReplaceViewerFetchForPriority(boolean foreground,
                                                                boolean existingForeground,
-                                                               boolean wfwf) {
-        return wfwf && foreground && !existingForeground;
+                                                               boolean webViewPriority) {
+        return webViewPriority && foreground && !existingForeground;
     }
 
     public static Ranking<Title> loadWebtoonSection(MainPageWebtoon parser, String title, String path, int baseMode,

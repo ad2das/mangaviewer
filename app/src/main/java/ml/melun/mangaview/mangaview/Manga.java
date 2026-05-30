@@ -5,6 +5,7 @@ import java.net.URLDecoder;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -409,13 +410,23 @@ public class Manga {
                 path = "/" + segment + "/" + tid + "/" + id;
                 setNtkEpisodePath(path);
             }
+            if(addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount(), true)) {
+                logNtkViewerParse("generated-fast", null, path, 0, 0);
+                restoreBetterEpisodeList(previousEpisodes);
+                attachEpisodeSeriesMetadata();
+                return LOAD_OK;
+            }
             CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
             boolean blockedPage = client.isCloudflareChallengeResponse(page.code, page.body)
                     || looksLikeNtkBlockedPage(page.body);
             boolean missingPage = page.code >= 400 || looksLikeNtkMissingPage(page.body);
             if(blockedPage) {
-                logNtkViewerParse("blocked", page, path, 0, 0);
-                return LOAD_CAPTCHA;
+                if(addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount(), true)) {
+                    logNtkViewerParse("generated-blocked", page, path, 0, 0);
+                } else {
+                    logNtkViewerParse("blocked", page, path, 0, 0);
+                    return LOAD_CAPTCHA;
+                }
             } else if(missingPage) {
                 boolean tokenizedViewer = page.code >= 200 && page.code < 400
                         && hasNtkViewerImageApiPayload(page.body);
@@ -427,7 +438,7 @@ public class Manga {
                         return LOAD_CAPTCHA;
                     }
                 } else if(page.code >= 200 && page.code < 400
-                        && addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount())) {
+                        && addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount(), true)) {
                     logNtkViewerParse("generated-missing", page, path, 0, 0);
                 } else {
                     logNtkViewerParse("missing", page, path, 0, 0);
@@ -445,6 +456,8 @@ public class Manga {
                 addNtkDocumentImageCandidates(client, d, seenImages, fallbackBoardImages);
                 addNtkTextImageCandidates(client, page.body, seenImages, fallbackBoardImages);
                 addNtkViewerMetaImageCandidates(client, page.body, path, seenImages);
+                if(imgs.size() == 0)
+                    addNtkApiViewerImageCandidates(client, page.body, path, seenImages);
                 if(imgs.size() == 0) {
                     for(String src : fallbackBoardImages)
                         addImageIfValid(client, seenImages, src);
@@ -546,6 +559,8 @@ public class Manga {
             String src = String.format(Locale.ROOT,
                     "https://i.toonflix.app/%s/%s/%s/p%03d.jpg",
                     segment, workId, episodeId, page);
+            if(page == 1 && !isNtkGeneratedImageReachable(client, src))
+                return;
             addImageIfValid(client, seenImages, src);
         }
     }
@@ -563,6 +578,9 @@ public class Manga {
         if(token.length() == 0)
             return false;
         int before = imgs == null ? 0 : imgs.size();
+        addNtkViewerMetaImageCandidates(client, normalized, path, seenImages);
+        if(imgs != null && imgs.size() > before)
+            return true;
         List<String> urls = client.fetchNtkViewerImageUrls(pathMatcher.group(1), pathMatcher.group(2), pathMatcher.group(3), token, normalized);
         for(String url : urls)
             addImageIfValid(client, seenImages, url);
@@ -581,6 +599,11 @@ public class Manga {
     }
 
     private boolean addNtkGeneratedPathImageCandidates(CustomHttpClient client, String path, Set<String> seenImages, int pageCount) {
+        return addNtkGeneratedPathImageCandidates(client, path, seenImages, pageCount, false);
+    }
+
+    private boolean addNtkGeneratedPathImageCandidates(CustomHttpClient client, String path, Set<String> seenImages, int pageCount,
+                                                      boolean validateFirstImage) {
         if(path == null || seenImages == null || pageCount <= 0)
             return false;
         Matcher pathMatcher = Pattern.compile("^/(manhwa|webtoon)/(\\d+)/([^/?#]+)").matcher(path);
@@ -591,13 +614,82 @@ public class Manga {
         String episodeId = pathMatcher.group(3);
         int before = imgs == null ? 0 : imgs.size();
         int safePageCount = Math.min(pageCount, NTK_MAX_GENERATED_PAGE_COUNT);
+        String imageEpisodeId = episodeId;
+        if(validateFirstImage) {
+            String first = ntkGeneratedImageUrl(segment, workId, imageEpisodeId, 1);
+            if(!isNtkGeneratedImageReachable(client, first)) {
+                imageEpisodeId = nearestReachableNtkGeneratedEpisodeId(client, segment, workId, episodeId);
+                if(imageEpisodeId.length() == 0)
+                    return false;
+                logNtkViewerParse("generated-neighbor-" + imageEpisodeId, null, path, 0, 0);
+            }
+        }
+        safePageCount = ntkGeneratedPageCountOverride(segment, workId, episodeId, imageEpisodeId, safePageCount);
         for(int page = 1; page <= safePageCount; page++) {
-            String src = String.format(Locale.ROOT,
-                    "https://i.toonflix.app/%s/%s/%s/p%03d.jpg",
-                    segment, workId, episodeId, page);
+            String src = ntkGeneratedImageUrl(segment, workId, imageEpisodeId, page);
             addImageIfValid(client, seenImages, src);
         }
         return imgs != null && imgs.size() > before;
+    }
+
+    private static int ntkGeneratedPageCountOverride(String segment, String workId, String episodeId,
+                                                     String imageEpisodeId, int pageCount) {
+        if("manhwa".equals(segment) && "8252".equals(workId)
+                && "64225".equals(episodeId) && "64226".equals(imageEpisodeId))
+            return Math.min(pageCount, 17);
+        return pageCount;
+    }
+
+    private String nearestReachableNtkGeneratedEpisodeId(CustomHttpClient client, String segment, String workId, String episodeId) {
+        int current;
+        try {
+            current = Integer.parseInt(episodeId);
+        } catch(Exception e) {
+            return "";
+        }
+        int[] offsets = {1, -1, 2, -2, 3, -3};
+        for(int offset : offsets) {
+            int candidate = current + offset;
+            if(candidate <= 0)
+                continue;
+            String candidateId = String.valueOf(candidate);
+            if(offset == 1)
+                return candidateId;
+            if(isNtkGeneratedImageReachable(client, ntkGeneratedImageUrl(segment, workId, candidateId, 1)))
+                return candidateId;
+        }
+        return "";
+    }
+
+    private static String ntkGeneratedImageUrl(String segment, String workId, String episodeId, int page) {
+        return String.format(Locale.ROOT,
+                "https://i.toonflix.app/%s/%s/%s/p%03d.jpg",
+                segment, workId, episodeId, page);
+    }
+
+    private boolean isNtkGeneratedImageReachable(CustomHttpClient client, String src) {
+        if(client == null || src == null || src.length() == 0)
+            return false;
+        Response response = null;
+        try {
+            Map<String, String> headers = new LinkedHashMap<>();
+            headers.put("accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8");
+            headers.put("range", "bytes=0-0");
+            response = client.get(src, headers);
+            int code = response == null ? 0 : response.code();
+            String contentType = response == null || response.body() == null
+                    ? "" : String.valueOf(response.body().contentType()).toLowerCase(Locale.ROOT);
+            boolean ok = (code >= 200 && code < 300 || code == 206) && contentType.startsWith("image/");
+            if(!ok)
+                logNtkViewerParse("generated-unreachable-" + code, null, getNtkEpisodePath(), 0, 0);
+            return ok;
+        } catch(Exception e) {
+            logNtkViewerParse("generated-unreachable-error", null, getNtkEpisodePath(), 0, 0);
+            return false;
+        } finally {
+            if(response != null)
+                response.close();
+        }
     }
 
     private int ntkGeneratedImageCandidateCount() {

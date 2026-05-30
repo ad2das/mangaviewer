@@ -284,6 +284,35 @@ public class EpisodeActivityNetworkTest {
     }
 
     @Test
+    public void ntkJagaanEpisode42DirectRendersReaderImage() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        MainApplication.p.setNtkSitePreset(CustomHttpClient.NTK_COMIC_URL);
+        MainApplication.p.setBaseMode(MTitle.base_comic);
+
+        Title title = new Title("쟈건", "", "", null, "", 8252, MTitle.base_comic);
+        title.setSourceSite("ntk");
+        title.setPath("/manhwa/8252");
+        Manga episode = new Manga(42, "42화", "", MTitle.base_comic);
+        episode.setTitle(title);
+        episode.setTitleId(title.getId());
+        episode.setNtkEpisodePath("/manhwa/8252/64225");
+        episode.setNtkImageCount(19);
+        MainApplication.p.resetViewerBookmark();
+        MainApplication.p.setBookmark(title, -1);
+
+        Utils.openViewerPrepared(context, episode, 0, false, true, false, title, true, true);
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        assertReaderOpenedThroughAutoCaptcha(device, "NTK Jagaan 42 direct");
+        File screenshot = new File(ApplicationProvider.getApplicationContext().getCacheDir(),
+                "ntk_jagaan42_direct_reader.png");
+        assertTrue("Expected NTK Jagaan 42 direct reader screenshot", device.takeScreenshot(screenshot));
+        String keepOpenMs = InstrumentationRegistry.getArguments().getString("keepReaderOpenMs", "0");
+        long keepOpenMillis = Long.parseLong(keepOpenMs);
+        if(keepOpenMillis > 0)
+            Thread.sleep(keepOpenMillis);
+    }
+
+    @Test
     public void ntkJagaanEpisode52RendersReaderImage() throws Exception {
         assertNtkJagaanEpisodeRendersReaderImage("52");
     }
