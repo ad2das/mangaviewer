@@ -26,17 +26,23 @@ public class ReaderPipelinePolicyTest {
     @Test
     public void heightResolveAdjustsOnlyPagesFullyAboveViewport() {
         assertTrue(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
-                false, false, false, true, 900f, 1000f));
+                false, false, false, true, false, 900f, 1000f));
         assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
-                false, false, false, true, 1200f, 1000f));
-        assertTrue(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
-                true, false, false, true, 900f, 1000f));
-        assertTrue(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
-                false, true, false, true, 900f, 1000f));
-        assertTrue(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
-                false, false, true, true, 900f, 1000f));
-        assertTrue(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
-                false, false, false, false, 900f, 1000f));
+                false, false, false, true, false, 1200f, 1000f));
+    }
+
+    @Test
+    public void heightResolveDoesNotCorrectScrollDuringOrRightAfterFling() {
+        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+                true, false, false, true, false, 900f, 1000f));
+        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+                false, true, false, true, false, 900f, 1000f));
+        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+                false, false, true, true, false, 900f, 1000f));
+        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+                false, false, false, false, false, 900f, 1000f));
+        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+                false, false, false, true, true, 900f, 1000f));
     }
 
     @Test

@@ -372,10 +372,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.errorText = null
             deferInitialEmptyDraw = false
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
-            val belowVisible = oldTop > scrollOffset + height
+            val nearVisible = isNearVisibleLocked(index, BUSY_RESOLVE_RENDER_EXTRA_PAGES)
             applyLockedRestorePositionLocked()
             clampScrollLocked()
-            if (!lastBusy || !belowVisible) {
+            if (!lastBusy || nearVisible) {
                 renderRequested = true
                 scheduleFrameLocked()
                 stateLock.notifyAll()
@@ -419,10 +419,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.errorText = null
             deferInitialEmptyDraw = false
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
-            val belowVisible = oldTop > scrollOffset + height
+            val nearVisible = isNearVisibleLocked(index, BUSY_RESOLVE_RENDER_EXTRA_PAGES)
             applyLockedRestorePositionLocked()
             clampScrollLocked()
-            if (!lastBusy || !belowVisible) {
+            if (!lastBusy || nearVisible) {
                 renderRequested = true
                 scheduleFrameLocked()
                 stateLock.notifyAll()
@@ -443,10 +443,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.cardText = null
             page.errorText = null
             clearPendingResolveLocked(page)
-            layoutDirty = true
-            renderRequested = true
-            scheduleFrameLocked()
-            stateLock.notifyAll()
+            if (!lastBusy || isNearVisibleLocked(index, BUSY_RESOLVE_RENDER_EXTRA_PAGES)) {
+                renderRequested = true
+                scheduleFrameLocked()
+                stateLock.notifyAll()
+            }
         }
     }
 
@@ -509,12 +510,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.height = pageHeight
             clearPendingResolveLocked(page)
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
-            val belowVisible = oldTop > scrollOffset + height
+            val nearVisible = isNearVisibleLocked(index, BUSY_RESOLVE_RENDER_EXTRA_PAGES)
             applyLockedRestorePositionLocked()
             clampScrollLocked()
             if (!shouldSuppressInitialEmptyRenderLocked()
                 && !shouldDeferInitialEmptyDrawLocked()
-                && (!lastBusy || !belowVisible)
+                && (!lastBusy || nearVisible)
             ) {
                 renderRequested = true
                 scheduleFrameLocked()
@@ -824,6 +825,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 false
             }
             if (scrolling) {
+                lastScrollInteractionMs = SystemClock.uptimeMillis()
                 setScrollOffsetLocked(scroller.currY.toFloat() + activeScrollerOffsetShift)
                 clampScrollLocked()
                 renderRequested = true
@@ -1530,11 +1532,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun applyPageHeightChangeLocked(index: Int, oldTop: Float, oldHeight: Float, delta: Float) {
         if (abs(delta) <= 0.01f) return
         val oldBottom = oldTop + oldHeight
+        val now = SystemClock.uptimeMillis()
+        val recentScrollSettling = lastScrollInteractionMs > 0L &&
+            now - lastScrollInteractionMs <= HEIGHT_CHANGE_SCROLL_ADJUST_QUIET_MS
         if (shouldAdjustScrollForChangedPageHeight(
                 lastBusy = lastBusy,
                 pointerDown = pointerDown,
                 dragging = dragging,
                 scrollerFinished = scroller.isFinished,
+                recentScrollSettling = recentScrollSettling,
                 oldBottom = oldBottom,
                 scrollOffset = scrollOffset
             )
@@ -1582,11 +1588,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun setScrollOffsetLocked(next: Float) {
         if (height > 0) {
             val delta = next - scrollOffset
+            val lockedRestoreActive = lockedRestorePage >= 0 &&
+                SystemClock.uptimeMillis() <= lockedRestoreUntilMs
             if (
                 abs(delta) >= height * SCROLL_JUMP_LOG_SCREEN_RATIO &&
                 !pointerDown &&
                 !dragging &&
-                scroller.isFinished
+                scroller.isFinished &&
+                !lockedRestoreActive
             ) {
                 Log.w(
                     TAG,
@@ -1922,6 +1931,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val RESTORE_POSITION_EPSILON_PX = 2f
         private const val INITIAL_RENDER_HOLD_MS = 700L
         private const val SCROLL_JUMP_LOG_SCREEN_RATIO = 0.75f
+        private const val HEIGHT_CHANGE_SCROLL_ADJUST_QUIET_MS = 900L
+        private const val BUSY_RESOLVE_RENDER_EXTRA_PAGES = 2
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
         private const val PENDING_NONE = 0
@@ -1936,10 +1947,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
             pointerDown: Boolean,
             dragging: Boolean,
             scrollerFinished: Boolean,
+            recentScrollSettling: Boolean,
             oldBottom: Float,
             scrollOffset: Float
         ): Boolean {
-            return oldBottom <= scrollOffset
+            if (oldBottom > scrollOffset) return false
+            return !lastBusy && !pointerDown && !dragging && scrollerFinished && !recentScrollSettling
         }
 
         @JvmStatic
@@ -1948,6 +1961,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             pointerDown: Boolean,
             dragging: Boolean,
             scrollerFinished: Boolean,
+            recentScrollSettling: Boolean,
             oldBottom: Float,
             scrollOffset: Float
         ): Boolean {
@@ -1956,6 +1970,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 pointerDown,
                 dragging,
                 scrollerFinished,
+                recentScrollSettling,
                 oldBottom,
                 scrollOffset
             )
