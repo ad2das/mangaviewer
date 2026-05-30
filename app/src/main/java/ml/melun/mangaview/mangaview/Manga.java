@@ -416,18 +416,8 @@ public class Manga {
                 path = "/" + segment + "/" + tid + "/" + id;
                 setNtkEpisodePath(path);
             }
-            boolean hasKnownGeneratedImages = getNtkImageCount() > 0;
-            AsyncNtkPageFetch pageFetch = null;
-            if(hasKnownGeneratedImages
-                    && addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount(), true)) {
-                logNtkViewerParse("generated-fast", null, path, 0, 0);
-                restoreBetterEpisodeList(previousEpisodes);
-                attachEpisodeSeriesMetadata();
-                return LOAD_OK;
-            }
-            pageFetch = startAsyncNtkPageFetch(client, path);
-            if(!hasKnownGeneratedImages
-                    && addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount(), true)) {
+            AsyncNtkPageFetch pageFetch = startAsyncNtkPageFetch(client, path);
+            if(addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount(), true)) {
                 logNtkViewerParse("generated-fast", null, path, 0, 0);
                 restoreBetterEpisodeList(previousEpisodes);
                 attachEpisodeSeriesMetadata();

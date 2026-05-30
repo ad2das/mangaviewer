@@ -3446,12 +3446,10 @@ public class CustomHttpClient {
                     || lower.contains("error code 522")
                     || lower.contains("connection timed out");
         }
-        if(code != 403)
-            return false;
         String lower = body.toLowerCase(Locale.ROOT);
         if(looksLikeNtkNormalPage(lower))
             return false;
-        return lower.contains("cf-mitigated")
+        boolean challengeBody = lower.contains("cf-mitigated")
                 || lower.contains("challenges.cloudflare.com")
                 || lower.contains("cf-challenge")
                 || lower.contains("cf-turnstile")
@@ -3460,6 +3458,7 @@ public class CustomHttpClient {
                 || lower.contains("__cf_bm")
                 || lower.contains("checking your browser")
                 || lower.contains("just a moment");
+        return challengeBody && (code == 403 || code >= 200 && code < 400);
     }
 
     public boolean isCloudflareChallengeResponse(int code, String body) {
@@ -3836,6 +3835,21 @@ public class CustomHttpClient {
                 // Debug-only artifact dumps are expensive and must not run during normal image loading.
                 dumpNtkAckDebugArtifacts(baseUrl, path);
             }
+
+            // Fetch encrypted ad_guard_bg.wasm (JS will decrypt it internally)
+            byte[] wasmBytes = null;
+            try {
+                Map<String, String> wasmHeaders = new HashMap<>();
+                wasmHeaders.put("referer", baseUrl + path);
+                NtkQuicFetcher.Result wasmResult = NtkQuicFetcher.fetchWithEngine(engine, baseUrl + "/wasm/ad-guard/ad_guard_bg.wasm", agent,
+                        getCookieHeader(), wasmHeaders, "GET", null, 30000L);
+                int wasmCode = wasmResult == null ? 0 : wasmResult.code;
+                Log.e(TAG, "ntk_wasm_fetch_code=" + wasmCode);
+                if(wasmResult != null && wasmResult.bodyBytes != null && wasmResult.bodyBytes.length > 100) {
+                    wasmBytes = wasmResult.bodyBytes;
+                    Log.e(TAG, "ntk_wasm_body_len=" + wasmBytes.length);
+                }
+            } catch(Exception ignored) {}
 
             // 1. POST /api/ad/challenge
             JSONObject challengePayload = new JSONObject();
