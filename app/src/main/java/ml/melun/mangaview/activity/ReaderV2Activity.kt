@@ -436,11 +436,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     override fun onPagesAppended(count: Int) {
         MainThreadStallMonitor.trace("reader_on_pages_appended") {
             if (pagesReady) {
-                val revealAppendedBoundary = pendingBoundaryStatus &&
-                    pendingCaptchaRetryDirection == ReaderSurfaceView.DIRECTION_NEXT
                 hideBoundaryStatus()
                 pageCount = count
-                renderView.appendPageCount(count, revealAppendedBoundary)
+                renderView.appendPageCount(count)
                 updateCurrentEpisode(currentPage)
             }
         }
