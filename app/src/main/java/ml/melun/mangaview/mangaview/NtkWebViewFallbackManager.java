@@ -55,11 +55,13 @@ final class NtkWebViewFallbackManager {
             + "function bodyBase64(b){try{if(b==null)return '';if(typeof b==='string')return textBase64(b);if(window.URLSearchParams&&b instanceof URLSearchParams)return textBase64(b.toString());if(window.ArrayBuffer&&b instanceof ArrayBuffer){var a=new Uint8Array(b),r='';for(var i=0;i<a.length;i++)r+=String.fromCharCode(a[i]);return btoa(r);}if(window.ArrayBuffer&&ArrayBuffer.isView&&ArrayBuffer.isView(b)){var v=new Uint8Array(b.buffer,b.byteOffset,b.byteLength),o='';for(var j=0;j<v.length;j++)o+=String.fromCharCode(v[j]);return btoa(o);}return textBase64(String(b));}catch(e){return '';}}"
             + "function bodyBase64Async(b){try{if(b&&window.Request&&b instanceof Request&&b.clone)return b.clone().arrayBuffer().then(function(a){return bodyBase64(a);});if(b&&window.Blob&&b instanceof Blob&&b.arrayBuffer)return b.arrayBuffer().then(function(a){return bodyBase64(a);});}catch(e){}return Promise.resolve(bodyBase64(b));}"
             + "function bytesFromBase64(b){var bin=atob(b||''),a=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i);return a;}"
+            + "function textFromBase64(b){try{return decodeURIComponent(escape(atob(b||'')));}catch(e){try{return atob(b||'');}catch(_){return '';}}}"
+            + "function noteAck(url,res,body64){try{if(String(url||'').indexOf('/api/ad/ack')<0)return;var req={},body={};try{req=JSON.parse(textFromBase64(body64)||'{}');}catch(e){}try{body=JSON.parse(textFromBase64(res&&res.bodyBase64)||'{}');}catch(e){}if((res.status||0)!==200||!(body.ok||body.acked||body.status==='ok'||body.status==='acked'))return;var p=req.path||location.pathname||'';window.__ntk_ad_ack_scope=p;window.__ntk_ad_ack_last={scope:p,ts:Date.now(),bridge:true};window.__ntk_ad_ack_tp=req.tp||'';try{window.NtkViewerBridge.onAckProof(req.tp||'');}catch(e){}window.dispatchEvent(new CustomEvent('ntk-ad-ack-ready',{detail:{scope:p,bridge:true,tp:req.tp||''}}));}catch(e){}}"
             + "function collectHeaders(input,init){var out={};try{var h=new Headers(input&&input.headers?input.headers:{});if(init&&init.headers){new Headers(init.headers).forEach(function(v,k){h.set(k,v);});}h.forEach(function(v,k){out[k]=v;});}catch(e){}return out;}"
             + "function addDefaultHeaders(h){try{if(!h['Origin']&&!h['origin'])h['Origin']=location.origin;if(!h['Referer']&&!h['referer'])h['Referer']=location.href;if(!h['Accept']&&!h['accept'])h['Accept']='*/*';}catch(e){}return h;}"
-            + "var nativeFetch=window.fetch;if(nativeFetch){window.fetch=function(input,init){var url=(typeof input==='string'||input instanceof String)?String(input):(input&&input.url)||'';var method=(init&&init.method)||(input&&input.method)||'GET';if(!shouldBridge(url,method))return nativeFetch.apply(this,arguments);return new Promise(function(resolve,reject){try{var absolute=new URL(url,location.href).href;var hasInitBody=init&&Object.prototype.hasOwnProperty.call(init,'body');var bodyArg=hasInitBody?init.body:((input&&window.Request&&input instanceof Request)?input:null);bodyBase64Async(bodyArg).then(function(body64){try{var raw=window.NtkQuicBridge.request(absolute,String(method),JSON.stringify(addDefaultHeaders(collectHeaders(input,init))),body64);var res=JSON.parse(raw||'{}');if(!res.ok)throw new Error(res.error||'NTK QUIC bridge failed');resolve(new Response(bytesFromBase64(res.bodyBase64||''),{status:res.status||200,statusText:res.statusText||'OK',headers:res.headers||{}}));}catch(e){reject(e);}},reject);}catch(e){reject(e);}});};}"
-            + "var xhrOpen=window.XMLHttpRequest&&XMLHttpRequest.prototype.open;var xhrSend=window.XMLHttpRequest&&XMLHttpRequest.prototype.send;var xhrSetHeader=window.XMLHttpRequest&&XMLHttpRequest.prototype.setRequestHeader;if(xhrOpen&&xhrSend){XMLHttpRequest.prototype.open=function(m,u,a,user,pw){this.__ntkq={method:m||'GET',url:u||'',headers:{}};return xhrOpen.apply(this,arguments);};XMLHttpRequest.prototype.setRequestHeader=function(k,v){if(this.__ntkq&&k)this.__ntkq.headers[String(k)]=String(v);return xhrSetHeader?xhrSetHeader.apply(this,arguments):undefined;};XMLHttpRequest.prototype.send=function(body){var meta=this.__ntkq;if(!meta||!shouldBridge(meta.url,meta.method))return xhrSend.apply(this,arguments);var xhr=this;setTimeout(function(){try{var raw=window.NtkQuicBridge.request(new URL(meta.url,location.href).href,String(meta.method),JSON.stringify(addDefaultHeaders(meta.headers||{})),bodyBase64(body));var res=JSON.parse(raw||'{}');if(!res.ok)throw new Error(res.error||'NTK QUIC bridge failed');var headers=res.headers||{},headerText='';Object.keys(headers).forEach(function(k){headerText+=k+': '+headers[k]+'\\r\\n';});var arr=bytesFromBase64(res.bodyBase64||''),response=arr;if(!xhr.responseType||xhr.responseType==='text'){var bin='';for(var i=0;i<arr.length;i++)bin+=String.fromCharCode(arr[i]);response=decodeURIComponent(escape(bin));}Object.defineProperty(xhr,'readyState',{configurable:true,get:function(){return 4;}});Object.defineProperty(xhr,'status',{configurable:true,get:function(){return res.status||200;}});Object.defineProperty(xhr,'statusText',{configurable:true,get:function(){return res.statusText||'OK';}});Object.defineProperty(xhr,'response',{configurable:true,get:function(){return response;}});Object.defineProperty(xhr,'responseText',{configurable:true,get:function(){return typeof response==='string'?response:'';}});xhr.getAllResponseHeaders=function(){return headerText;};xhr.getResponseHeader=function(n){var l=String(n||'').toLowerCase();for(var k in headers){if(k.toLowerCase()===l)return headers[k];}return null;};['readystatechange','load','loadend'].forEach(function(n){var e=new Event(n);xhr.dispatchEvent(e);var cb=xhr['on'+n];if(typeof cb==='function')cb.call(xhr,e);});}catch(e){var ev=new Event('error');xhr.dispatchEvent(ev);if(typeof xhr.onerror==='function')xhr.onerror.call(xhr,ev);}},0);};}"
-            + "var nativeBeacon=navigator.sendBeacon;if(nativeBeacon){navigator.sendBeacon=function(url,data){if(!shouldBridge(url,'POST'))return nativeBeacon.apply(this,arguments);try{var absolute=new URL(url,location.href).href;bodyBase64Async(data).then(function(body64){try{window.NtkQuicBridge.request(absolute,'POST','{}',body64);}catch(e){}});return true;}catch(e){return false;}};}"
+            + "var nativeFetch=window.fetch;if(nativeFetch){window.fetch=function(input,init){var url=(typeof input==='string'||input instanceof String)?String(input):(input&&input.url)||'';var method=(init&&init.method)||(input&&input.method)||'GET';if(!shouldBridge(url,method))return nativeFetch.apply(this,arguments);return new Promise(function(resolve,reject){try{var absolute=new URL(url,location.href).href;var hasInitBody=init&&Object.prototype.hasOwnProperty.call(init,'body');var bodyArg=hasInitBody?init.body:((input&&window.Request&&input instanceof Request)?input:null);bodyBase64Async(bodyArg).then(function(body64){try{var raw=window.NtkQuicBridge.request(absolute,String(method),JSON.stringify(addDefaultHeaders(collectHeaders(input,init))),body64);var res=JSON.parse(raw||'{}');if(!res.ok)throw new Error(res.error||'NTK QUIC bridge failed');noteAck(absolute,res,body64);resolve(new Response(bytesFromBase64(res.bodyBase64||''),{status:res.status||200,statusText:res.statusText||'OK',headers:res.headers||{}}));}catch(e){reject(e);}},reject);}catch(e){reject(e);}});};}"
+            + "var xhrOpen=window.XMLHttpRequest&&XMLHttpRequest.prototype.open;var xhrSend=window.XMLHttpRequest&&XMLHttpRequest.prototype.send;var xhrSetHeader=window.XMLHttpRequest&&XMLHttpRequest.prototype.setRequestHeader;if(xhrOpen&&xhrSend){XMLHttpRequest.prototype.open=function(m,u,a,user,pw){this.__ntkq={method:m||'GET',url:u||'',headers:{}};return xhrOpen.apply(this,arguments);};XMLHttpRequest.prototype.setRequestHeader=function(k,v){if(this.__ntkq&&k)this.__ntkq.headers[String(k)]=String(v);return xhrSetHeader?xhrSetHeader.apply(this,arguments):undefined;};XMLHttpRequest.prototype.send=function(body){var meta=this.__ntkq;if(!meta||!shouldBridge(meta.url,meta.method))return xhrSend.apply(this,arguments);var xhr=this;setTimeout(function(){try{var absolute=new URL(meta.url,location.href).href,body64=bodyBase64(body);var raw=window.NtkQuicBridge.request(absolute,String(meta.method),JSON.stringify(addDefaultHeaders(meta.headers||{})),body64);var res=JSON.parse(raw||'{}');if(!res.ok)throw new Error(res.error||'NTK QUIC bridge failed');noteAck(absolute,res,body64);var headers=res.headers||{},headerText='';Object.keys(headers).forEach(function(k){headerText+=k+': '+headers[k]+'\\r\\n';});var arr=bytesFromBase64(res.bodyBase64||''),response=arr;if(!xhr.responseType||xhr.responseType==='text'){var bin='';for(var i=0;i<arr.length;i++)bin+=String.fromCharCode(arr[i]);response=decodeURIComponent(escape(bin));}Object.defineProperty(xhr,'readyState',{configurable:true,get:function(){return 4;}});Object.defineProperty(xhr,'status',{configurable:true,get:function(){return res.status||200;}});Object.defineProperty(xhr,'statusText',{configurable:true,get:function(){return res.statusText||'OK';}});Object.defineProperty(xhr,'response',{configurable:true,get:function(){return response;}});Object.defineProperty(xhr,'responseText',{configurable:true,get:function(){return typeof response==='string'?response:'';}});xhr.getAllResponseHeaders=function(){return headerText;};xhr.getResponseHeader=function(n){var l=String(n||'').toLowerCase();for(var k in headers){if(k.toLowerCase()===l)return headers[k];}return null;};['readystatechange','load','loadend'].forEach(function(n){var e=new Event(n);xhr.dispatchEvent(e);var cb=xhr['on'+n];if(typeof cb==='function')cb.call(xhr,e);});}catch(e){var ev=new Event('error');xhr.dispatchEvent(ev);if(typeof xhr.onerror==='function')xhr.onerror.call(xhr,ev);}},0);};}"
+            + "var nativeBeacon=navigator.sendBeacon;if(nativeBeacon){navigator.sendBeacon=function(url,data){if(!shouldBridge(url,'POST'))return nativeBeacon.apply(this,arguments);try{var absolute=new URL(url,location.href).href;bodyBase64Async(data).then(function(body64){try{var raw=window.NtkQuicBridge.request(absolute,'POST','{}',body64);noteAck(absolute,JSON.parse(raw||'{}'),body64);}catch(e){}});return true;}catch(e){return false;}};}"
             + "function rearmAck(reason){try{var p=location.pathname||'';if(/^\\/(manhwa|webtoon)\\/[^\\/?#%]+\\/[^\\/?#%]+/.test(p))window.dispatchEvent(new CustomEvent('ntk-ack-rearm',{detail:{reason:reason,scope:p}}));}catch(e){}}"
             + "var rearmCount=0,rearmTimer=setInterval(function(){rearmAck('native-bridge-ready');if(++rearmCount>=10)clearInterval(rearmTimer);},250);setTimeout(function(){rearmAck('native-bridge-ready');},0);"
             + "})();";
@@ -228,8 +230,8 @@ final class NtkWebViewFallbackManager {
                 return urls;
             if(result.body == null || result.body.length() == 0)
                 return urls;
-            if(Log.isLoggable(TAG, Log.DEBUG))
-                Log.d(TAG, "ntk_webview_viewer_images body=" + result.body.substring(0, Math.min(400, result.body.length())));
+            Log.d(TAG, "ntk_webview_viewer_images body="
+                    + result.body.substring(0, Math.min(400, result.body.length())));
             JSONObject envelope = new JSONObject(result.body);
             JSONObject body = envelope.optJSONObject("body");
             if(body == null && envelope.optString("body", "").startsWith("{"))
@@ -286,7 +288,7 @@ final class NtkWebViewFallbackManager {
             settings.setAllowContentAccess(false);
             settings.setUserAgentString(userAgent);
             CookieManager.getInstance().setAcceptCookie(true);
-            view.addJavascriptInterface(new ViewerImageBridge(result, finish), "NtkViewerBridge");
+            view.addJavascriptInterface(new ViewerImageBridge(result, finish, mainHandler), "NtkViewerBridge");
             if(NtkQuicFetcher.isAvailable())
                 view.addJavascriptInterface(new NtkQuicBridge(userAgent), "NtkQuicBridge");
             view.setWebViewClient(new WebViewClient() {
@@ -766,9 +768,9 @@ final class NtkWebViewFallbackManager {
                 + "function decode64(b){try{return decodeURIComponent(escape(atob(b||'')));}catch(e){try{return atob(b||'');}catch(_){return '';}}}"
                 + "function markAck(){try{window.__ntk_ad_ack_scope=scope;window.__ntk_ad_ack_last={scope:scope,ts:Date.now(),native:true};window.dispatchEvent(new CustomEvent('ntk-ad-ack-ready',{detail:{scope:scope,native:true}}));}catch(e){}}"
                 + "async function bridgeReq(url,method,body){var abs=new URL(url,location.href).href,h={'content-type':'application/json','accept':'application/json','origin':location.origin,'referer':location.href};if(window.NtkQuicBridge){var raw=window.NtkQuicBridge.request(abs,method,JSON.stringify(h),body?b64(new TextEncoder().encode(JSON.stringify(body))):'');var o=JSON.parse(raw||'{}');if(!o.ok)throw new Error(o.error||'bridge failed');var text=decode64(o.bodyBase64||''),json={};try{json=JSON.parse(text||'{}');}catch(e){}return{status:o.status||0,body:json,text:text};}var opt={method:method,credentials:'same-origin',cache:'no-store',headers:h};if(body)opt.body=JSON.stringify(body);var r=await fetch(abs,opt);var t=await r.text().catch(function(){return '';});var j={};try{j=JSON.parse(t||'{}');}catch(e){}return{status:r.status,body:j,text:t};}"
-                + "async function directAck(){try{var cRes=await bridgeReq('/api/ad/challenge','POST',{path:scope});var cBody=cRes.body||{};if(cRes.status!==200||!cBody.ok)return false;var ch=cBody.challenge||{},ct=ch.challengeToken||ch.token||'',imps=ch.impressionUrls||[],i,u;if(!ct)return false;for(i=0;i<imps.length;i++){u=imps[i];if(!u)continue;try{await bridgeReq(u,'GET',null);}catch(e){try{await fetch(new URL(u,location.href).href,{credentials:'include',cache:'no-store',mode:'no-cors'});}catch(_){}}}try{await bridgeReq('/api/ad/canary','POST',{adAckCanary:true,challengeToken:ct,token:ct,path:scope});}catch(e){}var aRes=await bridgeReq('/api/ad/ack','POST',{challengeToken:ct,token:ct,total:ch.slotCount||4,visible:ch.minSeen||2,path:scope,td:0,tp:''});var a=aRes.body||{},ok=aRes.status===200&&(a.ok||a.acked||a.status==='ok'||a.status==='acked');if(ok){markAck();return true;}return false;}catch(e){return false;}}"
+                + "async function directAck(){return false;}"
                 + "function extractAckState(){try{var ls={},ss={},i,k;for(i=0;i<localStorage.length;i++){k=localStorage.key(i);if(k)ls[k]=localStorage.getItem(k);}for(i=0;i<sessionStorage.length;i++){k=sessionStorage.key(i);if(k)ss[k]=sessionStorage.getItem(k);}return JSON.stringify({cookies:document.cookie,local:ls,session:ss,ackScope:(function(){try{return window.__ntk_ad_ack_scope;}catch(e){return null;}})(),ntkVars:(function(){try{var o={};for(var p in window)if(p.indexOf('__ntk')===0)try{o[p]=String(window[p]);}catch(e){}return o;}catch(e){return{};}})(),ua:navigator.userAgent,ts:Date.now()});}catch(e){return JSON.stringify({error:String(e)});}}"
-                + "(async function(){try{for(var i=0;i<20;i++){if(document.body)break;await sleep(100);}var deadline=Date.now()+18000,r=await api(),armed=false,didDirect=false;while(Date.now()<deadline&&r&&r.status===403&&r.body&&r.body.error==='ad_ack_required'){try{window.NtkViewerBridge.onAckState(extractAckState());}catch(e){}if(!didDirect){didDirect=true;if(await directAck()){r=await api();continue;}}if(!acked()&&!armed){armed=true;rearm();}await waitAck(Math.min(1800,Math.max(0,deadline-Date.now())));await sleep(180);r=await api();}send({code:r?r.status:0,body:r?r.body:{error:'timeout'}});}catch(e){send({code:0,error:String(e)});}})();"
+                + "(async function(){try{for(var i=0;i<20;i++){if(document.body)break;await sleep(100);}var deadline=Date.now()+18000,r=await api(),armed=false;while(Date.now()<deadline&&r&&r.status===403&&r.body&&r.body.error==='ad_ack_required'){try{window.NtkViewerBridge.onAckState(extractAckState());}catch(e){}if(!acked()&&!armed){armed=true;rearm();}await waitAck(Math.min(1800,Math.max(0,deadline-Date.now())));await sleep(180);r=await api();}send({code:r?r.status:0,body:r?r.body:{error:'timeout'}});}catch(e){send({code:0,error:String(e)});}})();"
                 + "})()";
     }
 
@@ -1011,22 +1013,30 @@ final class NtkWebViewFallbackManager {
     private static final class ViewerImageBridge {
         private final ViewerImageResult result;
         private final Runnable finish;
+        private final Handler mainHandler;
 
-        ViewerImageBridge(ViewerImageResult result, Runnable finish) {
+        ViewerImageBridge(ViewerImageResult result, Runnable finish, Handler mainHandler) {
             this.result = result;
             this.finish = finish;
+            this.mainHandler = mainHandler;
         }
 
         @JavascriptInterface
         public void onViewerImages(String value) {
             result.body = value == null ? "" : value;
-            finish.run();
+            mainHandler.post(finish);
         }
 
         @JavascriptInterface
         public void onAckState(String value) {
             if(Log.isLoggable(TAG, Log.DEBUG))
                 Log.d(TAG, "ntk_ack_state=" + (value == null ? "" : value));
+        }
+
+        @JavascriptInterface
+        public void onAckProof(String value) {
+            if(Log.isLoggable(TAG, Log.DEBUG))
+                Log.d(TAG, "ntk_ack_proof=" + (value == null ? "" : value));
         }
     }
 
@@ -1057,10 +1067,14 @@ final class NtkWebViewFallbackManager {
                             + ",code=" + result.code
                             + ",len=" + result.bodyBytes.length
                             + ",url=" + url);
-                if(url != null && url.contains("/api/ad/") && body != null && body.length > 0) {
+                if(url != null && url.contains("/api/ad/")) {
                     try {
-                        String bodyStr = new String(body, java.nio.charset.StandardCharsets.UTF_8);
-                        Log.w(TAG, "ntk_bridge_ad_body url=" + url + " body=" + bodyStr.substring(0, Math.min(800, bodyStr.length())));
+                        Log.w(TAG, "ntk_bridge_ad_headers url=" + url + " headers=" + headersJson);
+                        if(body != null && body.length > 0) {
+                            String bodyStr = new String(body, java.nio.charset.StandardCharsets.UTF_8);
+                            Log.w(TAG, "ntk_bridge_ad_body url=" + url + " body=" + bodyStr.substring(0, Math.min(800, bodyStr.length())));
+                        }
+                        Log.w(TAG, "ntk_bridge_ad_response url=" + url + " code=" + result.code + " body=" + result.body.substring(0, Math.min(200, result.body.length())));
                     } catch(Exception ignored) {}
                 }
                 JSONObject object = new JSONObject();

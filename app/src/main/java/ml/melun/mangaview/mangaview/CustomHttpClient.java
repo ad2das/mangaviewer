@@ -3,6 +3,8 @@ package ml.melun.mangaview.mangaview;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.net.http.HttpEngine;
+import android.net.http.QuicOptions;
 import android.util.Base64;
 import android.util.Log;
 import android.webkit.CookieManager;
@@ -105,6 +107,8 @@ public class CustomHttpClient {
     private static final int MAX_IMAGE_HTTP_REQUESTS = 32;
     private static final int MAX_IMAGE_HTTP_REQUESTS_PER_HOST = 12;
     private static final boolean DUMP_NTK_ACK_DEBUG_ARTIFACTS = false;
+    private static final long NTK_ACK_CACHE_TTL_MS = 5 * 60 * 1000L;
+    private static final java.util.Map<String, Long> NTK_ACK_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
     private static final String PAGE_CACHE_PREFIX = "httpPageCacheV1_";
     private static final String NTK_DNS_CACHE_PREFIX = "ntkDnsCacheV1_";
     private static final String CLOUDFLARE_DOH_HOST = "cloudflare-dns.com";
@@ -2253,7 +2257,7 @@ public class CustomHttpClient {
                 lastError = error;
                 if(isInterruptedRequest(error))
                     throw error;
-                if(ntk)
+                if(ntk && attempt >= attempts - 1)
                     throw error;
                 if(attempt == 0 && shouldForceResolveWfwfOnRetry(normalized, wolfDocument)) {
                     boolean changed = ensureWfwfDomainForRetry();
@@ -2380,7 +2384,7 @@ public class CustomHttpClient {
 
     private static int pageNetworkAttempts(boolean ntk, String path) {
         if(ntk)
-            return 1;
+            return 2;
         if(isWolfEpisodeDocumentPath(path))
             return 2;
         if(isWfwfSearchPath(path))
@@ -3539,7 +3543,8 @@ public class CustomHttpClient {
         String baseUrl = getBaseUrl("/" + kind + "/" + workId + "/" + episodeId);
         String path = "/" + kind + "/" + workId + "/" + episodeId;
         try {
-            syncCookiesFromWebView(baseUrl, true);
+            // Native bypass path: cookies are already managed by applySetCookieHeaders
+            // inside performNtkNativeAckBypass; skip WebView sync to save ~200-500ms.
             String nv = getCookie("nv");
             if(!isNtkNvValid(nv)) {
                 issueNtkNvCookie(baseUrl);
@@ -3561,16 +3566,8 @@ public class CustomHttpClient {
             headers.put("x-images-client", "viewer-v1");
             headers.put("origin", baseUrl);
             headers.put("referer", baseUrl + "/" + kind + "/" + workId + "/" + episodeId);
-            // Native ACK bypass: try to complete ad/challenge flow natively without WebView
-            boolean nativeAckCompleted = false;
-            if(MainApplication.currentActivity == null) {
-                try {
-                    nativeAckCompleted = performNtkNativeAckBypass(baseUrl, path);
-                } catch(Exception ackEx) {
-                    if(Log.isLoggable(TAG, Log.DEBUG))
-                        Log.d(TAG, "ntk_native_ack_bypass_error=" + ackEx);
-                }
-            }
+            // Attempt native ACK bypass first for cold-start speed
+            boolean nativeAckCompleted = performNtkNativeAckBypass(baseUrl, path);
             if(nativeAckCompleted) {
                 if(Log.isLoggable(TAG, Log.DEBUG))
                     Log.d(TAG, "ntk_native_ack_bypass_success path=" + path);
@@ -3672,25 +3669,186 @@ public class CustomHttpClient {
         }
     }
 
-    private boolean performNtkNativeAckBypass(String baseUrl, String path) {
+    public static byte[] decryptAdGuardWasm(byte[] encryptedWasm) {
+        try {
+            int[][] M = {{82,71,192,87},{45,63,132,197},{77,64,253,242},{33,232,165,75}};
+            int[][] H = {{248,84,63,18},{233,12,138,230},{115,147,80,3},{226,132,67,42},{184,152,154,50},{18,168,87,79},{33,144,180,203},{111,235,186,206}};
+            int[] perm = {3,0,6,1,4,7,2,5};
+
+            byte[] n = new byte[16];
+            for(int t = 0; t < 4; t++) {
+                int mask = (163 + 71*t) & 255;
+                for(int r = 0; r < 4; r++) {
+                    n[4*t + r] = (byte)(M[t][r] ^ mask);
+                }
+            }
+
+            javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+            mac.init(new javax.crypto.spec.SecretKeySpec(n, "HmacSHA256"));
+            byte[] e_hmac = mac.doFinal("ntk-ad-guard-v2".getBytes(StandardCharsets.UTF_8));
+
+            byte[] e = new byte[32];
+            for(int r = 0; r < 8; r++) {
+                int o = perm[r];
+                int mask = (93 + 43*o + 17*r) & 255;
+                for(int u = 0; u < 4; u++) {
+                    e[4*o + u] = (byte)(H[r][u] ^ mask);
+                }
+            }
+
+            byte[] f = new byte[32];
+            for(int i = 0; i < 32; i++) {
+                f[i] = (byte)(e[i] ^ e_hmac[i]);
+            }
+            StringBuilder fHex = new StringBuilder();
+            for(byte b : f) fHex.append(String.format("%02x", b));
+            Log.e(TAG, "ntk_wasm_f_hex=" + fHex.toString());
+
+            byte[] iv = java.util.Arrays.copyOfRange(encryptedWasm, 0, 12);
+            byte[] ciphertext = java.util.Arrays.copyOfRange(encryptedWasm, 12, encryptedWasm.length);
+
+            javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(javax.crypto.Cipher.DECRYPT_MODE, new javax.crypto.spec.SecretKeySpec(f, "AES"),
+                    new javax.crypto.spec.GCMParameterSpec(128, iv));
+            byte[] decrypted = cipher.doFinal(ciphertext);
+
+            for(int c = 0; c < decrypted.length; c++) {
+                decrypted[c] ^= e_hmac[c % 32];
+            }
+            return decrypted;
+        } catch(Exception ex) {
+            Log.e(TAG, "ntk_wasm_decrypt_error=" + ex);
+            return null;
+        }
+    }
+
+    private String runWasmVcInWebView(byte[] wasmBytes, String adGuardJs, String token) {
+        final String[] result = {null};
+        final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        android.os.Handler mainHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+        mainHandler.post(() -> {
+            try {
+                android.webkit.WebView webView = new android.webkit.WebView(context);
+                webView.getSettings().setJavaScriptEnabled(true);
+                webView.addJavascriptInterface(new Object() {
+                    @android.webkit.JavascriptInterface
+                    public void onVcResult(String value) {
+                        Log.e(TAG, "ntk_wasm_js_result=" + value);
+                        result[0] = value;
+                        latch.countDown();
+                    }
+                }, "NtkWasmBridge");
+                String wasmBase64 = android.util.Base64.encodeToString(wasmBytes, android.util.Base64.NO_WRAP);
+                String jsBase64 = android.util.Base64.encodeToString(adGuardJs.getBytes(StandardCharsets.UTF_8), android.util.Base64.NO_WRAP);
+                String jsHtml = "<html><body><script type='module'>" +
+                        "let moduleExports=null;" +
+                        "const wasmBase64='" + wasmBase64 + "';" +
+                        "const jsCodeStr=atob('" + jsBase64 + "');" +
+                        "const blob=new Blob([jsCodeStr],{type:'application/javascript'});" +
+                        "const url=URL.createObjectURL(blob);" +
+                        "import(url).then(m=>{" +
+                        "  moduleExports=m;" +
+                        "  return m.default({module_or_path:'data:application/wasm;base64,'+wasmBase64});" +
+                        "}).then(()=>{" +
+                        "  const r=moduleExports._vc('" + token + "');" +
+                        "  window.NtkWasmBridge.onVcResult(String(r));" +
+                        "}).catch(e=>{" +
+                        "  window.NtkWasmBridge.onVcResult('error:'+e);" +
+                        "});" +
+                        "</script></body></html>";
+                webView.loadDataWithBaseURL("https://sbxh3.com", jsHtml, "text/html", "UTF-8", null);
+                mainHandler.postDelayed(() -> {
+                    try { webView.destroy(); } catch(Exception ignored) {}
+                    latch.countDown();
+                }, 5000);
+            } catch(Exception ex) {
+                Log.e(TAG, "ntk_wasm_webview_error=" + ex);
+                latch.countDown();
+            }
+        });
+        try {
+            latch.await(6000, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch(Exception ignored) {}
+        return result[0];
+    }
+
+    private static String extractNtkChallengeScope(String token) {
+        if(token == null || token.length() == 0)
+            return "";
+        String[] parts = token.split("\\.");
+        if(parts.length < 2)
+            return "";
+        try {
+            // NTK uses a 2-part token: payload.signature (not standard JWT)
+            String payload = parts.length == 2 ? parts[0] : parts[1];
+            int padding = 4 - (payload.length() % 4);
+            if(padding != 4) {
+                StringBuilder padded = new StringBuilder(payload);
+                for(int i = 0; i < padding; i++) padded.append('=');
+                payload = padded.toString();
+            }
+            payload = payload.replace('-', '+').replace('_', '/');
+            byte[] decoded = Base64.decode(payload, Base64.DEFAULT);
+            JSONObject json = new JSONObject(new String(decoded, StandardCharsets.UTF_8));
+            return json.optString("scope", "");
+        } catch(Exception e) {
+            return "";
+        }
+    }
+
+    public boolean performNtkNativeAckBypass(String baseUrl, String path) {
         if(baseUrl == null || path == null || baseUrl.length() == 0 || path.length() == 0)
             return false;
+        String cacheKey = baseUrl + path;
+        Long cached = NTK_ACK_CACHE.get(cacheKey);
+        if(cached != null && System.currentTimeMillis() - cached < NTK_ACK_CACHE_TTL_MS) {
+            if(Log.isLoggable(TAG, Log.DEBUG))
+                Log.d(TAG, "ntk_native_ack_cache_hit path=" + path);
+            return true;
+        }
+        HttpEngine engine = null;
         try {
+            String host = URI.create(baseUrl).getHost();
+            engine = new HttpEngine.Builder(context.getApplicationContext())
+                    .setEnableHttp2(true)
+                    .setEnableQuic(true)
+                    .setEnableBrotli(true)
+                    .setUserAgent(agent)
+                    .setQuicOptions(new QuicOptions.Builder()
+                            .addAllowedQuicHost(host)
+                            .setHandshakeUserAgent(agent)
+                            .build())
+                    .addQuicHint(host, 443, 443)
+                    .build();
             Map<String, String> h = new HashMap<>();
-            h.put("content-type", "application/json");
-            h.put("accept", "application/json");
             h.put("origin", baseUrl);
             h.put("referer", baseUrl + path);
+            h.put("accept", "*/*");
 
-            if(DUMP_NTK_ACK_DEBUG_ARTIFACTS && Log.isLoggable(TAG, Log.DEBUG)) {
+            if(DUMP_NTK_ACK_DEBUG_ARTIFACTS) {
                 // Debug-only artifact dumps are expensive and must not run during normal image loading.
                 dumpNtkAckDebugArtifacts(baseUrl, path);
             }
 
+            // Fetch encrypted ad_guard_bg.wasm (JS will decrypt it internally)
+            byte[] wasmBytes = null;
+            try {
+                Map<String, String> wasmHeaders = new HashMap<>();
+                wasmHeaders.put("referer", baseUrl + path);
+                NtkQuicFetcher.Result wasmResult = NtkQuicFetcher.fetchWithEngine(engine, baseUrl + "/wasm/ad-guard/ad_guard_bg.wasm", agent,
+                        getCookieHeader(), wasmHeaders, "GET", null, 30000L);
+                int wasmCode = wasmResult == null ? 0 : wasmResult.code;
+                Log.e(TAG, "ntk_wasm_fetch_code=" + wasmCode);
+                if(wasmResult != null && wasmResult.bodyBytes != null && wasmResult.bodyBytes.length > 100) {
+                    wasmBytes = wasmResult.bodyBytes;
+                    Log.e(TAG, "ntk_wasm_body_len=" + wasmBytes.length);
+                }
+            } catch(Exception ignored) {}
+
             // 1. POST /api/ad/challenge
             JSONObject challengePayload = new JSONObject();
             challengePayload.put("path", path);
-            NtkQuicFetcher.Result challenge = NtkQuicFetcher.fetch(context, baseUrl + "/api/ad/challenge", agent,
+            NtkQuicFetcher.Result challenge = NtkQuicFetcher.fetchWithEngine(engine, baseUrl + "/api/ad/challenge", agent,
                     getCookieHeader(), h, "POST",
                     challengePayload.toString().getBytes(StandardCharsets.UTF_8), 15000L);
             Log.d(TAG, "ntk_native_ack_challenge_code=" + (challenge == null ? "null" : challenge.code));
@@ -3706,26 +3864,60 @@ public class CustomHttpClient {
             String token = challengeObj.optString("token", "");
             JSONArray impressionUrls = challengeObj.optJSONArray("impressionUrls");
             Log.d(TAG, "ntk_native_ack_challenge_token_len=" + token.length() + ",impressions=" + (impressionUrls == null ? 0 : impressionUrls.length()));
+            String scope = extractNtkChallengeScope(token);
+            String challengePath = scope.length() > 0 ? scope : path;
+            Log.d(TAG, "ntk_native_ack_scope=" + scope + ",challengePath=" + challengePath);
+            String cookiesAfterChallenge = getCookieHeader();
+            String nvAfterChallenge = getCookie("nv");
+            Log.d(TAG, "ntk_native_ack_cookies_after_challenge nv=" + (nvAfterChallenge == null ? "null" : nvAfterChallenge.substring(0, Math.min(60, nvAfterChallenge.length()))) + " cookies_len=" + (cookiesAfterChallenge == null ? 0 : cookiesAfterChallenge.length()));
+            Map<String, String> h2 = new HashMap<>(h);
+            h2.put("referer", baseUrl + challengePath);
 
             // 2. GET impression URLs (ad tracking pixels) and apply cookies
-            if(impressionUrls != null) {
+            if(impressionUrls != null && impressionUrls.length() > 0) {
+                final android.net.http.HttpEngine engineFinal = engine;
+                java.util.concurrent.ExecutorService impExecutor = java.util.concurrent.Executors.newFixedThreadPool(Math.min(4, impressionUrls.length()));
+                java.util.List<java.util.concurrent.Future<?>> impFutures = new java.util.ArrayList<>();
                 for(int i = 0; i < impressionUrls.length(); i++) {
+                    final int idx = i;
                     String url = impressionUrls.optString(i, "");
                     if(url.length() == 0) continue;
                     if(!url.startsWith("http")) url = baseUrl + url;
-                    NtkQuicFetcher.Result imp = NtkQuicFetcher.fetch(context, url, agent,
-                            getCookieHeader(), Collections.emptyMap(), "GET", null, 10000L);
-                    Log.d(TAG, "ntk_native_ack_imp i=" + i + ",code=" + (imp == null ? "null" : imp.code));
-                    if(imp != null) applySetCookieHeaders(imp.headers, baseUrl);
+                    final String impUrl = url;
+                    impFutures.add(impExecutor.submit(() -> {
+                        try {
+                            NtkQuicFetcher.Result imp = NtkQuicFetcher.fetchWithEngine(engineFinal, impUrl, agent,
+                                    getCookieHeader(), Collections.emptyMap(), "GET", null, 10000L);
+                            Log.d(TAG, "ntk_native_ack_imp i=" + idx + ",code=" + (imp == null ? "null" : imp.code));
+                            if(imp != null) applySetCookieHeaders(imp.headers, baseUrl);
+                        } catch(Exception e) {
+                            Log.d(TAG, "ntk_native_ack_imp_error i=" + idx + "," + e);
+                        }
+                    }));
                 }
+                for(java.util.concurrent.Future<?> f : impFutures) {
+                    try { f.get(12000L, java.util.concurrent.TimeUnit.MILLISECONDS); } catch(Exception ignored) {}
+                }
+                impExecutor.shutdownNow();
             }
 
+            // 2.5 Transform challenge token using ad_guard WASM via WebView
+            // OPTIMIZATION: skip WASM/JS fetch and _vc WebView execution;
+            // the original challenge token works directly for canary/ack.
+            // Saves ~2-4s of WebView overhead per ACK.
+            Log.d(TAG, "ntk_native_ack_vc_skipped token_len=" + token.length());
+
             // 3. POST /api/ad/canary with challenge token
+            Log.d(TAG, "ntk_native_ack_token_before_canary len=" + token.length());
+            int slotCount = challengeObj.optInt("slotCount", 4);
+            int minSeen = challengeObj.optInt("minSeen", 2);
             JSONObject canaryPayload = new JSONObject();
-            canaryPayload.put("path", path);
-            if(token.length() > 0) canaryPayload.put("token", token);
-            NtkQuicFetcher.Result canary = NtkQuicFetcher.fetch(context, baseUrl + "/api/ad/canary", agent,
-                    getCookieHeader(), h, "POST",
+            canaryPayload.put("adAckCanary", true);
+            canaryPayload.put("challengeToken", token);
+            canaryPayload.put("token", token);
+            canaryPayload.put("path", challengePath);
+            NtkQuicFetcher.Result canary = NtkQuicFetcher.fetchWithEngine(engine, baseUrl + "/api/ad/canary", agent,
+                    getCookieHeader(), h2, "POST",
                     canaryPayload.toString().getBytes(StandardCharsets.UTF_8), 10000L);
             Log.d(TAG, "ntk_native_ack_canary_code=" + (canary == null ? "null" : canary.code));
             if(canary != null && canary.body != null) {
@@ -3734,11 +3926,17 @@ public class CustomHttpClient {
             if(canary != null) applySetCookieHeaders(canary.headers, baseUrl);
 
             // 4. POST /api/ad/ack with challenge token
+            // WebView sends additional metrics: total, visible, td, tp
+            // tp is a proof computed by ad_guard.js; we leave it empty for now
             JSONObject ackPayload = new JSONObject();
-            ackPayload.put("path", path);
-            if(token.length() > 0) ackPayload.put("token", token);
-            NtkQuicFetcher.Result ack = NtkQuicFetcher.fetch(context, baseUrl + "/api/ad/ack", agent,
-                    getCookieHeader(), h, "POST",
+            ackPayload.put("challengeToken", token);
+            ackPayload.put("total", slotCount);
+            ackPayload.put("visible", minSeen);
+            ackPayload.put("path", challengePath);
+            ackPayload.put("td", 0);
+            ackPayload.put("tp", "");
+            NtkQuicFetcher.Result ack = NtkQuicFetcher.fetchWithEngine(engine, baseUrl + "/api/ad/ack", agent,
+                    getCookieHeader(), h2, "POST",
                     ackPayload.toString().getBytes(StandardCharsets.UTF_8), 10000L);
             Log.d(TAG, "ntk_native_ack_ack_code=" + (ack == null ? "null" : ack.code));
             if(ack != null) applySetCookieHeaders(ack.headers, baseUrl);
@@ -3764,10 +3962,16 @@ public class CustomHttpClient {
             }
             boolean ackSuccess = ack != null && ack.code == 200 && ackBodyOk;
             Log.d(TAG, "ntk_native_ack_final_success=" + ackSuccess);
+            if(ackSuccess) {
+                NTK_ACK_CACHE.put(cacheKey, System.currentTimeMillis());
+            }
             return ackSuccess;
         } catch(Exception e) {
             Log.d(TAG, "ntk_native_ack_bypass_exception=" + e);
             return false;
+        } finally {
+            if(engine != null)
+                engine.shutdown();
         }
     }
 

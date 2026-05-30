@@ -72,7 +72,7 @@ public final class NtkQuicFetcher {
         }
     }
 
-    private static Result fetchWithEngine(HttpEngine engine, String url, String userAgent,
+    public static Result fetchWithEngine(HttpEngine engine, String url, String userAgent,
                                           String cookieHeader, Map<String, String> requestHeaders,
                                           String method, byte[] body, long timeoutMs) throws InterruptedException {
         ExecutorService executor = Executors.newSingleThreadExecutor();

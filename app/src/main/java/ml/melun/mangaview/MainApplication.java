@@ -13,6 +13,7 @@ import androidx.work.WorkManager;
 
 import ml.melun.mangaview.ClassificationDbUpdater;
 import ml.melun.mangaview.ClassificationDbStore;
+import ml.melun.mangaview.activity.NtkQuicFetcher;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.report.CrashReporter;
 import ml.melun.mangaview.repository.room.MangaRoomStore;

@@ -10,6 +10,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -410,13 +412,14 @@ public class Manga {
                 path = "/" + segment + "/" + tid + "/" + id;
                 setNtkEpisodePath(path);
             }
+            AsyncNtkPageFetch pageFetch = startAsyncNtkPageFetch(client, path);
             if(addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount(), true)) {
                 logNtkViewerParse("generated-fast", null, path, 0, 0);
                 restoreBetterEpisodeList(previousEpisodes);
                 attachEpisodeSeriesMetadata();
                 return LOAD_OK;
             }
-            CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+            CustomHttpClient.PageResponse page = awaitAsyncNtkPageFetch(pageFetch, client, path);
             boolean blockedPage = client.isCloudflareChallengeResponse(page.code, page.body)
                     || looksLikeNtkBlockedPage(page.body);
             boolean missingPage = page.code >= 400 || looksLikeNtkMissingPage(page.body);
@@ -486,6 +489,46 @@ public class Manga {
         restoreBetterEpisodeList(previousEpisodes);
         attachEpisodeSeriesMetadata();
         return LOAD_OK;
+    }
+
+    private AsyncNtkPageFetch startAsyncNtkPageFetch(CustomHttpClient client, String path) {
+        AsyncNtkPageFetch fetch = new AsyncNtkPageFetch();
+        Thread thread = new Thread(() -> {
+            try {
+                fetch.page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+            } catch (Exception e) {
+                fetch.error = e;
+            } finally {
+                fetch.done.countDown();
+            }
+        }, "ntk-page-prefetch");
+        thread.setDaemon(true);
+        thread.start();
+        return fetch;
+    }
+
+    private CustomHttpClient.PageResponse awaitAsyncNtkPageFetch(AsyncNtkPageFetch fetch,
+                                                                 CustomHttpClient client,
+                                                                 String path) throws Exception {
+        if(fetch != null) {
+            try {
+                fetch.done.await(14, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw e;
+            }
+            if(fetch.page != null)
+                return fetch.page;
+            if(fetch.error != null)
+                throw fetch.error;
+        }
+        return client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+    }
+
+    private static final class AsyncNtkPageFetch {
+        final CountDownLatch done = new CountDownLatch(1);
+        volatile CustomHttpClient.PageResponse page;
+        volatile Exception error;
     }
 
     private void addNtkDocumentImageCandidates(CustomHttpClient client, Document d, Set<String> seenImages,
@@ -672,6 +715,7 @@ public class Manga {
             logNtkViewerParse("generated-trim-pages-" + pageCount + "-to-" + best, null, getNtkEpisodePath(), 0, 0);
         return best;
     }
+
     private boolean isNtkGeneratedImageReachable(CustomHttpClient client, String src) {
         if(client == null || src == null || src.length() == 0)
             return false;
@@ -2158,4 +2202,3 @@ public class Manga {
         void setMessage(String msg);
     }
 }
-
