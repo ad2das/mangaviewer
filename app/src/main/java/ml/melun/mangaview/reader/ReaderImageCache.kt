@@ -130,7 +130,7 @@ object ReaderImageCache {
         val tmp = File(finalFile.parentFile, "${finalFile.name}.part.${System.nanoTime()}")
         try {
             val requestUrl = Utils.viewerImageRequestUrl(image, manga.baseMode)
-            request(context, manga, image).use { response ->
+            requestWithNtkGeneratedFallback(context, manga, image).use { response ->
                 if (!response.isSuccessful) throw java.io.IOException("Image request failed: ${response.code} url=$requestUrl")
                 val body = response.body ?: throw java.io.IOException("Empty image body")
                 FileOutputStream(tmp).use { out -> body.byteStream().copyTo(out) }
@@ -154,6 +154,34 @@ object ReaderImageCache {
             requestBuilder.addHeader(entry.key, entry.value)
         }
         return getHttpClient().imageClient.newCall(requestBuilder.build()).execute()
+    }
+
+    private fun requestWithNtkGeneratedFallback(context: Context, manga: Manga, image: String): okhttp3.Response {
+        val response = request(context, manga, image)
+        if (response.isSuccessful || !shouldTryNtkGeneratedExtensionFallback(image)) return response
+        response.close()
+        for (candidate in ntkGeneratedExtensionFallbacks(image)) {
+            val fallback = request(context, manga, candidate)
+            if (fallback.isSuccessful) return fallback
+            fallback.close()
+        }
+        return request(context, manga, image)
+    }
+
+    private fun shouldTryNtkGeneratedExtensionFallback(image: String): Boolean {
+        val lower = image.lowercase()
+        return lower.contains("://i.toonflix.app/")
+            && Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|png|webp)(?:[?#].*)?$").containsMatchIn(lower)
+    }
+
+    private fun ntkGeneratedExtensionFallbacks(image: String): List<String> {
+        val match = Regex("(?i)\\.(jpg|png|webp)([?#].*)?$").find(image) ?: return emptyList()
+        val current = match.groupValues[1].lowercase()
+        val suffix = match.groupValues.getOrNull(2).orEmpty()
+        val prefix = image.substring(0, match.range.first)
+        return listOf("jpg", "png", "webp")
+            .filter { it != current }
+            .map { "$prefix.$it$suffix" }
     }
 
     private fun replaceWithImageExtractedFromHtml(

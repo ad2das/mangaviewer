@@ -620,6 +620,7 @@ public class Manga {
             imageExtension = reachableNtkGeneratedImageExtension(client, segment, workId, imageEpisodeId, 1);
             if(imageExtension.length() == 0)
                 return false;
+            safePageCount = reachableNtkGeneratedPageCount(client, segment, workId, imageEpisodeId, imageExtension, safePageCount);
         }
         for(int page = 1; page <= safePageCount; page++) {
             String src = ntkGeneratedImageUrl(segment, workId, imageEpisodeId, page, imageExtension);
@@ -649,6 +650,28 @@ public class Manga {
         return "";
     }
 
+    private int reachableNtkGeneratedPageCount(CustomHttpClient client, String segment, String workId,
+                                               String episodeId, String extension, int pageCount) {
+        if(pageCount <= 1)
+            return pageCount;
+        if(isNtkGeneratedImageReachable(client, ntkGeneratedImageUrl(segment, workId, episodeId, pageCount, extension)))
+            return pageCount;
+        int low = 1;
+        int high = pageCount - 1;
+        int best = 1;
+        while(low <= high) {
+            int mid = low + (high - low) / 2;
+            if(isNtkGeneratedImageReachable(client, ntkGeneratedImageUrl(segment, workId, episodeId, mid, extension))) {
+                best = mid;
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
+        }
+        if(best < pageCount)
+            logNtkViewerParse("generated-trim-pages-" + pageCount + "-to-" + best, null, getNtkEpisodePath(), 0, 0);
+        return best;
+    }
     private boolean isNtkGeneratedImageReachable(CustomHttpClient client, String src) {
         if(client == null || src == null || src.length() == 0)
             return false;
@@ -2135,3 +2158,4 @@ public class Manga {
         void setMessage(String msg);
     }
 }
+
