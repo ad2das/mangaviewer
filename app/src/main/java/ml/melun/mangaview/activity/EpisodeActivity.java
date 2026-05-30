@@ -410,9 +410,6 @@ public class EpisodeActivity extends AppCompatActivity {
             }
             @Override
             public void onItemPress(int position, Manga selected) {
-                warmupUserSelectedEpisode(selected);
-                if(selected != null)
-                    ReaderWarmupCoordinator.primeExactImmediate(context, selected, title);
             }
             @Override
             public void onStarClick(){
@@ -520,7 +517,19 @@ public class EpisodeActivity extends AppCompatActivity {
     private void warmupLikelyNtkViewerPage() {
         if(!p.isNtkSite() && !getHttpClient().isNtk())
             return;
-        ViewerWarmupManager.logMetric("ntk_initial_viewer_warmup_skipped", 1L);
+        Manga target = quickReadEpisode();
+        if(target == null)
+            return;
+        target.setMode(mode);
+        target.setTitle(title);
+        target.setTitleId(title == null ? target.getTitleId() : title.getId());
+        target.ensureNtkEpisodePathFromIdentity();
+        if(EpisodeWarmupPolicy.shouldDirectWarmupNtkViewerPage(p.isNtkSite(), getHttpClient().isNtk(),
+                target.getNtkEpisodePath())) {
+            ReaderWarmupCoordinator.primeExactImmediate(context, target, title);
+        } else {
+            ViewerWarmupManager.logMetric("ntk_initial_viewer_warmup_skipped", 1L);
+        }
     }
 
     private void warmupLikelyWfwfViewerPage() {

@@ -254,9 +254,7 @@ class ReaderSession(
             )
             if (installPreparedSnapshot(snapshot)) return
             if (snapshot.status != ReaderPreparedStore.Status.FAILED) {
-                main.postDelayed({
-                    if (!cancelled.get() && !pagesInstalled.get()) loadFromRepository()
-                }, PREPARED_FALLBACK_MS)
+                loadFromRepository()
                 return
             }
         } else if (!preparedStoreKey.isNullOrEmpty()) {
@@ -273,7 +271,7 @@ class ReaderSession(
                 var urls = imageRepository.imageUrls(manga, appContext)
                 if (urls.isNullOrEmpty()) {
                     val cancellation = MangaRepository.cancellation().userVisible()
-                    if (isWfwfSource(manga, title) || isNtkSource(manga, title)) cancellation.prioritizeWebViewFallback()
+                    if (isNtkSource(manga, title)) cancellation.prioritizeWebViewFallback()
                     val result = imageRepository.fetchViewerInitial(manga, cancellation)
                     if (result != Title.LOAD_OK) {
                         if (result == Title.LOAD_CAPTCHA) {
@@ -399,7 +397,7 @@ class ReaderSession(
     private fun prefetchImageFilesAround(startPage: Int) {
         val refs = synchronized(pagesLock) { pages.toList() }
         if (refs.isEmpty()) return
-        val first = max(0, startPage - START_SOURCE_PREFETCH_BEFORE)
+        val first = startPage
         val last = minOf(refs.lastIndex, startPage + START_SOURCE_PREFETCH_AFTER)
         val ordered = ArrayList<Int>(last - first + 1)
         val anchor = startPage.coerceIn(first, last)
@@ -411,6 +409,7 @@ class ReaderSession(
             if (behind >= first) ordered.add(behind)
         }
         for (index in ordered) {
+            if (index == anchor) continue
             val page = refs.getOrNull(index) ?: continue
             if (page.transitionTitle != null) continue
             try {
@@ -1111,7 +1110,7 @@ class ReaderSession(
                     ViewerWarmupManager.logMetric("reader_decoded_cache_hit", index.toLong())
                     return@execute
                 }
-                prefetchImageFile(index, originalPage)
+                if (!anchor && !urgent) prefetchImageFile(index, originalPage)
                 try {
                     decodeExecutor.execute {
                     val gate = if (busy) busyDecodeGate else idleDecodeGate
@@ -1236,10 +1235,14 @@ class ReaderSession(
         return ReaderImageCache.leaseFile(appContext, page.manga, image)
     }
 
-    private fun prefetchImageFile(index: Int, page: PageRef) {
+    private fun prefetchImageFile(index: Int, page: PageRef, foreground: Boolean = false) {
         val image = page.image ?: return
         if (page.manga.isOnline) {
-            ReaderImageCache.getOrFetchFile(appContext, page.manga, image)
+            if (foreground) {
+                ReaderImageCache.getOrFetchFileForeground(appContext, page.manga, image)
+            } else {
+                ReaderImageCache.getOrFetchFile(appContext, page.manga, image)
+            }
         } else {
             File(image)
         }
@@ -1279,6 +1282,7 @@ class ReaderSession(
 
     private fun decodePageWithLease(index: Int, page: PageRef, targetWidth: Int): PageDecodeResult {
         cachedDecodedResult(page, targetWidth)?.let { return it }
+        decodeForegroundStream(index, page, targetWidth)?.let { return it }
         val leaseStart = if (index == requestedStartPage() && page.manga.isOnline) SystemClock.elapsedRealtime() else 0L
         leaseImageFile(index, page).use { lease ->
             if (leaseStart > 0L) ViewerWarmupManager.logMetric(
@@ -1287,6 +1291,35 @@ class ReaderSession(
             )
             return decodePage(index, page, lease.file, targetWidth)
         }
+    }
+
+    private fun decodeForegroundStream(index: Int, page: PageRef, targetWidth: Int): PageDecodeResult? {
+        if (!page.manga.isOnline || index != requestedStartPage()) return null
+        val image = page.image ?: return null
+        val metric = SystemClock.elapsedRealtime()
+        val raw = try {
+            ReaderImageCache.decodeForegroundBitmap(appContext, page.manga, image)
+        } catch (e: Exception) {
+            recordIfUnexpected(e)
+            null
+        } ?: return null
+        val rawAt = SystemClock.elapsedRealtime()
+        val displayBounds = displayBounds(raw.width, raw.height, page.side, page.allowAutoSplit)
+        postPageBounds(index, displayBounds.width(), displayBounds.height())
+        val decodeTargetWidth = decodeTargetWidth(raw.width, raw.height, targetWidth, page.allowAutoSplit)
+        val decoded = Decoder(page.manga.seed, page.manga.id).decode(raw, decodeTargetWidth, Glide.get(appContext).bitmapPool)
+        if (decoded !== raw && !raw.isRecycled) raw.recycle()
+        val transformedAt = SystemClock.elapsedRealtime()
+        val result = PageDecodeResult.Full(
+            ViewerBitmapTrim.trimBlankVerticalEdges(
+                applyAutoSplit(decoded, page.side, page.allowAutoSplit),
+                true
+            )
+        )
+        ViewerWarmupManager.logMetric("reader_first_stream_raw_ms", rawAt - metric)
+        ViewerWarmupManager.logMetric("reader_first_stream_transform_ms", transformedAt - rawAt)
+        ViewerWarmupManager.logMetric("reader_first_decode_total_ms", SystemClock.elapsedRealtime() - metric)
+        return result
     }
 
     private fun cachedDecodedResult(page: PageRef, targetWidth: Int): PageDecodeResult? {
@@ -2145,7 +2178,6 @@ class ReaderSession(
     }
 
     private companion object {
-        private const val PREPARED_FALLBACK_MS = 250L
         private const val PREPARED_BITMAP_RELEASE_DELAY_MS = 12000L
         private const val PRIME_FORWARD_EPISODES = 40
         private const val BOUNDARY_DECODE_AHEAD_PAGES = 8
@@ -2160,7 +2192,7 @@ class ReaderSession(
         private const val IDLE_DELIVERY_RESUME_DELAY_MS = 24L
         private const val IDLE_DELIVERY_FRAME_DELAY_MS = 8L
         private const val INPUT_PRIORITY_QUIET_MS = 24L
-        private const val START_SOURCE_PREFETCH_BEFORE = 2
+        private const val START_SOURCE_PREFETCH_BEFORE = 0
         private const val START_SOURCE_PREFETCH_AFTER = 36
         private const val ADJACENT_EXISTING_SKIP_LIMIT = 8
         private const val NTK_GENERATED_APPEND_REFRESH_MIN_COUNT = 24

@@ -603,8 +603,6 @@ public class Utils {
         String preparedKey = null;
         try {
             preparedKey = ReaderWarmupCoordinator.readyKey(appContext, manga, launchTitle, width, exactEpisode);
-            if(preparedKey == null && !isNtkLaunchSource(launchTitle))
-                preparedKey = ReaderWarmupCoordinator.openKey(appContext, manga, launchTitle, width, exactEpisode);
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }

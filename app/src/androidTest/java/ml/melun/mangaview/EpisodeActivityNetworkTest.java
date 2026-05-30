@@ -13,6 +13,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.os.ParcelFileDescriptor;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.View;
 
@@ -169,6 +170,59 @@ public class EpisodeActivityNetworkTest {
 
         assertReaderOpened(device, "WFWF");
         assertNoInitialVisibleCoverageGap("WFWF");
+    }
+
+    @Test
+    public void wfwfNonPreloadedEpisodeColdMinimizesInternalFirstImageDelay() throws Exception {
+        ActivityScenario<EpisodeActivity> scenario = launchWfwfSummertimeTitle();
+        try {
+            UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+            UiObject2 episodeList = device.wait(Until.findObject(By.res(PACKAGE_NAME, "EpisodeList")), 60000L);
+            assertNotNull("Expected WFWF episode list to render", episodeList);
+            UiObject2 episodeRow = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 60000L);
+            assertNotNull("Expected WFWF title to render at least one episode", episodeRow);
+
+            AtomicReference<String> quickReadName = new AtomicReference<>("");
+            scenario.onActivity(activity -> {
+                List<Manga> episodes = readEpisodes(activity);
+                assertTrue("Expected WFWF episodes", episodes != null && episodes.size() >= 2);
+                Manga quick = episodes.get(episodes.size() - 1);
+                quickReadName.set(quick == null ? "" : quick.getName());
+                MainApplication.p.resetViewerBookmark();
+                MainApplication.p.setBookmark(readTitle(activity), -1);
+            });
+
+            List<UiObject2> rows = visibleEpisodeRows(device);
+            assertTrue("Expected multiple visible WFWF episode rows", rows.size() >= 2);
+            UiObject2 target = rows.get(0);
+            for(UiObject2 row : rows) {
+                if(row != null && row.getText() != null && !row.getText().equals(quickReadName.get())) {
+                    target = row;
+                    break;
+                }
+            }
+
+            executeShell("logcat -c");
+            long clickAt = SystemClock.elapsedRealtime();
+            target.click();
+
+            UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 60000L);
+            assertNotNull("Expected tapping a WFWF non-preloaded cold episode to open the reader", strip);
+            UiObject2 firstDrawable = device.wait(Until.findObject(By.desc("reader-drawable-ready")), 60000L);
+            long clickToFirstDrawableMs = SystemClock.elapsedRealtime() - clickAt;
+            Log.d("ViewerPerf", "test_click_to_first_drawable_ms=" + clickToFirstDrawableMs);
+            assertNotNull("Expected tapping a WFWF non-preloaded cold episode to render the first reader image", firstDrawable);
+            String latestOutput = executeShellOutput("logcat -d -s ViewerPerf:D *:S");
+            String line = firstLineContaining(latestOutput, "reader_open_to_first_drawable source=wfwf");
+            assertNotNull("Expected WFWF first drawable metric: " + latestOutput, line);
+            String streamLine = firstLineContaining(latestOutput, "reader_first_stream_raw_ms=");
+            String decodeLine = firstLineContaining(latestOutput, "reader_first_decode_total_ms=");
+            assertTrue("Expected first image to use the low-latency foreground path: " + latestOutput,
+                    streamLine != null || decodeLine != null);
+        } finally {
+            scenario.close();
+            finishReaderActivities();
+        }
     }
 
     @Test

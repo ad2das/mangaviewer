@@ -130,7 +130,6 @@ object ReaderWarmupCoordinator {
 
     @JvmStatic
     fun primeExactImmediate(context: Context?, manga: Manga?, title: Title?) {
-        if (isNtkWarmup(title ?: manga?.title)) return
         val profile = launchProfile(title ?: manga?.title)
         val entry = createEntry(context, manga, title, 0, true, profile) ?: return
         BackgroundPrefetchBudget.suppressForUserNavigation()
@@ -347,6 +346,7 @@ object ReaderWarmupCoordinator {
                 var decodedHeightPx = 0f
                 val targetHeightPx = viewportHeightPx(appContext) * sourceProfile.launchDecodeScreenfuls
                 for ((position, index) in decodeOrder.withIndex()) {
+                    if (index != startPage && BackgroundPrefetchBudget.isNonCriticalPrefetchSuppressed()) break
                     val existing = existingBitmaps[index]
                     if (existing != null && !existing.isRecycled) {
                         decoded.add(index)
@@ -363,6 +363,7 @@ object ReaderWarmupCoordinator {
                     entry.putBitmap(index, bitmap, index == startPage, complete)
                     if (complete) break
                 }
+                if (BackgroundPrefetchBudget.isNonCriticalPrefetchSuppressed()) return
                 for (index in byteOrder) {
                     if (!decoded.contains(index)) fetchImageFile(appContext, manga, urls[index])
                 }
@@ -379,6 +380,7 @@ object ReaderWarmupCoordinator {
         width: Int
     ) {
         if (p != null && p.getDataSave()) return
+        if (BackgroundPrefetchBudget.isNonCriticalPrefetchSuppressed()) return
         if (!firstBitmapBackfillInFlight.add(entry.key)) return
         try {
             val sourceProfile = sourceProfile(entry.title ?: manga.title)

@@ -95,6 +95,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var deferredBoundaryAnchor = -1
     private var pendingBoundaryStartInteractionMs = 0L
     private var lastReaderInteractionMs = 0L
+    private var lastReaderScrollInteractionMs = 0L
+    private var lastReaderTouchRawY = Float.NaN
+    private var lastReaderScrollDirection = 0
     private var lastReaderBusyMs = 0L
     private val missingEpisodePromptState = MissingEpisodeNavigator.PromptState()
     private var pendingCaptchaRetryManga: Manga? = null
@@ -675,6 +678,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             progressMovedInGesture = false
         } else if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
             progressMovedInGesture = false
+            lastReaderTouchRawY = ev.rawY
+            lastReaderScrollDirection = 0
         }
         if (ev.actionMasked == MotionEvent.ACTION_DOWN ||
             ev.actionMasked == MotionEvent.ACTION_MOVE ||
@@ -683,12 +688,28 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         ) {
             session?.noteUserInteraction()
             lastReaderInteractionMs = SystemClock.uptimeMillis()
+            if (ev.actionMasked == MotionEvent.ACTION_MOVE) {
+                val previousY = lastReaderTouchRawY
+                if (!previousY.isNaN()) {
+                    val dy = previousY - ev.rawY
+                    if (abs(dy) > toolbarTouchSlop) {
+                        lastReaderScrollDirection = if (dy > 0f) {
+                            ReaderSurfaceView.DIRECTION_NEXT
+                        } else {
+                            ReaderSurfaceView.DIRECTION_PREVIOUS
+                        }
+                    }
+                }
+                lastReaderTouchRawY = ev.rawY
+                lastReaderScrollInteractionMs = lastReaderInteractionMs
+            }
         }
         return super.dispatchTouchEvent(ev)
     }
 
     override fun onNearBoundary(direction: Int, anchorPage: Int) {
         if (destroyed || isFinishing) return
+        if (!shouldPrepareNearBoundaryForTest(direction, lastReaderScrollInteractionMs, lastReaderScrollDirection)) return
         session?.prepareAdjacentEpisode(anchorPage, direction)
     }
 
@@ -852,7 +873,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             startAtFirstPage = true,
             clearViewImmediately = false
         )
-        primeAdjacentLaunchWindow(currentTitle, cachedPreviousEpisode)
         primeAdjacentLaunchWindow(currentTitle, cachedNextEpisode)
         statusHandler.postDelayed({
             if (!destroyed && !isFinishing) updateAdjacentButtons()
@@ -986,7 +1006,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val next = if (manga == null) null else adjacentEpisode(manga, true)
         cachedPreviousEpisode = previous
         cachedNextEpisode = next
-        primeAdjacentLaunchWindow(title, previous)
         primeAdjacentLaunchWindow(title, next)
         prevButton.isEnabled = shouldEnableAdjacentButton(
             previous != null,
@@ -1550,6 +1569,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 boundaryStartInteractionMs,
                 lastInteractionMs
             )
+        }
+
+        @JvmStatic
+        fun shouldPrepareNearBoundaryForTest(
+            direction: Int,
+            lastScrollInteractionMs: Long,
+            lastScrollDirection: Int
+        ): Boolean {
+            return direction != ReaderSurfaceView.DIRECTION_PREVIOUS ||
+                (lastScrollInteractionMs > 0L && lastScrollDirection == ReaderSurfaceView.DIRECTION_PREVIOUS)
         }
 
         private fun pageGapForBaseMode(baseMode: Int): Int {

@@ -134,7 +134,6 @@ public final class PrefetchCoordinator {
             int current = bookmarkIndex - 1;
             addTarget(targets, episodes, current, limit);
             addReadingForwardTargets(targets, episodes, current, limit);
-            addReadingBackwardTargets(targets, episodes, current, limit);
             addTarget(targets, episodes, firstEpisodeIndex(episodes), limit);
             addTarget(targets, episodes, 0, limit);
             return targets;
@@ -176,10 +175,6 @@ public final class PrefetchCoordinator {
 
     private static void addReadingForwardTargets(List<Integer> targets, List<Manga> episodes, int current, int limit) {
         addReadingTargets(targets, episodes, current, limit, true);
-    }
-
-    private static void addReadingBackwardTargets(List<Integer> targets, List<Manga> episodes, int current, int limit) {
-        addReadingTargets(targets, episodes, current, limit, false);
     }
 
     private static void addReadingTargets(List<Integer> targets, List<Manga> episodes, int current, int limit,

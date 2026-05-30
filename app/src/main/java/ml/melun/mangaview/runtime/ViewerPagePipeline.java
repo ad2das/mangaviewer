@@ -105,8 +105,6 @@ public final class ViewerPagePipeline {
     }
 
     public void preparePreviousEpisode(Manga target) {
-        prepareEpisode(target, 0, dataSave ? 4 : 12, dataSave ? 3 : 8,
-                0, Priority.HIGH);
     }
 
     public boolean hasPreparedImages(Manga target) {
