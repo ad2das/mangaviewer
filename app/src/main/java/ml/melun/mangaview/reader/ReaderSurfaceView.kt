@@ -347,7 +347,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
             val newHeight = resolvedPageDrawHeightLocked(bitmap.width, bitmap.height)
-            if (shouldDeferHeightChangingResolveLocked()) {
+            if (shouldDeferHeightChangingResolveLocked(index, oldTop, oldHeight)) {
                 page.bitmap = bitmap
                 page.tiles = emptyList()
                 page.loading = false
@@ -394,7 +394,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
             val newHeight = resolvedPageDrawHeightLocked(pageWidth, pageHeight)
-            if (shouldDeferHeightChangingResolveLocked()) {
+            if (shouldDeferHeightChangingResolveLocked(index, oldTop, oldHeight)) {
                 page.bitmap = null
                 page.tiles = tiles
                 page.loading = false
@@ -498,7 +498,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
             val newHeight = resolvedPageDrawHeightLocked(pageWidth, pageHeight)
-            if (shouldDeferHeightChangingResolveLocked()) {
+            if (shouldDeferHeightChangingResolveLocked(index, oldTop, oldHeight)) {
                 page.pendingResolveType = PENDING_BOUNDS
                 page.pendingBitmap = null
                 page.pendingTiles = emptyList()
@@ -1419,8 +1419,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return max(1f, viewWidth * placeholderPageHeightRatio)
     }
 
-    private fun shouldDeferHeightChangingResolveLocked(): Boolean {
-        return isScrollMovingLocked()
+    private fun shouldDeferHeightChangingResolveLocked(index: Int, oldTop: Float, oldHeight: Float): Boolean {
+        if (!isScrollMovingLocked()) return false
+        val page = pages.getOrNull(index) ?: return false
+        if (page.width <= 0 || page.height <= 0) return false
+        return oldHeight > 0f
     }
 
     private fun isScrollMovingLocked(): Boolean {
@@ -1444,6 +1447,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (type == PENDING_NONE) continue
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
+            if (isPageVisibleLocked(oldTop, oldHeight)) continue
             val pendingWidth = page.pendingWidth
             val pendingHeight = page.pendingHeight
             when (type) {
@@ -1479,6 +1483,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val newHeight = pageDrawHeightLocked(page)
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
         }
+    }
+
+    private fun isPageVisibleLocked(top: Float, pageHeight: Float): Boolean {
+        val bottom = top + pageHeight
+        return bottom > scrollOffset && top < scrollOffset + height
     }
 
     private fun noteResolvedPageAspectLocked(pageWidth: Int, pageHeight: Int) {

@@ -1299,8 +1299,6 @@ class ReaderSession(
             null
         } ?: return null
         val rawAt = SystemClock.elapsedRealtime()
-        val displayBounds = displayBounds(raw.width, raw.height, page.side, page.allowAutoSplit)
-        postPageBounds(index, displayBounds.width(), displayBounds.height())
         val decodeTargetWidth = decodeTargetWidth(raw.width, raw.height, targetWidth, page.allowAutoSplit)
         val decoded = Decoder(page.manga.seed, page.manga.id).decode(raw, decodeTargetWidth, Glide.get(appContext).bitmapPool)
         if (decoded !== raw && !raw.isRecycled) raw.recycle()
@@ -1311,6 +1309,7 @@ class ReaderSession(
                 true
             )
         )
+        postPageBounds(index, result.bitmap.width, result.bitmap.height)
         ViewerWarmupManager.logMetric("reader_first_stream_raw_ms", rawAt - metric)
         ViewerWarmupManager.logMetric("reader_first_stream_transform_ms", transformedAt - rawAt)
         ViewerWarmupManager.logMetric("reader_first_decode_total_ms", SystemClock.elapsedRealtime() - metric)
@@ -1339,9 +1338,9 @@ class ReaderSession(
             decodeLocal(page.image ?: "", bounds)
         }
         val boundsAt = if (metric) SystemClock.elapsedRealtime() else 0L
-        val displayBounds = displayBounds(bounds.outWidth, bounds.outHeight, page.side, page.allowAutoSplit)
-        postPageBounds(index, displayBounds.width(), displayBounds.height())
         if (!autoCut && shouldDecodeTiles(page, file, bounds)) {
+            val displayBounds = displayBounds(bounds.outWidth, bounds.outHeight, page.side, page.allowAutoSplit)
+            postPageBounds(index, displayBounds.width(), displayBounds.height())
             return decodePageTiles(file, bounds, targetWidth)
         }
         val decodeTargetWidth = decodeTargetWidth(bounds.outWidth, bounds.outHeight, targetWidth, page.allowAutoSplit)
@@ -1358,11 +1357,13 @@ class ReaderSession(
             ?: throw java.io.IOException("Bitmap decode failed")
         val rawAt = if (metric) SystemClock.elapsedRealtime() else 0L
         if (!page.manga.isOnline) {
+            val bitmap = ViewerBitmapTrim.trimBlankVerticalEdges(
+                applyAutoSplit(raw, page.side, page.allowAutoSplit),
+                true
+            )
+            postPageBounds(index, bitmap.width, bitmap.height)
             return PageDecodeResult.Full(
-                ViewerBitmapTrim.trimBlankVerticalEdges(
-                    applyAutoSplit(raw, page.side, page.allowAutoSplit),
-                    true
-                )
+                bitmap
             )
         }
         val decoded = Decoder(page.manga.seed, page.manga.id).decode(raw, decodeTargetWidth, Glide.get(appContext).bitmapPool)
@@ -1374,6 +1375,7 @@ class ReaderSession(
                 true
             )
         )
+        postPageBounds(index, result.bitmap.width, result.bitmap.height)
         if (metric) {
             val finishedAt = SystemClock.elapsedRealtime()
             ViewerWarmupManager.logMetric("reader_first_bounds_ms", boundsAt - startedAt)
