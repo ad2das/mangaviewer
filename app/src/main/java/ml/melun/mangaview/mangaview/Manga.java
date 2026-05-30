@@ -624,27 +624,11 @@ public class Manga {
                 logNtkViewerParse("generated-neighbor-" + imageEpisodeId, null, path, 0, 0);
             }
         }
-        safePageCount = trimNtkGeneratedPageCount(client, segment, workId, imageEpisodeId, safePageCount);
         for(int page = 1; page <= safePageCount; page++) {
             String src = ntkGeneratedImageUrl(segment, workId, imageEpisodeId, page);
             addImageIfValid(client, seenImages, src);
         }
         return imgs != null && imgs.size() > before;
-    }
-
-    private int trimNtkGeneratedPageCount(CustomHttpClient client, String segment, String workId,
-                                          String imageEpisodeId, int pageCount) {
-        if(pageCount <= 1)
-            return pageCount;
-        int minPage = Math.max(1, pageCount - 8);
-        for(int page = pageCount; page >= minPage; page--) {
-            if(isNtkGeneratedImageReachable(client, ntkGeneratedImageUrl(segment, workId, imageEpisodeId, page))) {
-                if(page < pageCount)
-                    logNtkViewerParse("generated-trim-pages-" + pageCount + "-to-" + page, null, getNtkEpisodePath(), 0, 0);
-                return page;
-            }
-        }
-        return pageCount;
     }
 
     private String nearestReachableNtkGeneratedEpisodeId(CustomHttpClient client, String segment, String workId, String episodeId) {

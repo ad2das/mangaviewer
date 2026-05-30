@@ -5,7 +5,7 @@ object ReaderPipelinePolicy {
     const val IDLE_DECODE_PARALLELISM = 2
     const val BUSY_DECODE_PARALLELISM = 3
     const val INITIAL_WINDOW_BEFORE = 0
-    const val INITIAL_WINDOW_AFTER = 24
+    const val INITIAL_WINDOW_AFTER = 8
     const val BUSY_WINDOW_BEFORE = 8
     const val BUSY_WINDOW_AFTER = 14
     const val IDLE_WINDOW_BEFORE = 6
