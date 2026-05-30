@@ -3836,7 +3836,8 @@ public class CustomHttpClient {
                 dumpNtkAckDebugArtifacts(baseUrl, path);
             }
 
-            // Fetch encrypted ad_guard_bg.wasm (JS will decrypt it internally)
+            // Fetch encrypted ad_guard_bg.wasm before ad challenge. The returned bytes are
+            // not transformed here, but the request is part of the native ACK request sequence.
             byte[] wasmBytes = null;
             try {
                 Map<String, String> wasmHeaders = new HashMap<>();

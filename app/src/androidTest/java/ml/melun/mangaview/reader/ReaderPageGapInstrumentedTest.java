@@ -75,7 +75,7 @@ public class ReaderPageGapInstrumentedTest {
     }
 
     @Test
-    public void trimBlankVerticalEdgesRemovesInternalBlackSeparators() {
+    public void trimBlankVerticalEdgesPreservesInternalBlackSeparators() {
         Bitmap bitmap = Bitmap.createBitmap(20, 42, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bitmap);
         android.graphics.Paint paint = new android.graphics.Paint();
@@ -88,9 +88,10 @@ public class ReaderPageGapInstrumentedTest {
 
         Bitmap trimmed = ViewerBitmapTrim.trimBlankVerticalEdges(bitmap);
 
-        assertEquals(32, trimmed.getHeight());
+        assertEquals(42, trimmed.getHeight());
         assertEquals(Color.rgb(90, 120, 180), trimmed.getPixel(10, 15));
-        assertEquals(Color.rgb(170, 120, 90), trimmed.getPixel(10, 16));
+        assertEquals(Color.BLACK, trimmed.getPixel(10, 16));
+        assertEquals(Color.rgb(170, 120, 90), trimmed.getPixel(10, 26));
     }
 
     @Test
