@@ -700,7 +700,7 @@ class ReaderSession(
                 }
                 anchorManga.title = currentTitle
                 anchorManga.titleId = currentTitle.id
-                val target = if (direction < 0) anchorManga.prevEp() else anchorManga.nextEp()
+                val target = nextUnloadedAdjacentEpisode(anchorManga, currentTitle, episodes, direction)
                 if (target == null) {
                     if (!silentMissing) {
                         postMessage(if (direction < 0) "이전 회차가 없습니다" else "다음 회차가 없습니다")
@@ -711,7 +711,6 @@ class ReaderSession(
                 target.titleId = currentTitle.id
                 target.mode = anchorManga.mode
                 if (episodes.isNotEmpty()) target.setEps(episodes)
-                if (hasEpisode(target)) return@execute
                 var urls = imageRepository.imageUrls(target, appContext)
                 if (!urls.isNullOrEmpty() &&
                     isNtkSource(target, currentTitle) &&
@@ -982,6 +981,26 @@ class ReaderSession(
 
     private fun hasEpisode(target: Manga): Boolean = synchronized(pagesLock) {
         containsEpisodeLocked(target)
+    }
+
+    private fun nextUnloadedAdjacentEpisode(
+        source: Manga,
+        currentTitle: Title,
+        episodes: List<Manga>,
+        direction: Int
+    ): Manga? {
+        var candidate = if (direction < 0) source.prevEp() else source.nextEp()
+        var checked = 0
+        while (candidate != null && checked < ADJACENT_EXISTING_SKIP_LIMIT) {
+            candidate.title = currentTitle
+            candidate.titleId = currentTitle.id
+            candidate.mode = source.mode
+            if (episodes.isNotEmpty()) candidate.setEps(episodes)
+            if (!hasEpisode(candidate)) return candidate
+            candidate = if (direction < 0) candidate.prevEp() else candidate.nextEp()
+            checked++
+        }
+        return null
     }
 
     private fun containsEpisodeLocked(target: Manga): Boolean {
@@ -2143,6 +2162,7 @@ class ReaderSession(
         private const val INPUT_PRIORITY_QUIET_MS = 24L
         private const val START_SOURCE_PREFETCH_BEFORE = 2
         private const val START_SOURCE_PREFETCH_AFTER = 36
+        private const val ADJACENT_EXISTING_SKIP_LIMIT = 8
         private const val NTK_GENERATED_APPEND_REFRESH_MIN_COUNT = 24
         private const val ACTIVE_BITMAP_BYTES = 128L * 1024L * 1024L
         private const val TILE_PAGE_MAX_BYTES = 24L * 1024L * 1024L
