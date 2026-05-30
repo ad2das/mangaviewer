@@ -202,7 +202,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var windowDispatchPosted = false
     private var boundaryArmedDirection = 0
     private var boundaryDispatchInFlight = false
-    private var pendingResolveDispatchPosted = false
     private var lastCoverageLog: CoverageStats? = null
     private var lastCoverageLogMs = 0L
 
@@ -1184,29 +1183,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun setBusyLocked(busy: Boolean): WindowRequest? {
         if (lastBusy == busy) return null
         lastBusy = busy
-        if (!busy) schedulePendingPageResolvesAfterIdleLocked()
+        if (!busy) applyPendingPageResolvesLocked()
         renderRequested = true
         return windowRequestLocked(busy)
-    }
-
-    private fun schedulePendingPageResolvesAfterIdleLocked() {
-        if (pendingResolveDispatchPosted) return
-        pendingResolveDispatchPosted = true
-        mainHandler.postDelayed({
-            val request = synchronized(stateLock) {
-                pendingResolveDispatchPosted = false
-                if (!shouldApplyPendingPageResolvesLocked()) {
-                    if (!isScrollMovingLocked()) schedulePendingPageResolvesAfterIdleLocked()
-                    return@synchronized null
-                }
-                applyPendingPageResolvesLocked()
-                renderRequested = true
-                scheduleFrameLocked()
-                stateLock.notifyAll()
-                windowRequestLocked(false)
-            }
-            dispatchWindowRequest(request)
-        }, HEIGHT_RESOLVE_STABLE_IDLE_MS)
     }
 
     private fun scheduleFrameLocked(preferImmediate: Boolean = false) {
@@ -1444,15 +1423,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
-    private fun shouldApplyPendingPageResolvesLocked(): Boolean {
-        return shouldApplyPendingPageResolves(
-            scrollMoving = isScrollMovingLocked(),
-            nowMs = SystemClock.uptimeMillis(),
-            lastScrollInteractionMs = lastScrollInteractionMs,
-            stableIdleMs = HEIGHT_RESOLVE_STABLE_IDLE_MS
-        )
-    }
-
     private fun noteResolvedPageAspectLocked(pageWidth: Int, pageHeight: Int) {
         if (pageWidth <= 0 || pageHeight <= 0) return
         val ratio = (pageHeight / pageWidth.toFloat()).coerceIn(
@@ -1505,7 +1475,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (abs(delta) <= 0.01f) return
         val oldBottom = oldTop + oldHeight
         if (shouldAdjustScrollForChangedPageHeight(
-                preservePosition = isRestorePositionLockActiveLocked(),
                 lastBusy = lastBusy,
                 pointerDown = pointerDown,
                 dragging = dragging,
@@ -1517,10 +1486,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             setScrollOffsetLocked(scrollOffset + delta)
         }
         updatePageHeightDeltaLocked(index, delta)
-    }
-
-    private fun isRestorePositionLockActiveLocked(): Boolean {
-        return lockedRestorePage >= 0 && SystemClock.uptimeMillis() <= lockedRestoreUntilMs
     }
 
     private fun firstVisiblePageLocked(position: Float): Int {
@@ -1899,7 +1864,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val RESTORE_POSITION_LOCK_MS = 4000L
         private const val RESTORE_POSITION_EPSILON_PX = 2f
         private const val INITIAL_RENDER_HOLD_MS = 700L
-        private const val HEIGHT_RESOLVE_STABLE_IDLE_MS = 450L
         private const val SCROLL_JUMP_LOG_SCREEN_RATIO = 0.75f
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
@@ -1911,7 +1875,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private val PAGE_PLACEHOLDER_COLOR = Color.WHITE
 
         private fun shouldAdjustScrollForChangedPageHeight(
-            preservePosition: Boolean,
             lastBusy: Boolean,
             pointerDown: Boolean,
             dragging: Boolean,
@@ -1919,25 +1882,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
             oldBottom: Float,
             scrollOffset: Float
         ): Boolean {
-            if (!preservePosition) return false
             if (lastBusy || pointerDown || dragging || !scrollerFinished) return false
             return oldBottom <= scrollOffset
         }
 
-        private fun shouldApplyPendingPageResolves(
-            scrollMoving: Boolean,
-            nowMs: Long,
-            lastScrollInteractionMs: Long,
-            stableIdleMs: Long
-        ): Boolean {
-            if (scrollMoving) return false
-            if (lastScrollInteractionMs <= 0L) return true
-            return nowMs - lastScrollInteractionMs >= stableIdleMs
-        }
-
         @JvmStatic
         fun shouldAdjustScrollForChangedPageHeightForTest(
-            preservePosition: Boolean,
             lastBusy: Boolean,
             pointerDown: Boolean,
             dragging: Boolean,
@@ -1946,28 +1896,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
             scrollOffset: Float
         ): Boolean {
             return shouldAdjustScrollForChangedPageHeight(
-                preservePosition,
                 lastBusy,
                 pointerDown,
                 dragging,
                 scrollerFinished,
                 oldBottom,
                 scrollOffset
-            )
-        }
-
-        @JvmStatic
-        fun shouldApplyPendingPageResolvesForTest(
-            scrollMoving: Boolean,
-            nowMs: Long,
-            lastScrollInteractionMs: Long,
-            stableIdleMs: Long
-        ): Boolean {
-            return shouldApplyPendingPageResolves(
-                scrollMoving,
-                nowMs,
-                lastScrollInteractionMs,
-                stableIdleMs
             )
         }
     }
