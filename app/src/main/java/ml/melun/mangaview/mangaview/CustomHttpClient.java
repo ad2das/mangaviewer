@@ -3806,15 +3806,15 @@ public class CustomHttpClient {
                 Log.d(TAG, "ntk_native_ack_cache_hit path=" + path);
             return true;
         }
-        HttpEngine engine = null;
+        android.net.http.HttpEngine engine = null;
         try {
             String host = URI.create(baseUrl).getHost();
-            engine = new HttpEngine.Builder(context.getApplicationContext())
+            engine = new android.net.http.HttpEngine.Builder(context.getApplicationContext())
                     .setEnableHttp2(true)
                     .setEnableQuic(true)
                     .setEnableBrotli(true)
                     .setUserAgent(agent)
-                    .setQuicOptions(new QuicOptions.Builder()
+                    .setQuicOptions(new android.net.http.QuicOptions.Builder()
                             .addAllowedQuicHost(host)
                             .setHandshakeUserAgent(agent)
                             .build())
