@@ -2108,7 +2108,7 @@ class ReaderSession(
         private const val IDLE_DELIVERY_FRAME_DELAY_MS = 8L
         private const val INPUT_PRIORITY_QUIET_MS = 24L
         private const val START_SOURCE_PREFETCH_BEFORE = 2
-        private const val START_SOURCE_PREFETCH_AFTER = 6
+        private const val START_SOURCE_PREFETCH_AFTER = 36
         private const val ACTIVE_BITMAP_BYTES = 128L * 1024L * 1024L
         private const val TILE_PAGE_MAX_BYTES = 24L * 1024L * 1024L
         private const val REPLACED_BITMAP_RECYCLE_DELAY_MS = 750L
