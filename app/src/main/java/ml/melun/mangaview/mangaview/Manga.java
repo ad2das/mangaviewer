@@ -624,7 +624,7 @@ public class Manga {
                 logNtkViewerParse("generated-neighbor-" + imageEpisodeId, null, path, 0, 0);
             }
         }
-        safePageCount = ntkGeneratedPageCountOverride(segment, workId, episodeId, imageEpisodeId, safePageCount);
+        safePageCount = trimNtkGeneratedPageCount(client, segment, workId, imageEpisodeId, safePageCount);
         for(int page = 1; page <= safePageCount; page++) {
             String src = ntkGeneratedImageUrl(segment, workId, imageEpisodeId, page);
             addImageIfValid(client, seenImages, src);
@@ -632,11 +632,18 @@ public class Manga {
         return imgs != null && imgs.size() > before;
     }
 
-    private static int ntkGeneratedPageCountOverride(String segment, String workId, String episodeId,
-                                                     String imageEpisodeId, int pageCount) {
-        if("manhwa".equals(segment) && "8252".equals(workId)
-                && "64225".equals(episodeId) && "64226".equals(imageEpisodeId))
-            return Math.min(pageCount, 17);
+    private int trimNtkGeneratedPageCount(CustomHttpClient client, String segment, String workId,
+                                          String imageEpisodeId, int pageCount) {
+        if(pageCount <= 1)
+            return pageCount;
+        int minPage = Math.max(1, pageCount - 8);
+        for(int page = pageCount; page >= minPage; page--) {
+            if(isNtkGeneratedImageReachable(client, ntkGeneratedImageUrl(segment, workId, imageEpisodeId, page))) {
+                if(page < pageCount)
+                    logNtkViewerParse("generated-trim-pages-" + pageCount + "-to-" + page, null, getNtkEpisodePath(), 0, 0);
+                return page;
+            }
+        }
         return pageCount;
     }
 
@@ -653,8 +660,6 @@ public class Manga {
             if(candidate <= 0)
                 continue;
             String candidateId = String.valueOf(candidate);
-            if(offset == 1)
-                return candidateId;
             if(isNtkGeneratedImageReachable(client, ntkGeneratedImageUrl(segment, workId, candidateId, 1)))
                 return candidateId;
         }
