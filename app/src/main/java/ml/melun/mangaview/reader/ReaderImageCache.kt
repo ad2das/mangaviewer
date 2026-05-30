@@ -290,15 +290,15 @@ object ReaderImageCache {
     private fun shouldTryNtkGeneratedExtensionFallback(image: String): Boolean {
         val lower = image.lowercase()
         return lower.contains("://i.toonflix.app/")
-            && Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|png|webp)(?:[?#].*)?$").containsMatchIn(lower)
+            && Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower)
     }
 
     private fun ntkGeneratedExtensionFallbacks(image: String): List<String> {
-        val match = Regex("(?i)\\.(jpg|png|webp)([?#].*)?$").find(image) ?: return emptyList()
+        val match = Regex("(?i)\\.(jpg|jpeg|png|webp)([?#].*)?$").find(image) ?: return emptyList()
         val current = match.groupValues[1].lowercase()
         val suffix = match.groupValues.getOrNull(2).orEmpty()
         val prefix = image.substring(0, match.range.first)
-        return listOf("jpg", "png", "webp")
+        return listOf("jpg", "jpeg", "png", "webp")
             .filter { it != current }
             .map { "$prefix.$it$suffix" }
     }

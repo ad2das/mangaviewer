@@ -3534,14 +3534,21 @@ public class CustomHttpClient {
     public List<String> fetchNtkViewerImageUrls(String segment, String workId, String episodeId,
                                                 String imagesToken, String viewerBody) {
         List<String> urls = new ArrayList<>();
-        if(context == null || !isNtk() || !NtkQuicFetcher.isAvailable()
-                || segment == null || workId == null || episodeId == null || imagesToken == null
+        if(context == null || segment == null || workId == null || episodeId == null || imagesToken == null
                 || imagesToken.length() == 0)
             return urls;
         String kind = "webtoon".equals(segment) ? "webtoon" : "manhwa";
         String endpoint = "webtoon".equals(kind) ? "/api/webtoon-images" : "/api/manhwa-images";
         String baseUrl = getBaseUrl("/" + kind + "/" + workId + "/" + episodeId);
         String path = "/" + kind + "/" + workId + "/" + episodeId;
+        boolean ntkTarget = isNtk() || isNtkUrl(baseUrl);
+        if(!ntkTarget || !NtkQuicFetcher.isAvailable()) {
+            Log.d(TAG, "ntk_viewer_images_skip path=" + path
+                    + ",ntk=" + ntkTarget
+                    + ",quic=" + NtkQuicFetcher.isAvailable()
+                    + ",context=" + (context != null));
+            return urls;
+        }
         try {
             // Native bypass path: cookies are already managed by applySetCookieHeaders
             // inside performNtkNativeAckBypass; skip WebView sync to save ~200-500ms.

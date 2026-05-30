@@ -2211,7 +2211,7 @@ class ReaderSession(
         private const val SPREAD_ASPECT_RATIO = 0.90f
         private const val PAGE_SIDE_FIRST = 0
         private const val PAGE_SIDE_SECOND = 1
-        private val NTK_GENERATED_PAGE_URL = Regex("/p(\\d{3})\\.(jpg|png|webp)(?:[?#].*)?$")
+        private val NTK_GENERATED_PAGE_URL = Regex("/p(\\d{3})\\.(jpg|jpeg|png|webp)(?:[?#].*)?$")
 
         @JvmStatic
         fun shouldSplitPreparedBitmapForTest(autoCut: Boolean, allowSplit: Boolean, width: Int, height: Int): Boolean {

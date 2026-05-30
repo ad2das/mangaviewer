@@ -685,7 +685,7 @@ public class Manga {
 
     private String reachableNtkGeneratedImageExtension(CustomHttpClient client, String segment, String workId,
                                                        String episodeId, int page) {
-        String[] extensions = {"jpg", "png", "webp"};
+        String[] extensions = {"jpg", "jpeg", "png", "webp"};
         for(String extension : extensions) {
             if(isNtkGeneratedImageReachable(client, ntkGeneratedImageUrl(segment, workId, episodeId, page, extension)))
                 return extension;
