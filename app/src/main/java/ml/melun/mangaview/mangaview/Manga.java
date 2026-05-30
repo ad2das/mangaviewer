@@ -615,45 +615,38 @@ public class Manga {
         int before = imgs == null ? 0 : imgs.size();
         int safePageCount = Math.min(pageCount, NTK_MAX_GENERATED_PAGE_COUNT);
         String imageEpisodeId = episodeId;
+        String imageExtension = "jpg";
         if(validateFirstImage) {
-            String first = ntkGeneratedImageUrl(segment, workId, imageEpisodeId, 1);
-            if(!isNtkGeneratedImageReachable(client, first)) {
-                imageEpisodeId = nearestReachableNtkGeneratedEpisodeId(client, segment, workId, episodeId);
-                if(imageEpisodeId.length() == 0)
-                    return false;
-                logNtkViewerParse("generated-neighbor-" + imageEpisodeId, null, path, 0, 0);
-            }
+            imageExtension = reachableNtkGeneratedImageExtension(client, segment, workId, imageEpisodeId, 1);
+            if(imageExtension.length() == 0)
+                return false;
         }
         for(int page = 1; page <= safePageCount; page++) {
-            String src = ntkGeneratedImageUrl(segment, workId, imageEpisodeId, page);
+            String src = ntkGeneratedImageUrl(segment, workId, imageEpisodeId, page, imageExtension);
             addImageIfValid(client, seenImages, src);
         }
         return imgs != null && imgs.size() > before;
     }
 
-    private String nearestReachableNtkGeneratedEpisodeId(CustomHttpClient client, String segment, String workId, String episodeId) {
-        int current;
-        try {
-            current = Integer.parseInt(episodeId);
-        } catch(Exception e) {
-            return "";
-        }
-        int[] offsets = {1, -1, 2, -2, 3, -3};
-        for(int offset : offsets) {
-            int candidate = current + offset;
-            if(candidate <= 0)
-                continue;
-            String candidateId = String.valueOf(candidate);
-            if(isNtkGeneratedImageReachable(client, ntkGeneratedImageUrl(segment, workId, candidateId, 1)))
-                return candidateId;
-        }
-        return "";
+    private static String ntkGeneratedImageUrl(String segment, String workId, String episodeId, int page) {
+        return ntkGeneratedImageUrl(segment, workId, episodeId, page, "jpg");
     }
 
-    private static String ntkGeneratedImageUrl(String segment, String workId, String episodeId, int page) {
+    private static String ntkGeneratedImageUrl(String segment, String workId, String episodeId, int page, String extension) {
+        String safeExtension = extension == null || extension.length() == 0 ? "jpg" : extension;
         return String.format(Locale.ROOT,
-                "https://i.toonflix.app/%s/%s/%s/p%03d.jpg",
-                segment, workId, episodeId, page);
+                "https://i.toonflix.app/%s/%s/%s/p%03d.%s",
+                segment, workId, episodeId, page, safeExtension);
+    }
+
+    private String reachableNtkGeneratedImageExtension(CustomHttpClient client, String segment, String workId,
+                                                       String episodeId, int page) {
+        String[] extensions = {"jpg", "png", "webp"};
+        for(String extension : extensions) {
+            if(isNtkGeneratedImageReachable(client, ntkGeneratedImageUrl(segment, workId, episodeId, page, extension)))
+                return extension;
+        }
+        return "";
     }
 
     private boolean isNtkGeneratedImageReachable(CustomHttpClient client, String src) {
