@@ -621,7 +621,8 @@ public class Utils {
             viewer.putExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY, preparedKey);
         if(exactEpisode) {
             viewer.putExtra(ViewerIntentContract.EXTRA_EXACT_EPISODE, true);
-            viewer.putExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, true);
+            if(shouldStartExactEpisodeAtFirstPage(manga))
+                viewer.putExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, true);
         }
         if(returnToEpisodes)
             viewer.putExtra("returnToEpisodes", true);
@@ -645,6 +646,12 @@ public class Utils {
             ViewerWarmupManager.logMetric("viewer_launch_exception", manga.getId());
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
+    }
+
+    private static boolean shouldStartExactEpisodeAtFirstPage(Manga manga) {
+        if(manga == null || !manga.useBookmark() || p == null)
+            return true;
+        return p.getViewerBookmark(manga) <= 0;
     }
 
     private static boolean isNtkLaunchSource(Title title) {

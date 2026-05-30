@@ -1420,7 +1420,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun shouldDeferHeightChangingResolveLocked(): Boolean {
-        return false
+        return isScrollMovingLocked()
     }
 
     private fun isScrollMovingLocked(): Boolean {
