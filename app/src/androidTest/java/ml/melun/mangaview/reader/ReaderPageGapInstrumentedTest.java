@@ -14,6 +14,8 @@ import org.junit.runner.RunWith;
 
 import ml.melun.mangaview.glide.ViewerBitmapTrim;
 
+import java.util.Collections;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
@@ -114,6 +116,45 @@ public class ReaderPageGapInstrumentedTest {
     }
 
     @Test
+    public void partiallyVisibleBitmapIncludesBottomSourceRow() throws Exception {
+        ReaderSurfaceView view = new ReaderSurfaceView(ApplicationProvider.getApplicationContext());
+        attachForTest(view);
+        view.measure(
+                android.view.View.MeasureSpec.makeMeasureSpec(101, android.view.View.MeasureSpec.EXACTLY),
+                android.view.View.MeasureSpec.makeMeasureSpec(51, android.view.View.MeasureSpec.EXACTLY));
+        view.layout(0, 0, 101, 51);
+        view.setPageGapPx(0);
+        view.setPageCount(1);
+        view.setPageBitmap(0, halfRedHalfGreenBitmap());
+
+        Bitmap frame = Bitmap.createBitmap(101, 51, Bitmap.Config.ARGB_8888);
+        view.draw(new Canvas(frame));
+
+        assertTrue("Expected bottom row of a fractional viewport clip to include visible source pixels",
+                isGreen(frame.getPixel(frame.getWidth() / 2, frame.getHeight() - 1)));
+    }
+
+    @Test
+    public void partiallyVisibleTileIncludesBottomSourceRow() throws Exception {
+        ReaderSurfaceView view = new ReaderSurfaceView(ApplicationProvider.getApplicationContext());
+        attachForTest(view);
+        view.measure(
+                android.view.View.MeasureSpec.makeMeasureSpec(101, android.view.View.MeasureSpec.EXACTLY),
+                android.view.View.MeasureSpec.makeMeasureSpec(51, android.view.View.MeasureSpec.EXACTLY));
+        view.layout(0, 0, 101, 51);
+        view.setPageGapPx(0);
+        view.setPageCount(1);
+        view.setPageTiles(0, 100, 100, Collections.singletonList(
+                new ReaderTile(0, 100, 100, 100, halfRedHalfGreenBitmap())));
+
+        Bitmap frame = Bitmap.createBitmap(101, 51, Bitmap.Config.ARGB_8888);
+        view.draw(new Canvas(frame));
+
+        assertTrue("Expected bottom row of a fractional tile clip to include visible source pixels",
+                isGreen(frame.getPixel(frame.getWidth() / 2, frame.getHeight() - 1)));
+    }
+
+    @Test
     public void heightChangingPageResolveIsDeferredDuringScroll() throws Exception {
         ReaderSurfaceView view = new ReaderSurfaceView(ApplicationProvider.getApplicationContext());
         attachForTest(view);
@@ -159,6 +200,17 @@ public class ReaderPageGapInstrumentedTest {
     private static Bitmap bitmapOfSize(int width, int height, int color) {
         Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565);
         bitmap.eraseColor(color);
+        return bitmap;
+    }
+
+    private static Bitmap halfRedHalfGreenBitmap() {
+        Bitmap bitmap = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bitmap);
+        android.graphics.Paint paint = new android.graphics.Paint();
+        paint.setColor(Color.rgb(220, 32, 32));
+        canvas.drawRect(0, 0, 100, 50, paint);
+        paint.setColor(Color.rgb(32, 200, 80));
+        canvas.drawRect(0, 50, 100, 100, paint);
         return bitmap;
     }
 

@@ -168,6 +168,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var deferInitialEmptyDraw = false
     private var listener: WindowListener? = null
     private var lastAnchor = -1
+    private var lastNearStart = false
+    private var lastNearEnd = false
     private var lastBusy = false
     private var lastRequestedBusy = false
     private var lastBusyWindowDispatchMs = 0L
@@ -199,6 +201,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var pendingWindowRequest: WindowRequest? = null
     private var windowDispatchPosted = false
     private var boundaryArmedDirection = 0
+    private var boundaryDispatchInFlight = false
     private var lastCoverageLog: CoverageStats? = null
     private var lastCoverageLogMs = 0L
 
@@ -235,7 +238,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
             repeat(max(0, count)) { pages.add(Page()) }
             setScrollOffsetLocked(0f)
             boundaryArmedDirection = 0
+            boundaryDispatchInFlight = false
             lastAnchor = -1
+            lastNearStart = false
+            lastNearEnd = false
             hasDrawnContentFrame = false
             deferInitialEmptyDraw = count > 0
             initialViewportHoldUntilMs = if (count > 0) {
@@ -276,6 +282,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     .toInt()
                 scroller.fling(0, scrollOffset.toInt(), 0, velocity, 0, 0, 0, newMaxScroll)
             }
+            boundaryDispatchInFlight = false
             renderRequested = true
             scheduleFrameLocked()
             stateLock.notifyAll()
@@ -305,6 +312,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (!scroller.isFinished) scroller.forceFinished(true)
             activeScrollerOffsetShift = 0f
             boundaryArmedDirection = 0
+            boundaryDispatchInFlight = false
             clampScrollLocked()
             renderRequested = true
             scheduleFrameLocked()
@@ -817,6 +825,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 clampScrollLocked()
                 renderRequested = true
                 request = windowRequestLocked(true)
+                boundary = boundaryRequestLocked(clearDirection = false)
             } else if (scroller.isFinished && activeScrollerOffsetShift != 0f) {
                 activeScrollerOffsetShift = 0f
             }
@@ -827,7 +836,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             } else if (busyNow) {
                 request = windowRequestLocked(true) ?: request
             }
-            if (wasBusy && !busyNow) boundary = boundaryRequestLocked()
+            if (wasBusy && !busyNow) boundary = boundaryRequestLocked() ?: boundary
             val animateScroll = dragging || scrolling || !scroller.isFinished
             val shouldDraw = (renderRequested || animateScroll) && pages.isNotEmpty()
             val state = if (shouldDraw && !shouldDeferInitialEmptyDrawLocked()) buildDrawStateLocked(busyNow) else null
@@ -1199,16 +1208,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun windowRequestLocked(busy: Boolean): WindowRequest? {
         if (pages.isEmpty() || width <= 0 || height <= 0) return null
         val anchor = anchorPageLocked()
-        if (busy && lastRequestedBusy) {
-            val now = SystemClock.uptimeMillis()
-            val anchorMoved = lastAnchor < 0 || abs(anchor - lastAnchor) >= BUSY_WINDOW_ANCHOR_STEP
-            val intervalElapsed = now - lastBusyWindowDispatchMs >= BUSY_WINDOW_MIN_DISPATCH_MS
-            if (!anchorMoved && !intervalElapsed) return null
-        }
-        if (anchor == lastAnchor && busy == lastRequestedBusy) return null
-        lastAnchor = anchor
-        lastRequestedBusy = busy
-        if (busy) lastBusyWindowDispatchMs = SystemClock.uptimeMillis()
         val first = max(0, anchor - ReaderPipelinePolicy.windowBefore(busy))
         val last = min(pages.lastIndex, anchor + ReaderPipelinePolicy.windowAfter(busy))
         val boundaryPx = height * NEAR_BOUNDARY_SCREENFULS
@@ -1218,6 +1217,19 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val nearEnd = remainingPx <= boundaryPx ||
             anchor >= pages.size - NEAR_BOUNDARY_PAGE_THRESHOLD
         val progress = progressPositionLocked() ?: return null
+        val nearChanged = nearStart != lastNearStart || nearEnd != lastNearEnd
+        if (busy && lastRequestedBusy) {
+            val now = SystemClock.uptimeMillis()
+            val anchorMoved = lastAnchor < 0 || abs(anchor - lastAnchor) >= BUSY_WINDOW_ANCHOR_STEP
+            val intervalElapsed = now - lastBusyWindowDispatchMs >= BUSY_WINDOW_MIN_DISPATCH_MS
+            if (!anchorMoved && !intervalElapsed && !nearChanged) return null
+        }
+        if (anchor == lastAnchor && busy == lastRequestedBusy && !nearChanged) return null
+        lastAnchor = anchor
+        lastNearStart = nearStart
+        lastNearEnd = nearEnd
+        lastRequestedBusy = busy
+        if (busy) lastBusyWindowDispatchMs = SystemClock.uptimeMillis()
         return WindowRequest(first, last, anchor, progress.page, progress.offset, busy, nearStart, nearEnd)
     }
 
@@ -1307,18 +1319,21 @@ class ReaderSurfaceView @JvmOverloads constructor(
         setScrollOffsetLocked(scrollOffset.coerceIn(0f, maxScroll))
     }
 
-    private fun boundaryRequestLocked(): BoundaryRequest? {
+    private fun boundaryRequestLocked(clearDirection: Boolean = true): BoundaryRequest? {
+        if (boundaryDispatchInFlight) return null
         val direction = boundaryArmedDirection
-        boundaryArmedDirection = 0
+        if (clearDirection) boundaryArmedDirection = 0
         if (direction == 0 || pages.isEmpty() || width <= 0 || height <= 0) return null
         val maxScroll = max(0f, totalHeightLocked() - height)
         val atStart = scrollOffset <= BOUNDARY_EPSILON_PX
         val atEnd = scrollOffset >= maxScroll - BOUNDARY_EPSILON_PX
-        return when {
+        val request = when {
             direction == DIRECTION_PREVIOUS && atStart -> BoundaryRequest(direction, anchorPageLocked())
             direction == DIRECTION_NEXT && atEnd -> BoundaryRequest(direction, anchorPageLocked())
             else -> null
         }
+        if (request != null) boundaryDispatchInFlight = true
+        return request
     }
 
     private fun totalHeightLocked(): Float {
