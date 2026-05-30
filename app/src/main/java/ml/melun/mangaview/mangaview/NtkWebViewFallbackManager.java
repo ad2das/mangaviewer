@@ -266,21 +266,28 @@ final class NtkWebViewFallbackManager {
         final WebView view = new WebView(context);
         final boolean[] finished = {false};
         final boolean[] requested = {false};
-        Runnable finish = () -> {
-            if(finished[0])
-                return;
-            finished[0] = true;
-            try {
-                ViewGroup parent = (ViewGroup) view.getParent();
-                if(parent != null)
-                    parent.removeView(view);
-            } catch (Exception ignored) {
+        Runnable finish = new Runnable() {
+            @Override
+            public void run() {
+                if(Looper.myLooper() != Looper.getMainLooper()) {
+                    mainHandler.post(this);
+                    return;
+                }
+                if(finished[0])
+                    return;
+                finished[0] = true;
+                try {
+                    ViewGroup parent = (ViewGroup) view.getParent();
+                    if(parent != null)
+                        parent.removeView(view);
+                } catch (Exception ignored) {
+                }
+                try {
+                    view.destroy();
+                } catch (Exception ignored) {
+                }
+                done.countDown();
             }
-            try {
-                view.destroy();
-            } catch (Exception ignored) {
-            }
-            done.countDown();
         };
         try {
             WebSettings settings = view.getSettings();

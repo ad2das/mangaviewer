@@ -54,6 +54,14 @@ public class ReaderV2ActivityTest {
     }
 
     @Test
+    public void previousNearBoundaryDoesNotPrepareAutomatically() {
+        assertFalse(ReaderV2Activity.shouldPrepareNearBoundaryForTest(
+                ReaderSurfaceView.DIRECTION_PREVIOUS));
+        assertTrue(ReaderV2Activity.shouldPrepareNearBoundaryForTest(
+                ReaderSurfaceView.DIRECTION_NEXT));
+    }
+
+    @Test
     public void transitionCardHeightIsOnlySlightlyLargerThanText() {
         assertEquals(168f, ReaderSurfaceView.transitionCardPageHeightForTest(), 0.001f);
     }

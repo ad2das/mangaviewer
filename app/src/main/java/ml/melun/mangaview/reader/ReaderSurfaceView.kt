@@ -683,7 +683,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 synchronized(stateLock) {
                     noteInputLocked(event)
                     lastScrollInteractionMs = event.eventTime
-                    clearLockedRestorePositionLocked()
                     scroller.forceFinished(true)
                     activeScrollerOffsetShift = 0f
                     lastY = event.y
@@ -1021,10 +1020,22 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var visibleLoading = 0
         var hasDrawableContent = false
         var index = firstVisiblePageLocked(scrollOffset)
+        while (index > 0 && pageTopLocked(index) - scrollOffset > 0f) {
+            index--
+        }
         while (index < pages.size) {
             val page = pages[index]
-            val top = pageTopLocked(index) - scrollOffset
+            val laidOutTop = pageTopLocked(index) - scrollOffset
             val pageHeight = pageDrawHeightLocked(page)
+            var top = laidOutTop
+            val previousBottom = items.lastOrNull()?.let { it.top + it.pageHeight }
+            if (previousBottom != null &&
+                previousBottom < viewHeight &&
+                laidOutTop > previousBottom + COVERAGE_EDGE_FILL_PX
+            ) {
+                top = previousBottom
+            }
+            if (top > viewHeight) break
             val bottom = top + pageHeight
             if (bottom > 0f && top < viewHeight) {
                 if (page.bitmap == null && page.tiles.isEmpty() && page.cardText == null && page.errorText == null) {
@@ -1034,7 +1045,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 }
                 items.add(DrawItem(page.bitmap, page.tiles, page.loading, page.cardText, page.errorText, top, pageHeight))
             }
-            if (top > viewHeight) break
             index++
         }
         val last = items.lastOrNull()
@@ -1560,6 +1570,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun applyDragMoveLocked(y: Float): Boolean {
         val dy = lastY - y
         if (dy == 0f) return false
+        clearLockedRestorePositionLocked()
         if (!dragging) dragging = true
         setBusyLocked(true)
         val direction = directionForDelta(dy)
@@ -1882,7 +1893,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             oldBottom: Float,
             scrollOffset: Float
         ): Boolean {
-            if (lastBusy || pointerDown || dragging || !scrollerFinished) return false
             return oldBottom <= scrollOffset
         }
 

@@ -29,13 +29,13 @@ public class ReaderPipelinePolicyTest {
                 false, false, false, true, 900f, 1000f));
         assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
                 false, false, false, true, 1200f, 1000f));
-        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+        assertTrue(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
                 true, false, false, true, 900f, 1000f));
-        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+        assertTrue(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
                 false, true, false, true, 900f, 1000f));
-        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+        assertTrue(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
                 false, false, true, true, 900f, 1000f));
-        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+        assertTrue(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
                 false, false, false, false, 900f, 1000f));
     }
 
