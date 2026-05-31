@@ -173,6 +173,7 @@ class ReaderSession(
     private val loading = ConcurrentHashMap.newKeySet<Int>()
     private val urgentLoading = ConcurrentHashMap.newKeySet<Int>()
     private val bytePrefetching = ConcurrentHashMap.newKeySet<Int>()
+    private val idleFullWidthUpgradeScheduled = ConcurrentHashMap.newKeySet<Int>()
     private val failedPages = ConcurrentHashMap.newKeySet<Int>()
     private val decodedWidths = ConcurrentHashMap<Int, Int>()
     private val desiredWidths = ConcurrentHashMap<Int, Int>()
@@ -200,6 +201,9 @@ class ReaderSession(
     private val nextLoading = AtomicBoolean(false)
     private val previousAppendLoading = AtomicBoolean(false)
     private val nextAppendLoading = AtomicBoolean(false)
+    private val deferredAdjacentPrepareScheduled = AtomicBoolean(false)
+    private val deferredAdjacentPrepareAnchor = AtomicInteger(-1)
+    private val deferredAdjacentPrepareDirection = AtomicInteger(0)
     private val timelinePrimeLoading = AtomicBoolean(false)
     private val timelinePrimeRequested = AtomicBoolean(false)
     private val repositoryLoading = AtomicBoolean(false)
@@ -404,10 +408,19 @@ class ReaderSession(
         val count = synchronized(pagesLock) { pages.size }
         if (count <= 0) return
         val first = startPage.coerceIn(0, count - 1)
-        val priorityLast = minOf(count - 1, first + NTK_INITIAL_PRIORITY_PAGES)
+        val priorityLast = minOf(count - 1, first + NTK_INITIAL_BOOT_PRIORITY_PAGES)
         if (first < priorityLast) {
             for (index in (first + 1)..priorityLast) {
                 requestPage(index, busy = true, anchor = false, generation = FOREGROUND_PRIME_WARM_GENERATION)
+            }
+        }
+        val prefetchLast = minOf(count - 1, first + NTK_INITIAL_PRIORITY_PAGES)
+        if (priorityLast < prefetchLast) {
+            val refs = synchronized(pagesLock) { pages.toList() }
+            for (index in (priorityLast + 1)..prefetchLast) {
+                refs.getOrNull(index)?.let { page ->
+                    if (page.transitionTitle == null) prefetchBusyPage(index, page, FOREGROUND_PRIME_WARM_GENERATION)
+                }
             }
         }
     }
@@ -687,7 +700,37 @@ class ReaderSession(
     }
 
     fun prepareAdjacentEpisode(anchor: Int, direction: Int) {
+        val quietMs = ntkBackgroundPrepareQuietRemainingMs()
+        if (quietMs > 0L) {
+            scheduleDeferredAdjacentPrepare(anchor, direction, quietMs)
+            return
+        }
         appendAdjacentEpisode(anchor, direction, silentMissing = true)
+    }
+
+    private fun scheduleDeferredAdjacentPrepare(anchor: Int, direction: Int, delayMs: Long) {
+        deferredAdjacentPrepareAnchor.set(anchor)
+        deferredAdjacentPrepareDirection.set(direction)
+        if (!deferredAdjacentPrepareScheduled.compareAndSet(false, true)) return
+        main.postDelayed({ flushDeferredAdjacentPrepare() }, delayMs)
+    }
+
+    private fun flushDeferredAdjacentPrepare() {
+        if (cancelled.get()) {
+            deferredAdjacentPrepareScheduled.set(false)
+            return
+        }
+        val quietMs = ntkBackgroundPrepareQuietRemainingMs()
+        if (quietMs > 0L) {
+            main.postDelayed({ flushDeferredAdjacentPrepare() }, quietMs)
+            return
+        }
+        val anchor = deferredAdjacentPrepareAnchor.getAndSet(-1)
+        val direction = deferredAdjacentPrepareDirection.getAndSet(0)
+        deferredAdjacentPrepareScheduled.set(false)
+        if (anchor >= 0 && direction != 0) {
+            appendAdjacentEpisode(anchor, direction, silentMissing = true)
+        }
     }
 
     fun appendAdjacentEpisode(anchor: Int, direction: Int, silentMissing: Boolean = false): AppendStartResult {
@@ -1101,6 +1144,7 @@ class ReaderSession(
         loading.clear()
         urgentLoading.clear()
         bytePrefetching.clear()
+        idleFullWidthUpgradeScheduled.clear()
         synchronized(deliveredBitmaps) {
             val oldEntries = deliveredBitmaps.entries.toList()
             deliveredBitmaps.clear()
@@ -1383,9 +1427,28 @@ class ReaderSession(
     private fun scheduleNtkForwardTimelinePrimeAfterFirstBitmap() {
         if (autoCut || !isNtkSource(manga, title)) return
         if (!timelinePrimeRequested.compareAndSet(false, true)) return
+        scheduleNtkForwardTimelinePrimeAfterDelay(ntkForwardPrimeDelayMs())
+    }
+
+    private fun scheduleNtkForwardTimelinePrimeAfterDelay(delayMs: Long) {
         main.postDelayed({
-            if (!cancelled.get()) primeForwardTimeline()
-        }, ntkForwardPrimeDelayMs())
+            if (cancelled.get()) return@postDelayed
+            val quietMs = ntkBackgroundPrepareQuietRemainingMs()
+            if (quietMs > 0L) {
+                scheduleNtkForwardTimelinePrimeAfterDelay(quietMs)
+                return@postDelayed
+            }
+            primeForwardTimeline()
+        }, delayMs)
+    }
+
+    private fun ntkBackgroundPrepareQuietRemainingMs(): Long {
+        if (!isNtkSource(manga, title)) return 0L
+        if (viewportBusy.get()) return NTK_BACKGROUND_PREPARE_QUIET_MS
+        val lastInteraction = lastUserInteractionMs.get()
+        if (lastInteraction <= 0L) return 0L
+        val quietFor = SystemClock.uptimeMillis() - lastInteraction
+        return (NTK_BACKGROUND_PREPARE_QUIET_MS - quietFor).coerceAtLeast(0L)
     }
 
     private fun ntkForwardPrimeDelayMs(): Long {
@@ -2019,12 +2082,14 @@ class ReaderSession(
                     droppedLowerWidth = true
                 } else {
                     decodedWidths[index] = max(deliveredWidth, delivery.result.width)
-                    val desiredWidth = if (busy) {
-                        max(delivery.requestedWidth, targetWidth(false))
-                    } else {
-                        delivery.requestedWidth
+                    val fullWidth = targetWidth(false)
+                    val shouldUpgradeRetainedLowRes =
+                        index in retainedFirst..retainedLast &&
+                        delivery.result.width < fullWidth
+                    if (shouldUpgradeRetainedLowRes) {
+                        scheduleIdleFullWidthUpgrade(index, fullWidth)
                     }
-                    desiredWidths[index] = max(desiredWidths[index] ?: 0, desiredWidth)
+                    desiredWidths[index] = max(desiredWidths[index] ?: 0, delivery.requestedWidth)
                     if (delivery.result is PageDecodeResult.Tiles) {
                         if (delivery.result.decodedWidth < delivery.requestedWidth) {
                             achievableWidths[index] = max(achievableWidths[index] ?: 0, delivery.result.decodedWidth)
@@ -2055,6 +2120,31 @@ class ReaderSession(
         }
         main.post { releaseInitialFanoutIfAnchorReady(currentIndex) }
         retryPendingWidthIfNeeded(currentIndex)
+    }
+
+    private fun scheduleIdleFullWidthUpgrade(index: Int, width: Int) {
+        if (!idleFullWidthUpgradeScheduled.add(index)) return
+        main.postDelayed({
+            idleFullWidthUpgradeScheduled.remove(index)
+            if (cancelled.get()) return@postDelayed
+            val quietMs = readerQuietRemainingMs(LOW_RES_UPGRADE_QUIET_MS)
+            if (quietMs > 0L) {
+                scheduleIdleFullWidthUpgrade(index, width)
+                return@postDelayed
+            }
+            if (!isRetainedPage(index)) return@postDelayed
+            ViewerWarmupManager.logMetric("busy_to_idle_upgrade_retry", width.toLong())
+            rememberDesiredWidth(index, width)
+            requestPage(index, busy = false, anchor = false, generation = windowGeneration.get())
+        }, LOW_RES_UPGRADE_QUIET_MS)
+    }
+
+    private fun readerQuietRemainingMs(requiredQuietMs: Long): Long {
+        if (viewportBusy.get()) return requiredQuietMs
+        val lastInteraction = lastUserInteractionMs.get()
+        if (lastInteraction <= 0L) return 0L
+        val quietFor = SystemClock.uptimeMillis() - lastInteraction
+        return (requiredQuietMs - quietFor).coerceAtLeast(0L)
     }
 
     private fun recycleQueuedDeliveries() {
@@ -2375,12 +2465,14 @@ class ReaderSession(
         private const val NTK_LIGHT_PRIMED_EPISODE_DECODE_AHEAD_PAGES = 10
         private const val NTK_LIGHT_PRIMED_EPISODE_BYTE_AHEAD_PAGES = 12
         private const val NTK_INITIAL_PRIORITY_START_OFFSET = 1
-        private const val NTK_INITIAL_PRIORITY_PAGES = 12
+        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 3
+        private const val NTK_INITIAL_PRIORITY_PAGES = 16
         private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 20
         private const val NTK_INITIAL_DECODE_AHEAD_PAGES = 64
         private const val NTK_INITIAL_SECONDARY_WARM_DELAY_MS = 180L
         private const val NTK_INITIAL_FAR_WARM_DELAY_MS = 450L
         private const val NTK_INITIAL_SOURCE_PREFETCH_AFTER_FIRST_BITMAP_DELAY_MS = 250L
+        private const val NTK_BACKGROUND_PREPARE_QUIET_MS = 900L
         private const val BOUNDARY_DECODE_AHEAD_PAGES = 8
         private const val BOUNDARY_BYTE_AHEAD_PAGES = 32
         private const val BOUNDARY_BUSY_DECODE_AHEAD_PAGES = 10
@@ -2393,6 +2485,7 @@ class ReaderSession(
         private const val IDLE_DELIVERY_RESUME_DELAY_MS = 24L
         private const val IDLE_DELIVERY_FRAME_DELAY_MS = 8L
         private const val INPUT_PRIORITY_QUIET_MS = 24L
+        private const val LOW_RES_UPGRADE_QUIET_MS = 900L
         private const val START_SOURCE_PREFETCH_BEFORE = 0
         private const val START_SOURCE_PREFETCH_AFTER = 64
         private const val ADJACENT_EXISTING_SKIP_LIMIT = 8

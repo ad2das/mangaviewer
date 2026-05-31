@@ -441,22 +441,45 @@ public class Manga {
             }
             boolean nativeAckMode = isNtkNativeAckModeOverride();
             boolean allowGeneratedImages = !nativeAckMode;
-            if(nativeAckMode)
-                client.performNtkNativeAckBypass(client.getUrl(path), path);
+            final String viewerPath = path;
+            final AsyncNtkPageFetch[] pageFetchRef = new AsyncNtkPageFetch[1];
+            final AsyncNtkNativeAck[] nativeAckRef = new AsyncNtkNativeAck[1];
+            Runnable startPageFetchIfNeeded = () -> {
+                if(pageFetchRef[0] == null)
+                    pageFetchRef[0] = startAsyncNtkPageFetch(client, viewerPath);
+            };
+            Runnable startNativeAckIfNeeded = () -> {
+                if(nativeAckRef[0] == null)
+                    nativeAckRef[0] = startAsyncNtkNativeAck(client, viewerPath);
+            };
+            boolean nativeAckCompleted = false;
+            if(nativeAckMode) {
+                startPageFetchIfNeeded.run();
+                nativeAckCompleted = client.performNtkNativeAckBypass(client.getUrl(path), path);
+            }
             boolean validateGeneratedFirstImage = true;
             boolean generatedCandidatesChecked = false;
             if(allowGeneratedImages) {
                 generatedCandidatesChecked = true;
                 if(addNtkGeneratedPathImageCandidates(client, path, seenImages,
-                        ntkGeneratedImageCandidateCount(), validateGeneratedFirstImage)) {
+                        ntkGeneratedImageCandidateCount(), validateGeneratedFirstImage, startPageFetchIfNeeded)) {
                     logNtkViewerParse("generated-fast", null, path, 0, 0);
                     restoreBetterEpisodeList(previousEpisodes);
                     attachEpisodeSeriesMetadata();
                     return LOAD_OK;
                 }
+                startNativeAckIfNeeded.run();
             }
-            AsyncNtkPageFetch pageFetch = null;
-            CustomHttpClient.PageResponse page = awaitAsyncNtkPageFetch(pageFetch, client, path);
+            CustomHttpClient.PageResponse page = awaitAsyncNtkPageFetch(pageFetchRef[0], client, path);
+            if(!nativeAckCompleted && nativeAckRef[0] != null
+                    && (client.isCloudflareChallengeResponse(page.code, page.body)
+                    || looksLikeNtkBlockedPage(page.body))) {
+                nativeAckCompleted = awaitAsyncNtkNativeAck(nativeAckRef[0]);
+            }
+            if(nativeAckCompleted && (client.isCloudflareChallengeResponse(page.code, page.body)
+                    || looksLikeNtkBlockedPage(page.body))) {
+                page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+            }
             boolean blockedPage = client.isCloudflareChallengeResponse(page.code, page.body)
                     || looksLikeNtkBlockedPage(page.body);
             boolean missingPage = page.code >= 400 || looksLikeNtkMissingPage(page.body);
@@ -472,7 +495,7 @@ public class Manga {
                 boolean tokenizedViewer = page.code >= 200 && page.code < 400
                         && hasNtkViewerImageApiPayload(page.body);
                 if(tokenizedViewer) {
-                    if(addNtkApiViewerImageCandidates(client, page.body, path, seenImages)) {
+                    if(addNtkApiViewerImageCandidates(client, page.body, path, seenImages, !generatedCandidatesChecked)) {
                         logNtkViewerParse("api-missing", page, path, 0, 0);
                     } else {
                         logNtkViewerParse("api-missing-failed", page, path, 0, 0);
@@ -532,9 +555,15 @@ public class Manga {
 
     private AsyncNtkPageFetch startAsyncNtkPageFetch(CustomHttpClient client, String path) {
         AsyncNtkPageFetch fetch = new AsyncNtkPageFetch();
+        CustomHttpClient.RequestGroup requestGroup = client == null ? null : client.currentRequestGroup();
         Thread thread = new Thread(() -> {
             try {
-                fetch.page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+                if(requestGroup != null) {
+                    fetch.page = client.runWithRequestGroup(requestGroup,
+                            () -> client.mgetCachedPage(path, PAGE_CACHE_TTL_MS));
+                } else {
+                    fetch.page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+                }
             } catch (Exception e) {
                 fetch.error = e;
             } finally {
@@ -564,9 +593,51 @@ public class Manga {
         return client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
     }
 
+    private AsyncNtkNativeAck startAsyncNtkNativeAck(CustomHttpClient client, String path) {
+        AsyncNtkNativeAck fetch = new AsyncNtkNativeAck();
+        CustomHttpClient.RequestGroup requestGroup = client == null ? null : client.currentRequestGroup();
+        Thread thread = new Thread(() -> {
+            try {
+                if(requestGroup != null) {
+                    fetch.completed = client.runWithRequestGroup(requestGroup,
+                            () -> client.performNtkNativeAckBypass(client.getUrl(path), path));
+                } else {
+                    fetch.completed = client.performNtkNativeAckBypass(client.getUrl(path), path);
+                }
+            } catch (Exception e) {
+                fetch.error = e;
+            } finally {
+                fetch.done.countDown();
+            }
+        }, "ntk-native-ack-prefetch");
+        thread.setDaemon(true);
+        thread.start();
+        return fetch;
+    }
+
+    private boolean awaitAsyncNtkNativeAck(AsyncNtkNativeAck fetch) throws Exception {
+        if(fetch == null)
+            return false;
+        try {
+            fetch.done.await(14, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw e;
+        }
+        if(fetch.error != null)
+            throw fetch.error;
+        return fetch.completed;
+    }
+
     private static final class AsyncNtkPageFetch {
         final CountDownLatch done = new CountDownLatch(1);
         volatile CustomHttpClient.PageResponse page;
+        volatile Exception error;
+    }
+
+    private static final class AsyncNtkNativeAck {
+        final CountDownLatch done = new CountDownLatch(1);
+        volatile boolean completed;
         volatile Exception error;
     }
 
@@ -648,6 +719,11 @@ public class Manga {
     }
 
     private boolean addNtkApiViewerImageCandidates(CustomHttpClient client, String body, String path, Set<String> seenImages) {
+        return addNtkApiViewerImageCandidates(client, body, path, seenImages, true);
+    }
+
+    private boolean addNtkApiViewerImageCandidates(CustomHttpClient client, String body, String path, Set<String> seenImages,
+                                                   boolean tryGeneratedMetaFirst) {
         if(client == null || body == null || path == null || seenImages == null)
             return false;
         String normalized = normalizeNtkViewerPayloadText(body);
@@ -660,7 +736,7 @@ public class Manga {
         if(token.length() == 0)
             return false;
         int before = imgs == null ? 0 : imgs.size();
-        if(!isNtkNativeAckModeOverride()) {
+        if(tryGeneratedMetaFirst && !isNtkNativeAckModeOverride()) {
             addNtkViewerMetaImageCandidates(client, normalized, path, seenImages);
             if(imgs != null && imgs.size() > before)
                 return true;
@@ -688,6 +764,11 @@ public class Manga {
 
     private boolean addNtkGeneratedPathImageCandidates(CustomHttpClient client, String path, Set<String> seenImages, int pageCount,
                                                       boolean validateFirstImage) {
+        return addNtkGeneratedPathImageCandidates(client, path, seenImages, pageCount, validateFirstImage, null);
+    }
+
+    private boolean addNtkGeneratedPathImageCandidates(CustomHttpClient client, String path, Set<String> seenImages, int pageCount,
+                                                      boolean validateFirstImage, Runnable onPrimaryValidationMiss) {
         if(path == null || seenImages == null || pageCount <= 0)
             return false;
         Matcher pathMatcher = Pattern.compile("^/(manhwa|webtoon)/(\\d+)/([^/?#]+)").matcher(path);
@@ -701,7 +782,8 @@ public class Manga {
         String imageEpisodeId = episodeId;
         String imageExtension = "jpg";
         if(validateFirstImage) {
-            imageExtension = reachableNtkGeneratedImageExtension(client, segment, workId, imageEpisodeId, 1);
+            imageExtension = reachableNtkGeneratedImageExtension(client, segment, workId, imageEpisodeId, 1,
+                    onPrimaryValidationMiss);
             if(imageExtension.length() == 0)
                 return false;
             safePageCount = reachableNtkGeneratedPageCount(client, segment, workId, imageEpisodeId, imageExtension, safePageCount);
@@ -726,10 +808,18 @@ public class Manga {
 
     private String reachableNtkGeneratedImageExtension(CustomHttpClient client, String segment, String workId,
                                                        String episodeId, int page) {
+        return reachableNtkGeneratedImageExtension(client, segment, workId, episodeId, page, null);
+    }
+
+    private String reachableNtkGeneratedImageExtension(CustomHttpClient client, String segment, String workId,
+                                                       String episodeId, int page, Runnable onPrimaryValidationMiss) {
         String[] extensions = {"jpeg", "jpg", "png", "webp"};
-        for(String extension : extensions) {
+        for(int i = 0; i < extensions.length; i++) {
+            String extension = extensions[i];
             if(isNtkGeneratedImageReachable(client, ntkGeneratedImageUrl(segment, workId, episodeId, page, extension)))
                 return extension;
+            if(i == 0 && onPrimaryValidationMiss != null)
+                onPrimaryValidationMiss.run();
         }
         return "";
     }
