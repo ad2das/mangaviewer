@@ -132,7 +132,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private val stateLock = Object()
     private val pages = ArrayList<Page>()
-    private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.rgb(190, 190, 190)
         textSize = 34f
@@ -980,7 +980,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val dstTop = floor(visibleTop).toInt()
             val dstBottom = ceil(visibleBottom).toInt().coerceAtLeast(dstTop + 1)
             dstInt.set(0, dstTop, state.width, dstBottom)
-            paint.isFilterBitmap = !state.busy
+            prepareBitmapPaint()
             canvas.drawBitmap(bitmap, src, dstInt, paint)
             return
         }
@@ -997,7 +997,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val visibleTop = max(0f, item.top)
         val visibleBottom = min(state.height.toFloat(), item.top + item.pageHeight)
         if (visibleBottom <= visibleTop) return
-        paint.isFilterBitmap = !state.busy
+        prepareBitmapPaint()
         val sourceHeight = item.tiles.firstOrNull()?.sourceHeight?.takeIf { it > 0 } ?: return
         val pageScale = item.pageHeight / sourceHeight.toFloat()
         for (tile in item.tiles) {
@@ -1024,6 +1024,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
             dstInt.set(0, dstTopInt, state.width, dstBottomInt)
             canvas.drawBitmap(bitmap, src, dstInt, paint)
         }
+    }
+
+    private fun prepareBitmapPaint() {
+        paint.alpha = 255
+        paint.colorFilter = null
+        paint.isDither = true
+        paint.isFilterBitmap = true
     }
 
     private fun buildDrawStateLocked(busy: Boolean = lastBusy): DrawState? {
