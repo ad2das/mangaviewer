@@ -1343,17 +1343,24 @@ public class EpisodeActivityNetworkTest {
         String afterMarker = output.substring(marker);
         int maxLoading = 0;
         String worstLine = "";
+        int visibleGaps = 0;
+        String worstGapLine = "";
         for(String line : afterMarker.split("\\R")) {
-            if(!line.contains("reader_visible_loading="))
-                continue;
-            int loading = parseMetricInt(line, "reader_visible_loading", 0);
-            if(loading > maxLoading) {
-                maxLoading = loading;
-                worstLine = line;
+            if(line.contains("reader_visible_loading=")) {
+                int loading = parseMetricInt(line, "reader_visible_loading", 0);
+                if(loading > maxLoading) {
+                    maxLoading = loading;
+                    worstLine = line;
+                }
+            } else if(line.contains("reader_visible_gap")) {
+                visibleGaps++;
+                worstGapLine = line;
             }
         }
         assertEquals("Expected no visible loading during " + source + "; worst=" + worstLine,
                 0, maxLoading);
+        assertEquals("Expected no visible reader gaps during " + source + "; worst=" + worstGapLine,
+                0, visibleGaps);
     }
 
     private static void assertNoVisibleLoadingAfterScrollStartIfFailFast(String scrollSource) throws Exception {

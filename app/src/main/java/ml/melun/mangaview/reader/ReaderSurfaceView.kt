@@ -1058,10 +1058,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     top = 0f
                 }
             } else {
-                if (previousBottom < viewHeight &&
-                    laidOutTop > previousBottom + COVERAGE_EDGE_FILL_PX
-                ) {
-                    top = previousBottom
+                if (previousBottom < viewHeight) {
+                    if (laidOutTop > previousBottom + COVERAGE_EDGE_FILL_PX ||
+                        laidOutTop < previousBottom - COVERAGE_EDGE_FILL_PX
+                    ) {
+                        top = previousBottom
+                    }
                 }
             }
             if (top > viewHeight) break
@@ -1549,9 +1551,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun updatePageHeightDeltaLocked(index: Int, delta: Float) {
         if (abs(delta) <= 0.01f) return
-        pageTopDeltas.add(index + 1, delta)
-        contentHeight = max(0f, contentHeight + delta)
-        layoutDirty = false
+        /*
+         * The old incremental range-delta path is cheap, but it is fragile when several
+         * NTK pages resolve size while the placeholder aspect ratio is still learning.
+         * A stale delta can make later pages overlap the current page, which looks like
+         * the top of the image is pinned while only the lower part scrolls.
+         */
+        layoutDirty = true
     }
 
     private fun applyPageHeightChangeLocked(index: Int, oldTop: Float, oldHeight: Float, delta: Float) {
