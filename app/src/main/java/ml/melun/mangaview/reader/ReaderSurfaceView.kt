@@ -347,7 +347,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
             val newHeight = resolvedPageDrawHeightLocked(bitmap.width, bitmap.height)
-            if (shouldDeferHeightChangingResolveLocked(oldHeight, newHeight)) {
+            if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight)) {
                 val hasCurrentDrawable = page.bitmap != null || page.tiles.isNotEmpty()
                 if (hasCurrentDrawable) {
                     page.bitmap = bitmap
@@ -400,7 +400,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
             val newHeight = resolvedPageDrawHeightLocked(pageWidth, pageHeight)
-            if (shouldDeferHeightChangingResolveLocked(oldHeight, newHeight)) {
+            if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight)) {
                 val hasCurrentDrawable = page.bitmap != null || page.tiles.isNotEmpty()
                 if (hasCurrentDrawable) {
                     page.bitmap = null
@@ -510,7 +510,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
             val newHeight = resolvedPageDrawHeightLocked(pageWidth, pageHeight)
-            if (shouldDeferHeightChangingResolveLocked(oldHeight, newHeight)) {
+            if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight)) {
                 page.pendingResolveType = PENDING_BOUNDS
                 page.pendingBitmap = null
                 page.pendingTiles = emptyList()
@@ -873,12 +873,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 TAG,
                 "reader_slow_frame busy=${state.busy} items=${state.items.size} " +
                     "visibleLoading=${state.visibleLoading} drawMs=${fmt(timing.drawMs)} " +
-                    "totalMs=${fmt(timing.totalMs)}"
+                    "totalMs=${fmt(timing.totalMs)} visibleItems=${formatDrawItems(state.items)}"
             )
         }
         if (lastVisibleLoading != state.visibleLoading) {
             lastVisibleLoading = state.visibleLoading
-            Log.i(TAG, "reader_visible_loading=${state.visibleLoading} busy=${state.busy} items=${state.items.size}")
+            Log.i(
+                TAG,
+                "reader_visible_loading=${state.visibleLoading} busy=${state.busy} " +
+                    "items=${state.items.size} visibleItems=${formatDrawItems(state.items)}"
+            )
             logCoverageIfNeeded(state, force = true)
         }
         logCoverageIfNeeded(state, force = false)
@@ -1431,9 +1435,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return max(1f, viewWidth * placeholderPageHeightRatio)
     }
 
-    private fun shouldDeferHeightChangingResolveLocked(oldHeight: Float, newHeight: Float): Boolean {
+    private fun shouldDeferHeightChangingResolveLocked(oldTop: Float, oldHeight: Float, newHeight: Float): Boolean {
         if (!isScrollMovingLocked()) return false
-        return oldHeight > 0f && abs(newHeight - oldHeight) > HEIGHT_CHANGE_EPSILON_PX
+        if (oldHeight <= 0f || abs(newHeight - oldHeight) <= HEIGHT_CHANGE_EPSILON_PX) return false
+        val viewBottom = scrollOffset + max(1, height)
+        if (oldTop >= viewBottom + COVERAGE_EDGE_FILL_PX) return false
+        return true
     }
 
     private fun isScrollMovingLocked(): Boolean {

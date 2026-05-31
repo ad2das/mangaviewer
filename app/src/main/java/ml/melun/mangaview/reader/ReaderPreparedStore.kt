@@ -258,6 +258,12 @@ object ReaderPreparedStore {
     }
 
     @JvmStatic
+    @Synchronized
+    fun clearAll() {
+        entries.clear()
+    }
+
+    @JvmStatic
     fun clearBitmaps(key: String?) {
         get(key)?.clearBitmaps()
     }

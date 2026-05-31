@@ -37,7 +37,7 @@ object ReaderImageCache {
     private const val TARGET_CACHE_BYTES = 384L * 1024L * 1024L
     private const val TRIM_DEBOUNCE_MS = 30_000L
     private const val FOREGROUND_RACE_DELAY_MS = 900L
-    private const val MAX_DIRECT_STREAM_DECODE_BYTES = 3L * 1024L * 1024L
+    private const val MAX_DIRECT_STREAM_DECODE_BYTES = 8L * 1024L * 1024L
     private val flights = ConcurrentHashMap<String, FutureTask<File>>()
     private val activeReads = ConcurrentHashMap<String, AtomicInteger>()
     private val trimLock = Any()
@@ -66,12 +66,12 @@ object ReaderImageCache {
         }
     }
 
-    fun leaseFile(context: Context, manga: Manga, image: String): FileLease {
+    fun leaseFile(context: Context, manga: Manga, image: String, foreground: Boolean = true): FileLease {
         if (!manga.isOnline) return FileLease(File(image), null)
         val key = key(manga.baseMode, image)
         retainActiveRead(key)
         return try {
-            val file = getOrFetch(context, manga, image, foreground = true)
+            val file = getOrFetch(context, manga, image, foreground = foreground)
             file.setLastModified(System.currentTimeMillis())
             FileLease(file, key)
         } catch (t: Throwable) {
@@ -107,6 +107,11 @@ object ReaderImageCache {
         val appContext = context.applicationContext
         val file = File(cacheDir(appContext), "${key(manga.baseMode, image)}.img")
         return if (isUsableImage(file)) file else null
+    }
+
+    fun hasActiveFetch(manga: Manga, image: String): Boolean {
+        if (!manga.isOnline) return false
+        return flights.containsKey(key(manga.baseMode, image))
     }
 
     fun decodeForegroundBitmap(
@@ -278,11 +283,23 @@ object ReaderImageCache {
         image: String,
         foreground: Boolean = false
     ): okhttp3.Response {
-        val response = if (foreground) requestForegroundRace(manga, image) else request(context, manga, image)
-        if (response.isSuccessful || !shouldTryNtkGeneratedExtensionFallback(image)) return response
-        response.close()
+        val response = try {
+            if (foreground) requestForegroundRace(manga, image) else request(context, manga, image)
+        } catch (e: IOException) {
+            if (!shouldTryNtkGeneratedExtensionFallback(image)) throw e
+            null
+        }
+        if (response != null && (response.isSuccessful || !shouldTryNtkGeneratedExtensionFallback(image))) return response
+        if (response == null && !shouldTryNtkGeneratedExtensionFallback(image)) {
+            throw IOException("Generated image request failed before fallback: $image")
+        }
+        response?.close()
         for (candidate in ntkGeneratedExtensionFallbacks(image)) {
-            val fallback = if (foreground) requestForegroundRace(manga, candidate) else request(context, manga, candidate)
+            val fallback = try {
+                if (foreground) requestForegroundRace(manga, candidate) else request(context, manga, candidate)
+            } catch (e: IOException) {
+                continue
+            }
             if (fallback.isSuccessful) return fallback
             fallback.close()
         }

@@ -3,6 +3,7 @@ package ml.melun.mangaview;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.fail;
 
 import android.app.Activity;
@@ -42,17 +43,20 @@ import java.util.Collections;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import ml.melun.mangaview.activity.CaptchaActivity;
 import ml.melun.mangaview.activity.EpisodeActivity;
 import ml.melun.mangaview.activity.ReaderV2Activity;
+import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.reader.ReaderPreparedStore;
 import ml.melun.mangaview.reader.ReaderSurfaceView;
 
 @RunWith(AndroidJUnit4.class)
@@ -377,6 +381,38 @@ public class EpisodeActivityNetworkTest {
     }
 
     @Test
+    public void ntkJagaanColdEpisodeScrollStress() throws Exception {
+        String episodeNumber = InstrumentationRegistry.getArguments().getString("episodeNumber", "50");
+        String ntkFetchMode = InstrumentationRegistry.getArguments().getString("ntkFetchMode", "generated");
+        Context context = ApplicationProvider.getApplicationContext();
+        clearColdReaderState(context);
+        Manga.setNtkViewerFetchModeOverrideForTest(ntkFetchMode);
+        executeShell("logcat -c");
+
+        try {
+            Manga targetEpisode = openNtkJagaanEpisodeColdDirect(episodeNumber);
+            String targetPath = targetEpisode == null ? "" : targetEpisode.getNtkEpisodePath();
+            UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+            assertReaderOpenedThroughAutoCaptcha(device, "NTK Jagaan " + episodeNumber + " " + ntkFetchMode + " cold");
+
+            String firstDrawable = waitForFirstDrawableMetric("ntk", 120000L);
+            Log.d("ViewerPerf", "ntk_jagaan_cold_first_drawable mode=" + ntkFetchMode
+                    + " episode=" + episodeNumber + " " + firstDrawable);
+            assertNtkFetchModeUsed(ntkFetchMode, episodeNumber, targetPath);
+            assertInitialVisibleCoverageSettles("ntk Jagaan " + episodeNumber + " " + ntkFetchMode + " cold");
+
+            long scrollInitialDelayMs = Long.parseLong(InstrumentationRegistry.getArguments()
+                    .getString("scrollInitialDelayMs", "300"));
+            String scrollSource = "ntk_jagaan_" + episodeNumber + "_" + ntkFetchMode + "_cold";
+            stressScrollViewer(device, scrollSource, scrollInitialDelayMs);
+            assertNoVisibleLoadingLoggedAfterScrollStart("ntk Jagaan " + episodeNumber + " " + ntkFetchMode + " cold",
+                    scrollSource);
+        } finally {
+            Manga.clearNtkViewerFetchModeOverrideForTest();
+        }
+    }
+
+    @Test
     public void ntkJagaanEpisode79ScrollKeepsPageCoherent() throws Exception {
         openNtkJagaanEpisode("79");
         UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
@@ -486,6 +522,46 @@ public class EpisodeActivityNetworkTest {
         MainApplication.p.setBookmark(title, -1);
 
         Utils.openViewerPrepared(context, targetEpisode, 0, false, true, false, title, true, true);
+        return targetEpisode;
+    }
+
+    private Manga openNtkJagaanEpisodeColdDirect(String episodeNumber) throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        MainApplication.p.setNtkSitePreset(CustomHttpClient.NTK_COMIC_URL);
+        MainApplication.p.setBaseMode(MTitle.base_comic);
+
+        Title title = findNtkJagaanTitle();
+        int status = title.fetchEps(MainApplication.getHttpClient());
+        if(status == Title.LOAD_CAPTCHA) {
+            openNtkCaptchaAndWaitForAutoVerification(UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()), "NTK Jagaan cold episode list");
+            status = title.fetchEps(MainApplication.getHttpClient());
+        }
+        assertEquals("Expected NTK Jagaan episodes to load", Title.LOAD_OK, status);
+        List<Manga> episodes = Title.orderedEpisodeSnapshot(title.getEps());
+        Manga targetEpisode = null;
+        for(Manga episode : episodes) {
+            String number = Manga.visibleEpisodeNumberKey(episode == null ? null : episode.getName());
+            if(episodeNumber.equals(number)) {
+                targetEpisode = episode;
+                break;
+            }
+        }
+        assertNotNull("Expected NTK Jagaan episode " + episodeNumber + " in "
+                + firstEpisodeNames(episodes, Math.min(8, episodes.size())), targetEpisode);
+        targetEpisode.setTitle(title);
+        targetEpisode.setTitleId(title.getId());
+        MainApplication.p.resetViewerBookmark();
+        MainApplication.p.setBookmark(title, -1);
+
+        Intent viewer = new Intent(context, ReaderV2Activity.class);
+        viewer.putExtra("manga", Utils.toViewerMangaJson(targetEpisode, title, false));
+        viewer.putExtra("title", Utils.toViewerTitleJson(title, true));
+        viewer.putExtra("online", true);
+        viewer.putExtra("viewerLaunchStartedAtMs", SystemClock.elapsedRealtime());
+        viewer.putExtra("viewerLaunchSourceSite", "ntk");
+        viewer.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        viewer.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        context.startActivity(viewer);
         return targetEpisode;
     }
 
@@ -1159,6 +1235,10 @@ public class EpisodeActivityNetworkTest {
     }
 
     private static void stressScrollViewer(UiDevice device, String source) throws Exception {
+        stressScrollViewer(device, source, 2500L);
+    }
+
+    private static void stressScrollViewer(UiDevice device, String source, long initialDelayMs) throws Exception {
         int width = device.getDisplayWidth();
         int height = device.getDisplayHeight();
         int x = width / 2;
@@ -1166,9 +1246,8 @@ public class EpisodeActivityNetworkTest {
         int middle = height / 2;
         int bottom = Math.min(height - 96, height * 6 / 7);
 
-        executeShell("logcat -c");
         Log.d("ViewerPerf", "viewer_scroll_stress_start source=" + source);
-        Thread.sleep(2500L);
+        Thread.sleep(Math.max(0L, initialDelayMs));
 
         executeShell("input motionevent DOWN " + x + " " + middle);
         for(int i = 0; i < 24; i++) {
@@ -1177,14 +1256,19 @@ public class EpisodeActivityNetworkTest {
             Thread.sleep(18L);
         }
         executeShell("input motionevent UP " + x + " " + middle);
+        assertNoVisibleLoadingAfterScrollStartIfFailFast(source);
 
         for(int i = 0; i < 28; i++) {
             device.swipe(x, bottom, x, top, 4);
             Thread.sleep(35L);
+            if(i % 7 == 6)
+                assertNoVisibleLoadingAfterScrollStartIfFailFast(source);
         }
         for(int i = 0; i < 12; i++) {
             device.swipe(x, top, x, bottom, 4);
             Thread.sleep(35L);
+            if(i % 6 == 5)
+                assertNoVisibleLoadingAfterScrollStartIfFailFast(source);
         }
         device.waitForIdle(5000L);
         Thread.sleep(1500L);
@@ -1197,6 +1281,123 @@ public class EpisodeActivityNetworkTest {
         assertEquals("Expected zero reader render frame debt during " + source + " scroll stress: " + metrics.rawLine,
                 0, metrics.droppedFrameDebt);
         Log.d("ViewerPerf", "viewer_scroll_stress_end source=" + source);
+    }
+
+    private static void clearColdReaderState(Context context) throws Exception {
+        ReaderPreparedStore.clearAll();
+        ViewerWarmupManager.clearDecodedWork(context);
+        deleteRecursively(new File(context.getCacheDir(), "reader_image_cache_v1"));
+    }
+
+    private static void deleteRecursively(File file) {
+        if(file == null || !file.exists())
+            return;
+        if(file.isDirectory()) {
+            File[] children = file.listFiles();
+            if(children != null) {
+                for(File child : children)
+                    deleteRecursively(child);
+            }
+        }
+        file.delete();
+    }
+
+    private static String waitForFirstDrawableMetric(String source, long timeoutMs) throws Exception {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        String latestOutput = "";
+        while(System.currentTimeMillis() < deadline) {
+            latestOutput = executeShellOutput("logcat -d -s ViewerPerf:D *:S");
+            for(String line : latestOutput.split("\\R")) {
+                if(line.contains("reader_open_to_first_drawable source=" + source))
+                    return line;
+            }
+            Thread.sleep(100L);
+        }
+        fail("Expected first drawable metric for " + source + ": " + latestOutput);
+        return "";
+    }
+
+    private static void assertNoVisibleLoadingLogged(String source) throws Exception {
+        String output = executeShellOutput("logcat -d -s ReaderSurfaceStats:I *:S");
+        int maxLoading = 0;
+        String worstLine = "";
+        for(String line : output.split("\\R")) {
+            if(!line.contains("reader_visible_loading="))
+                continue;
+            int loading = parseMetricInt(line, "reader_visible_loading", 0);
+            if(loading > maxLoading) {
+                maxLoading = loading;
+                worstLine = line;
+            }
+        }
+        assertEquals("Expected no visible loading during " + source + "; worst=" + worstLine,
+                0, maxLoading);
+    }
+
+    private static void assertNoVisibleLoadingLoggedAfterScrollStart(String source, String scrollSource) throws Exception {
+        String output = executeShellOutput("logcat -d -s ViewerPerf:D ReaderSurfaceStats:I *:S");
+        int marker = output.indexOf("viewer_scroll_stress_start source=" + scrollSource);
+        assertTrue("Expected scroll stress marker for " + source + ": " + output, marker >= 0);
+        String afterMarker = output.substring(marker);
+        int maxLoading = 0;
+        String worstLine = "";
+        for(String line : afterMarker.split("\\R")) {
+            if(!line.contains("reader_visible_loading="))
+                continue;
+            int loading = parseMetricInt(line, "reader_visible_loading", 0);
+            if(loading > maxLoading) {
+                maxLoading = loading;
+                worstLine = line;
+            }
+        }
+        assertEquals("Expected no visible loading during " + source + "; worst=" + worstLine,
+                0, maxLoading);
+    }
+
+    private static void assertNoVisibleLoadingAfterScrollStartIfFailFast(String scrollSource) throws Exception {
+        if(!Boolean.parseBoolean(InstrumentationRegistry.getArguments()
+                .getString("failFastVisibleLoading", "false")))
+            return;
+        assertNoVisibleLoadingLoggedAfterScrollStart(scrollSource, scrollSource);
+    }
+
+    private static void assertNtkFetchModeUsed(String mode, String episodeNumber, String targetPath) throws Exception {
+        String normalized = mode == null ? "" : mode.trim().toLowerCase(Locale.ROOT);
+        String output = executeShellOutput("logcat -d -s ViewerPerf:D *:S");
+        if("native".equals(normalized) || "native-ack".equals(normalized) || "native_ack".equals(normalized)) {
+            assertTrue("Expected native ACK bypass success for NTK Jagaan " + episodeNumber + ": " + output,
+                    output.contains("ntk_native_ack_final_success=true,path=" + targetPath)
+                            || output.contains("ntk_native_ack_bypass_success path=" + targetPath));
+            assertFalse("Native ACK target path must not report missing_canary for NTK Jagaan "
+                            + episodeNumber + ": " + output,
+                    output.contains("error=missing_canary,path=" + targetPath)
+                            || output.contains("missing_canary}\",path=" + targetPath));
+            assertFalse("Native ACK mode must not use generated-fast for NTK Jagaan "
+                            + episodeNumber + ": " + output,
+                    output.contains("ntk_viewer_parse reason=generated-fast"));
+        } else {
+            assertTrue("Expected generated-fast parse for NTK Jagaan " + episodeNumber + ": " + output,
+                    output.contains("ntk_viewer_parse reason=generated-fast"));
+        }
+    }
+
+    private static void assertInitialVisibleCoverageSettles(String source) throws Exception {
+        long deadline = System.currentTimeMillis() + 5000L;
+        String latestOutput = "";
+        while(System.currentTimeMillis() < deadline) {
+            latestOutput = executeShellOutput("logcat -d -s ReaderSurfaceStats:I *:S");
+            String loadingLine = latestLineContaining(latestOutput, "reader_visible_loading=");
+            String coverageLine = latestLineContaining(latestOutput, "reader_visible_coverage");
+            if(loadingLine != null && coverageLine != null
+                    && parseMetricInt(loadingLine, "reader_visible_loading", -1) == 0
+                    && parseMetricInt(coverageLine, "placeholderPx", -1) == 0
+                    && parseMetricInt(coverageLine, "missingPx", -1) == 0
+                    && parseMetricInt(coverageLine, "drawablePx", 0) > 0) {
+                return;
+            }
+            Thread.sleep(100L);
+        }
+        assertTrue("Expected settled visible reader coverage for " + source + ": " + latestOutput, false);
     }
 
     private static void assertNoInitialVisibleCoverageGap(String source) throws Exception {
@@ -1228,6 +1429,15 @@ public class EpisodeActivityNetworkTest {
                 return line;
         }
         return null;
+    }
+
+    private static String latestLineContaining(String text, String needle) {
+        String latest = null;
+        for(String line : text.split("\\R")) {
+            if(line.contains(needle))
+                latest = line;
+        }
+        return latest;
     }
 
     private static int parseMetricInt(String line, String key, int defaultValue) {
