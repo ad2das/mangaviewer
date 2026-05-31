@@ -4,6 +4,7 @@ import android.graphics.Bitmap;
 import android.graphics.Color;
 
 public final class ViewerBitmapTrim {
+    private static final boolean ENABLED = false;
     private static final int MAX_SAMPLES = 72;
     private static final int WHITE_THRESHOLD = 246;
     private static final int ALPHA_THRESHOLD = 8;
@@ -17,6 +18,8 @@ public final class ViewerBitmapTrim {
     }
 
     public static Bitmap trimBlankVerticalEdges(Bitmap bitmap, boolean recycleSource) {
+        if(!ENABLED)
+            return bitmap;
         if(bitmap == null || bitmap.isRecycled())
             return bitmap;
         int width = bitmap.getWidth();

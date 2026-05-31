@@ -43,7 +43,7 @@ public class ReaderPageGapInstrumentedTest {
     }
 
     @Test
-    public void trimBlankVerticalEdgesRemovesSourceGutters() {
+    public void trimBlankVerticalEdgesLeavesSourceGuttersDisabled() {
         Bitmap bitmap = Bitmap.createBitmap(20, 30, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bitmap);
         canvas.drawColor(Color.WHITE);
@@ -53,9 +53,9 @@ public class ReaderPageGapInstrumentedTest {
 
         Bitmap trimmed = ViewerBitmapTrim.trimBlankVerticalEdges(bitmap);
 
-        assertEquals(16, trimmed.getHeight());
-        assertEquals(Color.rgb(90, 120, 180), trimmed.getPixel(10, 0));
-        assertEquals(Color.rgb(90, 120, 180), trimmed.getPixel(10, trimmed.getHeight() - 1));
+        assertEquals(30, trimmed.getHeight());
+        assertEquals(Color.WHITE, trimmed.getPixel(10, 0));
+        assertEquals(Color.WHITE, trimmed.getPixel(10, trimmed.getHeight() - 1));
     }
 
     @Test
