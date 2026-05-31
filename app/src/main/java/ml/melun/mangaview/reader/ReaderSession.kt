@@ -414,15 +414,6 @@ class ReaderSession(
                 requestPage(index, busy = true, anchor = false, generation = FOREGROUND_PRIME_WARM_GENERATION)
             }
         }
-        val prefetchLast = minOf(count - 1, first + NTK_INITIAL_PRIORITY_PAGES)
-        if (priorityLast < prefetchLast) {
-            val refs = synchronized(pagesLock) { pages.toList() }
-            for (index in (priorityLast + 1)..prefetchLast) {
-                refs.getOrNull(index)?.let { page ->
-                    if (page.transitionTitle == null) prefetchBusyPage(index, page, FOREGROUND_PRIME_WARM_GENERATION)
-                }
-            }
-        }
     }
 
     private fun releaseInitialFanoutIfAnchorReady(index: Int) {
@@ -2494,7 +2485,7 @@ class ReaderSession(
         private const val NTK_LIGHT_PRIMED_EPISODE_DECODE_AHEAD_PAGES = 10
         private const val NTK_LIGHT_PRIMED_EPISODE_BYTE_AHEAD_PAGES = 12
         private const val NTK_INITIAL_PRIORITY_START_OFFSET = 1
-        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 3
+        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 1
         private const val NTK_INITIAL_PRIORITY_PAGES = 16
         private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 20
         private const val NTK_INITIAL_DECODE_AHEAD_PAGES = 64

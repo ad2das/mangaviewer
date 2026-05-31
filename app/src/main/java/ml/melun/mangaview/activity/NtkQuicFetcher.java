@@ -76,10 +76,20 @@ public final class NtkQuicFetcher {
                                           String cookieHeader, Map<String, String> requestHeaders,
                                           String method, byte[] body, long timeoutMs) throws InterruptedException {
         ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            return fetchWithEngine(engine, executor, url, userAgent, cookieHeader, requestHeaders,
+                    method, body, timeoutMs);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    public static Result fetchWithEngine(HttpEngine engine, ExecutorService executor, String url, String userAgent,
+                                          String cookieHeader, Map<String, String> requestHeaders,
+                                          String method, byte[] body, long timeoutMs) throws InterruptedException {
         CountDownLatch done = new CountDownLatch(1);
         State state = new State();
-        try {
-            UrlRequest.Builder builder = engine.newUrlRequestBuilder(url, executor, new UrlRequest.Callback() {
+        UrlRequest.Builder builder = engine.newUrlRequestBuilder(url, executor, new UrlRequest.Callback() {
                 final ByteArrayOutputStream response = new ByteArrayOutputStream();
 
                 @Override
@@ -130,37 +140,34 @@ public final class NtkQuicFetcher {
                     state.error = new InterruptedException("cancelled");
                     done.countDown();
                 }
-            });
-            String normalizedMethod = method == null || method.length() == 0
-                    ? "GET" : method.toUpperCase(Locale.ROOT);
-            if(!"GET".equals(normalizedMethod))
-                builder.setHttpMethod(normalizedMethod);
-            if(body != null && body.length > 0)
-                builder.setUploadDataProvider(new ByteArrayUploadDataProvider(body), executor);
-            addForwardedHeaders(builder, requestHeaders);
-            if(userAgent != null && userAgent.length() > 0)
-                builder.addHeader("User-Agent", userAgent);
-            if(body != null && body.length > 0 && !hasHeader(requestHeaders, "Content-Type"))
-                builder.addHeader("Content-Type", "text/plain;charset=UTF-8");
-            if(!hasHeader(requestHeaders, "Accept"))
-                builder.addHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-            if(!hasHeader(requestHeaders, "Accept-Language"))
-                builder.addHeader("Accept-Language", Locale.getDefault().toLanguageTag() + ",ko-KR;q=0.9,ko;q=0.8,en-US;q=0.7,en;q=0.6");
-            if(cookieHeader != null && cookieHeader.length() > 0)
-                builder.addHeader("Cookie", cookieHeader);
-            UrlRequest request = builder.build();
-            request.start();
-            if(!done.await(Math.max(1L, timeoutMs), TimeUnit.MILLISECONDS)) {
-                request.cancel();
-                return Result.error(new java.net.SocketTimeoutException("QUIC fetch timed out"));
-            }
-            if(state.error != null)
-                return Result.error(state.error);
-            return new Result(state.code, state.bodyBytes == null ? new byte[0] : state.bodyBytes,
-                    state.headers == null ? Collections.emptyMap() : state.headers, null);
-        } finally {
-            executor.shutdownNow();
+        });
+        String normalizedMethod = method == null || method.length() == 0
+                ? "GET" : method.toUpperCase(Locale.ROOT);
+        if(!"GET".equals(normalizedMethod))
+            builder.setHttpMethod(normalizedMethod);
+        if(body != null && body.length > 0)
+            builder.setUploadDataProvider(new ByteArrayUploadDataProvider(body), executor);
+        addForwardedHeaders(builder, requestHeaders);
+        if(userAgent != null && userAgent.length() > 0)
+            builder.addHeader("User-Agent", userAgent);
+        if(body != null && body.length > 0 && !hasHeader(requestHeaders, "Content-Type"))
+            builder.addHeader("Content-Type", "text/plain;charset=UTF-8");
+        if(!hasHeader(requestHeaders, "Accept"))
+            builder.addHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+        if(!hasHeader(requestHeaders, "Accept-Language"))
+            builder.addHeader("Accept-Language", Locale.getDefault().toLanguageTag() + ",ko-KR;q=0.9,ko;q=0.8,en-US;q=0.7,en;q=0.6");
+        if(cookieHeader != null && cookieHeader.length() > 0)
+            builder.addHeader("Cookie", cookieHeader);
+        UrlRequest request = builder.build();
+        request.start();
+        if(!done.await(Math.max(1L, timeoutMs), TimeUnit.MILLISECONDS)) {
+            request.cancel();
+            return Result.error(new java.net.SocketTimeoutException("QUIC fetch timed out"));
         }
+        if(state.error != null)
+            return Result.error(state.error);
+        return new Result(state.code, state.bodyBytes == null ? new byte[0] : state.bodyBytes,
+                state.headers == null ? Collections.emptyMap() : state.headers, null);
     }
 
     private static void addForwardedHeaders(UrlRequest.Builder builder, Map<String, String> headers) {

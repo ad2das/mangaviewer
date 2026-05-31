@@ -452,6 +452,10 @@ public class Manga {
                 if(nativeAckRef[0] == null)
                     nativeAckRef[0] = startAsyncNtkNativeAck(client, viewerPath);
             };
+            Runnable startFallbackFetchIfGeneratedBlocked = () -> {
+                startPageFetchIfNeeded.run();
+                startNativeAckIfNeeded.run();
+            };
             boolean nativeAckCompleted = false;
             if(nativeAckMode) {
                 startPageFetchIfNeeded.run();
@@ -462,7 +466,7 @@ public class Manga {
             if(allowGeneratedImages) {
                 generatedCandidatesChecked = true;
                 if(addNtkGeneratedPathImageCandidates(client, path, seenImages,
-                        ntkGeneratedImageCandidateCount(), validateGeneratedFirstImage, startPageFetchIfNeeded)) {
+                        ntkGeneratedImageCandidateCount(), validateGeneratedFirstImage, startFallbackFetchIfGeneratedBlocked)) {
                     logNtkViewerParse("generated-fast", null, path, 0, 0);
                     restoreBetterEpisodeList(previousEpisodes);
                     attachEpisodeSeriesMetadata();
