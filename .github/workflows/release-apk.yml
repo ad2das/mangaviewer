@@ -83,7 +83,11 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           cache-read-only: ${{ github.event_name != 'workflow_dispatch' || !inputs.refresh_gradle_cache }}
-          cache-cleanup: never
+          cache-cleanup: on-success
+          gradle-home-cache-excludes: |
+            caches/build-cache-*
+            caches/journal-*
+            caches/keyrings
 
       - name: Configure Git
         if: env.STALE_RELEASE_RUN != 'true'
