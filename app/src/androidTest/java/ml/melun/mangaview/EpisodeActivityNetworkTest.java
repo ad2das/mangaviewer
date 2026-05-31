@@ -42,6 +42,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -453,6 +454,7 @@ public class EpisodeActivityNetworkTest {
         UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
         assertReaderOpenedThroughAutoCaptcha(device, "NTK One Piece 1184");
         assertInitialVisibleCoverageSettles("ntk One Piece 1184");
+        assertReaderToolbarTitleContains(device, "1184");
 
         Thread.sleep(2500L);
         File screenshot = new File(ApplicationProvider.getApplicationContext().getCacheDir(),
@@ -466,6 +468,10 @@ public class EpisodeActivityNetworkTest {
         } finally {
             bitmap.recycle();
         }
+
+        ReaderV2Activity reader = waitForReaderActivity(10000L);
+        assertNotNull("Expected NTK One Piece 1184 reader activity", reader);
+        scrollReaderToEndSavingScreenshots(device, reader, "ntk_onepiece1184_quality");
 
         String keepOpenMs = InstrumentationRegistry.getArguments().getString("keepReaderOpenMs", "0");
         long keepOpenMillis = Long.parseLong(keepOpenMs);
@@ -1233,6 +1239,67 @@ public class EpisodeActivityNetworkTest {
         return latest;
     }
 
+    private static void scrollReaderToEndSavingScreenshots(
+            UiDevice device, ReaderV2Activity reader, String prefix) throws Exception {
+        int width = device.getDisplayWidth();
+        int height = device.getDisplayHeight();
+        int x = width / 2;
+        int fromY = Math.min(height - 140, height * 5 / 6);
+        int toY = Math.max(100, height / 6);
+        Context context = ApplicationProvider.getApplicationContext();
+        HashSet<String> capturedPositions = new HashSet<>();
+        ReaderSurfaceView.ProgressPosition start = waitForReaderProgress(reader, 10000L);
+        assertNotNull("Expected reader progress before full-episode quality scroll", start);
+        ReaderSurfaceView.ProgressPosition previous = start;
+        int stagnantRounds = 0;
+        int captureIndex = 0;
+        Log.d("ViewerPerf", "viewer_quality_scroll_start source=" + prefix
+                + " page=" + start.getPage() + " offset=" + start.getOffset());
+
+        for(int round = 0; round < 90; round++) {
+            ReaderSurfaceView.ProgressPosition current = waitForReaderProgress(reader, 3000L);
+            if(current != null) {
+                String key = current.getPage() + ":" + (current.getOffset() / 320);
+                if(capturedPositions.add(key)) {
+                    File screenshot = new File(context.getCacheDir(),
+                            prefix + "_scroll_" + String.format(Locale.US, "%03d", captureIndex++) + ".png");
+                    assertTrue("Expected " + prefix + " scroll screenshot at page="
+                            + current.getPage() + " offset=" + current.getOffset(),
+                            device.takeScreenshot(screenshot));
+                }
+            }
+
+            device.swipe(x, fromY, x, toY, 28);
+            Thread.sleep(1350L);
+            assertInitialVisibleCoverageSettles(prefix + " round " + round);
+
+            ReaderSurfaceView.ProgressPosition next = waitForReaderProgress(reader, 3000L);
+            if(next == null) continue;
+            boolean barelyMoved = previous != null
+                    && next.getPage() == previous.getPage()
+                    && Math.abs(next.getOffset() - previous.getOffset()) < 80;
+            if(barelyMoved)
+                stagnantRounds++;
+            else
+                stagnantRounds = 0;
+            previous = next;
+            if(stagnantRounds >= 5 && round > 8)
+                break;
+        }
+
+        ReaderSurfaceView.ProgressPosition end = waitForReaderProgress(reader, 5000L);
+        assertNotNull("Expected reader progress after full-episode quality scroll", end);
+        File finalScreenshot = new File(context.getCacheDir(), prefix + "_scroll_end.png");
+        assertTrue("Expected " + prefix + " final scroll screenshot", device.takeScreenshot(finalScreenshot));
+        assertTrue("Expected full-episode quality scroll to advance from page="
+                        + start.getPage() + " offset=" + start.getOffset()
+                        + " to page=" + end.getPage() + " offset=" + end.getOffset(),
+                end.getPage() > start.getPage() || end.getOffset() > start.getOffset() + 240);
+        Log.d("ViewerPerf", "viewer_quality_scroll_end source=" + prefix
+                + " page=" + end.getPage() + " offset=" + end.getOffset()
+                + " captures=" + captureIndex);
+    }
+
     private static ReaderSurfaceView.ProgressPosition waitForReaderProgress(
             ReaderV2Activity reader, long timeoutMs) throws Exception {
         long deadline = System.currentTimeMillis() + timeoutMs;
@@ -1302,6 +1369,15 @@ public class EpisodeActivityNetworkTest {
         assertTrue("Expected toolbar title to change quickly after episode tap",
                 originalTitle == null || !originalTitle.equals(title.getText()));
         return title;
+    }
+
+    private static void assertReaderToolbarTitleContains(UiDevice device, String expected) {
+        showReaderToolbar(device);
+        UiObject2 title = device.wait(Until.findObject(By.res(PACKAGE_NAME, "toolbar_title")), 5000L);
+        assertNotNull("Expected reader toolbar title", title);
+        assertTrue("Expected reader toolbar title to contain " + expected + ", actual=" + title.getText(),
+                title.getText() != null && title.getText().contains(expected));
+        hideReaderToolbar(device);
     }
 
     private static void stressScrollViewer(UiDevice device, String source) throws Exception {
@@ -1756,5 +1832,16 @@ public class EpisodeActivityNetworkTest {
                 toolbar = device.findObject(By.res(PACKAGE_NAME, "viewerToolbar"));
         }
         assertNotNull("Expected reader toolbar to show after tapping the reader surface", toolbar);
+    }
+
+    private static void hideReaderToolbar(UiDevice device) {
+        UiObject2 toolbar = device.findObject(By.res(PACKAGE_NAME, "viewerToolbar"));
+        if(toolbar == null)
+            return;
+        UiObject2 strip = device.findObject(By.res(PACKAGE_NAME, "strip"));
+        assertNotNull("Expected reader surface to render before hiding toolbar", strip);
+        Rect bounds = strip.getVisibleBounds();
+        device.click(bounds.centerX(), bounds.centerY());
+        device.wait(Until.gone(By.res(PACKAGE_NAME, "viewerToolbar")), 2000L);
     }
 }

@@ -10,7 +10,7 @@ object ReaderPipelinePolicy {
     const val BUSY_WINDOW_AFTER = 14
     const val IDLE_WINDOW_BEFORE = 6
     const val IDLE_WINDOW_AFTER = 10
-    const val BUSY_DECODE_WIDTH = 720
+    const val BUSY_DECODE_WIDTH = Int.MAX_VALUE
 
     @JvmStatic
     fun windowBefore(busy: Boolean): Int = if (busy) BUSY_WINDOW_BEFORE else IDLE_WINDOW_BEFORE

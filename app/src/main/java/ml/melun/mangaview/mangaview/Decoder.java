@@ -2,6 +2,7 @@ package ml.melun.mangaview.mangaview;
 
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.graphics.Rect;
 
 import com.bumptech.glide.load.engine.bitmap_recycle.BitmapPool;
@@ -12,6 +13,7 @@ public class Decoder {
     int view_cnt;
     int cx=5, cy=5;
     private static final int MAX_DISPLAY_BITMAP_BYTES = 64 * 1024 * 1024;
+    private static final Paint BITMAP_SCALE_PAINT = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG);
 
     public int getCnt(){
         return view_cnt;
@@ -64,7 +66,7 @@ public class Decoder {
         int width = scaledDimension(input.getWidth(), ratio);
         int height = scaledDimension(input.getHeight(), ratio);
         Bitmap bitmap = obtainBitmap(pool, width, height, displayConfig(input));
-        new Canvas(bitmap).drawBitmap(input, null, new Rect(0, 0, width, height), null);
+        new Canvas(bitmap).drawBitmap(input, null, new Rect(0, 0, width, height), BITMAP_SCALE_PAINT);
         return bitmap;
     }
 
@@ -129,7 +131,7 @@ public class Decoder {
             return input;
         int height = sampleHeight(input.getWidth(), input.getHeight(), width);
         Bitmap bitmap = obtainBitmap(pool, width, height, displayConfig(input));
-        new Canvas(bitmap).drawBitmap(input, null, new Rect(0, 0, width, height), null);
+        new Canvas(bitmap).drawBitmap(input, null, new Rect(0, 0, width, height), BITMAP_SCALE_PAINT);
         return bitmap;
     }
 
@@ -139,7 +141,7 @@ public class Decoder {
             return new BitmapCandidate(input, false);
         int height = sampleHeight(input.getWidth(), input.getHeight(), width);
         Bitmap bitmap = obtainBitmap(pool, width, height, displayConfig(input));
-        new Canvas(bitmap).drawBitmap(input, null, new Rect(0, 0, width, height), null);
+        new Canvas(bitmap).drawBitmap(input, null, new Rect(0, 0, width, height), BITMAP_SCALE_PAINT);
         return new BitmapCandidate(bitmap, pool != null);
     }
 
@@ -182,8 +184,7 @@ public class Decoder {
     }
 
     private static Bitmap.Config displayConfig(Bitmap bitmap) {
-        Bitmap.Config config = bitmap == null ? null : bitmap.getConfig();
-        return config == Bitmap.Config.RGB_565 ? Bitmap.Config.RGB_565 : Bitmap.Config.ARGB_8888;
+        return Bitmap.Config.ARGB_8888;
     }
 
     private static Bitmap obtainBitmap(BitmapPool pool, int width, int height, Bitmap.Config config) {
