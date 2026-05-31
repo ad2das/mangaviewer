@@ -64,7 +64,7 @@ jobs:
         run: |
           set -euo pipefail
           latest_sha="$(git ls-remote origin "refs/heads/${GITHUB_REF_NAME}" | awk '{print $1}')"
-          if [ -n "${latest_sha}" ] && [ "${latest_sha}" != "${GITHUB_SHA}" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ -n "${latest_sha}" ] && [ "${latest_sha}" != "${GITHUB_SHA}" ]; then
             echo "STALE_RELEASE_RUN=true" >> "${GITHUB_ENV}"
             echo "Skipping stale release run for ${GITHUB_SHA}; latest is ${latest_sha}."
           else
