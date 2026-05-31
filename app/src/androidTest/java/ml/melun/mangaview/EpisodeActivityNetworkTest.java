@@ -447,6 +447,32 @@ public class EpisodeActivityNetworkTest {
             Thread.sleep(keepOpenMillis);
     }
 
+    @Test
+    public void ntkOnePieceEpisode1184RendersReaderImageQuality() throws Exception {
+        openNtkOnePieceEpisode("1184");
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        assertReaderOpenedThroughAutoCaptcha(device, "NTK One Piece 1184");
+        assertInitialVisibleCoverageSettles("ntk One Piece 1184");
+
+        Thread.sleep(2500L);
+        File screenshot = new File(ApplicationProvider.getApplicationContext().getCacheDir(),
+                "ntk_onepiece1184_quality.png");
+        assertTrue("Expected NTK One Piece 1184 quality screenshot", device.takeScreenshot(screenshot));
+        Bitmap bitmap = BitmapFactory.decodeFile(screenshot.getAbsolutePath());
+        assertNotNull("Expected readable NTK One Piece 1184 screenshot", bitmap);
+        try {
+            assertTrue("Expected NTK One Piece 1184 to render real image content",
+                    countNonBlankPixels(bitmap, 180, 96) > 1000);
+        } finally {
+            bitmap.recycle();
+        }
+
+        String keepOpenMs = InstrumentationRegistry.getArguments().getString("keepReaderOpenMs", "0");
+        long keepOpenMillis = Long.parseLong(keepOpenMs);
+        if(keepOpenMillis > 0)
+            Thread.sleep(keepOpenMillis);
+    }
+
     private void assertNtkJagaanEpisodeRendersReaderImage(String episodeNumber) throws Exception {
         openNtkJagaanEpisode(episodeNumber);
         UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
@@ -524,6 +550,48 @@ public class EpisodeActivityNetworkTest {
         MainApplication.p.setBookmark(title, -1);
 
         Utils.openViewerPrepared(context, targetEpisode, 0, false, true, false, title, true, true);
+        return targetEpisode;
+    }
+
+    private Manga openNtkOnePieceEpisode(String episodeNumber) throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        MainApplication.p.setNtkSitePreset(CustomHttpClient.NTK_COMIC_URL);
+        MainApplication.p.setBaseMode(MTitle.base_comic);
+
+        Title title = new Title(
+                "원피스(ONE PIECE)",
+                "https://11toon8.com/data/toon_category/2.webp",
+                "",
+                Collections.singletonList("애니화"),
+                "",
+                2,
+                MTitle.base_comic);
+        title.setSourceSite("ntk");
+
+        int status = title.fetchEps(MainApplication.getHttpClient());
+        if(status == Title.LOAD_CAPTCHA) {
+            openNtkCaptchaAndWaitForAutoVerification(UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()), "NTK One Piece episode list");
+            status = title.fetchEps(MainApplication.getHttpClient());
+        }
+        assertEquals("Expected NTK One Piece episodes to load", Title.LOAD_OK, status);
+        List<Manga> episodes = Title.orderedEpisodeSnapshot(title.getEps());
+        assertTrue("Expected NTK One Piece episode list", episodes != null && episodes.size() > 0);
+        Manga targetEpisode = null;
+        for(Manga episode : episodes) {
+            String number = Manga.visibleEpisodeNumberKey(episode == null ? null : episode.getName());
+            if(episodeNumber.equals(number)) {
+                targetEpisode = episode;
+                break;
+            }
+        }
+        assertNotNull("Expected NTK One Piece episode " + episodeNumber + " in "
+                + firstEpisodeNames(episodes, Math.min(8, episodes.size())), targetEpisode);
+        targetEpisode.setTitle(title);
+        targetEpisode.setTitleId(title.getId());
+        MainApplication.p.resetViewerBookmark();
+        MainApplication.p.setBookmark(title, -1);
+
+        Utils.openViewerPrepared(context, targetEpisode, 0, false, true, false, title, false, true);
         return targetEpisode;
     }
 

@@ -596,7 +596,7 @@ object ReaderWarmupCoordinator {
         }
         val boundsAt = android.os.SystemClock.elapsedRealtime()
         val options = BitmapFactory.Options().apply {
-            inPreferredConfig = Bitmap.Config.RGB_565
+            inPreferredConfig = Bitmap.Config.ARGB_8888
             inSampleSize = sampleSize(bounds.outWidth, width)
         }
         val raw = if (source != null) {

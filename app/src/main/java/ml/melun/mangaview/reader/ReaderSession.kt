@@ -1230,7 +1230,8 @@ class ReaderSession(
                     return@execute
                 }
                 val originalPage = page
-                cachedDecodedResult(originalPage, targetWidth)?.let { cached ->
+                val allowPreviewCache = shouldUsePreviewDecodedCache(index, targetWidth)
+                cachedDecodedResult(originalPage, targetWidth, allowPreviewCache)?.let { cached ->
                     clearPageLoadState(index, ownsLoading, urgent)
                     postDecodeResult(Delivery(index, originalPage, cached, SystemClock.elapsedRealtime(), targetWidth, retainWhenBusy))
                     ViewerWarmupManager.logMetric("reader_decoded_cache_hit", index.toLong())
@@ -1248,7 +1249,7 @@ class ReaderSession(
                         if (cancelled.get() || shouldSkipStalePage(index, generation, anchor)) return@execute
                         val startedAt = SystemClock.elapsedRealtime()
                         val foregroundFetch = shouldUseForegroundFetch(index, originalPage, anchor, urgent, busy, generation)
-                        val result = decodePageWithLease(index, originalPage, targetWidth, foregroundFetch)
+                        val result = decodePageWithLease(index, originalPage, targetWidth, foregroundFetch, allowPreviewCache)
                         if (
                             cancelled.get() ||
                             shouldSkipStalePage(index, generation, anchor) ||
@@ -1514,8 +1515,14 @@ class ReaderSession(
         return cause != null && cause !== t && isExpectedCancellation(cause)
     }
 
-    private fun decodePageWithLease(index: Int, page: PageRef, targetWidth: Int, foregroundFetch: Boolean): PageDecodeResult {
-        cachedDecodedResult(page, targetWidth)?.let { return it }
+    private fun decodePageWithLease(
+        index: Int,
+        page: PageRef,
+        targetWidth: Int,
+        foregroundFetch: Boolean,
+        allowPreviewCache: Boolean
+    ): PageDecodeResult {
+        cachedDecodedResult(page, targetWidth, allowPreviewCache)?.let { return it }
         decodeForegroundStream(index, page, targetWidth, foregroundFetch)?.let { return it }
         val leaseStart = if (index == requestedStartPage() && page.manga.isOnline) SystemClock.elapsedRealtime() else 0L
         leaseImageFile(index, page, foregroundFetch || index == requestedStartPage()).use { lease ->
@@ -1554,14 +1561,36 @@ class ReaderSession(
         return result
     }
 
-    private fun cachedDecodedResult(page: PageRef, targetWidth: Int): PageDecodeResult? {
+    private fun shouldUsePreviewDecodedCache(index: Int, targetWidth: Int): Boolean {
+        return targetWidth < targetWidth(false) && !hasDeliveredBitmap(index)
+    }
+
+    private fun cachedDecodedResult(
+        page: PageRef,
+        targetWidth: Int,
+        allowPreviewCache: Boolean
+    ): PageDecodeResult? {
         val image = page.image ?: return null
-        val bitmap = ViewerWarmupManager.getDecodedBitmap(
-            PageItem(page.sourceIndex, image, page.manga, page.side),
+        val pageItem = PageItem(page.sourceIndex, image, page.manga, page.side)
+        val full = ViewerWarmupManager.getDecodedBitmap(
+            pageItem,
             autoCut,
             reverse,
-            targetWidth
-        ) ?: return null
+            targetWidth,
+            false
+        )
+        val preview = if (allowPreviewCache) {
+            ViewerWarmupManager.getDecodedBitmap(
+                pageItem,
+                autoCut,
+                reverse,
+                targetWidth,
+                true
+            )
+        } else {
+            null
+        }
+        val bitmap = full ?: preview ?: return null
         if (bitmap.isRecycled) return null
         return PageDecodeResult.Full(ViewerBitmapTrim.trimBlankVerticalEdges(bitmap))
     }
@@ -1584,7 +1613,7 @@ class ReaderSession(
         val decodeTargetWidth = decodeTargetWidth(bounds.outWidth, bounds.outHeight, targetWidth, page.allowAutoSplit)
         val sample = sampleSize(bounds.outWidth, decodeTargetWidth)
         val options = BitmapFactory.Options().apply {
-            inPreferredConfig = Bitmap.Config.RGB_565
+            inPreferredConfig = Bitmap.Config.ARGB_8888
             inSampleSize = sample
         }
         val raw = if (page.manga.isOnline || file.exists()) {
@@ -1700,7 +1729,7 @@ class ReaderSession(
     }
 
     private fun displayConfig(bitmap: Bitmap): Bitmap.Config {
-        return if (bitmap.config == Bitmap.Config.RGB_565) Bitmap.Config.RGB_565 else Bitmap.Config.ARGB_8888
+        return Bitmap.Config.ARGB_8888
     }
 
     private fun shouldAutoSplit(width: Int, height: Int): Boolean {
@@ -1752,7 +1781,7 @@ class ReaderSession(
                 val bottom = minOf(sourceHeight, top + TILE_SOURCE_HEIGHT)
                 rect.set(0, top, sourceWidth, bottom)
                 val options = BitmapFactory.Options().apply {
-                    inPreferredConfig = Bitmap.Config.RGB_565
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
                     inSampleSize = sample
                 }
                 val bitmap = decoder.decodeRegion(rect, options)

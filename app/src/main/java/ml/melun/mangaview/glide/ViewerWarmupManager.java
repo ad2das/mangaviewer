@@ -1041,7 +1041,7 @@ public class ViewerWarmupManager {
     private static RequestOptions viewerOptions(Context context, PageItem page, boolean autoCut, boolean reverse, int width) {
         RequestOptions options = new RequestOptions()
                 .diskCacheStrategy(viewerDiskCacheStrategy(context, false))
-                .format(DecodeFormat.PREFER_RGB_565)
+                .format(DecodeFormat.PREFER_ARGB_8888)
                 .downsample(DownsampleStrategy.AT_MOST)
                 .dontAnimate()
                 .override(Math.max(width, 1), Target.SIZE_ORIGINAL);

@@ -139,7 +139,7 @@ object ReaderImageCache {
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
             val decodeTargetWidth = foregroundDecodeTargetWidth(bounds.outWidth, bounds.outHeight, targetWidth, autoCut, allowSplit)
             val options = BitmapFactory.Options().apply {
-                inPreferredConfig = Bitmap.Config.RGB_565
+                inPreferredConfig = Bitmap.Config.ARGB_8888
                 inSampleSize = foregroundSampleSize(bounds.outWidth, decodeTargetWidth)
             }
             val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null

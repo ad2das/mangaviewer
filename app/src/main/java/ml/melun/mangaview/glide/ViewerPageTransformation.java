@@ -16,7 +16,7 @@ import ml.melun.mangaview.mangaview.Decoder;
 import ml.melun.mangaview.model.PageItem;
 
 public class ViewerPageTransformation extends BitmapTransformation {
-    private static final String ID = "ml.melun.mangaview.glide.ViewerPageTransformation.5";
+    private static final String ID = "ml.melun.mangaview.glide.ViewerPageTransformation.6";
     private static final float SPREAD_ASPECT_RATIO = 0.90f;
     private final int index;
     private final int side;
@@ -70,8 +70,7 @@ public class ViewerPageTransformation extends BitmapTransformation {
     }
 
     private static Bitmap.Config displayConfig(Bitmap bitmap) {
-        Bitmap.Config config = bitmap == null ? null : bitmap.getConfig();
-        return config == Bitmap.Config.RGB_565 ? Bitmap.Config.RGB_565 : Bitmap.Config.ARGB_8888;
+        return Bitmap.Config.ARGB_8888;
     }
 
     private static boolean shouldAutoSplit(int width, int height) {
