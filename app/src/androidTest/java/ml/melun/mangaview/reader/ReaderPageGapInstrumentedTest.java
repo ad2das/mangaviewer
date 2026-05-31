@@ -59,7 +59,7 @@ public class ReaderPageGapInstrumentedTest {
     }
 
     @Test
-    public void trimBlankVerticalEdgesRemovesNearBlackSourceGutters() {
+    public void trimBlankVerticalEdgesPreservesNearBlackSourceEdges() {
         Bitmap bitmap = Bitmap.createBitmap(20, 30, Bitmap.Config.ARGB_8888);
         bitmap.eraseColor(Color.rgb(18, 18, 18));
         Canvas canvas = new Canvas(bitmap);
@@ -69,9 +69,9 @@ public class ReaderPageGapInstrumentedTest {
 
         Bitmap trimmed = ViewerBitmapTrim.trimBlankVerticalEdges(bitmap);
 
-        assertEquals(18, trimmed.getHeight());
-        assertEquals(Color.rgb(90, 120, 180), trimmed.getPixel(10, 0));
-        assertEquals(Color.rgb(90, 120, 180), trimmed.getPixel(10, trimmed.getHeight() - 1));
+        assertEquals(30, trimmed.getHeight());
+        assertEquals(Color.rgb(18, 18, 18), trimmed.getPixel(10, 0));
+        assertEquals(Color.rgb(18, 18, 18), trimmed.getPixel(10, trimmed.getHeight() - 1));
     }
 
     @Test

@@ -6,7 +6,6 @@ import android.graphics.Color;
 public final class ViewerBitmapTrim {
     private static final int MAX_SAMPLES = 72;
     private static final int WHITE_THRESHOLD = 246;
-    private static final int BLACK_THRESHOLD = 24;
     private static final int ALPHA_THRESHOLD = 8;
     private static final int MAX_NON_BLANK_SAMPLES = 1;
 
@@ -74,7 +73,6 @@ public final class ViewerBitmapTrim {
         int red = Color.red(pixel);
         int green = Color.green(pixel);
         int blue = Color.blue(pixel);
-        return red >= WHITE_THRESHOLD && green >= WHITE_THRESHOLD && blue >= WHITE_THRESHOLD
-                || red <= BLACK_THRESHOLD && green <= BLACK_THRESHOLD && blue <= BLACK_THRESHOLD;
+        return red >= WHITE_THRESHOLD && green >= WHITE_THRESHOLD && blue >= WHITE_THRESHOLD;
     }
 }
