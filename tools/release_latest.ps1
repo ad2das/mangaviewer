@@ -7,6 +7,7 @@ param(
     [string]$PythonExe = "",
     [int]$ReleasePatch = -1,
     [switch]$SkipTests,
+    [switch]$SkipClassificationAssets,
     [switch]$NoCommit,
     [switch]$NoPush,
     [switch]$NoUpload,
@@ -253,15 +254,17 @@ if (-not (Test-Path $builtApk)) {
     throw "Built APK not found: $builtApk"
 }
 
-Write-Step "Building classification SQLite release assets"
-$python = Resolve-PythonExe
-& $python -X utf8 tools/classification/build_sqlite_release.py `
-    --version "$versionCode" `
-    --output "release/classification-base.sqlite" `
-    --gzip-output $classificationBasePath `
-    --manifest-output $classificationManifestPath
-if ($LASTEXITCODE -ne 0) {
-    throw "classification SQLite build failed"
+if (-not $SkipClassificationAssets) {
+    Write-Step "Building classification SQLite release assets"
+    $python = Resolve-PythonExe
+    & $python -X utf8 tools/classification/build_sqlite_release.py `
+        --version "$versionCode" `
+        --output "release/classification-base.sqlite" `
+        --gzip-output $classificationBasePath `
+        --manifest-output $classificationManifestPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "classification SQLite build failed"
+    }
 }
 
 $buildGradle = [regex]::Replace($buildGradle, "def\s+defaultReleasePatch\s*=\s*\d+", "def defaultReleasePatch = $nextPatch", 1)
@@ -303,9 +306,11 @@ if (-not $NoUpload) {
     Write-Step "Uploading version metadata release asset"
     Upload-ReleaseAsset $Repo $releaseId $versionJsonPath
 
-    Write-Step "Uploading classification DB release assets"
-    Upload-ReleaseAsset $Repo $releaseId $classificationManifestPath
-    Upload-ReleaseAsset $Repo $releaseId $classificationBasePath
+    if (-not $SkipClassificationAssets) {
+        Write-Step "Uploading classification DB release assets"
+        Upload-ReleaseAsset $Repo $releaseId $classificationManifestPath
+        Upload-ReleaseAsset $Repo $releaseId $classificationBasePath
+    }
 
     if ($DeleteOldReleaseApks) {
         Write-Step "Deleting old APK release assets"

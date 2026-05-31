@@ -2,7 +2,7 @@ param(
     [string]$Repo = "ad2das/mangaviewer",
     [string]$Workflow = "build-apk-artifact.yml",
     [string]$ArtifactName = "mangaviewer-debug-apk",
-    [string]$ReleaseTag = "codex/perf-stability-max-core-rewrite-v2112260512",
+    [string]$ReleaseTag = "main-latest",
     [string]$BuildRunId = "",
     [string]$ArtifactDir = "",
     [string]$CommitMessage = "",
