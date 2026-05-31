@@ -398,6 +398,8 @@ public class EpisodeActivityNetworkTest {
             String firstDrawable = waitForFirstDrawableMetric("ntk", 120000L);
             Log.d("ViewerPerf", "ntk_jagaan_cold_first_drawable mode=" + ntkFetchMode
                     + " episode=" + episodeNumber + " " + firstDrawable);
+            assertFalse("Expected first NTK drawable to be a real image for Jagaan " + episodeNumber
+                    + ": " + firstDrawable, firstDrawable.contains(" kind=error "));
             assertNtkFetchModeUsed(ntkFetchMode, episodeNumber, targetPath);
             assertInitialVisibleCoverageSettles("ntk Jagaan " + episodeNumber + " " + ntkFetchMode + " cold");
 
@@ -1376,8 +1378,15 @@ public class EpisodeActivityNetworkTest {
                             + episodeNumber + ": " + output,
                     output.contains("ntk_viewer_parse reason=generated-fast"));
         } else {
-            assertTrue("Expected generated-fast parse for NTK Jagaan " + episodeNumber + ": " + output,
-                    output.contains("ntk_viewer_parse reason=generated-fast"));
+            boolean generatedFast = output.contains("ntk_viewer_parse reason=generated-fast");
+            boolean validatedFallback = output.contains("ntk_viewer_parse reason=api-missing")
+                    || output.contains("ntk_viewer_parse reason=ok");
+            assertTrue("Expected generated-fast or validated image API fallback for NTK Jagaan "
+                    + episodeNumber + ": " + output, generatedFast || validatedFallback);
+            assertFalse("Generated mode must not surface invalid generated image URLs for NTK Jagaan "
+                            + episodeNumber + ": " + output,
+                    output.contains("Image request failed: 404 url=https://i.toonflix.app/manhwa/")
+                            || output.contains("reader_open_to_first_drawable source=ntk kind=error"));
         }
     }
 

@@ -1174,9 +1174,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 placeholderPx += px
             }
         }
-        val missingPx = max(0, state.height - coveredPx)
+        val rawMissingPx = max(0, state.height - coveredPx)
+        val missingPx = if (rawMissingPx <= COVERAGE_EDGE_FILL_PX && placeholderPx == 0 && drawablePx > 0) {
+            0
+        } else {
+            rawMissingPx
+        }
         return CoverageStats(
-            drawablePx = drawablePx,
+            drawablePx = if (missingPx == 0) max(drawablePx, state.height - placeholderPx) else drawablePx,
             missingPx = missingPx,
             placeholderPx = placeholderPx,
             drawableItems = drawableItems,

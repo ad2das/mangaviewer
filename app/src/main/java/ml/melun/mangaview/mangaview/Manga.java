@@ -443,13 +443,17 @@ public class Manga {
             boolean allowGeneratedImages = !nativeAckMode;
             if(nativeAckMode)
                 client.performNtkNativeAckBypass(client.getUrl(path), path);
-            boolean validateGeneratedFirstImage = !isNtkGeneratedModeOverride();
-            if(allowGeneratedImages
-                    && addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount(), validateGeneratedFirstImage)) {
-                logNtkViewerParse("generated-fast", null, path, 0, 0);
-                restoreBetterEpisodeList(previousEpisodes);
-                attachEpisodeSeriesMetadata();
-                return LOAD_OK;
+            boolean validateGeneratedFirstImage = true;
+            boolean generatedCandidatesChecked = false;
+            if(allowGeneratedImages) {
+                generatedCandidatesChecked = true;
+                if(addNtkGeneratedPathImageCandidates(client, path, seenImages,
+                        ntkGeneratedImageCandidateCount(), validateGeneratedFirstImage)) {
+                    logNtkViewerParse("generated-fast", null, path, 0, 0);
+                    restoreBetterEpisodeList(previousEpisodes);
+                    attachEpisodeSeriesMetadata();
+                    return LOAD_OK;
+                }
             }
             AsyncNtkPageFetch pageFetch = null;
             CustomHttpClient.PageResponse page = awaitAsyncNtkPageFetch(pageFetch, client, path);
@@ -457,7 +461,7 @@ public class Manga {
                     || looksLikeNtkBlockedPage(page.body);
             boolean missingPage = page.code >= 400 || looksLikeNtkMissingPage(page.body);
             if(blockedPage) {
-                if(allowGeneratedImages
+                if(allowGeneratedImages && !generatedCandidatesChecked
                         && addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount(), validateGeneratedFirstImage)) {
                     logNtkViewerParse("generated-blocked", page, path, 0, 0);
                 } else {
@@ -475,6 +479,7 @@ public class Manga {
                         return LOAD_CAPTCHA;
                     }
                 } else if(allowGeneratedImages && page.code >= 200 && page.code < 400
+                        && !generatedCandidatesChecked
                         && addNtkGeneratedPathImageCandidates(client, path, seenImages, ntkGeneratedImageCandidateCount(), validateGeneratedFirstImage)) {
                     logNtkViewerParse("generated-missing", page, path, 0, 0);
                 } else {

@@ -396,27 +396,20 @@ class ReaderSession(
             warmNtkInitialPages(startPage)
         } else {
             requestInitialWindow(startPage, false)
+            prefetchImageFilesAround(startPage)
         }
-        prefetchImageFilesAround(startPage)
     }
 
     private fun warmNtkInitialPages(startPage: Int) {
         val count = synchronized(pagesLock) { pages.size }
         if (count <= 0) return
         val first = startPage.coerceIn(0, count - 1)
-        val nearLast = minOf(count - 1, first + NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES)
-        if (first >= nearLast) return
-        for (index in (first + 1)..nearLast) {
-            requestPage(index, busy = true, anchor = false, generation = PRIME_WARM_GENERATION)
-        }
-        val farLast = minOf(count - 1, first + NTK_INITIAL_DECODE_AHEAD_PAGES)
-        if (nearLast >= farLast) return
-        main.postDelayed({
-            if (cancelled.get()) return@postDelayed
-            for (index in (nearLast + 1)..farLast) {
-                requestPage(index, busy = true, anchor = false, generation = PRIME_WARM_GENERATION)
+        val priorityLast = minOf(count - 1, first + NTK_INITIAL_PRIORITY_PAGES)
+        if (first < priorityLast) {
+            for (index in (first + 1)..priorityLast) {
+                requestPage(index, busy = true, anchor = false, generation = FOREGROUND_PRIME_WARM_GENERATION)
             }
-        }, NTK_INITIAL_FAR_WARM_DELAY_MS)
+        }
     }
 
     private fun releaseInitialFanoutIfAnchorReady(index: Int) {
@@ -1199,7 +1192,7 @@ class ReaderSession(
                     ViewerWarmupManager.logMetric("reader_decoded_cache_hit", index.toLong())
                     return@execute
                 }
-                if (!anchor && !urgent) prefetchImageFile(index, originalPage)
+                if (!anchor && !urgent && !foregroundPrime) prefetchImageFile(index, originalPage)
                 try {
                     decodeExecutor.execute {
                     val gate = if (busy) busyDecodeGate else idleDecodeGate
@@ -1336,8 +1329,42 @@ class ReaderSession(
             ViewerWarmupManager.logMetric("reader_first_bitmap_ms", SystemClock.elapsedRealtime() - startedAt)
             releasePreparedStoreBitmapsSoon()
             upgradeNtkInitialPriorityPagesAfterFirstBitmap()
+            scheduleNtkSecondaryInitialWarmAfterFirstBitmap()
+            scheduleNtkSourcePrefetchAfterFirstBitmap()
             scheduleNtkForwardTimelinePrimeAfterFirstBitmap()
         }
+    }
+
+    private fun scheduleNtkSecondaryInitialWarmAfterFirstBitmap() {
+        if (!isNtkSource(manga, title)) return
+        val first = requestedStartPage()
+        val count = synchronized(pagesLock) { pages.size }
+        if (count <= 0) return
+        val priorityLast = minOf(count - 1, first + NTK_INITIAL_PRIORITY_PAGES)
+        val nearLast = minOf(count - 1, first + NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES)
+        if (priorityLast < nearLast) {
+            main.postDelayed({
+                if (cancelled.get()) return@postDelayed
+                for (index in (priorityLast + 1)..nearLast) {
+                    requestPage(index, busy = true, anchor = false, generation = PRIME_WARM_GENERATION)
+                }
+            }, NTK_INITIAL_SECONDARY_WARM_DELAY_MS)
+        }
+        val farLast = minOf(count - 1, first + NTK_INITIAL_DECODE_AHEAD_PAGES)
+        if (nearLast >= farLast) return
+        main.postDelayed({
+            if (cancelled.get()) return@postDelayed
+            for (index in (nearLast + 1)..farLast) {
+                requestPage(index, busy = true, anchor = false, generation = PRIME_WARM_GENERATION)
+            }
+        }, NTK_INITIAL_FAR_WARM_DELAY_MS)
+    }
+
+    private fun scheduleNtkSourcePrefetchAfterFirstBitmap() {
+        if (!isNtkSource(manga, title)) return
+        main.postDelayed({
+            if (!cancelled.get()) prefetchImageFilesAround(requestedStartPage())
+        }, NTK_INITIAL_SOURCE_PREFETCH_AFTER_FIRST_BITMAP_DELAY_MS)
     }
 
     private fun upgradeNtkInitialPriorityPagesAfterFirstBitmap() {
@@ -2351,7 +2378,9 @@ class ReaderSession(
         private const val NTK_INITIAL_PRIORITY_PAGES = 12
         private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 20
         private const val NTK_INITIAL_DECODE_AHEAD_PAGES = 64
+        private const val NTK_INITIAL_SECONDARY_WARM_DELAY_MS = 180L
         private const val NTK_INITIAL_FAR_WARM_DELAY_MS = 450L
+        private const val NTK_INITIAL_SOURCE_PREFETCH_AFTER_FIRST_BITMAP_DELAY_MS = 250L
         private const val BOUNDARY_DECODE_AHEAD_PAGES = 8
         private const val BOUNDARY_BYTE_AHEAD_PAGES = 32
         private const val BOUNDARY_BUSY_DECODE_AHEAD_PAGES = 10
