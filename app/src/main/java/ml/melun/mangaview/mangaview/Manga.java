@@ -662,13 +662,17 @@ public class Manga {
         int before = imgs == null ? 0 : imgs.size();
         int safePageCount = Math.min(pageCount, NTK_MAX_GENERATED_PAGE_COUNT);
         String imageEpisodeId = episodeId;
+        boolean hasKnownImageCount = getNtkImageCount() > 0;
         String imageExtension = "jpeg";
         if(validateFirstImage) {
-            imageExtension = reachableNtkGeneratedImageExtension(client, segment, workId, imageEpisodeId, 1);
-            if(imageExtension.length() == 0)
-                return false;
-            safePageCount = reachableNtkGeneratedPageCountExpanded(client, segment, workId, imageEpisodeId,
-                    imageExtension, safePageCount);
+            if(!hasKnownImageCount) {
+                imageExtension = reachableNtkGeneratedImageExtension(client, segment, workId, imageEpisodeId, 1);
+                if(imageExtension.length() == 0)
+                    return false;
+                safePageCount = reachableNtkGeneratedPageCount(client, segment, workId, imageEpisodeId, imageExtension, safePageCount);
+            } else {
+                warmNtkGeneratedFirstImageConnection(client, segment, workId, imageEpisodeId, imageExtension);
+            }
         }
         for(int page = 1; page <= safePageCount; page++) {
             String src = ntkGeneratedImageUrl(segment, workId, imageEpisodeId, page, imageExtension);
@@ -714,7 +718,7 @@ public class Manga {
 
     private String reachableNtkGeneratedImageExtension(CustomHttpClient client, String segment, String workId,
                                                        String episodeId, int page) {
-        String[] extensions = {"jpg", "jpeg", "png", "webp"};
+        String[] extensions = {"jpeg", "jpg", "png", "webp"};
         for(String extension : extensions) {
             if(isNtkGeneratedImageReachable(client, ntkGeneratedImageUrl(segment, workId, episodeId, page, extension)))
                 return extension;
@@ -742,47 +746,6 @@ public class Manga {
         }
         if(best < pageCount)
             logNtkViewerParse("generated-trim-pages-" + pageCount + "-to-" + best, null, getNtkEpisodePath(), 0, 0);
-        return best;
-    }
-
-    private int reachableNtkGeneratedPageCountExpanded(CustomHttpClient client, String segment, String workId,
-                                                       String episodeId, String extension, int pageCount) {
-        int safePageCount = Math.max(1, Math.min(pageCount, NTK_MAX_GENERATED_PAGE_COUNT));
-        int best = reachableNtkGeneratedPageCount(client, segment, workId, episodeId, extension, safePageCount);
-        if(best < safePageCount || best >= NTK_MAX_GENERATED_PAGE_COUNT)
-            return best;
-        int next = best + 1;
-        if(!isNtkGeneratedImageReachable(client, ntkGeneratedImageUrl(segment, workId, episodeId, next, extension)))
-            return best;
-        best = next;
-        int low = next + 1;
-        int high = NTK_MAX_GENERATED_PAGE_COUNT;
-        int step = Math.max(8, best);
-        int probe = Math.min(NTK_MAX_GENERATED_PAGE_COUNT, next + step);
-        while(probe <= NTK_MAX_GENERATED_PAGE_COUNT) {
-            if(isNtkGeneratedImageReachable(client, ntkGeneratedImageUrl(segment, workId, episodeId, probe, extension))) {
-                best = probe;
-                low = probe + 1;
-                if(probe == NTK_MAX_GENERATED_PAGE_COUNT)
-                    break;
-                probe = Math.min(NTK_MAX_GENERATED_PAGE_COUNT, probe + step);
-                step = Math.min(NTK_MAX_GENERATED_PAGE_COUNT, step * 2);
-            } else {
-                high = probe - 1;
-                break;
-            }
-        }
-        while(low <= high) {
-            int mid = low + (high - low) / 2;
-            if(isNtkGeneratedImageReachable(client, ntkGeneratedImageUrl(segment, workId, episodeId, mid, extension))) {
-                best = mid;
-                low = mid + 1;
-            } else {
-                high = mid - 1;
-            }
-        }
-        if(best > safePageCount)
-            logNtkViewerParse("generated-expand-pages-" + safePageCount + "-to-" + best, null, getNtkEpisodePath(), 0, 0);
         return best;
     }
 
