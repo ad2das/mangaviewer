@@ -376,6 +376,39 @@ public class EpisodeActivityNetworkTest {
         assertNtkJagaanEpisodeRendersReaderImage("72");
     }
 
+    @Test
+    public void ntkJagaanEpisode79ScrollKeepsPageCoherent() throws Exception {
+        openNtkJagaanEpisode("79");
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        assertReaderOpenedThroughAutoCaptcha(device, "NTK Jagaan 79");
+
+        Thread.sleep(2500L);
+        File before = new File(ApplicationProvider.getApplicationContext().getCacheDir(),
+                "ntk_jagaan79_scroll_before.png");
+        assertTrue("Expected NTK Jagaan 79 initial screenshot", device.takeScreenshot(before));
+
+        for(int i = 0; i < 4; i++) {
+            device.swipe(540, 1600, 540, 350, 16);
+            Thread.sleep(350L);
+        }
+        File after = new File(ApplicationProvider.getApplicationContext().getCacheDir(),
+                "ntk_jagaan79_scroll_after.png");
+        assertTrue("Expected NTK Jagaan 79 scrolled screenshot", device.takeScreenshot(after));
+
+        for(int i = 0; i < 2; i++) {
+            device.swipe(540, 350, 540, 1600, 18);
+            Thread.sleep(350L);
+        }
+        File back = new File(ApplicationProvider.getApplicationContext().getCacheDir(),
+                "ntk_jagaan79_scroll_back.png");
+        assertTrue("Expected NTK Jagaan 79 back-scroll screenshot", device.takeScreenshot(back));
+
+        String keepOpenMs = InstrumentationRegistry.getArguments().getString("keepReaderOpenMs", "0");
+        long keepOpenMillis = Long.parseLong(keepOpenMs);
+        if(keepOpenMillis > 0)
+            Thread.sleep(keepOpenMillis);
+    }
+
     private void assertNtkJagaanEpisodeRendersReaderImage(String episodeNumber) throws Exception {
         openNtkJagaanEpisode(episodeNumber);
         UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());

@@ -347,7 +347,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
             val newHeight = resolvedPageDrawHeightLocked(bitmap.width, bitmap.height)
-            if (shouldDeferHeightChangingResolveLocked(index, oldTop, oldHeight)) {
+            if (shouldDeferHeightChangingResolveLocked(oldHeight, newHeight)) {
                 val hasCurrentDrawable = page.bitmap != null || page.tiles.isNotEmpty()
                 if (hasCurrentDrawable) {
                     page.bitmap = bitmap
@@ -400,7 +400,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
             val newHeight = resolvedPageDrawHeightLocked(pageWidth, pageHeight)
-            if (shouldDeferHeightChangingResolveLocked(index, oldTop, oldHeight)) {
+            if (shouldDeferHeightChangingResolveLocked(oldHeight, newHeight)) {
                 val hasCurrentDrawable = page.bitmap != null || page.tiles.isNotEmpty()
                 if (hasCurrentDrawable) {
                     page.bitmap = null
@@ -510,7 +510,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
             val newHeight = resolvedPageDrawHeightLocked(pageWidth, pageHeight)
-            if (shouldDeferHeightChangingResolveLocked(index, oldTop, oldHeight)) {
+            if (shouldDeferHeightChangingResolveLocked(oldHeight, newHeight)) {
                 page.pendingResolveType = PENDING_BOUNDS
                 page.pendingBitmap = null
                 page.pendingTiles = emptyList()
@@ -1431,11 +1431,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return max(1f, viewWidth * placeholderPageHeightRatio)
     }
 
-    private fun shouldDeferHeightChangingResolveLocked(index: Int, oldTop: Float, oldHeight: Float): Boolean {
+    private fun shouldDeferHeightChangingResolveLocked(oldHeight: Float, newHeight: Float): Boolean {
         if (!isScrollMovingLocked()) return false
-        val page = pages.getOrNull(index) ?: return false
-        if (page.width <= 0 || page.height <= 0) return false
-        return oldHeight > 0f
+        return oldHeight > 0f && abs(newHeight - oldHeight) > HEIGHT_CHANGE_EPSILON_PX
     }
 
     private fun isScrollMovingLocked(): Boolean {
@@ -1459,7 +1457,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (type == PENDING_NONE) continue
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
-            if (isPageVisibleLocked(oldTop, oldHeight) && !canApplyPendingResolveWhileVisibleLocked(page, type)) continue
             val pendingWidth = page.pendingWidth
             val pendingHeight = page.pendingHeight
             when (type) {
@@ -1495,19 +1492,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val newHeight = pageDrawHeightLocked(page)
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
         }
-    }
-
-    private fun canApplyPendingResolveWhileVisibleLocked(page: Page, type: Int): Boolean {
-        return when (type) {
-            PENDING_BITMAP -> page.bitmap == null && page.tiles.isEmpty()
-            PENDING_TILES -> page.bitmap == null && page.tiles.isEmpty()
-            else -> false
-        }
-    }
-
-    private fun isPageVisibleLocked(top: Float, pageHeight: Float): Boolean {
-        val bottom = top + pageHeight
-        return bottom > scrollOffset && top < scrollOffset + height
     }
 
     private fun noteResolvedPageAspectLocked(pageWidth: Int, pageHeight: Int) {
@@ -1961,6 +1945,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val INITIAL_RENDER_HOLD_MS = 700L
         private const val SCROLL_JUMP_LOG_SCREEN_RATIO = 0.75f
         private const val HEIGHT_CHANGE_SCROLL_ADJUST_QUIET_MS = 900L
+        private const val HEIGHT_CHANGE_EPSILON_PX = 0.01f
         private const val BUSY_RESOLVE_RENDER_EXTRA_PAGES = 2
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
