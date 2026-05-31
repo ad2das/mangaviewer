@@ -3626,7 +3626,7 @@ public class CustomHttpClient {
             // Fall back to WebView if native ACK bypass failed or returned no images
             if(MainApplication.currentActivity != null) {
                 urls.addAll(NtkWebViewFallbackManager.get(context).fetchViewerImageUrls(agent, baseUrl,
-                        path, headers, kind, workId, episodeId, imagesToken));
+                        path, headers, kind, workId, episodeId, imagesToken, getCookieHeader()));
                 if(urls.size() > 0)
                     return urls;
             }

@@ -527,10 +527,12 @@ public class Manga {
                     for(String src : fallbackBoardImages)
                         addImageIfValid(client, seenImages, src);
                 }
-                if(imgs.size() == 0)
+                if(imgs.size() == 0) {
                     logNtkViewerParse("empty", page, path, pageImages.size(), fallbackBoardImages.size());
-                else
+                    return LOAD_CAPTCHA;
+                } else {
                     logNtkViewerParse("ok", page, path, pageImages.size(), fallbackBoardImages.size());
+                }
             }
 
             List<Manga> titleEpisodes = title == null ? null : safeEpisodeCopy(title.getEps());
