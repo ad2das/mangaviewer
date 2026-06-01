@@ -831,7 +831,8 @@ class ReaderSession(
 
     private fun primeForwardTimeline() {
         if (cancelled.get() || !timelinePrimeLoading.compareAndSet(false, true)) return
-        network.execute {
+        try {
+            control.execute {
             try {
                 var current = manga
                 val currentTitle = title ?: current.title ?: manga.title ?: return@execute
@@ -882,6 +883,9 @@ class ReaderSession(
             } finally {
                 timelinePrimeLoading.set(false)
             }
+            }
+        } catch (_: RejectedExecutionException) {
+            timelinePrimeLoading.set(false)
         }
     }
 
@@ -1417,15 +1421,15 @@ class ReaderSession(
     }
 
     private fun scheduleNtkForwardTimelinePrimeAfterFirstBitmap() {
-        if (autoCut || !isNtkSource(manga, title)) return
+        if (!isNtkSource(manga, title)) return
         if (!timelinePrimeRequested.compareAndSet(false, true)) return
-        scheduleNtkForwardTimelinePrimeAfterDelay(ntkForwardPrimeDelayMs())
+        primeForwardTimeline()
     }
 
     private fun scheduleNtkForwardTimelinePrimeAfterDelay(delayMs: Long) {
         main.postDelayed({
             if (cancelled.get()) return@postDelayed
-            val quietMs = ntkBackgroundPrepareQuietRemainingMs()
+            val quietMs = if (isNtkGeneratedFastParse()) 0L else ntkBackgroundPrepareQuietRemainingMs()
             if (quietMs > 0L) {
                 scheduleNtkForwardTimelinePrimeAfterDelay(quietMs)
                 return@postDelayed
@@ -2478,7 +2482,7 @@ class ReaderSession(
         private const val PRIME_FORWARD_EPISODES = 40
         private const val NTK_PRIME_FORWARD_EPISODES = 2
         private const val NTK_GENERATED_FORWARD_PRIME_AFTER_FIRST_BITMAP_DELAY_MS = 0L
-        private const val NTK_NATIVE_FORWARD_PRIME_AFTER_FIRST_BITMAP_DELAY_MS = 4500L
+        private const val NTK_NATIVE_FORWARD_PRIME_AFTER_FIRST_BITMAP_DELAY_MS = 650L
         private const val NTK_PRIMED_EPISODE_DECODE_AHEAD_PAGES = 20
         private const val NTK_PRIMED_EPISODE_PRIORITY_PAGES = 16
         private const val NTK_PRIMED_EPISODE_BYTE_AHEAD_PAGES = 28

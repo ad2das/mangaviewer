@@ -224,6 +224,11 @@ public class MangaTest {
     }
 
     @Test
+    public void ntkGeneratedFastPathDoesNotTrimPagesBeforeFirstFrame() {
+        assertTrue(!Manga.shouldTrimNtkGeneratedPagesBeforeFirstFrameForTest());
+    }
+
+    @Test
     public void ntkViewerMetaImagesAreDerivedFromEpisodePath() {
         List<String> images = Manga.ntkViewerMetaPageImagesForTest(
                 "<script>{\\\"imageMetas\\\":[{\\\"page\\\":1},{\\\"page\\\":2}],"

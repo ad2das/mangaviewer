@@ -111,6 +111,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var viewerLaunchStartedAtMs = 0L
     private var viewerLaunchSourceSite = ""
     private var firstDrawableMetricLogged = false
+    private val launchDrawableMetricPages = HashSet<Int>()
     private val initialDrawGateTimeoutRunnable = Runnable {
         if (!pagesReady && !destroyed && !isFinishing) {
             initialStatusPending = false
@@ -506,6 +507,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 hideBoundaryStatus()
                 renderView.setPageBitmap(index, bitmap)
                 val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
+                logLaunchDrawableMetric(index, "bitmap")
                 if (visibleInitialDrawable) logFirstDrawableMetric(index, "bitmap")
                 if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
                 if (visibleInitialDrawable) releaseInitialDrawGate("page")
@@ -519,6 +521,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 hideBoundaryStatus()
                 renderView.setPageTiles(index, pageWidth, pageHeight, tiles)
                 val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
+                logLaunchDrawableMetric(index, "tiles")
                 if (visibleInitialDrawable) logFirstDrawableMetric(index, "tiles")
                 if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
                 if (visibleInitialDrawable) releaseInitialDrawGate("tiles")
@@ -574,6 +577,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         renderView.contentDescription = READER_DRAWABLE_READY_DESCRIPTION
         val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
         Log.d("ViewerPerf", "reader_open_to_first_drawable source=$viewerLaunchSourceSite kind=$kind page=$index ms=$elapsed")
+    }
+
+    private fun logLaunchDrawableMetric(index: Int, kind: String) {
+        if (viewerLaunchStartedAtMs <= 0L) return
+        val first = currentPage
+        if (index < first || index > first + 2) return
+        if (!launchDrawableMetricPages.add(index)) return
+        val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
+        Log.d("ViewerPerf", "reader_open_to_near_drawable source=$viewerLaunchSourceSite kind=$kind page=$index ms=$elapsed")
     }
 
     private fun shouldMarkFirstDrawable(index: Int, currentPage: Int): Boolean {

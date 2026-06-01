@@ -4054,6 +4054,8 @@ public class CustomHttpClient {
     }
 
     private boolean performNtkNativeAckBypassLocked(String baseUrl, String path, String cacheKey) {
+        long startedMs = System.currentTimeMillis();
+        long phaseStartedMs = startedMs;
         try {
             HttpEngine engine = getOrCreateNtkQuicEngine(baseUrl);
             if(engine == null)
@@ -4061,6 +4063,7 @@ public class CustomHttpClient {
             ExecutorService executor = getOrCreateNtkQuicExecutor(baseUrl);
             if(executor == null)
                 return false;
+            phaseStartedMs = logNtkNativeAckPhase("engine", path, startedMs, phaseStartedMs);
             Map<String, String> h = new HashMap<>();
             h.put("origin", baseUrl);
             h.put("referer", baseUrl + path);
@@ -4071,27 +4074,8 @@ public class CustomHttpClient {
                 dumpNtkAckDebugArtifacts(baseUrl, path);
             }
 
-            // Fetch encrypted ad_guard_bg.wasm before ad challenge. The returned bytes are
-            // not transformed here, but the request is part of the native ACK request sequence.
-            byte[] wasmBytes = null;
-            try {
-                if(isNtkWasmWarm(baseUrl)) {
-                    Log.d(TAG, "ntk_wasm_fetch_skipped_warm path=" + path);
-                } else {
-                Map<String, String> wasmHeaders = new HashMap<>();
-                wasmHeaders.put("referer", baseUrl + path);
-                wasmHeaders.put("range", "bytes=0-0");
-                NtkQuicFetcher.Result wasmResult = NtkQuicFetcher.fetchWithEngine(engine, executor, baseUrl + "/wasm/ad-guard/ad_guard_bg.wasm", agent,
-                        getCookieHeader(), wasmHeaders, "GET", null, 30000L);
-                int wasmCode = wasmResult == null ? 0 : wasmResult.code;
-                Log.e(TAG, "ntk_wasm_fetch_code=" + wasmCode);
-                if(wasmResult != null && wasmResult.bodyBytes != null && wasmResult.bodyBytes.length > 0) {
-                    wasmBytes = wasmResult.bodyBytes;
-                    Log.e(TAG, "ntk_wasm_body_len=" + wasmBytes.length);
-                    markNtkWasmWarm(baseUrl);
-                }
-                }
-            } catch(Exception ignored) {}
+            Log.d(TAG, "ntk_wasm_fetch_skipped_ack_fast path=" + path);
+            phaseStartedMs = logNtkNativeAckPhase("wasm", path, startedMs, phaseStartedMs);
 
             // 1. POST /api/ad/challenge
             JSONObject challengePayload = new JSONObject();
@@ -4117,6 +4101,7 @@ public class CustomHttpClient {
             JSONObject challengeObj = challengeJson.optJSONObject("challenge");
             if(challengeObj == null)
                 return false;
+            phaseStartedMs = logNtkNativeAckPhase("challenge", path, startedMs, phaseStartedMs);
             String token = challengeObj.optString("token", "");
             JSONArray impressionUrls = challengeObj.optJSONArray("impressionUrls");
             Log.d(TAG, "ntk_native_ack_challenge_token_len=" + token.length()
@@ -4135,6 +4120,7 @@ public class CustomHttpClient {
             if(impressionUrls != null && impressionUrls.length() > 0) {
                 fetchNtkAckImpressions(engine, executor, baseUrl, challengePath, impressionUrls);
             }
+            phaseStartedMs = logNtkNativeAckPhase("impressions", challengePath, startedMs, phaseStartedMs);
 
             // 2.5 Transform challenge token using ad_guard WASM via WebView
             // OPTIMIZATION: skip WASM/JS fetch and _vc WebView execution;
@@ -4173,6 +4159,7 @@ public class CustomHttpClient {
                 Log.d(TAG, "ntk_native_ack_canary_failed path=" + challengePath);
                 return false;
             }
+            phaseStartedMs = logNtkNativeAckPhase("canary", challengePath, startedMs, phaseStartedMs);
 
             // 4. POST /api/ad/ack with challenge token
             // WebView sends additional metrics: total, visible, td, tp
@@ -4224,15 +4211,29 @@ public class CustomHttpClient {
                     break;
             }
             boolean ackSuccess = ack != null && ack.code == 200 && ackBodyOk;
-            Log.d(TAG, "ntk_native_ack_final_success=" + ackSuccess + ",path=" + challengePath);
+            phaseStartedMs = logNtkNativeAckPhase("ack", challengePath, startedMs, phaseStartedMs);
+            Log.d(TAG, "ntk_native_ack_final_success=" + ackSuccess
+                    + ",path=" + challengePath
+                    + ",totalMs=" + (System.currentTimeMillis() - startedMs));
             if(ackSuccess) {
                 NTK_ACK_CACHE.put(cacheKey, System.currentTimeMillis());
             }
             return ackSuccess;
         } catch(Exception e) {
-            Log.d(TAG, "ntk_native_ack_bypass_exception=" + e);
+            Log.d(TAG, "ntk_native_ack_bypass_exception=" + e
+                    + ",totalMs=" + (System.currentTimeMillis() - startedMs)
+                    + ",path=" + path);
             return false;
         }
+    }
+
+    private long logNtkNativeAckPhase(String phase, String path, long startedMs, long phaseStartedMs) {
+        long now = System.currentTimeMillis();
+        Log.d(TAG, "ntk_native_ack_phase phase=" + phase
+                + ",phaseMs=" + (now - phaseStartedMs)
+                + ",totalMs=" + (now - startedMs)
+                + ",path=" + path);
+        return now;
     }
 
     private void fetchNtkAckImpressions(HttpEngine engine, ExecutorService executor, String baseUrl,

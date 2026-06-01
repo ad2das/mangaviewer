@@ -627,7 +627,9 @@ public class Utils {
         if(returnToEpisodes)
             viewer.putExtra("returnToEpisodes", true);
         if(launchTitle != null)
-            viewer.putExtra("title", toViewerTitleJson(launchTitle, includeTitleEpisodes));
+            viewer.putExtra("title", includeTitleEpisodes
+                    ? toViewerTitleJson(launchTitle, true)
+                    : toViewerTitleJsonAround(launchTitle, manga, 4, 12));
         if(recent)
             viewer.putExtra("recent", true);
         viewer.putExtra("viewerLaunchStartedAtMs", SystemClock.elapsedRealtime());
@@ -896,6 +898,42 @@ public class Utils {
         if(includeEpisodes)
             copy.setEps(viewerEpisodeCopies(snapshotEpisodes(title)));
         return new Gson().toJson(copy);
+    }
+
+    public static String toViewerTitleJsonAround(Title title, Manga anchor, int before, int after) {
+        if(title == null)
+            return null;
+        Title copy = new Title(title.minimize());
+        List<Manga> episodes = snapshotEpisodes(title);
+        if(episodes == null || episodes.isEmpty())
+            return new Gson().toJson(copy);
+        int anchorIndex = viewerEpisodeIndex(episodes, anchor);
+        if(anchorIndex < 0)
+            return new Gson().toJson(copy);
+        int first = Math.max(0, anchorIndex - Math.max(0, before));
+        int last = Math.min(episodes.size() - 1, anchorIndex + Math.max(0, after));
+        copy.setEps(viewerEpisodeCopies(episodes.subList(first, last + 1)));
+        return new Gson().toJson(copy);
+    }
+
+    private static int viewerEpisodeIndex(List<Manga> episodes, Manga anchor) {
+        if(episodes == null || anchor == null)
+            return -1;
+        String anchorPath = anchor.getNtkEpisodePath();
+        String anchorNumber = Manga.visibleEpisodeNumberKey(anchor.getName());
+        for(int i = 0; i < episodes.size(); i++) {
+            Manga episode = episodes.get(i);
+            if(episode == null)
+                continue;
+            if(anchor.getId() > 0 && anchor.getId() == episode.getId())
+                return i;
+            if(anchorPath != null && anchorPath.length() > 0 && anchorPath.equals(episode.getNtkEpisodePath()))
+                return i;
+            if(anchorNumber != null && anchorNumber.length() > 0
+                    && anchorNumber.equals(Manga.visibleEpisodeNumberKey(episode.getName())))
+                return i;
+        }
+        return -1;
     }
 
     private static Manga viewerMangaCopy(Manga source, Title title) {

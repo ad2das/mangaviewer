@@ -516,6 +516,55 @@ public class EpisodeActivityNetworkTest {
             Thread.sleep(keepOpenMillis);
     }
 
+    @Test
+    public void ntkOnePieceColdEpisodeRangePerf() throws Exception {
+        int episodeStart = Integer.parseInt(InstrumentationRegistry.getArguments().getString("episodeStart", "1100"));
+        int episodeEnd = Integer.parseInt(InstrumentationRegistry.getArguments().getString("episodeEnd", "1110"));
+        String ntkFetchMode = InstrumentationRegistry.getArguments().getString("ntkFetchMode", "generated");
+        boolean scrollStressEachEpisode = Boolean.parseBoolean(InstrumentationRegistry.getArguments()
+                .getString("scrollStressEachEpisode", "false"));
+        long scrollInitialDelayMs = Long.parseLong(InstrumentationRegistry.getArguments()
+                .getString("scrollInitialDelayMs", "300"));
+        Context context = ApplicationProvider.getApplicationContext();
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        int first = Math.min(episodeStart, episodeEnd);
+        int last = Math.max(episodeStart, episodeEnd);
+
+        Manga.setNtkViewerFetchModeOverrideForTest(ntkFetchMode);
+        try {
+            executeShell("logcat -c");
+            for(int episode = first; episode <= last; episode++) {
+                String episodeNumber = String.valueOf(episode);
+                clearColdReaderState(context);
+                int firstDrawableBaseline = countFirstDrawableMetrics("ntk");
+
+                Manga targetEpisode = openNtkOnePieceEpisodeColdDirect(episodeNumber);
+                String targetPath = targetEpisode == null ? "" : targetEpisode.getNtkEpisodePath();
+                assertReaderOpenedThroughAutoCaptcha(device, "NTK One Piece " + episodeNumber + " " + ntkFetchMode + " cold");
+
+                String firstDrawable = waitForFirstDrawableMetric("ntk", 120000L, firstDrawableBaseline);
+                Log.d("ViewerPerf", "ntk_onepiece_cold_first_drawable mode=" + ntkFetchMode
+                        + " episode=" + episodeNumber + " " + firstDrawable);
+                assertFalse("Expected first NTK drawable to be a real image for One Piece "
+                        + episodeNumber + ": " + firstDrawable, firstDrawable.contains(" kind=error "));
+                assertNtkFetchModeUsedForLabel(ntkFetchMode, "One Piece " + episodeNumber, targetPath);
+                assertInitialVisibleCoverageSettles("ntk One Piece " + episodeNumber + " " + ntkFetchMode + " cold");
+                assertReaderToolbarTitleContains(device, episodeNumber);
+                if(scrollStressEachEpisode) {
+                    String scrollSource = "ntk_onepiece_" + episodeNumber + "_" + ntkFetchMode + "_cold";
+                    stressScrollViewer(device, scrollSource, scrollInitialDelayMs);
+                    assertNoVisibleLoadingLoggedAfterScrollStart(
+                            "ntk One Piece " + episodeNumber + " " + ntkFetchMode + " cold",
+                            scrollSource);
+                }
+                device.pressBack();
+                device.wait(Until.gone(By.res(PACKAGE_NAME, "strip")), 5000L);
+            }
+        } finally {
+            Manga.clearNtkViewerFetchModeOverrideForTest();
+        }
+    }
+
     private void assertNtkJagaanEpisodeRendersReaderImage(String episodeNumber) throws Exception {
         openNtkJagaanEpisode(episodeNumber);
         UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
@@ -638,6 +687,56 @@ public class EpisodeActivityNetworkTest {
         return targetEpisode;
     }
 
+    private Manga openNtkOnePieceEpisodeColdDirect(String episodeNumber) throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        MainApplication.p.setNtkSitePreset(CustomHttpClient.NTK_COMIC_URL);
+        MainApplication.p.setBaseMode(MTitle.base_comic);
+
+        Title title = new Title(
+                "원피스(ONE PIECE)",
+                "https://11toon8.com/data/toon_category/2.webp",
+                "",
+                Collections.singletonList("애니화"),
+                "",
+                2,
+                MTitle.base_comic);
+        title.setSourceSite("ntk");
+
+        int status = title.fetchEps(MainApplication.getHttpClient());
+        if(status == Title.LOAD_CAPTCHA) {
+            openNtkCaptchaAndWaitForAutoVerification(UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()), "NTK One Piece cold episode list");
+            status = title.fetchEps(MainApplication.getHttpClient());
+        }
+        assertEquals("Expected NTK One Piece episodes to load", Title.LOAD_OK, status);
+        List<Manga> episodes = Title.orderedEpisodeSnapshot(title.getEps());
+        assertTrue("Expected NTK One Piece episode list", episodes != null && episodes.size() > 0);
+        Manga targetEpisode = null;
+        for(Manga episode : episodes) {
+            String number = Manga.visibleEpisodeNumberKey(episode == null ? null : episode.getName());
+            if(episodeNumber.equals(number)) {
+                targetEpisode = episode;
+                break;
+            }
+        }
+        assertNotNull("Expected NTK One Piece episode " + episodeNumber + " in "
+                + firstEpisodeNames(episodes, Math.min(8, episodes.size())), targetEpisode);
+        targetEpisode.setTitle(title);
+        targetEpisode.setTitleId(title.getId());
+        MainApplication.p.resetViewerBookmark();
+        MainApplication.p.setBookmark(title, -1);
+
+        Intent viewer = new Intent(context, ReaderV2Activity.class);
+        viewer.putExtra("manga", Utils.toViewerMangaJson(targetEpisode, title, false));
+        viewer.putExtra("title", Utils.toViewerTitleJsonAround(title, targetEpisode, 4, 12));
+        viewer.putExtra("online", true);
+        viewer.putExtra("viewerLaunchStartedAtMs", SystemClock.elapsedRealtime());
+        viewer.putExtra("viewerLaunchSourceSite", "ntk");
+        viewer.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        viewer.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        context.startActivity(viewer);
+        return targetEpisode;
+    }
+
     private Manga openNtkJagaanEpisodeColdDirect(String episodeNumber) throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         MainApplication.p.setNtkSitePreset(CustomHttpClient.NTK_COMIC_URL);
@@ -668,7 +767,7 @@ public class EpisodeActivityNetworkTest {
 
         Intent viewer = new Intent(context, ReaderV2Activity.class);
         viewer.putExtra("manga", Utils.toViewerMangaJson(targetEpisode, title, false));
-        viewer.putExtra("title", Utils.toViewerTitleJson(title, true));
+        viewer.putExtra("title", Utils.toViewerTitleJson(title, false));
         viewer.putExtra("online", true);
         viewer.putExtra("viewerLaunchStartedAtMs", SystemClock.elapsedRealtime());
         viewer.putExtra("viewerLaunchSourceSite", "ntk");
@@ -1523,13 +1622,33 @@ public class EpisodeActivityNetworkTest {
     }
 
     private static String waitForFirstDrawableMetric(String source, long timeoutMs) throws Exception {
+        return waitForFirstDrawableMetric(source, timeoutMs, 0);
+    }
+
+    private static int countFirstDrawableMetrics(String source) throws Exception {
+        String output = executeShellOutput("logcat -d -s ViewerPerf:D *:S");
+        int count = 0;
+        for(String line : output.split("\\R")) {
+            if(line.contains("reader_open_to_first_drawable source=" + source))
+                count++;
+        }
+        return count;
+    }
+
+    private static String waitForFirstDrawableMetric(String source, long timeoutMs, int alreadySeen) throws Exception {
         long deadline = System.currentTimeMillis() + timeoutMs;
         String latestOutput = "";
         while(System.currentTimeMillis() < deadline) {
             latestOutput = executeShellOutput("logcat -d -s ViewerPerf:D *:S");
+            int seen = 0;
+            String latestMatch = "";
             for(String line : latestOutput.split("\\R")) {
-                if(line.contains("reader_open_to_first_drawable source=" + source))
-                    return line;
+                if(line.contains("reader_open_to_first_drawable source=" + source)) {
+                    seen++;
+                    latestMatch = line;
+                    if(seen > alreadySeen)
+                        return line;
+                }
             }
             Thread.sleep(100L);
         }
@@ -1589,27 +1708,45 @@ public class EpisodeActivityNetworkTest {
     }
 
     private static void assertNtkFetchModeUsed(String mode, String episodeNumber, String targetPath) throws Exception {
+        assertNtkFetchModeUsedForLabel(mode, "Jagaan " + episodeNumber, targetPath);
+    }
+
+    private static void assertNtkFetchModeUsedForLabel(String mode, String label, String targetPath) throws Exception {
         String normalized = mode == null ? "" : mode.trim().toLowerCase(Locale.ROOT);
         String output = executeShellOutput("logcat -d -s ViewerPerf:D *:S");
         if("native".equals(normalized) || "native-ack".equals(normalized) || "native_ack".equals(normalized)) {
-            assertTrue("Expected native ACK bypass success for NTK Jagaan " + episodeNumber + ": " + output,
+            assertTrue("Expected native ACK bypass success for NTK " + label + ": " + output,
                     output.contains("ntk_native_ack_final_success=true,path=" + targetPath)
                             || output.contains("ntk_native_ack_bypass_success path=" + targetPath));
-            assertFalse("Native ACK target path must not report missing_canary for NTK Jagaan "
-                            + episodeNumber + ": " + output,
+            assertFalse("Native ACK target path must not report missing_canary for NTK "
+                            + label + ": " + output,
                     output.contains("error=missing_canary,path=" + targetPath)
                             || output.contains("missing_canary}\",path=" + targetPath));
-            assertFalse("Native ACK mode must not use generated-fast for NTK Jagaan "
-                            + episodeNumber + ": " + output,
+            assertFalse("Native ACK mode must not use plain generated-fast for NTK "
+                            + label + ": " + output,
                     output.contains("ntk_viewer_parse reason=generated-fast"));
+        } else if("api".equals(normalized) || "api-fallback".equals(normalized) || "api_fallback".equals(normalized)) {
+            assertTrue("Expected validated image API fallback for NTK "
+                    + label + ": " + output,
+                    output.contains("ntk_viewer_parse reason=api-missing")
+                            || output.contains("ntk_viewer_parse reason=ok")
+                            || output.contains("ntk_viewer_parse reason=api-accelerated-after-ack")
+                            || output.contains("ntk_viewer_parse reason=api-optimistic-generated"));
+            assertFalse("API fallback mode must not use plain generated-fast for NTK "
+                            + label + ": " + output,
+                    output.contains("ntk_viewer_parse reason=generated-fast"));
+            assertFalse("API fallback mode must not surface invalid reader images for NTK "
+                            + label + ": " + output,
+                    output.contains("reader_open_to_first_drawable source=ntk kind=error"));
         } else {
             boolean generatedFast = output.contains("ntk_viewer_parse reason=generated-fast");
+            boolean generatedAfterAck = output.contains("ntk_viewer_parse reason=generated-after-ack");
             boolean validatedFallback = output.contains("ntk_viewer_parse reason=api-missing")
                     || output.contains("ntk_viewer_parse reason=ok");
-            assertTrue("Expected generated-fast or validated image API fallback for NTK Jagaan "
-                    + episodeNumber + ": " + output, generatedFast || validatedFallback);
-            assertFalse("Generated mode must not surface invalid generated image URLs for NTK Jagaan "
-                            + episodeNumber + ": " + output,
+            assertTrue("Expected generated-fast or validated image API fallback for NTK "
+                    + label + ": " + output, generatedFast || generatedAfterAck || validatedFallback);
+            assertFalse("Generated mode must not surface invalid generated image URLs for NTK "
+                            + label + ": " + output,
                     output.contains("Image request failed: 404 url=https://i.toonflix.app/manhwa/")
                             || output.contains("reader_open_to_first_drawable source=ntk kind=error"));
         }

@@ -9,6 +9,7 @@ import ml.melun.mangaview.MainApplication.getHttpClient
 import ml.melun.mangaview.Utils
 import ml.melun.mangaview.glide.ViewerWarmupManager
 import ml.melun.mangaview.mangaview.Manga
+import ml.melun.mangaview.mangaview.Title
 import okhttp3.Call
 import okhttp3.Request
 import okhttp3.Response
@@ -284,7 +285,7 @@ object ReaderImageCache {
         foreground: Boolean = false
     ): okhttp3.Response {
         val response = try {
-            if (foreground) requestForegroundRace(manga, image) else request(context, manga, image)
+            requestForForegroundMode(context, manga, image, foreground)
         } catch (e: IOException) {
             if (!shouldTryNtkGeneratedExtensionFallback(image)) throw e
             null
@@ -294,16 +295,82 @@ object ReaderImageCache {
             throw IOException("Generated image request failed before fallback: $image")
         }
         response?.close()
+        retryNtkGeneratedAfterNativeAck(context, manga, image, foreground)?.let { return it }
         for (candidate in ntkGeneratedExtensionFallbacks(image)) {
             val fallback = try {
-                if (foreground) requestForegroundRace(manga, candidate) else request(context, manga, candidate)
+                requestForForegroundMode(context, manga, candidate, foreground)
             } catch (e: IOException) {
                 continue
             }
             if (fallback.isSuccessful) return fallback
             fallback.close()
         }
-        return if (foreground) requestForegroundRace(manga, image) else request(context, manga, image)
+        retryNtkGeneratedViaApiFallback(context, manga, image, foreground)?.let { return it }
+        return requestForForegroundMode(context, manga, image, foreground)
+    }
+
+    private fun retryNtkGeneratedAfterNativeAck(
+        context: Context,
+        manga: Manga,
+        image: String,
+        foreground: Boolean
+    ): okhttp3.Response? {
+        val target = ntkGeneratedTarget(image) ?: return null
+        val acked = try {
+            getHttpClient().performNtkNativeAckBypass(target.baseUrl, target.path)
+        } catch (_: Exception) {
+            false
+        }
+        if (!acked) return null
+        ViewerWarmupManager.logMetric("ntk_generated_image_native_ack_retry", target.page.toLong())
+        val retry = try {
+            requestForForegroundMode(context, manga, image, foreground)
+        } catch (_: IOException) {
+            null
+        }
+        if (retry != null && retry.isSuccessful) return retry
+        retry?.close()
+        return null
+    }
+
+    private fun retryNtkGeneratedViaApiFallback(
+        context: Context,
+        manga: Manga,
+        image: String,
+        foreground: Boolean
+    ): okhttp3.Response? {
+        val target = ntkGeneratedTarget(image) ?: return null
+        val result = try {
+            Manga.fetchWithTemporaryNtkViewerFetchMode(manga, getHttpClient(), "api-strict")
+        } catch (_: Exception) {
+            Title.LOAD_ERROR
+        }
+        if (result != Title.LOAD_OK) return null
+        val replacement = manga.getImgs(context).getOrNull(target.page - 1) ?: return null
+        if (replacement == image) return null
+        ViewerWarmupManager.logMetric("ntk_generated_image_api_fallback_retry", target.page.toLong())
+        val retry = try {
+            requestForForegroundMode(context, manga, replacement, foreground)
+        } catch (_: IOException) {
+            null
+        }
+        if (retry != null && retry.isSuccessful) return retry
+        retry?.close()
+        return null
+    }
+
+    private fun requestForForegroundMode(
+        context: Context,
+        manga: Manga,
+        image: String,
+        foreground: Boolean
+    ): okhttp3.Response {
+        if (!foreground) return request(context, manga, image)
+        return if (shouldRaceForegroundImage(image)) requestForegroundRace(manga, image) else request(context, manga, image)
+    }
+
+    private fun shouldRaceForegroundImage(image: String): Boolean {
+        return !shouldTryNtkGeneratedExtensionFallback(image)
     }
 
     private fun requestForegroundRace(manga: Manga, image: String): okhttp3.Response {
@@ -356,6 +423,22 @@ object ReaderImageCache {
         val lower = image.lowercase()
         return lower.contains("://i.toonflix.app/")
             && Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower)
+    }
+
+    private data class NtkGeneratedTarget(
+        val baseUrl: String,
+        val path: String,
+        val page: Int
+    )
+
+    private fun ntkGeneratedTarget(image: String): NtkGeneratedTarget? {
+        val match = Regex("^(https?://[^/]+)/(manhwa|webtoon)/(\\d+)/([^/?#]+)/p(\\d{3})\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
+            .find(image) ?: return null
+        val segment = match.groupValues[2]
+        val workId = match.groupValues[3]
+        val episodeId = match.groupValues[4]
+        val page = match.groupValues[5].toIntOrNull() ?: return null
+        return NtkGeneratedTarget(match.groupValues[1], "/$segment/$workId/$episodeId", page)
     }
 
     private fun ntkGeneratedExtensionFallbacks(image: String): List<String> {
