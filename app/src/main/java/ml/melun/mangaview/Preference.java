@@ -1768,7 +1768,7 @@ public class Preference {
             return;
         boolean changed = false;
         int processed = 0;
-        for(MTitle item : recent) {
+        for(MTitle item : Utils.snapshotList(recent)) {
             if(item == null || item.getId() <= 0)
                 continue;
             if(item.getBookmarkEpisodeIndex() > 0 && item.getEpisodeCount() > 0)

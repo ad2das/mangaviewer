@@ -552,7 +552,6 @@ public class Manga {
             };
             if(skipGeneratedForSlugEpisode && !nativeAckMode) {
                 startDirectPageFetchIfNeeded.run();
-                startPageFetchIfNeeded.run();
             }
             boolean nativeAckCompleted = false;
             if(apiFallbackMode && !isNtkStrictApiFallbackModeOverride()
@@ -576,7 +575,8 @@ public class Manga {
                 }
             } else if(apiFallbackMode) {
                 startDirectPageFetchIfNeeded.run();
-                startPageFetchIfNeeded.run();
+                if(!skipGeneratedForSlugEpisode)
+                    startPageFetchIfNeeded.run();
                 startNativeAckIfNeeded.run();
                 if(!isNtkStrictApiFallbackModeOverride()) {
                     nativeAckCompleted = awaitAsyncNtkNativeAck(nativeAckRef[0],
@@ -1115,15 +1115,35 @@ public class Manga {
         }
         if(addNtkBoardUploadTextImageCandidates(client, normalized, seenImages))
             return true;
-        String imageEpisodeId = getNtkImageEpisodeId();
+        if(shouldPreAckBeforeNtkViewerImageApi(path)) {
+            if(Thread.currentThread().isInterrupted()) {
+                Log.d(TAG, "ntk_pre_ack_stale_interrupt_cleared path=" + path);
+                Thread.interrupted();
+            }
+            boolean acked = client.performNtkNativeAckBypass(client.getUrl(path), path);
+            if(!acked && Thread.currentThread().isInterrupted()) {
+                Log.d(TAG, "ntk_pre_ack_interrupted_cleared path=" + path);
+                Thread.interrupted();
+                acked = client.performNtkNativeAckBypass(client.getUrl(path), path);
+            }
+        }
+        String pathEpisodeId = pathMatcher.group(3);
+        String imageEpisodeId = shouldSkipNtkGeneratedForEpisodePath(path)
+                ? pathEpisodeId : getNtkImageEpisodeId();
         if(imageEpisodeId.length() == 0)
-            imageEpisodeId = pathMatcher.group(3);
+            imageEpisodeId = pathEpisodeId;
         List<String> urls = client.fetchNtkViewerImageUrls(pathMatcher.group(1), pathMatcher.group(2), imageEpisodeId, token, normalized);
         for(String url : urls)
             addImageIfValid(client, seenImages, url);
         if(imgs == null || imgs.size() == before)
             addNtkBoardUploadTextImageCandidates(client, normalized, seenImages);
         return imgs != null && imgs.size() > before;
+    }
+
+    private boolean shouldPreAckBeforeNtkViewerImageApi(String path) {
+        return shouldSkipNtkGeneratedForEpisodePath(path)
+                || isNtkApiFallbackModeOverride()
+                || isNtkNativeAckModeOverride();
     }
 
     private boolean addNtkBoardUploadTextImageCandidates(CustomHttpClient client, String body, Set<String> seenImages) {

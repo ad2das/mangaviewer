@@ -279,7 +279,7 @@ public final class MangaRepository {
         boolean foreground = requestGroup != null && requestGroup.isUserVisible();
         boolean webViewPriority = requestGroup != null && requestGroup.prioritizesWebViewFallback();
         ViewerFetchTask candidate = new ViewerFetchTask(task, requestGroup, foreground);
-        ViewerFetchTask running = reserveViewerFetch(key, candidate, foreground, webViewPriority);
+        ViewerFetchTask running = reserveViewerFetch(key, candidate, foreground, webViewPriority, !client.isNtk());
         if(running == candidate) {
             task.run();
         }
@@ -302,12 +302,14 @@ public final class MangaRepository {
     }
 
     private static ViewerFetchTask reserveViewerFetch(String key, ViewerFetchTask candidate,
-                                                      boolean foreground, boolean webViewPriority) {
+                                                      boolean foreground, boolean webViewPriority,
+                                                      boolean allowPriorityReplace) {
         while(true) {
             ViewerFetchTask existing = VIEWER_FETCH_IN_FLIGHT.putIfAbsent(key, candidate);
             if(existing == null)
                 return candidate;
-            if(!shouldReplaceViewerFetchForPriority(foreground, existing.foreground, webViewPriority))
+            if(!allowPriorityReplace
+                    || !shouldReplaceViewerFetchForPriority(foreground, existing.foreground, webViewPriority))
                 return existing;
             existing.cancel();
             VIEWER_FETCH_IN_FLIGHT.remove(key, existing);
@@ -375,8 +377,10 @@ public final class MangaRepository {
     }
 
     private static String viewerFetchKey(CustomHttpClient client, Manga manga, boolean forceDirectMode) {
-        String site = client != null && client.isNtk() ? "ntk" : "wfwf";
-        String fetchMode = forceDirectMode || (client != null && client.isDirectOnlyFetchMode()) ? "direct" : "allow";
+        boolean ntk = client != null && client.isNtk();
+        String site = ntk ? "ntk" : "wfwf";
+        String fetchMode = ntk ? "shared"
+                : forceDirectMode || (client != null && client.isDirectOnlyFetchMode()) ? "direct" : "allow";
         String url = "";
         try {
             url = Manga.safeUrl(manga);

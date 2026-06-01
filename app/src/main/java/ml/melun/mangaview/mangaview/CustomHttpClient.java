@@ -19,6 +19,7 @@ import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.URI;
+import java.net.URL;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
@@ -1886,6 +1887,8 @@ public class CustomHttpClient {
     private boolean ensureNtkDomainIfNeeded(boolean force) {
         long now = System.currentTimeMillis();
         String currentRoot = WfwfDomainResolver.toRoot(getWebtoonUrl());
+        if(!force && isTrustedCurrentNtkRoot(currentRoot))
+            return false;
         DomainResolveState activeResolve = null;
         synchronized (wfwfDomainLock) {
             if(ntkDomainResolveState != null)
@@ -1900,6 +1903,18 @@ public class CustomHttpClient {
             ntkDomainLastCheckedRoot = currentRoot;
         }
         return ensureNtkDomain();
+    }
+
+    private static boolean isTrustedCurrentNtkRoot(String root) {
+        String normalized = NtkDomainResolver.normalizeRoot(root);
+        if(normalized == null || normalized.length() == 0)
+            return false;
+        try {
+            String host = new URL(normalized).getHost();
+            return host != null && host.matches("(?i)sbxh\\d+\\.com");
+        } catch(Exception ignored) {
+            return false;
+        }
     }
 
     private static boolean shouldSkipRecentNtkDomainCheck(boolean force, String currentRoot,
@@ -3920,16 +3935,26 @@ public class CustomHttpClient {
 
     private NtkQuicFetcher.Result fetchNtkViewerImagesApi(String baseUrl, String endpoint,
                                                           Map<String, String> headers,
-                                                          JSONObject payload) throws InterruptedException {
+                                                          JSONObject payload) {
         byte[] body = payload.toString().getBytes(StandardCharsets.UTF_8);
-        NtkQuicFetcher.Result result = fetchNtkQuic(baseUrl, baseUrl + endpoint,
-                getCookieHeader(), headers, "POST", body, 12000L);
-        Log.d(TAG, "ntk_images_api_primary endpoint=" + endpoint
-                + ",code=" + (result == null ? 0 : result.code)
-                + ",error=" + (result == null ? "" : result.error)
-                + ",imageCount=" + ntkViewerImagesCount(result)
-                + ",ackRequired=" + ntkViewerImagesAckRequired(result));
-        return result;
+        for(int attempt = 0; attempt < 2; attempt++) {
+            try {
+                NtkQuicFetcher.Result result = fetchNtkQuic(baseUrl, baseUrl + endpoint,
+                        getCookieHeader(), headers, "POST", body, 12000L);
+                Log.d(TAG, "ntk_images_api_primary endpoint=" + endpoint
+                        + ",attempt=" + attempt
+                        + ",code=" + (result == null ? 0 : result.code)
+                        + ",error=" + (result == null ? "" : result.error)
+                        + ",imageCount=" + ntkViewerImagesCount(result)
+                        + ",ackRequired=" + ntkViewerImagesAckRequired(result));
+                return result;
+            } catch (InterruptedException e) {
+                Log.d(TAG, "ntk_images_api_interrupted_retry endpoint=" + endpoint
+                        + ",attempt=" + attempt);
+                Thread.interrupted();
+            }
+        }
+        return null;
     }
 
     private static int ntkViewerImagesCount(NtkQuicFetcher.Result result) {

@@ -44,6 +44,7 @@ final class NtkEpisodeParser {
             manga.setTitle(title);
             manga.setTitleId(titleId);
             manga.setNtkEpisodePath(epPath);
+            manga.setNtkImageEpisodeId(extractImageEpisodeId(imageCountMetadata, epPath));
             manga.setNtkImageCount(extractImageCount(imageCountMetadata, epPath));
             result.episodes.add(manga);
         }
@@ -222,6 +223,56 @@ final class NtkEpisodeParser {
         if(count > 0)
             return count;
         return imageCountNearEpisodeId(html, "\"id\"\\s*:\\s*" + Pattern.quote(episodeId));
+    }
+
+    private static String extractImageEpisodeId(String html, String epPath) {
+        if(html == null || html.length() == 0 || epPath == null || epPath.length() == 0)
+            return "";
+        String episodeId = epPath.substring(epPath.lastIndexOf('/') + 1);
+        if(episodeId.length() == 0)
+            return "";
+        String internalId = episodeIdNearSourceEpisodeId(html, episodeId);
+        if(internalId.length() > 0)
+            return internalId;
+        String sourceId = sourceEpisodeIdNearEpisodeId(html, "\"id\"\\s*:\\s*\"" + Pattern.quote(episodeId) + "\"");
+        if(sourceId.length() > 0)
+            return sourceId;
+        sourceId = sourceEpisodeIdNearEpisodeId(html, "\"slug\"\\s*:\\s*\"" + Pattern.quote(episodeId) + "\"");
+        if(sourceId.length() > 0)
+            return sourceId;
+        if(episodeId.matches("\\d+"))
+            return episodeId;
+        return "";
+    }
+
+    private static String episodeIdNearSourceEpisodeId(String html, String sourceEpisodeId) {
+        Matcher sourceMatcher = Pattern.compile("\"sourceEpisodeId\"\\s*:\\s*\"" + Pattern.quote(sourceEpisodeId) + "\"")
+                .matcher(html);
+        while(sourceMatcher.find()) {
+            int start = Math.max(0, sourceMatcher.start() - 900);
+            int end = sourceMatcher.start();
+            Matcher idMatcher = Pattern.compile("\"id\"\\s*:\\s*\"?(\\d{1,12})\"?")
+                    .matcher(html.substring(start, end));
+            String id = "";
+            while(idMatcher.find())
+                id = idMatcher.group(1);
+            if(id.length() > 0)
+                return id;
+        }
+        return "";
+    }
+
+    private static String sourceEpisodeIdNearEpisodeId(String html, String idPattern) {
+        Matcher idMatcher = Pattern.compile(idPattern).matcher(html);
+        while(idMatcher.find()) {
+            int start = Math.max(0, idMatcher.start() - 900);
+            int end = Math.min(html.length(), idMatcher.end() + 900);
+            Matcher sourceMatcher = Pattern.compile("\"sourceEpisodeId\"\\s*:\\s*\"?(\\d{1,12})\"?")
+                    .matcher(html.substring(start, end));
+            if(sourceMatcher.find())
+                return sourceMatcher.group(1);
+        }
+        return "";
     }
 
     private static int imageCountNearEpisodeId(String html, String idPattern) {

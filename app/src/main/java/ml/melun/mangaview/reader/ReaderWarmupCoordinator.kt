@@ -290,6 +290,9 @@ object ReaderWarmupCoordinator {
             return MangaRepository.fetchViewerInitial(manga, cancellation)
         }
         val client = getHttpClient()
+        if (client?.isNtk == true) {
+            return MangaRepository.fetchViewerInitial(manga, cancellation)
+        }
         return client?.runWithFetchMode(CustomHttpClient.FetchMode.DIRECT_ONLY) {
             MangaRepository.fetchViewerInitial(manga, cancellation)
         } ?: MangaRepository.fetchViewerInitial(manga, cancellation)
