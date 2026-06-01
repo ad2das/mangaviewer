@@ -552,6 +552,8 @@ public class Manga {
             };
             if(skipGeneratedForSlugEpisode) {
                 startDirectPageFetchIfNeeded.run();
+                startPageFetchIfNeeded.run();
+                startNativeAckIfNeeded.run();
             }
             boolean nativeAckCompleted = false;
             if(apiFallbackMode && !isNtkStrictApiFallbackModeOverride()

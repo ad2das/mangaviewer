@@ -3951,8 +3951,31 @@ public class CustomHttpClient {
                 return urls;
             }
 
-            nvAfterAck = getCookie("nv");
-            if(isNtkNvValid(nvAfterAck)) {
+            if(ntkViewerImagesAckRequired(result)) {
+                nativeAckCompleted = performNtkNativeAckBypassFresh(baseUrl, path);
+                if(nativeAckCompleted) {
+                    nvAfterAck = getCookie("nv");
+                    if(!isNtkNvValid(nvAfterAck)) {
+                        issueNtkNvCookie(baseUrl);
+                        nvAfterAck = getCookie("nv");
+                    }
+                    if(isNtkNvValid(nvAfterAck))
+                        payload = ntkViewerImagesPayload(workId, episodeId, imagesToken, nvAfterAck);
+                    result = fetchNtkViewerImagesApi(baseUrl, endpoint, headers, payload);
+                    ViewerWarmupManager.logMetric("ntk_images_api_code", result == null ? 0 : result.code);
+                    if(appendNtkViewerImages(urls, result)) {
+                        cacheNtkViewerImageUrls(cacheKey, urls);
+                        return urls;
+                    }
+                }
+            } else {
+                nvAfterAck = getCookie("nv");
+                if(!isNtkNvValid(nvAfterAck)) {
+                    issueNtkNvCookie(baseUrl);
+                    nvAfterAck = getCookie("nv");
+                }
+                if(!isNtkNvValid(nvAfterAck))
+                    return urls;
                 payload = ntkViewerImagesPayload(workId, episodeId, imagesToken, nvAfterAck);
                 result = fetchNtkViewerImagesApi(baseUrl, endpoint, headers, payload);
                 ViewerWarmupManager.logMetric("ntk_images_api_code", result == null ? 0 : result.code);
@@ -4239,10 +4262,8 @@ public class CustomHttpClient {
         }
         syncCookiesFromWebView(baseUrl + path, true);
         if(hasNtkAdAckCookieForPath(path)) {
-            NTK_ACK_CACHE.put(cacheKey, System.currentTimeMillis());
-            Log.d(TAG, "ntk_native_ack_final_success=true,path=" + path
-                    + ",totalMs=0,cookie=true");
-            return true;
+            Log.d(TAG, "ntk_native_ack_cookie_ignored path=" + path);
+            removeCookie("ad_ack");
         }
         FutureTask<Boolean> task = new FutureTask<>(() -> performNtkNativeAckBypassLocked(baseUrl, path, cacheKey));
         FutureTask<Boolean> running = NTK_ACK_FLIGHTS.putIfAbsent(cacheKey, task);
@@ -4458,6 +4479,16 @@ public class CustomHttpClient {
                     + ",path=" + path);
             return false;
         }
+    }
+
+    private boolean performNtkNativeAckBypassFresh(String baseUrl, String path) {
+        if(baseUrl == null || path == null || baseUrl.length() == 0 || path.length() == 0)
+            return false;
+        String cacheKey = baseUrl + path;
+        NTK_ACK_CACHE.remove(cacheKey);
+        removeCookie("ad_ack");
+        Log.d(TAG, "ntk_native_ack_force_refresh path=" + path);
+        return performNtkNativeAckBypassLocked(baseUrl, path, cacheKey);
     }
 
     private NtkQuicFetcher.Result fetchNtkAckChallengeRace(HttpEngine engine, ExecutorService executor,
