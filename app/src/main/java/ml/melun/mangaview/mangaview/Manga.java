@@ -1176,8 +1176,9 @@ public class Manga {
         if(addCachedNtkViewerImageApiCandidates(client, path, seenImages))
             return true;
         if(!isNtkNativeAckModeOverride()
+                && !isNtkStrictApiFallbackModeOverride()
                 && shouldPreAckBeforeNtkViewerImageApi(path)
-                && awaitCachedNtkViewerImageApiCandidates(client, path, seenImages, 3500L))
+                && awaitCachedNtkViewerImageApiCandidates(client, path, seenImages, 650L))
             return true;
         if(shouldPreAckBeforeNtkViewerImageApi(path)) {
             if(Thread.currentThread().isInterrupted()) {
