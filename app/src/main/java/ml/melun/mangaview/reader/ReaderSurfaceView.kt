@@ -1382,7 +1382,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val maxScroll = max(0f, contentHeight - height)
         val restoredScroll = desiredScroll.coerceIn(0f, maxScroll)
         setScrollOffsetLocked(restoredScroll)
-        if (pageHasDrawableContentLocked(target) && abs(restoredScroll - desiredScroll) <= RESTORE_POSITION_EPSILON_PX) {
+        if (
+            hasDrawnContentFrame &&
+            pageHasDrawableContentLocked(target) &&
+            abs(restoredScroll - desiredScroll) <= RESTORE_POSITION_EPSILON_PX
+        ) {
             clearLockedRestorePositionLocked()
         }
     }
@@ -1396,7 +1400,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun progressPositionLocked(): ProgressPosition? {
         if (pages.isEmpty() || width <= 0 || height <= 0) return null
         rebuildLayoutLocked()
-        var page = firstVisiblePageLocked(scrollOffset + 1f).coerceIn(0, pages.lastIndex)
+        var page = firstVisiblePageLocked(scrollOffset + height * PROGRESS_PAGE_PROBE_SCREEN_RATIO)
+            .coerceIn(0, pages.lastIndex)
         val contentBottom = pageTopLocked(page) + pageDrawHeightLocked(pages[page])
         if (scrollOffset >= contentBottom && page < pages.lastIndex) {
             page += 1
@@ -1970,6 +1975,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val BOUNDARY_FLING_EXTEND_EPSILON_PX = 4
         private const val BOUNDARY_FLING_MIN_VELOCITY_MULTIPLIER = 2f
         private const val PREPENDED_BOUNDARY_REVEAL_SCREEN_RATIO = 0.72f
+        private const val PROGRESS_PAGE_PROBE_SCREEN_RATIO = 0.35f
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_MIN_DRAG_TOUCH_SLOP_MULTIPLIER = 1.0f

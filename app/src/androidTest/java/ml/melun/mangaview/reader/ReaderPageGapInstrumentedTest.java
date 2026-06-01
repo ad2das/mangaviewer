@@ -223,6 +223,27 @@ public class ReaderPageGapInstrumentedTest {
         assertEquals(0, position.getOffset());
     }
 
+    @Test
+    public void progressUsesViewportAnchorInsteadOfTopSliver() throws Exception {
+        ReaderSurfaceView view = new ReaderSurfaceView(ApplicationProvider.getApplicationContext());
+        attachForTest(view);
+        view.measure(
+                android.view.View.MeasureSpec.makeMeasureSpec(1000, android.view.View.MeasureSpec.EXACTLY),
+                android.view.View.MeasureSpec.makeMeasureSpec(600, android.view.View.MeasureSpec.EXACTLY));
+        view.layout(0, 0, 1000, 600);
+        view.setPageGapPx(0);
+        view.setPageCount(2);
+        view.setPageBitmap(0, bitmapOfSize(1000, 1000, Color.rgb(220, 32, 32)));
+        view.setPageBitmap(1, bitmapOfSize(1000, 600, Color.rgb(32, 200, 80)));
+        view.scrollToPage(1, 100);
+
+        ReaderSurfaceView.ProgressPosition position = view.currentProgressPosition();
+
+        assertEquals("Expected progress to follow the page inside the viewport, not the top sliver",
+                1, position.getPage());
+        assertEquals(100, position.getOffset());
+    }
+
     private static Bitmap solidBitmap(int color) {
         Bitmap bitmap = Bitmap.createBitmap(720, 360, Bitmap.Config.RGB_565);
         bitmap.eraseColor(color);
