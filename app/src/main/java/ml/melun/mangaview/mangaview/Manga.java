@@ -97,7 +97,13 @@ public class Manga {
     private static boolean isNtkNativeAckModeOverride() {
         return "native".equals(ntkViewerFetchModeOverride)
                 || "native-ack".equals(ntkViewerFetchModeOverride)
-                || "native_ack".equals(ntkViewerFetchModeOverride);
+                || "native_ack".equals(ntkViewerFetchModeOverride)
+                || isNtkStrictNativeAckModeOverride();
+    }
+
+    private static boolean isNtkStrictNativeAckModeOverride() {
+        return "native-strict".equals(ntkViewerFetchModeOverride)
+                || "native_strict".equals(ntkViewerFetchModeOverride);
     }
 
     private static boolean isNtkGeneratedModeOverride() {
@@ -493,7 +499,8 @@ public class Manga {
                 startNativeAckIfNeeded.run();
             };
             boolean nativeAckCompleted = false;
-            if((nativeAckMode || (apiFallbackMode && !isNtkStrictApiFallbackModeOverride()))
+            if(((nativeAckMode && !isNtkStrictNativeAckModeOverride())
+                    || (apiFallbackMode && !isNtkStrictApiFallbackModeOverride()))
                     && addNtkGeneratedPathImageCandidates(client, path, seenImages,
                     ntkGeneratedImageCandidateCount(), false)) {
                 startNativeAckIfNeeded.run();
@@ -516,8 +523,8 @@ public class Manga {
                 }
             } else if(apiFallbackMode) {
                 startPageFetchIfNeeded.run();
+                startNativeAckIfNeeded.run();
                 if(!isNtkStrictApiFallbackModeOverride()) {
-                    startNativeAckIfNeeded.run();
                     nativeAckCompleted = awaitAsyncNtkNativeAck(nativeAckRef[0],
                             NTK_API_FALLBACK_ACK_FAST_PATH_WAIT_MS, false);
                     if(nativeAckCompleted

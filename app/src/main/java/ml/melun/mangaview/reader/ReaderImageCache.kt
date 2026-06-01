@@ -295,7 +295,6 @@ object ReaderImageCache {
             throw IOException("Generated image request failed before fallback: $image")
         }
         response?.close()
-        retryNtkGeneratedAfterNativeAck(context, manga, image, foreground)?.let { return it }
         for (candidate in ntkGeneratedExtensionFallbacks(image)) {
             val fallback = try {
                 requestForForegroundMode(context, manga, candidate, foreground)
@@ -305,6 +304,7 @@ object ReaderImageCache {
             if (fallback.isSuccessful) return fallback
             fallback.close()
         }
+        retryNtkGeneratedAfterNativeAck(context, manga, image, foreground)?.let { return it }
         retryNtkGeneratedViaApiFallback(context, manga, image, foreground)?.let { return it }
         return requestForForegroundMode(context, manga, image, foreground)
     }

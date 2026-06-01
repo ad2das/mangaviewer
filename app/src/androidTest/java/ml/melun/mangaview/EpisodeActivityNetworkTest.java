@@ -441,6 +441,10 @@ public class EpisodeActivityNetworkTest {
             assertNtkFetchModeUsed(ntkFetchMode, episodeNumber, targetPath);
             assertInitialVisibleCoverageSettles("ntk Jagaan " + episodeNumber + " " + ntkFetchMode + " cold");
 
+            if(!Boolean.parseBoolean(InstrumentationRegistry.getArguments()
+                    .getString("scrollStress", "true"))) {
+                return;
+            }
             long scrollInitialDelayMs = Long.parseLong(InstrumentationRegistry.getArguments()
                     .getString("scrollInitialDelayMs", "300"));
             String scrollSource = "ntk_jagaan_" + episodeNumber + "_" + ntkFetchMode + "_cold";
@@ -1714,7 +1718,8 @@ public class EpisodeActivityNetworkTest {
     private static void assertNtkFetchModeUsedForLabel(String mode, String label, String targetPath) throws Exception {
         String normalized = mode == null ? "" : mode.trim().toLowerCase(Locale.ROOT);
         String output = executeShellOutput("logcat -d -s ViewerPerf:D *:S");
-        if("native".equals(normalized) || "native-ack".equals(normalized) || "native_ack".equals(normalized)) {
+        if("native".equals(normalized) || "native-ack".equals(normalized) || "native_ack".equals(normalized)
+                || "native-strict".equals(normalized) || "native_strict".equals(normalized)) {
             assertTrue("Expected native ACK bypass success for NTK " + label + ": " + output,
                     output.contains("ntk_native_ack_final_success=true,path=" + targetPath)
                             || output.contains("ntk_native_ack_bypass_success path=" + targetPath));
