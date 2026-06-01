@@ -250,7 +250,16 @@ final class NtkWebViewFallbackManager {
         mainHandler.post(() -> fetchViewerImageUrlsOnMain(userAgent, baseUrl, path, headers, kind,
                 workId, episodeId, imagesToken, fallbackCookieHeader, result, done));
         try {
-            if(!done.await(65, TimeUnit.SECONDS))
+            long deadline = SystemClock.elapsedRealtime() + 65_000L;
+            while(!done.await(120L, TimeUnit.MILLISECONDS)) {
+                appendCachedViewerImageUrls(urls, kind, workId, episodeId, path);
+                if(urls.size() > 0)
+                    return urls;
+                if(SystemClock.elapsedRealtime() >= deadline)
+                    return urls;
+            }
+            appendCachedViewerImageUrls(urls, kind, workId, episodeId, path);
+            if(urls.size() > 0)
                 return urls;
             if(result.body == null || result.body.length() == 0)
                 return urls;
@@ -400,6 +409,7 @@ final class NtkWebViewFallbackManager {
             view.loadDataWithBaseURL(baseUrl + path,
                     "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>",
                     "text/html", "UTF-8", null);
+            scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 120L);
             scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 700L);
             scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 1_800L);
             scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 3_800L);
