@@ -2265,6 +2265,7 @@ public class CustomHttpClient {
             return loaded;
         } catch (Exception e) {
             if(isNtk() && isNtkWebViewFetchPath(normalized)
+                    && !Thread.currentThread().isInterrupted()
                     && effectiveFetchMode(FetchMode.ALLOW_SHARED_WEBVIEW) == FetchMode.ALLOW_SHARED_WEBVIEW) {
                 PageResponse fallback = loadNtkPageViaWebViewFallback(normalized, now);
                 if(fallback != null) {
@@ -2927,6 +2928,8 @@ public class CustomHttpClient {
             response = getWithNtkQuicFallback(baseUrl, url, headers);
             if(response != null)
                 return response;
+            if(Thread.currentThread().isInterrupted())
+                return null;
             response = getWithNtkWebViewFallback(baseUrl, url, headers);
         }
         if(!ntkBaseUrl && allowWfwfDomainRetry && shouldRetryWithResolvedDomain(response)) {
@@ -2948,6 +2951,8 @@ public class CustomHttpClient {
                 response = getWithNtkQuicFallback(baseUrl, url, headers);
                 if(response != null)
                     return response;
+                if(Thread.currentThread().isInterrupted())
+                    return null;
                 response = getWithNtkWebViewFallback(baseUrl, url, headers);
             }
         }
@@ -2962,6 +2967,8 @@ public class CustomHttpClient {
             response = get(baseUrl + url, headers, fastNtkPageDirect);
         }
         if(shouldUseWolfWebViewFallback(ntkBaseUrl, response == null, url, fetchMode, wolfWebViewFallbackAllowed)) {
+            if(Thread.currentThread().isInterrupted())
+                return null;
             response = getWithNtkWebViewFallback(baseUrl, url, headers);
         }
         return response;
@@ -3943,6 +3950,15 @@ public class CustomHttpClient {
             headers.put("x-images-client", "viewer-v1");
             headers.put("origin", baseUrl);
             headers.put("referer", baseUrl + "/" + kind + "/" + workId + "/" + episodeId);
+
+            if(MainApplication.currentActivity != null) {
+                urls.addAll(NtkWebViewFallbackManager.get(context).cachedViewerImageUrls(
+                        kind, workId, episodeId, path));
+                if(urls.size() > 0) {
+                    cacheNtkViewerImageUrls(cacheKey, urls);
+                    return urls;
+                }
+            }
 
             boolean nativeAckCompleted = performNtkNativeAckBypass(baseUrl, path);
             if(!nativeAckCompleted && Thread.currentThread().isInterrupted()) {

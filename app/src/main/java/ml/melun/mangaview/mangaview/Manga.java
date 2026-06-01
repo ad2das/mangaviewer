@@ -40,6 +40,8 @@ import android.util.Log;
 
 import androidx.documentfile.provider.DocumentFile;
 
+import ml.melun.mangaview.MainApplication;
+
     /*
     mode:
     0 = online
@@ -566,23 +568,66 @@ public class Manga {
                 return LOAD_OK;
             }
             if(nativeAckMode) {
-                nativeAckCompleted = client.performNtkNativeAckBypass(client.getUrl(path), path);
-                if(nativeAckCompleted
-                        && addNtkGeneratedPathImageCandidates(client, path, seenImages,
-                        ntkGeneratedImageCandidateCount(), true)) {
-                    logNtkViewerParse("generated-after-ack", null, path, 0, 0);
-                    restoreBetterEpisodeList(previousEpisodes);
-                    attachEpisodeSeriesMetadata();
-                    return LOAD_OK;
+                if(isNtkStrictNativeAckModeOverride()) {
+                    nativeAckCompleted = client.performNtkNativeAckBypass(client.getUrl(path), path);
+                    if(nativeAckCompleted
+                            && addNtkGeneratedPathImageCandidates(client, path, seenImages,
+                            ntkGeneratedImageCandidateCount(), true)) {
+                        logNtkViewerParse("generated-after-ack", null, path, 0, 0);
+                        restoreBetterEpisodeList(previousEpisodes);
+                        attachEpisodeSeriesMetadata();
+                        return LOAD_OK;
+                    }
+                } else {
+                    startDirectPageFetchIfNeeded.run();
+                    startPageFetchIfNeeded.run();
+                    startNativeAckIfNeeded.run();
+                    nativeAckCompleted = awaitAsyncNtkNativeAck(nativeAckRef[0],
+                            NTK_API_FALLBACK_ACK_FAST_PATH_WAIT_MS, false);
+                    if(nativeAckCompleted
+                            && addNtkGeneratedPathImageCandidates(client, path, seenImages,
+                            ntkGeneratedImageCandidateCount(), true)) {
+                        logNtkViewerParse("generated-after-ack", null, path, 0, 0);
+                        restoreBetterEpisodeList(previousEpisodes);
+                        attachEpisodeSeriesMetadata();
+                        return LOAD_OK;
+                    }
+                    if(addCachedNtkViewerImageApiCandidates(client, path, seenImages)) {
+                        logNtkViewerParse("api-cached-webview", null, path, 0, 0);
+                        restoreBetterEpisodeList(previousEpisodes);
+                        attachEpisodeSeriesMetadata();
+                        return LOAD_OK;
+                    }
+                    CustomHttpClient.PageResponse earlyPage =
+                            awaitFastNtkApiPageFetch(directPageFetchRef[0], pageFetchRef[0], 0L);
+                    if(isUsableNtkApiPage(earlyPage)
+                            && addNtkApiViewerImageCandidates(client, earlyPage.body, path, seenImages, false)) {
+                        logNtkViewerParse("api-missing", earlyPage, path, 0, 0);
+                        restoreBetterEpisodeList(previousEpisodes);
+                        attachEpisodeSeriesMetadata();
+                        return LOAD_OK;
+                    }
                 }
             } else if(apiFallbackMode) {
                 startDirectPageFetchIfNeeded.run();
                 if(!skipGeneratedForSlugEpisode)
                     startPageFetchIfNeeded.run();
                 startNativeAckIfNeeded.run();
+                if(addCachedNtkViewerImageApiCandidates(client, path, seenImages)) {
+                    logNtkViewerParse("api-cached-webview", null, path, 0, 0);
+                    restoreBetterEpisodeList(previousEpisodes);
+                    attachEpisodeSeriesMetadata();
+                    return LOAD_OK;
+                }
                 if(!isNtkStrictApiFallbackModeOverride()) {
                     nativeAckCompleted = awaitAsyncNtkNativeAck(nativeAckRef[0],
                             NTK_API_FALLBACK_ACK_FAST_PATH_WAIT_MS, false);
+                    if(addCachedNtkViewerImageApiCandidates(client, path, seenImages)) {
+                        logNtkViewerParse("api-cached-webview", null, path, 0, 0);
+                        restoreBetterEpisodeList(previousEpisodes);
+                        attachEpisodeSeriesMetadata();
+                        return LOAD_OK;
+                    }
                     if(nativeAckCompleted
                             && addNtkGeneratedPathImageCandidates(client, path, seenImages,
                             ntkGeneratedImageCandidateCount(), true)) {
@@ -601,7 +646,6 @@ public class Manga {
                         && addNtkGeneratedPathImageCandidates(client, path, seenImages,
                         ntkGeneratedImageCandidateCount(), false)) {
                     logNtkViewerParse("generated-fast", null, path, 0, 0);
-                    startDelayedNtkNativeAckWarmup(client, path, 650L);
                     restoreBetterEpisodeList(previousEpisodes);
                     attachEpisodeSeriesMetadata();
                     return LOAD_OK;
@@ -626,8 +670,20 @@ public class Manga {
                             return LOAD_OK;
                         }
                     }
+                    if(addCachedNtkViewerImageApiCandidates(client, path, seenImages)) {
+                        logNtkViewerParse("api-cached-webview", null, path, 0, 0);
+                        restoreBetterEpisodeList(previousEpisodes);
+                        attachEpisodeSeriesMetadata();
+                        return LOAD_OK;
+                    }
                     nativeAckCompleted = awaitAsyncNtkNativeAck(nativeAckRef[0],
                             NTK_API_FALLBACK_ACK_FAST_PATH_WAIT_MS, false);
+                    if(addCachedNtkViewerImageApiCandidates(client, path, seenImages)) {
+                        logNtkViewerParse("api-cached-webview", null, path, 0, 0);
+                        restoreBetterEpisodeList(previousEpisodes);
+                        attachEpisodeSeriesMetadata();
+                        return LOAD_OK;
+                    }
                     if(nativeAckCompleted
                             && addNtkGeneratedPathImageCandidates(client, path, seenImages,
                             ntkGeneratedImageCandidateCount(), true)) {
@@ -1117,6 +1173,12 @@ public class Manga {
         }
         if(addNtkBoardUploadTextImageCandidates(client, normalized, seenImages))
             return true;
+        if(addCachedNtkViewerImageApiCandidates(client, path, seenImages))
+            return true;
+        if(!isNtkNativeAckModeOverride()
+                && shouldPreAckBeforeNtkViewerImageApi(path)
+                && awaitCachedNtkViewerImageApiCandidates(client, path, seenImages, 3500L))
+            return true;
         if(shouldPreAckBeforeNtkViewerImageApi(path)) {
             if(Thread.currentThread().isInterrupted()) {
                 Log.d(TAG, "ntk_pre_ack_stale_interrupt_cleared path=" + path);
@@ -1139,6 +1201,43 @@ public class Manga {
             addImageIfValid(client, seenImages, url);
         if(imgs == null || imgs.size() == before)
             addNtkBoardUploadTextImageCandidates(client, normalized, seenImages);
+        return imgs != null && imgs.size() > before;
+    }
+
+    private boolean awaitCachedNtkViewerImageApiCandidates(CustomHttpClient client, String path,
+                                                           Set<String> seenImages, long timeoutMs) {
+        long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMs);
+        while(System.currentTimeMillis() < deadline) {
+            if(addCachedNtkViewerImageApiCandidates(client, path, seenImages))
+                return true;
+            if(Thread.currentThread().isInterrupted())
+                return false;
+            try {
+                Thread.sleep(35L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return addCachedNtkViewerImageApiCandidates(client, path, seenImages);
+    }
+
+    private boolean addCachedNtkViewerImageApiCandidates(CustomHttpClient client, String path, Set<String> seenImages) {
+        if(path == null || seenImages == null)
+            return false;
+        Matcher pathMatcher = Pattern.compile("^/(manhwa|webtoon)/(\\d+)/([^/?#]+)").matcher(path);
+        if(!pathMatcher.find())
+            return false;
+        Context context = MainApplication.appContext;
+        if(context == null)
+            return false;
+        ArrayList<String> urls = NtkWebViewFallbackManager.get(context).cachedViewerImageUrls(
+                pathMatcher.group(1), pathMatcher.group(2), pathMatcher.group(3), path);
+        if(urls.size() == 0)
+            return false;
+        int before = imgs == null ? 0 : imgs.size();
+        for(String url : urls)
+            addImageIfValid(client, seenImages, url);
         return imgs != null && imgs.size() > before;
     }
 
@@ -1238,6 +1337,11 @@ public class Manga {
 
     private static String ntkGeneratedImageUrl(String segment, String workId, String episodeId, int page, String extension) {
         String safeExtension = extension == null || extension.length() == 0 ? "jpg" : extension;
+        if("webtoon".equals(segment)) {
+            return String.format(Locale.ROOT,
+                    "https://i.toonflix.app/blacktoon/episodes/%s/%s/p%03d.%s",
+                    workId, episodeId, page, safeExtension);
+        }
         return String.format(Locale.ROOT,
                 "https://i.toonflix.app/%s/%s/%s/p%03d.%s",
                 segment, workId, episodeId, page, safeExtension);

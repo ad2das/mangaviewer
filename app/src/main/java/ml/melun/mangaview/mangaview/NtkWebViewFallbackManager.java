@@ -29,6 +29,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -46,6 +47,7 @@ final class NtkWebViewFallbackManager {
     private static final long DOCUMENT_READY_WAIT_MS = 18_000L;
     private static final long PRIORITY_WOLF_DOCUMENT_READY_WAIT_MS = 2_500L;
     private static final long PRIORITY_WOLF_LOAD_TIMEOUT_MS = 6_000L;
+    private static final long VIEWER_IMAGE_CACHE_TTL_MS = 45_000L;
     private static final Object INSTANCE_LOCK = new Object();
     private static final String NTK_QUIC_BRIDGE_JS = "(function(){"
             + "if(window.__ntkViewerQuicBridgeInstalled||!window.NtkQuicBridge)return;"
@@ -69,6 +71,7 @@ final class NtkWebViewFallbackManager {
             + "var rearmCount=0,rearmTimer=setInterval(function(){rearmAck('native-bridge-ready');if(++rearmCount>=10)clearInterval(rearmTimer);},250);setTimeout(function(){rearmAck('native-bridge-ready');},0);"
             + "})();";
     private static WeakReference<NtkWebViewFallbackManager> instanceRef;
+    private static final Map<String, CachedViewerImages> VIEWER_IMAGE_API_CACHE = new ConcurrentHashMap<>();
 
     private final Object lock = new Object();
     private final Context context;
@@ -236,6 +239,9 @@ final class NtkWebViewFallbackManager {
                                            String workId, String episodeId, String imagesToken,
                                            String fallbackCookieHeader) {
         ArrayList<String> urls = new ArrayList<>();
+        appendCachedViewerImageUrls(urls, kind, workId, episodeId, path);
+        if(urls.size() > 0)
+            return urls;
         if(Looper.myLooper() == Looper.getMainLooper() || baseUrl == null || path == null
                 || kind == null || workId == null || episodeId == null || imagesToken == null)
             return urls;
@@ -269,6 +275,43 @@ final class NtkWebViewFallbackManager {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return urls;
+    }
+
+    ArrayList<String> cachedViewerImageUrls(String kind, String workId, String episodeId, String path) {
+        ArrayList<String> urls = new ArrayList<>();
+        appendCachedViewerImageUrls(urls, kind, workId, episodeId, path);
+        return urls;
+    }
+
+    private static void appendCachedViewerImageUrls(ArrayList<String> urls, String kind, String workId,
+                                                    String episodeId, String path) {
+        if(urls == null)
+            return;
+        String key = viewerImageCacheKey(kind, workId, episodeId, path);
+        if(key.length() == 0)
+            return;
+        CachedViewerImages cached = VIEWER_IMAGE_API_CACHE.get(key);
+        if(cached == null)
+            return;
+        if(System.currentTimeMillis() - cached.storedAtMs > VIEWER_IMAGE_CACHE_TTL_MS) {
+            VIEWER_IMAGE_API_CACHE.remove(key);
+            return;
+        }
+        try {
+            JSONObject body = new JSONObject(cached.body);
+            JSONArray images = body.optJSONArray("images");
+            if(images == null)
+                return;
+            for(int i = 0; i < images.length(); i++) {
+                JSONObject image = images.optJSONObject(i);
+                String src = image == null ? "" : image.optString("src", "");
+                if(src.length() > 0)
+                    urls.add(src);
+            }
+            if(urls.size() > 0)
+                Log.d(TAG, "ntk_webview_viewer_images_cached key=" + key + ",count=" + urls.size());
+        } catch (Exception ignored) {
+        }
     }
 
     private void fetchViewerImageUrlsOnMain(String userAgent, String baseUrl, String path,
@@ -1172,6 +1215,14 @@ final class NtkWebViewFallbackManager {
         return result;
     }
 
+    private static String viewerImageCacheKey(String kind, String workId, String episodeId, String path) {
+        if(kind == null || workId == null || episodeId == null || path == null
+                || kind.length() == 0 || workId.length() == 0 || episodeId.length() == 0
+                || path.length() == 0)
+            return "";
+        return kind + ':' + workId + ':' + episodeId + ':' + path;
+    }
+
     private static String jsonQuote(String value) {
         if(value == null)
             return "\"\"";
@@ -1306,6 +1357,7 @@ final class NtkWebViewFallbackManager {
                             + ",code=" + result.code
                             + ",len=" + result.bodyBytes.length
                             + ",url=" + url);
+                cacheViewerImageApiResponse(url, headers, body, result);
                 JSONObject object = new JSONObject();
                 object.put("ok", true);
                 object.put("status", result.code);
@@ -1325,6 +1377,40 @@ final class NtkWebViewFallbackManager {
             if(scope.length() == 0)
                 return cookieHeader;
             return filterNtkAckCookiesForScope(cookieHeader, scope);
+        }
+
+        private static void cacheViewerImageApiResponse(String url, Map<String, String> headers,
+                                                        byte[] requestBody, NtkQuicFetcher.Result result) {
+            if(result == null || result.error != null || result.code < 200 || result.code >= 300
+                    || result.body == null || result.body.length() == 0)
+                return;
+            String scope = ntkBridgeScopeForRequest(url, headers, requestBody);
+            if(scope.length() == 0)
+                return;
+            String kind;
+            try {
+                String endpointPath = URI.create(url).getPath();
+                if(endpointPath == null || !(endpointPath.endsWith("/manhwa-images")
+                        || endpointPath.endsWith("/webtoon-images")))
+                    return;
+                kind = endpointPath.endsWith("/webtoon-images") ? "webtoon" : "manhwa";
+            } catch (Exception e) {
+                return;
+            }
+            String workId = "";
+            String episodeId = "";
+            try {
+                JSONObject payload = new JSONObject(new String(requestBody, java.nio.charset.StandardCharsets.UTF_8));
+                workId = payload.optString("workId", "");
+                episodeId = payload.optString("episodeId", "");
+            } catch (Exception ignored) {
+            }
+            String key = viewerImageCacheKey(kind, workId, episodeId, scope);
+            if(key.length() == 0)
+                return;
+            VIEWER_IMAGE_API_CACHE.put(key, new CachedViewerImages(result.body, System.currentTimeMillis()));
+            Log.d(TAG, "ntk_webview_viewer_images_cache_store key=" + key
+                    + ",len=" + result.body.length());
         }
 
         private static String ntkBridgeScopeForRequest(String url, Map<String, String> headers, byte[] body) {
@@ -1451,6 +1537,16 @@ final class NtkWebViewFallbackManager {
 
     private static final class ViewerImageResult {
         volatile String body = "";
+    }
+
+    private static final class CachedViewerImages {
+        final String body;
+        final long storedAtMs;
+
+        CachedViewerImages(String body, long storedAtMs) {
+            this.body = body == null ? "" : body;
+            this.storedAtMs = storedAtMs;
+        }
     }
 
     private static final class FetchTask {
