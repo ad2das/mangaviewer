@@ -722,15 +722,54 @@ public class Manga {
                                                                    AsyncNtkPageFetch fallbackFetch,
                                                                    CustomHttpClient client,
                                                                    String path) throws Exception {
-        CustomHttpClient.PageResponse direct = awaitAsyncNtkPageFetch(directFetch, null, path, 2_500L, false);
+        long deadline = System.currentTimeMillis() + 14_000L;
+        CustomHttpClient.PageResponse direct = null;
+        CustomHttpClient.PageResponse fallback = null;
+        while(System.currentTimeMillis() < deadline) {
+            if(direct == null)
+                direct = completedNtkPageFetch(directFetch, false);
+            if(isUsableNtkApiPage(direct)) {
+                logNtkViewerParse("api-direct-page", direct, path, 0, 0);
+                return direct;
+            }
+            if(fallback == null)
+                fallback = completedNtkPageFetch(fallbackFetch, true);
+            if(isUsableNtkApiPage(fallback))
+                return fallback;
+            if((directFetch == null || directFetch.done.getCount() == 0)
+                    && (fallbackFetch == null || fallbackFetch.done.getCount() == 0))
+                break;
+            try {
+                Thread.sleep(25L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw e;
+            }
+        }
+        if(direct == null)
+            direct = completedNtkPageFetch(directFetch, false);
         if(isUsableNtkApiPage(direct)) {
             logNtkViewerParse("api-direct-page", direct, path, 0, 0);
             return direct;
         }
-        CustomHttpClient.PageResponse fallback = awaitAsyncNtkPageFetch(fallbackFetch, client, path);
+        if(fallback == null)
+            fallback = completedNtkPageFetch(fallbackFetch, true);
         if(isUsableNtkApiPage(fallback))
             return fallback;
-        return direct != null ? direct : fallback;
+        return fallback != null ? fallback
+                : direct != null ? direct
+                : client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+    }
+
+    private CustomHttpClient.PageResponse completedNtkPageFetch(AsyncNtkPageFetch fetch,
+                                                                boolean throwOnError) throws Exception {
+        if(fetch == null || fetch.done.getCount() > 0)
+            return null;
+        if(fetch.page != null)
+            return fetch.page;
+        if(fetch.error != null && throwOnError)
+            throw fetch.error;
+        return null;
     }
 
     private CustomHttpClient.PageResponse awaitAsyncNtkPageFetch(AsyncNtkPageFetch fetch,
