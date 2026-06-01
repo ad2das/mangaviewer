@@ -2590,7 +2590,7 @@ class ReaderSession(
         private const val PREPARED_BITMAP_RELEASE_DELAY_MS = 12000L
         private const val PRIME_WARM_GENERATION = Int.MIN_VALUE
         private const val FOREGROUND_PRIME_WARM_GENERATION = Int.MIN_VALUE + 1
-        private const val PRIME_PIPELINE_PARALLELISM = 1
+        private const val PRIME_PIPELINE_PARALLELISM = 2
         private const val NTK_FOREGROUND_PRIME_HEDGE_DELAY_MS = 1400L
         private const val PRIME_FORWARD_EPISODES = 8
         private const val NTK_PRIME_FORWARD_EPISODES = 1
@@ -2603,11 +2603,11 @@ class ReaderSession(
         private const val NTK_LIGHT_PRIMED_EPISODE_BYTE_AHEAD_PAGES = 12
         private const val NTK_INITIAL_PRIORITY_START_OFFSET = 1
         private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 4
-        private const val NTK_INITIAL_PRIORITY_PAGES = 10
-        private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 16
-        private const val NTK_INITIAL_DECODE_AHEAD_PAGES = 32
-        private const val NTK_INITIAL_SECONDARY_WARM_DELAY_MS = 120L
-        private const val NTK_INITIAL_FAR_WARM_DELAY_MS = 600L
+        private const val NTK_INITIAL_PRIORITY_PAGES = 12
+        private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 20
+        private const val NTK_INITIAL_DECODE_AHEAD_PAGES = 36
+        private const val NTK_INITIAL_SECONDARY_WARM_DELAY_MS = 0L
+        private const val NTK_INITIAL_FAR_WARM_DELAY_MS = 250L
         private const val NTK_INITIAL_SOURCE_PREFETCH_AFTER_FIRST_BITMAP_DELAY_MS = 250L
         private const val NTK_INITIAL_DELIVERY_HOLD_FALLBACK_MS = 3500L
         private const val NTK_BACKGROUND_PREPARE_QUIET_MS = 900L

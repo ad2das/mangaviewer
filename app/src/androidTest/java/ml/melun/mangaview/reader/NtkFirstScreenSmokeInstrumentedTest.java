@@ -5,6 +5,9 @@ import static org.junit.Assert.assertTrue;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Color;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.util.Log;
@@ -17,6 +20,7 @@ import androidx.test.uiautomator.Until;
 
 import org.junit.Test;
 
+import java.io.File;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -43,13 +47,15 @@ public class NtkFirstScreenSmokeInstrumentedTest {
 
         Bundle arguments = InstrumentationRegistry.getArguments();
         String requestedCase = arguments == null ? "" : arguments.getString("ntkCase", "");
+        boolean scrollProbe = arguments != null && Boolean.parseBoolean(arguments.getString("ntkScroll", "false"));
+        int scrollSteps = arguments == null ? 6 : parsePositiveInt(arguments.getString("ntkScrollSteps", "6"), 6);
         List<Case> cases = allCases();
         boolean ranCase = false;
         for(Case sample : cases) {
             if(requestedCase.length() > 0 && !requestedCase.equals(sample.name))
                 continue;
             ranCase = true;
-            runCase(context, device, sample);
+            runCase(context, device, sample, scrollProbe, scrollSteps);
         }
         assertTrue("No NTK smoke case matched " + requestedCase, ranCase);
     }
@@ -68,7 +74,8 @@ public class NtkFirstScreenSmokeInstrumentedTest {
         );
     }
 
-    private static void runCase(Context context, UiDevice device, Case sample) {
+    private static void runCase(Context context, UiDevice device, Case sample,
+                                boolean scrollProbe, int scrollSteps) {
         Activity activity = null;
         long startedAt = SystemClock.elapsedRealtime();
         try {
@@ -88,6 +95,8 @@ public class NtkFirstScreenSmokeInstrumentedTest {
                     + ",ms=" + elapsed);
             assertTrue("Expected first screen drawable for " + sample.name
                     + " path=" + sample.path + " elapsedMs=" + elapsed, ready);
+            if(scrollProbe)
+                probeScrollContinuity(context, device, sample, scrollSteps);
         } finally {
             Manga.clearNtkViewerFetchModeOverrideForTest();
             if(activity != null)
@@ -95,6 +104,81 @@ public class NtkFirstScreenSmokeInstrumentedTest {
             device.wait(Until.gone(By.desc("reader-drawable-ready")), 3000L);
             device.waitForIdle(2000L);
         }
+    }
+
+    private static void probeScrollContinuity(Context context, UiDevice device, Case sample, int steps) {
+        File screenshot = new File(context.getExternalCacheDir(), "ntk-scroll-probe-" + sample.name + ".png");
+        int width = Math.max(1, device.getDisplayWidth());
+        int height = Math.max(1, device.getDisplayHeight());
+        int startX = width / 2;
+        int startY = (int)(height * 0.82f);
+        int endY = (int)(height * 0.24f);
+        for(int step = 0; step < steps; step++) {
+            long before = SystemClock.elapsedRealtime();
+            device.swipe(startX, startY, startX, endY, 36);
+            device.waitForIdle(350L);
+            boolean captured = device.takeScreenshot(screenshot);
+            long elapsed = SystemClock.elapsedRealtime() - before;
+            String visual = captured ? screenshotStats(screenshot) : "screenshot=false";
+            Log.d(TAG, "ntk_scroll_probe name=" + sample.name
+                    + ",mode=" + sample.mode
+                    + ",step=" + step
+                    + ",elapsedMs=" + elapsed
+                    + "," + visual);
+        }
+    }
+
+    private static String screenshotStats(File screenshot) {
+        Bitmap bitmap = BitmapFactory.decodeFile(screenshot.getAbsolutePath());
+        if(bitmap == null)
+            return "screenshot=false";
+        try {
+            int width = bitmap.getWidth();
+            int height = bitmap.getHeight();
+            int sampled = 0;
+            int nearWhite = 0;
+            int nearBlack = 0;
+            int lowColor = 0;
+            int stepX = Math.max(1, width / 64);
+            int stepY = Math.max(1, height / 96);
+            for(int y = height / 12; y < height - height / 12; y += stepY) {
+                for(int x = width / 8; x < width - width / 8; x += stepX) {
+                    int pixel = bitmap.getPixel(x, y);
+                    int red = Color.red(pixel);
+                    int green = Color.green(pixel);
+                    int blue = Color.blue(pixel);
+                    sampled++;
+                    if(red > 245 && green > 245 && blue > 245)
+                        nearWhite++;
+                    if(red < 10 && green < 10 && blue < 10)
+                        nearBlack++;
+                    if(Math.max(red, Math.max(green, blue)) - Math.min(red, Math.min(green, blue)) < 6)
+                        lowColor++;
+                }
+            }
+            return "screenshot=true,width=" + width
+                    + ",height=" + height
+                    + ",whitePct=" + pct(nearWhite, sampled)
+                    + ",blackPct=" + pct(nearBlack, sampled)
+                    + ",lowColorPct=" + pct(lowColor, sampled);
+        } finally {
+            bitmap.recycle();
+        }
+    }
+
+    private static int parsePositiveInt(String value, int fallback) {
+        try {
+            int parsed = Integer.parseInt(value == null ? "" : value);
+            return parsed > 0 ? parsed : fallback;
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
+    private static String pct(int value, int total) {
+        if(total <= 0)
+            return "0.0";
+        return String.format(java.util.Locale.US, "%.1f", value * 100.0 / total);
     }
 
     private static Intent viewerIntent(Context context, Case sample) {
