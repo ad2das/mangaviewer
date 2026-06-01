@@ -276,6 +276,43 @@ public class EpisodeActivityNetworkTest {
     }
 
     @Test
+    public void wfwfGhostEpisodes10To20DoNotJumpAfterScrollIdle() throws Exception {
+        ActivityScenario<EpisodeActivity> scenario = launchWfwfGhostTitle();
+        try {
+            UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+            UiObject2 episodeList = device.wait(Until.findObject(By.res(PACKAGE_NAME, "EpisodeList")), 90000L);
+            assertNotNull("Expected WFWF ghost episode list to render", episodeList);
+            UiObject2 firstEpisode = device.wait(Until.findObject(By.res(PACKAGE_NAME, "episode")), 90000L);
+            assertNotNull("Expected WFWF ghost title to render episodes", firstEpisode);
+
+            for(int episodeNumber = 10; episodeNumber <= 20; episodeNumber++) {
+                final int targetNumber = episodeNumber;
+                AtomicReference<Manga> target = new AtomicReference<>();
+                AtomicReference<List<Manga>> episodeSnapshot = new AtomicReference<>();
+                scenario.onActivity(activity -> {
+                    List<Manga> episodes = readEpisodes(activity);
+                    episodeSnapshot.set(episodes);
+                    target.set(findEpisodeByVisibleNumber(episodes, targetNumber));
+                });
+                List<Manga> snapshot = episodeSnapshot.get();
+                assertNotNull("Expected WFWF ghost episode " + targetNumber
+                        + " in " + firstEpisodeNames(snapshot, Math.min(24, snapshot == null ? 0 : snapshot.size())),
+                        target.get());
+
+                scenario.onActivity(activity -> activity.openViewer(target.get(), 0, true));
+                assertReaderOpened(device, "WFWF ghost " + targetNumber);
+                assertNoScrollJumpAfterIdleScroll(device, "wfwf_ghost_" + targetNumber);
+                finishReaderActivities();
+                device.wait(Until.findObject(By.res(PACKAGE_NAME, "EpisodeList")), 15000L);
+                Thread.sleep(650L);
+            }
+        } finally {
+            finishReaderActivities();
+            scenario.close();
+        }
+    }
+
+    @Test
     public void wfwfJagaanEpisode40HasNoWideBlackImageGaps() throws Exception {
         Manga episode40 = openWfwfJagaanEpisode("40");
         UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
@@ -932,6 +969,43 @@ public class EpisodeActivityNetworkTest {
         return ActivityScenario.launch(intent);
     }
 
+    private ActivityScenario<EpisodeActivity> launchWfwfGhostTitle() {
+        Context context = ApplicationProvider.getApplicationContext();
+        MainApplication.p.setSitePreset(CustomHttpClient.DEFAULT_COMIC_URL, CustomHttpClient.WEBTOON_URL);
+        MainApplication.p.setBaseMode(MTitle.base_webtoon);
+
+        Title title = new Title(
+                "\uADC0\uC2E0\uC774 \uC2FC\uB2E4",
+                "",
+                "",
+                Collections.singletonList("fantasy"),
+                "",
+                41,
+                MTitle.base_webtoon);
+        title.setSourceSite("wfwf");
+        MainApplication.p.setBookmark(title, -1);
+
+        Intent intent = new Intent(context, EpisodeActivity.class);
+        intent.putExtra("title", Utils.toViewerTitleJson(title, true));
+        intent.putExtra("online", true);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+        return ActivityScenario.launch(intent);
+    }
+
+    private static Manga findEpisodeByVisibleNumber(List<Manga> episodes, int episodeNumber) {
+        if(episodes == null)
+            return null;
+        String target = String.valueOf(episodeNumber);
+        for(Manga episode : episodes) {
+            if(episode == null)
+                continue;
+            if(target.equals(Manga.visibleEpisodeNumberKey(episode.getName())))
+                return episode;
+        }
+        return null;
+    }
+
     private Title findWfwfJagaanTitle() throws Exception {
         String[] queries = {
                 "쟈건",
@@ -1558,6 +1632,29 @@ public class EpisodeActivityNetworkTest {
             Thread.sleep(100L);
         }
         assertTrue("Expected settled visible reader coverage for " + source + ": " + latestOutput, false);
+    }
+
+    private static void assertNoScrollJumpAfterIdleScroll(UiDevice device, String source) throws Exception {
+        int width = device.getDisplayWidth();
+        int height = device.getDisplayHeight();
+        int x = width / 2;
+        int top = Math.max(96, height / 7);
+        int bottom = Math.min(height - 96, height * 6 / 7);
+
+        executeShell("logcat -c");
+        Log.d("ViewerPerf", "viewer_idle_jump_probe_start source=" + source);
+        Thread.sleep(2200L);
+        for(int i = 0; i < 10; i++) {
+            device.swipe(x, bottom, x, top, 8);
+            Thread.sleep(120L);
+        }
+        device.waitForIdle(5000L);
+        Thread.sleep(2200L);
+        assertReaderOpened(device, source + " idle jump probe");
+        String output = executeShellOutput("logcat -d -s ReaderSurfaceStats:W *:S");
+        assertTrue("Expected no reader_scroll_jump while idling after " + source + " scroll:\n" + output,
+                !output.contains("reader_scroll_jump"));
+        Log.d("ViewerPerf", "viewer_idle_jump_probe_end source=" + source);
     }
 
     private static void assertNoInitialVisibleCoverageGap(String source) throws Exception {

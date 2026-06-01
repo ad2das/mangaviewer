@@ -192,6 +192,37 @@ public class ReaderPageGapInstrumentedTest {
                 isGreen(afterRelease.getPixel(500, 100)));
     }
 
+    @Test
+    public void multipleDeferredHeightResolvesKeepReleaseAnchor() throws Exception {
+        ReaderSurfaceView view = new ReaderSurfaceView(ApplicationProvider.getApplicationContext());
+        attachForTest(view);
+        view.measure(
+                android.view.View.MeasureSpec.makeMeasureSpec(1000, android.view.View.MeasureSpec.EXACTLY),
+                android.view.View.MeasureSpec.makeMeasureSpec(600, android.view.View.MeasureSpec.EXACTLY));
+        view.layout(0, 0, 1000, 600);
+        view.setPageGapPx(0);
+        view.setPageCount(3);
+        view.setPageBitmap(0, bitmapOfSize(1000, 300, Color.rgb(220, 32, 32)));
+        view.setPageBitmap(1, bitmapOfSize(1000, 300, Color.rgb(32, 200, 80)));
+        view.setPageBitmap(2, bitmapOfSize(1000, 600, Color.rgb(32, 80, 220)));
+        view.scrollToPage(2, 0);
+
+        MotionEvent down = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, 500f, 300f, 0);
+        view.onTouchEvent(down);
+        down.recycle();
+        view.setPageBitmap(0, bitmapOfSize(1000, 2000, Color.rgb(220, 32, 32)));
+        view.setPageBitmap(1, bitmapOfSize(1000, 2000, Color.rgb(32, 200, 80)));
+
+        MotionEvent up = MotionEvent.obtain(0, 16, MotionEvent.ACTION_UP, 500f, 300f, 0);
+        view.onTouchEvent(up);
+        up.recycle();
+
+        ReaderSurfaceView.ProgressPosition position = view.currentProgressPosition();
+        assertEquals("Expected release to stay anchored to the page visible before pending height resolves",
+                2, position.getPage());
+        assertEquals(0, position.getOffset());
+    }
+
     private static Bitmap solidBitmap(int color) {
         Bitmap bitmap = Bitmap.createBitmap(720, 360, Bitmap.Config.RGB_565);
         bitmap.eraseColor(color);

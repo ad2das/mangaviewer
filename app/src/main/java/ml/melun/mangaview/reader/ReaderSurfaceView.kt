@@ -1472,6 +1472,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun applyPendingPageResolvesLocked() {
         if (pages.isEmpty()) return
         rebuildLayoutLocked()
+        val anchorPage = firstVisiblePageLocked(scrollOffset + 1f).coerceIn(0, pages.lastIndex)
+        val anchorOffset = pageOffsetLocked(anchorPage)
+        var appliedAny = false
         for (index in pages.indices) {
             val page = pages[index]
             val type = page.pendingResolveType
@@ -1511,7 +1514,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
             clearPendingResolveLocked(page)
             noteResolvedPageAspectLocked(page.width, page.height)
             val newHeight = pageDrawHeightLocked(page)
-            applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
+            updatePageHeightDeltaLocked(index, newHeight - oldHeight)
+            appliedAny = true
+        }
+        if (appliedAny) {
+            setScrollOffsetLocked(pageTopOrElseLocked(anchorPage, 0f) - anchorOffset)
+            clampScrollLocked()
         }
     }
 
