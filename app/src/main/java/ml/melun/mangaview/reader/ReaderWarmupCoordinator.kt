@@ -285,12 +285,12 @@ object ReaderWarmupCoordinator {
 
     private fun fetchViewerInitialForProfile(manga: Manga, profile: WarmupProfile): Int {
         val cancellation = MangaRepository.cancellation()
-        if (profile == WarmupProfile.LAUNCH_WINDOW) {
-            cancellation.prioritizeWebViewFallback()
-            return MangaRepository.fetchViewerInitial(manga, cancellation)
-        }
         val client = getHttpClient()
         if (client?.isNtk == true) {
+            return MangaRepository.fetchViewerInitial(manga, cancellation)
+        }
+        if (profile == WarmupProfile.LAUNCH_WINDOW) {
+            cancellation.prioritizeWebViewFallback()
             return MangaRepository.fetchViewerInitial(manga, cancellation)
         }
         return client?.runWithFetchMode(CustomHttpClient.FetchMode.DIRECT_ONLY) {

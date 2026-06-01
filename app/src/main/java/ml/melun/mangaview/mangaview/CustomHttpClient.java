@@ -2874,10 +2874,7 @@ public class CustomHttpClient {
                 && requestGroup.prioritizesWebViewFallback()
                 && !ntkBaseUrl
                 && shouldUseWolfWebViewFallback(ntkBaseUrl, true, url, fetchMode, true);
-        boolean prioritizeNtkEpisodeWebView = ntkBaseUrl
-                && fetchMode == FetchMode.ALLOW_SHARED_WEBVIEW
-                && isNtkEpisodeDocumentPath(url)
-                && MainApplication.currentActivity != null;
+        boolean prioritizeNtkEpisodeWebView = false;
         if(ntkBaseUrl && isNtkEpisodeDocumentPath(url)) {
             Log.d(TAG, "ntk_mget_episode path=" + url
                     + ",mode=" + fetchMode

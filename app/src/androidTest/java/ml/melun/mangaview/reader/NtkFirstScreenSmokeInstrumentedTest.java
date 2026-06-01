@@ -21,9 +21,11 @@ import androidx.test.uiautomator.Until;
 import org.junit.Test;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Random;
 
 import ml.melun.mangaview.LiveNetworkAssume;
 import ml.melun.mangaview.MainApplication;
@@ -49,7 +51,14 @@ public class NtkFirstScreenSmokeInstrumentedTest {
         String requestedCase = arguments == null ? "" : arguments.getString("ntkCase", "");
         boolean scrollProbe = arguments != null && Boolean.parseBoolean(arguments.getString("ntkScroll", "false"));
         int scrollSteps = arguments == null ? 6 : parsePositiveInt(arguments.getString("ntkScrollSteps", "6"), 6);
+        int randomRuns = arguments == null ? 0 : parsePositiveInt(arguments.getString("ntkRandomRuns", "0"), 0);
+        long randomSeed = arguments == null ? SystemClock.elapsedRealtime()
+                : parseLong(arguments.getString("ntkRandomSeed", ""), SystemClock.elapsedRealtime());
         List<Case> cases = allCases();
+        if(randomRuns > 0 && requestedCase.length() == 0) {
+            runRandomCases(context, device, cases, randomRuns, randomSeed, scrollProbe, scrollSteps);
+            return;
+        }
         boolean ranCase = false;
         for(Case sample : cases) {
             if(requestedCase.length() > 0 && !requestedCase.equals(sample.name))
@@ -58,6 +67,28 @@ public class NtkFirstScreenSmokeInstrumentedTest {
             runCase(context, device, sample, scrollProbe, scrollSteps);
         }
         assertTrue("No NTK smoke case matched " + requestedCase, ranCase);
+    }
+
+    private static void runRandomCases(Context context, UiDevice device, List<Case> cases,
+                                       int randomRuns, long randomSeed,
+                                       boolean scrollProbe, int scrollSteps) {
+        assertTrue("No NTK smoke cases configured", cases != null && cases.size() > 0);
+        Random random = new Random(randomSeed);
+        Log.d(TAG, "ntk_random_start runs=" + randomRuns
+                + ",seed=" + randomSeed
+                + ",scroll=" + scrollProbe
+                + ",scrollSteps=" + scrollSteps);
+        ArrayList<Case> shuffled = new ArrayList<>(cases);
+        for(int run = 0; run < randomRuns; run++) {
+            if(run % shuffled.size() == 0)
+                Collections.shuffle(shuffled, random);
+            Case sample = shuffled.get(run % shuffled.size());
+            Log.d(TAG, "ntk_random_pick run=" + run
+                    + ",name=" + sample.name
+                    + ",mode=" + sample.mode
+                    + ",path=" + sample.path);
+            runCase(context, device, sample, scrollProbe, scrollSteps);
+        }
     }
 
     private static List<Case> allCases() {
@@ -169,7 +200,15 @@ public class NtkFirstScreenSmokeInstrumentedTest {
     private static int parsePositiveInt(String value, int fallback) {
         try {
             int parsed = Integer.parseInt(value == null ? "" : value);
-            return parsed > 0 ? parsed : fallback;
+            return parsed >= 0 ? parsed : fallback;
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
+    private static long parseLong(String value, long fallback) {
+        try {
+            return Long.parseLong(value == null ? "" : value);
         } catch (Exception ignored) {
             return fallback;
         }

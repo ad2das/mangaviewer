@@ -549,12 +549,10 @@ public class Manga {
                 generatedPrimaryValidationMiss[0] = true;
                 Log.d(TAG, "ntk_generated_miss_start_fallback path=" + viewerPath);
                 startDirectPageFetchIfNeeded.run();
-                startPageFetchIfNeeded.run();
                 startNativeAckIfNeeded.run();
             };
             if(skipGeneratedForSlugEpisode) {
                 startDirectPageFetchIfNeeded.run();
-                startPageFetchIfNeeded.run();
                 startNativeAckIfNeeded.run();
             }
             boolean nativeAckCompleted = false;
@@ -580,7 +578,6 @@ public class Manga {
                     }
                 } else {
                     startDirectPageFetchIfNeeded.run();
-                    startPageFetchIfNeeded.run();
                     startNativeAckIfNeeded.run();
                     nativeAckCompleted = awaitAsyncNtkNativeAck(nativeAckRef[0],
                             NTK_API_FALLBACK_ACK_FAST_PATH_WAIT_MS, false);
@@ -610,8 +607,6 @@ public class Manga {
                 }
             } else if(apiFallbackMode) {
                 startDirectPageFetchIfNeeded.run();
-                if(!skipGeneratedForSlugEpisode)
-                    startPageFetchIfNeeded.run();
                 startNativeAckIfNeeded.run();
                 if(addCachedNtkViewerImageApiCandidates(client, path, seenImages)) {
                     logNtkViewerParse("api-cached-webview", null, path, 0, 0);
@@ -711,6 +706,12 @@ public class Manga {
             CustomHttpClient.PageResponse page = (apiFallbackMode || directPageFetchRef[0] != null)
                     ? awaitBestNtkApiPageFetch(directPageFetchRef[0], pageFetchRef[0], client, path)
                     : awaitAsyncNtkPageFetch(pageFetchRef[0], client, path);
+            if(pageFetchRef[0] == null
+                    && !isUsableNtkApiPage(page)
+                    && (skipGeneratedForSlugEpisode || nativeAckMode || apiFallbackMode)) {
+                startPageFetchIfNeeded.run();
+                page = awaitBestNtkApiPageFetch(directPageFetchRef[0], pageFetchRef[0], client, path);
+            }
             if(!nativeAckCompleted && nativeAckRef[0] == null
                     && (client.isCloudflareChallengeResponse(page.code, page.body)
                     || looksLikeNtkBlockedPage(page.body))) {
