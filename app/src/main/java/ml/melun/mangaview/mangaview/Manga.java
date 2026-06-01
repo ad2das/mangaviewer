@@ -485,10 +485,16 @@ public class Manga {
             boolean allowGeneratedImages = !nativeAckMode && !apiFallbackMode;
             final String viewerPath = path;
             final AsyncNtkPageFetch[] pageFetchRef = new AsyncNtkPageFetch[1];
+            final AsyncNtkPageFetch[] directPageFetchRef = new AsyncNtkPageFetch[1];
             final AsyncNtkNativeAck[] nativeAckRef = new AsyncNtkNativeAck[1];
             Runnable startPageFetchIfNeeded = () -> {
                 if(pageFetchRef[0] == null)
                     pageFetchRef[0] = startAsyncNtkPageFetch(client, viewerPath);
+            };
+            Runnable startDirectPageFetchIfNeeded = () -> {
+                if(directPageFetchRef[0] == null)
+                    directPageFetchRef[0] = startAsyncNtkPageFetch(client, viewerPath,
+                            CustomHttpClient.FetchMode.DIRECT_ONLY);
             };
             Runnable startNativeAckIfNeeded = () -> {
                 if(nativeAckRef[0] == null)
@@ -511,7 +517,6 @@ public class Manga {
                 return LOAD_OK;
             }
             if(nativeAckMode) {
-                startPageFetchIfNeeded.run();
                 nativeAckCompleted = client.performNtkNativeAckBypass(client.getUrl(path), path);
                 if(nativeAckCompleted
                         && addNtkGeneratedPathImageCandidates(client, path, seenImages,
@@ -522,6 +527,7 @@ public class Manga {
                     return LOAD_OK;
                 }
             } else if(apiFallbackMode) {
+                startDirectPageFetchIfNeeded.run();
                 startPageFetchIfNeeded.run();
                 startNativeAckIfNeeded.run();
                 if(!isNtkStrictApiFallbackModeOverride()) {
@@ -570,7 +576,9 @@ public class Manga {
                     return LOAD_OK;
                 }
             }
-            CustomHttpClient.PageResponse page = awaitAsyncNtkPageFetch(pageFetchRef[0], client, path);
+            CustomHttpClient.PageResponse page = apiFallbackMode
+                    ? awaitBestNtkApiPageFetch(directPageFetchRef[0], pageFetchRef[0], client, path)
+                    : awaitAsyncNtkPageFetch(pageFetchRef[0], client, path);
             if(!nativeAckCompleted && nativeAckRef[0] != null
                     && (client.isCloudflareChallengeResponse(page.code, page.body)
                     || looksLikeNtkBlockedPage(page.body))) {
@@ -658,22 +666,35 @@ public class Manga {
     }
 
     private AsyncNtkPageFetch startAsyncNtkPageFetch(CustomHttpClient client, String path) {
+        return startAsyncNtkPageFetch(client, path, null);
+    }
+
+    private AsyncNtkPageFetch startAsyncNtkPageFetch(CustomHttpClient client, String path,
+                                                     CustomHttpClient.FetchMode fetchMode) {
         AsyncNtkPageFetch fetch = new AsyncNtkPageFetch();
         CustomHttpClient.RequestGroup requestGroup = client == null ? null : client.currentRequestGroup();
         Thread thread = new Thread(() -> {
             try {
+                CustomHttpClient.RequestWork<CustomHttpClient.PageResponse> work =
+                        () -> client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
                 if(requestGroup != null) {
-                    fetch.page = client.runWithRequestGroup(requestGroup,
-                            () -> client.mgetCachedPage(path, PAGE_CACHE_TTL_MS));
+                    if(fetchMode != null) {
+                        fetch.page = client.runWithRequestGroup(requestGroup,
+                                () -> client.runWithFetchMode(fetchMode, work));
+                    } else {
+                        fetch.page = client.runWithRequestGroup(requestGroup, work);
+                    }
                 } else {
-                    fetch.page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+                    fetch.page = fetchMode == null
+                            ? work.run()
+                            : client.runWithFetchMode(fetchMode, work);
                 }
             } catch (Exception e) {
                 fetch.error = e;
             } finally {
                 fetch.done.countDown();
             }
-        }, "ntk-page-prefetch");
+        }, fetchMode == CustomHttpClient.FetchMode.DIRECT_ONLY ? "ntk-page-direct-prefetch" : "ntk-page-prefetch");
         thread.setDaemon(true);
         thread.start();
         return fetch;
@@ -695,6 +716,48 @@ public class Manga {
                 throw fetch.error;
         }
         return client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+    }
+
+    private CustomHttpClient.PageResponse awaitBestNtkApiPageFetch(AsyncNtkPageFetch directFetch,
+                                                                   AsyncNtkPageFetch fallbackFetch,
+                                                                   CustomHttpClient client,
+                                                                   String path) throws Exception {
+        CustomHttpClient.PageResponse direct = awaitAsyncNtkPageFetch(directFetch, null, path, 2_500L, false);
+        if(isUsableNtkApiPage(direct)) {
+            logNtkViewerParse("api-direct-page", direct, path, 0, 0);
+            return direct;
+        }
+        CustomHttpClient.PageResponse fallback = awaitAsyncNtkPageFetch(fallbackFetch, client, path);
+        if(isUsableNtkApiPage(fallback))
+            return fallback;
+        return direct != null ? direct : fallback;
+    }
+
+    private CustomHttpClient.PageResponse awaitAsyncNtkPageFetch(AsyncNtkPageFetch fetch,
+                                                                 CustomHttpClient client,
+                                                                 String path,
+                                                                 long timeoutMs,
+                                                                 boolean throwOnError) throws Exception {
+        if(fetch != null) {
+            try {
+                boolean done = fetch.done.await(Math.max(0L, timeoutMs), TimeUnit.MILLISECONDS);
+                if(done) {
+                    if(fetch.page != null)
+                        return fetch.page;
+                    if(fetch.error != null && throwOnError)
+                        throw fetch.error;
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw e;
+            }
+        }
+        return client == null ? null : client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+    }
+
+    private static boolean isUsableNtkApiPage(CustomHttpClient.PageResponse page) {
+        return page != null && page.code >= 200 && page.code < 400
+                && hasNtkViewerImageApiPayload(page.body);
     }
 
     private AsyncNtkNativeAck startAsyncNtkNativeAck(CustomHttpClient client, String path) {
