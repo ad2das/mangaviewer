@@ -1134,7 +1134,7 @@ public class Manga {
                 ? pathEpisodeId : getNtkImageEpisodeId();
         if(imageEpisodeId.length() == 0)
             imageEpisodeId = pathEpisodeId;
-        List<String> urls = client.fetchNtkViewerImageUrls(pathMatcher.group(1), pathMatcher.group(2), imageEpisodeId, token, normalized);
+        List<String> urls = client.fetchNtkViewerImageUrls(pathMatcher.group(1), pathMatcher.group(2), pathEpisodeId, token, normalized);
         for(String url : urls)
             addImageIfValid(client, seenImages, url);
         if(imgs == null || imgs.size() == before)
@@ -1271,6 +1271,7 @@ public class Manga {
             if(i == 0 && onPrimaryValidationMiss != null && !primaryMissReported) {
                 primaryMissReported = true;
                 onPrimaryValidationMiss.run();
+                return "";
             }
         }
         cacheNtkGeneratedImageExtension(cacheKey, "");

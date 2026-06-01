@@ -1294,7 +1294,7 @@ final class NtkWebViewFallbackManager {
                         ? new byte[0] : Base64.decode(bodyBase64, Base64.DEFAULT);
                 Map<String, String> headers = parseBridgeHeaders(headersJson);
                 NtkQuicFetcher.Result result = NtkQuicFetcher.fetch(MainApplication.appContext,
-                        url, userAgent, mergedCookieHeader(url, fallbackCookieHeader), headers,
+                        url, userAgent, bridgeCookieHeader(url, fallbackCookieHeader, headers, body), headers,
                         method, body, 15000L);
                 if(result == null)
                     return bridgeError("empty result");
@@ -1315,6 +1315,95 @@ final class NtkWebViewFallbackManager {
                 return object.toString();
             } catch (Exception e) {
                 return bridgeError(String.valueOf(e));
+            }
+        }
+
+        private static String bridgeCookieHeader(String url, String fallbackCookieHeader,
+                                                 Map<String, String> headers, byte[] body) {
+            String cookieHeader = mergedCookieHeader(url, fallbackCookieHeader);
+            String scope = ntkBridgeScopeForRequest(url, headers, body);
+            if(scope.length() == 0)
+                return cookieHeader;
+            return filterNtkAckCookiesForScope(cookieHeader, scope);
+        }
+
+        private static String ntkBridgeScopeForRequest(String url, Map<String, String> headers, byte[] body) {
+            if(url == null)
+                return "";
+            String kind = "";
+            try {
+                URI uri = URI.create(url);
+                String path = uri.getPath();
+                if(path == null || !(path.endsWith("/manhwa-images") || path.endsWith("/webtoon-images")))
+                    return "";
+                kind = path.endsWith("/webtoon-images") ? "webtoon" : "manhwa";
+            } catch (Exception e) {
+                return "";
+            }
+            try {
+                if(body != null && body.length > 0) {
+                    JSONObject payload = new JSONObject(new String(body, java.nio.charset.StandardCharsets.UTF_8));
+                    String workId = payload.optString("workId", "");
+                    String episodeId = payload.optString("episodeId", "");
+                    if(workId.length() > 0 && episodeId.length() > 0)
+                        return "/" + kind + "/" + workId + "/" + episodeId;
+                }
+            } catch (Exception ignored) {
+            }
+            String referer = headers == null ? "" : headers.get("referer");
+            if(referer == null || referer.length() == 0)
+                referer = headers == null ? "" : headers.get("Referer");
+            if(referer == null || referer.length() == 0)
+                return "";
+            try {
+                String path = URI.create(referer).getPath();
+                return path == null ? "" : path;
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        private static String filterNtkAckCookiesForScope(String cookieHeader, String scope) {
+            if(cookieHeader == null || cookieHeader.length() == 0 || scope == null || scope.length() == 0)
+                return cookieHeader == null ? "" : cookieHeader;
+            StringBuilder builder = new StringBuilder();
+            for(String part : cookieHeader.split(";")) {
+                String trimmed = part == null ? "" : part.trim();
+                int equals = trimmed.indexOf('=');
+                if(equals <= 0)
+                    continue;
+                String name = trimmed.substring(0, equals).trim();
+                String value = trimmed.substring(equals + 1).trim();
+                if(("ad_ack".equals(name) || "ad_ack_c".equals(name))
+                        && !ntkAckCookieMatchesScope(value, scope))
+                    continue;
+                if(builder.length() > 0)
+                    builder.append("; ");
+                builder.append(trimmed);
+            }
+            return builder.toString();
+        }
+
+        private static boolean ntkAckCookieMatchesScope(String value, String scope) {
+            if(value == null || value.length() == 0 || scope == null || scope.length() == 0)
+                return false;
+            try {
+                String[] parts = value.split("\\.");
+                if(parts.length < 1)
+                    return false;
+                String payload = parts[0];
+                int padding = (4 - (payload.length() % 4)) % 4;
+                StringBuilder padded = new StringBuilder(payload);
+                for(int i = 0; i < padding; i++)
+                    padded.append('=');
+                byte[] decoded = Base64.decode(padded.toString(), Base64.URL_SAFE | Base64.NO_WRAP);
+                JSONObject json = new JSONObject(new String(decoded, java.nio.charset.StandardCharsets.UTF_8));
+                long exp = json.optLong("exp", 0L);
+                if(exp > 0L && exp < System.currentTimeMillis())
+                    return false;
+                return scope.equals(json.optString("scope", ""));
+            } catch (Exception e) {
+                return false;
             }
         }
 

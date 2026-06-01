@@ -238,6 +238,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val request = synchronized(stateLock) {
             scroller.forceFinished(true)
             activeScrollerOffsetShift = 0f
+            clearInputStateLocked()
+            lastBusy = false
+            lastRequestedBusy = false
+            pendingWindowRequest = null
+            windowDispatchPosted = false
             pages.clear()
             repeat(max(0, count)) { pages.add(Page()) }
             setScrollOffsetLocked(0f)
@@ -1455,6 +1460,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun shouldDeferHeightChangingResolveLocked(oldTop: Float, oldHeight: Float, newHeight: Float): Boolean {
+        if (!hasDrawnContentFrame) return false
         if (!isScrollMovingLocked()) return false
         if (oldHeight <= 0f || abs(newHeight - oldHeight) <= HEIGHT_CHANGE_EPSILON_PX) return false
         val viewBottom = scrollOffset + max(1, height)
