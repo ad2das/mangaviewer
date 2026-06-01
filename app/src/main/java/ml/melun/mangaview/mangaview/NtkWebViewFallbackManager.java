@@ -100,10 +100,16 @@ final class NtkWebViewFallbackManager {
 
     Response fetch(String userAgent, String baseUrl, String path, Map<String, String> headers,
                    CustomHttpClient.RequestGroup requestGroup) {
-        if(Looper.myLooper() == Looper.getMainLooper() || baseUrl == null || path == null)
+        if(Looper.myLooper() == Looper.getMainLooper() || baseUrl == null || path == null) {
+            Log.d(TAG, "ntk_webview_fetch_skip path=" + path
+                    + ",main=" + (Looper.myLooper() == Looper.getMainLooper())
+                    + ",baseNull=" + (baseUrl == null));
             return null;
-        if(requestGroup != null && requestGroup.isCancelled())
+        }
+        if(requestGroup != null && requestGroup.isCancelled()) {
+            Log.d(TAG, "ntk_webview_fetch_skip_cancelled path=" + path);
             return null;
+        }
         FetchTask task;
         boolean reused = false;
         String key = fetchKey(baseUrl, path);
@@ -125,12 +131,20 @@ final class NtkWebViewFallbackManager {
                 reused = true;
             }
         }
+        Log.d(TAG, "ntk_webview_fetch_wait path=" + path
+                + ",reused=" + reused
+                + ",priority=" + task.highPriority);
         try {
             if(!awaitTask(task, requestGroup)) {
+                Log.d(TAG, "ntk_webview_fetch_wait_timeout path=" + path);
                 return null;
             }
-            if(task.code <= 0 || task.body == null || task.body.length() == 0)
+            if(task.code <= 0 || task.body == null || task.body.length() == 0) {
+                Log.d(TAG, "ntk_webview_fetch_empty path=" + path
+                        + ",code=" + task.code
+                        + ",bodyLen=" + (task.body == null ? 0 : task.body.length()));
                 return null;
+            }
             return CustomHttpClient.responseFromWebViewFetch(baseUrl, path,
                     "{\"code\":" + task.code + ",\"body\":" + jsonQuote(task.body) + "}");
         } catch (InterruptedException e) {
@@ -312,11 +326,8 @@ final class NtkWebViewFallbackManager {
                     if(requested[0] || finished[0] || !isFinishedDocumentUrl(url, baseUrl, path))
                         return;
                     requested[0] = true;
-                    mainHandler.postDelayed(() -> {
-                        if(!finished[0])
-                            view.evaluateJavascript(buildViewerImageFetchScript(baseUrl, path, kind, workId,
-                                    episodeId, imagesToken), null);
-                    }, 150L);
+                    mainHandler.post(() -> evaluateViewerImageFetchScript(view, finished, baseUrl, path,
+                            kind, workId, episodeId, imagesToken));
                 }
 
                 @Override
@@ -335,17 +346,21 @@ final class NtkWebViewFallbackManager {
             Activity activity = MainApplication.currentActivity;
             if(activity != null && !activity.isFinishing() && activity.getWindow() != null) {
                 ViewGroup decor = (ViewGroup) activity.getWindow().getDecorView();
-                view.setAlpha(1.0f);
-                FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                        Math.max(360, decor.getWidth()), Math.max(520, decor.getHeight() / 2),
+                view.setAlpha(0.01f);
+                view.setClickable(false);
+                view.setFocusable(false);
+                view.setFocusableInTouchMode(false);
+                FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(1, 1,
                         Gravity.BOTTOM | Gravity.LEFT);
                 decor.addView(view, 0, params);
             }
-            view.loadUrl(baseUrl + path, webViewHeaders(headers));
-            scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 1_200L);
-            scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 2_500L);
-            scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 5_000L);
-            scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 9_000L);
+            view.loadDataWithBaseURL(baseUrl + path,
+                    "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>",
+                    "text/html", "UTF-8", null);
+            scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 700L);
+            scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 1_800L);
+            scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 3_800L);
+            scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 7_000L);
             mainHandler.postDelayed(finish, 64_000L);
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
@@ -362,9 +377,22 @@ final class NtkWebViewFallbackManager {
             String currentUrl = view.getUrl();
             if(!isFinishedDocumentUrl(currentUrl, baseUrl, path))
                 return;
-            view.evaluateJavascript(buildViewerImageFetchScript(baseUrl, path, kind, workId,
-                    episodeId, imagesToken), null);
+            evaluateViewerImageFetchScript(view, finished, baseUrl, path, kind, workId,
+                    episodeId, imagesToken);
         }, delayMs);
+    }
+
+    private void evaluateViewerImageFetchScript(WebView view, boolean[] finished, String baseUrl, String path,
+                                                String kind, String workId, String episodeId,
+                                                String imagesToken) {
+        if(finished[0] || view == null)
+            return;
+        try {
+            view.stopLoading();
+        } catch (Exception ignored) {
+        }
+        view.evaluateJavascript(buildViewerImageFetchScript(baseUrl, path, kind, workId,
+                episodeId, imagesToken), null);
     }
 
     static long webViewLoadTimeoutMsForTest(boolean highPriority, boolean wolfDocument) {
@@ -431,6 +459,7 @@ final class NtkWebViewFallbackManager {
     private void beginOnMain(FetchTask task) {
         if(Looper.myLooper() != Looper.getMainLooper())
             return;
+        Log.d(TAG, "ntk_webview_begin path=" + (task == null ? "" : task.path));
         if(task.completed) {
             synchronized (lock) {
                 if(activeTask == task)
@@ -441,17 +470,17 @@ final class NtkWebViewFallbackManager {
         }
         try {
             ensureWebView(task.userAgent);
+            attachSharedWebViewToActivity();
             task.startedOnMainAt = SystemClock.elapsedRealtime();
             task.requested = false;
             if(shouldNavigateDocument(task.path)) {
                 webView.loadUrl(task.baseUrl + task.path, webViewHeaders(task.headers));
                 boolean episodeDocument = isNtkEpisodeDocumentPath(task.path);
-                if(!episodeDocument)
-                    mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task, false), 1500L);
-                mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task, true), 4000L);
-                mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task, true), 8000L);
+                mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task, false, false), 1500L);
+                mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task, !episodeDocument, episodeDocument), 4000L);
+                mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task, !episodeDocument, episodeDocument), 8000L);
                 if(episodeDocument)
-                    mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task, true), 14000L);
+                    mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task, false, true), 14000L);
             } else {
                 webView.loadDataWithBaseURL(task.baseUrl, "<!doctype html><html><body></body></html>",
                         "text/html", "UTF-8", null);
@@ -466,9 +495,11 @@ final class NtkWebViewFallbackManager {
     private void ensureWebView(String userAgent) {
         if(webView != null) {
             webView.getSettings().setUserAgentString(userAgent);
+            attachSharedWebViewToActivity();
             return;
         }
-        webView = new WebView(context);
+        Activity activity = MainApplication.currentActivity;
+        webView = new WebView(activity == null ? context : activity);
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
@@ -477,12 +508,13 @@ final class NtkWebViewFallbackManager {
         settings.setUserAgentString(userAgent);
         CookieManager.getInstance().setAcceptCookie(true);
         webView.addJavascriptInterface(new Bridge(), "NtkBridge");
+        if(NtkQuicFetcher.isAvailable())
+            webView.addJavascriptInterface(new NtkQuicBridge(userAgent, ""), "NtkQuicBridge");
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
-                if(Log.isLoggable(TAG, Log.DEBUG))
-                    Log.d(TAG, "ntk_webview_page_started url=" + url);
+                Log.d(TAG, "ntk_webview_page_started url=" + url);
                 FetchTask task;
                 synchronized (lock) {
                     task = activeTask;
@@ -505,16 +537,22 @@ final class NtkWebViewFallbackManager {
                 if(shouldNavigateDocument(task.path) && !isFinishedDocumentUrl(url, task.baseUrl, task.path))
                     return;
                 if(shouldNavigateDocument(task.path) && !isNtkEpisodeDocumentPath(task.path))
-                    requestDocumentHtmlOnMain(task, false);
+                    requestDocumentHtmlOnMain(task, false, false);
                 else if(!shouldNavigateDocument(task.path))
                     view.evaluateJavascript(CustomHttpClient.buildNtkWebViewFetchScript(task.path, task.headers, task.token), null);
+            }
+
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                WebResourceResponse response = interceptViewerQuicRequest(userAgent, "", request);
+                return response == null ? super.shouldInterceptRequest(view, request) : response;
             }
 
             @Override
             public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 super.onReceivedError(view, request, error);
                 boolean mainFrame = request != null && request.isForMainFrame();
-                if(Log.isLoggable(TAG, Log.DEBUG) && mainFrame) {
+                if(mainFrame) {
                     CharSequence description = error == null ? "" : error.getDescription();
                     Log.d(TAG, "ntk_webview_error url=" + request.getUrl()
                             + ",code=" + (error == null ? 0 : error.getErrorCode())
@@ -533,7 +571,14 @@ final class NtkWebViewFallbackManager {
     }
 
     private void requestDocumentHtmlOnMain(FetchTask task, boolean stopLoading) {
-        if(task == null || task.completed || task.requested || webView == null)
+        requestDocumentHtmlOnMain(task, stopLoading, false);
+    }
+
+    private void requestDocumentHtmlOnMain(FetchTask task, boolean stopLoading, boolean immediate) {
+        if(task == null || task.completed || webView == null)
+            return;
+        boolean episodeDocument = isNtkEpisodeDocumentPath(task.path);
+        if(task.requested && (!episodeDocument || !immediate))
             return;
         String currentUrl = webView.getUrl();
         if(!isFinishedDocumentUrl(currentUrl, task.baseUrl, task.path))
@@ -544,9 +589,11 @@ final class NtkWebViewFallbackManager {
             } catch (Exception ignored) {
             }
         }
-        task.requested = true;
-        task.loadStartedAt = SystemClock.elapsedRealtime();
-        webView.evaluateJavascript(stopLoading && isNtkEpisodeDocumentPath(task.path)
+        if(!episodeDocument || !immediate)
+            task.requested = true;
+        if(task.loadStartedAt <= 0)
+            task.loadStartedAt = SystemClock.elapsedRealtime();
+        webView.evaluateJavascript(immediate
                 ? buildImmediateDocumentHtmlScript(task.token)
                 : buildDocumentHtmlScript(task.token, documentReadyWaitMs(task)), null);
     }
@@ -570,8 +617,49 @@ final class NtkWebViewFallbackManager {
             } catch (Exception e) {
                 ml.melun.mangaview.report.CrashReporter.record(e);
             }
+            boolean unusableEpisodeDocument = isUnusableNtkEpisodeDocumentResult(task.path, body);
+            if(isNtkEpisodeDocumentPath(task.path) && (code <= 0 || unusableEpisodeDocument)
+                    && SystemClock.elapsedRealtime() - task.enqueuedAt
+                    < Math.max(0L, webViewLoadTimeoutMs(task) - 800L)) {
+                task.requested = false;
+                if(Log.isLoggable(TAG, Log.DEBUG)) {
+                    Log.d(TAG, "ntk_webview_ignore_empty_episode_probe path=" + task.path
+                            + ",code=" + code
+                            + ",htmlLen=" + (body == null ? 0 : body.length()));
+                }
+                return;
+            }
+            if(code > 0 && unusableEpisodeDocument) {
+                if(Log.isLoggable(TAG, Log.DEBUG)) {
+                    Log.d(TAG, "ntk_webview_reject_empty_episode path=" + task.path
+                            + ",code=" + code
+                            + ",htmlLen=" + (body == null ? 0 : body.length()));
+                }
+                code = 0;
+            }
             finishOnMain(task, code, body, code <= 0);
         });
+    }
+
+    private void attachSharedWebViewToActivity() {
+        if(webView == null || webView.getParent() != null)
+            return;
+        Activity activity = MainApplication.currentActivity;
+        if(activity == null || activity.isFinishing() || activity.getWindow() == null)
+            return;
+        try {
+            ViewGroup decor = (ViewGroup) activity.getWindow().getDecorView();
+            webView.setAlpha(0.01f);
+            webView.setClickable(false);
+            webView.setFocusable(false);
+            webView.setFocusableInTouchMode(false);
+            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(1, 1,
+                    Gravity.BOTTOM | Gravity.LEFT);
+            decor.addView(webView, 0, params);
+            Log.d(TAG, "ntk_webview_attached");
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
     }
 
     private void timeoutOnMain(FetchTask task) {
@@ -598,6 +686,15 @@ final class NtkWebViewFallbackManager {
         task.code = code;
         task.body = body == null ? "" : body;
         long finishedAt = SystemClock.elapsedRealtime();
+        try {
+            CustomHttpClient client = MainApplication.getHttpClient();
+            if(client != null) {
+                client.syncCookiesFromWebView(task.baseUrl, true);
+                client.syncCookiesFromWebView(task.baseUrl + task.path, true);
+            }
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
         ViewerWarmupManager.logMetric("ntk_webview_queue_ms", Math.max(0L, task.startedOnMainAt - task.enqueuedAt));
         ViewerWarmupManager.logMetric("ntk_webview_fallback_ms", Math.max(0L, finishedAt - task.enqueuedAt));
         ViewerWarmupManager.logMetric("ntk_webview_load_ms", task.loadStartedAt <= 0 ? 0L : Math.max(0L, finishedAt - task.loadStartedAt));
@@ -628,6 +725,8 @@ final class NtkWebViewFallbackManager {
         if(webView == null)
             return;
         try {
+            if(webView.getParent() instanceof ViewGroup)
+                ((ViewGroup) webView.getParent()).removeView(webView);
             webView.destroy();
         } catch (Exception ignored) {
         }
@@ -762,6 +861,27 @@ final class NtkWebViewFallbackManager {
                 + "catch(e){send(0,String(e));}})()";
     }
 
+    private static boolean isUnusableNtkEpisodeDocumentResult(String path, String body) {
+        if(!isNtkEpisodeDocumentPath(path))
+            return false;
+        if(body == null)
+            return true;
+        String trimmed = body.trim();
+        if(trimmed.length() < 160)
+            return true;
+        String lower = trimmed.toLowerCase(Locale.ROOT);
+        if(lower.contains("\"imagestoken\"") && lower.contains("\"imagemetas\""))
+            return false;
+        if(lower.contains("/webtoon_uploads/") || lower.contains("/manhwa_uploads/")
+                || lower.contains("/comic_uploads/") || lower.contains("/blacktoon/episodes/"))
+            return false;
+        if(lower.contains("vw-main") || lower.contains("vw-imgs")
+                || lower.contains("viewer-content") || lower.contains("toon-view")
+                || lower.contains("image-view") || lower.contains("webtoon-body"))
+            return false;
+        return lower.contains("<html") && lower.contains("<body") && !lower.contains("<img");
+    }
+
     private static String buildViewerImageFetchScript(String baseUrl, String path, String kind, String workId,
                                                       String episodeId, String imagesToken) {
         String endpoint = "webtoon".equals(kind) ? "/api/webtoon-images" : "/api/manhwa-images";
@@ -784,13 +904,14 @@ final class NtkWebViewFallbackManager {
                 + "function acked(){try{if(window.__ntk_ad_ack_scope===scope)return true;var l=window.__ntk_ad_ack_last;if(l&&l.scope===scope)return true;}catch(e){}return false;}"
                 + "function rearm(){try{window.dispatchEvent(new CustomEvent('ntk-ack-rearm',{detail:{reason:kind+'-native-403',scope:scope}}));}catch(e){}}"
                 + "function waitAck(ms){return new Promise(function(resolve){if(acked())return resolve(true);var done=false;function finish(v){if(done)return;done=true;clearTimeout(to);clearInterval(iv);window.removeEventListener('ntk-ad-ack-ready',ev);resolve(v);}function ev(e){if((e.detail&&e.detail.scope===scope)||acked())finish(true);}var to=setTimeout(function(){finish(acked());},ms);var iv=setInterval(function(){if(acked())finish(true);},120);window.addEventListener('ntk-ad-ack-ready',ev);});}"
-                + "async function api(){var v=await nv();if(!v)return{status:401,body:{error:'missing session'}};var n=new Uint8Array(24);crypto.getRandomValues(n);var nonce=b64(n);var proof=await hmac(v,token+'.'+nonce+'.'+navigator.userAgent);return await bridgeReq(endpoint,'POST',{workId:workId,episodeId:episodeId,token:token,nonce:nonce,proof:proof},{'x-images-client':'viewer-v1'});}"
+                + "async function api(){var v=await nv();if(!v)return{status:401,body:{error:'missing session'}};var n=new Uint8Array(24);crypto.getRandomValues(n);var nonce=b64(n);var proof=await hmac(v,token+'.'+nonce+'.'+navigator.userAgent),body={workId:workId,episodeId:episodeId,token:token,nonce:nonce,proof:proof};return await bridgeReq(endpoint,'POST',body,{'x-images-client':'viewer-v1'});}"
                 + "function decode64(b){try{return decodeURIComponent(escape(atob(b||'')));}catch(e){try{return atob(b||'');}catch(_){return '';}}}"
                 + "function markAck(){try{window.__ntk_ad_ack_scope=scope;window.__ntk_ad_ack_last={scope:scope,ts:Date.now(),native:true};window.dispatchEvent(new CustomEvent('ntk-ad-ack-ready',{detail:{scope:scope,native:true}}));}catch(e){}}"
                 + "async function bridgeReq(url,method,body,extra){var absolute=abs(url),h={'content-type':'application/json','accept':'application/json','origin':baseOrigin(),'referer':pageUrl()};if(extra){Object.keys(extra).forEach(function(k){h[k]=extra[k];});}if(window.NtkQuicBridge){var raw=window.NtkQuicBridge.request(absolute,method,JSON.stringify(h),body?b64(new TextEncoder().encode(JSON.stringify(body))):'');var o=JSON.parse(raw||'{}');if(!o.ok)throw new Error(o.error||'bridge failed');var text=decode64(o.bodyBase64||''),json={};try{json=JSON.parse(text||'{}');}catch(e){}return{status:o.status||0,body:json,text:text};}var opt={method:method,credentials:'same-origin',cache:'no-store',headers:h};if(body)opt.body=JSON.stringify(body);var r=await fetch(absolute,opt);var t=await r.text().catch(function(){return '';});var j={};try{j=JSON.parse(t||'{}');}catch(e){}return{status:r.status,body:j,text:t};}"
-                + "async function directAck(){try{var c=await bridgeReq('/api/ad/challenge','POST',{path:scope});if(!c||c.status!==200||!c.body||!c.body.ok||!c.body.challenge)return false;var ch=c.body.challenge,token=ch.token||'',imps=ch.impressionUrls||[],i,u;for(i=0;i<imps.length;i++){try{u=abs(imps[i]);await fetch(u,{credentials:'same-origin',cache:'no-store'});}catch(e){}}await bridgeReq('/api/ad/canary','POST',{adAckCanary:true,challengeToken:token,token:token,path:scope});var a=await bridgeReq('/api/ad/ack','POST',{challengeToken:token,total:ch.slotCount||4,visible:ch.minSeen||2,path:scope,td:0,tp:''});var b=a&&a.body?a.body:{};if(a&&a.status===200&&(b.ok||b.acked||b.status==='ok'||b.status==='acked')){markAck();return true;}}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({directAckError:String(e)}));}catch(_){}}return false;}"
+                + "function fireImp(u){try{fetch(abs(u),{credentials:'same-origin',cache:'no-store',mode:'no-cors'}).catch(function(){});}catch(e){}}"
+                + "async function directAck(){try{var c=await bridgeReq('/api/ad/challenge','POST',{path:scope});if(!c||c.status!==200||!c.body||!c.body.ok)return false;if(c.body.trusted&&!c.body.challenge){markAck();return true;}if(!c.body.challenge)return false;var ch=c.body.challenge,token=ch.token||'',imps=ch.impressionUrls||[];imps.forEach(fireImp);await sleep(180);await bridgeReq('/api/ad/canary','POST',{adAckCanary:true,challengeToken:token,token:token,path:scope});var a=await bridgeReq('/api/ad/ack','POST',{challengeToken:token,total:ch.slotCount||4,visible:ch.minSeen||2,path:scope,td:0,tp:''});var b=a&&a.body?a.body:{};if(a&&a.status===200&&(b.ok||b.acked||b.status==='ok'||b.status==='acked')){markAck();return true;}}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({directAckError:String(e)}));}catch(_){}}return false;}"
                 + "function extractAckState(){try{var ls={},ss={},i,k;for(i=0;i<localStorage.length;i++){k=localStorage.key(i);if(k)ls[k]=localStorage.getItem(k);}for(i=0;i<sessionStorage.length;i++){k=sessionStorage.key(i);if(k)ss[k]=sessionStorage.getItem(k);}return JSON.stringify({cookies:docCookie(),local:ls,session:ss,ackScope:(function(){try{return window.__ntk_ad_ack_scope;}catch(e){return null;}})(),ntkVars:(function(){try{var o={};for(var p in window)if(p.indexOf('__ntk')===0)try{o[p]=String(window[p]);}catch(e){}return o;}catch(e){return{};}})(),ua:navigator.userAgent,ts:Date.now()});}catch(e){return JSON.stringify({error:String(e)});}}"
-                + "(async function(){try{for(var i=0;i<20;i++){if(document.body)break;await sleep(100);}var deadline=Date.now()+18000,r=await api(),armed=false;while(Date.now()<deadline&&r&&r.status===403&&r.body&&r.body.error==='ad_ack_required'){try{window.NtkViewerBridge.onAckState(extractAckState());}catch(e){}if(!acked()&&!armed){armed=true;if(!(await directAck()))rearm();}await waitAck(Math.min(1800,Math.max(0,deadline-Date.now())));await sleep(180);r=await api();}send({code:r?r.status:0,body:r?r.body:{error:'timeout'}});}catch(e){send({code:0,error:String(e)});}})();"
+                + "(async function(){try{for(var i=0;i<20;i++){if(document.body)break;await sleep(100);}var deadline=Date.now()+18000,armed=false;if(!acked()){armed=true;if(!(await directAck()))rearm();}var r=await api();while(Date.now()<deadline&&r&&r.status===403){try{window.NtkViewerBridge.onAckState(extractAckState());}catch(e){}if(!acked()&&!armed){armed=true;if(!(await directAck()))rearm();}await waitAck(Math.min(1800,Math.max(0,deadline-Date.now())));await sleep(180);r=await api();}send({code:r?r.status:0,body:r?r.body:{error:'timeout'}});}catch(e){send({code:0,error:String(e)});}})();"
                 + "})()";
     }
 
@@ -1185,16 +1306,6 @@ final class NtkWebViewFallbackManager {
                             + ",code=" + result.code
                             + ",len=" + result.bodyBytes.length
                             + ",url=" + url);
-                if(url != null && url.contains("/api/ad/")) {
-                    try {
-                        Log.w(TAG, "ntk_bridge_ad_headers url=" + url + " headers=" + headersJson);
-                        if(body != null && body.length > 0) {
-                            String bodyStr = new String(body, java.nio.charset.StandardCharsets.UTF_8);
-                            Log.w(TAG, "ntk_bridge_ad_body url=" + url + " body=" + bodyStr.substring(0, Math.min(800, bodyStr.length())));
-                        }
-                        Log.w(TAG, "ntk_bridge_ad_response url=" + url + " code=" + result.code + " body=" + result.body.substring(0, Math.min(200, result.body.length())));
-                    } catch(Exception ignored) {}
-                }
                 JSONObject object = new JSONObject();
                 object.put("ok", true);
                 object.put("status", result.code);
