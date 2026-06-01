@@ -39,8 +39,8 @@ object ReaderImageCache {
     private const val MAX_CACHE_BYTES = 512L * 1024L * 1024L
     private const val TARGET_CACHE_BYTES = 384L * 1024L * 1024L
     private const val TRIM_DEBOUNCE_MS = 30_000L
-    private const val FOREGROUND_RACE_DELAY_MS = 450L
-    private const val MAX_DIRECT_STREAM_DECODE_BYTES = 8L * 1024L * 1024L
+    private const val FOREGROUND_RACE_DELAY_MS = 180L
+    private const val MAX_DIRECT_STREAM_DECODE_BYTES = 16L * 1024L * 1024L
     private val flights = ConcurrentHashMap<String, FutureTask<File>>()
     private val ntkApiFallbackFlights = ConcurrentHashMap<String, FutureTask<List<String>?>>()
     private val ntkApiFallbackImages = ConcurrentHashMap<String, List<String>>()

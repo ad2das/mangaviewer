@@ -116,7 +116,11 @@ public class CustomHttpClient {
     private static final long NTK_VIEWER_IMAGE_URL_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final long NTK_WASM_WARM_CACHE_TTL_MS = 30 * 60 * 1000L;
     private static final int NTK_ACK_REQUEST_ATTEMPTS = 3;
+    private static final int NTK_ACK_CHALLENGE_RACE_REQUESTS = 2;
     private static final long NTK_ACK_RETRY_DELAY_MS = 250L;
+    private static final long NTK_ACK_CHALLENGE_TIMEOUT_MS = 2_500L;
+    private static final long NTK_ACK_CHALLENGE_HEDGE_DELAY_MS = 400L;
+    private static final long NTK_ACK_CONFIRM_TIMEOUT_MS = 5_000L;
     private static final java.util.Map<String, Long> NTK_ACK_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
     private static final java.util.Map<String, FutureTask<Boolean>> NTK_ACK_FLIGHTS = new java.util.concurrent.ConcurrentHashMap<>();
     private static final String PAGE_CACHE_PREFIX = "httpPageCacheV1_";
@@ -920,6 +924,7 @@ public class CustomHttpClient {
     private final Map<String, Long> ntkWasmWarmCache = new HashMap<>();
     private final Object ntkViewerImageUrlCacheLock = new Object();
     private final Map<String, CachedViewerImages> ntkViewerImageUrlCache = new HashMap<>();
+    private final Map<String, FutureTask<List<String>>> ntkViewerImageUrlFlights = new java.util.concurrent.ConcurrentHashMap<>();
     public String agent = "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36";
 
     public enum FetchMode {
@@ -3857,6 +3862,36 @@ public class CustomHttpClient {
             ViewerWarmupManager.logMetric("ntk_images_api_cache_hit", cachedUrls.size());
             return cachedUrls;
         }
+        FutureTask<List<String>> task = new FutureTask<>(() ->
+                fetchNtkViewerImageUrlsUncached(kind, endpoint, baseUrl, path, segment,
+                        workId, episodeId, imagesToken, cacheKey));
+        FutureTask<List<String>> running = ntkViewerImageUrlFlights.putIfAbsent(cacheKey, task);
+        if(running == null) {
+            running = task;
+            task.run();
+        } else {
+            Log.d(TAG, "ntk_images_api_flight_join path=" + path);
+        }
+        try {
+            List<String> result = running.get();
+            return result == null ? urls : result;
+        } catch(InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return urls;
+        } catch(Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return urls;
+        } finally {
+            ntkViewerImageUrlFlights.remove(cacheKey, running);
+        }
+    }
+
+    private List<String> fetchNtkViewerImageUrlsUncached(String kind, String endpoint,
+                                                         String baseUrl, String path,
+                                                         String segment, String workId,
+                                                         String episodeId, String imagesToken,
+                                                         String cacheKey) {
+        List<String> urls = new ArrayList<>();
         boolean ntkTarget = isNtk() || isNtkUrl(baseUrl);
         if(!ntkTarget || !NtkQuicFetcher.isAvailable()) {
             Log.d(TAG, "ntk_viewer_images_skip path=" + path
@@ -3875,20 +3910,40 @@ public class CustomHttpClient {
             }
             if(!isNtkNvValid(nv))
                 return urls;
-            String nonce = base64Url(randomBytes(24));
-            String proof = hmacSha256Base64Url(nv, imagesToken + "." + nonce + "." + agent);
-            JSONObject payload = new JSONObject();
-            payload.put("workId", workId);
-            payload.put("episodeId", episodeId);
-            payload.put("token", imagesToken);
-            payload.put("nonce", nonce);
-            payload.put("proof", proof);
             Map<String, String> headers = new HashMap<>();
             headers.put("content-type", "application/json");
             headers.put("accept", "application/json");
             headers.put("x-images-client", "viewer-v1");
             headers.put("origin", baseUrl);
             headers.put("referer", baseUrl + "/" + kind + "/" + workId + "/" + episodeId);
+
+            boolean nativeAckCompleted = performNtkNativeAckBypass(baseUrl, path);
+            if(!nativeAckCompleted && Thread.currentThread().isInterrupted()) {
+                Log.d(TAG, "ntk_images_api_pre_ack_interrupted_cleared path=" + path);
+                Thread.interrupted();
+                nativeAckCompleted = performNtkNativeAckBypass(baseUrl, path);
+            }
+            if(!nativeAckCompleted) {
+                Log.d(TAG, "ntk_images_api_skip_unacked path=" + path);
+                if(MainApplication.currentActivity != null) {
+                    urls.addAll(NtkWebViewFallbackManager.get(context).fetchViewerImageUrls(agent, baseUrl,
+                            path, headers, kind, workId, episodeId, imagesToken, getCookieHeader()));
+                    if(urls.size() > 0) {
+                        cacheNtkViewerImageUrls(cacheKey, urls);
+                        return urls;
+                    }
+                }
+                return urls;
+            }
+
+            String nvAfterAck = getCookie("nv");
+            if(!isNtkNvValid(nvAfterAck)) {
+                issueNtkNvCookie(baseUrl);
+                nvAfterAck = getCookie("nv");
+            }
+            if(isNtkNvValid(nvAfterAck))
+                nv = nvAfterAck;
+            JSONObject payload = ntkViewerImagesPayload(workId, episodeId, imagesToken, nv);
             NtkQuicFetcher.Result result = fetchNtkViewerImagesApi(baseUrl, endpoint, headers, payload);
             ViewerWarmupManager.logMetric("ntk_images_api_code", result == null ? 0 : result.code);
             if(appendNtkViewerImages(urls, result)) {
@@ -3896,20 +3951,9 @@ public class CustomHttpClient {
                 return urls;
             }
 
-            // The API fallback caller may already have a native ACK attempt in flight.
-            // Join only the same episode's ACK flight, then retry the image API before starting WebView.
-            boolean nativeAckCompleted = performNtkNativeAckBypass(baseUrl, path);
-            if(nativeAckCompleted) {
-                String nvAfterAck = getCookie("nv");
-                if(!isNtkNvValid(nvAfterAck)) {
-                    issueNtkNvCookie(baseUrl);
-                    nvAfterAck = getCookie("nv");
-                }
-                if(isNtkNvValid(nvAfterAck) && !nvAfterAck.equals(nv)) {
-                    nv = nvAfterAck;
-                    proof = hmacSha256Base64Url(nv, imagesToken + "." + nonce + "." + agent);
-                    payload.put("proof", proof);
-                }
+            nvAfterAck = getCookie("nv");
+            if(isNtkNvValid(nvAfterAck)) {
+                payload = ntkViewerImagesPayload(workId, episodeId, imagesToken, nvAfterAck);
                 result = fetchNtkViewerImagesApi(baseUrl, endpoint, headers, payload);
                 ViewerWarmupManager.logMetric("ntk_images_api_code", result == null ? 0 : result.code);
                 if(appendNtkViewerImages(urls, result)) {
@@ -3933,6 +3977,19 @@ public class CustomHttpClient {
         return urls;
     }
 
+    private JSONObject ntkViewerImagesPayload(String workId, String episodeId,
+                                              String imagesToken, String nv) throws Exception {
+        String nonce = base64Url(randomBytes(24));
+        String proof = hmacSha256Base64Url(nv, imagesToken + "." + nonce + "." + agent);
+        JSONObject payload = new JSONObject();
+        payload.put("workId", workId);
+        payload.put("episodeId", episodeId);
+        payload.put("token", imagesToken);
+        payload.put("nonce", nonce);
+        payload.put("proof", proof);
+        return payload;
+    }
+
     private NtkQuicFetcher.Result fetchNtkViewerImagesApi(String baseUrl, String endpoint,
                                                           Map<String, String> headers,
                                                           JSONObject payload) {
@@ -3949,9 +4006,10 @@ public class CustomHttpClient {
                         + ",ackRequired=" + ntkViewerImagesAckRequired(result));
                 return result;
             } catch (InterruptedException e) {
-                Log.d(TAG, "ntk_images_api_interrupted_retry endpoint=" + endpoint
+                Log.d(TAG, "ntk_images_api_interrupted endpoint=" + endpoint
                         + ",attempt=" + attempt);
                 Thread.interrupted();
+                return null;
             }
         }
         return null;
@@ -4238,12 +4296,10 @@ public class CustomHttpClient {
             byte[] challengeBytes = challengePayload.toString().getBytes(StandardCharsets.UTF_8);
             for(int attempt = 0; attempt < NTK_ACK_REQUEST_ATTEMPTS; attempt++) {
                 if(attempt > 0) Thread.sleep(NTK_ACK_RETRY_DELAY_MS * attempt);
-                challenge = NtkQuicFetcher.fetchWithEngine(engine, executor, baseUrl + "/api/ad/challenge", agent,
-                        getCookieHeader(), h, "POST", challengeBytes, 15000L);
+                challenge = fetchNtkAckChallengeRace(engine, executor, baseUrl, path, h, challengeBytes, attempt);
                 Log.d(TAG, "ntk_native_ack_challenge_code=" + (challenge == null ? "null" : challenge.code)
                         + ",attempt=" + attempt
                         + ",path=" + path);
-                if(challenge != null) applySetCookieHeaders(challenge.headers, baseUrl);
                 if(challenge != null && challenge.error == null && challenge.code == 200
                         && looksLikeJsonObject(challenge.body))
                     break;
@@ -4342,7 +4398,7 @@ public class CustomHttpClient {
             for(int attempt = 0; attempt < NTK_ACK_REQUEST_ATTEMPTS; attempt++) {
                 if(attempt > 0) Thread.sleep(NTK_ACK_RETRY_DELAY_MS * attempt);
                 ack = NtkQuicFetcher.fetchWithEngine(engine, executor, baseUrl + "/api/ad/ack", agent,
-                        getCookieHeader(), h2, "POST", ackBytes, 10000L);
+                        getCookieHeader(), h2, "POST", ackBytes, NTK_ACK_CONFIRM_TIMEOUT_MS);
                 Log.d(TAG, "ntk_native_ack_ack_code=" + (ack == null ? "null" : ack.code)
                         + ",attempt=" + attempt
                         + ",path=" + challengePath);
@@ -4404,6 +4460,92 @@ public class CustomHttpClient {
         }
     }
 
+    private NtkQuicFetcher.Result fetchNtkAckChallengeRace(HttpEngine engine, ExecutorService executor,
+                                                           String baseUrl, String path,
+                                                           Map<String, String> headers,
+                                                           byte[] challengeBytes,
+                                                           int attempt) throws InterruptedException {
+        int lanes = Math.max(1, NTK_ACK_CHALLENGE_RACE_REQUESTS);
+        ExecutorCompletionService<NtkQuicFetcher.Result> completion =
+                new ExecutorCompletionService<>(executor);
+        List<Future<NtkQuicFetcher.Result>> futures = new ArrayList<>();
+        int submitted = 0;
+        submitNtkAckChallengeLane(completion, futures, engine, executor, baseUrl, path,
+                headers, challengeBytes, attempt, submitted++);
+        NtkQuicFetcher.Result fallback = null;
+        try {
+            for(int completed = 0; completed < lanes; completed++) {
+                Future<NtkQuicFetcher.Result> completedFuture = completion.poll(
+                        completed == 0 && submitted < lanes
+                                ? NTK_ACK_CHALLENGE_HEDGE_DELAY_MS
+                                : NTK_ACK_CHALLENGE_TIMEOUT_MS,
+                        TimeUnit.MILLISECONDS);
+                if(completedFuture == null) {
+                    if(submitted < lanes) {
+                        submitNtkAckChallengeLane(completion, futures, engine, executor, baseUrl, path,
+                                headers, challengeBytes, attempt, submitted++);
+                    }
+                    completedFuture = completion.take();
+                }
+                NtkQuicFetcher.Result result = null;
+                Throwable error = null;
+                try {
+                    result = completedFuture.get();
+                } catch(InterruptedException e) {
+                    throw e;
+                } catch(Exception e) {
+                    error = e;
+                }
+                if(result != null) {
+                    applySetCookieHeaders(result.headers, baseUrl);
+                    if(fallback == null)
+                        fallback = result;
+                }
+                boolean valid = result != null && result.error == null
+                        && result.code == 200 && looksLikeJsonObject(result.body);
+                Log.d(TAG, "ntk_native_ack_challenge_race_done attempt=" + attempt
+                        + ",completed=" + completed
+                        + ",code=" + (result == null ? "null" : result.code)
+                        + ",error=" + (result == null ? error : result.error)
+                        + ",valid=" + valid
+                        + ",path=" + path);
+                if(valid)
+                    return result;
+            }
+            return fallback;
+        } finally {
+            for(Future<NtkQuicFetcher.Result> future : futures) {
+                if(!future.isDone())
+                    future.cancel(true);
+            }
+        }
+    }
+
+    private void submitNtkAckChallengeLane(ExecutorCompletionService<NtkQuicFetcher.Result> completion,
+                                           List<Future<NtkQuicFetcher.Result>> futures,
+                                           HttpEngine engine,
+                                           ExecutorService executor,
+                                           String baseUrl,
+                                           String path,
+                                           Map<String, String> headers,
+                                           byte[] challengeBytes,
+                                           int attempt,
+                                           int lane) {
+        futures.add(completion.submit(() -> NtkQuicFetcher.fetchWithEngine(
+                engine,
+                executor,
+                baseUrl + "/api/ad/challenge",
+                agent,
+                getCookieHeader(),
+                headers,
+                "POST",
+                challengeBytes,
+                NTK_ACK_CHALLENGE_TIMEOUT_MS)));
+        Log.d(TAG, "ntk_native_ack_challenge_race_start attempt=" + attempt
+                + ",lane=" + lane
+                + ",path=" + path);
+    }
+
     private long logNtkNativeAckPhase(String phase, String path, long startedMs, long phaseStartedMs) {
         long now = System.currentTimeMillis();
         Log.d(TAG, "ntk_native_ack_phase phase=" + phase
@@ -4454,7 +4596,7 @@ public class CustomHttpClient {
             for(int attempt = 0; attempt < NTK_ACK_REQUEST_ATTEMPTS; attempt++) {
                 if(attempt > 0) Thread.sleep(NTK_ACK_RETRY_DELAY_MS * attempt);
                 canary = NtkQuicFetcher.fetchWithEngine(engine, executor, baseUrl + "/api/ad/canary", agent,
-                        getCookieHeader(), headers, "POST", canaryBytes, 10000L);
+                        getCookieHeader(), headers, "POST", canaryBytes, NTK_ACK_CONFIRM_TIMEOUT_MS);
                 Log.d(TAG, "ntk_native_ack_canary_code=" + (canary == null ? "null" : canary.code)
                         + ",attempt=" + attempt
                         + ",parallel=true,path=" + challengePath);
@@ -4488,7 +4630,7 @@ public class CustomHttpClient {
             futures.add(completion.submit(() -> {
                 try {
                     NtkQuicFetcher.Result imp = NtkQuicFetcher.fetchWithEngine(engine, executor, impressionUrl, agent,
-                            getCookieHeader(), Collections.emptyMap(), "GET", null, 10000L);
+                            getCookieHeader(), Collections.emptyMap(), "GET", null, NTK_ACK_CONFIRM_TIMEOUT_MS);
                     return new NtkImpressionResult(index, impressionUrl, imp, null);
                 } catch(Exception e) {
                     return new NtkImpressionResult(index, impressionUrl, null, e);

@@ -550,7 +550,7 @@ public class Manga {
                 startPageFetchIfNeeded.run();
                 startNativeAckIfNeeded.run();
             };
-            if(skipGeneratedForSlugEpisode && !nativeAckMode) {
+            if(skipGeneratedForSlugEpisode) {
                 startDirectPageFetchIfNeeded.run();
             }
             boolean nativeAckCompleted = false;

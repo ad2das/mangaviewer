@@ -1978,7 +1978,7 @@ class ReaderSession(
         if (!isNtkSource(manga, title)) return false
         val start = currentStartPage()
         if (index == start) return false
-        return index in max(0, start - 1)..minOf(start + NTK_INITIAL_BOOT_PRIORITY_PAGES, start + 8)
+        return index in max(0, start - 1)..minOf(start + NTK_INITIAL_PRIORITY_PAGES, start + 12)
     }
 
     private fun scheduleInitialDeliveryFallback() {
