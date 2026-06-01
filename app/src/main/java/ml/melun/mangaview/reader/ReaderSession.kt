@@ -206,6 +206,7 @@ class ReaderSession(
     private val firstBitmapLogged = AtomicBoolean(false)
     private val initialFanoutStarted = AtomicBoolean(false)
     private val pendingInitialFanoutPage = AtomicInteger(-1)
+    private val resolvedInitialStartPage = AtomicInteger(-1)
     private val windowGeneration = AtomicInteger(0)
     private val nextLoading = AtomicBoolean(false)
     private val previousAppendLoading = AtomicBoolean(false)
@@ -370,6 +371,7 @@ class ReaderSession(
             pages.addAll(refs)
         }
         val startPage = displayStartPage(requestedStartPage, requestedStartSide(), refs)
+        resolvedInitialStartPage.set(startPage)
         main.post {
             if (!cancelled.get()) {
                 listener.onPagesReady(refs.size)
@@ -534,7 +536,7 @@ class ReaderSession(
             initialPreparedBacklog.put(index, PreparedDelivery(bitmap, owned))?.let { previous ->
                 if (previous.owned && !previous.bitmap.isRecycled) previous.bitmap.recycle()
             }
-            Log.d(TAG, "reader_initial_hold_prepared page=$index,start=${requestedStartPage()},width=${bitmap.width}")
+            Log.d(TAG, "reader_initial_hold_prepared page=$index,start=${currentStartPage()},width=${bitmap.width}")
             scheduleInitialDeliveryFallback()
             return
         }
@@ -1328,7 +1330,7 @@ class ReaderSession(
 
     private fun shouldHedgeForegroundPrime(index: Int): Boolean {
         if (!isNtkSource(manga, title)) return false
-        val first = requestedStartPage()
+        val first = currentStartPage()
         val hedgeFirst = first + NTK_INITIAL_PRIORITY_PAGES + 1
         val hedgeLast = first + NTK_INITIAL_PRIORITY_PAGES + NTK_PRIMED_EPISODE_PRIORITY_PAGES
         return index in hedgeFirst..hedgeLast
@@ -1417,7 +1419,7 @@ class ReaderSession(
 
     private fun scheduleNtkSecondaryInitialWarmAfterFirstBitmap() {
         if (!isNtkSource(manga, title)) return
-        val first = requestedStartPage()
+        val first = currentStartPage()
         val count = synchronized(pagesLock) { pages.size }
         if (count <= 0) return
         val priorityLast = minOf(count - 1, first + NTK_INITIAL_PRIORITY_PAGES)
@@ -1443,13 +1445,13 @@ class ReaderSession(
     private fun scheduleNtkSourcePrefetchAfterFirstBitmap() {
         if (!isNtkSource(manga, title)) return
         main.postDelayed({
-            if (!cancelled.get()) prefetchImageFilesAround(requestedStartPage())
+            if (!cancelled.get()) prefetchImageFilesAround(currentStartPage())
         }, NTK_INITIAL_SOURCE_PREFETCH_AFTER_FIRST_BITMAP_DELAY_MS)
     }
 
     private fun upgradeNtkInitialPriorityPagesAfterFirstBitmap() {
         if (!isNtkSource(manga, title)) return
-        val first = requestedStartPage()
+        val first = currentStartPage()
         val count = synchronized(pagesLock) { pages.size }
         if (count <= 0) return
         val firstPriority = minOf(count - 1, first + NTK_INITIAL_PRIORITY_START_OFFSET)
@@ -1559,8 +1561,9 @@ class ReaderSession(
     ): PageDecodeResult {
         cachedDecodedResult(page, targetWidth, allowPreviewCache)?.let { return it }
         decodeForegroundStream(index, page, targetWidth, foregroundFetch)?.let { return it }
-        val leaseStart = if (index == requestedStartPage() && page.manga.isOnline) SystemClock.elapsedRealtime() else 0L
-        leaseImageFile(index, page, foregroundFetch || index == requestedStartPage()).use { lease ->
+        val startPage = currentStartPage()
+        val leaseStart = if (index == startPage && page.manga.isOnline) SystemClock.elapsedRealtime() else 0L
+        leaseImageFile(index, page, foregroundFetch || index == startPage).use { lease ->
             if (leaseStart > 0L) ViewerWarmupManager.logMetric(
                 "reader_first_fetch_wait_ms",
                 SystemClock.elapsedRealtime() - leaseStart
@@ -1570,7 +1573,7 @@ class ReaderSession(
     }
 
     private fun decodeForegroundStream(index: Int, page: PageRef, targetWidth: Int, foregroundFetch: Boolean): PageDecodeResult? {
-        if (!page.manga.isOnline || (!foregroundFetch && index != requestedStartPage())) return null
+        if (!page.manga.isOnline || (!foregroundFetch && index != currentStartPage())) return null
         val image = page.image ?: return null
         val metric = SystemClock.elapsedRealtime()
         val raw = try {
@@ -1631,7 +1634,7 @@ class ReaderSession(
     }
 
     private fun decodePage(index: Int, page: PageRef, file: File, targetWidth: Int): PageDecodeResult {
-        val metric = index == requestedStartPage() && page.manga.isOnline
+        val metric = index == currentStartPage() && page.manga.isOnline
         val startedAt = if (metric) SystemClock.elapsedRealtime() else 0L
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         if (page.manga.isOnline || file.exists()) {
@@ -1957,7 +1960,7 @@ class ReaderSession(
             initialDeliveryBacklog[delivery.index] = delivery
             Log.d(
                 TAG,
-                "reader_initial_hold page=${delivery.index},start=${requestedStartPage()},width=${delivery.result.width}"
+                "reader_initial_hold page=${delivery.index},start=${currentStartPage()},width=${delivery.result.width}"
             )
             scheduleInitialDeliveryFallback()
             return
@@ -1973,9 +1976,9 @@ class ReaderSession(
     private fun shouldHoldInitialNtkIndex(index: Int): Boolean {
         if (firstBitmapLogged.get()) return false
         if (!isNtkSource(manga, title)) return false
-        val start = requestedStartPage()
+        val start = currentStartPage()
         if (index == start) return false
-        return index in start..minOf(start + NTK_INITIAL_BOOT_PRIORITY_PAGES, start + 8)
+        return index in max(0, start - 1)..minOf(start + NTK_INITIAL_BOOT_PRIORITY_PAGES, start + 8)
     }
 
     private fun scheduleInitialDeliveryFallback() {
@@ -2019,7 +2022,7 @@ class ReaderSession(
         generation: Int
     ): Boolean {
         if (!page.manga.isOnline) return false
-        if (anchor || index == requestedStartPage()) return true
+        if (anchor || index == currentStartPage()) return true
         if (urgent) return true
         if (generation == FOREGROUND_PRIME_WARM_GENERATION && isNtkSource(page.manga, title)) return true
         if (!urgent && (!busy || generation == PRIME_WARM_GENERATION)) return false
@@ -2236,7 +2239,7 @@ class ReaderSession(
             is PageDecodeResult.Full -> listener.onPageReady(currentIndex, result.bitmap)
             is PageDecodeResult.Tiles -> listener.onPageTilesReady(currentIndex, result.pageWidth, result.pageHeight, result.tiles)
         }
-        if (currentIndex == requestedStartPage()) flushInitialHeldDeliveries("anchor")
+        if (currentIndex == currentStartPage()) flushInitialHeldDeliveries("anchor")
         main.post { releaseInitialFanoutIfAnchorReady(currentIndex) }
         retryPendingWidthIfNeeded(currentIndex)
     }
@@ -2554,6 +2557,11 @@ class ReaderSession(
             0
         }
         return max(0, page)
+    }
+
+    private fun currentStartPage(): Int {
+        val resolved = resolvedInitialStartPage.get()
+        return if (resolved >= 0) resolved else requestedStartPage()
     }
 
     private fun requestedStartSide(): Int {
