@@ -20,6 +20,10 @@ public final class ViewerBitmapTrim {
     public static Bitmap trimBlankVerticalEdges(Bitmap bitmap, boolean recycleSource) {
         if(!ENABLED)
             return bitmap;
+        return trimBlankVerticalEdgesForced(bitmap, recycleSource);
+    }
+
+    public static Bitmap trimBlankVerticalEdgesForced(Bitmap bitmap, boolean recycleSource) {
         if(bitmap == null || bitmap.isRecycled())
             return bitmap;
         int width = bitmap.getWidth();
