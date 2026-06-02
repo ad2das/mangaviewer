@@ -119,7 +119,7 @@ public class CustomHttpClient {
     private static final int NTK_ACK_CHALLENGE_RACE_REQUESTS = 2;
     private static final long NTK_ACK_RETRY_DELAY_MS = 250L;
     private static final long NTK_ACK_CHALLENGE_TIMEOUT_MS = 2_500L;
-    private static final long NTK_ACK_CHALLENGE_HEDGE_DELAY_MS = 400L;
+    private static final long NTK_ACK_CHALLENGE_HEDGE_DELAY_MS = 220L;
     private static final long NTK_ACK_CONFIRM_TIMEOUT_MS = 5_000L;
     private static final java.util.Map<String, Long> NTK_ACK_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
     private static final java.util.Map<String, FutureTask<Boolean>> NTK_ACK_FLIGHTS = new java.util.concurrent.ConcurrentHashMap<>();
@@ -4302,11 +4302,17 @@ public class CustomHttpClient {
         String cacheKey = baseUrl + path;
         Long cached = NTK_ACK_CACHE.get(cacheKey);
         if(cached != null && System.currentTimeMillis() - cached < NTK_ACK_CACHE_TTL_MS) {
-            if(Log.isLoggable(TAG, Log.DEBUG))
-                Log.d(TAG, "ntk_native_ack_cache_hit path=" + path);
-            return true;
+            if(hasNtkAdAckCookieForPath(path)) {
+                if(Log.isLoggable(TAG, Log.DEBUG))
+                    Log.d(TAG, "ntk_native_ack_cache_hit path=" + path);
+                return true;
+            }
+            NTK_ACK_CACHE.remove(cacheKey);
+            Log.d(TAG, "ntk_native_ack_cache_cookie_miss path=" + path);
         }
-        syncCookiesFromWebView(baseUrl + path, true);
+        if(shouldSyncCookiesBeforeNtkAck()) {
+            syncCookiesFromWebView(baseUrl + path, true);
+        }
         if(removeNtkAckCookies()) {
             Log.d(TAG, "ntk_native_ack_stale_cookie_removed path=" + path);
         }
@@ -4529,6 +4535,10 @@ public class CustomHttpClient {
         }
     }
 
+    private boolean shouldSyncCookiesBeforeNtkAck() {
+        return !isNtkNvValid(getCookie("nv")) && !hasCloudflareClearance();
+    }
+
     private boolean performNtkNativeAckBypassFresh(String baseUrl, String path) {
         if(baseUrl == null || path == null || baseUrl.length() == 0 || path.length() == 0)
             return false;
@@ -4658,8 +4668,11 @@ public class CustomHttpClient {
             JSONObject json = new JSONObject(new String(decoded, StandardCharsets.UTF_8));
             String scope = json.optString("scope", "");
             long exp = json.optLong("exp", 0L);
-            if(exp > 0L && exp < System.currentTimeMillis())
-                return false;
+            if(exp > 0L) {
+                long expMs = exp < 100_000_000_000L ? exp * 1000L : exp;
+                if(expMs < System.currentTimeMillis())
+                    return false;
+            }
             return path.equals(scope);
         } catch(Exception ignored) {
             return false;

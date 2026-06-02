@@ -487,8 +487,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     fun stopRenderingAndClearPages() {
-        val thread = synchronized(stateLock) {
+        mainHandler.removeCallbacksAndMessages(null)
+        synchronized(stateLock) {
             renderRunning = false
+            renderRequested = false
+            frameScheduled = false
             clearInputStateLocked()
             resetActiveFrameStatsLocked()
             for (page in pages) {
@@ -501,9 +504,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
             hasDrawnContentFrame = false
             layoutDirty = true
-            val stopped = stopRenderThreadLocked()
+            stopRenderThreadLocked()
             stateLock.notifyAll()
-            stopped
         }
     }
 
@@ -685,8 +687,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
+        mainHandler.removeCallbacksAndMessages(null)
         synchronized(stateLock) {
             renderRunning = false
+            renderRequested = false
+            frameScheduled = false
             clearInputStateLocked()
             resetActiveFrameStatsLocked()
             stopRenderThreadLocked()

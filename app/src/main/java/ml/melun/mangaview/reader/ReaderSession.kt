@@ -419,11 +419,17 @@ class ReaderSession(
         val count = synchronized(pagesLock) { pages.size }
         if (count <= 0) return
         val anchor = startPage.coerceIn(0, count - 1)
-        val first = max(0, anchor - 1)
-        val priorityLast = minOf(count - 1, anchor + NTK_INITIAL_BOOT_PRIORITY_PAGES)
-        if (first <= priorityLast) {
-            for (index in first..priorityLast) {
-                requestPage(index, busy = true, anchor = index == anchor, generation = FOREGROUND_PRIME_WARM_GENERATION)
+        requestPage(anchor, busy = true, anchor = true, generation = FOREGROUND_PRIME_WARM_GENERATION)
+        for (offset in 1..NTK_INITIAL_BOOT_PRIORITY_PAGES) {
+            val ahead = anchor + offset
+            if (ahead < count) {
+                requestPage(ahead, busy = true, anchor = false, generation = FOREGROUND_PRIME_WARM_GENERATION)
+            }
+        }
+        val backgroundLast = minOf(count - 1, anchor + NTK_INITIAL_BOOT_BACKGROUND_PAGES)
+        if (anchor + NTK_INITIAL_BOOT_PRIORITY_PAGES + 1 <= backgroundLast) {
+            for (index in (anchor + NTK_INITIAL_BOOT_PRIORITY_PAGES + 1)..backgroundLast) {
+                requestPage(index, busy = false, anchor = false, generation = PRIME_WARM_GENERATION)
             }
         }
     }
@@ -611,30 +617,40 @@ class ReaderSession(
         }
         val count = synchronized(pagesLock) { pages.size }
         if (count <= 0) return
+        val windowAnchor = anchor.coerceIn(0, count - 1)
+        val windowFirstInput: Int
+        val windowLastInput: Int
+        if (isNtkSource(manga, title) && !firstBitmapLogged.get()) {
+            windowFirstInput = windowAnchor
+            windowLastInput = minOf(count - 1, windowAnchor + NTK_INITIAL_BOOT_PRIORITY_PAGES)
+        } else {
+            windowFirstInput = first
+            windowLastInput = last
+        }
         val requestList: List<Int>
         val generation: Int
         val safeFirst: Int
         val safeLast: Int
         val direction: Int
         synchronized(windowLock) {
-            safeFirst = first.coerceIn(0, count - 1)
-            safeLast = last.coerceIn(safeFirst, count - 1)
+            safeFirst = windowFirstInput.coerceIn(0, count - 1)
+            safeLast = windowLastInput.coerceIn(safeFirst, count - 1)
             generation = windowGeneration.incrementAndGet()
             direction = when {
                 lastWindowAnchor < 0 -> lastWindowDirection
-                anchor > lastWindowAnchor -> 1
-                anchor < lastWindowAnchor -> -1
+                windowAnchor > lastWindowAnchor -> 1
+                windowAnchor < lastWindowAnchor -> -1
                 else -> lastWindowDirection
             }
-            lastWindowAnchor = anchor
+            lastWindowAnchor = windowAnchor
             if (direction != 0) lastWindowDirection = direction
-            requestList = windowOrder(safeFirst, safeLast, anchor, direction)
+            requestList = windowOrder(safeFirst, safeLast, windowAnchor, direction)
         }
         if (retainWindow) {
             synchronized(deliveredBitmaps) {
                 retainedFirstPage = safeFirst
                 retainedLastPage = safeLast
-                retainedAnchorPage = anchor.coerceIn(safeFirst, safeLast)
+                retainedAnchorPage = windowAnchor.coerceIn(safeFirst, safeLast)
             }
             if (primedDeliveryBacklog.isNotEmpty()) scheduleDeliveryDrain()
         }
@@ -642,23 +658,23 @@ class ReaderSession(
             val visibleFirst = if (direction < 0) {
                 safeFirst
             } else {
-                max(safeFirst, anchor - BUSY_VISIBLE_DECODE_RADIUS)
+                max(safeFirst, windowAnchor - BUSY_VISIBLE_DECODE_RADIUS)
             }
             val visibleLast = if (direction >= 0) {
-                minOf(safeLast, anchor + BUSY_DIRECTIONAL_DECODE_AHEAD)
+                minOf(safeLast, windowAnchor + BUSY_DIRECTIONAL_DECODE_AHEAD)
             } else {
-                minOf(safeLast, anchor + BUSY_VISIBLE_DECODE_RADIUS)
+                minOf(safeLast, windowAnchor + BUSY_VISIBLE_DECODE_RADIUS)
             }
-            val visible = windowOrder(visibleFirst, visibleLast, anchor, direction)
-            for (i in visible) requestPage(i, true, i == anchor, generation)
+            val visible = windowOrder(visibleFirst, visibleLast, windowAnchor, direction)
+            for (i in visible) requestPage(i, true, i == windowAnchor, generation)
             for (i in requestList) {
                 if (!visible.contains(i)) pageRef(i)?.let { prefetchBusyPage(i, it, generation) }
             }
-            trimDecodedWidth(anchor, true)
+            trimDecodedWidth(windowAnchor, true)
             return
         }
-        for (i in requestList) requestPage(i, busy, i == anchor, generation)
-        trimDecodedWidth(anchor, busy)
+        for (i in requestList) requestPage(i, busy, i == windowAnchor, generation)
+        trimDecodedWidth(windowAnchor, busy)
     }
 
     fun clearOutside(first: Int, last: Int) {
@@ -1464,6 +1480,7 @@ class ReaderSession(
 
     private fun scheduleNtkForwardTimelinePrimeAfterFirstBitmap() {
         if (!isNtkSource(manga, title)) return
+        if (NTK_PRIME_FORWARD_EPISODES <= 0) return
         if (!timelinePrimeRequested.compareAndSet(false, true)) return
         scheduleNtkForwardTimelinePrimeAfterDelay(ntkForwardPrimeDelayMs())
     }
@@ -2593,7 +2610,7 @@ class ReaderSession(
         private const val PRIME_PIPELINE_PARALLELISM = 2
         private const val NTK_FOREGROUND_PRIME_HEDGE_DELAY_MS = 1400L
         private const val PRIME_FORWARD_EPISODES = 8
-        private const val NTK_PRIME_FORWARD_EPISODES = 1
+        private const val NTK_PRIME_FORWARD_EPISODES = 0
         private const val NTK_GENERATED_FORWARD_PRIME_AFTER_FIRST_BITMAP_DELAY_MS = 700L
         private const val NTK_NATIVE_FORWARD_PRIME_AFTER_FIRST_BITMAP_DELAY_MS = 1200L
         private const val NTK_PRIMED_EPISODE_DECODE_AHEAD_PAGES = 12
@@ -2602,7 +2619,8 @@ class ReaderSession(
         private const val NTK_LIGHT_PRIMED_EPISODE_DECODE_AHEAD_PAGES = 8
         private const val NTK_LIGHT_PRIMED_EPISODE_BYTE_AHEAD_PAGES = 12
         private const val NTK_INITIAL_PRIORITY_START_OFFSET = 1
-        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 4
+        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 1
+        private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 3
         private const val NTK_INITIAL_PRIORITY_PAGES = 12
         private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 20
         private const val NTK_INITIAL_DECODE_AHEAD_PAGES = 36

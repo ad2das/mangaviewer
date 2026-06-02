@@ -577,8 +577,16 @@ public class Manga {
                         return LOAD_OK;
                     }
                 } else {
-                    startDirectPageFetchIfNeeded.run();
                     startNativeAckIfNeeded.run();
+                    if(!skipGeneratedForSlugEpisode
+                            && addNtkGeneratedPathImageCandidates(client, path, seenImages,
+                            ntkGeneratedImageCandidateCount(), false)) {
+                        logNtkViewerParse("native-ack-optimistic-generated", null, path, 0, 0);
+                        restoreBetterEpisodeList(previousEpisodes);
+                        attachEpisodeSeriesMetadata();
+                        return LOAD_OK;
+                    }
+                    startDirectPageFetchIfNeeded.run();
                     nativeAckCompleted = awaitAsyncNtkNativeAck(nativeAckRef[0],
                             NTK_API_FALLBACK_ACK_FAST_PATH_WAIT_MS, false);
                     if(nativeAckCompleted

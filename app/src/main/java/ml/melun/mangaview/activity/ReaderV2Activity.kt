@@ -19,6 +19,7 @@ import android.view.ViewGroup
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewTreeObserver
+import android.view.accessibility.AccessibilityEvent
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -168,6 +169,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         renderView = ReaderSurfaceView(this).also {
             it.id = R.id.strip
             it.isClickable = true
+            it.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
             it.contentDescription = READER_LOADING_DESCRIPTION
             it.setWindowListener(this)
         }
@@ -575,6 +577,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (firstDrawableMetricLogged || viewerLaunchStartedAtMs <= 0L) return
         firstDrawableMetricLogged = true
         renderView.contentDescription = READER_DRAWABLE_READY_DESCRIPTION
+        renderView.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
         val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
         Log.d("ViewerPerf", "reader_open_to_first_drawable source=$viewerLaunchSourceSite kind=$kind page=$index ms=$elapsed")
     }

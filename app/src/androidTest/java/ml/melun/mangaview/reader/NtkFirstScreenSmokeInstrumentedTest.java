@@ -11,6 +11,7 @@ import android.graphics.Color;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.util.Log;
+import android.view.View;
 
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -117,7 +118,7 @@ public class NtkFirstScreenSmokeInstrumentedTest {
             Manga.setNtkViewerFetchModeOverrideForTest(sample.mode);
             activity = InstrumentationRegistry.getInstrumentation()
                     .startActivitySync(viewerIntent(context, sample));
-            boolean ready = device.wait(Until.hasObject(By.desc("reader-drawable-ready")), 15000L);
+            boolean ready = waitForDrawableReady(activity, device, 15000L);
             long elapsed = SystemClock.elapsedRealtime() - startedAt;
             Log.d(TAG, "ntk_first_screen_case name=" + sample.name
                     + ",mode=" + sample.mode
@@ -135,6 +136,31 @@ public class NtkFirstScreenSmokeInstrumentedTest {
             device.wait(Until.gone(By.desc("reader-drawable-ready")), 3000L);
             device.waitForIdle(2000L);
         }
+    }
+
+    private static boolean waitForDrawableReady(Activity activity, UiDevice device, long timeoutMs) {
+        long deadline = SystemClock.elapsedRealtime() + Math.max(0L, timeoutMs);
+        while(SystemClock.elapsedRealtime() < deadline) {
+            if(device.wait(Until.hasObject(By.desc("reader-drawable-ready")), 250L))
+                return true;
+            if(activityHasDrawableReadyMarker(activity))
+                return true;
+            SystemClock.sleep(150L);
+        }
+        return device.hasObject(By.desc("reader-drawable-ready"))
+                || activityHasDrawableReadyMarker(activity);
+    }
+
+    private static boolean activityHasDrawableReadyMarker(Activity activity) {
+        if(activity == null)
+            return false;
+        final boolean[] ready = new boolean[]{false};
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            View strip = activity.findViewById(ml.melun.mangaview.R.id.strip);
+            CharSequence description = strip == null ? null : strip.getContentDescription();
+            ready[0] = description != null && "reader-drawable-ready".contentEquals(description);
+        });
+        return ready[0];
     }
 
     private static void probeScrollContinuity(Context context, UiDevice device, Case sample, int steps) {
