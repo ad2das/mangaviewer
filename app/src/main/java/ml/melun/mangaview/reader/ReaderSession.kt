@@ -1604,7 +1604,10 @@ class ReaderSession(
         val decoded = Decoder(page.manga.seed, page.manga.id).decode(raw, decodeTargetWidth, Glide.get(appContext).bitmapPool)
         if (decoded !== raw && !raw.isRecycled) raw.recycle()
         val transformedAt = SystemClock.elapsedRealtime()
-        val bitmap = trimDisplayBitmap(page, applyAutoSplit(decoded, page.side, page.allowAutoSplit), true)
+        val bitmap = ViewerBitmapTrim.trimBlankVerticalEdges(
+            applyAutoSplit(decoded, page.side, page.allowAutoSplit),
+            true
+        )
         postPageBounds(index, bitmap.width, bitmap.height)
         val result = drawableResult(bitmap)
         ViewerWarmupManager.logMetric("reader_first_stream_raw_ms", rawAt - metric)
@@ -1644,7 +1647,7 @@ class ReaderSession(
         }
         val bitmap = full ?: preview ?: return null
         if (bitmap.isRecycled) return null
-        return PageDecodeResult.Full(trimDisplayBitmap(page, bitmap, false))
+        return PageDecodeResult.Full(ViewerBitmapTrim.trimBlankVerticalEdges(bitmap))
     }
 
     private fun decodePage(index: Int, page: PageRef, file: File, targetWidth: Int): PageDecodeResult {
@@ -1676,14 +1679,20 @@ class ReaderSession(
             ?: throw java.io.IOException("Bitmap decode failed")
         val rawAt = if (metric) SystemClock.elapsedRealtime() else 0L
         if (!page.manga.isOnline) {
-            val bitmap = trimDisplayBitmap(page, applyAutoSplit(raw, page.side, page.allowAutoSplit), true)
+            val bitmap = ViewerBitmapTrim.trimBlankVerticalEdges(
+                applyAutoSplit(raw, page.side, page.allowAutoSplit),
+                true
+            )
             postPageBounds(index, bitmap.width, bitmap.height)
             return drawableResult(bitmap)
         }
         val decoded = Decoder(page.manga.seed, page.manga.id).decode(raw, decodeTargetWidth, Glide.get(appContext).bitmapPool)
         if (decoded !== raw && !raw.isRecycled) raw.recycle()
         val transformedAt = if (metric) SystemClock.elapsedRealtime() else 0L
-        val bitmap = trimDisplayBitmap(page, applyAutoSplit(decoded, page.side, page.allowAutoSplit), true)
+        val bitmap = ViewerBitmapTrim.trimBlankVerticalEdges(
+            applyAutoSplit(decoded, page.side, page.allowAutoSplit),
+            true
+        )
         postPageBounds(index, bitmap.width, bitmap.height)
         val result = drawableResult(bitmap)
         if (metric) {
@@ -1694,14 +1703,6 @@ class ReaderSession(
             ViewerWarmupManager.logMetric("reader_first_decode_total_ms", finishedAt - startedAt)
         }
         return result
-    }
-
-    private fun trimDisplayBitmap(page: PageRef, bitmap: Bitmap, recycleSource: Boolean): Bitmap {
-        return if (isNtkSource(page.manga, title)) {
-            ViewerBitmapTrim.trimBlankVerticalEdgesForced(bitmap, recycleSource)
-        } else {
-            ViewerBitmapTrim.trimBlankVerticalEdges(bitmap, recycleSource)
-        }
     }
 
     private fun drawableResult(bitmap: Bitmap): PageDecodeResult {

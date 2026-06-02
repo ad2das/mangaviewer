@@ -983,7 +983,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val sourceTop = ((visibleTop - item.top) / item.pageHeight * bitmap.height)
                 .toInt()
                 .coerceIn(0, bitmap.height - 1)
-            val sourceBottom = ceil((visibleBottom - item.top) / item.pageHeight * bitmap.height).toInt()
+            val sourceBottom = ((visibleBottom - item.top) / item.pageHeight * bitmap.height)
+                .toInt()
                 .coerceIn(sourceTop + 1, bitmap.height)
             src.set(0, sourceTop, bitmap.width, sourceBottom)
             val dstTop = floor(visibleTop).toInt()
@@ -1022,7 +1023,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val srcTop = ((drawTop - tileTop) / (tileBottom - tileTop) * bitmap.height)
                 .toInt()
                 .coerceIn(0, bitmap.height - 1)
-            val srcBottom = ceil((drawBottom - tileTop) / (tileBottom - tileTop) * bitmap.height).toInt()
+            val srcBottom = ((drawBottom - tileTop) / (tileBottom - tileTop) * bitmap.height)
+                .toInt()
                 .coerceIn(srcTop + 1, bitmap.height)
             src.set(0, srcTop, bitmap.width, srcBottom)
             val dstTop = if (drawTop > visibleTop) drawTop - TILE_SEAM_OVERLAP_PX else drawTop
@@ -1486,8 +1488,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun applyPendingPageResolvesLocked() {
         if (pages.isEmpty()) return
         rebuildLayoutLocked()
-        val anchorPage = firstVisiblePageLocked(scrollOffset + height * PROGRESS_PAGE_PROBE_SCREEN_RATIO)
-            .coerceIn(0, pages.lastIndex)
+        val anchorPage = firstVisiblePageLocked(scrollOffset + 1f).coerceIn(0, pages.lastIndex)
         val anchorOffset = pageOffsetLocked(anchorPage)
         var appliedAny = false
         for (index in pages.indices) {
