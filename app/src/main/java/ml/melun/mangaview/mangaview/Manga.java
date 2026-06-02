@@ -548,12 +548,12 @@ public class Manga {
             Runnable startFallbackFetchIfGeneratedBlocked = () -> {
                 generatedPrimaryValidationMiss[0] = true;
                 Log.d(TAG, "ntk_generated_miss_start_fallback path=" + viewerPath);
-                startDirectPageFetchIfNeeded.run();
                 startNativeAckIfNeeded.run();
+                startDirectPageFetchIfNeeded.run();
             };
             if(skipGeneratedForSlugEpisode) {
-                startDirectPageFetchIfNeeded.run();
                 startNativeAckIfNeeded.run();
+                startDirectPageFetchIfNeeded.run();
             }
             boolean nativeAckCompleted = false;
             if(apiFallbackMode && !isNtkStrictApiFallbackModeOverride()
@@ -614,8 +614,8 @@ public class Manga {
                     }
                 }
             } else if(apiFallbackMode) {
-                startDirectPageFetchIfNeeded.run();
                 startNativeAckIfNeeded.run();
+                startDirectPageFetchIfNeeded.run();
                 if(addCachedNtkViewerImageApiCandidates(client, path, seenImages)) {
                     logNtkViewerParse("api-cached-webview", null, path, 0, 0);
                     restoreBetterEpisodeList(previousEpisodes);
@@ -830,8 +830,11 @@ public class Manga {
                 Log.d(TAG, "ntk_page_fetch_start mode="
                         + (fetchMode == CustomHttpClient.FetchMode.DIRECT_ONLY ? "direct" : "allow")
                         + ",path=" + path);
-                CustomHttpClient.RequestWork<CustomHttpClient.PageResponse> work =
-                        () -> client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+                CustomHttpClient.RequestWork<CustomHttpClient.PageResponse> work = () -> {
+                    if(fetchMode == CustomHttpClient.FetchMode.DIRECT_ONLY)
+                        return client.mgetNtkViewerPayloadPage(path, PAGE_CACHE_TTL_MS);
+                    return client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+                };
                 if(requestGroup != null) {
                     if(fetchMode != null) {
                         fetch.page = client.runWithRequestGroup(requestGroup,
@@ -1148,7 +1151,7 @@ public class Manga {
             String src = String.format(Locale.ROOT,
                     "https://i.toonflix.app/%s/%s/%s/p%03d.jpg",
                     segment, workId, episodeId, page);
-            if(page == 1 && !isNtkGeneratedImageReachable(client, src))
+            if(page == 1 && client != null && !isNtkGeneratedImageReachable(client, src))
                 return;
             addImageIfValid(client, seenImages, src);
         }

@@ -2025,9 +2025,14 @@ class ReaderSession(
         for ((index, delivery) in prepared) {
             deliverPreparedBitmap(index, delivery.bitmap, delivery.owned, false)
         }
-        for (delivery in held) deliveryQueue.add(delivery)
+        val deliverHeldNow = reason == "anchor" && Looper.myLooper() == Looper.getMainLooper()
+        if (deliverHeldNow) {
+            for (delivery in held) deliverDecodeResultOnMain(delivery, viewportBusy.get())
+        } else {
+            for (delivery in held) deliveryQueue.add(delivery)
+        }
         Log.d(TAG, "reader_initial_hold_flush reason=$reason,prepared=${prepared.size},decoded=${held.size}")
-        scheduleDeliveryDrain()
+        if (!deliverHeldNow) scheduleDeliveryDrain()
     }
 
     private fun shouldUseForegroundFetch(
@@ -2619,7 +2624,7 @@ class ReaderSession(
         private const val NTK_LIGHT_PRIMED_EPISODE_DECODE_AHEAD_PAGES = 8
         private const val NTK_LIGHT_PRIMED_EPISODE_BYTE_AHEAD_PAGES = 12
         private const val NTK_INITIAL_PRIORITY_START_OFFSET = 1
-        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 1
+        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 2
         private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 2
         private const val NTK_INITIAL_PRIORITY_PAGES = 12
         private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 20
