@@ -2620,7 +2620,7 @@ class ReaderSession(
         private const val NTK_LIGHT_PRIMED_EPISODE_BYTE_AHEAD_PAGES = 12
         private const val NTK_INITIAL_PRIORITY_START_OFFSET = 1
         private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 1
-        private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 3
+        private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 2
         private const val NTK_INITIAL_PRIORITY_PAGES = 12
         private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 20
         private const val NTK_INITIAL_DECODE_AHEAD_PAGES = 36
