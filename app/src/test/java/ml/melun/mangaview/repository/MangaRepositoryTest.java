@@ -28,6 +28,27 @@ public class MangaRepositoryTest {
     }
 
     @Test
+    public void imageUrlsDeduplicateNtkQueryVariants() {
+        Manga manga = new Manga(12, "episode", "", MTitle.base_webtoon) {
+            @Override
+            public synchronized List<String> getImgs(android.content.Context context) {
+                return Arrays.asList(
+                        "https://i.toonflix.app/webtoon_uploads/page001.webp?width=3840",
+                        "https://i.toonflix.app/webtoon_uploads/page001.webp",
+                        "/_next/image?url=https%3A%2F%2Fi.toonflix.app%2Fwebtoon_uploads%2Fpage002.webp&w=1080&q=75",
+                        "https://i.toonflix.app/webtoon_uploads/page002.webp",
+                        "https://i.toonflix.app/webtoon_uploads/page003.webp");
+            }
+        };
+
+        assertEquals(Arrays.asList(
+                "https://i.toonflix.app/webtoon_uploads/page001.webp?width=3840",
+                "/_next/image?url=https%3A%2F%2Fi.toonflix.app%2Fwebtoon_uploads%2Fpage002.webp&w=1080&q=75",
+                "https://i.toonflix.app/webtoon_uploads/page003.webp"
+        ), MangaRepository.imageUrls(manga, null));
+    }
+
+    @Test
     public void imageUrlsReturnEmptyListForMissingManga() {
         assertEquals(0, MangaRepository.imageUrls(null, null).size());
     }

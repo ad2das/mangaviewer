@@ -812,12 +812,14 @@ public class Manga {
                 addNtkTextImageCandidates(client, page.body, seenImages, fallbackBoardImages);
                 if(allowGeneratedImages && !generatedCandidatesChecked)
                     addNtkViewerMetaImageCandidates(client, page.body, path, seenImages);
+                compactNtkImageCandidates(page.body, seenImages);
                 if(shouldFetchNtkApiViewerImagesForSparseParse(page.body, path, pageImages.size()))
                     addNtkApiViewerImageCandidates(client, page.body, path, seenImages);
                 if(imgs.size() == 0) {
                     for(String src : fallbackBoardImages)
                         addImageIfValid(client, seenImages, src);
                 }
+                compactNtkImageCandidates(page.body, seenImages);
                 if(imgs.size() == 0) {
                     logNtkViewerParse("empty", page, path, pageImages.size(), fallbackBoardImages.size());
                     return LOAD_CAPTCHA;
@@ -1141,6 +1143,7 @@ public class Manga {
         String normalized = normalizeNtkEmbeddedImageText(body);
         addNtkTextImageMatches(client, normalized, NTK_TEXT_IMAGE_PATTERN, false, seenImages, fallbackBoardImages);
         addNtkTextImageMatches(client, body, NTK_ENCODED_TEXT_IMAGE_PATTERN, true, seenImages, fallbackBoardImages);
+        compactNtkImageCandidates(normalized, seenImages);
     }
 
     private void addNtkTextImageMatches(CustomHttpClient client, String source, Pattern pattern, boolean percentEncoded,
@@ -1243,7 +1246,7 @@ public class Manga {
                 token, viewerBodyForImageFetch, path);
         if(urls.size() >= 3 && imgs != null && imgs.size() > 0 && imgs.size() <= 2) {
             if(seenImages != null)
-                seenImages.removeAll(imgs);
+                seenImages.clear();
             imgs.clear();
         }
         for(String url : urls)
@@ -1251,6 +1254,7 @@ public class Manga {
         if(imgs == null || imgs.size() == before) {
             addNtkBoardUploadTextImageCandidates(client, normalized, seenImages);
         }
+        compactNtkImageCandidates(normalized, seenImages);
         return imgs != null && imgs.size() > before;
     }
 
@@ -2198,8 +2202,6 @@ public class Manga {
                 || context.contains("bn-ph")
                 || context.contains("data-br")
                 || context.contains("nofollow")
-                || context.contains("http://")
-                || context.contains("https://")
                 || context.contains("ad-")
                 || context.contains("-ad")
                 || context.contains("thumb")
@@ -2361,6 +2363,61 @@ public class Manga {
         return false;
     }
 
+    private void compactNtkImageCandidates(String body, Set<String> seenImages) {
+        if(imgs == null || imgs.size() <= 1)
+            return;
+        int before = imgs.size();
+        ArrayList<String> compacted = new ArrayList<>(before);
+        LinkedHashSet<String> compactKeys = new LinkedHashSet<>();
+        for(String image : imgs) {
+            String key = ntkImageDedupKey(image);
+            if(key.length() == 0)
+                key = image == null ? "" : image.trim().toLowerCase(Locale.ROOT);
+            if(key.length() == 0 || !compactKeys.add(key))
+                continue;
+            compacted.add(image);
+        }
+        int metaCount = ntkViewerMetaPageCount(normalizeNtkViewerPayloadText(body));
+        if(metaCount > 0 && compacted.size() > metaCount) {
+            compacted = new ArrayList<>(compacted.subList(0, metaCount));
+            compactKeys.clear();
+            for(String image : compacted) {
+                String key = ntkImageDedupKey(image);
+                if(key.length() > 0)
+                    compactKeys.add(key);
+            }
+        }
+        if(compacted.size() == before)
+            return;
+        imgs.clear();
+        imgs.addAll(compacted);
+        if(seenImages != null) {
+            seenImages.clear();
+            seenImages.addAll(compactKeys);
+        }
+    }
+
+    private static String ntkImageDedupKey(String img) {
+        if(img == null)
+            return "";
+        String normalized = normalizeNtkEmbeddedImageText(img.trim());
+        String proxied = ntkProxiedImageUrl(normalized);
+        if(proxied.length() > 0)
+            normalized = normalizeNtkEmbeddedImageText(proxied.trim());
+        if(normalized.startsWith("//"))
+            normalized = "https:" + normalized;
+        int fragment = normalized.indexOf('#');
+        if(fragment >= 0)
+            normalized = normalized.substring(0, fragment);
+        int query = normalized.indexOf('?');
+        if(query >= 0) {
+            String withoutQuery = normalized.substring(0, query);
+            if(isNtkPageImage(null, withoutQuery) || isNtkFallbackBoardPageImage(null, withoutQuery))
+                normalized = withoutQuery;
+        }
+        return normalized.toLowerCase(Locale.ROOT);
+    }
+
     private boolean addImageIfValid(CustomHttpClient client, Set<String> seenImages, String img) {
         if(img == null)
             return false;
@@ -2380,7 +2437,10 @@ public class Manga {
             String path = "/" + img;
             img = client.getUrl(path) + path;
         }
-        if(!seenImages.add(img))
+        String dedupKey = ntkImageDedupKey(img);
+        if(dedupKey.length() == 0)
+            dedupKey = img.toLowerCase(Locale.ROOT);
+        if(!seenImages.add(dedupKey))
             return false;
         imgs.add(img);
         return true;

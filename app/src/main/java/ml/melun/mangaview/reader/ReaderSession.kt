@@ -14,6 +14,7 @@ import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import com.bumptech.glide.Glide
+import com.google.gson.Gson
 import ml.melun.mangaview.Utils
 import ml.melun.mangaview.glide.ViewerBitmapTrim
 import ml.melun.mangaview.glide.ViewerWarmupManager
@@ -21,6 +22,8 @@ import ml.melun.mangaview.mangaview.Decoder
 import ml.melun.mangaview.mangaview.Manga
 import ml.melun.mangaview.mangaview.Title
 import ml.melun.mangaview.model.PageItem
+import ml.melun.mangaview.repository.CacheFileStore
+import ml.melun.mangaview.repository.EpisodeSnapshotCache
 import ml.melun.mangaview.repository.MangaRepository
 import ml.melun.mangaview.runtime.MainThreadStallMonitor
 import java.io.File
@@ -142,6 +145,10 @@ class ReaderSession(
         val owned: Boolean
     )
 
+    private class CachedEpisodeSnapshot {
+        var episodes: ArrayList<Manga>? = null
+    }
+
     private val appContext = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private val network = Executors.newFixedThreadPool(
@@ -178,7 +185,9 @@ class ReaderSession(
     private val pages = ArrayList<PageRef>()
     private val pagesLock = Object()
     private val loading = ConcurrentHashMap.newKeySet<Int>()
+    private val loadingPages = ConcurrentHashMap<Int, PageRef>()
     private val urgentLoading = ConcurrentHashMap.newKeySet<Int>()
+    private val urgentLoadingPages = ConcurrentHashMap<Int, PageRef>()
     private val bytePrefetching = ConcurrentHashMap.newKeySet<Int>()
     private val idleFullWidthUpgradeScheduled = ConcurrentHashMap.newKeySet<Int>()
     private val failedPages = ConcurrentHashMap.newKeySet<Int>()
@@ -851,6 +860,7 @@ class ReaderSession(
                 if (syncNtkTitlePathFromEpisode(currentTitle, anchorManga)) {
                     currentTitle.removeEps()
                 }
+                restoreNtkEpisodeSnapshotIfNeeded(currentTitle, anchorManga)
                 if (currentTitle.eps == null || currentTitle.eps.size <= 1) {
                     val result = withRepositoryCancellation {
                         imageRepository.fetchEpisodesForeground(currentTitle, it)
@@ -875,6 +885,7 @@ class ReaderSession(
                 if (episodes.isNotEmpty()) {
                     manga.setEps(episodes)
                     anchorManga.setEps(episodes)
+                    persistNtkEpisodeSnapshot(currentTitle, episodes)
                 }
                 anchorManga.title = currentTitle
                 anchorManga.titleId = currentTitle.id
@@ -893,6 +904,7 @@ class ReaderSession(
                             if (episodes.isNotEmpty()) {
                                 manga.setEps(episodes)
                                 anchorManga.setEps(episodes)
+                                persistNtkEpisodeSnapshot(currentTitle, episodes)
                             }
                             anchorManga.title = currentTitle
                             anchorManga.titleId = currentTitle.id
@@ -1252,10 +1264,23 @@ class ReaderSession(
 
     private fun warmPrependedEpisode(inserted: Int) {
         if (cancelled.get() || inserted <= 0) return
-        val generation = windowGeneration.get()
-        val busy = viewportBusy.get()
-        val decodeAhead = if (busy) BOUNDARY_BUSY_DECODE_AHEAD_PAGES else BOUNDARY_DECODE_AHEAD_PAGES
-        val byteAhead = if (busy) BOUNDARY_BUSY_BYTE_AHEAD_PAGES else BOUNDARY_BYTE_AHEAD_PAGES
+        val ntk = isNtkSource(manga, title)
+        val generation = if (ntk) FOREGROUND_PRIME_WARM_GENERATION else windowGeneration.get()
+        val busy = ntk || viewportBusy.get()
+        val decodeAhead = if (ntk) {
+            NTK_PREPENDED_EPISODE_DECODE_AHEAD_PAGES
+        } else if (busy) {
+            BOUNDARY_BUSY_DECODE_AHEAD_PAGES
+        } else {
+            BOUNDARY_DECODE_AHEAD_PAGES
+        }
+        val byteAhead = if (ntk) {
+            NTK_PREPENDED_EPISODE_BYTE_AHEAD_PAGES
+        } else if (busy) {
+            BOUNDARY_BUSY_BYTE_AHEAD_PAGES
+        } else {
+            BOUNDARY_BYTE_AHEAD_PAGES
+        }
         val firstDecoded = max(1, inserted - decodeAhead)
         for (index in (inserted - 1) downTo firstDecoded) {
             requestPage(index, busy = busy, anchor = false, generation = generation)
@@ -1397,9 +1422,12 @@ class ReaderSession(
         shiftConcurrentMap(sourceWidths, delta)
         shiftConcurrentMap(achievableWidths, delta)
         shiftConcurrentMap(earlyPreparedBitmaps, delta)
+        shiftConcurrentSet(failedPages, delta)
         inFlightWidths.clear()
         loading.clear()
+        loadingPages.clear()
         urgentLoading.clear()
+        urgentLoadingPages.clear()
         bytePrefetching.clear()
         idleFullWidthUpgradeScheduled.clear()
         synchronized(deliveredBitmaps) {
@@ -1428,6 +1456,13 @@ class ReaderSession(
         for (entry in entries) map[entry.key + delta] = entry.value
     }
 
+    private fun shiftConcurrentSet(set: MutableSet<Int>, delta: Int) {
+        if (set.isEmpty()) return
+        val entries = set.toList()
+        set.clear()
+        for (index in entries) set.add(index + delta)
+    }
+
     private fun requestPage(index: Int, busy: Boolean, anchor: Boolean, generation: Int = windowGeneration.get()) {
         if (cancelled.get()) return
         val page = pageRef(index) ?: return
@@ -1445,10 +1480,17 @@ class ReaderSession(
         val targetWidth = targetWidth(busy)
         rememberDesiredWidth(index, targetWidth)
         val effectiveTargetWidth = achievableWidth(index, targetWidth)
+        clearStaleLoadStateForIndex(index, page)
         val decodedWidth = decodedWidths[index] ?: 0
-        if (decodedWidth >= effectiveTargetWidth) return
+        if (decodedWidth >= effectiveTargetWidth) {
+            if (hasDeliveredBitmap(index)) return
+            decodedWidths.remove(index)
+        }
         val pendingWidth = pendingDeliveryWidths[index] ?: 0
-        if (pendingWidth >= effectiveTargetWidth) return
+        if (pendingWidth >= effectiveTargetWidth) {
+            if (hasDeliveredBitmap(index) || loading.contains(index) || urgentLoading.contains(index)) return
+            pendingDeliveryWidths.remove(index)
+        }
         val activeWidth = inFlightWidths[index] ?: 0
         val ownsLoading = loading.add(index)
         val urgent = !ownsLoading &&
@@ -1460,7 +1502,11 @@ class ReaderSession(
                 ViewerWarmupManager.logMetric("busy_to_idle_upgrade_pending", targetWidth.toLong())
             return
         }
-        if (ownsLoading) inFlightWidths[index] = targetWidth
+        if (ownsLoading) {
+            loadingPages[index] = page
+            inFlightWidths[index] = targetWidth
+        }
+        if (urgent) urgentLoadingPages[index] = page
         if (ownsLoading) {
             main.post { if (!cancelled.get()) listener.onPageLoading(index) }
         }
@@ -1485,13 +1531,13 @@ class ReaderSession(
             networkExecutor.execute {
             try {
                 if (shouldSkipStalePage(index, generation, anchor)) {
-                    clearPageLoadState(index, ownsLoading, urgent)
+                    clearPageLoadState(index, page, ownsLoading, urgent)
                     return@execute
                 }
                 val originalPage = page
                 val allowPreviewCache = shouldUsePreviewDecodedCache(index, targetWidth)
                 cachedDecodedResult(originalPage, targetWidth, allowPreviewCache)?.let { cached ->
-                    clearPageLoadState(index, ownsLoading, urgent)
+                    clearPageLoadState(index, page, ownsLoading, urgent)
                     postDecodeResult(Delivery(index, originalPage, cached, SystemClock.elapsedRealtime(), targetWidth, retainWhenBusy))
                     ViewerWarmupManager.logMetric("reader_decoded_cache_hit", index.toLong())
                     return@execute
@@ -1524,21 +1570,21 @@ class ReaderSession(
                         postPageError(index, originalPage, e)
                     } finally {
                         if (acquired) gate.release()
-                        clearPageLoadState(index, ownsLoading, urgent)
+                        clearPageLoadState(index, page, ownsLoading, urgent)
                         if (delivered) ViewerWarmupManager.logMetric("reader_delivery_posted", index.toLong())
                     }
                 }
                 } catch (_: RejectedExecutionException) {
-                    clearPageLoadState(index, ownsLoading, urgent)
+                    clearPageLoadState(index, page, ownsLoading, urgent)
                 }
             } catch (e: Exception) {
-                clearPageLoadState(index, ownsLoading, urgent)
+                clearPageLoadState(index, page, ownsLoading, urgent)
                 recordIfUnexpected(e)
                 postPageError(index, page, e)
             }
             }
         } catch (_: RejectedExecutionException) {
-            clearPageLoadState(index, ownsLoading, urgent)
+            clearPageLoadState(index, page, ownsLoading, urgent)
         }
     }
 
@@ -1558,12 +1604,32 @@ class ReaderSession(
         return index in hedgeFirst..hedgeLast
     }
 
-    private fun clearPageLoadState(index: Int, ownsLoading: Boolean, urgent: Boolean) {
-        if (ownsLoading) {
+    private fun clearStaleLoadStateForIndex(index: Int, page: PageRef) {
+        loadingPages[index]?.let { loadingPage ->
+            if (loadingPage !== page) {
+                loadingPages.remove(index, loadingPage)
+                loading.remove(index)
+                inFlightWidths.remove(index)
+            }
+        }
+        urgentLoadingPages[index]?.let { urgentPage ->
+            if (urgentPage !== page) {
+                urgentLoadingPages.remove(index, urgentPage)
+                urgentLoading.remove(index)
+            }
+        }
+    }
+
+    private fun clearPageLoadState(index: Int, page: PageRef, ownsLoading: Boolean, urgent: Boolean) {
+        if (ownsLoading && loadingPages[index] === page) {
+            loadingPages.remove(index, page)
             loading.remove(index)
             inFlightWidths.remove(index)
         }
-        if (urgent) urgentLoading.remove(index)
+        if (urgent && urgentLoadingPages[index] === page) {
+            urgentLoadingPages.remove(index, page)
+            urgentLoading.remove(index)
+        }
     }
 
     private fun prefetchBusyPage(index: Int, page: PageRef, generation: Int) {
@@ -1690,6 +1756,7 @@ class ReaderSession(
                     if (syncNtkTitlePathFromEpisode(currentTitle, manga)) {
                         currentTitle.removeEps()
                     }
+                    restoreNtkEpisodeSnapshotIfNeeded(currentTitle, manga)
                     if ((currentTitle.eps?.size ?: 0) > 1) return@execute
                     val startedAt = SystemClock.elapsedRealtime()
                     val result = withRepositoryCancellation {
@@ -1699,7 +1766,10 @@ class ReaderSession(
                     if (result == Title.LOAD_OK) {
                         attachTitle()
                         val episodes = Utils.snapshotEpisodes(currentTitle)
-                        if (episodes.isNotEmpty()) manga.setEps(episodes)
+                        if (episodes.isNotEmpty()) {
+                            manga.setEps(episodes)
+                            persistNtkEpisodeSnapshot(currentTitle, episodes)
+                        }
                     }
                     Log.d(
                         TAG,
@@ -1715,6 +1785,85 @@ class ReaderSession(
         } catch (_: RejectedExecutionException) {
             ntkEpisodeMetadataLoading.set(false)
         }
+    }
+
+    private fun restoreNtkEpisodeSnapshotIfNeeded(currentTitle: Title, anchorManga: Manga): Boolean {
+        if (!isNtkSource(anchorManga, currentTitle)) return false
+        if ((currentTitle.eps?.size ?: 0) > 1) return true
+        val episodes = readCachedNtkEpisodeSnapshot(currentTitle) ?: return false
+        attachNtkEpisodeSnapshot(currentTitle, anchorManga, episodes)
+        Log.d(
+            TAG,
+            "ntk_episode_snapshot_cache_hit titleId=${currentTitle.id} episodes=${episodes.size}"
+        )
+        return true
+    }
+
+    private fun readCachedNtkEpisodeSnapshot(currentTitle: Title): ArrayList<Manga>? {
+        val primaryKey = EpisodeSnapshotCache.key(currentTitle, true)
+        val legacyKey = EpisodeSnapshotCache.legacyKey(currentTitle)
+        return readCachedNtkEpisodeSnapshot(primaryKey)
+            ?: if (legacyKey == primaryKey) null else readCachedNtkEpisodeSnapshot(legacyKey)
+    }
+
+    private fun readCachedNtkEpisodeSnapshot(cacheKey: String): ArrayList<Manga>? {
+        if (cacheKey.isEmpty()) return null
+        val memoryJson = CacheFileStore.readMemory(cacheKey)
+        parseCachedNtkEpisodeSnapshot(memoryJson)?.let { return it }
+        val diskJson = CacheFileStore.read(appContext, cacheKey)
+        return parseCachedNtkEpisodeSnapshot(diskJson)
+    }
+
+    private fun parseCachedNtkEpisodeSnapshot(json: String?): ArrayList<Manga>? {
+        if (json.isNullOrEmpty()) return null
+        return try {
+            val snapshot = GSON.fromJson(json, CachedEpisodeSnapshot::class.java)
+            val ordered = Title.orderedEpisodeSnapshot(snapshot?.episodes) ?: return null
+            if (ordered.size > 1) ordered else null
+        } catch (e: Exception) {
+            recordIfUnexpected(e)
+            null
+        }
+    }
+
+    private fun attachNtkEpisodeSnapshot(currentTitle: Title, anchorManga: Manga, episodes: ArrayList<Manga>) {
+        for (episode in episodes) {
+            episode.title = currentTitle
+            episode.titleId = currentTitle.id
+        }
+        currentTitle.setEps(episodes)
+        manga.setEps(episodes)
+        anchorManga.setEps(episodes)
+        anchorManga.title = currentTitle
+        anchorManga.titleId = currentTitle.id
+    }
+
+    private fun persistNtkEpisodeSnapshot(currentTitle: Title, episodes: List<Manga>) {
+        if (!isNtkSource(manga, currentTitle) || episodes.size <= 1) return
+        try {
+            val snapshot = CachedEpisodeSnapshot()
+            snapshot.episodes = ntkEpisodeSnapshotForCache(episodes)
+            if (snapshot.episodes.isNullOrEmpty()) return
+            CacheFileStore.write(appContext, EpisodeSnapshotCache.key(currentTitle, true), GSON.toJson(snapshot))
+        } catch (e: Exception) {
+            recordIfUnexpected(e)
+        }
+    }
+
+    private fun ntkEpisodeSnapshotForCache(episodes: List<Manga>): ArrayList<Manga> {
+        val ordered = Title.orderedEpisodeSnapshot(episodes) ?: return ArrayList()
+        val copy = ArrayList<Manga>(ordered.size)
+        for (episode in ordered) {
+            val item = Manga(episode.id, episode.name, episode.date, episode.baseMode)
+            item.addThumb(episode.thumb)
+            item.mode = episode.mode
+            item.titleId = episode.titleId
+            item.setNtkEpisodePath(episode.ntkEpisodePath)
+            item.setNtkImageCount(episode.ntkImageCount)
+            item.offlinePath = episode.offlinePath
+            copy.add(item)
+        }
+        return copy
     }
 
     private fun upgradeNtkInitialPriorityPagesAfterFirstBitmap() {
@@ -1872,6 +2021,8 @@ class ReaderSession(
         shiftConcurrentMapAfterRemoval(achievableWidths, rangeStart, removedCount)
         shiftConcurrentMapAfterRemoval(earlyPreparedBitmaps, rangeStart, removedCount)
         shiftConcurrentMapAfterRemoval(inFlightWidths, rangeStart, removedCount)
+        shiftConcurrentMapAfterRemoval(loadingPages, rangeStart, removedCount)
+        shiftConcurrentMapAfterRemoval(urgentLoadingPages, rangeStart, removedCount)
         shiftConcurrentSetAfterRemoval(loading, rangeStart, removedCount)
         shiftConcurrentSetAfterRemoval(urgentLoading, rangeStart, removedCount)
         shiftConcurrentSetAfterRemoval(bytePrefetching, rangeStart, removedCount)
@@ -1924,11 +2075,11 @@ class ReaderSession(
             entries.add(deliveryQueue.poll() ?: break)
         }
         for (delivery in entries) {
-            val shifted = shiftedIndexAfterRemoval(delivery.index, rangeStart, removedCount)
-            if (shifted == null) {
+            val current = currentPageIndex(delivery.page, delivery.index)
+            if (current < 0) {
                 recycleDecodeResult(delivery.result)
             } else {
-                deliveryQueue.add(delivery.copy(index = shifted))
+                deliveryQueue.add(delivery.copy(index = current))
             }
         }
     }
@@ -1942,11 +2093,11 @@ class ReaderSession(
         val entries = map.entries.toList()
         map.clear()
         for (entry in entries) {
-            val shifted = shiftedIndexAfterRemoval(entry.key, rangeStart, removedCount)
-            if (shifted == null) {
+            val current = currentPageIndex(entry.value.page, entry.value.index)
+            if (current < 0) {
                 recycleDecodeResult(entry.value.result)
             } else {
-                map[shifted] = entry.value.copy(index = shifted)
+                map[current] = entry.value.copy(index = current)
             }
         }
     }
@@ -2026,7 +2177,7 @@ class ReaderSession(
             applyAutoSplit(decoded, page.side, page.allowAutoSplit),
             true
         )
-        postPageBounds(index, bitmap.width, bitmap.height)
+        postPageBounds(index, page, bitmap.width, bitmap.height)
         val result = drawableResult(bitmap)
         ViewerWarmupManager.logMetric("reader_first_stream_raw_ms", rawAt - metric)
         ViewerWarmupManager.logMetric("reader_first_stream_transform_ms", transformedAt - rawAt)
@@ -2080,7 +2231,7 @@ class ReaderSession(
         val boundsAt = if (metric) SystemClock.elapsedRealtime() else 0L
         if (!autoCut && shouldDecodeTiles(page, file, bounds)) {
             val displayBounds = displayBounds(bounds.outWidth, bounds.outHeight, page.side, page.allowAutoSplit)
-            postPageBounds(index, displayBounds.width(), displayBounds.height())
+            postPageBounds(index, page, displayBounds.width(), displayBounds.height())
             return decodePageTiles(file, bounds, targetWidth)
         }
         val decodeTargetWidth = decodeTargetWidth(bounds.outWidth, bounds.outHeight, targetWidth, page.allowAutoSplit)
@@ -2101,7 +2252,7 @@ class ReaderSession(
                 applyAutoSplit(raw, page.side, page.allowAutoSplit),
                 true
             )
-            postPageBounds(index, bitmap.width, bitmap.height)
+            postPageBounds(index, page, bitmap.width, bitmap.height)
             return drawableResult(bitmap)
         }
         val decoded = Decoder(page.manga.seed, page.manga.id).decode(raw, decodeTargetWidth, Glide.get(appContext).bitmapPool)
@@ -2111,7 +2262,7 @@ class ReaderSession(
             applyAutoSplit(decoded, page.side, page.allowAutoSplit),
             true
         )
-        postPageBounds(index, bitmap.width, bitmap.height)
+        postPageBounds(index, page, bitmap.width, bitmap.height)
         val result = drawableResult(bitmap)
         if (metric) {
             val finishedAt = SystemClock.elapsedRealtime()
@@ -2287,11 +2438,16 @@ class ReaderSession(
         return PageDecodeResult.Tiles(sourceWidth, pageHeight, decodedWidth, tiles)
     }
 
-    private fun postPageBounds(index: Int, width: Int, height: Int) {
+    private fun postPageBounds(index: Int, page: PageRef, width: Int, height: Int) {
         if (width <= 0 || height <= 0) return
-        sourceWidths[index] = width
+        val currentIndex = currentPageIndex(page, index)
+        if (currentIndex < 0) return
+        sourceWidths[currentIndex] = width
         main.post {
-            if (!cancelled.get()) listener.onPageBoundsReady(index, width, height)
+            val latestIndex = currentPageIndex(page, currentIndex)
+            if (!cancelled.get() && latestIndex >= 0) {
+                listener.onPageBoundsReady(latestIndex, width, height)
+            }
         }
     }
 
@@ -2303,6 +2459,23 @@ class ReaderSession(
 
     private fun pageRef(index: Int): PageRef? = synchronized(pagesLock) {
         pages.getOrNull(index)
+    }
+
+    private fun currentPageIndex(page: PageRef, fallback: Int): Int = synchronized(pagesLock) {
+        pageIndexLocked(page, fallback)
+    }
+
+    private fun pageIndexLocked(page: PageRef, fallback: Int): Int {
+        val known = page.pageIndex
+        if (known in pages.indices && pages[known] === page) return known
+        if (fallback in pages.indices && pages[fallback] === page) return fallback
+        return pages.indexOfFirst { it === page }
+    }
+
+    private fun deliveryAtCurrentIndex(delivery: Delivery): Delivery? {
+        val currentIndex = currentPageIndex(delivery.page, delivery.index)
+        if (currentIndex < 0) return null
+        return if (currentIndex == delivery.index) delivery else delivery.copy(index = currentIndex)
     }
 
     fun pageInfo(index: Int): PageInfo? {
@@ -2384,23 +2557,28 @@ class ReaderSession(
     }
 
     private fun postDecodeResult(delivery: Delivery) {
-        if (hasDeliveredAtLeast(delivery, delivery.result.width)) {
+        val currentDelivery = deliveryAtCurrentIndex(delivery)
+        if (currentDelivery == null) {
+            recycleDecodeResult(delivery.result)
+            return
+        }
+        if (hasDeliveredAtLeast(currentDelivery, currentDelivery.result.width)) {
             ViewerWarmupManager.logMetric("reader_drop_duplicate_before_queue", delivery.result.width.toLong())
             recycleDecodeResult(delivery.result)
             return
         }
-        prepareDecodeResultForDraw(delivery.result)
-        pendingDeliveryWidths.merge(delivery.index, delivery.result.width, ::max)
-        if (shouldHoldInitialNtkDelivery(delivery)) {
-            initialDeliveryBacklog[delivery.index] = delivery
+        prepareDecodeResultForDraw(currentDelivery.result)
+        pendingDeliveryWidths.merge(currentDelivery.index, currentDelivery.result.width, ::max)
+        if (shouldHoldInitialNtkDelivery(currentDelivery)) {
+            initialDeliveryBacklog[currentDelivery.index] = currentDelivery
             Log.d(
                 TAG,
-                "reader_initial_hold page=${delivery.index},start=${currentStartPage()},width=${delivery.result.width}"
+                "reader_initial_hold page=${currentDelivery.index},start=${currentStartPage()},width=${currentDelivery.result.width}"
             )
             scheduleInitialDeliveryFallback()
             return
         }
-        deliveryQueue.add(delivery)
+        deliveryQueue.add(currentDelivery)
         scheduleDeliveryDrain()
     }
 
@@ -2437,7 +2615,11 @@ class ReaderSession(
             .sortedBy { it.key }
             .mapNotNull { entry ->
                 val delivery = entry.value
-                if (initialDeliveryBacklog.remove(entry.key, delivery)) delivery else null
+                if (initialDeliveryBacklog.remove(entry.key, delivery)) {
+                    deliveryAtCurrentIndex(delivery)
+                } else {
+                    null
+                }
             }
         if (held.isEmpty() && prepared.isEmpty()) return
         for ((index, delivery) in prepared) {
@@ -2472,12 +2654,7 @@ class ReaderSession(
 
     private fun hasDeliveredAtLeast(delivery: Delivery, width: Int): Boolean {
         val currentIndex = synchronized(pagesLock) {
-            val knownIndex = delivery.page.pageIndex
-            if (knownIndex in pages.indices && pages[knownIndex] === delivery.page) {
-                knownIndex
-            } else {
-                pages.indexOfFirst { it === delivery.page }
-            }
+            pageIndexLocked(delivery.page, delivery.index)
         }
         if (currentIndex < 0) return false
         val deliveredWidth = decodedWidths[currentIndex] ?: 0
@@ -2571,18 +2748,23 @@ class ReaderSession(
         while (checked < BUSY_DELIVERY_SCAN_LIMIT) {
             val delivery = deliveryQueue.poll() ?: break
             checked++
-            val index = delivery.page.pageIndex
-            if (index in retainedFirst..retainedLast) {
-                retained.add(delivery)
-            } else if (delivery.retainWhenBusy) {
-                primedDeliveryBacklog[delivery.index] = delivery
-            } else {
-                pendingDeliveryWidths.remove(delivery.index)
+            val currentDelivery = deliveryAtCurrentIndex(delivery)
+            if (currentDelivery == null) {
                 recycleDecodeResult(delivery.result)
+                continue
+            }
+            val index = currentDelivery.index
+            if (index in retainedFirst..retainedLast) {
+                retained.add(currentDelivery)
+            } else if (currentDelivery.retainWhenBusy) {
+                primedDeliveryBacklog[index] = currentDelivery
+            } else {
+                pendingDeliveryWidths.remove(index)
+                recycleDecodeResult(currentDelivery.result)
             }
         }
         retained.sortWith(
-            compareBy<Delivery> { abs(it.page.pageIndex - retainedAnchor) }
+            compareBy<Delivery> { abs(it.index - retainedAnchor) }
                 .thenBy { it.startedAt }
         )
         var deliveredCount = 0
@@ -2605,17 +2787,29 @@ class ReaderSession(
             retainedLast = retainedLastPage
         }
         for ((key, delivery) in primedDeliveryBacklog.entries) {
-            val index = delivery.page.pageIndex
+            val currentDelivery = deliveryAtCurrentIndex(delivery)
+            if (currentDelivery == null) {
+                if (primedDeliveryBacklog.remove(key, delivery)) recycleDecodeResult(delivery.result)
+                continue
+            }
+            val index = currentDelivery.index
             if (index in retainedFirst..retainedLast && primedDeliveryBacklog.remove(key, delivery)) {
-                deliveryQueue.add(delivery)
+                deliveryQueue.add(currentDelivery)
+            } else if (index != key && primedDeliveryBacklog.remove(key, delivery)) {
+                primedDeliveryBacklog[index] = currentDelivery
             }
         }
     }
 
     private fun deliverDecodeResultOnMain(delivery: Delivery, busy: Boolean) {
-        if (cancelled.get()) {
-            pendingDeliveryWidths.remove(delivery.index)
+        val currentDelivery = deliveryAtCurrentIndex(delivery)
+        if (currentDelivery == null) {
             recycleDecodeResult(delivery.result)
+            return
+        }
+        if (cancelled.get()) {
+            pendingDeliveryWidths.remove(currentDelivery.index)
+            recycleDecodeResult(currentDelivery.result)
             return
         }
         val retainedFirst: Int
@@ -2624,60 +2818,56 @@ class ReaderSession(
             retainedFirst = retainedFirstPage
             retainedLast = retainedLastPage
         }
-        val knownIndex = delivery.page.pageIndex
+        val knownIndex = currentDelivery.index
         if (busy && knownIndex !in retainedFirst..retainedLast) {
-            pendingDeliveryWidths.remove(delivery.index)
-            recycleDecodeResult(delivery.result)
+            pendingDeliveryWidths.remove(currentDelivery.index)
+            recycleDecodeResult(currentDelivery.result)
             return
         }
         var droppedLowerWidth = false
         val currentIndex = synchronized(pagesLock) {
-            val index = if (knownIndex in pages.indices && pages[knownIndex] === delivery.page) {
-                knownIndex
-            } else {
-                pages.indexOfFirst { it === delivery.page }
-            }
+            val index = pageIndexLocked(currentDelivery.page, knownIndex)
             if (index >= 0 && (!busy || index in retainedFirst..retainedLast)) {
                 val deliveredWidth = decodedWidths[index] ?: 0
-                if (deliveredWidth >= delivery.result.width && hasDeliveredBitmap(index)) {
+                if (deliveredWidth >= currentDelivery.result.width && hasDeliveredBitmap(index)) {
                     droppedLowerWidth = true
                 } else {
-                    decodedWidths[index] = max(deliveredWidth, delivery.result.width)
+                    decodedWidths[index] = max(deliveredWidth, currentDelivery.result.width)
                     val fullWidth = targetWidth(false)
                     val shouldUpgradeRetainedLowRes =
                         index in retainedFirst..retainedLast &&
-                        delivery.result.width < fullWidth
+                        currentDelivery.result.width < fullWidth
                     if (shouldUpgradeRetainedLowRes) {
                         scheduleIdleFullWidthUpgrade(index, fullWidth)
                     }
-                    desiredWidths[index] = max(desiredWidths[index] ?: 0, delivery.requestedWidth)
-                    if (delivery.result is PageDecodeResult.Tiles) {
-                        if (delivery.result.decodedWidth < delivery.requestedWidth) {
-                            achievableWidths[index] = max(achievableWidths[index] ?: 0, delivery.result.decodedWidth)
+                    desiredWidths[index] = max(desiredWidths[index] ?: 0, currentDelivery.requestedWidth)
+                    if (currentDelivery.result is PageDecodeResult.Tiles) {
+                        if (currentDelivery.result.decodedWidth < currentDelivery.requestedWidth) {
+                            achievableWidths[index] = max(achievableWidths[index] ?: 0, currentDelivery.result.decodedWidth)
                         }
                     }
-                    trackDeliveredResult(index, delivery.result)
+                    trackDeliveredResult(index, currentDelivery.result)
                 }
             }
             index
         }
         if (currentIndex < 0 || (busy && currentIndex !in retainedFirst..retainedLast)) {
-            pendingDeliveryWidths.remove(delivery.index)
-            recycleDecodeResult(delivery.result)
+            pendingDeliveryWidths.remove(currentDelivery.index)
+            recycleDecodeResult(currentDelivery.result)
             return
         }
         if (droppedLowerWidth) {
-            ViewerWarmupManager.logMetric("reader_drop_stale_lower_width", delivery.result.width.toLong())
-            pendingDeliveryWidths.remove(delivery.index)
-            recycleDecodeResult(delivery.result)
+            ViewerWarmupManager.logMetric("reader_drop_stale_lower_width", currentDelivery.result.width.toLong())
+            pendingDeliveryWidths.remove(currentDelivery.index)
+            recycleDecodeResult(currentDelivery.result)
             retryPendingWidthIfNeeded(currentIndex)
             return
         }
-        pendingDeliveryWidths.remove(delivery.index)
-        failedPages.remove(delivery.index)
+        pendingDeliveryWidths.remove(currentDelivery.index)
+        failedPages.remove(currentDelivery.index)
         failedPages.remove(currentIndex)
-        logFirstBitmapIfNeeded(delivery.startedAt)
-        when (val result = delivery.result) {
+        logFirstBitmapIfNeeded(currentDelivery.startedAt)
+        when (val result = currentDelivery.result) {
             is PageDecodeResult.Full -> listener.onPageReady(currentIndex, result.bitmap)
             is PageDecodeResult.Tiles -> listener.onPageTilesReady(currentIndex, result.pageWidth, result.pageHeight, result.tiles)
         }
@@ -3037,6 +3227,7 @@ class ReaderSession(
 
     private companion object {
         private const val TAG = "ViewerPerf"
+        private val GSON = Gson()
         private const val PREPARED_BITMAP_RELEASE_DELAY_MS = 12000L
         private const val PRIME_WARM_GENERATION = Int.MIN_VALUE
         private const val FOREGROUND_PRIME_WARM_GENERATION = Int.MIN_VALUE + 1
@@ -3051,6 +3242,8 @@ class ReaderSession(
         private const val NTK_PRIMED_EPISODE_BYTE_AHEAD_PAGES = 18
         private const val NTK_LIGHT_PRIMED_EPISODE_DECODE_AHEAD_PAGES = 8
         private const val NTK_LIGHT_PRIMED_EPISODE_BYTE_AHEAD_PAGES = 12
+        private const val NTK_PREPENDED_EPISODE_DECODE_AHEAD_PAGES = 10
+        private const val NTK_PREPENDED_EPISODE_BYTE_AHEAD_PAGES = 18
         private const val NTK_INITIAL_PRIORITY_START_OFFSET = 1
         private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 2
         private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 2

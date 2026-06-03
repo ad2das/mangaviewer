@@ -400,8 +400,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
             val newHeight = resolvedPageDrawHeightLocked(bitmap.width, bitmap.height)
-            if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight)) {
-                val hasCurrentDrawable = page.bitmap != null || page.tiles.isNotEmpty()
+            val hasCurrentDrawable = page.bitmap != null || page.tiles.isNotEmpty()
+            if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight, hasCurrentDrawable)) {
                 if (hasCurrentDrawable) {
                     page.bitmap = bitmap
                     page.tiles = emptyList()
@@ -453,8 +453,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
             val newHeight = resolvedPageDrawHeightLocked(pageWidth, pageHeight)
-            if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight)) {
-                val hasCurrentDrawable = page.bitmap != null || page.tiles.isNotEmpty()
+            val hasCurrentDrawable = page.bitmap != null || page.tiles.isNotEmpty()
+            if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight, hasCurrentDrawable)) {
                 if (hasCurrentDrawable) {
                     page.bitmap = null
                     page.tiles = tiles
@@ -565,7 +565,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
             val newHeight = resolvedPageDrawHeightLocked(pageWidth, pageHeight)
-            if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight)) {
+            if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight, false)) {
                 page.pendingResolveType = PENDING_BOUNDS
                 page.pendingBitmap = null
                 page.pendingTiles = emptyList()
@@ -1521,10 +1521,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return max(1f, viewWidth * placeholderPageHeightRatio)
     }
 
-    private fun shouldDeferHeightChangingResolveLocked(oldTop: Float, oldHeight: Float, newHeight: Float): Boolean {
+    private fun shouldDeferHeightChangingResolveLocked(
+        oldTop: Float,
+        oldHeight: Float,
+        newHeight: Float,
+        hasCurrentDrawable: Boolean
+    ): Boolean {
         if (!hasDrawnContentFrame) return false
         if (!isScrollMovingLocked()) return false
         if (oldHeight <= 0f || abs(newHeight - oldHeight) <= HEIGHT_CHANGE_EPSILON_PX) return false
+        if (!hasCurrentDrawable && oldTop + oldHeight > scrollOffset) return false
         val viewBottom = scrollOffset + max(1, height)
         if (oldTop >= viewBottom + COVERAGE_EDGE_FILL_PX) return false
         return true

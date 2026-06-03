@@ -152,6 +152,8 @@ public class MangaTest {
                 "<img src=\"/manhwa/25089/296849/p025.webp?token=1\">"));
         assertTrue(Manga.isNtkPageImageForTest(
                 "<img src=\"https://www.pl3040.com/kr//07/34911/1792086/J0sSOWegkucq.jpg\">"));
+        assertTrue(Manga.isNtkPageImageForTest(
+                "<main class=\"vw-main\"><div class=\"vw-imgs\"><a href=\"https://i.toonflix.app/webtoon_uploads/page002.webp\"><img src=\"https://i.toonflix.app/webtoon_uploads/page002.webp\"></a></div></main>"));
 
         org.junit.Assert.assertFalse(Manga.isNtkPageImageForTest(
                 "<img src=\"https://i.toonflix.app/board_uploads/2026/05/15/ad.png\">"));
@@ -159,6 +161,8 @@ public class MangaTest {
                 "<img src=\"https://i.toonflix.app/blacktoon/thumbs/15741.png?v2\">"));
         org.junit.Assert.assertFalse(Manga.isNtkPageImageForTest(
                 "<div class=\"banner\"><img src=\"https://i.toonflix.app/webtoon_uploads/page001.jpg\"></div>"));
+        org.junit.Assert.assertFalse(Manga.isNtkPageImageForTest(
+                "<div class=\"bn-r\" data-br=\"1\"><a class=\"bn-s\" rel=\"noopener noreferrer nofollow\" href=\"https://ad.example\"><img src=\"https://i.toonflix.app/webtoon_uploads/page001.jpg\" alt=\"page 1\"></a></div>"));
     }
 
     @Test
@@ -223,6 +227,31 @@ public class MangaTest {
                         + "<img srcset=\"/_next/image?url=https%3A%2F%2Fi.toonflix.app%2Fwebtoon_uploads%2Fpage002.webp&w=1080&q=75 1080w,"
                         + " /_next/image?url=https%3A%2F%2Fi.toonflix.app%2Fwebtoon_uploads%2Fpage002.webp&w=1920&q=75 1920w\">"
                         + "</div>");
+
+        assertEquals(2, images.size());
+        assertEquals("https://i.toonflix.app/webtoon_uploads/page001.webp", images.get(0));
+        assertEquals("https://i.toonflix.app/webtoon_uploads/page002.webp", images.get(1));
+    }
+
+    @Test
+    public void ntkEmbeddedImagesDeduplicateQueryVariants() {
+        List<String> images = Manga.ntkEmbeddedPageImagesForTest(
+                "<script>self.__next_f.push([\"https://i.toonflix.app/webtoon_uploads/page001.webp?width=3840\","
+                        + "\"https://i.toonflix.app/webtoon_uploads/page001.webp\","
+                        + "\"https://i.toonflix.app/webtoon_uploads/page002.webp\"])</script>");
+
+        assertEquals(2, images.size());
+        assertEquals("https://i.toonflix.app/webtoon_uploads/page001.webp?width=3840", images.get(0));
+        assertEquals("https://i.toonflix.app/webtoon_uploads/page002.webp", images.get(1));
+    }
+
+    @Test
+    public void ntkEmbeddedImagesTrimToViewerMetaPageCount() {
+        List<String> images = Manga.ntkEmbeddedPageImagesForTest(
+                "<script>{\"imageMetas\":[{\"page\":1},{\"page\":2}],\"imagesToken\":\"token\","
+                        + "\"images\":[\"https://i.toonflix.app/webtoon_uploads/page001.webp\","
+                        + "\"https://i.toonflix.app/webtoon_uploads/page002.webp\","
+                        + "\"https://i.toonflix.app/webtoon_uploads/page003.webp\"]}</script>");
 
         assertEquals(2, images.size());
         assertEquals("https://i.toonflix.app/webtoon_uploads/page001.webp", images.get(0));

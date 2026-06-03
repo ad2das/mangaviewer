@@ -357,11 +357,64 @@ public final class MangaRepository {
         if(images == null)
             return new ArrayList<>();
         ArrayList<String> usable = new ArrayList<>(images.size());
+        java.util.LinkedHashSet<String> ntkSeen = new java.util.LinkedHashSet<>();
         for(String image : images) {
-            if(image != null && image.trim().length() > 0)
-                usable.add(image);
+            if(image == null)
+                continue;
+            String trimmed = image.trim();
+            if(trimmed.length() == 0)
+                continue;
+            String ntkKey = ntkImageDedupKey(trimmed);
+            if(ntkKey.length() > 0 && !ntkSeen.add(ntkKey))
+                continue;
+            usable.add(trimmed);
         }
         return usable;
+    }
+
+    private static String ntkImageDedupKey(String image) {
+        if(image == null)
+            return "";
+        String normalized = image.trim()
+                .replace("\\/", "/")
+                .replace("\\u002F", "/")
+                .replace("\\u002f", "/")
+                .replace("&amp;", "&");
+        String lower = normalized.toLowerCase(Locale.ROOT);
+        if(!lower.contains("toonflix.app")
+                && !lower.matches("(?s).*://(?:www\\.)?pl\\d+\\.com/.*"))
+            return "";
+        String proxied = ntkProxiedImageUrl(normalized);
+        if(proxied.length() > 0) {
+            normalized = proxied;
+            lower = normalized.toLowerCase(Locale.ROOT);
+        }
+        int fragment = normalized.indexOf('#');
+        if(fragment >= 0)
+            normalized = normalized.substring(0, fragment);
+        int query = normalized.indexOf('?');
+        if(query >= 0) {
+            String pathOnly = normalized.substring(0, query);
+            String pathLower = pathOnly.toLowerCase(Locale.ROOT);
+            if(pathLower.matches("(?s).*\\.(jpg|jpeg|png|webp|gif)$"))
+                normalized = pathOnly;
+        }
+        return normalized.toLowerCase(Locale.ROOT);
+    }
+
+    private static String ntkProxiedImageUrl(String value) {
+        if(value == null || value.length() == 0)
+            return "";
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
+                "(?i)(?:[?&]|&amp;)url=([^\\s\"'<>&,]+\\.(?:jpg|jpeg|png|webp|gif)(?:%3F[^\\s\"'<>&,]*)?)"
+        ).matcher(value);
+        if(!matcher.find())
+            return "";
+        try {
+            return java.net.URLDecoder.decode(matcher.group(1), "UTF-8");
+        } catch (Exception ignored) {
+            return matcher.group(1);
+        }
     }
 
     public static void backfillRecentProgress(int limit) {
