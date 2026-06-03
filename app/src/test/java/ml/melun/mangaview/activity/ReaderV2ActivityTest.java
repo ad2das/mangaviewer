@@ -33,24 +33,16 @@ public class ReaderV2ActivityTest {
     }
 
     @Test
-    public void delayedPreviousPrependDoesNotRevealAfterNewInteraction() {
-        long boundaryInteraction = 1000L;
-
+    public void delayedPreviousPrependRevealUsesStartedPrependRequest() {
         assertTrue(ReaderV2Activity.shouldRevealPrependedBoundaryForTest(
-                true,
-                ReaderSurfaceView.DIRECTION_PREVIOUS,
-                boundaryInteraction,
-                boundaryInteraction));
+                1,
+                11));
         assertFalse(ReaderV2Activity.shouldRevealPrependedBoundaryForTest(
-                true,
-                ReaderSurfaceView.DIRECTION_PREVIOUS,
-                boundaryInteraction,
-                boundaryInteraction + 1L));
+                0,
+                11));
         assertFalse(ReaderV2Activity.shouldRevealPrependedBoundaryForTest(
-                true,
-                ReaderSurfaceView.DIRECTION_NEXT,
-                boundaryInteraction,
-                boundaryInteraction));
+                1,
+                0));
     }
 
     @Test

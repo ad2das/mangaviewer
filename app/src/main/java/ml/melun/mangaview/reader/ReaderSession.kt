@@ -55,6 +55,7 @@ class ReaderSession(
         fun onPagesReady(count: Int)
         fun onPagesAppended(count: Int)
         fun onPagesPrepended(count: Int, insertedCount: Int)
+        fun onPagesRemoved(startIndex: Int, removedCount: Int, totalCount: Int)
         fun onInitialPage(index: Int)
         fun onPageLoading(index: Int)
         fun onPageBoundsReady(index: Int, width: Int, height: Int)
@@ -1075,7 +1076,7 @@ class ReaderSession(
         val total: Int
         if (direction < 0) {
             synchronized(pagesLock) {
-                if (containsEpisodeLocked(target)) return
+                if (containsEpisodeFastLocked(target)) return
                 for (page in pages) page.pageIndex += inserted
                 refs.forEachIndexed { index, page -> page.pageIndex = index }
                 pages.addAll(0, refs)
@@ -1147,6 +1148,10 @@ class ReaderSession(
         containsEpisodeLocked(target)
     }
 
+    private fun hasEpisodeFast(target: Manga): Boolean = synchronized(pagesLock) {
+        containsEpisodeFastLocked(target)
+    }
+
     private fun nextUnloadedAdjacentEpisode(
         source: Manga,
         currentTitle: Title,
@@ -1160,7 +1165,8 @@ class ReaderSession(
             candidate.titleId = currentTitle.id
             candidate.mode = source.mode
             if (episodes.isNotEmpty()) candidate.setEps(episodes)
-            if (!hasEpisode(candidate)) return candidate
+            val loaded = if (direction < 0) hasEpisodeFast(candidate) else hasEpisode(candidate)
+            if (!loaded) return candidate
             candidate = if (direction < 0) candidate.prevEp() else candidate.nextEp()
             checked++
         }
@@ -1169,6 +1175,10 @@ class ReaderSession(
 
     private fun containsEpisodeLocked(target: Manga): Boolean {
         return pages.any { sameEpisode(it.manga, target) }
+    }
+
+    private fun containsEpisodeFastLocked(target: Manga): Boolean {
+        return pages.any { Manga.sameEpisodeIdentity(it.manga, target) }
     }
 
     private fun appendableNewEpisodeRefsLocked(refs: List<PageRef>): List<PageRef> {
@@ -1226,6 +1236,7 @@ class ReaderSession(
     private fun requestPage(index: Int, busy: Boolean, anchor: Boolean, generation: Int = windowGeneration.get()) {
         if (cancelled.get()) return
         val page = pageRef(index) ?: return
+        failedPages.remove(index)
         if (page.transitionTitle != null) {
             decodedWidths[index] = Int.MAX_VALUE
             desiredWidths.remove(index)
@@ -1552,7 +1563,13 @@ class ReaderSession(
     }
 
     private fun postPageError(index: Int, page: PageRef, e: Exception) {
+        if (trimKnownNtkGeneratedTail(index, page)) return
+        if (pageRef(index) != page) return
         if (cancelled.get() || isExpectedCancellation(e) || !failedPages.add(index)) return
+        Log.d(
+            TAG,
+            "page_error index=$index,pageIndex=${page.pageIndex},source=${page.sourceIndex},path=${page.manga.ntkEpisodePath},image=${page.image},error=${e.message}"
+        )
         main.post {
             if (!cancelled.get() && pageRef(index) == page) {
                 listener.onPageError(index, "Image load failed")
@@ -1560,10 +1577,170 @@ class ReaderSession(
         }
     }
 
+    private fun trimKnownNtkGeneratedTail(index: Int, page: PageRef): Boolean {
+        if (!isNtkSource(page.manga, title)) return false
+        val knownCount = page.manga.ntkImageCount
+        if (knownCount <= 0 || page.sourceIndex < knownCount) return false
+        val ranges = ArrayList<Pair<Int, Int>>()
+        val total: Int
+        synchronized(pagesLock) {
+            val removeIndexes = pages.withIndex()
+                .filter { item ->
+                    item.value.transitionTitle == null &&
+                        item.value.sourceIndex >= knownCount &&
+                        Manga.sameEpisodeIdentity(item.value.manga, page.manga)
+                }
+                .map { it.index }
+            if (removeIndexes.isEmpty()) return false
+            var start = removeIndexes.first()
+            var previous = start
+            for (i in 1 until removeIndexes.size) {
+                val current = removeIndexes[i]
+                if (current == previous + 1) {
+                    previous = current
+                } else {
+                    ranges.add(start to previous)
+                    start = current
+                    previous = current
+                }
+            }
+            ranges.add(start to previous)
+            for ((rangeStart, rangeEnd) in ranges.asReversed()) {
+                for (i in rangeEnd downTo rangeStart) pages.removeAt(i)
+            }
+            pages.forEachIndexed { pageIndex, ref -> ref.pageIndex = pageIndex }
+            removePageStateRange(rangeStart = ranges.first().first, removedCount = removeIndexes.size)
+            total = pages.size
+        }
+        for ((start, end) in ranges.asReversed()) {
+            val count = end - start + 1
+            main.post {
+                if (!cancelled.get()) listener.onPagesRemoved(start, count, total)
+            }
+            Log.d(TAG, "trim_generated_tail start=$start,count=$count,known=$knownCount,errorPage=$index,total=$total")
+        }
+        return true
+    }
+
+    private fun removePageStateRange(rangeStart: Int, removedCount: Int) {
+        if (removedCount <= 0) return
+        shiftConcurrentMapAfterRemoval(decodedWidths, rangeStart, removedCount)
+        shiftConcurrentMapAfterRemoval(desiredWidths, rangeStart, removedCount)
+        shiftConcurrentMapAfterRemoval(pendingDeliveryWidths, rangeStart, removedCount)
+        shiftConcurrentMapAfterRemoval(sourceWidths, rangeStart, removedCount)
+        shiftConcurrentMapAfterRemoval(achievableWidths, rangeStart, removedCount)
+        shiftConcurrentMapAfterRemoval(earlyPreparedBitmaps, rangeStart, removedCount)
+        shiftConcurrentMapAfterRemoval(inFlightWidths, rangeStart, removedCount)
+        shiftConcurrentSetAfterRemoval(loading, rangeStart, removedCount)
+        shiftConcurrentSetAfterRemoval(urgentLoading, rangeStart, removedCount)
+        shiftConcurrentSetAfterRemoval(bytePrefetching, rangeStart, removedCount)
+        shiftConcurrentSetAfterRemoval(idleFullWidthUpgradeScheduled, rangeStart, removedCount)
+        shiftConcurrentSetAfterRemoval(failedPages, rangeStart, removedCount)
+        shiftDeliveryQueueAfterRemoval(rangeStart, removedCount)
+        shiftDeliveryMapAfterRemoval(primedDeliveryBacklog, rangeStart, removedCount)
+        shiftDeliveryMapAfterRemoval(initialDeliveryBacklog, rangeStart, removedCount)
+        shiftPreparedMapAfterRemoval(initialPreparedBacklog, rangeStart, removedCount)
+        synchronized(deliveredBitmaps) {
+            shiftLinkedMapAfterRemoval(deliveredBitmaps, rangeStart, removedCount)
+            shiftLinkedMapAfterRemoval(deliveredTiles, rangeStart, removedCount)
+            val oldOwned = deliveredOwned.toList()
+            deliveredOwned.clear()
+            for (index in oldOwned) shiftedIndexAfterRemoval(index, rangeStart, removedCount)?.let { deliveredOwned.add(it) }
+            retainedFirstPage = shiftedIndexAfterRemoval(retainedFirstPage, rangeStart, removedCount) ?: rangeStart
+            retainedLastPage = shiftedIndexAfterRemoval(retainedLastPage, rangeStart, removedCount) ?: (rangeStart - 1)
+            retainedAnchorPage = shiftedIndexAfterRemoval(retainedAnchorPage, rangeStart, removedCount) ?: retainedFirstPage
+        }
+        synchronized(windowLock) {
+            lastWindowAnchor = shiftedIndexAfterRemoval(lastWindowAnchor, rangeStart, removedCount) ?: -1
+            windowGeneration.incrementAndGet()
+        }
+    }
+
+    private fun shiftedIndexAfterRemoval(index: Int, rangeStart: Int, removedCount: Int): Int? {
+        if (index < rangeStart) return index
+        if (index < rangeStart + removedCount) return null
+        return index - removedCount
+    }
+
+    private fun <T> shiftConcurrentMapAfterRemoval(map: ConcurrentHashMap<Int, T>, rangeStart: Int, removedCount: Int) {
+        if (map.isEmpty()) return
+        val entries = map.entries.toList()
+        map.clear()
+        for (entry in entries) shiftedIndexAfterRemoval(entry.key, rangeStart, removedCount)?.let { map[it] = entry.value }
+    }
+
+    private fun shiftConcurrentSetAfterRemoval(set: MutableSet<Int>, rangeStart: Int, removedCount: Int) {
+        if (set.isEmpty()) return
+        val entries = set.toList()
+        set.clear()
+        for (index in entries) shiftedIndexAfterRemoval(index, rangeStart, removedCount)?.let { set.add(it) }
+    }
+
+    private fun shiftDeliveryQueueAfterRemoval(rangeStart: Int, removedCount: Int) {
+        if (deliveryQueue.isEmpty()) return
+        val entries = ArrayList<Delivery>()
+        while (true) {
+            entries.add(deliveryQueue.poll() ?: break)
+        }
+        for (delivery in entries) {
+            val shifted = shiftedIndexAfterRemoval(delivery.index, rangeStart, removedCount)
+            if (shifted == null) {
+                recycleDecodeResult(delivery.result)
+            } else {
+                deliveryQueue.add(delivery.copy(index = shifted))
+            }
+        }
+    }
+
+    private fun shiftDeliveryMapAfterRemoval(
+        map: ConcurrentHashMap<Int, Delivery>,
+        rangeStart: Int,
+        removedCount: Int
+    ) {
+        if (map.isEmpty()) return
+        val entries = map.entries.toList()
+        map.clear()
+        for (entry in entries) {
+            val shifted = shiftedIndexAfterRemoval(entry.key, rangeStart, removedCount)
+            if (shifted == null) {
+                recycleDecodeResult(entry.value.result)
+            } else {
+                map[shifted] = entry.value.copy(index = shifted)
+            }
+        }
+    }
+
+    private fun shiftPreparedMapAfterRemoval(
+        map: ConcurrentHashMap<Int, PreparedDelivery>,
+        rangeStart: Int,
+        removedCount: Int
+    ) {
+        if (map.isEmpty()) return
+        val entries = map.entries.toList()
+        map.clear()
+        for (entry in entries) {
+            val shifted = shiftedIndexAfterRemoval(entry.key, rangeStart, removedCount)
+            if (shifted == null) {
+                if (entry.value.owned && !entry.value.bitmap.isRecycled) entry.value.bitmap.recycle()
+            } else {
+                map[shifted] = entry.value
+            }
+        }
+    }
+
+    private fun <T> shiftLinkedMapAfterRemoval(map: LinkedHashMap<Int, T>, rangeStart: Int, removedCount: Int) {
+        if (map.isEmpty()) return
+        val entries = map.entries.toList()
+        map.clear()
+        for (entry in entries) shiftedIndexAfterRemoval(entry.key, rangeStart, removedCount)?.let { map[it] = entry.value }
+    }
+
     private fun isExpectedCancellation(t: Throwable?): Boolean {
         if (t == null) return false
         if (cancelled.get()) return true
         if (t is InterruptedException || t is InterruptedIOException) return true
+        if (t.javaClass.name.endsWith("StreamResetException") && (t.message ?: "").contains("CANCEL")) return true
+        if ((t.message ?: "").startsWith("Generated image past tail:")) return true
         if (t is ExecutionException) return isExpectedCancellation(t.cause)
         val cause = t.cause
         return cause != null && cause !== t && isExpectedCancellation(cause)
@@ -2256,6 +2433,8 @@ class ReaderSession(
             return
         }
         pendingDeliveryWidths.remove(delivery.index)
+        failedPages.remove(delivery.index)
+        failedPages.remove(currentIndex)
         logFirstBitmapIfNeeded(delivery.startedAt)
         when (val result = delivery.result) {
             is PageDecodeResult.Full -> listener.onPageReady(currentIndex, result.bitmap)

@@ -485,6 +485,8 @@ object ReaderImageCache {
         return try {
             running.get(18, TimeUnit.SECONDS)?.also { images ->
                 ntkApiFallbackImages[key] = images
+                manga.setImgs(ArrayList(images))
+                manga.ntkImageCount = images.size
             }
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()

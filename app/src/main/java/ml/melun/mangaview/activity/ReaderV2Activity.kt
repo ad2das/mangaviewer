@@ -91,6 +91,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var pendingProgressOffset = 0
     private var pendingBoundaryStatus = false
     private var pendingBoundaryCaptchaRetry = false
+    private var pendingPrependRevealRequests = 0
     private var readerWindowBusy = false
     private var deferredBoundaryDirection = 0
     private var deferredBoundaryAnchor = -1
@@ -374,6 +375,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     pendingCaptchaRetryDirection = retryDirection
                     pendingCaptchaRetryAnchor = retryAnchor
                     val retryStart = session?.appendAdjacentEpisode(retryAnchor, retryDirection)
+                    markPrependRevealRequest(retryDirection, retryStart)
                     if (retryStart != ReaderSession.AppendStartResult.STARTED && retryStart != ReaderSession.AppendStartResult.BUSY) {
                         clearPendingBoundaryCaptchaRetry()
                     }
@@ -417,6 +419,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingProgressInfo = null
         pendingBoundaryStatus = false
         pendingBoundaryCaptchaRetry = false
+        pendingPrependRevealRequests = 0
         deferredBoundaryDirection = 0
         deferredBoundaryAnchor = -1
         renderView.setWindowListener(null)
@@ -450,12 +453,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPagesPrepended(count: Int, insertedCount: Int) {
         if (pagesReady) {
-            val revealPrependedBoundary = shouldRevealPrependedBoundary(
-                pendingBoundaryStatus,
-                pendingCaptchaRetryDirection,
-                pendingBoundaryStartInteractionMs,
-                lastReaderInteractionMs
-            )
+            val revealPrependedBoundary = consumePrependedBoundaryReveal(insertedCount)
             pendingBoundaryStartInteractionMs = 0L
             hideBoundaryStatus()
             pageCount = count
@@ -467,6 +465,30 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             }
             Log.d(TAG, "pages_prepended total=$count inserted=$insertedCount reveal=$revealPrependedBoundary currentPage=$currentPage")
             updateCurrentEpisode(currentPage)
+        }
+    }
+
+    override fun onPagesRemoved(startIndex: Int, removedCount: Int, totalCount: Int) {
+        if (pagesReady) {
+            hideBoundaryStatus()
+            pageCount = totalCount
+            currentPage = when {
+                currentPage >= startIndex + removedCount -> currentPage - removedCount
+                currentPage >= startIndex -> startIndex.coerceAtMost((totalCount - 1).coerceAtLeast(0))
+                else -> currentPage
+            }
+            if (pendingInitialRestorePage >= startIndex + removedCount) {
+                pendingInitialRestorePage -= removedCount
+            } else if (pendingInitialRestorePage >= startIndex) {
+                pendingInitialRestorePage = -1
+                pendingInitialRestoreOffset = 0
+            }
+            renderView.removePageRange(startIndex, removedCount)
+            Log.d(TAG, "pages_removed start=$startIndex removed=$removedCount total=$totalCount currentPage=$currentPage")
+            updateCurrentEpisode(currentPage.coerceAtMost((totalCount - 1).coerceAtLeast(0)))
+            if (totalCount > 0 && currentPage >= totalCount - 1 && pendingPrependRevealRequests <= 0) {
+                startBoundaryAppend(ReaderSurfaceView.DIRECTION_NEXT, currentPage)
+            }
         }
     }
 
@@ -545,8 +567,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         MainThreadStallMonitor.trace("reader_on_page_error") {
             if (pagesReady) {
                 hideBoundaryStatus()
-                status.visibility = TextView.VISIBLE
-                status.text = message
+                Log.d(TAG, "page_error_visible index=$index currentPage=$currentPage message=$message")
                 renderView.setPageError(index, message)
                 val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
                 if (visibleInitialDrawable) logFirstDrawableMetric(index, "error")
@@ -638,6 +659,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 pendingCaptchaRetryDirection = direction
                 pendingCaptchaRetryAnchor = anchor
                 val retryStart = session?.appendAdjacentEpisode(anchor, direction)
+                markPrependRevealRequest(direction, retryStart)
                 if (retryStart != ReaderSession.AppendStartResult.STARTED && retryStart != ReaderSession.AppendStartResult.BUSY) {
                     clearPendingBoundaryCaptchaRetry()
                 }
@@ -749,6 +771,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         statusHandler.postDelayed(showBoundaryStatusRunnable, BOUNDARY_STATUS_DELAY_MS)
         val startResult = session?.appendAdjacentEpisode(anchorPage, direction)
+        markPrependRevealRequest(direction, startResult)
         if (startResult != ReaderSession.AppendStartResult.STARTED && startResult != ReaderSession.AppendStartResult.BUSY) {
             clearPendingBoundaryCaptchaRetry()
         }
@@ -998,7 +1021,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             setAdjacentButtonState(false, false)
             return
         }
-        val previous = if (manga == null) null else adjacentEpisode(manga, false)
+        val previous = if (manga == null) null else adjacentEpisodeFast(manga, false)
         val next = if (manga == null) null else adjacentEpisode(manga, true)
         cachedPreviousEpisode = previous
         cachedNextEpisode = next
@@ -1427,6 +1450,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingCaptchaRetryAnchor = -1
     }
 
+    private fun markPrependRevealRequest(direction: Int, startResult: ReaderSession.AppendStartResult?) {
+        if (direction == ReaderSurfaceView.DIRECTION_PREVIOUS && startResult == ReaderSession.AppendStartResult.STARTED) {
+            pendingPrependRevealRequests++
+        }
+    }
+
+    private fun consumePrependedBoundaryReveal(insertedCount: Int): Boolean {
+        val reveal = shouldRevealPrependedBoundary(pendingPrependRevealRequests, insertedCount)
+        if (pendingPrependRevealRequests > 0) pendingPrependRevealRequests--
+        return reveal
+    }
+
     private fun installInitialDrawGate(root: View) {
         initialDrawGateOpen = false
         initialDrawGateView = root
@@ -1554,16 +1589,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
         @JvmStatic
         fun shouldRevealPrependedBoundaryForTest(
-            pendingBoundaryStatus: Boolean,
-            direction: Int,
-            boundaryStartInteractionMs: Long,
-            lastInteractionMs: Long
+            pendingPrependRevealRequests: Int,
+            insertedCount: Int
         ): Boolean {
             return shouldRevealPrependedBoundary(
-                pendingBoundaryStatus,
-                direction,
-                boundaryStartInteractionMs,
-                lastInteractionMs
+                pendingPrependRevealRequests,
+                insertedCount
             )
         }
 
@@ -1581,15 +1612,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
 
         private fun shouldRevealPrependedBoundary(
-            pendingBoundaryStatus: Boolean,
-            direction: Int,
-            boundaryStartInteractionMs: Long,
-            lastInteractionMs: Long
+            pendingPrependRevealRequests: Int,
+            insertedCount: Int
         ): Boolean {
-            return pendingBoundaryStatus &&
-                direction == ReaderSurfaceView.DIRECTION_PREVIOUS &&
-                boundaryStartInteractionMs > 0L &&
-                lastInteractionMs <= boundaryStartInteractionMs
+            return insertedCount > 0 && pendingPrependRevealRequests > 0
         }
     }
 }

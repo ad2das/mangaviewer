@@ -307,6 +307,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
             materializeLayoutDeltasLocked()
             val oldFirstTop = pageTopOrElseLocked(0, 0f)
             repeat(insertedCount) { pages.add(0, Page()) }
+            if (revealPrependedBoundary) {
+                pages.getOrNull(insertedCount - 1)?.let { page ->
+                    page.width = width
+                    page.height = max(1, (height * 0.38f).toInt())
+                    page.loading = false
+                    page.cardText = ""
+                    page.errorText = null
+                    clearPendingResolveLocked(page)
+                }
+            }
             if (lockedRestorePage >= 0) lockedRestorePage += insertedCount
             layoutDirty = true
             rebuildLayoutLocked()
@@ -331,10 +341,47 @@ class ReaderSurfaceView @JvmOverloads constructor(
         dispatchWindowRequest(request)
     }
 
+    fun removePageRange(startIndex: Int, removedCount: Int) {
+        if (removedCount <= 0) return
+        val request = synchronized(stateLock) {
+            if (startIndex !in pages.indices) return
+            val endExclusive = min(pages.size, startIndex + removedCount)
+            if (endExclusive <= startIndex) return
+            rebuildLayoutLocked()
+            repeat(endExclusive - startIndex) { pages.removeAt(startIndex) }
+            pageTopDeltas.clear()
+            layoutDirty = true
+            if (pages.isEmpty()) {
+                setScrollOffsetLocked(0f)
+                lastAnchor = -1
+            } else {
+                if (lockedRestorePage >= endExclusive) {
+                    lockedRestorePage -= endExclusive - startIndex
+                } else if (lockedRestorePage >= startIndex) {
+                    lockedRestorePage = -1
+                    lockedRestoreOffset = 0
+                }
+                lastAnchor = lastAnchor.coerceIn(0, pages.lastIndex)
+                clampScrollLocked()
+            }
+            boundaryArmedDirection = 0
+            boundaryDispatchInFlight = false
+            renderRequested = true
+            scheduleFrameLocked()
+            stateLock.notifyAll()
+            windowRequestLocked(lastBusy)
+        }
+        dispatchWindowRequest(request)
+    }
+
     fun setPageLoading(index: Int) {
         synchronized(stateLock) {
             pages.getOrNull(index)?.let {
-                if (it.cardText == null && it.errorText == null && it.bitmap == null && it.tiles.isEmpty()) it.loading = true
+                if (it.cardText == null && it.bitmap == null && it.tiles.isEmpty()) {
+                    it.errorText = null
+                    it.loading = true
+                    clearPendingResolveLocked(it)
+                }
             }
             if (shouldSuppressInitialEmptyRenderLocked() || shouldDeferInitialEmptyDrawLocked()) return
             if (!lastBusy || isNearVisibleLocked(index, 1)) {
