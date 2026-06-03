@@ -96,7 +96,7 @@ class ReaderSession(
         val sourceIndex: Int = 0,
         var pageIndex: Int = -1,
         val localPage: Int = 0,
-        val totalPages: Int = 0,
+        var totalPages: Int = 0,
         val side: Int = PAGE_SIDE_FIRST,
         val allowAutoSplit: Boolean = true
     )
@@ -1979,6 +1979,7 @@ class ReaderSession(
         if (firstTailSourceIndex < 0) return false
         val ranges = ArrayList<Pair<Int, Int>>()
         val total: Int
+        var displayTotalPages = 0
         synchronized(pagesLock) {
             val removeIndexes = pages.withIndex()
                 .filter { item ->
@@ -2005,6 +2006,17 @@ class ReaderSession(
                 for (i in rangeEnd downTo rangeStart) pages.removeAt(i)
             }
             pages.forEachIndexed { pageIndex, ref -> ref.pageIndex = pageIndex }
+            displayTotalPages = pages.count { ref ->
+                ref.transitionTitle == null && Manga.sameEpisodeIdentity(ref.manga, page.manga)
+            }
+            if (displayTotalPages > 0) {
+                page.manga.setNtkImageCount(displayTotalPages)
+                pages.forEach { ref ->
+                    if (ref.transitionTitle == null && Manga.sameEpisodeIdentity(ref.manga, page.manga)) {
+                        ref.totalPages = displayTotalPages
+                    }
+                }
+            }
             removePageStateRange(rangeStart = ranges.first().first, removedCount = removeIndexes.size)
             total = pages.size
         }
@@ -2016,7 +2028,7 @@ class ReaderSession(
             Log.d(
                 TAG,
                 "trim_generated_tail start=$start,count=$count,known=$knownCount,tailSource=$firstTailSourceIndex," +
-                    "errorPage=$index,total=$total"
+                    "errorPage=$index,total=$total,displayTotal=$displayTotalPages"
             )
         }
         return true
@@ -2495,7 +2507,7 @@ class ReaderSession(
             manga = page.manga,
             title = page.transitionTitle ?: displayEpisodeTitle(page.manga),
             localPage = if (transition) 0 else max(1, page.localPage),
-            totalPages = page.totalPages,
+            totalPages = displayTotalPages(page),
             sourcePageIndex = sourcePageIndex(page),
             side = page.side,
             layoutReady = transition || sourceWidths.containsKey(index) || decodedWidths.containsKey(index),
@@ -2506,6 +2518,14 @@ class ReaderSession(
     private fun sourcePageIndex(page: PageRef): Int {
         if (page.transitionTitle != null) return 0
         return page.sourceIndex.coerceAtLeast(0)
+    }
+
+    private fun displayTotalPages(page: PageRef): Int {
+        if (page.transitionTitle != null) return page.totalPages
+        val knownCount = page.manga.ntkImageCount
+        if (knownCount > 0) return knownCount
+        if (isNtkSource(page.manga, title) && page.totalPages >= NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD) return 0
+        return page.totalPages
     }
 
     private fun displayEpisodeTitle(pageManga: Manga): String {
@@ -3254,6 +3274,7 @@ class ReaderSession(
         private const val NTK_LIGHT_PRIMED_EPISODE_BYTE_AHEAD_PAGES = 12
         private const val NTK_PREPENDED_EPISODE_DECODE_AHEAD_PAGES = 10
         private const val NTK_PREPENDED_EPISODE_BYTE_AHEAD_PAGES = 18
+        private const val NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD = 64
         private const val NTK_INITIAL_PRIORITY_START_OFFSET = 1
         private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 2
         private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 2

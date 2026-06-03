@@ -1246,6 +1246,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             }
             setPageText(if (info.transitionCard) {
                 "회차 전환"
+            } else if (info.totalPages <= 0) {
+                "${info.localPage} / ?"
             } else {
                 "${info.localPage} / ${info.totalPages}"
             })
