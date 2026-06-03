@@ -47,6 +47,7 @@ final class NtkWebViewFallbackManager {
     private static final long DOCUMENT_READY_WAIT_MS = 18_000L;
     private static final long PRIORITY_WOLF_DOCUMENT_READY_WAIT_MS = 2_500L;
     private static final long PRIORITY_WOLF_LOAD_TIMEOUT_MS = 6_000L;
+    private static final long PRIORITY_NTK_VIEWER_IMAGE_GRACE_MS = 2_500L;
     private static final long VIEWER_IMAGE_CACHE_TTL_MS = 45_000L;
     private static final Object INSTANCE_LOCK = new Object();
     private static final String NTK_QUIC_BRIDGE_JS = "(function(){"
@@ -82,6 +83,9 @@ final class NtkWebViewFallbackManager {
     private WebView webView;
     private FetchTask activeTask;
     private long nextToken = 1L;
+    private String protectedViewerPath = "";
+    private long protectedViewerUntil = 0L;
+    private long protectedResumeAt = 0L;
 
     private NtkWebViewFallbackManager(Context context) {
         this.context = context.getApplicationContext();
@@ -203,6 +207,7 @@ final class NtkWebViewFallbackManager {
                 tasks = new ArrayList<>(inFlight.values());
                 queue.clear();
                 activeTask = null;
+                clearProtectedViewerLocked();
                 inFlight.clear();
             }
             for(FetchTask task : tasks) {
@@ -504,9 +509,30 @@ final class NtkWebViewFallbackManager {
         } while(task != null && task.completed);
         if(task == null)
             return;
+        long now = SystemClock.elapsedRealtime();
+        if(!task.highPriority && protectedViewerUntil > now) {
+            queue.addFirst(task);
+            scheduleProtectedViewerResumeLocked(protectedViewerUntil - now);
+            return;
+        }
         activeTask = task;
         final FetchTask nextTask = task;
         mainHandler.post(() -> beginOnMain(nextTask));
+    }
+
+    private void scheduleProtectedViewerResumeLocked(long delayMs) {
+        long now = SystemClock.elapsedRealtime();
+        long resumeAt = now + Math.max(1L, delayMs);
+        if(protectedResumeAt > now && protectedResumeAt <= resumeAt)
+            return;
+        protectedResumeAt = resumeAt;
+        mainHandler.postDelayed(() -> {
+            synchronized (lock) {
+                protectedResumeAt = 0L;
+                if(activeTask == null)
+                    startNextLocked();
+            }
+        }, Math.max(1L, delayMs));
     }
 
     private void beginOnMain(FetchTask task) {
@@ -769,9 +795,34 @@ final class NtkWebViewFallbackManager {
             queue.remove(task);
             if(taskWasActive && activeTask == task)
                 activeTask = null;
+            if(taskWasActive && shouldProtectPriorityNtkViewer(task, code, task.body))
+                protectPriorityViewerLocked(task.path, finishedAt);
             startNextLocked();
         }
         task.done.countDown();
+    }
+
+    private void protectPriorityViewerLocked(String path, long now) {
+        protectedViewerPath = path == null ? "" : path;
+        protectedViewerUntil = now + PRIORITY_NTK_VIEWER_IMAGE_GRACE_MS;
+        protectedResumeAt = 0L;
+        Log.d(TAG, "ntk_webview_protect path=" + protectedViewerPath
+                + ",ms=" + PRIORITY_NTK_VIEWER_IMAGE_GRACE_MS);
+    }
+
+    private void clearProtectedViewerLocked() {
+        protectedViewerPath = "";
+        protectedViewerUntil = 0L;
+        protectedResumeAt = 0L;
+    }
+
+    private static boolean shouldProtectPriorityNtkViewer(FetchTask task, int code, String body) {
+        return task != null
+                && task.highPriority
+                && code >= 200
+                && code < 400
+                && isNtkEpisodeDocumentPath(task.path)
+                && looksLikeNtkViewerPayload(body);
     }
 
     private void destroyWebView() {
@@ -933,6 +984,13 @@ final class NtkWebViewFallbackManager {
                 || lower.contains("image-view") || lower.contains("webtoon-body"))
             return false;
         return lower.contains("<html") && lower.contains("<body") && !lower.contains("<img");
+    }
+
+    private static boolean looksLikeNtkViewerPayload(String body) {
+        if(body == null)
+            return false;
+        String lower = body.toLowerCase(Locale.ROOT);
+        return lower.contains("\"imagestoken\"") && lower.contains("\"imagemetas\"");
     }
 
     private static String buildViewerImageFetchScript(String baseUrl, String path, String kind, String workId,

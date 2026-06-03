@@ -162,6 +162,31 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkEpisodePriorityStartsWebViewFallbackInSharedMode() {
+        CustomHttpClient.RequestGroup priority = new CustomHttpClient.RequestGroup().prioritizeWebViewFallback();
+        CustomHttpClient.RequestGroup regular = new CustomHttpClient.RequestGroup();
+
+        assertTrue(CustomHttpClient.shouldPrioritizeNtkEpisodeWebViewForTest(true, "/webtoon/work/episode",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, priority));
+        assertFalse(CustomHttpClient.shouldPrioritizeNtkEpisodeWebViewForTest(true, "/webtoon/work",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, priority));
+        assertFalse(CustomHttpClient.shouldPrioritizeNtkEpisodeWebViewForTest(true, "/webtoon/work/episode",
+                CustomHttpClient.FetchMode.DIRECT_ONLY, priority));
+        assertFalse(CustomHttpClient.shouldPrioritizeNtkEpisodeWebViewForTest(true, "/webtoon/work/episode",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, regular));
+        assertFalse(CustomHttpClient.shouldPrioritizeNtkEpisodeWebViewForTest(false, "/webtoon/work/episode",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, priority));
+    }
+
+    @Test
+    public void ntkViewerImageForbiddenRefreshesAckBeforeWebViewFallback() {
+        assertTrue(CustomHttpClient.ntkViewerImagesNeedsAckRefreshForTest(403, "{\"ok\":false}"));
+        assertTrue(CustomHttpClient.ntkViewerImagesNeedsAckRefreshForTest(200, "{\"ad_ack_required\":true}"));
+        assertTrue(CustomHttpClient.ntkViewerImagesNeedsAckRefreshForTest(200, "{\"error\":\"ad_ack_required\"}"));
+        assertFalse(CustomHttpClient.ntkViewerImagesNeedsAckRefreshForTest(200, "{\"ok\":false}"));
+    }
+
+    @Test
     public void ntkHeaderBuildSyncsWebViewCookiesWhenClearanceIsMissing() {
         assertFalse(CustomHttpClient.shouldSkipWebViewCookieSyncForTest(true, false, false, false,
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));

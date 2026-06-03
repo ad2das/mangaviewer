@@ -416,6 +416,65 @@ public class Title extends MTitle {
         return "/" + segment + "/" + id;
     }
 
+    public boolean applyNtkTitlePathFromEpisodePath(String episodePath) {
+        String titlePath = ntkTitlePathFromEpisodePath(episodePath, ntkSegment());
+        if(titlePath.length() == 0)
+            return false;
+        String currentPath = path == null ? "" : path.trim();
+        setSourceSite("ntk");
+        if(titlePath.equals(currentPath))
+            return false;
+        setPath(titlePath);
+        logNtkTitlePathFromEpisode("ntk_title_path_from_episode old=" + currentPath + ",new=" + titlePath
+                + ",episodePath=" + episodePath + ",name=" + name);
+        return true;
+    }
+
+    private static void logNtkTitlePathFromEpisode(String message) {
+        try {
+            Log.d(TAG, message);
+        } catch(RuntimeException ignored) {
+        }
+    }
+
+    static String ntkTitlePathFromEpisodePathForTest(String episodePath, String segment) {
+        return ntkTitlePathFromEpisodePath(episodePath, segment);
+    }
+
+    private static String ntkTitlePathFromEpisodePath(String episodePath, String expectedSegment) {
+        if(episodePath == null)
+            return "";
+        String path = episodePath.trim();
+        int scheme = path.indexOf("://");
+        if(scheme >= 0) {
+            int slash = path.indexOf('/', scheme + 3);
+            path = slash >= 0 ? path.substring(slash) : "";
+        }
+        int query = path.indexOf('?');
+        if(query >= 0)
+            path = path.substring(0, query);
+        int hash = path.indexOf('#');
+        if(hash >= 0)
+            path = path.substring(0, hash);
+        while(path.endsWith("/") && path.length() > 1)
+            path = path.substring(0, path.length() - 1);
+        if(path.length() > 0 && path.charAt(0) != '/')
+            path = "/" + path;
+        String[] parts = path.split("/");
+        if(parts.length < 4)
+            return "";
+        String actualSegment = parts[1];
+        if(!"manhwa".equals(actualSegment) && !"webtoon".equals(actualSegment))
+            return "";
+        if(expectedSegment != null && expectedSegment.trim().length() > 0
+                && !actualSegment.equals(expectedSegment.trim()))
+            return "";
+        String workKey = parts[2];
+        if(workKey.length() == 0 || parts[3].length() == 0)
+            return "";
+        return "/" + actualSegment + "/" + workKey;
+    }
+
     private String ntkTitleKey(String segment) {
         String titlePath = ntkTitlePath(segment);
         String prefix = "/" + segment + "/";
@@ -792,7 +851,17 @@ public class Title extends MTitle {
 
     @Override
     public Title clone(){
-        return new Title(name, thumb, author, tags, release, id, baseMode);
+        Title copy = new Title(name, thumb, author, tags, release, id, baseMode);
+        copy.setPath(getPath());
+        copy.setSourceSite(getSourceSite());
+        copy.setNtkStatusLabel(getNtkStatusLabel());
+        copy.setResumeNtkEpisodePath(getResumeNtkEpisodePath());
+        copy.setReadingProgress(getBookmarkEpisodeId(), getBookmarkEpisodeIndex(), getEpisodeCount());
+        copy.bookmark = bookmark;
+        copy.bookmarked = bookmarked;
+        copy.bookmarkLink = bookmarkLink;
+        copy.rc = rc;
+        return copy;
     }
 
     public int getRecommend_c() {

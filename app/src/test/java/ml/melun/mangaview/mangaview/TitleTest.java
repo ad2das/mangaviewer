@@ -85,6 +85,19 @@ public class TitleTest {
     }
 
     @Test
+    public void ntkTitlePathFromEpisodePathUsesWorkSlug() {
+        assertEquals("/webtoon/u-mp9vqiuy-y68e", Title.ntkTitlePathFromEpisodePathForTest(
+                "/webtoon/u-mp9vqiuy-y68e/lz-beasts_that_cross_the_line-7021779758331478?x=1",
+                "webtoon"));
+        assertEquals("", Title.ntkTitlePathFromEpisodePathForTest(
+                "/webtoon/u-mp9vqiuy-y68e",
+                "webtoon"));
+        assertEquals("", Title.ntkTitlePathFromEpisodePathForTest(
+                "/manhwa/u-mp9vqiuy-y68e/lz-beasts_that_cross_the_line-7021779758331478",
+                "webtoon"));
+    }
+
+    @Test
     public void ntkSearchTitlePathMatchesCurrentIdFromSearchHtml() {
         String html = "<a class=\"card\" href=\"/manhwa/34911\">"
                 + "<span class=\"title\">Girl Friend Request Works</span>"
@@ -122,6 +135,32 @@ public class TitleTest {
 
         assertEquals("ntk", minimized.getSourceSite());
         assertEquals("ntk", restored.getSourceSite());
+    }
+
+    @Test
+    public void titleClonePreservesNtkPathAndSource() {
+        Title title = new Title("title", "", "", null, "", 719578232, MTitle.base_webtoon);
+        title.setSourceSite("ntk");
+        title.setPath("/webtoon/u-mp9vqiuy-y68e");
+
+        Title clone = title.clone();
+
+        assertEquals("ntk", clone.getSourceSite());
+        assertEquals("/webtoon/u-mp9vqiuy-y68e", clone.getPath());
+        assertEquals("/webtoon/u-mp9vqiuy-y68e", clone.getUrl());
+    }
+
+    @Test
+    public void mangaSetTitleBackfillsNtkTitlePathFromEpisodePath() {
+        Title title = new Title("title", "", "", null, "", 719578232, MTitle.base_webtoon);
+        title.setSourceSite("ntk");
+        Manga episode = new Manga(7, "7", "", MTitle.base_webtoon);
+        episode.setNtkEpisodePath("/webtoon/u-mp9vqiuy-y68e/lz-beasts_that_cross_the_line-7021779758331478");
+
+        episode.setTitle(title);
+
+        assertEquals("/webtoon/u-mp9vqiuy-y68e", title.getPath());
+        assertEquals("/webtoon/u-mp9vqiuy-y68e", title.getUrl());
     }
 
     @Test

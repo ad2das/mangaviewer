@@ -53,9 +53,12 @@ public class NtkFirstScreenSmokeInstrumentedTest {
         boolean scrollProbe = arguments != null && Boolean.parseBoolean(arguments.getString("ntkScroll", "false"));
         int scrollSteps = arguments == null ? 6 : parsePositiveInt(arguments.getString("ntkScrollSteps", "6"), 6);
         int randomRuns = arguments == null ? 0 : parsePositiveInt(arguments.getString("ntkRandomRuns", "0"), 0);
+        boolean realModesOnly = arguments != null && Boolean.parseBoolean(arguments.getString("ntkRealModesOnly", "false"));
         long randomSeed = arguments == null ? SystemClock.elapsedRealtime()
                 : parseLong(arguments.getString("ntkRandomSeed", ""), SystemClock.elapsedRealtime());
         List<Case> cases = allCases();
+        if(realModesOnly && requestedCase.length() == 0)
+            cases = realModeCases(cases);
         if(randomRuns > 0 && requestedCase.length() == 0) {
             runRandomCases(context, device, cases, randomRuns, randomSeed, scrollProbe, scrollSteps);
             return;
@@ -99,11 +102,23 @@ public class NtkFirstScreenSmokeInstrumentedTest {
                 new Case("webtoon-api-fallback-82", "api-fallback", 18768, 82, "82화", MTitle.base_webtoon, "/webtoon/18768/1586173", 37),
                 new Case("webtoon-api-strict-83", "api-strict", 18768, 83, "83화", MTitle.base_webtoon, "/webtoon/18768/1586501", 39),
                 new Case("webtoon-generated-large", "generated", 15741, 103, "103화", MTitle.base_webtoon, "/webtoon/15741/1585893", 180),
+                new Case("webtoon-slug-beasts-7", "api-fallback", 719578232, 7, "7화", MTitle.base_webtoon, "/webtoon/u-mp9vqiuy-y68e/lz-beasts_that_cross_the_line-7021779758331478", 28),
                 new Case("manhwa-native-ack-numeric", "native-ack", 4127, 15, "15화", MTitle.base_comic, "/manhwa/4127/251114", 28),
                 new Case("manhwa-api-fallback-numeric", "api-fallback", 3540, 255, "255화", MTitle.base_comic, "/manhwa/3540/135918", 22),
                 new Case("manhwa-api-strict-slug", "api-strict", 25541, 168, "168화", MTitle.base_comic, "/manhwa/25541/u-mp3wtr15-sxjg", 20),
                 new Case("manhwa-native-strict-slug", "native-strict", 8044, 117, "117화", MTitle.base_comic, "/manhwa/8044/u-mp9phqym-9fo4", 38)
         );
+    }
+
+    private static List<Case> realModeCases(List<Case> cases) {
+        ArrayList<Case> filtered = new ArrayList<>();
+        for(Case sample : cases) {
+            if("generated".equals(sample.mode)
+                    || "native-ack".equals(sample.mode)
+                    || "api-fallback".equals(sample.mode))
+                filtered.add(sample);
+        }
+        return filtered;
     }
 
     private static void runCase(Context context, UiDevice device, Case sample,
@@ -173,14 +188,18 @@ public class NtkFirstScreenSmokeInstrumentedTest {
         for(int step = 0; step < steps; step++) {
             long before = SystemClock.elapsedRealtime();
             device.swipe(startX, startY, startX, endY, 36);
+            long swipeAt = SystemClock.elapsedRealtime();
             device.waitForIdle(350L);
+            long idleAt = SystemClock.elapsedRealtime();
             boolean captured = device.takeScreenshot(screenshot);
             long elapsed = SystemClock.elapsedRealtime() - before;
+            long idleElapsed = idleAt - swipeAt;
             String visual = captured ? screenshotStats(screenshot) : "screenshot=false";
             Log.d(TAG, "ntk_scroll_probe name=" + sample.name
                     + ",mode=" + sample.mode
                     + ",step=" + step
                     + ",elapsedMs=" + elapsed
+                    + ",idleMs=" + idleElapsed
                     + "," + visual);
         }
     }

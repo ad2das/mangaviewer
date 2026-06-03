@@ -216,6 +216,20 @@ public class MangaTest {
     }
 
     @Test
+    public void ntkNextImageProxyAttributesAreParsed() {
+        List<String> images = Manga.ntkDocumentPageImagesForTest(
+                "<div class=\"vw-imgs\">"
+                        + "<img src=\"/_next/image?url=https%3A%2F%2Fi.toonflix.app%2Fwebtoon_uploads%2Fpage001.webp&w=3840&q=75\">"
+                        + "<img srcset=\"/_next/image?url=https%3A%2F%2Fi.toonflix.app%2Fwebtoon_uploads%2Fpage002.webp&w=1080&q=75 1080w,"
+                        + " /_next/image?url=https%3A%2F%2Fi.toonflix.app%2Fwebtoon_uploads%2Fpage002.webp&w=1920&q=75 1920w\">"
+                        + "</div>");
+
+        assertEquals(2, images.size());
+        assertEquals("https://i.toonflix.app/webtoon_uploads/page001.webp", images.get(0));
+        assertEquals("https://i.toonflix.app/webtoon_uploads/page002.webp", images.get(1));
+    }
+
+    @Test
     public void ntkEmbeddedNumberedPageImagesAreParsed() {
         List<String> images = Manga.ntkEmbeddedPageImagesForTest(
                 "<script>{\"images\":[\"https:\\/\\/i.toonflix.app\\/manhwa\\/25089\\/296849\\/p001.jpg\"]}</script>");
@@ -251,6 +265,19 @@ public class MangaTest {
         assertEquals(2, images.size());
         assertEquals("https://i.toonflix.app/manhwa/3540/135918/p001.jpg", images.get(0));
         assertEquals("https://i.toonflix.app/manhwa/3540/135918/p002.jpg", images.get(1));
+    }
+
+    @Test
+    public void ntkGeneratedNumericEpisodeUsesUrlPathId() {
+        assertEquals("232965", Manga.ntkGeneratedEpisodeIdForTest("/manhwa/11359/232965"));
+        assertEquals("1587305", Manga.ntkGeneratedEpisodeIdForTest("/webtoon/18768/1587305"));
+    }
+
+    @Test
+    public void ntkImageApiNumericEpisodeUsesUrlPathId() {
+        assertEquals("232965", Manga.ntkApiEpisodeIdForTest("232965"));
+        assertEquals("lz-beasts_that_cross_the_line-7021779758750226",
+                Manga.ntkApiEpisodeIdForTest("lz-beasts_that_cross_the_line-7021779758750226"));
     }
 
     @Test

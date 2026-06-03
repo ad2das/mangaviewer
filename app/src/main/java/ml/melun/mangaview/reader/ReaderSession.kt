@@ -212,12 +212,15 @@ class ReaderSession(
     private val nextLoading = AtomicBoolean(false)
     private val previousAppendLoading = AtomicBoolean(false)
     private val nextAppendLoading = AtomicBoolean(false)
+    private val adjacentMissingRefreshes = ConcurrentHashMap.newKeySet<String>()
+    private val adjacentMissingTargets = ConcurrentHashMap.newKeySet<String>()
     private val deferredAdjacentPrepareScheduled = AtomicBoolean(false)
     private val deferredAdjacentPrepareAnchor = AtomicInteger(-1)
     private val deferredAdjacentPrepareDirection = AtomicInteger(0)
     private val timelinePrimeLoading = AtomicBoolean(false)
     private val timelinePrimeRequested = AtomicBoolean(false)
     private val repositoryLoading = AtomicBoolean(false)
+    private val repositoryCancellations = ConcurrentHashMap.newKeySet<MangaRepository.Cancellation>()
     private val windowLock = Object()
     private var lastWindowAnchor = -1
     private var lastWindowDirection = 0
@@ -296,9 +299,14 @@ class ReaderSession(
                 attachTitle()
                 var urls = imageRepository.imageUrls(manga, appContext)
                 if (urls.isNullOrEmpty()) {
-                    val cancellation = MangaRepository.cancellation().userVisible()
+                    val cancellation = repositoryCancellation(userVisible = true)
                     if (isNtkSource(manga, title)) cancellation.prioritizeWebViewFallback()
-                    val result = imageRepository.fetchViewerInitial(manga, cancellation)
+                    val result = try {
+                        imageRepository.fetchViewerInitial(manga, cancellation)
+                    } finally {
+                        releaseRepositoryCancellation(cancellation)
+                    }
+                    if (cancelled.get()) return@execute
                     if (result != Title.LOAD_OK) {
                         if (result == Title.LOAD_CAPTCHA) {
                             postCaptchaRequired(manga)
@@ -692,6 +700,10 @@ class ReaderSession(
         deliveryResumeAtMs.set(0L)
         lastUserInteractionMs.set(0L)
         urgentLoading.clear()
+        for (cancellation in repositoryCancellations.toList()) {
+            cancellation.cancel()
+        }
+        repositoryCancellations.clear()
         main.removeCallbacks(clearPreparedBitmapsRunnable)
         main.removeCallbacks(deliveryDrainRunnable)
         recycleQueuedDeliveries()
@@ -707,6 +719,31 @@ class ReaderSession(
         control.shutdownNow()
     }
 
+    private fun repositoryCancellation(userVisible: Boolean = false): MangaRepository.Cancellation {
+        val cancellation = MangaRepository.cancellation()
+        if (userVisible) cancellation.userVisible()
+        repositoryCancellations.add(cancellation)
+        if (cancelled.get()) cancellation.cancel()
+        return cancellation
+    }
+
+    private fun releaseRepositoryCancellation(cancellation: MangaRepository.Cancellation) {
+        repositoryCancellations.remove(cancellation)
+        if (cancelled.get()) cancellation.cancel()
+    }
+
+    private inline fun <T> withRepositoryCancellation(
+        userVisible: Boolean = false,
+        block: (MangaRepository.Cancellation) -> T
+    ): T {
+        val cancellation = repositoryCancellation(userVisible)
+        try {
+            return block(cancellation)
+        } finally {
+            releaseRepositoryCancellation(cancellation)
+        }
+    }
+
     fun prepareNextEpisode(anchor: Int) {
         if (isNtkSource(manga, title) && !firstBitmapLogged.get()) return
         if (cancelled.get() || nextLoading.getAndSet(true)) return
@@ -715,8 +752,12 @@ class ReaderSession(
                 val anchorManga = pageRef(anchor)?.manga ?: manga
                 val currentTitle = title ?: anchorManga.title ?: manga.title
                 if (currentTitle == null) return@execute
+                if (syncNtkTitlePathFromEpisode(currentTitle, anchorManga)) {
+                    currentTitle.removeEps()
+                }
                 if (currentTitle.eps == null || currentTitle.eps.size <= 1) {
-                    imageRepository.fetchEpisodesForeground(currentTitle, MangaRepository.cancellation())
+                    withRepositoryCancellation { imageRepository.fetchEpisodesForeground(currentTitle, it) }
+                    if (cancelled.get()) return@execute
                 }
                 attachTitle()
                 val episodes = Utils.snapshotEpisodes(currentTitle)
@@ -731,7 +772,10 @@ class ReaderSession(
                 next.titleId = currentTitle.id
                 if (episodes.isNotEmpty()) next.setEps(episodes)
                 if (imageRepository.imageUrls(next, appContext).isNullOrEmpty()) {
-                    val result = imageRepository.fetchViewerInitial(next, MangaRepository.cancellation())
+                    val result = withRepositoryCancellation {
+                        imageRepository.fetchViewerInitial(next, it)
+                    }
+                    if (cancelled.get()) return@execute
                     if (result != Title.LOAD_OK) return@execute
                 }
                 val nextUrls = imageRepository.imageUrls(next, appContext)
@@ -794,14 +838,22 @@ class ReaderSession(
             try {
                 val anchorManga = pageRef(anchor)?.manga ?: manga
                 val currentTitle = title ?: anchorManga.title ?: manga.title ?: return@execute
+                val adjacentMissingKey = "${Manga.episodeIdentityKey(anchorManga)}:$direction"
+                if (adjacentMissingTargets.contains(adjacentMissingKey)) return@execute
                 Log.d(
                     TAG,
                     "append_adjacent_start direction=$direction anchor=$anchor sourceId=${anchorManga.id} " +
                         "sourceTitleId=${anchorManga.titleId} titleId=${currentTitle.id} " +
                         "sourcePath=${anchorManga.ntkEpisodePath} sourceName=${anchorManga.name}"
                 )
+                if (syncNtkTitlePathFromEpisode(currentTitle, anchorManga)) {
+                    currentTitle.removeEps()
+                }
                 if (currentTitle.eps == null || currentTitle.eps.size <= 1) {
-                    val result = imageRepository.fetchEpisodesForeground(currentTitle, MangaRepository.cancellation())
+                    val result = withRepositoryCancellation {
+                        imageRepository.fetchEpisodesForeground(currentTitle, it)
+                    }
+                    if (cancelled.get()) return@execute
                     if (result != Title.LOAD_OK) {
                         if (result == Title.LOAD_CAPTCHA) {
                             if (silentMissing) {
@@ -817,15 +869,51 @@ class ReaderSession(
                     }
                 }
                 attachTitle()
-                val episodes = Utils.snapshotEpisodes(currentTitle)
+                var episodes = Utils.snapshotEpisodes(currentTitle)
                 if (episodes.isNotEmpty()) {
                     manga.setEps(episodes)
                     anchorManga.setEps(episodes)
                 }
                 anchorManga.title = currentTitle
                 anchorManga.titleId = currentTitle.id
-                val target = nextUnloadedAdjacentEpisode(anchorManga, currentTitle, episodes, direction)
+                var target = nextUnloadedAdjacentEpisode(anchorManga, currentTitle, episodes, direction)
+                if (target == null && anchorManga.isOnline) {
+                    val refreshKey = adjacentMissingKey
+                    if (adjacentMissingRefreshes.add(refreshKey)) {
+                        val result = withRepositoryCancellation {
+                            imageRepository.fetchEpisodesForeground(currentTitle, it)
+                        }
+                        if (cancelled.get()) return@execute
+                        Log.d(TAG, "append_adjacent_refresh direction=$direction result=$result beforeEpisodes=${episodes.size}")
+                        if (result == Title.LOAD_OK) {
+                            attachTitle()
+                            episodes = Utils.snapshotEpisodes(currentTitle)
+                            if (episodes.isNotEmpty()) {
+                                manga.setEps(episodes)
+                                anchorManga.setEps(episodes)
+                            }
+                            anchorManga.title = currentTitle
+                            anchorManga.titleId = currentTitle.id
+                            target = nextUnloadedAdjacentEpisode(anchorManga, currentTitle, episodes, direction)
+                        } else {
+                            if (result == Title.LOAD_CAPTCHA) {
+                                if (silentMissing) {
+                                    suppressedCaptcha = true
+                                    return@execute
+                                }
+                                captchaRequired = true
+                                postCaptchaRequired(anchorManga)
+                                return@execute
+                            }
+                            if (!silentMissing) {
+                                postMessage("Failed to load episode list")
+                            }
+                            return@execute
+                        }
+                    }
+                }
                 if (target == null) {
+                    adjacentMissingTargets.add(adjacentMissingKey)
                     Log.d(
                         TAG,
                         "append_adjacent_target_missing direction=$direction episodes=${episodes.size} " +
@@ -851,7 +939,10 @@ class ReaderSession(
                     shouldRefreshNtkGeneratedAppendUrls(urls)
                 ) {
                     target.setImgs(null)
-                    val result = imageRepository.fetchViewerInitial(target, MangaRepository.cancellation().userVisible())
+                    val result = withRepositoryCancellation(userVisible = true) {
+                        imageRepository.fetchViewerInitial(target, it)
+                    }
+                    if (cancelled.get()) return@execute
                     Log.d(TAG, "append_adjacent_fetch direction=$direction targetId=${target.id} result=$result")
                     if (result != Title.LOAD_OK) {
                         if (result == Title.LOAD_CAPTCHA) {
@@ -869,7 +960,10 @@ class ReaderSession(
                     urls = imageRepository.imageUrls(target, appContext)
                 }
                 if (urls.isNullOrEmpty()) {
-                    val result = imageRepository.fetchViewerInitial(target, MangaRepository.cancellation().userVisible())
+                    val result = withRepositoryCancellation(userVisible = true) {
+                        imageRepository.fetchViewerInitial(target, it)
+                    }
+                    if (cancelled.get()) return@execute
                     Log.d(TAG, "append_adjacent_fetch direction=$direction targetId=${target.id} result=$result")
                     if (result != Title.LOAD_OK) {
                         if (result == Title.LOAD_CAPTCHA) {
@@ -912,8 +1006,14 @@ class ReaderSession(
             try {
                 var current = manga
                 val currentTitle = title ?: current.title ?: manga.title ?: return@execute
+                if (syncNtkTitlePathFromEpisode(currentTitle, current)) {
+                    currentTitle.removeEps()
+                }
                 if (currentTitle.eps == null || currentTitle.eps.size <= 1) {
-                    val result = imageRepository.fetchEpisodesForeground(currentTitle, MangaRepository.cancellation())
+                    val result = withRepositoryCancellation {
+                        imageRepository.fetchEpisodesForeground(currentTitle, it)
+                    }
+                    if (cancelled.get()) return@execute
                     if (result != Title.LOAD_OK) return@execute
                 }
                 attachTitle()
@@ -937,7 +1037,10 @@ class ReaderSession(
                     if (episodes.isNotEmpty()) target.setEps(episodes)
                     if (!hasEpisode(target)) {
                         if (imageRepository.imageUrls(target, appContext).isNullOrEmpty()) {
-                            val result = imageRepository.fetchViewerInitial(target, MangaRepository.cancellation())
+                            val result = withRepositoryCancellation {
+                                imageRepository.fetchViewerInitial(target, it)
+                            }
+                            if (cancelled.get()) return@execute
                             if (result != Title.LOAD_OK) break
                         }
                         val urls = imageRepository.imageUrls(target, appContext)
@@ -1176,19 +1279,91 @@ class ReaderSession(
         episodes: List<Manga>,
         direction: Int
     ): Manga? {
-        var candidate = if (direction < 0) source.prevEp() else source.nextEp()
         var checked = 0
-        while (candidate != null && checked < ADJACENT_EXISTING_SKIP_LIMIT) {
+        for (candidate in adjacentEpisodeCandidates(source, episodes, direction)) {
+            if (checked >= ADJACENT_EXISTING_SKIP_LIMIT) break
             candidate.title = currentTitle
             candidate.titleId = currentTitle.id
             candidate.mode = source.mode
             if (episodes.isNotEmpty()) candidate.setEps(episodes)
             val loaded = if (direction < 0) hasEpisodeFast(candidate) else hasEpisode(candidate)
             if (!loaded) return candidate
-            candidate = if (direction < 0) candidate.prevEp() else candidate.nextEp()
             checked++
         }
         return null
+    }
+
+    private fun adjacentEpisodeCandidates(source: Manga, episodes: List<Manga>, direction: Int): List<Manga> {
+        val candidates = ArrayList<Manga>()
+        fun addCandidate(candidate: Manga?) {
+            if (candidate == null) return
+            if (!isValidAdjacentEpisodeCandidate(source, candidate)) return
+            if (looseSameEpisodeForAppend(source, candidate)) return
+            if (candidates.any { looseSameEpisodeForAppend(it, candidate) }) return
+            candidates.add(candidate)
+        }
+        addCandidate(if (direction < 0) source.prevEp() else source.nextEp())
+        val sourceIndex = looseEpisodeIndexForAppend(episodes, source)
+        if (sourceIndex >= 0) {
+            var index = if (direction < 0) sourceIndex + 1 else sourceIndex - 1
+            while (index >= 0 && index < episodes.size && candidates.size < ADJACENT_EXISTING_SKIP_LIMIT) {
+                addCandidate(episodes[index])
+                index += if (direction < 0) 1 else -1
+            }
+        }
+        return candidates
+    }
+
+    private fun isValidAdjacentEpisodeCandidate(source: Manga, candidate: Manga): Boolean {
+        val ntk = isNtkSource(source, source.title) || isNtkSource(candidate, candidate.title)
+        if (!ntk) return true
+        val path = candidate.ntkEpisodePath?.trim().orEmpty()
+        val candidatePath = if (path.isNotEmpty()) path else candidate.url?.trim().orEmpty()
+        val valid = candidatePath.isNotEmpty() && isNtkViewerEpisodePath(candidatePath)
+        if (!valid) {
+            Log.d(
+                TAG,
+                "append_adjacent_skip_non_episode path=$candidatePath id=${candidate.id} name=${candidate.name}"
+            )
+        }
+        return valid
+    }
+
+    private fun isNtkViewerEpisodePath(path: String): Boolean {
+        val parts = path
+            .substringBefore('#')
+            .substringBefore('?')
+            .trim()
+            .trimEnd('/')
+            .split('/')
+            .filter { it.isNotEmpty() }
+        if (parts.size < 3) return false
+        return (parts[0] == "manhwa" || parts[0] == "webtoon") &&
+            parts[1].isNotBlank() &&
+            parts[2].isNotBlank()
+    }
+
+    private fun looseEpisodeIndexForAppend(episodes: List<Manga>, source: Manga): Int {
+        for (index in episodes.indices) {
+            if (looseSameEpisodeForAppend(source, episodes[index])) return index
+        }
+        return -1
+    }
+
+    private fun looseSameEpisodeForAppend(first: Manga?, second: Manga?): Boolean {
+        if (Manga.sameEpisodeIdentity(first, second)) return true
+        if (first == null || second == null || first.baseMode != second.baseMode) return false
+        if (!isNtkSource(first, first.title) && !isNtkSource(second, second.title)) return false
+        val firstPath = first.ntkEpisodePath?.trim().orEmpty()
+        val secondPath = second.ntkEpisodePath?.trim().orEmpty()
+        if (firstPath.isNotEmpty() && secondPath.isNotEmpty()) return firstPath == secondPath
+        val firstNumber = Manga.visibleEpisodeNumberKey(first.name)
+        val secondNumber = Manga.visibleEpisodeNumberKey(second.name)
+        return firstNumber.isNotEmpty()
+            && secondNumber.isNotEmpty()
+            && firstNumber == secondNumber
+            && first.id > 0
+            && first.id == second.id
     }
 
     private fun containsEpisodeLocked(target: Manga): Boolean {
@@ -2754,6 +2929,14 @@ class ReaderSession(
             .lowercase(java.util.Locale.ROOT)
         return source == "ntk" ||
             (source.isBlank() && ml.melun.mangaview.MainApplication.getHttpClient().isNtk)
+    }
+
+    private fun syncNtkTitlePathFromEpisode(title: Title?, episode: Manga?): Boolean {
+        if (title == null || episode == null) return false
+        if (!isNtkSource(episode, title)) return false
+        val path = episode.ntkEpisodePath?.trim().orEmpty()
+        if (path.isEmpty()) return false
+        return title.applyNtkTitlePathFromEpisodePath(path)
     }
 
     private fun shouldRefreshNtkGeneratedAppendUrls(urls: List<String>): Boolean {
