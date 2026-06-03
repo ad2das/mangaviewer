@@ -558,7 +558,7 @@ public class Manga {
             boolean nativeAckCompleted = false;
             if(apiFallbackMode && !isNtkStrictApiFallbackModeOverride()
                     && addNtkGeneratedPathImageCandidates(client, path, seenImages,
-                    ntkGeneratedImageCandidateCount(), true)) {
+                    ntkGeneratedImageCandidateCount(), !shouldUseImmediateNtkGeneratedFastPath(path))) {
                 startNativeAckIfNeeded.run();
                 logNtkViewerParse("api-optimistic-generated", null, path, 0, 0);
                 restoreBetterEpisodeList(previousEpisodes);
@@ -645,7 +645,7 @@ public class Manga {
             boolean generatedCandidatesChecked = false;
             if(allowGeneratedImages) {
                 generatedCandidatesChecked = true;
-                if(isNtkGeneratedImmediateModeOverride()
+                if((isNtkGeneratedImmediateModeOverride() || shouldUseImmediateNtkGeneratedFastPath(path))
                         && addNtkGeneratedPathImageCandidates(client, path, seenImages,
                         ntkGeneratedImageCandidateCount(), false)) {
                     logNtkViewerParse("generated-fast", null, path, 0, 0);
@@ -1515,7 +1515,17 @@ public class Manga {
         return count > 0 ? count : NTK_DEFAULT_GENERATED_PAGE_COUNT;
     }
 
-    private boolean shouldSkipNtkGeneratedForEpisodePath(String path) {
+    private boolean shouldUseImmediateNtkGeneratedFastPath(String path) {
+        return shouldUseImmediateNtkGeneratedFastPath(baseMode, path, getNtkImageCount());
+    }
+
+    private static boolean shouldUseImmediateNtkGeneratedFastPath(int baseMode, String path, int imageCount) {
+        return baseMode == MTitle.base_webtoon
+                && imageCount > 0
+                && !shouldSkipNtkGeneratedForEpisodePath(path);
+    }
+
+    private static boolean shouldSkipNtkGeneratedForEpisodePath(String path) {
         if(path == null || path.length() == 0)
             return false;
         Matcher matcher = Pattern.compile("^/(?:manhwa|webtoon)/[^/?#]+/([^/?#]+)").matcher(path);
@@ -2180,6 +2190,10 @@ public class Manga {
 
     static boolean shouldTrimNtkGeneratedPagesBeforeFirstFrameForTest() {
         return NTK_GENERATED_TRIM_BEFORE_FIRST_FRAME;
+    }
+
+    static boolean shouldUseImmediateNtkGeneratedFastPathForTest(int baseMode, String path, int imageCount) {
+        return shouldUseImmediateNtkGeneratedFastPath(baseMode, path, imageCount);
     }
 
     private boolean hasWolfBlockedAncestor(Element img) {

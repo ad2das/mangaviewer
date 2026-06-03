@@ -224,6 +224,27 @@ public class ReaderPageGapInstrumentedTest {
     }
 
     @Test
+    public void resolvingPageDoesNotMoveLaterPageWhenEarlierPlaceholderStillUnresolved() throws Exception {
+        ReaderSurfaceView view = new ReaderSurfaceView(ApplicationProvider.getApplicationContext());
+        attachForTest(view);
+        view.measure(
+                android.view.View.MeasureSpec.makeMeasureSpec(1000, android.view.View.MeasureSpec.EXACTLY),
+                android.view.View.MeasureSpec.makeMeasureSpec(600, android.view.View.MeasureSpec.EXACTLY));
+        view.layout(0, 0, 1000, 600);
+        view.setPageGapPx(0);
+        view.setPageCount(3);
+        view.setPageBitmap(2, bitmapOfSize(1000, 600, Color.rgb(32, 80, 220)));
+        view.scrollToPage(2, 0);
+
+        view.setPageBitmap(1, bitmapOfSize(1000, 2350, Color.rgb(32, 200, 80)));
+
+        ReaderSurfaceView.ProgressPosition position = view.currentProgressPosition();
+        assertEquals("Expected page 2 to stay anchored while page 1 resolves above it",
+                2, position.getPage());
+        assertEquals(0, position.getOffset());
+    }
+
+    @Test
     public void progressUsesViewportAnchorInsteadOfTopSliver() throws Exception {
         ReaderSurfaceView view = new ReaderSurfaceView(ApplicationProvider.getApplicationContext());
         attachForTest(view);

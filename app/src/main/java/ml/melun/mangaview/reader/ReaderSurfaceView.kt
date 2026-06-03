@@ -55,7 +55,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var pendingBitmap: Bitmap? = null,
         var pendingTiles: List<ReaderTile> = emptyList(),
         var pendingWidth: Int = 0,
-        var pendingHeight: Int = 0
+        var pendingHeight: Int = 0,
+        var placeholderRatio: Float = DEFAULT_PLACEHOLDER_PAGE_HEIGHT_RATIO
     )
 
     private data class DrawItem(
@@ -244,7 +245,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             pendingWindowRequest = null
             windowDispatchPosted = false
             pages.clear()
-            repeat(max(0, count)) { pages.add(Page()) }
+            repeat(max(0, count)) { pages.add(newPageLocked()) }
             setScrollOffsetLocked(0f)
             boundaryArmedDirection = 0
             boundaryDispatchInFlight = false
@@ -306,7 +307,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             materializeLayoutDeltasLocked()
             val oldFirstTop = pageTopOrElseLocked(0, 0f)
-            repeat(insertedCount) { pages.add(0, Page()) }
+            repeat(insertedCount) { pages.add(0, newPageLocked()) }
             if (revealPrependedBoundary) {
                 pages.getOrNull(insertedCount - 1)?.let { page ->
                     page.width = width
@@ -1500,7 +1501,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (page.bitmap != null || page.tiles.isNotEmpty()) {
             if (page.width > 0 && page.height > 0) return max(1f, viewWidth * (page.height / page.width.toFloat()))
         }
-        return max(1f, viewWidth * placeholderPageHeightRatio)
+        return max(1f, viewWidth * page.placeholderRatio)
+    }
+
+    private fun newPageLocked(): Page {
+        return Page(
+            placeholderRatio = placeholderPageHeightRatio.coerceIn(
+                MIN_PLACEHOLDER_PAGE_HEIGHT_RATIO,
+                MAX_PLACEHOLDER_PAGE_HEIGHT_RATIO
+            )
+        )
     }
 
     private fun resolvedPageDrawHeightLocked(pageWidth: Int, pageHeight: Int): Float {
@@ -1616,7 +1626,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         materializeLayoutDeltasLocked()
         var top = if (pages.isEmpty()) 0f else contentHeight + pageGapPx
         repeat(additionalCount) {
-            val page = Page()
+            val page = newPageLocked()
             pages.add(page)
             if (pageTops.size != pages.size) pageTops = pageTops.copyWithSize(pages.size)
             if (pageTopDeltas.size != pages.size) pageTopDeltas = pageTopDeltas.copyWithSize(pages.size)

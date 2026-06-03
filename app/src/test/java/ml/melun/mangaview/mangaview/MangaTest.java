@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
@@ -226,6 +227,18 @@ public class MangaTest {
     @Test
     public void ntkGeneratedFastPathDoesNotTrimPagesBeforeFirstFrame() {
         assertTrue(!Manga.shouldTrimNtkGeneratedPagesBeforeFirstFrameForTest());
+    }
+
+    @Test
+    public void ntkKnownWebtoonNumericEpisodeUsesImmediateGeneratedFastPath() {
+        assertTrue(Manga.shouldUseImmediateNtkGeneratedFastPathForTest(
+                MTitle.base_webtoon, "/webtoon/18768/1586173", 37));
+        assertFalse(Manga.shouldUseImmediateNtkGeneratedFastPathForTest(
+                MTitle.base_webtoon, "/webtoon/18768/u-mp3wtr15-sxjg", 37));
+        assertFalse(Manga.shouldUseImmediateNtkGeneratedFastPathForTest(
+                MTitle.base_webtoon, "/webtoon/18768/1586173", 0));
+        assertFalse(Manga.shouldUseImmediateNtkGeneratedFastPathForTest(
+                MTitle.base_comic, "/manhwa/18768/1586173", 37));
     }
 
     @Test
