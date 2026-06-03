@@ -214,6 +214,7 @@ class ReaderSession(
     private val nextAppendLoading = AtomicBoolean(false)
     private val adjacentMissingRefreshes = ConcurrentHashMap.newKeySet<String>()
     private val adjacentMissingTargets = ConcurrentHashMap.newKeySet<String>()
+    private val ntkEpisodeMetadataLoading = AtomicBoolean(false)
     private val deferredAdjacentPrepareScheduled = AtomicBoolean(false)
     private val deferredAdjacentPrepareAnchor = AtomicInteger(-1)
     private val deferredAdjacentPrepareDirection = AtomicInteger(0)
@@ -571,6 +572,7 @@ class ReaderSession(
         if (firstBitmapLogged.compareAndSet(false, true)) {
             ViewerWarmupManager.logMetric("reader_first_bitmap_prepared", 1L)
             releasePreparedStoreBitmapsSoon()
+            scheduleNtkEpisodeMetadataAfterFirstBitmap()
         }
     }
 
@@ -1633,6 +1635,7 @@ class ReaderSession(
             upgradeNtkInitialPriorityPagesAfterFirstBitmap()
             scheduleNtkSecondaryInitialWarmAfterFirstBitmap()
             scheduleNtkSourcePrefetchAfterFirstBitmap()
+            scheduleNtkEpisodeMetadataAfterFirstBitmap()
             scheduleNtkForwardTimelinePrimeAfterFirstBitmap()
         }
     }
@@ -1667,6 +1670,51 @@ class ReaderSession(
         main.postDelayed({
             if (!cancelled.get()) prefetchImageFilesAround(currentStartPage())
         }, NTK_INITIAL_SOURCE_PREFETCH_AFTER_FIRST_BITMAP_DELAY_MS)
+    }
+
+    private fun scheduleNtkEpisodeMetadataAfterFirstBitmap() {
+        if (!isNtkSource(manga, title)) return
+        main.postDelayed({
+            fetchNtkEpisodeMetadataInBackground()
+        }, NTK_EPISODE_METADATA_AFTER_FIRST_BITMAP_DELAY_MS)
+    }
+
+    private fun fetchNtkEpisodeMetadataInBackground() {
+        if (cancelled.get()) return
+        if (!ntkEpisodeMetadataLoading.compareAndSet(false, true)) return
+        try {
+            primeNetwork.execute {
+                try {
+                    val currentTitle = title ?: manga.title ?: return@execute
+                    if (!isNtkSource(manga, currentTitle)) return@execute
+                    if (syncNtkTitlePathFromEpisode(currentTitle, manga)) {
+                        currentTitle.removeEps()
+                    }
+                    if ((currentTitle.eps?.size ?: 0) > 1) return@execute
+                    val startedAt = SystemClock.elapsedRealtime()
+                    val result = withRepositoryCancellation {
+                        imageRepository.fetchEpisodesForeground(currentTitle, it)
+                    }
+                    if (cancelled.get()) return@execute
+                    if (result == Title.LOAD_OK) {
+                        attachTitle()
+                        val episodes = Utils.snapshotEpisodes(currentTitle)
+                        if (episodes.isNotEmpty()) manga.setEps(episodes)
+                    }
+                    Log.d(
+                        TAG,
+                        "ntk_episode_metadata_prefetch result=$result ms=${SystemClock.elapsedRealtime() - startedAt} " +
+                            "episodes=${currentTitle.eps?.size ?: 0}"
+                    )
+                } catch (e: Exception) {
+                    recordIfUnexpected(e)
+                } finally {
+                    ntkEpisodeMetadataLoading.set(false)
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            ntkEpisodeMetadataLoading.set(false)
+        }
     }
 
     private fun upgradeNtkInitialPriorityPagesAfterFirstBitmap() {
@@ -3012,6 +3060,7 @@ class ReaderSession(
         private const val NTK_INITIAL_SECONDARY_WARM_DELAY_MS = 0L
         private const val NTK_INITIAL_FAR_WARM_DELAY_MS = 250L
         private const val NTK_INITIAL_SOURCE_PREFETCH_AFTER_FIRST_BITMAP_DELAY_MS = 250L
+        private const val NTK_EPISODE_METADATA_AFTER_FIRST_BITMAP_DELAY_MS = 300L
         private const val NTK_INITIAL_DELIVERY_HOLD_FALLBACK_MS = 3500L
         private const val NTK_BACKGROUND_PREPARE_QUIET_MS = 900L
         private const val BOUNDARY_DECODE_AHEAD_PAGES = 8
