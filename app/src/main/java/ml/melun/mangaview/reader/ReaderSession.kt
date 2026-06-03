@@ -794,6 +794,12 @@ class ReaderSession(
             try {
                 val anchorManga = pageRef(anchor)?.manga ?: manga
                 val currentTitle = title ?: anchorManga.title ?: manga.title ?: return@execute
+                Log.d(
+                    TAG,
+                    "append_adjacent_start direction=$direction anchor=$anchor sourceId=${anchorManga.id} " +
+                        "sourceTitleId=${anchorManga.titleId} titleId=${currentTitle.id} " +
+                        "sourcePath=${anchorManga.ntkEpisodePath} sourceName=${anchorManga.name}"
+                )
                 if (currentTitle.eps == null || currentTitle.eps.size <= 1) {
                     val result = imageRepository.fetchEpisodesForeground(currentTitle, MangaRepository.cancellation())
                     if (result != Title.LOAD_OK) {
@@ -820,6 +826,11 @@ class ReaderSession(
                 anchorManga.titleId = currentTitle.id
                 val target = nextUnloadedAdjacentEpisode(anchorManga, currentTitle, episodes, direction)
                 if (target == null) {
+                    Log.d(
+                        TAG,
+                        "append_adjacent_target_missing direction=$direction episodes=${episodes.size} " +
+                            "sourceKey=${Manga.episodeIdentityKey(anchorManga)}"
+                    )
                     if (!silentMissing) {
                         postMessage(if (direction < 0) "이전 회차가 없습니다" else "다음 회차가 없습니다")
                     }
@@ -829,6 +840,11 @@ class ReaderSession(
                 target.titleId = currentTitle.id
                 target.mode = anchorManga.mode
                 if (episodes.isNotEmpty()) target.setEps(episodes)
+                Log.d(
+                    TAG,
+                    "append_adjacent_target direction=$direction targetId=${target.id} " +
+                        "targetTitleId=${target.titleId} targetPath=${target.ntkEpisodePath} targetName=${target.name}"
+                )
                 var urls = imageRepository.imageUrls(target, appContext)
                 if (!urls.isNullOrEmpty() &&
                     isNtkSource(target, currentTitle) &&
@@ -836,6 +852,7 @@ class ReaderSession(
                 ) {
                     target.setImgs(null)
                     val result = imageRepository.fetchViewerInitial(target, MangaRepository.cancellation().userVisible())
+                    Log.d(TAG, "append_adjacent_fetch direction=$direction targetId=${target.id} result=$result")
                     if (result != Title.LOAD_OK) {
                         if (result == Title.LOAD_CAPTCHA) {
                             if (silentMissing) {
@@ -853,6 +870,7 @@ class ReaderSession(
                 }
                 if (urls.isNullOrEmpty()) {
                     val result = imageRepository.fetchViewerInitial(target, MangaRepository.cancellation().userVisible())
+                    Log.d(TAG, "append_adjacent_fetch direction=$direction targetId=${target.id} result=$result")
                     if (result != Title.LOAD_OK) {
                         if (result == Title.LOAD_CAPTCHA) {
                             if (silentMissing) {

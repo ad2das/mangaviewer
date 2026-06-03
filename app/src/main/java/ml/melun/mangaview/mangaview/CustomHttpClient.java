@@ -2677,14 +2677,14 @@ public class CustomHttpClient {
     private static boolean isNtkTokenizedViewerPath(String path) {
         if(path == null)
             return false;
-        return path.matches("^/(manhwa|webtoon)/\\d+/[^/?#%]+/?(?:[?#].*)?$");
+        return path.matches("^/(manhwa|webtoon)/[^/?#%]+/[^/?#%]+/?(?:[?#].*)?$");
     }
 
     private static boolean isNtkTokenizedViewerCacheKey(String cacheKey, String body) {
         if(cacheKey == null || body == null)
             return false;
         String lower = cacheKey.toLowerCase(Locale.ROOT);
-        if(!lower.matches("^https?://[^/]+/(manhwa|webtoon)/\\d+/[^/?#%]+/?(?:[?#].*)?$"))
+        if(!lower.matches("^https?://[^/]+/(manhwa|webtoon)/[^/?#%]+/[^/?#%]+/?(?:[?#].*)?$"))
             return false;
         String normalized = body.replace("\\\\\"", "\"").replace("\\\"", "\"");
         return normalized.contains("\"imagesToken\"") && normalized.contains("\"imageMetas\"");
@@ -3919,15 +3919,21 @@ public class CustomHttpClient {
 
     public List<String> fetchNtkViewerImageUrls(String segment, String workId, String episodeId,
                                                 String imagesToken, String viewerBody) {
+        return fetchNtkViewerImageUrls(segment, workId, episodeId, imagesToken, viewerBody, null);
+    }
+
+    public List<String> fetchNtkViewerImageUrls(String segment, String workId, String episodeId,
+                                                String imagesToken, String viewerBody, String viewerPath) {
         List<String> urls = new ArrayList<>();
         if(context == null || segment == null || workId == null || episodeId == null || imagesToken == null
                 || imagesToken.length() == 0)
             return urls;
         String kind = "webtoon".equals(segment) ? "webtoon" : "manhwa";
         String endpoint = "webtoon".equals(kind) ? "/api/webtoon-images" : "/api/manhwa-images";
-        String baseUrl = getBaseUrl("/" + kind + "/" + workId + "/" + episodeId);
-        String path = "/" + kind + "/" + workId + "/" + episodeId;
-        String cacheKey = baseUrl + path + "|" + imagesToken;
+        String payloadPath = "/" + kind + "/" + workId + "/" + episodeId;
+        String path = viewerPath != null && viewerPath.length() > 0 ? viewerPath : payloadPath;
+        String baseUrl = getBaseUrl(path);
+        String cacheKey = baseUrl + path + "|" + episodeId + "|" + imagesToken;
         Log.d(TAG, "ntk_images_api_start path=" + path
                 + ",endpoint=" + endpoint
                 + ",tokenLen=" + imagesToken.length());
@@ -3989,7 +3995,7 @@ public class CustomHttpClient {
             headers.put("accept", "application/json");
             headers.put("x-images-client", "viewer-v1");
             headers.put("origin", baseUrl);
-            headers.put("referer", baseUrl + "/" + kind + "/" + workId + "/" + episodeId);
+            headers.put("referer", baseUrl + path);
 
             if(MainApplication.currentActivity != null) {
                 urls.addAll(NtkWebViewFallbackManager.get(context).cachedViewerImageUrls(
@@ -4028,6 +4034,7 @@ public class CustomHttpClient {
                 nv = nvAfterAck;
             JSONObject payload = ntkViewerImagesPayload(workId, episodeId, imagesToken, nv);
             NtkQuicFetcher.Result result = fetchNtkViewerImagesApi(baseUrl, endpoint, path, headers, payload);
+            boolean hardForbidden = ntkViewerImagesHardForbidden(result);
             ViewerWarmupManager.logMetric("ntk_images_api_code", result == null ? 0 : result.code);
             if(appendNtkViewerImages(urls, result)) {
                 cacheNtkViewerImageUrls(cacheKey, urls);
@@ -4045,13 +4052,14 @@ public class CustomHttpClient {
                     if(isNtkNvValid(nvAfterAck))
                         payload = ntkViewerImagesPayload(workId, episodeId, imagesToken, nvAfterAck);
                     result = fetchNtkViewerImagesApi(baseUrl, endpoint, path, headers, payload);
+                    hardForbidden = hardForbidden || ntkViewerImagesHardForbidden(result);
                     ViewerWarmupManager.logMetric("ntk_images_api_code", result == null ? 0 : result.code);
                     if(appendNtkViewerImages(urls, result)) {
                         cacheNtkViewerImageUrls(cacheKey, urls);
                         return urls;
                     }
                 }
-            } else {
+            } else if(!hardForbidden) {
                 nvAfterAck = getCookie("nv");
                 if(!isNtkNvValid(nvAfterAck)) {
                     issueNtkNvCookie(baseUrl);
@@ -4066,9 +4074,10 @@ public class CustomHttpClient {
                     cacheNtkViewerImageUrls(cacheKey, urls);
                     return urls;
                 }
+                hardForbidden = hardForbidden || ntkViewerImagesHardForbidden(result);
             }
 
-            if(MainApplication.currentActivity != null) {
+            if(!hardForbidden && MainApplication.currentActivity != null) {
                 urls.addAll(NtkWebViewFallbackManager.get(context).fetchViewerImageUrls(agent, baseUrl,
                         path, headers, kind, workId, episodeId, imagesToken, getCookieHeaderForNtkPath(path)));
                 if(urls.size() > 0) {
@@ -4146,9 +4155,11 @@ public class CustomHttpClient {
     }
 
     private static boolean ntkViewerImagesNeedsAckRefresh(NtkQuicFetcher.Result result) {
-        if(ntkViewerImagesAckRequired(result))
-            return true;
-        return result != null && result.code == 403;
+        return ntkViewerImagesAckRequired(result);
+    }
+
+    private static boolean ntkViewerImagesHardForbidden(NtkQuicFetcher.Result result) {
+        return result != null && result.code == 403 && !ntkViewerImagesAckRequired(result);
     }
 
     private static boolean appendNtkViewerImages(List<String> urls, NtkQuicFetcher.Result result) {

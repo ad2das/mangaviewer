@@ -219,7 +219,7 @@ public class Title extends MTitle {
             }
             if(page.code >= 400 || NtkEpisodeParser.looksLikeMissingPage(page.body)) {
                 logNtkEpisodeParse("missing", page, segment, 0, 0);
-                if(allowPathRefresh && shouldRefreshNtkTitlePath(client, titlePath)) {
+                if(allowPathRefresh && shouldRefreshNtkTitlePathAfterMissing(client, titlePath)) {
                     NtkPathRefreshResult refresh = refreshNtkTitlePathFromApi(client, segment, titlePath);
                     if(refresh.refreshed)
                         return fetchNtkEps(client, false);
@@ -277,6 +277,14 @@ public class Title extends MTitle {
         if(titlePath == null || titlePath.length() == 0)
             return true;
         return client == null || (!client.hasNtkAccessProof() && !client.hasRecentNtkAccessVerification());
+    }
+
+    private static boolean shouldRefreshNtkTitlePathAfterMissing(CustomHttpClient client, String titlePath) {
+        return shouldRefreshNtkTitlePath(client, titlePath) || isNumericNtkTitleFallbackPath(titlePath);
+    }
+
+    private static boolean isNumericNtkTitleFallbackPath(String titlePath) {
+        return titlePath != null && titlePath.matches("^/(?:manhwa|webtoon)/\\d+$");
     }
 
     private static boolean shouldOpenNtkCaptchaForLoadFailure(CustomHttpClient client) {

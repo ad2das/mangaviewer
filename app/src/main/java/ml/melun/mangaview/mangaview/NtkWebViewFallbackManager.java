@@ -1436,6 +1436,17 @@ final class NtkWebViewFallbackManager {
             } catch (Exception e) {
                 return "";
             }
+            String referer = headers == null ? "" : headers.get("referer");
+            if(referer == null || referer.length() == 0)
+                referer = headers == null ? "" : headers.get("Referer");
+            if(referer != null && referer.length() > 0) {
+                try {
+                    String path = URI.create(referer).getPath();
+                    if(path != null && path.matches("^/(?:manhwa|webtoon)/[^/?#]+/[^/?#]+$"))
+                        return path;
+                } catch (Exception ignored) {
+                }
+            }
             try {
                 if(body != null && body.length > 0) {
                     JSONObject payload = new JSONObject(new String(body, java.nio.charset.StandardCharsets.UTF_8));
@@ -1446,9 +1457,6 @@ final class NtkWebViewFallbackManager {
                 }
             } catch (Exception ignored) {
             }
-            String referer = headers == null ? "" : headers.get("referer");
-            if(referer == null || referer.length() == 0)
-                referer = headers == null ? "" : headers.get("Referer");
             if(referer == null || referer.length() == 0)
                 return "";
             try {
