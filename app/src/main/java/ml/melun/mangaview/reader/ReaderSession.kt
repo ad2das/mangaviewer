@@ -1953,7 +1953,7 @@ class ReaderSession(
     }
 
     private fun postPageError(index: Int, page: PageRef, e: Exception) {
-        if (trimKnownNtkGeneratedTail(index, page)) return
+        if (trimNtkGeneratedTail(index, page, e)) return
         if (pageRef(index) != page) return
         if (cancelled.get() || isExpectedCancellation(e) || !failedPages.add(index)) return
         Log.d(
@@ -1967,17 +1967,23 @@ class ReaderSession(
         }
     }
 
-    private fun trimKnownNtkGeneratedTail(index: Int, page: PageRef): Boolean {
+    private fun trimNtkGeneratedTail(index: Int, page: PageRef, e: Exception): Boolean {
         if (!isNtkSource(page.manga, title)) return false
         val knownCount = page.manga.ntkImageCount
-        if (knownCount <= 0 || page.sourceIndex < knownCount) return false
+        val pastGeneratedTail = (e.message ?: "").startsWith("Generated image past tail:")
+        val firstTailSourceIndex = when {
+            knownCount > 0 && page.sourceIndex >= knownCount -> knownCount
+            knownCount <= 0 && pastGeneratedTail -> page.sourceIndex
+            else -> return false
+        }
+        if (firstTailSourceIndex < 0) return false
         val ranges = ArrayList<Pair<Int, Int>>()
         val total: Int
         synchronized(pagesLock) {
             val removeIndexes = pages.withIndex()
                 .filter { item ->
                     item.value.transitionTitle == null &&
-                        item.value.sourceIndex >= knownCount &&
+                        item.value.sourceIndex >= firstTailSourceIndex &&
                         Manga.sameEpisodeIdentity(item.value.manga, page.manga)
                 }
                 .map { it.index }
@@ -2007,7 +2013,11 @@ class ReaderSession(
             main.post {
                 if (!cancelled.get()) listener.onPagesRemoved(start, count, total)
             }
-            Log.d(TAG, "trim_generated_tail start=$start,count=$count,known=$knownCount,errorPage=$index,total=$total")
+            Log.d(
+                TAG,
+                "trim_generated_tail start=$start,count=$count,known=$knownCount,tailSource=$firstTailSourceIndex," +
+                    "errorPage=$index,total=$total"
+            )
         }
         return true
     }
