@@ -607,7 +607,7 @@ public class TagSearchActivity extends AppCompatActivity {
         }
 
         private Integer load(){
-            cancellation = MangaRepository.cancellation();
+            cancellation = MangaRepository.cancellation().userVisible().prioritizeWebViewFallback();
             loadStartedAt = System.currentTimeMillis();
             try {
                 return MangaRepository.search(search, cancellation);

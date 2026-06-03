@@ -188,6 +188,13 @@ public class SearchTest {
     }
 
     @Test
+    public void ntkSearchFallbackPolicyKeepsApiDirectButAllowsHtmlRecovery() {
+        assertEquals(false, Search.shouldSuppressNtkHtmlSearchWebViewFallbackForTest(true, "/search?q=hero&kind=manhwa"));
+        assertEquals(true, Search.shouldSuppressNtkKeywordApiWebViewFallbackForTest(true, "/api/manhwa-list?keyword=hero"));
+        assertEquals(false, Search.shouldSuppressNtkKeywordApiWebViewFallbackForTest(false, "/api/manhwa-list?keyword=hero"));
+    }
+
+    @Test
     public void ntkApiParserNormalizesSearchResultGenres() throws Exception {
         ArrayList<Title> titles = Search.parseNtkApiTitlesForTest(
                 "{\"works\":["

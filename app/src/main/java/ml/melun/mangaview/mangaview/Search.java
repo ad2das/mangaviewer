@@ -1610,8 +1610,17 @@ public class Search {
 
     private PageTitles fetchNtkHtmlSearchResultsPage(CustomHttpClient client, String path, int targetBaseMode, int limit, int currentPage) throws Exception {
         long fetchStartedAt = PerfTrace.start("ntk_search_html_fetch_ms");
-        boolean suppressWebViewFallback = client != null && client.isNtk() && isNtkSearchNoWebViewPath(path);
-        CustomHttpClient.PageResponse page = fetchSearchPage(client, path, suppressWebViewFallback);
+        boolean suppressWebViewFallback = shouldSuppressNtkHtmlSearchWebViewFallback(client, path);
+        CustomHttpClient.PageResponse page;
+        try {
+            page = fetchSearchPage(client, path, suppressWebViewFallback);
+        } catch (Exception e) {
+            traceSearchMetric("ntk_search_html_error_ms", fetchStartedAt,
+                    ",path=" + ntkMetricPath(path)
+                            + ",searchNoWebView=" + suppressWebViewFallback
+                            + ",type=" + e.getClass().getSimpleName());
+            throw e;
+        }
         traceSearchMetric("ntk_search_html_fetch_ms", fetchStartedAt,
                 ",path=" + ntkMetricPath(path)
                         + ",searchNoWebView=" + suppressWebViewFallback
@@ -1792,8 +1801,22 @@ public class Search {
                     publishPartialResults(part.pageTitles.titles);
                 if("api".equals(part.kind))
                     apiResults = part.pageTitles;
-                else
+                else {
                     htmlResults = part.pageTitles;
+                    if(part.success && part.pageTitles != null && part.pageTitles.titles.size() > 0) {
+                        PageTitles merged = mergeNtkHybridKeywordResults(htmlResults, apiResults);
+                        if(merged.titles.size() > 0)
+                            publishPartialResults(merged.titles);
+                        traceSearchMetric("ntk_search_hybrid_total_ms", totalStartedAt,
+                                ",success=" + success
+                                        + ",html=" + htmlResults.titles.size()
+                                        + ",api=" + apiResults.titles.size()
+                                        + ",count=" + merged.titles.size()
+                                        + ",hasMore=" + merged.hasMore
+                                        + ",early=html");
+                        return merged;
+                    }
+                }
             }
             PageTitles merged = mergeNtkHybridKeywordResults(htmlResults, apiResults);
             if(merged.titles.size() > 0)
@@ -1933,7 +1956,7 @@ public class Search {
                                                                   int limit, int currentPage, long totalStartedAt) {
         try {
             long fetchStartedAt = PerfTrace.start("ntk_search_api_fetch_ms");
-            boolean suppressWebViewFallback = client != null && client.isNtk() && isNtkSearchNoWebViewPath(path);
+            boolean suppressWebViewFallback = shouldSuppressNtkKeywordApiWebViewFallback(client, path);
             CustomHttpClient.PageResponse page = fetchSearchPage(client, path, suppressWebViewFallback);
             traceSearchMetric("ntk_search_api_fetch_ms", fetchStartedAt,
                     ",path=" + ntkMetricPath(path)
@@ -2087,6 +2110,30 @@ public class Search {
 
     private static boolean shouldFetchNtkKeywordApiPathsInParallel(ArrayList<String> paths) {
         return NtkKeywordSearchPolicy.shouldFetchPathsInParallel(paths);
+    }
+
+    static boolean shouldSuppressNtkHtmlSearchWebViewFallbackForTest(boolean ntkClient, String path) {
+        return shouldSuppressNtkHtmlSearchWebViewFallback(ntkClient, path);
+    }
+
+    private static boolean shouldSuppressNtkHtmlSearchWebViewFallback(CustomHttpClient client, String path) {
+        return shouldSuppressNtkHtmlSearchWebViewFallback(client != null && client.isNtk(), path);
+    }
+
+    private static boolean shouldSuppressNtkHtmlSearchWebViewFallback(boolean ntkClient, String path) {
+        return ntkClient && HttpDocumentPolicy.isNtkApiPath(path);
+    }
+
+    static boolean shouldSuppressNtkKeywordApiWebViewFallbackForTest(boolean ntkClient, String path) {
+        return shouldSuppressNtkKeywordApiWebViewFallback(ntkClient, path);
+    }
+
+    private static boolean shouldSuppressNtkKeywordApiWebViewFallback(CustomHttpClient client, String path) {
+        return shouldSuppressNtkKeywordApiWebViewFallback(client != null && client.isNtk(), path);
+    }
+
+    private static boolean shouldSuppressNtkKeywordApiWebViewFallback(boolean ntkClient, String path) {
+        return ntkClient && HttpDocumentPolicy.isNtkApiPath(path);
     }
 
     private static ArrayList<String> ntkKeywordApiPaths(String query, int targetBaseMode, int page, int limit) {

@@ -1588,7 +1588,7 @@ public class MainSearch extends Fragment {
         }
 
         private Integer load() {
-            cancellation = MangaRepository.cancellation();
+            cancellation = MangaRepository.cancellation().userVisible().prioritizeWebViewFallback();
             loadStartedAt = System.currentTimeMillis();
             try {
                 return MangaRepository.search(targetSearch, cancellation);
