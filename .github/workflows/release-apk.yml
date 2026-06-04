@@ -38,6 +38,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TZ: Asia/Seoul
+      CI_RELEASE_PATCH_FLOOR: 1000000
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -115,7 +116,9 @@ jobs:
             throw "Could not find defaultReleasePatch in app/build.gradle"
           }
           $patchBase = [int]$patchMatch.Matches[0].Groups[1].Value
-          $releasePatch = $patchBase + [int]"${{ github.run_number }}"
+          # Reserve a CI-only patch range so GitHub-built APKs stay above local debug builds from the same date.
+          $releasePatch = $patchBase + [int]$env:CI_RELEASE_PATCH_FLOOR + [int]"${{ github.run_number }}"
+          Write-Host "releasePatchBase=$patchBase ciFloor=$env:CI_RELEASE_PATCH_FLOOR runNumber=${{ github.run_number }} releasePatch=$releasePatch"
           ./tools/release_latest.ps1 `
             -TargetBranch "${{ github.ref_name }}" `
             -ReleasePatch $releasePatch `

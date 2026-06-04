@@ -18,6 +18,7 @@ jobs:
       TZ: Asia/Seoul
       RELEASE_TAG: codex/perf-stability-max-core-rewrite-v2112260512
       REPO_NAME: ${{ github.repository }}
+      CI_RELEASE_PATCH_FLOOR: 1000000
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,7 +73,8 @@ jobs:
             echo "Could not find defaultReleasePatch in app/build.gradle" >&2
             exit 1
           fi
-          release_patch=$((patch_base + ${{ github.run_number }}))
+          # Reserve a CI-only patch range so GitHub-built APKs stay above local debug builds from the same date.
+          release_patch=$((patch_base + CI_RELEASE_PATCH_FLOOR + ${{ github.run_number }}))
           date_code="$(date +%y%m%d)"
           version_code=$((2112000000 + 10#$date_code + release_patch))
           version_name="4.6-${version_code}"
@@ -103,6 +105,7 @@ jobs:
             "releaseTag": "${RELEASE_TAG}",
             "releasePatch": ${release_patch},
             "releasePatchBase": ${patch_base},
+            "releasePatchFloor": ${CI_RELEASE_PATCH_FLOOR},
             "dateCode": "${date_code}",
             "headSha": "${{ github.sha }}",
             "buildRunId": "${{ github.run_id }}",
