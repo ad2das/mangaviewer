@@ -2325,6 +2325,93 @@ public class CustomHttpClient {
         return mgetCachedPage(normalized, ttlMillis);
     }
 
+    public PageResponse mgetNtkRscPage(String url, long ttlMillis) throws Exception {
+        String normalized = normalizePath(url);
+        if(!isNtk() || !NtkQuicFetcher.isAvailable())
+            return mgetCachedPage(normalized, ttlMillis);
+        long now = System.currentTimeMillis();
+        String baseUrl = getBaseUrl(normalized);
+        String cacheKey = baseUrl + normalized + "|rsc";
+        if(ttlMillis > 0)
+            ttlMillis = Math.max(ttlMillis * 5, 10 * 60 * 1000L);
+        CachedPage cached = readDiskCachedPage(cacheKey, now, ttlMillis, true);
+        if(cached != null && cached.body != null && cached.body.length() > 0)
+            return new PageResponse(cached.code, cached.body, true);
+        Map<String, String> headers = new HashMap<>();
+        headers.put("accept", "text/x-component");
+        headers.put("rsc", "1");
+        headers.put("next-url", normalized);
+        headers.put("origin", baseUrl);
+        headers.put("referer", baseUrl + normalized);
+        long startedAt = System.currentTimeMillis();
+        try {
+            NtkQuicFetcher.Result result = fetchNtkQuic(baseUrl, baseUrl + normalized,
+                    getCookieHeaderForNtkPath(normalized), headers, "GET", null, 7000L);
+            String body = result == null || result.body == null ? "" : result.body;
+            Log.d(TAG, "ntk_rsc_generic path=" + normalized
+                    + ",code=" + (result == null ? 0 : result.code)
+                    + ",bytes=" + body.length()
+                    + ",ms=" + (System.currentTimeMillis() - startedAt)
+                    + ",error=" + (result == null ? "" : result.error));
+            if(result != null && result.error == null && result.code >= 200 && result.code < 400 && body.length() > 0) {
+                CachedPage page = new CachedPage(result.code, body, now);
+                synchronized (pageCacheLock) {
+                    pageCache.put(cacheKey, page);
+                }
+                writeDiskCachedPage(cacheKey, page);
+                return new PageResponse(result.code, body, false);
+            }
+        } catch(InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw e;
+        } catch(Exception e) {
+            Log.d(TAG, "ntk_rsc_generic_error path=" + normalized + "," + e);
+        }
+        return mgetCachedPage(normalized, ttlMillis);
+    }
+
+    public PageResponse mgetNtkStaticTextPage(String url, long ttlMillis) throws Exception {
+        String normalized = normalizePath(url);
+        if(!isNtk() || !NtkQuicFetcher.isAvailable())
+            return mgetCachedPage(normalized, ttlMillis);
+        String cacheKey = getBaseUrl(normalized) + normalized;
+        long now = System.currentTimeMillis();
+        if(ttlMillis > 0)
+            ttlMillis = Math.max(ttlMillis * 5, 10 * 60 * 1000L);
+        CachedPage cached = readDiskCachedPage(cacheKey, now, ttlMillis, true);
+        if(cached != null && cached.body != null && cached.body.length() > 0)
+            return new PageResponse(cached.code, cached.body, true);
+        String baseUrl = getBaseUrl(normalized);
+        Map<String, String> headers = new HashMap<>();
+        headers.put("accept", "application/javascript,text/javascript,*/*");
+        headers.put("referer", baseUrl + "/");
+        long startedAt = System.currentTimeMillis();
+        try {
+            NtkQuicFetcher.Result result = fetchNtkQuic(baseUrl, baseUrl + normalized,
+                    getCookieHeaderForNtkPath(normalized), headers, "GET", null, 7000L);
+            String body = result == null || result.body == null ? "" : result.body;
+            Log.d(TAG, "ntk_static_text path=" + normalized
+                    + ",code=" + (result == null ? 0 : result.code)
+                    + ",bytes=" + body.length()
+                    + ",ms=" + (System.currentTimeMillis() - startedAt)
+                    + ",error=" + (result == null ? "" : result.error));
+            if(result != null && result.error == null && result.code >= 200 && result.code < 400 && body.length() > 0) {
+                CachedPage page = new CachedPage(result.code, body, now);
+                synchronized (pageCacheLock) {
+                    pageCache.put(cacheKey, page);
+                }
+                writeDiskCachedPage(cacheKey, page);
+                return new PageResponse(result.code, body, false);
+            }
+        } catch(InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw e;
+        } catch(Exception e) {
+            Log.d(TAG, "ntk_static_text_error path=" + normalized + "," + e);
+        }
+        return mgetCachedPage(normalized, ttlMillis);
+    }
+
     private static boolean isUsableNtkViewerPayload(String body) {
         if(body == null || body.length() == 0)
             return false;

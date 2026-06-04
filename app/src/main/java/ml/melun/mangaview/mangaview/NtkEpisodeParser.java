@@ -3,6 +3,7 @@ package ml.melun.mangaview.mangaview;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
+import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -48,6 +49,7 @@ final class NtkEpisodeParser {
             manga.setNtkImageCount(extractImageCount(imageCountMetadata, epPath));
             result.episodes.add(manga);
         }
+        appendEmbeddedEpisodes(result, imageCountMetadata, seenEpisodePaths, segment, titleKey, baseMode, title, titleId);
         Collections.sort(result.episodes, (left, right) -> Integer.compare(right.getId(), left.getId()));
         EpisodeOrderingPolicy.sortByVisibleEpisodeNumber(result.episodes);
         return result;
@@ -197,6 +199,141 @@ final class NtkEpisodeParser {
             return "";
         String token = path.substring(prefix.length());
         return token.length() == 0 ? "" : path;
+    }
+
+    private static void appendEmbeddedEpisodes(ParseResult result, String html, Set<String> seenEpisodePaths,
+                                               String segment, String titleKey, int baseMode, Title title,
+                                               int titleId) {
+        if(result == null || html == null || html.length() == 0
+                || segment == null || segment.length() == 0
+                || titleKey == null || titleKey.length() == 0)
+            return;
+        int searchFrom = 0;
+        while(searchFrom < html.length()) {
+            Matcher listMatcher = Pattern.compile("\"(?:allEpisodes|episodes)\"\\s*:\\s*\\[").matcher(html);
+            if(!listMatcher.find(searchFrom))
+                return;
+            int arrayStart = html.indexOf('[', listMatcher.end() - 1);
+            int arrayEnd = findMatchingBracket(html, arrayStart, '[', ']');
+            if(arrayStart < 0 || arrayEnd <= arrayStart)
+                return;
+            appendEmbeddedEpisodeArray(result, html.substring(arrayStart + 1, arrayEnd),
+                    seenEpisodePaths, segment, titleKey, baseMode, title, titleId, html);
+            searchFrom = arrayEnd + 1;
+        }
+    }
+
+    private static void appendEmbeddedEpisodeArray(ParseResult result, String arrayBody,
+                                                   Set<String> seenEpisodePaths, String segment,
+                                                   String titleKey, int baseMode, Title title,
+                                                   int titleId, String imageCountMetadata) {
+        int searchFrom = 0;
+        while(searchFrom < arrayBody.length()) {
+            int objectStart = arrayBody.indexOf('{', searchFrom);
+            if(objectStart < 0)
+                return;
+            int objectEnd = findMatchingBracket(arrayBody, objectStart, '{', '}');
+            if(objectEnd <= objectStart)
+                return;
+            addEmbeddedEpisode(result, arrayBody.substring(objectStart, objectEnd + 1),
+                    seenEpisodePaths, segment, titleKey, baseMode, title, titleId, imageCountMetadata);
+            searchFrom = objectEnd + 1;
+        }
+    }
+
+    private static void addEmbeddedEpisode(ParseResult result, String objectJson,
+                                           Set<String> seenEpisodePaths, String segment,
+                                           String titleKey, int baseMode, Title title,
+                                           int titleId, String imageCountMetadata) {
+        String sourceEpisodeId = embeddedStringField(objectJson, "sourceEpisodeId");
+        if(sourceEpisodeId.length() == 0)
+            return;
+        String epPath = "/" + segment + "/" + titleKey + "/" + sourceEpisodeId;
+        if(!seenEpisodePaths.add(epPath))
+            return;
+        int epId = embeddedIntField(objectJson, "epNo");
+        if(epId <= 0)
+            epId = embeddedIntField(objectJson, "number");
+        if(epId <= 0)
+            epId = embeddedIntField(objectJson, "displayNumber");
+        if(epId <= 0)
+            epId = parsePositiveInt(sourceEpisodeId);
+        if(epId <= 0)
+            epId = result.episodes.size() + 1;
+        String epTitle = embeddedStringField(objectJson, "title");
+        if(epTitle.length() == 0)
+            epTitle = String.valueOf(epId);
+        Manga manga = new Manga(epId, epTitle, "", baseMode);
+        manga.setMode(0);
+        manga.setTitle(title);
+        manga.setTitleId(titleId);
+        manga.setNtkEpisodePath(epPath);
+        String imageEpisodeId = extractImageEpisodeId(imageCountMetadata, epPath);
+        manga.setNtkImageEpisodeId(imageEpisodeId.length() == 0 ? sourceEpisodeId : imageEpisodeId);
+        int imageCount = embeddedIntField(objectJson, "imageCount");
+        if(imageCount <= 0)
+            imageCount = extractImageCount(imageCountMetadata, epPath);
+        manga.setNtkImageCount(imageCount);
+        result.episodes.add(manga);
+    }
+
+    private static int findMatchingBracket(String value, int start, char open, char close) {
+        if(value == null || start < 0 || start >= value.length() || value.charAt(start) != open)
+            return -1;
+        int depth = 0;
+        boolean inString = false;
+        boolean escaped = false;
+        for(int i = start; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if(inString) {
+                if(escaped) {
+                    escaped = false;
+                } else if(c == '\\') {
+                    escaped = true;
+                } else if(c == '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if(c == '"') {
+                inString = true;
+            } else if(c == open) {
+                depth++;
+            } else if(c == close) {
+                depth--;
+                if(depth == 0)
+                    return i;
+            }
+        }
+        return -1;
+    }
+
+    private static String embeddedStringField(String objectJson, String field) {
+        JSONObject object = embeddedJsonObject(objectJson);
+        if(object != null)
+            return object.optString(field, "").trim();
+        Matcher matcher = Pattern.compile("\"" + Pattern.quote(field) + "\"\\s*:\\s*\"([^\"]*)\"")
+                .matcher(objectJson == null ? "" : objectJson);
+        return matcher.find() ? matcher.group(1).trim() : "";
+    }
+
+    private static int embeddedIntField(String objectJson, String field) {
+        JSONObject object = embeddedJsonObject(objectJson);
+        if(object != null)
+            return object.optInt(field, 0);
+        Matcher matcher = Pattern.compile("\"" + Pattern.quote(field) + "\"\\s*:\\s*(\\d{1,12})")
+                .matcher(objectJson == null ? "" : objectJson);
+        return matcher.find() ? parsePositiveInt(matcher.group(1)) : 0;
+    }
+
+    private static JSONObject embeddedJsonObject(String objectJson) {
+        if(objectJson == null || objectJson.length() == 0)
+            return null;
+        try {
+            return new JSONObject(objectJson);
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private static int episodeSortId(Element link, String epPath, String segment) {

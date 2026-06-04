@@ -1406,7 +1406,7 @@ public class Manga {
                     onPrimaryValidationMiss);
             if(imageExtension.length() == 0)
                 return false;
-            if(NTK_GENERATED_TRIM_BEFORE_FIRST_FRAME)
+            if(NTK_GENERATED_TRIM_BEFORE_FIRST_FRAME || getNtkImageCount() <= 0)
                 safePageCount = reachableNtkGeneratedPageCount(client, segment, workId, imageEpisodeId, imageExtension, safePageCount);
             else
                 logNtkViewerParse("generated-page-count-" + generatedPageCountSource(), null, path, 0, 0);

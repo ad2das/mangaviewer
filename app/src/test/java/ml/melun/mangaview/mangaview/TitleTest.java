@@ -334,6 +334,42 @@ public class TitleTest {
     }
 
     @Test
+    public void ntkEpisodeParserKeepsEpisodesFromNextAllEpisodesMetadata() {
+        List<Manga> episodes = Title.parseNtkEpisodesForTest(
+                "<html><body><script>self.__next_f.push([1,\"{\\\"allEpisodes\\\":["
+                        + "{\\\"sourceEpisodeId\\\":\\\"u-ep-2\\\",\\\"title\\\":\\\"2화\\\",\\\"epNo\\\":2,\\\"imageCount\\\":7},"
+                        + "{\\\"sourceEpisodeId\\\":\\\"u-ep-1\\\",\\\"title\\\":\\\"1화\\\",\\\"epNo\\\":1}"
+                        + "]}\"])</script></body></html>",
+                "webtoon",
+                "u-bt-test",
+                MTitle.base_webtoon);
+
+        assertEquals(2, episodes.size());
+        assertEquals("/webtoon/u-bt-test/u-ep-2", episodes.get(0).getNtkEpisodePath());
+        assertEquals("2화", episodes.get(0).getName());
+        assertEquals(7, episodes.get(0).getNtkImageCount());
+        assertEquals("/webtoon/u-bt-test/u-ep-1", episodes.get(1).getNtkEpisodePath());
+    }
+
+    @Test
+    public void ntkEpisodeParserKeepsEpisodesFromRscEpisodesMetadata() {
+        List<Manga> episodes = Title.parseNtkEpisodesForTest(
+                "<script>{\"episodes\":["
+                        + "{\"id\":\"1126802\",\"sourceEpisodeId\":\"bt-work-10\",\"number\":10,\"title\":\"10화\",\"imageCount\":23},"
+                        + "{\"id\":\"1126801\",\"sourceEpisodeId\":\"bt-work-9\",\"displayNumber\":9,\"title\":\"9화\",\"imageCount\":25}"
+                        + "]}</script>",
+                "webtoon",
+                "u-bt-test",
+                MTitle.base_webtoon);
+
+        assertEquals(2, episodes.size());
+        assertEquals("/webtoon/u-bt-test/bt-work-10", episodes.get(0).getNtkEpisodePath());
+        assertEquals(10, episodes.get(0).getId());
+        assertEquals(23, episodes.get(0).getNtkImageCount());
+        assertEquals("/webtoon/u-bt-test/bt-work-9", episodes.get(1).getNtkEpisodePath());
+    }
+
+    @Test
     public void ntkWebtoonEpisodeParserSortsVisibleEpisodeNumbersInsideMainRuns() {
         List<Manga> episodes = Title.parseNtkEpisodesForTest(
                 "<main>"

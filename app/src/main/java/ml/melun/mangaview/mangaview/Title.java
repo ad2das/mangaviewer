@@ -10,6 +10,10 @@ import com.google.gson.JsonParser;
 import java.net.URLEncoder;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.jsoup.*;
 import org.jsoup.nodes.Document;
@@ -190,7 +194,7 @@ public class Title extends MTitle {
             try {
                 page = client.mgetCachedPage(titlePath, PAGE_CACHE_TTL_MS);
             } catch(Exception e) {
-                if(allowPathRefresh && shouldRefreshNtkTitlePath(client, titlePath)) {
+                if(allowPathRefresh && shouldRefreshNtkTitlePathAfterMissing(client, titlePath)) {
                     NtkPathRefreshResult refresh = refreshNtkTitlePathFromApi(client, segment, titlePath);
                     if(refresh.refreshed)
                         return fetchNtkEps(client, false);
@@ -253,6 +257,16 @@ public class Title extends MTitle {
             NtkEpisodeParser.ParseResult parsed = NtkEpisodeParser.parse(d, segment, titleKey, baseMode, this);
             eps = parsed.episodes;
             if(eps.size() == 0) {
+                NtkEpisodeParser.ParseResult chunkParsed = parseNtkEpisodesFromNextPayloads(client, titlePath, page.body,
+                        segment, titleKey, baseMode);
+                if(chunkParsed.episodes.size() > 0) {
+                    eps = chunkParsed.episodes;
+                    Log.d(TAG, "ntk_episode_parse reason=next_chunk,id=" + id
+                            + ",segment=" + segment
+                            + ",path=" + titlePath
+                            + ",episodes=" + eps.size());
+                    return LOAD_OK;
+                }
                 logNtkEpisodeParse("empty", page, segment, parsed.matchedEpisodeLinks, episodeLinks.size());
                 if(allowPathRefresh && shouldRefreshNtkTitlePath(client, titlePath)) {
                     NtkPathRefreshResult refresh = refreshNtkTitlePathFromApi(client, segment, titlePath);
@@ -263,6 +277,17 @@ public class Title extends MTitle {
                 }
                 return LOAD_ERROR;
             }
+            if(shouldEnrichNtkEpisodeImageCounts(eps)) {
+                NtkEpisodeParser.ParseResult payloadParsed = parseNtkEpisodesFromNextPayloads(client, titlePath, page.body,
+                        segment, titleKey, baseMode);
+                if(payloadParsed.episodes.size() > 0 && hasNtkEpisodeImageCount(payloadParsed.episodes)) {
+                    eps = payloadParsed.episodes;
+                    Log.d(TAG, "ntk_episode_parse reason=next_payload_enrich,id=" + id
+                            + ",segment=" + segment
+                            + ",path=" + titlePath
+                            + ",episodes=" + eps.size());
+                }
+            }
         }catch(Exception e) {
             if(isNtkLoadBlocked(e))
                 return shouldOpenNtkCaptchaForLoadFailure(client) ? LOAD_CAPTCHA : LOAD_ERROR;
@@ -271,6 +296,96 @@ public class Title extends MTitle {
             return LOAD_ERROR;
         }
         return LOAD_OK;
+    }
+
+    private static boolean shouldEnrichNtkEpisodeImageCounts(List<Manga> episodes) {
+        return episodes != null && episodes.size() > 0 && !hasNtkEpisodeImageCount(episodes);
+    }
+
+    private static boolean hasNtkEpisodeImageCount(List<Manga> episodes) {
+        if(episodes == null)
+            return false;
+        for(Manga episode : episodes) {
+            if(episode != null && episode.getNtkImageCount() > 0)
+                return true;
+        }
+        return false;
+    }
+
+    private NtkEpisodeParser.ParseResult parseNtkEpisodesFromNextPayloads(CustomHttpClient client, String titlePath,
+                                                                          String html, String segment, String titleKey,
+                                                                          int baseMode) {
+        NtkEpisodeParser.ParseResult empty = new NtkEpisodeParser.ParseResult();
+        if(client == null || html == null || html.length() == 0 || segment == null || titleKey == null)
+            return empty;
+        try {
+            CustomHttpClient.PageResponse rsc = client.mgetNtkRscPage(titlePath, PAGE_CACHE_TTL_MS);
+            String body = rsc == null ? "" : rsc.body;
+            Log.d(TAG, "ntk_episode_rsc path=" + titlePath
+                    + ",code=" + (rsc == null ? 0 : rsc.code)
+                    + ",fromCache=" + (rsc != null && rsc.fromCache)
+                    + ",bodyLen=" + (body == null ? 0 : body.length()));
+            if(body != null && body.length() > 0) {
+                NtkEpisodeParser.ParseResult parsed = NtkEpisodeParser.parse(Jsoup.parse(html + "<script>" + body + "</script>"),
+                        segment, titleKey, baseMode, this);
+                if(parsed.episodes.size() > 0)
+                    return parsed;
+            }
+        } catch(Exception e) {
+            Log.d(TAG, "ntk_episode_rsc_failed path=" + titlePath + "," + e);
+        }
+        List<String> chunks = ntkTitleNextChunkPaths(html, segment);
+        if(chunks.size() == 0)
+            return empty;
+        StringBuilder merged = new StringBuilder(html.length() + 8192);
+        merged.append(html);
+        int fetched = 0;
+        for(String chunkPath : chunks) {
+            try {
+                CustomHttpClient.PageResponse chunk = client.mgetNtkStaticTextPage(chunkPath, PAGE_CACHE_TTL_MS);
+                String body = chunk == null ? "" : chunk.body;
+                Log.d(TAG, "ntk_episode_next_chunk path=" + chunkPath
+                        + ",code=" + (chunk == null ? 0 : chunk.code)
+                        + ",fromCache=" + (chunk != null && chunk.fromCache)
+                        + ",bodyLen=" + (body == null ? 0 : body.length()));
+                if(body != null && body.length() > 0) {
+                    merged.append("<script>").append(body).append("</script>");
+                    fetched++;
+                }
+            } catch(Exception e) {
+                Log.d(TAG, "ntk_episode_next_chunk_failed path=" + chunkPath + "," + e);
+            }
+        }
+        if(fetched == 0)
+            return empty;
+        return NtkEpisodeParser.parse(Jsoup.parse(merged.toString()), segment, titleKey, baseMode, this);
+    }
+
+    private static List<String> ntkTitleNextChunkPaths(String html, String segment) {
+        ArrayList<String> chunks = new ArrayList<>();
+        if(html == null || html.length() == 0 || segment == null || segment.length() == 0)
+            return chunks;
+        Set<String> seen = new HashSet<>();
+        String quotedSegment = Pattern.quote(segment);
+        Pattern pattern = Pattern.compile("([\"'])((?:/[^\"']*)?/_next/static/chunks/app/"
+                + quotedSegment
+                + "/%5BsourceWorkId%5D/page-[^\"'<>\\s]+\\.js)\\1", Pattern.CASE_INSENSITIVE);
+        Matcher matcher = pattern.matcher(html);
+        while(matcher.find()) {
+            String path = matcher.group(2);
+            if(path == null || path.length() == 0)
+                continue;
+            if(path.startsWith("http://") || path.startsWith("https://")) {
+                int scheme = path.indexOf("://");
+                int slash = scheme < 0 ? -1 : path.indexOf('/', scheme + 3);
+                path = slash < 0 ? "" : path.substring(slash);
+            }
+            if(path.length() > 0 && path.charAt(0) != '/')
+                path = "/" + path;
+            if(path.length() > 0 && seen.add(path))
+                chunks.add(path);
+        }
+        return chunks;
     }
 
     private static boolean shouldRefreshNtkTitlePath(CustomHttpClient client, String titlePath) {
