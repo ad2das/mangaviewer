@@ -566,7 +566,7 @@ public class Manga {
             boolean ignoreDirectPageFetchForFirstFrame = false;
             if(apiFallbackMode && !isNtkStrictApiFallbackModeOverride()
                     && addNtkGeneratedPathImageCandidates(client, path, seenImages,
-                    ntkGeneratedImageCandidateCount(), !shouldUseImmediateNtkGeneratedFastPath(path))) {
+                    ntkGeneratedImageCandidateCount(), true)) {
                 startNativeAckIfNeeded.run();
                 logNtkViewerParse("api-optimistic-generated", null, path, 0, 0);
                 restoreBetterEpisodeList(previousEpisodes);
@@ -601,7 +601,7 @@ public class Manga {
                     startNativeAckIfNeeded.run();
                     if(!skipGeneratedForSlugEpisode
                             && addNtkGeneratedPathImageCandidates(client, path, seenImages,
-                            ntkGeneratedImageCandidateCount(), false)) {
+                            ntkGeneratedImageCandidateCount(), true)) {
                         logNtkViewerParse("native-ack-optimistic-generated", null, path, 0, 0);
                         restoreBetterEpisodeList(previousEpisodes);
                         attachEpisodeSeriesMetadata();
@@ -1472,7 +1472,7 @@ public class Manga {
                 return cached;
             }
         }
-        String[] extensions = {"jpg", "webp", "png", "jpeg"};
+        String[] extensions = {"jpg", "jpeg", "webp", "png"};
         boolean primaryMissReported = false;
         for(int i = 0; i < extensions.length; i++) {
             String extension = extensions[i];
