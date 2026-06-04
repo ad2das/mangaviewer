@@ -127,3 +127,22 @@ jobs:
             -NoCommit `
             -DeleteOldReleaseApks
 
+      - name: Sync branch update metadata
+        if: env.STALE_RELEASE_RUN != 'true'
+        shell: pwsh
+        run: |
+          $latestSha = (git ls-remote origin "refs/heads/${{ github.ref_name }}" | ForEach-Object { ($_ -split "\s+")[0] })
+          if ($latestSha -ne "${{ github.sha }}") {
+            Write-Host "Skipping metadata sync because branch moved from ${{ github.sha }} to $latestSha"
+            exit 0
+          }
+          $versionInfo = Get-Content -Path version.json -Raw | ConvertFrom-Json
+          git add -- version.json releases.html
+          $metadataChanges = git status --porcelain -- version.json releases.html
+          if (-not $metadataChanges) {
+            Write-Host "No release metadata changes to sync"
+            exit 0
+          }
+          git commit -m "Update release metadata $($versionInfo.version) [skip ci]"
+          git push origin "HEAD:${{ github.ref_name }}"
+
