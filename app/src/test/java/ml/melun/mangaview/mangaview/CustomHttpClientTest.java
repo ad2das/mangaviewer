@@ -44,6 +44,27 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void clientHintsFollowDesktopUserAgentShape() {
+        String desktop = CustomHttpClient.NTK_DESKTOP_DOCUMENT_UA;
+
+        assertTrue(CustomHttpClient.isDesktopUserAgent(desktop));
+        assertEquals("?0", CustomHttpClient.clientHintMobile(desktop));
+        assertEquals("\"Windows\"", CustomHttpClient.clientHintPlatform(desktop));
+        assertTrue(CustomHttpClient.clientHintUa(desktop).contains("Google Chrome"));
+        assertFalse(CustomHttpClient.clientHintUa(desktop).contains("Android WebView"));
+    }
+
+    @Test
+    public void clientHintsKeepAndroidShapeForMobileUserAgent() {
+        String mobile = "Mozilla/5.0 (Linux; Android 15; Pixel) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
+
+        assertFalse(CustomHttpClient.isDesktopUserAgent(mobile));
+        assertEquals("?1", CustomHttpClient.clientHintMobile(mobile));
+        assertEquals("\"Android\"", CustomHttpClient.clientHintPlatform(mobile));
+        assertTrue(CustomHttpClient.clientHintUa(mobile).contains("Android WebView"));
+    }
+
+    @Test
     public void pageAndImageClientsShareConnectionPool() {
         assertTrue(CustomHttpClient.clientsShareConnectionPoolForTest());
     }
@@ -112,6 +133,18 @@ public class CustomHttpClientTest {
         assertEquals(1, CustomHttpClient.pageNetworkAttemptsForTest(false, "/cm?type1=genre"));
         assertEquals(2, CustomHttpClient.pageNetworkAttemptsForTest(false, "/cl?toon=10007"));
         assertEquals(1, CustomHttpClient.pageNetworkAttemptsForTest(true, "/api/manhwa-list"));
+    }
+
+    @Test
+    public void ntkChallengeAbortsPageRetryImmediately() {
+        assertTrue(CustomHttpClient.shouldAbortNtkPageRetryForTest(
+                true, new Exception("Request failed"), true));
+        assertTrue(CustomHttpClient.shouldAbortNtkPageRetryForTest(
+                true, new Exception("Cloudflare challenge"), false));
+        assertFalse(CustomHttpClient.shouldAbortNtkPageRetryForTest(
+                false, new Exception("Cloudflare challenge"), true));
+        assertFalse(CustomHttpClient.shouldAbortNtkPageRetryForTest(
+                true, new ConnectException("timeout"), false));
     }
 
     @Test
@@ -187,6 +220,21 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkViewerImagesCanTryNumericWebtoonApiBeforeAck() {
+        assertTrue(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
+                "webtoon", "/webtoon/840894/1073395", false, false));
+
+        assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
+                "webtoon", "/webtoon/840894/1073395", true, false));
+        assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
+                "webtoon", "/webtoon/840894/1073395", false, true));
+        assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
+                "webtoon", "/webtoon/840894/u-slug-1073395", false, false));
+        assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
+                "manhwa", "/manhwa/840894/1073395", false, false));
+    }
+
+    @Test
     public void ntkHeaderBuildSyncsWebViewCookiesWhenClearanceIsMissing() {
         assertFalse(CustomHttpClient.shouldSkipWebViewCookieSyncForTest(true, false, false, false,
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
@@ -254,6 +302,20 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkApiDirectTimeoutOnlyCoversDiscoveryRequests() {
+        assertTrue(CustomHttpClient.shouldUseFastNtkApiDirectUrlForTest(
+                "https://sbxh4.com/api/works?page=1"));
+        assertTrue(CustomHttpClient.shouldUseFastNtkApiDirectUrlForTest(
+                "https://sbxh4.com/search?q=hero"));
+        assertFalse(CustomHttpClient.shouldUseFastNtkApiDirectUrlForTest(
+                "https://sbxh4.com/webtoon/18768"));
+        assertFalse(CustomHttpClient.shouldUseFastNtkApiDirectUrlForTest(
+                "https://sbxh4.com/webtoon/18768/1"));
+        assertFalse(CustomHttpClient.shouldUseFastNtkApiDirectUrlForTest(
+                "https://example.com/api/works?page=1"));
+    }
+
+    @Test
     public void ntkNetworkMissesAreExpectedRequestFailures() {
         assertFalse(CustomHttpClient.shouldRecordRequestFailureForTest(
                 "https://sbxh1.com/api/manhwa-list?page=1",
@@ -310,6 +372,16 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkApiDirectSkipsUnsafeTlsFallback() {
+        assertFalse(CustomHttpClient.shouldUseUnsafeFallbackForUrlForTest(
+                "https://sbxh4.com/api/works?page=1", true));
+        assertTrue(CustomHttpClient.shouldUseUnsafeFallbackForUrlForTest(
+                "https://sbxh4.com/webtoon/18768", false));
+        assertFalse(CustomHttpClient.shouldUseUnsafeFallbackForUrlForTest(
+                "https://example.com/api/works?page=1", false));
+    }
+
+    @Test
     public void ntkWebViewFallbackScriptUsesAsyncRequestBridge() {
         String script = CustomHttpClient.buildNtkWebViewFetchScriptForTest("/manhwa/1", "text/html");
 
@@ -353,6 +425,17 @@ public class CustomHttpClientTest {
                 "https://sbxh1.com", "https://nicelink53.com/manhwa/7843", Arrays.<String>asList()));
         assertNull(CustomHttpClient.ntkRedirectRootForTest("https://t.me/something"));
         assertNull(CustomHttpClient.ntkRedirectRootForTest("/manhwa/7843"));
+    }
+
+    @Test
+    public void ntkMovedSearchResponseIsRejectedForDomainRecovery() {
+        String moved = "<head><title>Document Moved</title></head>"
+                + "<body><h1>Object Moved</h1>This document may be found "
+                + "<a HREF=\"https://a15c.com\">here</a></body>";
+
+        assertTrue(CustomHttpClient.shouldRejectNtkPageResponseForTest("/search?q=hero", 302, moved));
+        assertTrue(CustomHttpClient.shouldRejectNtkPageResponseForTest("/webtoon/1", 302, moved));
+        assertFalse(CustomHttpClient.shouldRejectNtkPageResponseForTest("/init/theme.js", 302, moved));
     }
 
     @Test

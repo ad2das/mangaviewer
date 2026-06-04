@@ -1533,6 +1533,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         return renderView.currentProgressPosition()
     }
 
+    fun testPageCount(): Int {
+        return pageCount
+    }
+
+    fun testCurrentPage(): Int {
+        return currentPage
+    }
+
     private fun findTestEpisode(predicate: (Manga) -> Boolean): Manga? {
         testEpisodeLists().forEach { episodes ->
             episodes.firstOrNull { predicate(it) }?.let { return it }

@@ -50,12 +50,31 @@ public class NtkFirstScreenSmokeInstrumentedTest {
 
         Bundle arguments = InstrumentationRegistry.getArguments();
         String requestedCase = arguments == null ? "" : arguments.getString("ntkCase", "");
+        String customPath = arguments == null ? "" : arguments.getString("ntkPath", "");
+        String customUserAgent = arguments == null ? "" : arguments.getString("ntkUserAgent", "");
+        if(customUserAgent.trim().length() > 0) {
+            MainApplication.getHttpClient().agent = customUserAgent.trim();
+            Log.d("ViewerPerf", "ntk_first_screen_user_agent=" + customUserAgent.trim());
+        }
         boolean scrollProbe = arguments != null && Boolean.parseBoolean(arguments.getString("ntkScroll", "false"));
         int scrollSteps = arguments == null ? 6 : parsePositiveInt(arguments.getString("ntkScrollSteps", "6"), 6);
         int randomRuns = arguments == null ? 0 : parsePositiveInt(arguments.getString("ntkRandomRuns", "0"), 0);
         boolean realModesOnly = arguments != null && Boolean.parseBoolean(arguments.getString("ntkRealModesOnly", "false"));
         long randomSeed = arguments == null ? SystemClock.elapsedRealtime()
                 : parseLong(arguments.getString("ntkRandomSeed", ""), SystemClock.elapsedRealtime());
+        if(customPath.length() > 0) {
+            Case custom = new Case(
+                    arguments.getString("ntkName", "custom-ntk"),
+                    arguments.getString("ntkMode", "api-fallback"),
+                    parsePositiveInt(arguments.getString("ntkTitleId", "1"), 1),
+                    parsePositiveInt(arguments.getString("ntkEpisodeId", "1"), 1),
+                    arguments.getString("ntkEpisodeName", "custom"),
+                    parseBaseMode(arguments.getString("ntkBaseMode", "webtoon")),
+                    customPath,
+                    parsePositiveInt(arguments.getString("ntkImageCount", "0"), 0));
+            runCase(context, device, custom, scrollProbe, scrollSteps);
+            return;
+        }
         List<Case> cases = allCases();
         if(realModesOnly && requestedCase.length() == 0)
             cases = realModeCases(cases);
@@ -115,10 +134,19 @@ public class NtkFirstScreenSmokeInstrumentedTest {
         for(Case sample : cases) {
             if("generated".equals(sample.mode)
                     || "native-ack".equals(sample.mode)
-                    || "api-fallback".equals(sample.mode))
-                filtered.add(sample);
+                    || "api-fallback".equals(sample.mode)) {
+                if(isGeneratedNumericSample(sample))
+                    filtered.add(sample);
+            }
         }
         return filtered;
+    }
+
+    private static boolean isGeneratedNumericSample(Case sample) {
+        return sample != null
+                && sample.imageCount > 0
+                && sample.path != null
+                && sample.path.matches("^/(?:manhwa|webtoon)/\\d+/\\d+(?:[/?#].*)?$");
     }
 
     private static void runCase(Context context, UiDevice device, Case sample,
@@ -257,6 +285,12 @@ public class NtkFirstScreenSmokeInstrumentedTest {
         } catch (Exception ignored) {
             return fallback;
         }
+    }
+
+    private static int parseBaseMode(String value) {
+        return "manhwa".equalsIgnoreCase(value) || "comic".equalsIgnoreCase(value)
+                ? MTitle.base_comic
+                : MTitle.base_webtoon;
     }
 
     private static String pct(int value, int total) {

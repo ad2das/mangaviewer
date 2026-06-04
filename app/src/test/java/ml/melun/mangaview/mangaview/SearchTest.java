@@ -116,7 +116,7 @@ public class SearchTest {
     }
 
     @Test
-    public void ntkKeywordSearchMergesFilteredApiBeforeHtmlResults() {
+    public void ntkKeywordSearchPrefersHtmlCanonicalResultsBeforeApiOnlyResults() {
         ArrayList<Title> html = new ArrayList<>();
         html.add(ntkTitle("One Piece", 100, base_comic, "/manhwa/100"));
         html.add(ntkTitle("One Piece Special", 101, base_comic, "/manhwa/101"));
@@ -134,9 +134,9 @@ public class SearchTest {
         assertEquals("/manhwa/100", merged.get(0).getPath());
         assertEquals(Arrays.asList("\uC131\uC778", "\uC561\uC158"), merged.get(0).getTags());
         assertEquals("10\uD654", merged.get(0).getRelease());
-        assertEquals("/manhwa/103", merged.get(1).getPath());
-        assertEquals("/manhwa/101", merged.get(2).getPath());
-        assertEquals("/manhwa/102", merged.get(3).getPath());
+        assertEquals("/manhwa/101", merged.get(1).getPath());
+        assertEquals("/manhwa/102", merged.get(2).getPath());
+        assertEquals("/manhwa/103", merged.get(3).getPath());
     }
 
     @Test
@@ -220,6 +220,17 @@ public class SearchTest {
         assertEquals("/manhwa/u-moo205z1-yvf4", titles.get(0).getUrl());
         assertEquals("/manhwa/u-moo205z1-yvf4/u-episode",
                 Title.normalizeNtkEpisodePathForTest("/manhwa/u-moo205z1-yvf4/u-episode", "manhwa", "u-moo205z1-yvf4"));
+    }
+
+    @Test
+    public void ntkApiParserPrefersNumericIdWhenSourceWorkIdIsDisplaySlug() throws Exception {
+        ArrayList<Title> titles = Search.parseNtkApiTitlesForTest(
+                "{\"works\":[{\"sourceWorkId\":\"최강-매니저\",\"id\":\"12345\",\"title\":\"최강 매니저\"}]}",
+                base_webtoon);
+
+        assertEquals(1, titles.size());
+        assertEquals(12345, titles.get(0).getId());
+        assertEquals("/webtoon/12345", titles.get(0).getPath());
     }
 
     private static Title ntkTitle(String name, int id, int baseMode, String path) {

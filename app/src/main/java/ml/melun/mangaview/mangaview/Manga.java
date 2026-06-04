@@ -525,12 +525,24 @@ public class Manga {
             }
             boolean nativeAckMode = isNtkNativeAckModeOverride();
             boolean apiFallbackMode = isNtkApiFallbackModeOverride();
+            boolean strictApiFallbackMode = isNtkStrictApiFallbackModeOverride();
             boolean allowGeneratedImages = !nativeAckMode && !apiFallbackMode;
             final boolean skipGeneratedForSlugEpisode = shouldSkipNtkGeneratedForEpisodePath(path);
-            if(allowGeneratedImages && skipGeneratedForSlugEpisode) {
+            final boolean apiFirstCanonicalWebtoonEpisode = shouldPreferNtkApiForCanonicalWebtoonPath(path);
+            if(allowGeneratedImages && apiFirstCanonicalWebtoonEpisode
+                    && addNtkSlugWebtoonGeneratedImageCandidates(client, path, seenImages,
+                    ntkGeneratedImageCandidateCount(), false)) {
+                logNtkViewerParse("generated-wt-slug", null, path, 0, 0);
+                restoreBetterEpisodeList(previousEpisodes);
+                attachEpisodeSeriesMetadata();
+                return LOAD_OK;
+            }
+            if(allowGeneratedImages && (skipGeneratedForSlugEpisode || apiFirstCanonicalWebtoonEpisode)) {
                 allowGeneratedImages = false;
-                Log.d(TAG, "ntk_generated_skip_slug_api path=" + path
-                        + ",imageEpisodeId=" + getNtkImageEpisodeId());
+                Log.d(TAG, skipGeneratedForSlugEpisode ? "ntk_generated_skip_slug_api path=" + path
+                        + ",imageEpisodeId=" + getNtkImageEpisodeId()
+                        : "ntk_generated_skip_canonical_api path=" + path
+                        + ",imageCount=" + getNtkImageCount());
             }
             final String viewerPath = path;
             final AsyncNtkPageFetch[] pageFetchRef = new AsyncNtkPageFetch[1];
@@ -556,23 +568,35 @@ public class Manga {
                 startNativeAckIfNeeded.run();
                 startDirectPageFetchIfNeeded.run();
             };
-            if(skipGeneratedForSlugEpisode) {
+            if(skipGeneratedForSlugEpisode || apiFirstCanonicalWebtoonEpisode) {
                 startNativeAckIfNeeded.run();
                 startDirectPageFetchIfNeeded.run();
-                startPageFetchIfNeeded.run();
+                if(skipGeneratedForSlugEpisode)
+                    startPageFetchIfNeeded.run();
             }
-            if(apiFallbackMode) {
+            boolean apiOptimisticGeneratedCandidate = apiFallbackMode
+                    && !strictApiFallbackMode
+                    && shouldTryNtkGeneratedBeforeApiFallback(path);
+            if(apiFallbackMode && !apiOptimisticGeneratedCandidate) {
                 startNativeAckIfNeeded.run();
                 startDirectPageFetchIfNeeded.run();
                 startPageFetchIfNeeded.run();
             }
             boolean nativeAckCompleted = false;
             boolean ignoreDirectPageFetchForFirstFrame = false;
-            if(apiFallbackMode && !isNtkStrictApiFallbackModeOverride()
-                    && shouldTryNtkGeneratedBeforeApiFallback(path)
+            boolean apiOptimisticGeneratedFastPath = apiOptimisticGeneratedCandidate
+                    && shouldUseOptimisticNtkGeneratedFastPath(path);
+            if(apiOptimisticGeneratedFastPath
+                    && addNtkGeneratedPathImageCandidates(client, path, seenImages,
+                    ntkGeneratedImageCandidateCount(), false)) {
+                logNtkViewerParse("api-optimistic-generated-fast", null, path, 0, 0);
+                restoreBetterEpisodeList(previousEpisodes);
+                attachEpisodeSeriesMetadata();
+                return LOAD_OK;
+            }
+            if(apiOptimisticGeneratedCandidate
                     && addNtkGeneratedPathImageCandidates(client, path, seenImages,
                     ntkGeneratedImageCandidateCount(), true)) {
-                startNativeAckIfNeeded.run();
                 logNtkViewerParse("api-optimistic-generated", null, path, 0, 0);
                 restoreBetterEpisodeList(previousEpisodes);
                 attachEpisodeSeriesMetadata();
@@ -604,6 +628,16 @@ public class Manga {
                     }
                 } else {
                     startNativeAckIfNeeded.run();
+                    boolean nativeOptimisticGeneratedFastPath = !skipGeneratedForSlugEpisode
+                            && shouldUseOptimisticNtkGeneratedFastPath(path);
+                    if(nativeOptimisticGeneratedFastPath
+                            && addNtkGeneratedPathImageCandidates(client, path, seenImages,
+                            ntkGeneratedImageCandidateCount(), false)) {
+                        logNtkViewerParse("native-ack-optimistic-generated-fast", null, path, 0, 0);
+                        restoreBetterEpisodeList(previousEpisodes);
+                        attachEpisodeSeriesMetadata();
+                        return LOAD_OK;
+                    }
                     if(!skipGeneratedForSlugEpisode
                             && addNtkGeneratedPathImageCandidates(client, path, seenImages,
                             ntkGeneratedImageCandidateCount(), true)) {
@@ -649,7 +683,7 @@ public class Manga {
                     attachEpisodeSeriesMetadata();
                     return LOAD_OK;
                 }
-                if(!isNtkStrictApiFallbackModeOverride() && !skipGeneratedForSlugEpisode) {
+                if(!strictApiFallbackMode && !skipGeneratedForSlugEpisode) {
                     nativeAckCompleted = awaitAsyncNtkNativeAck(nativeAckRef[0],
                             NTK_API_FALLBACK_ACK_FAST_PATH_WAIT_MS, false);
                     if(addCachedNtkViewerImageApiCandidates(client, path, seenImages)) {
@@ -673,15 +707,19 @@ public class Manga {
             boolean generatedCandidatesChecked = false;
             if(allowGeneratedImages) {
                 generatedCandidatesChecked = true;
-                if(isNtkGeneratedImmediateModeOverride()
+                boolean optimisticGeneratedFastPath = shouldUseOptimisticNtkGeneratedFastPath(path);
+                if((isNtkGeneratedImmediateModeOverride() || optimisticGeneratedFastPath)
                         && addNtkGeneratedPathImageCandidates(client, path, seenImages,
                         ntkGeneratedImageCandidateCount(), false)) {
-                    logNtkViewerParse("generated-fast", null, path, 0, 0);
+                    logNtkViewerParse(isNtkGeneratedImmediateModeOverride()
+                            ? "generated-fast" : "generated-optimistic", null, path, 0, 0);
                     restoreBetterEpisodeList(previousEpisodes);
                     attachEpisodeSeriesMetadata();
                     return LOAD_OK;
                 }
-                if(addNtkGeneratedPathImageCandidates(client, path, seenImages,
+                if(hasCachedUnreachableNtkGeneratedImageExtension(path)) {
+                    startFallbackFetchIfGeneratedBlocked.run();
+                } else if(addNtkGeneratedPathImageCandidates(client, path, seenImages,
                         ntkGeneratedImageCandidateCount(), validateGeneratedFirstImage, startFallbackFetchIfGeneratedBlocked)) {
                     logNtkViewerParse("generated-validated", null, path, 0, 0);
                     restoreBetterEpisodeList(previousEpisodes);
@@ -1226,7 +1264,10 @@ public class Manga {
             return false;
         }
         int before = imgs == null ? 0 : imgs.size();
-        if(tryGeneratedMetaFirst && !isNtkNativeAckModeOverride() && !isNtkApiFallbackModeOverride()) {
+        if(tryGeneratedMetaFirst
+                && !shouldPreferNtkApiForCanonicalWebtoonPath(path)
+                && !isNtkNativeAckModeOverride()
+                && !isNtkApiFallbackModeOverride()) {
             addNtkViewerMetaImageCandidates(client, normalized, path, seenImages);
             if(imgs != null && imgs.size() > before)
                 return true;
@@ -1242,14 +1283,26 @@ public class Manga {
         if(!isNtkNativeAckModeOverride()
                 && !isNtkApiFallbackModeOverride()
                 && !isNtkStrictApiFallbackModeOverride()
+                && !shouldPreferNtkApiForCanonicalWebtoonPath(path)
                 && shouldPreAckBeforeNtkViewerImageApi(path)
                 && awaitCachedNtkViewerImageApiCandidates(client, path, seenImages, 650L))
             return true;
         String pathEpisodeId = pathMatcher.group(3);
-        String imageEpisodeId = ntkApiEpisodeIdForPath(pathEpisodeId);
+        String imageEpisodeId = ntkApiEpisodeIdForPath(getNtkImageEpisodeId());
+        if(imageEpisodeId.length() == 0)
+            imageEpisodeId = ntkApiEpisodeIdForPath(pathEpisodeId);
         String viewerBodyForImageFetch = preferNativeApiImageFetch ? null : normalized;
-        List<String> urls = client.fetchNtkViewerImageUrls(pathMatcher.group(1), pathMatcher.group(2), imageEpisodeId,
-                token, viewerBodyForImageFetch, path);
+        String segment = pathMatcher.group(1);
+        String workId = pathMatcher.group(2);
+        List<String> urls = client.fetchNtkViewerImageUrls(segment, workId, imageEpisodeId,
+                token, viewerBodyForImageFetch, path, path);
+        if(urls.isEmpty() && titleId > 0 && !isNumericNtkId(workId)) {
+            String canonicalAckPath = "/" + segment + "/" + titleId + "/" + imageEpisodeId;
+            Log.d(TAG, "ntk_viewer_api_canonical_ack_retry path=" + path
+                    + ",ackPath=" + canonicalAckPath);
+            urls = client.fetchNtkViewerImageUrls(segment, workId, imageEpisodeId,
+                    token, null, path, canonicalAckPath);
+        }
         if(urls.size() >= 3 && imgs != null && imgs.size() > 0 && imgs.size() <= 2) {
             if(seenImages != null)
                 seenImages.clear();
@@ -1303,6 +1356,7 @@ public class Manga {
 
     private boolean shouldPreAckBeforeNtkViewerImageApi(String path) {
         return shouldSkipNtkGeneratedForEpisodePath(path)
+                || shouldPreferNtkApiForCanonicalWebtoonPath(path)
                 || isNtkApiFallbackModeOverride()
                 || isNtkNativeAckModeOverride();
     }
@@ -1424,6 +1478,32 @@ public class Manga {
         return imgs != null && imgs.size() > before;
     }
 
+    private boolean addNtkSlugWebtoonGeneratedImageCandidates(CustomHttpClient client, String path,
+                                                              Set<String> seenImages, int pageCount,
+                                                              boolean validateFirstImage) {
+        if(client == null || path == null || seenImages == null || pageCount <= 0)
+            return false;
+        Matcher pathMatcher = Pattern.compile("^/webtoon/(\\d{6,})/(\\d+)(?:[/?#].*)?$").matcher(path);
+        if(!pathMatcher.find())
+            return false;
+        String episodeId = pathMatcher.group(2);
+        String slug = ntkCanonicalWebtoonSlugCandidate(title == null ? "" : title.getPath(),
+                title == null ? "" : title.getName());
+        if(slug.length() == 0)
+            slug = ntkCanonicalWebtoonSlugCandidate("", name);
+        if(slug.length() == 0)
+            return false;
+        String extension = "jpeg";
+        String first = ntkSlugWebtoonImageUrl(slug, episodeId, 1, extension);
+        if(validateFirstImage && !isNtkGeneratedImageReachable(client, first))
+            return false;
+        int before = imgs == null ? 0 : imgs.size();
+        int safePageCount = Math.min(pageCount, NTK_MAX_GENERATED_PAGE_COUNT);
+        for(int page = 1; page <= safePageCount; page++)
+            addImageIfValid(client, seenImages, ntkSlugWebtoonImageUrl(slug, episodeId, page, extension));
+        return imgs != null && imgs.size() > before;
+    }
+
     private static String ntkGeneratedImageUrl(String segment, String workId, String episodeId, int page) {
         return ntkGeneratedImageUrl(segment, workId, episodeId, page, "jpg");
     }
@@ -1438,6 +1518,13 @@ public class Manga {
         return String.format(Locale.ROOT,
                 "https://i.toonflix.app/%s/%s/%s/p%03d.%s",
                 segment, workId, episodeId, page, safeExtension);
+    }
+
+    private static String ntkSlugWebtoonImageUrl(String slug, String episodeId, int page, String extension) {
+        String safeExtension = extension == null || extension.length() == 0 ? "jpeg" : extension;
+        return String.format(Locale.ROOT,
+                "https://i.toonflix.app/wt/episodes/%s/%s/p%03d.%s",
+                slug, episodeId, page, safeExtension);
     }
 
     private static String ntkApiEpisodeIdForPath(String pathEpisodeId) {
@@ -1489,6 +1576,7 @@ public class Manga {
             if(i == 0 && onPrimaryValidationMiss != null && !primaryMissReported) {
                 primaryMissReported = true;
                 onPrimaryValidationMiss.run();
+                cacheNtkGeneratedImageExtension(cacheKey, "");
                 return "";
             }
         }
@@ -1520,16 +1608,38 @@ public class Manga {
         return extension != null && extension.length() > 0;
     }
 
+    private boolean hasCachedUnreachableNtkGeneratedImageExtension(String path) {
+        if(path == null || path.length() == 0 || shouldSkipNtkGeneratedForEpisodePath(path))
+            return false;
+        Matcher pathMatcher = Pattern.compile("^/(manhwa|webtoon)/(\\d+)/([^/?#]+)").matcher(path);
+        if(!pathMatcher.find())
+            return false;
+        String imageEpisodeId = ntkGeneratedEpisodeIdForPath(path);
+        if(imageEpisodeId.length() == 0)
+            imageEpisodeId = pathMatcher.group(3);
+        String cacheKey = pathMatcher.group(1) + "/" + pathMatcher.group(2) + "/" + imageEpisodeId + "/1";
+        Long cachedAt = NTK_GENERATED_EXTENSION_CACHE_TIME.get(cacheKey);
+        if(cachedAt == null || System.currentTimeMillis() - cachedAt >= NTK_GENERATED_EXTENSION_CACHE_TTL_MS)
+            return false;
+        String extension = NTK_GENERATED_EXTENSION_CACHE.get(cacheKey);
+        return extension != null && extension.length() == 0;
+    }
+
     private boolean shouldTryNtkGeneratedBeforeApiFallback(String path) {
         if(hasCachedReachableNtkGeneratedImageExtension(path))
             return true;
-        return shouldProbeKnownManhwaGeneratedBeforeApiFallback(path, getNtkImageCount());
+        return shouldProbeKnownGeneratedBeforeApiFallback(path, getNtkImageCount());
     }
 
-    private static boolean shouldProbeKnownManhwaGeneratedBeforeApiFallback(String path, int imageCount) {
+    private boolean shouldUseOptimisticNtkGeneratedFastPath(String path) {
+        return shouldProbeKnownGeneratedBeforeApiFallback(path, getNtkImageCount())
+                && !hasCachedUnreachableNtkGeneratedImageExtension(path);
+    }
+
+    private static boolean shouldProbeKnownGeneratedBeforeApiFallback(String path, int imageCount) {
         if(imageCount <= 0 || path == null || shouldSkipNtkGeneratedForEpisodePath(path))
             return false;
-        return Pattern.compile("^/manhwa/\\d+/\\d+(?:[/?#].*)?$").matcher(path).find();
+        return Pattern.compile("^/(?:manhwa|webtoon)/\\d+/\\d+(?:[/?#].*)?$").matcher(path).find();
     }
 
     private int reachableNtkGeneratedPageCount(CustomHttpClient client, String segment, String workId,
@@ -1563,6 +1673,8 @@ public class Manga {
             Map<String, String> headers = new LinkedHashMap<>();
             headers.put("accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8");
             headers.put("Referer", client.getUrl(src.contains("/webtoon/")
+                    || src.contains("/blacktoon/episodes/")
+                    || src.contains("/wt/episodes/")
                     ? MTitle.base_webtoon : MTitle.base_comic));
             headers.put("User-Agent", client.agent);
             String cookie = client.getCookieHeader();
@@ -1624,7 +1736,46 @@ public class Manga {
     private static boolean shouldUseImmediateNtkGeneratedFastPath(int baseMode, String path, int imageCount) {
         return baseMode == MTitle.base_webtoon
                 && imageCount > 0
+                && !shouldPreferNtkApiForCanonicalWebtoonPath(path)
                 && !shouldSkipNtkGeneratedForEpisodePath(path);
+    }
+
+    private static boolean shouldPreferNtkApiForCanonicalWebtoonPath(String path) {
+        return shouldPreferNtkApiForCanonicalWebtoonPath(path, 100_000);
+    }
+
+    static boolean shouldPreferNtkApiForCanonicalWebtoonPathForTest(String path) {
+        return shouldPreferNtkApiForCanonicalWebtoonPath(path);
+    }
+
+    private static boolean shouldPreferNtkApiForCanonicalWebtoonPath(String path, int minimumCanonicalId) {
+        if(path == null)
+            return false;
+        Matcher matcher = Pattern.compile("^/webtoon/(\\d{6,})/\\d+(?:[/?#].*)?$").matcher(path);
+        if(!matcher.find())
+            return false;
+        try {
+            return Integer.parseInt(matcher.group(1)) >= minimumCanonicalId;
+        } catch(Exception ignored) {
+            return true;
+        }
+    }
+
+    private static String ntkCanonicalWebtoonSlugCandidate(String titlePath, String titleName) {
+        String path = titlePath == null ? "" : titlePath.trim();
+        Matcher pathMatcher = Pattern.compile("^/webtoon/([^/?#]+)(?:[/?#].*)?$").matcher(path);
+        if(pathMatcher.find()) {
+            String slug = pathMatcher.group(1);
+            if(slug != null && slug.length() > 0 && !slug.matches("\\d+"))
+                return slug;
+        }
+        String nameCandidate = titleName == null ? "" : titleName.trim();
+        if(nameCandidate.length() == 0)
+            return "";
+        nameCandidate = nameCandidate.replaceAll("\\s+", "-");
+        nameCandidate = nameCandidate.replaceAll("-{2,}", "-");
+        nameCandidate = nameCandidate.replaceAll("^-|-$", "");
+        return nameCandidate.matches("\\d+") ? "" : nameCandidate;
     }
 
     private static boolean shouldSkipNtkGeneratedForEpisodePath(String path) {
@@ -1663,6 +1814,10 @@ public class Manga {
             return matcher.group(1);
         matcher = Pattern.compile("\\\\\"imagesToken\\\\\"\\s*:\\s*\\\\\"([^\\\\\"]+)\\\\\"").matcher(body);
         return matcher.find() ? matcher.group(1) : "";
+    }
+
+    private static boolean isNumericNtkId(String value) {
+        return value != null && value.matches("\\d+");
     }
 
     private static String ntkViewerPayloadSnippet(String body) {
@@ -2345,6 +2500,14 @@ public class Manga {
         return shouldUseImmediateNtkGeneratedFastPath(baseMode, path, imageCount);
     }
 
+    static String ntkCanonicalWebtoonSlugCandidateForTest(String titlePath, String titleName) {
+        return ntkCanonicalWebtoonSlugCandidate(titlePath, titleName);
+    }
+
+    static String ntkSlugWebtoonImageUrlForTest(String slug, String episodeId, int page) {
+        return ntkSlugWebtoonImageUrl(slug, episodeId, page, "jpeg");
+    }
+
     static String ntkGeneratedEpisodeIdForTest(String path) {
         return ntkGeneratedEpisodeIdForPath(path);
     }
@@ -2354,7 +2517,11 @@ public class Manga {
     }
 
     static boolean shouldProbeKnownManhwaGeneratedBeforeApiFallbackForTest(String path, int imageCount) {
-        return shouldProbeKnownManhwaGeneratedBeforeApiFallback(path, imageCount);
+        return shouldProbeKnownGeneratedBeforeApiFallback(path, imageCount);
+    }
+
+    static boolean shouldProbeKnownGeneratedBeforeApiFallbackForTest(String path, int imageCount) {
+        return shouldProbeKnownGeneratedBeforeApiFallback(path, imageCount);
     }
 
     private boolean hasWolfBlockedAncestor(Element img) {

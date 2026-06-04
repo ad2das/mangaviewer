@@ -109,9 +109,44 @@ public class TitleTest {
     }
 
     @Test
+    public void ntkSearchTitlePathMatchesMixedResultCardText() {
+        String html = "<a href=\"/webtoon/840894\">웹툰\n\n최강 매니저\n\n액션/로맨스\n\n44화</a>"
+                + "<a href=\"/webtoon/3619\">웹툰\n\n사상 최강의 매니저\n\n액션/판타지\n\n47화</a>";
+
+        assertEquals("/webtoon/840894",
+                Title.ntkSearchTitlePathForTest(html, "webtoon", "최강 매니저"));
+    }
+
+    @Test
+    public void ntkSearchTitlePathPrefersNumericCanonicalOverMatchingSlug() {
+        String html = "<a href=\"/webtoon/최강-매니저\"><span class=\"title\">최강 매니저</span></a>"
+                + "<a href=\"/webtoon/840894\"><span class=\"title\">최강 매니저</span></a>";
+
+        assertEquals("/webtoon/840894",
+                Title.ntkSearchTitlePathForTest(html, "webtoon", "최강 매니저"));
+    }
+
+    @Test
     public void ntkTitlePathRefreshRetriesWhenSearchFindsSamePath() {
         assertTrue(Title.shouldRetrySameNtkTitlePathRefreshForTest(
                 "manhwa", "/manhwa/7843", "/manhwa/7843"));
+        assertFalse(Title.shouldRetrySameNtkTitlePathRefreshForTest(
+                "webtoon", "/webtoon/최강-매니저", "/webtoon/최강-매니저"));
+    }
+
+    @Test
+    public void ntkRscTitlePayloadIsPreferredForNumericAndSlugTitlePaths() {
+        assertTrue(Title.shouldPreferNtkRscTitlePayloadForTest("/webtoon/840894"));
+        assertTrue(Title.shouldPreferNtkRscTitlePayloadForTest("/webtoon/u-mp9vqiuy-y68e"));
+        assertFalse(Title.shouldPreferNtkRscTitlePayloadForTest("/webtoon/840894/1073395"));
+    }
+
+    @Test
+    public void ntkNumericTitlePathDoesNotForceSearchRefreshWithoutAccessProof() {
+        assertFalse(Title.shouldRefreshNtkTitlePathForTest("/webtoon/840894"));
+        assertFalse(Title.shouldRefreshNtkTitlePathAfterMissingForTest("/webtoon/840894"));
+        assertTrue(Title.shouldRefreshNtkTitlePathForTest("/webtoon/u-mp9vqiuy-y68e"));
+        assertTrue(Title.shouldRefreshNtkTitlePathAfterMissingForTest("/webtoon/u-mp9vqiuy-y68e"));
     }
 
     @Test

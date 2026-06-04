@@ -1697,19 +1697,15 @@ public class Utils {
     }
 
     private static void addClientHintHeaderMap(Map<String, String> headers) {
-        int chromeMajor = chromeMajorVersion(getHttpClient().agent);
-        String version = chromeMajor > 0 ? String.valueOf(chromeMajor) : "147";
-        headers.put("sec-ch-ua", "\"Chromium\";v=\"" + version + "\", \"Android WebView\";v=\"" + version + "\", \"Not A(Brand\";v=\"24\"");
-        headers.put("sec-ch-ua-mobile", "?1");
-        headers.put("sec-ch-ua-platform", "\"Android\"");
+        headers.put("sec-ch-ua", CustomHttpClient.clientHintUa(getHttpClient().agent));
+        headers.put("sec-ch-ua-mobile", CustomHttpClient.clientHintMobile(getHttpClient().agent));
+        headers.put("sec-ch-ua-platform", CustomHttpClient.clientHintPlatform(getHttpClient().agent));
     }
 
     private static void addClientHintHeaders(LazyHeaders.Builder headers) {
-        int chromeMajor = chromeMajorVersion(getHttpClient().agent);
-        String version = chromeMajor > 0 ? String.valueOf(chromeMajor) : "147";
-        headers.addHeader("sec-ch-ua", "\"Chromium\";v=\"" + version + "\", \"Android WebView\";v=\"" + version + "\", \"Not A(Brand\";v=\"24\"");
-        headers.addHeader("sec-ch-ua-mobile", "?1");
-        headers.addHeader("sec-ch-ua-platform", "\"Android\"");
+        headers.addHeader("sec-ch-ua", CustomHttpClient.clientHintUa(getHttpClient().agent));
+        headers.addHeader("sec-ch-ua-mobile", CustomHttpClient.clientHintMobile(getHttpClient().agent));
+        headers.addHeader("sec-ch-ua-platform", CustomHttpClient.clientHintPlatform(getHttpClient().agent));
     }
 
     private static boolean isProtectedImageHost(String url) {

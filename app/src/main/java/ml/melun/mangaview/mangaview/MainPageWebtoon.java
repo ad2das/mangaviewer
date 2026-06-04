@@ -196,9 +196,30 @@ public class MainPageWebtoon {
             try{
                 path = normalizePathForClient(client, path);
                 if(client != null && client.isNtk()) {
-                    Ranking<Title> apiRanking = parseNtkApiTitle(client, title, path, baseMode);
-                    if(apiRanking.size() > 0)
-                        return apiRanking;
+                    try {
+                        Ranking<Title> apiRanking = parseNtkApiTitle(client, title, path, baseMode);
+                        if(apiRanking.size() > 0)
+                            return apiRanking;
+                    } catch (Exception apiError) {
+                        if(apiError instanceof InterruptedIOException || Thread.currentThread().isInterrupted()) {
+                            Thread.currentThread().interrupt();
+                            return ranking;
+                        }
+                        if(shouldReportSectionFailure(apiError))
+                            ml.melun.mangaview.report.CrashReporter.record(apiError);
+                    }
+                    try {
+                        Ranking<Title> rscRanking = parseNtkRscTitle(client, title, path, baseMode);
+                        if(rscRanking.size() > 0)
+                            return rscRanking;
+                    } catch (Exception rscError) {
+                        if(rscError instanceof InterruptedIOException || Thread.currentThread().isInterrupted()) {
+                            Thread.currentThread().interrupt();
+                            return ranking;
+                        }
+                        if(shouldReportSectionFailure(rscError))
+                            ml.melun.mangaview.report.CrashReporter.record(rscError);
+                    }
                 }
                 CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
                 Document d = Jsoup.parse(page.body);
@@ -226,6 +247,8 @@ public class MainPageWebtoon {
         String message = e.getMessage();
         if(message != null && message.startsWith("Request failed:"))
             return false;
+        if("Cloudflare challenge".equals(message) || "Cloudflare/server error".equals(message))
+            return false;
         return true;
     }
 
@@ -238,6 +261,29 @@ public class MainPageWebtoon {
         for(Title webtoon : Search.parseNtkApiTitles(page.body, baseMode, MAIN_SECTION_LIMIT))
             ranking.add(webtoon);
         return ranking;
+    }
+
+    private Ranking<Title> parseNtkRscTitle(CustomHttpClient client, String title, String path, int baseMode) throws Exception {
+        Ranking<Title> ranking = new Ranking<>(title);
+        CustomHttpClient.PageResponse page = client.mgetNtkRscPage(path, PAGE_CACHE_TTL_MS);
+        if(page == null || page.body == null || page.body.length() == 0)
+            return ranking;
+        if(client.isCloudflareChallengeResponse(page.code, page.body))
+            return ranking;
+        for(Title webtoon : parseNtkTitleListPayload(page.body, baseMode, MAIN_SECTION_LIMIT))
+            ranking.add(webtoon);
+        return ranking;
+    }
+
+    public static ArrayList<Title> parseNtkTitleListPayload(String body, int baseMode, int limit) {
+        ArrayList<Title> titles = parseWolfSearchHtmlFast(body, baseMode, limit, "ntk");
+        if(titles.size() > 0)
+            return titles;
+        titles = parseWolfTitles(Jsoup.parse(body == null ? "" : body), baseMode, limit, "ntk");
+        if(titles.size() > 0)
+            return titles;
+        return parseWolfTitles(Jsoup.parse("<script>" + (body == null ? "" : body) + "</script>"),
+                baseMode, limit, "ntk");
     }
 
     private static String normalizePathForClient(CustomHttpClient client, String path) {

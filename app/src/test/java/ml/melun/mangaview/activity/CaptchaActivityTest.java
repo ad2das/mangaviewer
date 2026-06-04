@@ -1,6 +1,9 @@
 package ml.melun.mangaview.activity;
 
 import org.junit.Test;
+import ml.melun.mangaview.mangaview.CustomHttpClient;
+
+import java.util.Arrays;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -41,6 +44,19 @@ public class CaptchaActivityTest {
     }
 
     @Test
+    public void quicSetCookieSummaryDoesNotExposeCookieValues() {
+        String summary = CaptchaActivity.quicSetCookieNamesForTest(Arrays.asList(
+                "__cf_bm=hidden-bm-value; Path=/",
+                "cf_clearance=hidden-clearance-value; Path=/"));
+
+        assertTrue(summary.contains("__cf_bm"));
+        assertTrue(summary.contains("cf_clearance"));
+        assertTrue(summary.contains("hasClearance=true"));
+        assertFalse(summary.contains("hidden-bm-value"));
+        assertFalse(summary.contains("hidden-clearance-value"));
+    }
+
+    @Test
     public void captchaNavigationAllowsOnlyNtkAndCloudflareTargets() {
         assertFalse(CaptchaActivity.shouldBlockCaptchaNavigationForTest("https://sbxh2.com/manhwa/3540"));
         assertFalse(CaptchaActivity.shouldBlockCaptchaNavigationForTest("https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile"));
@@ -72,6 +88,25 @@ public class CaptchaActivityTest {
     }
 
     @Test
+    public void ntkCaptchaUserAgentUsesDesktopChromeShape() {
+        String ua = CaptchaActivity.ntkCaptchaUserAgentForTest(
+                "Mozilla/5.0 (Linux; Android 15; sdk_gphone64_x86_64 Build/AE3A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/124.0.6367.219 Mobile Safari/537.36");
+
+        assertTrue(ua.contains("Windows NT"));
+        assertTrue(ua.contains("Chrome/148.0.0.0"));
+        assertFalse(ua.contains("Mobile Safari"));
+        assertFalse(ua.contains("; wv"));
+    }
+
+    @Test
+    public void ntkCaptchaDisablesWebViewDebuggingEvenInDebugBuilds() {
+        assertFalse(CaptchaActivity.shouldEnableWebContentsDebuggingForTest(true, true));
+        assertFalse(CaptchaActivity.shouldEnableWebContentsDebuggingForTest(false, true));
+        assertTrue(CaptchaActivity.shouldEnableWebContentsDebuggingForTest(true, false));
+        assertFalse(CaptchaActivity.shouldEnableWebContentsDebuggingForTest(false, false));
+    }
+
+    @Test
     public void ntkCaptchaLoadRetriesWithProxyAfterDirectHttpsFailure() {
         assertTrue(CaptchaActivity.shouldRetryCaptchaLoadWithProxyForTest(
                 true, false, false, "https://sbxh3.com/"));
@@ -98,18 +133,40 @@ public class CaptchaActivityTest {
     }
 
     @Test
-    public void ntkQuicInterceptOnlyHandlesSbxh3GetRequests() {
+    public void turnstileTouchRepeatsAreBoundedAndSpaced() {
+        assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(1000L, 0L, 0));
+        assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(7000L, 0L, 1));
+        assertTrue(CaptchaActivity.shouldRetryTurnstileTouchForTest(8000L, 0L, 1));
+        assertTrue(CaptchaActivity.shouldRetryTurnstileTouchForTest(16000L, 8000L, 2));
+        assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(24000L, 16000L, 3));
+    }
+
+    @Test
+    public void turnstileCheckBacksOffUntilNextAllowedTouch() {
+        assertEquals(600L, CaptchaActivity.nextTurnstileCheckDelayForTest(true, "", 0, 1000L, 0L));
+        assertEquals(1000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "", 0, 1000L, 0L));
+        assertEquals(6000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "widget", 1, 2000L, 0L));
+        assertEquals(1000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "widget", 2, 9000L, 0L));
+        assertEquals(2000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "widget", 3, 9000L, 0L));
+    }
+
+    @Test
+    public void ntkQuicInterceptOnlyRunsInsideQuicHtmlFallback() {
+        String root = CustomHttpClient.NTK_WEBTOON_URL;
+        String imgRoot = root.replace("https://", "https://img.");
         assertTrue(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
-                true, "GET", "https://sbxh3.com/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1", true));
+                true, true, "GET", root + "/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1", true));
         assertTrue(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
-                true, "GET", "https://img.sbxh3.com/resource.js", true));
+                true, true, "GET", imgRoot + "/resource.js", true));
         assertFalse(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
-                true, "POST", "https://sbxh3.com/cdn-cgi/challenge-platform/h/b/flow/ov1", true));
+                true, false, "GET", root + "/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1", true));
         assertFalse(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
-                true, "GET", "https://challenges.cloudflare.com/turnstile/v0/api.js", true));
+                true, true, "POST", root + "/cdn-cgi/challenge-platform/h/b/flow/ov1", true));
         assertFalse(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
-                true, "GET", "https://sbxh3.com/", false));
+                true, true, "GET", "https://challenges.cloudflare.com/turnstile/v0/api.js", true));
         assertFalse(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
-                false, "GET", "https://sbxh3.com/", true));
+                true, true, "GET", root + "/", false));
+        assertFalse(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
+                false, true, "GET", root + "/", true));
     }
 }

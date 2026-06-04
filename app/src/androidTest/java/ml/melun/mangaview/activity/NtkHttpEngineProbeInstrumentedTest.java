@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import ml.melun.mangaview.LiveNetworkAssume;
+import ml.melun.mangaview.mangaview.CustomHttpClient;
 
 @RunWith(AndroidJUnit4.class)
 public class NtkHttpEngineProbeInstrumentedTest {
@@ -37,8 +38,10 @@ public class NtkHttpEngineProbeInstrumentedTest {
     }
 
     @Test
-    public void platformHttpEngineFetchesSbxh3OverQuic() throws Exception {
+    public void platformHttpEngineFetchesCurrentNtkRootOverQuic() throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
+        String ntkRoot = CustomHttpClient.NTK_WEBTOON_URL;
+        String ntkHost = java.net.URI.create(ntkRoot).getHost();
         String userAgent = CaptchaActivity.captchaUserAgentForTest(
                 "Mozilla/5.0 (Linux; Android 15; sdk_gphone64_x86_64 Build/AE3A.240806.036; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/124.0.6367.219 Mobile Safari/537.36");
         HttpEngine engine = new HttpEngine.Builder(context)
@@ -46,10 +49,10 @@ public class NtkHttpEngineProbeInstrumentedTest {
                 .setEnableQuic(true)
                 .setUserAgent(userAgent)
                 .setQuicOptions(new QuicOptions.Builder()
-                        .addAllowedQuicHost("sbxh3.com")
+                        .addAllowedQuicHost(ntkHost)
                         .setHandshakeUserAgent(userAgent)
                         .build())
-                .addQuicHint("sbxh3.com", 443, 443)
+                .addQuicHint(ntkHost, 443, 443)
                 .build();
         Executor executor = Executors.newSingleThreadExecutor();
         CountDownLatch done = new CountDownLatch(1);
@@ -57,7 +60,7 @@ public class NtkHttpEngineProbeInstrumentedTest {
         AtomicReference<String> body = new AtomicReference<>("");
         AtomicReference<Throwable> error = new AtomicReference<>();
 
-        UrlRequest request = engine.newUrlRequestBuilder("https://sbxh3.com/", executor, new UrlRequest.Callback() {
+        UrlRequest request = engine.newUrlRequestBuilder(ntkRoot + "/", executor, new UrlRequest.Callback() {
             final StringBuilder response = new StringBuilder();
 
             @Override
@@ -107,7 +110,7 @@ public class NtkHttpEngineProbeInstrumentedTest {
         assertTrue("HttpEngine failed: " + error.get(), error.get() == null);
         assertTrue("Expected HTTP response, code=" + code.get(), code.get() > 0);
         String lower = body.get().toLowerCase(java.util.Locale.ROOT);
-        assertTrue("Expected challenge or normal sbxh3 HTML, code=" + code.get() + ", body=" + body.get(),
+        assertTrue("Expected challenge or normal NTK HTML, code=" + code.get() + ", body=" + body.get(),
                 lower.contains("cloudflare")
                         || lower.contains("turnstile")
                         || lower.contains("verify you are human")

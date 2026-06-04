@@ -433,7 +433,7 @@ object ReaderImageCache {
     ): okhttp3.Response? {
         val target = ntkGeneratedTarget(image) ?: return null
         val acked = try {
-            getHttpClient().performNtkNativeAckBypass(target.baseUrl, target.path)
+            getHttpClient().performNtkNativeAckBypass(target.baseUrl, ntkFallbackKeyPath(manga, target))
         } catch (_: Exception) {
             false
         }
@@ -476,7 +476,7 @@ object ReaderImageCache {
         target: NtkGeneratedTarget,
         runningTask: FutureTask<List<String>?>? = null
     ): List<String>? {
-        val key = "${target.baseUrl}${target.path}"
+        val key = "${target.baseUrl}${ntkFallbackKeyPath(manga, target)}"
         ntkApiFallbackImages[key]?.let {
             ViewerWarmupManager.logMetric("ntk_generated_image_api_fallback_cache_hit", target.page.toLong())
             return it
@@ -503,7 +503,7 @@ object ReaderImageCache {
         manga: Manga,
         target: NtkGeneratedTarget
     ): FutureTask<List<String>?> {
-        val key = "${target.baseUrl}${target.path}"
+        val key = "${target.baseUrl}${ntkFallbackKeyPath(manga, target)}"
         val task = FutureTask {
             try {
                 val fallbackManga = ntkFallbackFetchCopy(manga)
@@ -525,6 +525,10 @@ object ReaderImageCache {
             task.run()
         }
         return task
+    }
+
+    private fun ntkFallbackKeyPath(manga: Manga, target: NtkGeneratedTarget): String {
+        return manga.ntkEpisodePath?.takeIf { it.isNotBlank() } ?: target.path
     }
 
     private fun ntkFallbackFetchCopy(source: Manga): Manga {
@@ -551,7 +555,9 @@ object ReaderImageCache {
     }
 
     private fun shouldRaceForegroundImage(image: String): Boolean {
-        return !shouldTryNtkGeneratedExtensionFallback(image)
+        val ntkTarget = ntkGeneratedTarget(image)
+        if (ntkTarget != null) return ntkTarget.page <= 2
+        return true
     }
 
     private fun requestForegroundRace(manga: Manga, image: String): okhttp3.Response {
@@ -603,7 +609,11 @@ object ReaderImageCache {
     private fun shouldTryNtkGeneratedExtensionFallback(image: String): Boolean {
         val lower = image.lowercase()
         return lower.contains("://i.toonflix.app/")
-            && Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower)
+            && (
+                Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
+                    Regex("/blacktoon/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
+                    Regex("/wt/episodes/[^/?#]+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower)
+                )
     }
 
     private data class NtkGeneratedTarget(
@@ -613,13 +623,29 @@ object ReaderImageCache {
     )
 
     private fun ntkGeneratedTarget(image: String): NtkGeneratedTarget? {
-        val match = Regex("^(https?://[^/]+)/(manhwa|webtoon)/(\\d+)/([^/?#]+)/p(\\d{3})\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
+        val numericMatch = Regex("^(https?://[^/]+)/(manhwa|webtoon)/(\\d+)/([^/?#]+)/p(\\d{3})\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
+            .find(image)
+        if (numericMatch != null) {
+            val segment = numericMatch.groupValues[2]
+            val workId = numericMatch.groupValues[3]
+            val episodeId = numericMatch.groupValues[4]
+            val page = numericMatch.groupValues[5].toIntOrNull() ?: return null
+            return NtkGeneratedTarget(numericMatch.groupValues[1], "/$segment/$workId/$episodeId", page)
+        }
+        val blacktoonMatch = Regex("^(https?://[^/]+)/blacktoon/episodes/(\\d+)/([^/?#]+)/p(\\d{3})\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
+            .find(image)
+        if (blacktoonMatch != null) {
+            val workId = blacktoonMatch.groupValues[2]
+            val episodeId = blacktoonMatch.groupValues[3]
+            val page = blacktoonMatch.groupValues[4].toIntOrNull() ?: return null
+            return NtkGeneratedTarget(blacktoonMatch.groupValues[1], "/webtoon/$workId/$episodeId", page)
+        }
+        val slugMatch = Regex("^(https?://[^/]+)/wt/episodes/([^/?#]+)/([^/?#]+)/p(\\d{3})\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
             .find(image) ?: return null
-        val segment = match.groupValues[2]
-        val workId = match.groupValues[3]
-        val episodeId = match.groupValues[4]
-        val page = match.groupValues[5].toIntOrNull() ?: return null
-        return NtkGeneratedTarget(match.groupValues[1], "/$segment/$workId/$episodeId", page)
+        val slug = slugMatch.groupValues[2]
+        val episodeId = slugMatch.groupValues[3]
+        val page = slugMatch.groupValues[4].toIntOrNull() ?: return null
+        return NtkGeneratedTarget(slugMatch.groupValues[1], "/webtoon/$slug/$episodeId", page)
     }
 
     private fun ntkGeneratedExtensionFallbacks(image: String): List<String> {

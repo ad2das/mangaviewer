@@ -277,11 +277,36 @@ public class MangaTest {
         assertTrue(Manga.shouldUseImmediateNtkGeneratedFastPathForTest(
                 MTitle.base_webtoon, "/webtoon/18768/1586173", 37));
         assertFalse(Manga.shouldUseImmediateNtkGeneratedFastPathForTest(
+                MTitle.base_webtoon, "/webtoon/840894/1073395", 47));
+        assertFalse(Manga.shouldUseImmediateNtkGeneratedFastPathForTest(
                 MTitle.base_webtoon, "/webtoon/18768/u-mp3wtr15-sxjg", 37));
         assertFalse(Manga.shouldUseImmediateNtkGeneratedFastPathForTest(
                 MTitle.base_webtoon, "/webtoon/18768/1586173", 0));
         assertFalse(Manga.shouldUseImmediateNtkGeneratedFastPathForTest(
                 MTitle.base_comic, "/manhwa/18768/1586173", 37));
+    }
+
+    @Test
+    public void ntkCanonicalWebtoonNumericEpisodePrefersApiFirst() {
+        assertTrue(Manga.shouldPreferNtkApiForCanonicalWebtoonPathForTest(
+                "/webtoon/840894/1073395"));
+
+        assertFalse(Manga.shouldPreferNtkApiForCanonicalWebtoonPathForTest(
+                "/webtoon/18768/1586173"));
+        assertFalse(Manga.shouldPreferNtkApiForCanonicalWebtoonPathForTest(
+                "/webtoon/840894/u-slug-1073395"));
+        assertFalse(Manga.shouldPreferNtkApiForCanonicalWebtoonPathForTest(
+                "/manhwa/840894/1073395"));
+    }
+
+    @Test
+    public void ntkCanonicalWebtoonSlugCdnUrlsUseTitleSlug() {
+        assertEquals("최강-매니저", Manga.ntkCanonicalWebtoonSlugCandidateForTest(
+                "/webtoon/최강-매니저", "ignored"));
+        assertEquals("최강-매니저", Manga.ntkCanonicalWebtoonSlugCandidateForTest(
+                "/webtoon/840894", "최강 매니저"));
+        assertEquals("https://i.toonflix.app/wt/episodes/최강-매니저/1073395/p001.jpeg",
+                Manga.ntkSlugWebtoonImageUrlForTest("최강-매니저", "1073395", 1));
     }
 
     @Test
@@ -396,16 +421,18 @@ public class MangaTest {
     }
 
     @Test
-    public void ntkApiFallbackOnlyColdProbesKnownManhwaGeneratedUrls() {
-        assertTrue(Manga.shouldProbeKnownManhwaGeneratedBeforeApiFallbackForTest(
+    public void ntkApiFallbackOnlyColdProbesKnownNumericGeneratedUrls() {
+        assertTrue(Manga.shouldProbeKnownGeneratedBeforeApiFallbackForTest(
                 "/manhwa/36404/1801301", 34));
-
-        assertFalse(Manga.shouldProbeKnownManhwaGeneratedBeforeApiFallbackForTest(
-                "/manhwa/36404/1801301", 0));
-        assertFalse(Manga.shouldProbeKnownManhwaGeneratedBeforeApiFallbackForTest(
-                "/manhwa/36404/u-slug-1801301", 34));
-        assertFalse(Manga.shouldProbeKnownManhwaGeneratedBeforeApiFallbackForTest(
+        assertTrue(Manga.shouldProbeKnownGeneratedBeforeApiFallbackForTest(
                 "/webtoon/56792335/1196612", 32));
+
+        assertFalse(Manga.shouldProbeKnownGeneratedBeforeApiFallbackForTest(
+                "/manhwa/36404/1801301", 0));
+        assertFalse(Manga.shouldProbeKnownGeneratedBeforeApiFallbackForTest(
+                "/manhwa/36404/u-slug-1801301", 34));
+        assertFalse(Manga.shouldProbeKnownGeneratedBeforeApiFallbackForTest(
+                "/webtoon/56792335/u-slug-1196612", 32));
     }
 
     @Test

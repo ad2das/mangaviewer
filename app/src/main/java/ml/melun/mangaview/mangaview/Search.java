@@ -1117,7 +1117,7 @@ public class Search {
                 if(workElement == null || !workElement.isJsonObject())
                     continue;
                 JsonObject work = workElement.getAsJsonObject();
-                String sourceWorkId = firstNonEmpty(jsonString(work, "sourceWorkId"), jsonString(work, "id"));
+                String sourceWorkId = ntkCanonicalWorkId(work);
                 int id = parsePositiveInt(sourceWorkId);
                 if(id <= 0)
                     id = stableNtkSourceId(sourceWorkId);
@@ -1229,6 +1229,16 @@ public class Search {
         if(first != null && first.trim().length() > 0)
             return first.trim();
         return second == null ? "" : second.trim();
+    }
+
+    private static String ntkCanonicalWorkId(JsonObject work) {
+        String sourceWorkId = jsonString(work, "sourceWorkId");
+        if(parsePositiveInt(sourceWorkId) > 0)
+            return sourceWorkId.trim();
+        String id = jsonString(work, "id");
+        if(parsePositiveInt(id) > 0)
+            return id.trim();
+        return firstNonEmpty(sourceWorkId, id);
     }
 
     private static int stableNtkSourceId(String value) {
@@ -1797,8 +1807,6 @@ public class Search {
                 if(part.success)
                     success++;
                 captchaRequired = captchaRequired || part.captchaRequired;
-                if(part.pageTitles != null && part.pageTitles.titles.size() > 0)
-                    publishPartialResults(part.pageTitles.titles);
                 if("api".equals(part.kind))
                     apiResults = part.pageTitles;
                 else {
@@ -1866,8 +1874,8 @@ public class Search {
         if(apiResults == null)
             apiResults = new PageTitles(new ArrayList<>(), null, true, false, 0);
         ArrayList<Title> merged = new ArrayList<>();
-        appendUnique(merged, apiResults.titles);
         appendUnique(merged, htmlResults.titles);
+        appendUnique(merged, apiResults.titles);
         boolean hasMore = htmlResults.hasMore || (apiResults.hasMore && apiResults.titles.size() > 0);
         boolean hasMoreKnown = htmlResults.hasMoreKnown || apiResults.hasMoreKnown;
         String nextPath = htmlResults.nextPath != null && htmlResults.nextPath.length() > 0

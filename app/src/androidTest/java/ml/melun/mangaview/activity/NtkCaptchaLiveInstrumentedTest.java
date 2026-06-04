@@ -6,7 +6,6 @@ import static org.junit.Assert.assertTrue;
 import android.content.Context;
 import android.content.Intent;
 
-import androidx.lifecycle.Lifecycle;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -26,10 +25,11 @@ import java.util.concurrent.atomic.AtomicReference;
 import ml.melun.mangaview.LiveNetworkAssume;
 import ml.melun.mangaview.MainApplication;
 import ml.melun.mangaview.mangaview.MTitle;
+import ml.melun.mangaview.mangaview.CustomHttpClient;
 
 @RunWith(AndroidJUnit4.class)
 public class NtkCaptchaLiveInstrumentedTest {
-    private static final String NTK_ROOT = "https://sbxh3.com";
+    private static final String NTK_ROOT = CustomHttpClient.NTK_WEBTOON_URL;
 
     @Before
     public void requireLiveNetworkOptIn() {
@@ -76,13 +76,16 @@ public class NtkCaptchaLiveInstrumentedTest {
                 "true".equalsIgnoreCase(wait));
 
         Intent intent = prepareNtkCaptchaIntent();
-        try(ActivityScenario<CaptchaActivity> scenario = ActivityScenario.launch(intent)) {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        CaptchaActivity activity = null;
+        try {
+            activity = (CaptchaActivity) InstrumentationRegistry.getInstrumentation().startActivitySync(intent);
             PageState last = new PageState();
             long deadline = System.currentTimeMillis() + 180000L;
             while(System.currentTimeMillis() < deadline) {
                 if(MainApplication.getHttpClient().hasCloudflareClearance())
                     break;
-                PageState state = readPageState(scenario);
+                PageState state = readPageState(activity);
                 if(state != null)
                     last = state;
                 Thread.sleep(1000L);
@@ -93,24 +96,31 @@ public class NtkCaptchaLiveInstrumentedTest {
 
             long closeDeadline = System.currentTimeMillis() + 30000L;
             while(System.currentTimeMillis() < closeDeadline
-                    && scenario.getState() != Lifecycle.State.DESTROYED) {
+                    && activity != null
+                    && !activity.isDestroyed()) {
                 Thread.sleep(500L);
             }
             assertTrue("Expected CaptchaActivity to close after verified NTK clearance",
-                    scenario.getState() == Lifecycle.State.DESTROYED);
+                    activity == null || activity.isDestroyed());
+        } finally {
+            if(activity != null && !activity.isDestroyed()) {
+                CaptchaActivity toFinish = activity;
+                InstrumentationRegistry.getInstrumentation().runOnMainSync(toFinish::finish);
+            }
         }
     }
 
     private Intent prepareNtkCaptchaIntent() {
         Context context = ApplicationProvider.getApplicationContext();
+        String siteRoot = InstrumentationRegistry.getArguments().getString("ntkSiteRoot", NTK_ROOT);
         context.getSharedPreferences("mangaView", Context.MODE_PRIVATE).edit().clear().commit();
         MainApplication.p.init(context);
-        MainApplication.p.setNtkSitePreset(NTK_ROOT);
+        MainApplication.p.setNtkSitePreset(siteRoot);
         MainApplication.p.setBaseMode(MTitle.base_comic);
         MainApplication.getHttpClient().resetCookie();
 
         Intent intent = new Intent(context, CaptchaActivity.class);
-        intent.putExtra("url", NTK_ROOT + "/");
+        intent.putExtra("url", siteRoot + "/");
         return intent;
     }
 
@@ -118,6 +128,36 @@ public class NtkCaptchaLiveInstrumentedTest {
         AtomicReference<PageState> out = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
         scenario.onActivity(activity -> {
+            if(activity.webView == null) {
+                latch.countDown();
+                return;
+            }
+            activity.webView.evaluateJavascript(
+                    "(function(){"
+                            + "var html=document.documentElement?document.documentElement.outerHTML:'';"
+                            + "var text=document.body?(document.body.innerText||''):'';"
+                            + "var cookie='';try{cookie=document.cookie||'';}catch(e){}"
+                            + "var hasFrame=!!document.querySelector('iframe[src*=\"turnstile\"],iframe[src*=\"challenges.cloudflare\"]');"
+                            + "var hasElement=!!document.querySelector('.cf-turnstile,.turnstile,[class*=\"turnstile\"],[id*=\"turnstile\"]');"
+                            + "var hasShadow=false;try{var all=document.querySelectorAll('*');for(var i=0;i<all.length;i++){var sr=all[i].shadowRoot||all[i].__sr;if(sr&&(sr.querySelector('input[type=\"checkbox\"],iframe[src*=\"turnstile\"],iframe[src*=\"challenges.cloudflare\"],.cf-turnstile,.turnstile'))){hasShadow=true;break;}}}catch(e){}"
+                            + "var visible=/verify you are human|performing security verification|checking your browser|just a moment/i.test(text);"
+                            + "var normal=!!document.querySelector('a[href^=\"/manhwa\"],a[href^=\"/webtoon\"],a[href*=\"/manhwa/\"],a[href*=\"/webtoon/\"],img[src*=\"/webtoon_uploads/\"],img[data-src*=\"/webtoon_uploads/\"],img[src*=\"/manhwa_uploads/\"],img[data-src*=\"/manhwa_uploads/\"]');"
+                            + "var links=document.querySelectorAll('a[href]').length;var imgs=document.querySelectorAll('img[src],img[data-src]').length;if(links>=8||imgs>=4)normal=true;"
+                            + "return JSON.stringify({url:location.href,title:document.title||'',text:text.slice(0,2000),html:html.slice(0,4000),cookie:cookie,hasChallengeFrame:hasFrame,hasChallengeElement:hasElement,hasShadowChallenge:hasShadow,hasVisibleChallengeText:visible,hasNormalPage:normal});"
+                            + "})()",
+                    value -> {
+                        out.set(PageState.fromJavascript(value));
+                        latch.countDown();
+                    });
+        });
+        latch.await(5, TimeUnit.SECONDS);
+        return out.get();
+    }
+
+    private PageState readPageState(CaptchaActivity activity) throws Exception {
+        AtomicReference<PageState> out = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
             if(activity.webView == null) {
                 latch.countDown();
                 return;

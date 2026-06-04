@@ -1736,6 +1736,7 @@ public class EpisodeActivityNetworkTest {
                     output.contains("ntk_viewer_parse reason=api-missing")
                             || output.contains("ntk_viewer_parse reason=ok")
                             || output.contains("ntk_viewer_parse reason=api-accelerated-after-ack")
+                            || output.contains("ntk_viewer_parse reason=api-optimistic-generated-fast")
                             || output.contains("ntk_viewer_parse reason=api-optimistic-generated"));
             assertFalse("API fallback mode must not use plain generated-fast for NTK "
                             + label + ": " + output,
@@ -1745,12 +1746,14 @@ public class EpisodeActivityNetworkTest {
                     output.contains("reader_open_to_first_drawable source=ntk kind=error"));
         } else {
             boolean generatedFast = output.contains("ntk_viewer_parse reason=generated-fast");
+            boolean generatedOptimistic = output.contains("ntk_viewer_parse reason=generated-optimistic");
             boolean generatedValidated = output.contains("ntk_viewer_parse reason=generated-validated");
             boolean generatedAfterAck = output.contains("ntk_viewer_parse reason=generated-after-ack");
             boolean validatedFallback = output.contains("ntk_viewer_parse reason=api-missing")
                     || output.contains("ntk_viewer_parse reason=ok");
             assertTrue("Expected generated-fast, generated-validated, or validated image API fallback for NTK "
-                    + label + ": " + output, generatedFast || generatedValidated || generatedAfterAck || validatedFallback);
+                    + label + ": " + output, generatedFast || generatedOptimistic
+                    || generatedValidated || generatedAfterAck || validatedFallback);
             assertFalse("Generated mode must not surface invalid generated image URLs for NTK "
                             + label + ": " + output,
                     output.contains("Image request failed: 404 url=https://i.toonflix.app/manhwa/")

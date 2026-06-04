@@ -56,13 +56,26 @@ final class HttpDocumentPolicy {
     }
 
     static boolean isNtkNavigableDocumentPath(String path) {
-        return isNtkTitleDocumentPath(path) || isNtkEpisodeDocumentPath(path);
+        return isNtkTitleDocumentPath(path) || isNtkEpisodeDocumentPath(path) || isNtkCategoryDocumentPath(path);
     }
 
     static boolean isNtkWebViewFetchPath(String path) {
         return isNtkNavigableDocumentPath(path)
                 || isNtkApiPath(path)
                 || isNtkSearchPath(path);
+    }
+
+    static boolean isNtkCategoryDocumentPath(String path) {
+        if(path == null)
+            return false;
+        return path.equals("/ing") || path.startsWith("/ing?")
+                || path.startsWith("/ing/page/")
+                || path.equals("/end") || path.startsWith("/end?")
+                || path.startsWith("/end/page/")
+                || path.equals("/manhwa") || path.startsWith("/manhwa?")
+                || path.startsWith("/manhwa/page/")
+                || path.equals("/manhwa-end") || path.startsWith("/manhwa-end?")
+                || path.startsWith("/manhwa-end/page/");
     }
 
     static boolean isNtkApiPath(String path) {

@@ -3,8 +3,10 @@ package ml.melun.mangaview;
 import android.app.Activity;
 import android.app.Application;
 import android.content.Context;
+import android.content.pm.ApplicationInfo;
 import android.os.Bundle;
 import android.util.Log;
+import android.webkit.WebView;
 
 import androidx.appcompat.app.AppCompatDelegate;
 import androidx.multidex.MultiDexApplication;
@@ -49,6 +51,7 @@ public class MainApplication extends MultiDexApplication {
     public void onCreate() {
         long appStartedAt = PerfTrace.start("app_on_create_ms");
         appContext = this;
+        WebView.setWebContentsDebuggingEnabled((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0);
         MainThreadStallMonitor.install(Log.isLoggable("MainStall", Log.DEBUG));
         long crashReporterStartedAt = PerfTrace.start("app_crash_reporter_install_ms");
         CrashReporter.install(this);

@@ -10,6 +10,10 @@ public class HttpDocumentPolicyTest {
     public void ntkDocumentPathsAreClassifiedSeparatelyFromApiAndSearch() {
         assertTrue(HttpDocumentPolicy.isNtkTitleDocumentPath("/manhwa/1"));
         assertTrue(HttpDocumentPolicy.isNtkEpisodeDocumentPath("/manhwa/1/2"));
+        assertTrue(HttpDocumentPolicy.isNtkCategoryDocumentPath("/manhwa?page=2"));
+        assertTrue(HttpDocumentPolicy.isNtkCategoryDocumentPath("/ing?tag=action"));
+        assertTrue(HttpDocumentPolicy.isNtkWebViewFetchPath("/manhwa?page=2"));
+        assertTrue(HttpDocumentPolicy.isNtkWebViewFetchPath("/ing?tag=action"));
         assertTrue(HttpDocumentPolicy.isNtkWebViewFetchPath("/api/manhwa-list"));
         assertTrue(HttpDocumentPolicy.isNtkWebViewFetchPath("/search?q=onepiece"));
         assertFalse(HttpDocumentPolicy.isNtkEpisodeDocumentPath("/api/manhwa-list"));
@@ -31,6 +35,8 @@ public class HttpDocumentPolicyTest {
                 CustomHttpClient.FetchMode.SEARCH_NO_WEBVIEW, true));
         assertTrue(HttpDocumentPolicy.shouldUseSharedWebViewFallback(true, true, "/manhwa/1/2",
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, true));
+        assertTrue(HttpDocumentPolicy.shouldUseSharedWebViewFallback(true, true, "/manhwa?page=2",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, true));
     }
 
     @Test
@@ -51,5 +57,6 @@ public class HttpDocumentPolicyTest {
         assertTrue(HttpDocumentPolicy.isNtkSearchNoWebViewPath("/api/manhwa-list?keyword=onepiece"));
         assertFalse(HttpDocumentPolicy.isNtkSearchNoWebViewPath("/manhwa/1"));
         assertFalse(HttpDocumentPolicy.isNtkSearchNoWebViewPath("/manhwa/1/2"));
+        assertFalse(HttpDocumentPolicy.isNtkSearchNoWebViewPath("/manhwa?page=2"));
     }
 }

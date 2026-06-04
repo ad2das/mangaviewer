@@ -22,6 +22,8 @@ import android.widget.FrameLayout;
 import java.io.ByteArrayInputStream;
 import java.lang.ref.WeakReference;
 import java.net.URI;
+import java.net.URLDecoder;
+import java.net.URLEncoder;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -32,6 +34,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import ml.melun.mangaview.MainApplication;
 import ml.melun.mangaview.activity.NtkQuicFetcher;
@@ -252,20 +255,27 @@ final class NtkWebViewFallbackManager {
             return urls;
         CountDownLatch done = new CountDownLatch(1);
         ViewerImageResult result = new ViewerImageResult();
+        AtomicReference<Runnable> cancelRef = new AtomicReference<>();
         mainHandler.post(() -> fetchViewerImageUrlsOnMain(userAgent, baseUrl, path, headers, kind,
-                workId, episodeId, imagesToken, fallbackCookieHeader, result, done));
+                workId, episodeId, imagesToken, fallbackCookieHeader, result, done, cancelRef));
         try {
             long deadline = SystemClock.elapsedRealtime() + 65_000L;
             while(!done.await(120L, TimeUnit.MILLISECONDS)) {
                 appendCachedViewerImageUrls(urls, kind, workId, episodeId, path);
-                if(urls.size() > 0)
+                if(urls.size() > 0) {
+                    cancelViewerImageFetch(cancelRef);
                     return urls;
-                if(SystemClock.elapsedRealtime() >= deadline)
+                }
+                if(SystemClock.elapsedRealtime() >= deadline) {
+                    cancelViewerImageFetch(cancelRef);
                     return urls;
+                }
             }
             appendCachedViewerImageUrls(urls, kind, workId, episodeId, path);
-            if(urls.size() > 0)
+            if(urls.size() > 0) {
+                cancelViewerImageFetch(cancelRef);
                 return urls;
+            }
             if(result.body == null || result.body.length() == 0)
                 return urls;
             Log.d(TAG, "ntk_webview_viewer_images body="
@@ -332,7 +342,7 @@ final class NtkWebViewFallbackManager {
                                             Map<String, String> headers, String kind,
                                             String workId, String episodeId, String imagesToken,
                                             String fallbackCookieHeader, ViewerImageResult result,
-                                            CountDownLatch done) {
+                                            CountDownLatch done, AtomicReference<Runnable> cancelRef) {
         if(Looper.myLooper() != Looper.getMainLooper()) {
             done.countDown();
             return;
@@ -364,6 +374,7 @@ final class NtkWebViewFallbackManager {
                 done.countDown();
             }
         };
+        cancelRef.set(finish);
         try {
             WebSettings settings = view.getSettings();
             settings.setJavaScriptEnabled(true);
@@ -424,6 +435,13 @@ final class NtkWebViewFallbackManager {
             ml.melun.mangaview.report.CrashReporter.record(e);
             finish.run();
         }
+    }
+
+    private void cancelViewerImageFetch(AtomicReference<Runnable> cancelRef) {
+        Runnable cancel = cancelRef == null ? null : cancelRef.getAndSet(null);
+        if(cancel == null)
+            return;
+        mainHandler.post(cancel);
     }
 
     private void scheduleViewerImageFetch(WebView view, boolean[] finished, String baseUrl, String path,
@@ -716,7 +734,7 @@ final class NtkWebViewFallbackManager {
                 }
                 code = 0;
             }
-            finishOnMain(task, code, body, code <= 0);
+            finishOnMain(task, code, body, code <= 0 || isNtkEpisodeDocumentPath(task.path));
         });
     }
 
@@ -1083,7 +1101,7 @@ final class NtkWebViewFallbackManager {
             URI uri = URI.create(root);
             return normalizeHost(uri.getHost());
         } catch (Exception e) {
-            return normalizeHost("sbxh3.com");
+            return normalizeHost(CustomHttpClient.NTK_WEBTOON_URL);
         }
     }
 
@@ -1412,8 +1430,10 @@ final class NtkWebViewFallbackManager {
                 byte[] body = bodyBase64 == null || bodyBase64.length() == 0
                         ? new byte[0] : Base64.decode(bodyBase64, Base64.DEFAULT);
                 Map<String, String> headers = parseBridgeHeaders(headersJson);
+                String cookieHeader = bridgeCookieHeader(url, fallbackCookieHeader, headers, body);
+                logBridgeRequest(url, method, headers, body, cookieHeader);
                 NtkQuicFetcher.Result result = NtkQuicFetcher.fetch(MainApplication.appContext,
-                        url, userAgent, bridgeCookieHeader(url, fallbackCookieHeader, headers, body), headers,
+                        url, userAgent, cookieHeader, headers,
                         method, body, 15000L);
                 if(result == null)
                     return bridgeError("empty result");
@@ -1536,14 +1556,38 @@ final class NtkWebViewFallbackManager {
                     continue;
                 String name = trimmed.substring(0, equals).trim();
                 String value = trimmed.substring(equals + 1).trim();
-                if(("ad_ack".equals(name) || "ad_ack_c".equals(name))
-                        && !ntkAckCookieMatchesScope(value, scope))
+                if("ad_ack".equals(name) && !ntkAckCookieMatchesScope(value, scope))
                     continue;
                 if(builder.length() > 0)
                     builder.append("; ");
                 builder.append(trimmed);
             }
             return builder.toString();
+        }
+
+        private static void logBridgeRequest(String url, String method, Map<String, String> headers,
+                                             byte[] body, String cookieHeader) {
+            if(url == null)
+                return;
+            String lower = url.toLowerCase(Locale.ROOT);
+            if(!(lower.contains("/api/webtoon-images") || lower.contains("/api/manhwa-images")
+                    || lower.contains("/api/ad/ack") || lower.contains("/api/ad/challenge")
+                    || lower.contains("/api/ad/canary")))
+                return;
+            String bodyText = "";
+            if(body != null && body.length > 0) {
+                bodyText = new String(body, java.nio.charset.StandardCharsets.UTF_8);
+                if(bodyText.length() > 420)
+                    bodyText = bodyText.substring(0, 420);
+            }
+            String origin = headers == null ? "" : String.valueOf(headers.get("origin"));
+            String referer = headers == null ? "" : String.valueOf(headers.get("referer"));
+            Log.d(TAG, "ntk_viewer_quic_bridge_request method=" + method
+                    + ",url=" + url
+                    + ",origin=" + origin
+                    + ",referer=" + referer
+                    + ",cookieLen=" + (cookieHeader == null ? 0 : cookieHeader.length())
+                    + ",body=" + bodyText);
         }
 
         private static boolean ntkAckCookieMatchesScope(String value, String scope) {
@@ -1563,9 +1607,65 @@ final class NtkWebViewFallbackManager {
                 long exp = json.optLong("exp", 0L);
                 if(exp > 0L && exp < System.currentTimeMillis())
                     return false;
-                return scope.equals(json.optString("scope", ""));
+                return ntkScopesEqual(json.optString("scope", ""), scope);
             } catch (Exception e) {
                 return false;
+            }
+        }
+
+        private static boolean ntkScopesEqual(String left, String right) {
+            if(left == null || right == null || left.length() == 0 || right.length() == 0)
+                return false;
+            if(left.equals(right))
+                return true;
+            String encodedLeft = ntkEncodePath(left);
+            String encodedRight = ntkEncodePath(right);
+            if(encodedLeft.equals(right) || left.equals(encodedRight) || encodedLeft.equals(encodedRight))
+                return true;
+            return ntkDecodePath(left).equals(ntkDecodePath(right));
+        }
+
+        private static String ntkEncodePath(String value) {
+            if(value == null || value.length() == 0)
+                return "";
+            int query = value.indexOf('?');
+            String suffix = "";
+            String path = value;
+            if(query >= 0) {
+                suffix = value.substring(query);
+                path = value.substring(0, query);
+            }
+            String[] parts = path.split("/", -1);
+            StringBuilder builder = new StringBuilder(path.length() + 16);
+            for(int i = 0; i < parts.length; i++) {
+                if(i > 0)
+                    builder.append('/');
+                if(parts[i].length() == 0)
+                    continue;
+                builder.append(ntkEncodePathSegment(parts[i]));
+            }
+            return builder.append(suffix).toString();
+        }
+
+        private static String ntkEncodePathSegment(String value) {
+            try {
+                String decoded = value.indexOf('%') >= 0 ? URLDecoder.decode(value, "UTF-8") : value;
+                return URLEncoder.encode(decoded, "UTF-8").replace("+", "%20")
+                        .replace("%21", "!")
+                        .replace("%27", "'")
+                        .replace("%28", "(")
+                        .replace("%29", ")")
+                        .replace("%7E", "~");
+            } catch(Exception e) {
+                return value;
+            }
+        }
+
+        private static String ntkDecodePath(String value) {
+            try {
+                return URLDecoder.decode(value, "UTF-8");
+            } catch(Exception e) {
+                return value == null ? "" : value;
             }
         }
 
