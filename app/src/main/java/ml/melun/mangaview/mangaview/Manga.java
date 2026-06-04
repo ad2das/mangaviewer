@@ -136,8 +136,7 @@ public class Manga {
 
     private static boolean isNtkGeneratedImmediateModeOverride() {
         String mode = ntkViewerFetchModeOverride();
-        return "generated".equals(mode)
-                || "fast".equals(mode)
+        return "fast".equals(mode)
                 || "generated-fast".equals(mode);
     }
 
@@ -667,7 +666,7 @@ public class Manga {
             boolean generatedCandidatesChecked = false;
             if(allowGeneratedImages) {
                 generatedCandidatesChecked = true;
-                if((isNtkGeneratedImmediateModeOverride() || shouldUseImmediateNtkGeneratedFastPath(path))
+                if(isNtkGeneratedImmediateModeOverride()
                         && addNtkGeneratedPathImageCandidates(client, path, seenImages,
                         ntkGeneratedImageCandidateCount(), false)) {
                     logNtkViewerParse("generated-fast", null, path, 0, 0);
@@ -677,7 +676,7 @@ public class Manga {
                 }
                 if(addNtkGeneratedPathImageCandidates(client, path, seenImages,
                         ntkGeneratedImageCandidateCount(), validateGeneratedFirstImage, startFallbackFetchIfGeneratedBlocked)) {
-                    logNtkViewerParse("generated-fast", null, path, 0, 0);
+                    logNtkViewerParse("generated-validated", null, path, 0, 0);
                     restoreBetterEpisodeList(previousEpisodes);
                     attachEpisodeSeriesMetadata();
                     return LOAD_OK;
