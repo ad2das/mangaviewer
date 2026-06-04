@@ -561,9 +561,15 @@ public class Manga {
                 startDirectPageFetchIfNeeded.run();
                 startPageFetchIfNeeded.run();
             }
+            if(apiFallbackMode) {
+                startNativeAckIfNeeded.run();
+                startDirectPageFetchIfNeeded.run();
+                startPageFetchIfNeeded.run();
+            }
             boolean nativeAckCompleted = false;
             boolean ignoreDirectPageFetchForFirstFrame = false;
             if(apiFallbackMode && !isNtkStrictApiFallbackModeOverride()
+                    && shouldTryNtkGeneratedBeforeApiFallback(path)
                     && addNtkGeneratedPathImageCandidates(client, path, seenImages,
                     ntkGeneratedImageCandidateCount(), true)) {
                 startNativeAckIfNeeded.run();
@@ -653,6 +659,7 @@ public class Manga {
                         return LOAD_OK;
                     }
                     if(nativeAckCompleted
+                            && shouldTryNtkGeneratedBeforeApiFallback(path)
                             && addNtkGeneratedPathImageCandidates(client, path, seenImages,
                             ntkGeneratedImageCandidateCount(), true)) {
                         logNtkViewerParse("api-accelerated-after-ack", null, path, 0, 0);
@@ -1496,6 +1503,35 @@ public class Manga {
         NTK_GENERATED_EXTENSION_CACHE_TIME.put(cacheKey, System.currentTimeMillis());
     }
 
+    private boolean hasCachedReachableNtkGeneratedImageExtension(String path) {
+        if(path == null || path.length() == 0 || shouldSkipNtkGeneratedForEpisodePath(path))
+            return false;
+        Matcher pathMatcher = Pattern.compile("^/(manhwa|webtoon)/(\\d+)/([^/?#]+)").matcher(path);
+        if(!pathMatcher.find())
+            return false;
+        String imageEpisodeId = ntkGeneratedEpisodeIdForPath(path);
+        if(imageEpisodeId.length() == 0)
+            imageEpisodeId = pathMatcher.group(3);
+        String cacheKey = pathMatcher.group(1) + "/" + pathMatcher.group(2) + "/" + imageEpisodeId + "/1";
+        Long cachedAt = NTK_GENERATED_EXTENSION_CACHE_TIME.get(cacheKey);
+        if(cachedAt == null || System.currentTimeMillis() - cachedAt >= NTK_GENERATED_EXTENSION_CACHE_TTL_MS)
+            return false;
+        String extension = NTK_GENERATED_EXTENSION_CACHE.get(cacheKey);
+        return extension != null && extension.length() > 0;
+    }
+
+    private boolean shouldTryNtkGeneratedBeforeApiFallback(String path) {
+        if(hasCachedReachableNtkGeneratedImageExtension(path))
+            return true;
+        return shouldProbeKnownManhwaGeneratedBeforeApiFallback(path, getNtkImageCount());
+    }
+
+    private static boolean shouldProbeKnownManhwaGeneratedBeforeApiFallback(String path, int imageCount) {
+        if(imageCount <= 0 || path == null || shouldSkipNtkGeneratedForEpisodePath(path))
+            return false;
+        return Pattern.compile("^/manhwa/\\d+/\\d+(?:[/?#].*)?$").matcher(path).find();
+    }
+
     private int reachableNtkGeneratedPageCount(CustomHttpClient client, String segment, String workId,
                                                String episodeId, String extension, int pageCount) {
         if(pageCount <= 1)
@@ -2315,6 +2351,10 @@ public class Manga {
 
     static String ntkApiEpisodeIdForTest(String pathEpisodeId) {
         return ntkApiEpisodeIdForPath(pathEpisodeId);
+    }
+
+    static boolean shouldProbeKnownManhwaGeneratedBeforeApiFallbackForTest(String path, int imageCount) {
+        return shouldProbeKnownManhwaGeneratedBeforeApiFallback(path, imageCount);
     }
 
     private boolean hasWolfBlockedAncestor(Element img) {

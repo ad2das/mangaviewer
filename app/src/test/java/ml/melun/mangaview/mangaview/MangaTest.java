@@ -396,6 +396,19 @@ public class MangaTest {
     }
 
     @Test
+    public void ntkApiFallbackOnlyColdProbesKnownManhwaGeneratedUrls() {
+        assertTrue(Manga.shouldProbeKnownManhwaGeneratedBeforeApiFallbackForTest(
+                "/manhwa/36404/1801301", 34));
+
+        assertFalse(Manga.shouldProbeKnownManhwaGeneratedBeforeApiFallbackForTest(
+                "/manhwa/36404/1801301", 0));
+        assertFalse(Manga.shouldProbeKnownManhwaGeneratedBeforeApiFallbackForTest(
+                "/manhwa/36404/u-slug-1801301", 34));
+        assertFalse(Manga.shouldProbeKnownManhwaGeneratedBeforeApiFallbackForTest(
+                "/webtoon/56792335/1196612", 32));
+    }
+
+    @Test
     public void ntkEpisodePathIsNotGuessedFromNumericIdentity() {
         Title title = new Title("one piece", "", "", null, "", 2, MTitle.base_comic);
         title.setSourceSite("ntk");
