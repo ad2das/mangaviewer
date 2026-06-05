@@ -3,8 +3,10 @@ package ml.melun.mangaview.mangaview;
 import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
+import android.content.Intent;
 import android.util.Log;
 
+import androidx.test.core.app.ActivityScenario;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 
@@ -12,6 +14,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import ml.melun.mangaview.activity.CaptchaActivity;
 import ml.melun.mangaview.LiveNetworkAssume;
 import ml.melun.mangaview.MainApplication;
 
@@ -60,6 +63,51 @@ public class NtkSearchGenreLiveInstrumentedTest {
 
         assertTrue("NTK keyword search should load titles or surface the in-app captcha path",
                 result == 0 && count > 0 || hasNtkChallengeFor("/search"));
+    }
+
+    @Test
+    public void ntkCaptchaFlowThenGenreAndKeywordLoadTitles() throws Exception {
+        MainApplication.getHttpClient().resetCookie();
+        MainApplication.getHttpClient().clearLastCloudflareChallenge();
+        runCaptchaFlow();
+
+        Search genre = new Search(MainPageWebtoon.resolveCurrentSiteFilterPath("액션", MTitle.base_comic, true),
+                8, MTitle.base_comic);
+        int genreResult = genre.fetch(MainApplication.getHttpClient());
+        int genreCount = genre.getResult() == null ? 0 : genre.getResult().size();
+        Log.d(TAG, "ntk_live_after_captcha_genre result=" + genreResult
+                + ",count=" + genreCount
+                + ",challenge=" + MainApplication.getHttpClient().getLastCloudflareChallengeUrl());
+
+        Search keyword = new Search("원피스", 0, MTitle.base_comic);
+        int keywordResult = keyword.fetch(MainApplication.getHttpClient());
+        int keywordCount = keyword.getResult() == null ? 0 : keyword.getResult().size();
+        Log.d(TAG, "ntk_live_after_captcha_keyword result=" + keywordResult
+                + ",count=" + keywordCount
+                + ",challenge=" + MainApplication.getHttpClient().getLastCloudflareChallengeUrl());
+
+        assertTrue("NTK genre should load titles after in-app captcha clearance",
+                genreResult == 0 && genreCount > 0);
+        assertTrue("NTK keyword search should load titles after in-app captcha clearance",
+                keywordResult == 0 && keywordCount > 0);
+    }
+
+    private void runCaptchaFlow() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        Intent intent = new Intent(context, CaptchaActivity.class);
+        intent.putExtra("url", NTK_ROOT + "/");
+        try(ActivityScenario<CaptchaActivity> ignored = ActivityScenario.launch(intent)) {
+            long deadline = System.currentTimeMillis() + 90_000L;
+            while(System.currentTimeMillis() < deadline) {
+                if(MainApplication.getHttpClient().hasCloudflareClearance()
+                        && MainApplication.getHttpClient().hasRecentNtkAccessVerification())
+                    return;
+                Thread.sleep(500L);
+            }
+        }
+        assertTrue("Expected in-app NTK captcha flow to produce a verified clearance",
+                MainApplication.getHttpClient().hasCloudflareClearance()
+                        && MainApplication.getHttpClient().hasRecentNtkAccessVerification());
     }
 
     private boolean hasNtkChallengeFor(String pathPrefix) {
