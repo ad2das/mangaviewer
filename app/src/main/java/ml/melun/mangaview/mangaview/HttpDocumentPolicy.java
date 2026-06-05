@@ -40,7 +40,7 @@ final class HttpDocumentPolicy {
     static boolean shouldUseFastNtkPageDirect(boolean ntkUrl, String path, CustomHttpClient.FetchMode fetchMode) {
         if(!ntkUrl || path == null || fetchMode == CustomHttpClient.FetchMode.CACHE_ONLY)
             return false;
-        return path.startsWith("/webtoon/") || path.startsWith("/manhwa/") || path.startsWith("/api/");
+        return isNtkWebViewFetchPath(path);
     }
 
     static boolean isNtkSearchNoWebViewPath(String path) {

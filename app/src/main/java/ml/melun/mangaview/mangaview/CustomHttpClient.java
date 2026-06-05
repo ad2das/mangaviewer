@@ -14,15 +14,23 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.InterruptedIOException;
+import java.io.OutputStream;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.URI;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.SocketAddress;
+import java.net.SocketException;
 import java.net.URL;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.net.UnknownHostException;
+import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
@@ -60,6 +68,7 @@ import okhttp3.ConnectionPool;
 import okhttp3.ConnectionSpec;
 import okhttp3.Dispatcher;
 import okhttp3.Dns;
+import okhttp3.Headers;
 import okhttp3.HttpUrl;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
@@ -96,6 +105,8 @@ public class CustomHttpClient {
     private static final long NTK_DOMAIN_CHECK_INTERVAL_MS = 15 * 60 * 1000L;
     private static final long NTK_PAGE_DIRECT_TIMEOUT_MS = 3_500L;
     private static final long NTK_API_DIRECT_TIMEOUT_MS = 1_200L;
+    private static final long NTK_QUIC_GET_TIMEOUT_MS = 4_500L;
+    private static final long NTK_QUIC_IMAGE_TIMEOUT_MS = 15_000L;
     private static final long NTK_VIEWER_IMAGES_API_TIMEOUT_MS = 2_100L;
     private static final long WFWF_PAGE_CONNECT_TIMEOUT_MS = 2_500L;
     private static final long WFWF_PAGE_READ_TIMEOUT_MS = 7_000L;
@@ -106,7 +117,6 @@ public class CustomHttpClient {
     private static final long NTK_DOH_TIMEOUT_MS = 1_500L;
     private static final long NTK_DNS_CACHE_DEFAULT_TTL_MS = 5 * 60 * 1000L;
     private static final long NTK_DNS_CACHE_MAX_TTL_MS = 30 * 60 * 1000L;
-    private static final long NTK_DNS_FALLBACK_MEMORY_TTL_MS = 30 * 1000L;
     private static final long NTK_DOH_FAILURE_BACKOFF_MS = 10 * 60 * 1000L;
     private static final long NTK_DNS_DISK_STALE_TTL_MS = 7 * 24 * 60 * 60 * 1000L;
     private static final long COOKIE_SYNC_INTERVAL_MS = 30 * 1000L;
@@ -133,9 +143,10 @@ public class CustomHttpClient {
     private static final String PAGE_CACHE_PREFIX = "httpPageCacheV1_";
     private static final String NTK_DNS_CACHE_PREFIX = "ntkDnsCacheV1_";
     private static final String CLOUDFLARE_DOH_HOST = "cloudflare-dns.com";
-    private static final String NTK_EDGE_IP = "104.16.219.55";
     private static final Gson GSON = new Gson();
     private static final ConnectionPool SHARED_CONNECTION_POOL = new ConnectionPool(12, 5, TimeUnit.MINUTES);
+    private static final javax.net.SocketFactory SNI_FRAGMENTING_SOCKET_FACTORY =
+            new SniFragmentingSocketFactory(javax.net.SocketFactory.getDefault());
     private static final Object NTK_DNS_CACHE_LOCK = new Object();
     private static final Map<String, CachedDns> NTK_DNS_CACHE = new HashMap<>();
     private static final Set<String> NTK_DNS_WARMING = new java.util.HashSet<>();
@@ -241,13 +252,10 @@ public class CustomHttpClient {
     }
 
     private static List<InetAddress> lookupFallbackNtkDns(String hostname) {
-        warmNtkDohAsync(hostname);
-        List<InetAddress> fallback = ntkFallbackAddresses(hostname);
-        if(!fallback.isEmpty()) {
-            writeMemoryCachedNtkDns(hostname, fallback, System.currentTimeMillis() + NTK_DNS_FALLBACK_MEMORY_TTL_MS);
-            ViewerWarmupManager.logMetric("ntk_dns_fallback_count", fallback.size());
-        }
-        return fallback;
+        List<InetAddress> doh = ipv4OnlyOrEmpty(lookupNtkDohFresh(hostname, "ntk_dns_doh_fallback_ms"));
+        if(!doh.isEmpty())
+            return doh;
+        return new ArrayList<>();
     }
 
     private static void warmNtkDohAsync(String hostname) {
@@ -507,17 +515,6 @@ public class CustomHttpClient {
         return expiresAt <= now && savedAt <= now && now - savedAt <= NTK_DNS_DISK_STALE_TTL_MS;
     }
 
-    private static List<InetAddress> ntkFallbackAddresses(String hostname) {
-        ArrayList<InetAddress> addresses = new ArrayList<>();
-        if(!isNtkDnsProtectedHost(hostname))
-            return addresses;
-        try {
-            addAddressIfMissing(addresses, parseIpv4Address(hostname, NTK_EDGE_IP));
-        } catch (Exception ignored) {
-        }
-        return addresses;
-    }
-
     private static List<InetAddress> mergeIpv4First(String hostname, List<InetAddress> preferred,
                                                     List<InetAddress> secondary,
                                                     List<InetAddress> fallback) {
@@ -578,10 +575,6 @@ public class CustomHttpClient {
 
     static boolean isNtkDnsProtectedHostForTest(String hostname) {
         return isNtkDnsProtectedHost(hostname);
-    }
-
-    static List<InetAddress> ntkFallbackAddressesForTest(String hostname) {
-        return ntkFallbackAddresses(hostname);
     }
 
     static boolean isPersistedNtkDnsUsableForTest(long savedAt, long expiresAt, long now, boolean allowStale) {
@@ -728,6 +721,32 @@ public class CustomHttpClient {
         }
     }
 
+    private void appendNtkQuicDiagnostic(StringBuilder report, String root) {
+        if(context == null || !NtkQuicFetcher.isAvailable()) {
+            appendDiagnosticLine(report, "ntk_quic_sni", "unavailable");
+            return;
+        }
+        long startedAt = System.currentTimeMillis();
+        try {
+            Map<String, String> headers = buildHeaders(root, true, null);
+            NtkQuicFetcher.Result result = fetchNtkQuic(root, trimTrailingSlash(root) + "/",
+                    headers.get("Cookie"), headers, "GET", null, 5_000L);
+            String body = result == null || result.body == null ? "" : result.body;
+            boolean challenge = result != null && isCloudflareChallengeResponse(result.code, body);
+            if(challenge)
+                markCloudflareChallenge(trimTrailingSlash(root) + "/");
+            appendDiagnosticLine(report, "ntk_quic_sni",
+                    "code=" + (result == null ? 0 : result.code)
+                            + ",ms=" + (System.currentTimeMillis() - startedAt)
+                            + ",body_len=" + body.length()
+                            + ",challenge=" + challenge
+                            + ",error=" + (result == null ? "" : throwableSummary(result.error)));
+        } catch (Exception e) {
+            appendDiagnosticLine(report, "ntk_quic_sni",
+                    "fail " + (System.currentTimeMillis() - startedAt) + "ms " + exceptionSummary(e));
+        }
+    }
+
     private void appendNtkApiDiagnostic(StringBuilder report, String root) {
         String path = "/api/manhwa-list?page=1&pageSize=1&withTotal=1";
         long startedAt = System.currentTimeMillis();
@@ -853,6 +872,12 @@ public class CustomHttpClient {
     private static String exceptionSummary(Exception e) {
         if(e == null)
             return "unknown";
+        return throwableSummary(e);
+    }
+
+    private static String throwableSummary(Throwable e) {
+        if(e == null)
+            return "";
         String message = e.getMessage();
         return e.getClass().getSimpleName() + (message == null || message.length() == 0 ? "" : "(" + abbreviate(message, 120) + ")");
     }
@@ -883,12 +908,29 @@ public class CustomHttpClient {
         if(lower.contains("ntk_api_direct: code=403") || lower.contains("challenge=true"))
             return "Cloudflare challenge/cookie issue. Open NTK captcha once.";
         String currentNtkHost = NTK_HOST.toLowerCase(Locale.ROOT);
+        if(ntkQuicSniLooksBlocked(lower) && lower.contains("app_dns_" + currentNtkHost + ": ok"))
+            return "DNS bypass works, but mobile route/TLS/SNI is still blocked before NTK responds. A VPN/WARP-style tunnel is required on this network.";
         if(lower.contains("system_dns_") && lower.contains("system_dns_" + currentNtkHost + ": fail")
                 && lower.contains("app_dns_" + currentNtkHost + ": ok"))
             return "Carrier DNS appears blocked, app DNS bypass is working.";
         if(lower.contains("ntk_api_direct: fail") && lower.contains("app_dns_" + currentNtkHost + ": ok"))
             return "DNS bypass works, but route/TLS/SNI may still be blocked by the mobile network.";
         return "Check DNS/API lines above.";
+    }
+
+    private static boolean ntkQuicSniLooksBlocked(String lowerReport) {
+        if(lowerReport == null || !lowerReport.contains("ntk_quic_sni:"))
+            return false;
+        return lowerReport.contains("err_connection_closed")
+                || lowerReport.contains("internalerrorcode=-100")
+                || lowerReport.contains("net_error=-100")
+                || lowerReport.contains("networkexceptionwrapper")
+                || lowerReport.contains("ntk_quic_sni: fail")
+                || lowerReport.contains("ntk_quic_sni: code=0");
+    }
+
+    static String diagnosticInterpretationForTest(String report) {
+        return diagnosticInterpretation(report);
     }
 
     public OkHttpClient client;
@@ -969,7 +1011,9 @@ public class CustomHttpClient {
         loadSavedUserAgent();
         loadSavedCookies();
         this.client = baseClient(new OkHttpClient.Builder()).build();
-        this.imageClient = imageClient(new OkHttpClient.Builder()).build();
+        this.imageClient = imageClient(new OkHttpClient.Builder()
+                .socketFactory(SNI_FRAGMENTING_SOCKET_FACTORY)
+                .addInterceptor(this::interceptNtkImageWithQuic)).build();
         this.unsafeFallbackClient = baseClient(getUnsafeOkHttpClient())
                 .protocols(ntkTlsFallbackProtocolsForTest())
                 .build();
@@ -1586,10 +1630,12 @@ public class CustomHttpClient {
             }
             report.append('\n');
 
-            if(ntkSite)
+            if(ntkSite) {
+                appendNtkQuicDiagnostic(report, root);
                 appendNtkApiDiagnostic(report, root);
-            else
+            } else {
                 appendWfwfHttpDiagnostic(report, root);
+            }
             report.append('\n');
             appendDiagnosticLine(report, "elapsed_ms", String.valueOf(System.currentTimeMillis() - startedAt));
             appendDiagnosticLine(report, "interpretation", diagnosticInterpretation(report.toString()));
@@ -1626,16 +1672,20 @@ public class CustomHttpClient {
         RequestGroup requestGroup = currentRequestGroup.get();
         boolean fastWolfPageDirect = shouldUseFastWolfPageDirectUrl(url);
         boolean fastWolfSearchDirect = shouldUseFastWolfSearchDirectUrl(url);
-        boolean fastNtkApiDirect = fastNtkPageDirect && shouldUseFastNtkApiDirectUrl(url);
+        boolean ntkDirectUrl = shouldUseNtkDirectClientUrl(url);
+        boolean fastNtkApiDirect = ntkDirectUrl && shouldUseFastNtkApiDirectUrl(url);
         OkHttpClient primaryClient = fastNtkApiDirect ? ntkApiFastClient
-                : fastNtkPageDirect ? ntkPageFastClient
+                : (fastNtkPageDirect || ntkDirectUrl) ? ntkPageFastClient
                 : fastWolfSearchDirect ? wolfSearchFastClient
                 : fastWolfPageDirect ? wolfPageFastClient : this.client;
         OkHttpClient fallbackClient = fastNtkApiDirect ? unsafeNtkApiFastClient
-                : fastNtkPageDirect ? unsafeNtkPageFastClient
+                : (fastNtkPageDirect || ntkDirectUrl) ? unsafeNtkPageFastClient
                 : fastWolfSearchDirect ? unsafeWolfSearchFastClient
                 : fastWolfPageDirect ? unsafeWolfPageFastClient : this.unsafeFallbackClient;
         try {
+            Response quicPrimary = getWithNtkQuicPrimaryUrl(url, headers);
+            if(quicPrimary != null)
+                return quicPrimary;
             Request.Builder builder = new Request.Builder()
                     .url(url)
                     .get();
@@ -3366,6 +3416,109 @@ public class CustomHttpClient {
         return response;
     }
 
+    static boolean shouldUseNtkDirectClientUrlForTest(String url) {
+        return shouldUseNtkDirectClientUrl(url);
+    }
+
+    private static boolean shouldUseNtkDirectClientUrl(String url) {
+        return isNtkUrlForTest(url) || shouldUseNtkQuicPrimaryUrl(url);
+    }
+
+    private Response getWithNtkQuicPrimaryUrl(String url, Map<String, String> headers) {
+        if(context == null || !NtkQuicFetcher.isAvailable() || !shouldUseNtkQuicPrimaryUrl(url))
+            return null;
+        try {
+            HttpUrl parsed = HttpUrl.parse(url);
+            if(parsed == null)
+                return null;
+            String baseUrl = rootFromHttpUrl(parsed);
+            String path = encodedPathWithQuery(parsed);
+            String cookieHeader = headerValue(headers, "Cookie");
+            NtkQuicFetcher.Result result = fetchNtkQuic(baseUrl, url,
+                    cookieHeader == null ? "" : cookieHeader, headers, "GET", null, ntkQuicGetTimeout(url));
+            if(!isUsableNtkQuicGetResult(result))
+                return null;
+            applySetCookieHeaders(result.headers, baseUrl);
+            if(isCloudflareChallenge(result.code, result.body))
+                markCloudflareChallenge(url);
+            ViewerWarmupManager.logMetric("ntk_quic_primary_code", result.code);
+            ViewerWarmupManager.logMetric("ntk_quic_primary_len", result.bodyBytes.length);
+            if(Log.isLoggable(TAG, Log.DEBUG))
+                Log.d(TAG, "ntk_quic_primary_ok path=" + path
+                        + ",code=" + result.code
+                        + ",len=" + result.bodyBytes.length);
+            return responseFromNtkQuic(new Request.Builder().url(url).build(), result, "HttpEngine");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (Exception e) {
+            if(Log.isLoggable(TAG, Log.DEBUG))
+                Log.d(TAG, "ntk_quic_primary_failed url=" + safeLogUrl(url), e);
+            return null;
+        }
+    }
+
+    private Response interceptNtkImageWithQuic(okhttp3.Interceptor.Chain chain) throws IOException {
+        Request request = chain.request();
+        String url = request.url().toString();
+        if(!"GET".equalsIgnoreCase(request.method()) || context == null
+                || !NtkQuicFetcher.isAvailable() || !shouldUseNtkQuicPrimaryUrl(url))
+            return chain.proceed(request);
+        try {
+            HttpUrl parsed = request.url();
+            String baseUrl = rootFromHttpUrl(parsed);
+            Map<String, String> headers = requestHeadersMap(request);
+            if(headerValue(headers, "Cookie") == null)
+                headers.put("Cookie", getCookieHeader());
+            if(headerValue(headers, "User-Agent") == null)
+                headers.put("User-Agent", agent);
+            NtkQuicFetcher.Result result = fetchNtkQuic(baseUrl, url,
+                    headerValue(headers, "Cookie"), headers, "GET", null, NTK_QUIC_IMAGE_TIMEOUT_MS);
+            if(isUsableNtkQuicGetResult(result)) {
+                applySetCookieHeaders(result.headers, baseUrl);
+                if(isCloudflareChallenge(result.code, result.body))
+                    markCloudflareChallenge(url);
+                ViewerWarmupManager.logMetric("ntk_quic_image_code", result.code);
+                ViewerWarmupManager.logMetric("ntk_quic_image_len", result.bodyBytes.length);
+                return responseFromNtkQuic(request, result, "HttpEngine");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            InterruptedIOException interrupted = new InterruptedIOException("Interrupted during NTK QUIC image fetch");
+            interrupted.initCause(e);
+            throw interrupted;
+        } catch (Exception e) {
+            if(Log.isLoggable(TAG, Log.DEBUG))
+                Log.d(TAG, "ntk_quic_image_failed url=" + safeLogUrl(url), e);
+        }
+        return chain.proceed(request);
+    }
+
+    private static boolean shouldUseNtkQuicPrimaryUrl(String url) {
+        if(url == null || url.length() == 0)
+            return false;
+        HttpUrl parsed = HttpUrl.parse(url);
+        if(parsed == null || !"https".equals(parsed.scheme()))
+            return false;
+        return isNtkDnsProtectedHost(parsed.host());
+    }
+
+    static boolean shouldUseNtkQuicPrimaryUrlForTest(String url) {
+        return shouldUseNtkQuicPrimaryUrl(url);
+    }
+
+    private static boolean isUsableNtkQuicGetResult(NtkQuicFetcher.Result result) {
+        return result != null
+                && result.error == null
+                && result.code > 0
+                && result.bodyBytes != null
+                && result.bodyBytes.length > 0;
+    }
+
+    private static long ntkQuicGetTimeout(String url) {
+        return shouldUseFastNtkApiDirectUrl(url) ? Math.max(NTK_API_DIRECT_TIMEOUT_MS, 2_500L) : NTK_QUIC_GET_TIMEOUT_MS;
+    }
+
     private Response getWithNtkQuicFallback(String baseUrl, String path, Map<String, String> headers) {
         if(context == null || !isNtkUrl(baseUrl) || !NtkQuicFetcher.isAvailable())
             return null;
@@ -3391,19 +3544,81 @@ public class CustomHttpClient {
                 Log.d(TAG, "ntk_quic_fallback_ok path=" + path
                         + ",len=" + result.bodyBytes.length
                         + ",sample=" + abbreviateLogSample(result.body, 240));
-            Request request = new Request.Builder().url(url).build();
-            return new Response.Builder()
-                    .request(request)
-                    .protocol(Protocol.HTTP_2)
-                    .code(result.code)
-                    .message("HttpEngine")
-                    .body(ResponseBody.create(result.bodyBytes, MediaType.parse(result.contentType())))
-                    .build();
+            return responseFromNtkQuic(new Request.Builder().url(url).build(), result, "HttpEngine");
         } catch (Exception e) {
             if(Log.isLoggable(TAG, Log.DEBUG))
                 Log.d(TAG, "ntk_quic_fallback_failed path=" + path, e);
             return null;
         }
+    }
+
+    private static Response responseFromNtkQuic(Request request, NtkQuicFetcher.Result result, String message) {
+        return new Response.Builder()
+                .request(request)
+                .protocol(Protocol.HTTP_2)
+                .code(result.code)
+                .message(message)
+                .headers(headersFromNtkQuic(result.headers))
+                .body(ResponseBody.create(result.bodyBytes, MediaType.parse(result.contentType())))
+                .build();
+    }
+
+    private static Headers headersFromNtkQuic(Map<String, List<String>> headers) {
+        Headers.Builder builder = new Headers.Builder();
+        if(headers == null)
+            return builder.build();
+        for(String name : headers.keySet()) {
+            if(name == null || name.length() == 0)
+                continue;
+            List<String> values = headers.get(name);
+            if(values == null)
+                continue;
+            for(String value : values) {
+                if(value == null)
+                    continue;
+                try {
+                    builder.add(name, value);
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        return builder.build();
+    }
+
+    private static Map<String, String> requestHeadersMap(Request request) {
+        Map<String, String> headers = new HashMap<>();
+        if(request == null)
+            return headers;
+        for(String name : request.headers().names()) {
+            String value = request.header(name);
+            if(value != null)
+                headers.put(name, value);
+        }
+        return headers;
+    }
+
+    private static String headerValue(Map<String, String> headers, String name) {
+        if(headers == null || name == null)
+            return null;
+        for(String key : headers.keySet()) {
+            if(name.equalsIgnoreCase(key))
+                return headers.get(key);
+        }
+        return null;
+    }
+
+    private static String rootFromHttpUrl(HttpUrl url) {
+        String root = url.scheme() + "://" + url.host();
+        int port = url.port();
+        if(("http".equals(url.scheme()) && port != 80) || ("https".equals(url.scheme()) && port != 443))
+            root += ":" + port;
+        return root;
+    }
+
+    private static String encodedPathWithQuery(HttpUrl url) {
+        String path = url.encodedPath();
+        String query = url.encodedQuery();
+        return query == null || query.length() == 0 ? path : path + "?" + query;
     }
 
     private static String abbreviateLogSample(String value, int maxLength) {
@@ -6022,6 +6237,349 @@ public class CustomHttpClient {
                 || "Canceled".equals(e.getMessage());
     }
 
+    private static final class SniFragmentingSocketFactory extends javax.net.SocketFactory {
+        private final javax.net.SocketFactory delegate;
+
+        SniFragmentingSocketFactory(javax.net.SocketFactory delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Socket createSocket() throws IOException {
+            return new SniFragmentingSocket(delegate.createSocket());
+        }
+
+        @Override
+        public Socket createSocket(String host, int port) throws IOException {
+            return new SniFragmentingSocket(delegate.createSocket(host, port));
+        }
+
+        @Override
+        public Socket createSocket(String host, int port, InetAddress localHost, int localPort) throws IOException {
+            return new SniFragmentingSocket(delegate.createSocket(host, port, localHost, localPort));
+        }
+
+        @Override
+        public Socket createSocket(InetAddress host, int port) throws IOException {
+            return new SniFragmentingSocket(delegate.createSocket(host, port));
+        }
+
+        @Override
+        public Socket createSocket(InetAddress address, int port, InetAddress localAddress, int localPort) throws IOException {
+            return new SniFragmentingSocket(delegate.createSocket(address, port, localAddress, localPort));
+        }
+    }
+
+    private static final class SniFragmentingSocket extends Socket {
+        private final Socket delegate;
+        private OutputStream outputStream;
+
+        SniFragmentingSocket(Socket delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public void connect(SocketAddress endpoint) throws IOException {
+            delegate.connect(endpoint);
+            enableLowLatencyWrites();
+        }
+
+        @Override
+        public void connect(SocketAddress endpoint, int timeout) throws IOException {
+            delegate.connect(endpoint, timeout);
+            enableLowLatencyWrites();
+        }
+
+        private void enableLowLatencyWrites() {
+            try {
+                delegate.setTcpNoDelay(true);
+            } catch (Exception ignored) {
+            }
+        }
+
+        @Override
+        public void bind(SocketAddress bindpoint) throws IOException {
+            delegate.bind(bindpoint);
+        }
+
+        @Override
+        public InetAddress getInetAddress() {
+            return delegate.getInetAddress();
+        }
+
+        @Override
+        public InetAddress getLocalAddress() {
+            return delegate.getLocalAddress();
+        }
+
+        @Override
+        public int getPort() {
+            return delegate.getPort();
+        }
+
+        @Override
+        public int getLocalPort() {
+            return delegate.getLocalPort();
+        }
+
+        @Override
+        public SocketAddress getRemoteSocketAddress() {
+            return delegate.getRemoteSocketAddress();
+        }
+
+        @Override
+        public SocketAddress getLocalSocketAddress() {
+            return delegate.getLocalSocketAddress();
+        }
+
+        @Override
+        public SocketChannel getChannel() {
+            return delegate.getChannel();
+        }
+
+        @Override
+        public InputStream getInputStream() throws IOException {
+            return delegate.getInputStream();
+        }
+
+        @Override
+        public OutputStream getOutputStream() throws IOException {
+            if(outputStream == null)
+                outputStream = new FragmentingTlsOutputStream(delegate, delegate.getOutputStream());
+            return outputStream;
+        }
+
+        @Override
+        public void setTcpNoDelay(boolean on) throws SocketException {
+            delegate.setTcpNoDelay(on);
+        }
+
+        @Override
+        public boolean getTcpNoDelay() throws SocketException {
+            return delegate.getTcpNoDelay();
+        }
+
+        @Override
+        public void setSoLinger(boolean on, int linger) throws SocketException {
+            delegate.setSoLinger(on, linger);
+        }
+
+        @Override
+        public int getSoLinger() throws SocketException {
+            return delegate.getSoLinger();
+        }
+
+        @Override
+        public void sendUrgentData(int data) throws IOException {
+            delegate.sendUrgentData(data);
+        }
+
+        @Override
+        public void setOOBInline(boolean on) throws SocketException {
+            delegate.setOOBInline(on);
+        }
+
+        @Override
+        public boolean getOOBInline() throws SocketException {
+            return delegate.getOOBInline();
+        }
+
+        @Override
+        public synchronized void setSoTimeout(int timeout) throws SocketException {
+            delegate.setSoTimeout(timeout);
+        }
+
+        @Override
+        public synchronized int getSoTimeout() throws SocketException {
+            return delegate.getSoTimeout();
+        }
+
+        @Override
+        public synchronized void setSendBufferSize(int size) throws SocketException {
+            delegate.setSendBufferSize(size);
+        }
+
+        @Override
+        public synchronized int getSendBufferSize() throws SocketException {
+            return delegate.getSendBufferSize();
+        }
+
+        @Override
+        public synchronized void setReceiveBufferSize(int size) throws SocketException {
+            delegate.setReceiveBufferSize(size);
+        }
+
+        @Override
+        public synchronized int getReceiveBufferSize() throws SocketException {
+            return delegate.getReceiveBufferSize();
+        }
+
+        @Override
+        public void setKeepAlive(boolean on) throws SocketException {
+            delegate.setKeepAlive(on);
+        }
+
+        @Override
+        public boolean getKeepAlive() throws SocketException {
+            return delegate.getKeepAlive();
+        }
+
+        @Override
+        public void setTrafficClass(int tc) throws SocketException {
+            delegate.setTrafficClass(tc);
+        }
+
+        @Override
+        public int getTrafficClass() throws SocketException {
+            return delegate.getTrafficClass();
+        }
+
+        @Override
+        public void setReuseAddress(boolean on) throws SocketException {
+            delegate.setReuseAddress(on);
+        }
+
+        @Override
+        public boolean getReuseAddress() throws SocketException {
+            return delegate.getReuseAddress();
+        }
+
+        @Override
+        public void close() throws IOException {
+            delegate.close();
+        }
+
+        @Override
+        public void shutdownInput() throws IOException {
+            delegate.shutdownInput();
+        }
+
+        @Override
+        public void shutdownOutput() throws IOException {
+            delegate.shutdownOutput();
+        }
+
+        @Override
+        public String toString() {
+            return delegate.toString();
+        }
+
+        @Override
+        public boolean isConnected() {
+            return delegate.isConnected();
+        }
+
+        @Override
+        public boolean isBound() {
+            return delegate.isBound();
+        }
+
+        @Override
+        public boolean isClosed() {
+            return delegate.isClosed();
+        }
+
+        @Override
+        public boolean isInputShutdown() {
+            return delegate.isInputShutdown();
+        }
+
+        @Override
+        public boolean isOutputShutdown() {
+            return delegate.isOutputShutdown();
+        }
+
+        @Override
+        public void setPerformancePreferences(int connectionTime, int latency, int bandwidth) {
+            delegate.setPerformancePreferences(connectionTime, latency, bandwidth);
+        }
+    }
+
+    private static final class FragmentingTlsOutputStream extends OutputStream {
+        private final Socket socket;
+        private final OutputStream delegate;
+        private boolean firstTlsRecord = true;
+
+        FragmentingTlsOutputStream(Socket socket, OutputStream delegate) {
+            this.socket = socket;
+            this.delegate = delegate;
+        }
+
+        @Override
+        public void write(int b) throws IOException {
+            firstTlsRecord = false;
+            delegate.write(b);
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) throws IOException {
+            if(firstTlsRecord && looksLikeTlsClientHello(b, off, len)) {
+                firstTlsRecord = false;
+                fragmentClientHello(b, off, len);
+                return;
+            }
+            if(len > 0)
+                firstTlsRecord = false;
+            delegate.write(b, off, len);
+        }
+
+        private void fragmentClientHello(byte[] b, int off, int len) throws IOException {
+            try {
+                socket.setTcpNoDelay(true);
+            } catch (Exception ignored) {
+            }
+            int first = Math.min(1, len);
+            int second = Math.min(7, Math.max(0, len - first));
+            int third = Math.min(64, Math.max(0, len - first - second));
+            writeChunk(b, off, first);
+            shortDelay();
+            writeChunk(b, off + first, second);
+            shortDelay();
+            writeChunk(b, off + first + second, third);
+            shortDelay();
+            int written = first + second + third;
+            if(written < len)
+                delegate.write(b, off + written, len - written);
+            delegate.flush();
+        }
+
+        private void writeChunk(byte[] b, int off, int len) throws IOException {
+            if(len <= 0)
+                return;
+            delegate.write(b, off, len);
+            delegate.flush();
+        }
+
+        private void shortDelay() throws IOException {
+            try {
+                Thread.sleep(8L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                InterruptedIOException interrupted = new InterruptedIOException("Interrupted while fragmenting TLS ClientHello");
+                interrupted.initCause(e);
+                throw interrupted;
+            }
+        }
+
+        @Override
+        public void flush() throws IOException {
+            delegate.flush();
+        }
+
+        @Override
+        public void close() throws IOException {
+            delegate.close();
+        }
+    }
+
+    private static boolean looksLikeTlsClientHello(byte[] b, int off, int len) {
+        if(b == null || len < 6 || off < 0 || off + len > b.length)
+            return false;
+        return (b[off] & 0xff) == 0x16
+                && (b[off + 1] & 0xff) == 0x03
+                && (b[off + 5] & 0xff) == 0x01;
+    }
+
     public interface RequestWork<T> {
         T run() throws Exception;
     }
@@ -6195,14 +6753,14 @@ public class CustomHttpClient {
     }
 
     private static OkHttpClient.Builder fastNtkPageClient(OkHttpClient.Builder builder) {
-        return baseClient(builder)
+        return baseClient(builder.socketFactory(SNI_FRAGMENTING_SOCKET_FACTORY))
                 .connectTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 .readTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 .callTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     }
 
     private static OkHttpClient.Builder fastNtkApiClient(OkHttpClient.Builder builder) {
-        return baseClient(builder)
+        return baseClient(builder.socketFactory(SNI_FRAGMENTING_SOCKET_FACTORY))
                 .connectTimeout(NTK_API_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 .readTimeout(NTK_API_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 .callTimeout(NTK_API_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS);

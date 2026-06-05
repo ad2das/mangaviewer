@@ -394,6 +394,10 @@ public class CustomHttpClientTest {
                 CustomHttpClient.FetchMode.DIRECT_ONLY));
         assertTrue(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/api/manhwa-list",
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertTrue(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/search?q=hero",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        assertTrue(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/manhwa?page=2",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
         assertFalse(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/_next/static/app.js",
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
         assertFalse(CustomHttpClient.shouldUseFastNtkPageDirectForTest(false, "/manhwa/1/1",
@@ -414,6 +418,22 @@ public class CustomHttpClientTest {
                 "https://sbxh4.com/webtoon/18768/1"));
         assertFalse(CustomHttpClient.shouldUseFastNtkApiDirectUrlForTest(
                 "https://example.com/api/works?page=1"));
+    }
+
+    @Test
+    public void ntkQuicPrimaryAndDirectClientCoverProtectedHosts() {
+        assertTrue(CustomHttpClient.shouldUseNtkQuicPrimaryUrlForTest(
+                "https://sbxh4.com/search?q=hero"));
+        assertTrue(CustomHttpClient.shouldUseNtkQuicPrimaryUrlForTest(
+                "https://img.sbxh4.com/images/1.jpg"));
+        assertTrue(CustomHttpClient.shouldUseNtkDirectClientUrlForTest(
+                "https://sbxh4.com/manhwa?page=2"));
+        assertTrue(CustomHttpClient.shouldUseNtkDirectClientUrlForTest(
+                "https://img.sbxh4.com/images/1.jpg"));
+        assertFalse(CustomHttpClient.shouldUseNtkQuicPrimaryUrlForTest(
+                "https://example.com/images/1.jpg"));
+        assertFalse(CustomHttpClient.shouldUseNtkDirectClientUrlForTest(
+                "https://example.com/images/1.jpg"));
     }
 
     @Test
@@ -769,15 +789,6 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void ntkDnsFallbackReturnsDirectEdgeWhenSystemDnsFails() {
-        assertEquals("104.16.219.55",
-                CustomHttpClient.ntkFallbackAddressesForTest("sbxh1.com").get(0).getHostAddress());
-        assertEquals("104.16.219.55",
-                CustomHttpClient.ntkFallbackAddressesForTest("img.sbxh1.com").get(0).getHostAddress());
-        assertTrue(CustomHttpClient.ntkFallbackAddressesForTest("example.com").isEmpty());
-    }
-
-    @Test
     public void ntkPersistedDnsAllowsColdStartBootstrapStaleOnlyWithinLimit() {
         long now = 8L * 24L * 60L * 60L * 1000L;
 
@@ -807,13 +818,40 @@ public class CustomHttpClientTest {
         InetAddress preferred = InetAddress.getByAddress("sbxh1.com",
                 new byte[] {(byte)104, (byte)16, (byte)220, (byte)55});
         InetAddress fallback = InetAddress.getByAddress("sbxh1.com",
-                new byte[] {(byte)104, (byte)16, (byte)219, (byte)55});
+                new byte[] {(byte)203, (byte)0, (byte)113, (byte)10});
 
         List<InetAddress> merged = CustomHttpClient.mergeIpv4FirstForTest("sbxh1.com",
                 Arrays.asList(preferred), null, Arrays.asList(fallback));
 
         assertEquals("104.16.220.55", merged.get(0).getHostAddress());
-        assertEquals("104.16.219.55", merged.get(1).getHostAddress());
+        assertEquals("203.0.113.10", merged.get(1).getHostAddress());
+    }
+
+    @Test
+    public void ntkDiagnosticInterpretsClosedSniRouteAsTunnelRequired() {
+        String report = "active_site: ntk\n"
+                + "network: cellular,validated=true,internet=true\n"
+                + "system_dns_sbxh4.com: ok 104.21.48.220,172.67.156.176\n"
+                + "app_dns_sbxh4.com: ok 104.21.48.220,172.67.156.176\n"
+                + "ntk_quic_sni: code=0,ms=102,error=NetworkExceptionWrapper(net::ERR_CONNECTION_CLOSED, ErrorCode=5, InternalErrorCode=-100)\n"
+                + "ntk_api_direct: fail 501ms SocketException(Connection reset)";
+
+        String interpretation = CustomHttpClient.diagnosticInterpretationForTest(report);
+
+        assertTrue(interpretation.contains("DNS bypass works"));
+        assertTrue(interpretation.contains("VPN/WARP-style tunnel"));
+    }
+
+    @Test
+    public void ntkDiagnosticKeepsCaptchaInterpretationWhenChallengeIsReached() {
+        String report = "active_site: ntk\n"
+                + "network: cellular+vpn,validated=true,internet=true\n"
+                + "app_dns_sbxh4.com: ok 104.21.48.220,172.67.156.176\n"
+                + "ntk_quic_sni: code=403,ms=110,body_len=2048,challenge=true,error=\n"
+                + "ntk_api_direct: code=403,ms=130,body_len=2048,challenge=true";
+
+        assertEquals("Cloudflare challenge/cookie issue. Open NTK captcha once.",
+                CustomHttpClient.diagnosticInterpretationForTest(report));
     }
 
     @Test

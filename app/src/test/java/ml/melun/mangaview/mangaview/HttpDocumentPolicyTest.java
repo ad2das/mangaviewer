@@ -45,6 +45,10 @@ public class HttpDocumentPolicyTest {
                 CustomHttpClient.FetchMode.DIRECT_ONLY));
         assertTrue(HttpDocumentPolicy.shouldUseFastNtkPageDirect(true, "/api/manhwa-list",
                 CustomHttpClient.FetchMode.DIRECT_ONLY));
+        assertTrue(HttpDocumentPolicy.shouldUseFastNtkPageDirect(true, "/search?q=onepiece",
+                CustomHttpClient.FetchMode.DIRECT_ONLY));
+        assertTrue(HttpDocumentPolicy.shouldUseFastNtkPageDirect(true, "/manhwa?page=2",
+                CustomHttpClient.FetchMode.DIRECT_ONLY));
         assertFalse(HttpDocumentPolicy.shouldUseFastNtkPageDirect(true, "/_next/static/app.js",
                 CustomHttpClient.FetchMode.DIRECT_ONLY));
         assertFalse(HttpDocumentPolicy.shouldUseFastNtkPageDirect(true, "/manhwa/1/2",
