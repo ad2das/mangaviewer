@@ -2377,8 +2377,10 @@ public class CustomHttpClient {
             throw new Exception("Cache miss: " + cacheKey);
         }
         if(shouldFastFailNtkPageForCaptcha(isNtk(), normalized, fetchMode,
-                hasNtkAccessProof(), hasRecentNtkAccessVerification(), hasRecentCloudflareChallenge()))
+                hasNtkAccessProof(), hasRecentNtkAccessVerification(), hasRecentCloudflareChallenge())) {
+            markCloudflareChallenge(getBaseUrl(normalized) + normalized);
             throw new Exception("Cloudflare challenge");
+        }
         if(isNtk() || shouldResolveWfwfBeforeCachedPage(normalized, staleCached != null, fetchMode))
             ensureNumberedDomain(false);
         synchronized (pageLoadsLock) {
@@ -4279,7 +4281,7 @@ public class CustomHttpClient {
                 && !lower.contains("window.location.href='/lander")
                 && !containsCloudflareChallengeMarker(lower)
                 && !containsNtkBlockedDocumentMarker(lower)
-                && !looksLikeUnrenderedNtkDocument(null, 200, body);
+                && !looksLikeUnrenderedNtkAppShell(lower);
     }
 
     static boolean looksLikeUnrenderedNtkDocumentForTest(String path, int code, String body) {
@@ -4339,6 +4341,10 @@ public class CustomHttpClient {
                 && (lowerBody.contains("%5bsourceworkid%5d") || lowerBody.contains("[sourceworkid]")
                 || lowerBody.contains("%5bviewid%5d") || lowerBody.contains("[viewid]")
                 || lowerBody.contains("next-route-announcer") || lowerBody.contains("app-router-announcer"));
+    }
+
+    private static boolean looksLikeUnrenderedNtkAppShell(String lowerBody) {
+        return looksLikeNtkNextShell(lowerBody) && !hasRenderedNtkDocumentContent(lowerBody);
     }
 
     private static boolean hasRenderedNtkDocumentContent(String lowerBody) {

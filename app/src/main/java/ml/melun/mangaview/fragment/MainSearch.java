@@ -1658,6 +1658,8 @@ public class MainSearch extends Fragment {
     }
 
     private static boolean shouldOpenCaptchaAfterSearchFailure(int result, long loadStartedAt) {
-        return result != 0 && getHttpClient().hasCloudflareChallengeSince(loadStartedAt);
+        return result != 0
+                && (getHttpClient().hasCloudflareChallengeSince(loadStartedAt)
+                || getHttpClient().hasRecentCloudflareChallenge());
     }
 }

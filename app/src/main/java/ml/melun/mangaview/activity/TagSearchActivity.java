@@ -710,7 +710,8 @@ public class TagSearchActivity extends AppCompatActivity {
 
     private static boolean shouldOpenCaptchaAfterSearchFailure(int result, Exception failure, long loadStartedAt) {
         return TagSearchPolicy.shouldOpenCaptchaAfterSearchFailure(result, failure,
-                getHttpClient().hasCloudflareChallengeSince(loadStartedAt));
+                getHttpClient().hasCloudflareChallengeSince(loadStartedAt)
+                        || getHttpClient().hasRecentCloudflareChallenge());
     }
 
     private class getUpdated implements LoadOperation {
