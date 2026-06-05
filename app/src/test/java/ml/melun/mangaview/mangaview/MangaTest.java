@@ -143,6 +143,8 @@ public class MangaTest {
         assertTrue(Manga.isNtkPageImageForTest(
                 "<img src=\"https://i.toonflix.app/blacktoon/episodes/1/12712/p001.jpg\">"));
         assertTrue(Manga.isNtkPageImageForTest(
+                "<img src=\"https://i.toonflix.app/wt/episodes/19353/tk_1075221/p001.jpeg\">"));
+        assertTrue(Manga.isNtkPageImageForTest(
                 "<img src=\"https://i.toonflix.app/manhwa/25089/296849/p001.jpg\">"));
         assertTrue(Manga.isNtkPageImageForTest(
                 "<img src=\"https://i.toonflix.app/manhwa/25089/296849/001.jpg\">"));
@@ -187,6 +189,10 @@ public class MangaTest {
 
         org.junit.Assert.assertFalse(Manga.looksLikeNtkBlockedPageForTest(
                 "<html><body><main><img src=\"https://i.toonflix.app/webtoon_uploads/page001.jpg\"></main></body></html>"));
+
+        org.junit.Assert.assertFalse(Manga.looksLikeNtkBlockedPageForTest(
+                "DevToolsBlockerGate {\"imageMetas\":[{\"page\":1},{\"page\":2}],"
+                        + "\"imagesToken\":\"viewer-token\"}"));
     }
 
     @Test
@@ -208,6 +214,10 @@ public class MangaTest {
 
         org.junit.Assert.assertFalse(Manga.looksLikeNtkMissingPageForTest(
                 "<script>{\"images\":[{\"page\":1,\"src\":\"https://i.toonflix.app/board_uploads/2026/05/17/page001.png\"}]}</script>"));
+
+        org.junit.Assert.assertFalse(Manga.looksLikeNtkMissingPageForTest(
+                "404: This page could not be found. {\"imageMetas\":[{\"page\":1},{\"page\":2}],"
+                        + "\"imagesToken\":\"viewer-token\"}"));
     }
 
     @Test
@@ -273,6 +283,13 @@ public class MangaTest {
     }
 
     @Test
+    public void ntkGeneratedFastPathValidatesFirstVisiblePages() {
+        assertEquals(1, Manga.ntkGeneratedInitialValidationPageCountForTest(1));
+        assertEquals(2, Manga.ntkGeneratedInitialValidationPageCountForTest(2));
+        assertEquals(2, Manga.ntkGeneratedInitialValidationPageCountForTest(64));
+    }
+
+    @Test
     public void ntkKnownWebtoonNumericEpisodeUsesImmediateGeneratedFastPath() {
         assertTrue(Manga.shouldUseImmediateNtkGeneratedFastPathForTest(
                 MTitle.base_webtoon, "/webtoon/18768/1586173", 37));
@@ -319,6 +336,20 @@ public class MangaTest {
         assertEquals(2, images.size());
         assertEquals("https://i.toonflix.app/manhwa/3540/135918/p001.jpg", images.get(0));
         assertEquals("https://i.toonflix.app/manhwa/3540/135918/p002.jpg", images.get(1));
+    }
+
+    @Test
+    public void ntkViewerMetaSlugWebtoonImagesUseThumbWorkId() {
+        List<String> images = Manga.ntkViewerMetaPageImagesForTest(
+                "<script>{\"imageMetas\":[{\"page\":1},{\"page\":2}],"
+                        + "\"imagesToken\":\"token\","
+                        + "\"episodeId\":\"tk_1075221\","
+                        + "\"image\":\"https://i.toonflix.app/blacktoon/thumbs/19353.png?v2\"}</script>",
+                "/webtoon/849365/tk_1075221");
+
+        assertEquals(2, images.size());
+        assertEquals("https://i.toonflix.app/wt/episodes/19353/tk_1075221/p001.jpeg", images.get(0));
+        assertEquals("https://i.toonflix.app/wt/episodes/19353/tk_1075221/p002.jpeg", images.get(1));
     }
 
     @Test

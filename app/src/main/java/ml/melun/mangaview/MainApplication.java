@@ -8,6 +8,7 @@ import android.os.Bundle;
 import android.util.Log;
 import android.webkit.WebView;
 
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatDelegate;
 import androidx.multidex.MultiDexApplication;
 import androidx.work.Configuration;
@@ -28,7 +29,7 @@ import ml.melun.mangaview.runtime.PerfTrace;
 //@AcraCore(reportContent = { APP_VERSION_NAME, ANDROID_VERSION, PHONE_MODEL, STACK_TRACE, REPORT_ID})
 
 
-public class MainApplication extends MultiDexApplication {
+public class MainApplication extends MultiDexApplication implements Configuration.Provider {
     public static volatile CustomHttpClient httpClient;
     public static Preference p;
     public static Context appContext;
@@ -51,7 +52,7 @@ public class MainApplication extends MultiDexApplication {
     public void onCreate() {
         long appStartedAt = PerfTrace.start("app_on_create_ms");
         appContext = this;
-        WebView.setWebContentsDebuggingEnabled((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0);
+        WebView.setWebContentsDebuggingEnabled(false);
         MainThreadStallMonitor.install(Log.isLoggable("MainStall", Log.DEBUG));
         long crashReporterStartedAt = PerfTrace.start("app_crash_reporter_install_ms");
         CrashReporter.install(this);
@@ -82,6 +83,7 @@ public class MainApplication extends MultiDexApplication {
         PerfTrace.end("app_vector_delegate_ms", vectorStartedAt);
         long preferenceStartedAt = PerfTrace.start("app_preference_init_ms");
         p = new Preference(this);
+        refreshWebViewDebuggingPolicy();
         PerfTrace.end("app_preference_init_ms", preferenceStartedAt);
         AppDispatchers.runIo(() -> ClassificationDbStore.cleanupLegacyFiles(appContext));
         long superStartedAt = PerfTrace.start("app_super_on_create_ms");
@@ -146,6 +148,30 @@ public class MainApplication extends MultiDexApplication {
             }
         }
         return WorkManager.getInstance(app);
+    }
+
+    public static void refreshWebViewDebuggingPolicy() {
+        refreshWebViewDebuggingPolicy(p);
+    }
+
+    public static void refreshWebViewDebuggingPolicy(Preference preference) {
+        Context context = appContext;
+        if(context == null)
+            return;
+        boolean debuggable = (context.getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+        WebView.setWebContentsDebuggingEnabled(
+                shouldEnableWebViewDebuggingForTest(debuggable,
+                        preference != null && preference.isNtkSite()));
+    }
+
+    static boolean shouldEnableWebViewDebuggingForTest(boolean debuggable, boolean ntkSite) {
+        return debuggable && !ntkSite;
+    }
+
+    @NonNull
+    @Override
+    public Configuration getWorkManagerConfiguration() {
+        return new Configuration.Builder().build();
     }
 
     public static void initDeferredServices() {

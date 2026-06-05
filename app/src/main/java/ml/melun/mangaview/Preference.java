@@ -729,6 +729,7 @@ public class Preference {
         prefsEditor.putString("url", this.url);
         prefsEditor.putString("wfwfResolvedRoot", wfwfResolvedRoot);
         prefsEditor.apply();
+        MainApplication.refreshWebViewDebuggingPolicy(this);
         notifySync("settings");
     }
 
@@ -751,6 +752,7 @@ public class Preference {
         prefsEditor.putString("webtoonUrl", this.webtoonUrl);
         prefsEditor.putString("wfwfResolvedRoot", wfwfResolvedRoot);
         prefsEditor.apply();
+        MainApplication.refreshWebViewDebuggingPolicy(this);
         notifySync("settings");
     }
 
@@ -779,6 +781,7 @@ public class Preference {
                 .putBoolean("autoUrl", false)
                 .apply();
         autoUrl = false;
+        MainApplication.refreshWebViewDebuggingPolicy(this);
         notifySync("settings");
     }
 
@@ -798,6 +801,7 @@ public class Preference {
                 .putString("webtoonUrl", webtoonUrl)
                 .putBoolean("autoUrl", false)
                 .apply();
+        MainApplication.refreshWebViewDebuggingPolicy(this);
         notifySync("settings");
     }
 

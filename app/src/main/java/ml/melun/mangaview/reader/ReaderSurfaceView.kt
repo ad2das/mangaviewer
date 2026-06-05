@@ -36,6 +36,20 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val offset: Int
     )
 
+    data class VisibleCoverageSnapshot(
+        val viewportPx: Int,
+        val drawablePx: Int,
+        val missingPx: Int,
+        val placeholderPx: Int,
+        val drawableItems: Int,
+        val totalItems: Int,
+        val visibleLoading: Int,
+        val visibleErrors: Int,
+        val visibleCards: Int,
+        val busy: Boolean,
+        val pageCount: Int
+    )
+
     interface WindowListener {
         fun onWindowChanged(firstPage: Int, lastPage: Int, anchorPage: Int, progressPage: Int, progressOffset: Int, busy: Boolean)
         fun onNearBoundary(direction: Int, anchorPage: Int)
@@ -167,6 +181,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var lockedRestorePage = -1
     private var lockedRestoreOffset = 0
     private var lockedRestoreUntilMs = 0L
+    private var prependedRevealHoldPage = -1
     private var initialRenderHoldPage = -1
     private var initialRenderHoldUntilMs = 0L
     private var initialViewportHoldUntilMs = 0L
@@ -209,6 +224,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var boundaryDispatchInFlight = false
     private var lastCoverageLog: CoverageStats? = null
     private var lastCoverageLogMs = 0L
+    private var lastVisibleCoverageSnapshot: VisibleCoverageSnapshot? = null
 
     init {
         isFocusable = true
@@ -245,6 +261,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             pendingWindowRequest = null
             windowDispatchPosted = false
             pages.clear()
+            prependedRevealHoldPage = -1
             repeat(max(0, count)) { pages.add(newPageLocked()) }
             setScrollOffsetLocked(0f)
             boundaryArmedDirection = 0
@@ -253,14 +270,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
             lastNearStart = false
             lastNearEnd = false
             hasDrawnContentFrame = false
-            deferInitialEmptyDraw = count > 0
-            initialViewportHoldUntilMs = if (count > 0) {
-                SystemClock.uptimeMillis() + INITIAL_RENDER_HOLD_MS
-            } else {
-                0L
-            }
+            deferInitialEmptyDraw = false
+            initialViewportHoldUntilMs = 0L
+            lastVisibleCoverageSnapshot = null
             layoutDirty = true
-            renderRequested = count <= 0
+            renderRequested = true
             if (renderRequested) scheduleFrameLocked()
             stateLock.notifyAll()
             windowRequestLocked(false)
@@ -319,13 +333,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 }
             }
             if (lockedRestorePage >= 0) lockedRestorePage += insertedCount
+            if (revealPrependedBoundary) prependedRevealHoldPage = -1
             layoutDirty = true
             rebuildLayoutLocked()
             val shiftedFirstTop = pageTopOrElseLocked(insertedCount, 0f)
             if (lockedRestorePage >= 0 && SystemClock.uptimeMillis() <= lockedRestoreUntilMs) {
                 applyLockedRestorePositionLocked()
             } else if (revealPrependedBoundary) {
-                setScrollOffsetLocked(max(0f, shiftedFirstTop - height * PREPENDED_BOUNDARY_REVEAL_SCREEN_RATIO))
+                val boundaryCardTop = pageTopOrElseLocked(insertedCount - 1, shiftedFirstTop)
+                setScrollOffsetLocked(max(0f, boundaryCardTop))
             } else {
                 setScrollOffsetLocked(scrollOffset + shiftedFirstTop - oldFirstTop)
             }
@@ -342,6 +358,55 @@ class ReaderSurfaceView @JvmOverloads constructor(
         dispatchWindowRequest(request)
     }
 
+    fun holdPrependedBoundaryReveal(currentPageAfterInsert: Int) {
+        val request = synchronized(stateLock) {
+            if (currentPageAfterInsert !in pages.indices) return
+            prependedRevealHoldPage = currentPageAfterInsert
+            rebuildLayoutLocked()
+            clampScrollLocked()
+            if (!scroller.isFinished) scroller.forceFinished(true)
+            activeScrollerOffsetShift = 0f
+            renderRequested = true
+            scheduleFrameLocked()
+            stateLock.notifyAll()
+            windowRequestLocked(lastBusy)
+        }
+        dispatchWindowRequest(request)
+    }
+
+    fun revealPrependedBoundary(insertedCount: Int, firstDrawableIndex: Int, lastDrawableIndex: Int): Boolean {
+        val request = synchronized(stateLock) {
+            rebuildLayoutLocked()
+            if (insertedCount <= 0 || pages.isEmpty()) return false
+            val first = firstDrawableIndex.coerceAtLeast(0)
+            val last = lastDrawableIndex.coerceAtMost(pages.lastIndex)
+            if (first > last) return false
+            for (index in first..last) {
+                if (!pageHasDrawableContentLocked(index)) {
+                    applyPendingPageResolveLocked(index)
+                }
+            }
+            for (index in first..last) {
+                if (!pageHasDrawableContentLocked(index)) return false
+            }
+            prependedRevealHoldPage = -1
+            val cardIndex = (insertedCount - 1).coerceIn(0, pages.lastIndex)
+            val boundaryCardTop = pageTopOrElseLocked(cardIndex, 0f)
+            setScrollOffsetLocked(max(0f, boundaryCardTop))
+            if (!scroller.isFinished) scroller.forceFinished(true)
+            activeScrollerOffsetShift = 0f
+            boundaryArmedDirection = 0
+            boundaryDispatchInFlight = false
+            clampScrollLocked()
+            renderRequested = true
+            scheduleFrameLocked()
+            stateLock.notifyAll()
+            windowRequestLocked(lastBusy)
+        }
+        dispatchWindowRequest(request)
+        return true
+    }
+
     fun removePageRange(startIndex: Int, removedCount: Int) {
         if (removedCount <= 0) return
         val request = synchronized(stateLock) {
@@ -355,7 +420,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (pages.isEmpty()) {
                 setScrollOffsetLocked(0f)
                 lastAnchor = -1
+                prependedRevealHoldPage = -1
             } else {
+                if (prependedRevealHoldPage >= endExclusive) {
+                    prependedRevealHoldPage -= endExclusive - startIndex
+                } else if (prependedRevealHoldPage >= startIndex) {
+                    prependedRevealHoldPage = -1
+                }
                 if (lockedRestorePage >= endExclusive) {
                     lockedRestorePage -= endExclusive - startIndex
                 } else if (lockedRestorePage >= startIndex) {
@@ -707,6 +778,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
+    fun visibleCoverageSnapshot(): VisibleCoverageSnapshot? {
+        return synchronized(stateLock) {
+            lastVisibleCoverageSnapshot
+        }
+    }
+
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         synchronized(stateLock) {
@@ -829,6 +906,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     dragging = false
                     pendingDragY = Float.NaN
                     val dragDistance = abs(event.y - downY)
+                    val cancelledBoundaryDrag = event.actionMasked == MotionEvent.ACTION_CANCEL &&
+                        shouldDispatchCancelledBoundaryLocked(dragDistance)
                     val canFling = shouldStartFling(dragDistance, velocityY, minVelocity, touchSlop)
                     if (wasTap) {
                         boundaryArmedDirection = 0
@@ -854,11 +933,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         renderRequested = true
                         scheduleFrameLocked()
                         stateLock.notifyAll()
-                        (busyRequest ?: windowRequestLocked(true)) to null
+                        (busyRequest ?: windowRequestLocked(true)) to boundaryRequestLocked()
                     } else {
                         val request = setBusyLocked(false)
-                        val boundary = if (wasReleased) boundaryRequestLocked() else null
-                        if (!wasReleased) boundaryArmedDirection = 0
+                        val shouldDispatchBoundary = wasReleased || cancelledBoundaryDrag
+                        val boundary = if (shouldDispatchBoundary) boundaryRequestLocked() else null
+                        if (!shouldDispatchBoundary) boundaryArmedDirection = 0
                         request to boundary
                     }
                 }
@@ -945,6 +1025,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
         logCoverageIfNeeded(state, force = false)
         if (timing.posted) synchronized(stateLock) { lastPostedFrameEndNs = timing.postEndNs }
+        updateVisibleCoverageSnapshot(state)
         recordFrameStats(timing, state.busy)
     }
 
@@ -1202,6 +1283,31 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         "items=${formatDrawItems(state.items)}"
                 )
             }
+        }
+    }
+
+    private fun updateVisibleCoverageSnapshot(state: DrawState) {
+        val coverage = coverageStats(state)
+        var visibleErrors = 0
+        var visibleCards = 0
+        for (item in state.items) {
+            if (item.errorText != null) visibleErrors++
+            if (item.cardText != null) visibleCards++
+        }
+        synchronized(stateLock) {
+            lastVisibleCoverageSnapshot = VisibleCoverageSnapshot(
+                viewportPx = state.height,
+                drawablePx = coverage.drawablePx,
+                missingPx = coverage.missingPx,
+                placeholderPx = coverage.placeholderPx,
+                drawableItems = coverage.drawableItems,
+                totalItems = coverage.totalItems,
+                visibleLoading = state.visibleLoading,
+                visibleErrors = visibleErrors,
+                visibleCards = visibleCards,
+                busy = state.busy,
+                pageCount = state.pageCount
+            )
         }
     }
 
@@ -1469,7 +1575,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun clampScrollLocked() {
         val maxScroll = max(0f, totalHeightLocked() - height)
-        setScrollOffsetLocked(scrollOffset.coerceIn(0f, maxScroll))
+        val minScroll = if (prependedRevealHoldPage in pages.indices) {
+            min(pageTopOrElseLocked(prependedRevealHoldPage, 0f), maxScroll)
+        } else {
+            0f
+        }
+        setScrollOffsetLocked(scrollOffset.coerceIn(minScroll, maxScroll))
     }
 
     private fun boundaryRequestLocked(clearDirection: Boolean = true): BoundaryRequest? {
@@ -1555,51 +1666,54 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val anchorOffset = pageOffsetLocked(anchorPage)
         var appliedAny = false
         for (index in pages.indices) {
-            val page = pages[index]
-            val type = page.pendingResolveType
-            if (type == PENDING_NONE) continue
-            val oldHeight = pageDrawHeightLocked(page)
-            val oldTop = pageTopOrElseLocked(index, 0f)
-            val pendingWidth = page.pendingWidth
-            val pendingHeight = page.pendingHeight
-            when (type) {
-                PENDING_SIZE -> {
-                    if (page.bitmap == null && page.tiles.isEmpty()) {
-                        clearPendingResolveLocked(page)
-                        continue
-                    }
-                }
-                PENDING_BITMAP -> {
-                    val bitmap = page.pendingBitmap ?: continue
-                    page.bitmap = bitmap
-                    page.tiles = emptyList()
-                }
-                PENDING_TILES -> {
-                    page.bitmap = null
-                    page.tiles = page.pendingTiles
-                }
-                PENDING_BOUNDS -> {
-                    if (page.bitmap != null || page.tiles.isNotEmpty() || page.cardText != null || page.errorText != null) {
-                        clearPendingResolveLocked(page)
-                        continue
-                    }
-                }
-            }
-            page.width = max(1, pendingWidth)
-            page.height = max(1, pendingHeight)
-            page.loading = false
-            page.cardText = null
-            page.errorText = null
-            clearPendingResolveLocked(page)
-            noteResolvedPageAspectLocked(page.width, page.height)
-            val newHeight = pageDrawHeightLocked(page)
-            updatePageHeightDeltaLocked(index, newHeight - oldHeight)
-            appliedAny = true
+            if (applyPendingPageResolveLocked(index)) appliedAny = true
         }
         if (appliedAny) {
             setScrollOffsetLocked(pageTopOrElseLocked(anchorPage, 0f) - anchorOffset)
             clampScrollLocked()
         }
+    }
+
+    private fun applyPendingPageResolveLocked(index: Int): Boolean {
+        val page = pages.getOrNull(index) ?: return false
+        val type = page.pendingResolveType
+        if (type == PENDING_NONE) return false
+        val oldHeight = pageDrawHeightLocked(page)
+        val pendingWidth = page.pendingWidth
+        val pendingHeight = page.pendingHeight
+        when (type) {
+            PENDING_SIZE -> {
+                if (page.bitmap == null && page.tiles.isEmpty()) {
+                    clearPendingResolveLocked(page)
+                    return false
+                }
+            }
+            PENDING_BITMAP -> {
+                val bitmap = page.pendingBitmap ?: return false
+                page.bitmap = bitmap
+                page.tiles = emptyList()
+            }
+            PENDING_TILES -> {
+                page.bitmap = null
+                page.tiles = page.pendingTiles
+            }
+            PENDING_BOUNDS -> {
+                if (page.bitmap != null || page.tiles.isNotEmpty() || page.cardText != null || page.errorText != null) {
+                    clearPendingResolveLocked(page)
+                    return false
+                }
+            }
+        }
+        page.width = max(1, pendingWidth)
+        page.height = max(1, pendingHeight)
+        page.loading = false
+        page.cardText = null
+        page.errorText = null
+        clearPendingResolveLocked(page)
+        noteResolvedPageAspectLocked(page.width, page.height)
+        val newHeight = pageDrawHeightLocked(page)
+        updatePageHeightDeltaLocked(index, newHeight - oldHeight)
+        return true
     }
 
     private fun noteResolvedPageAspectLocked(pageWidth: Int, pageHeight: Int) {
@@ -1737,6 +1851,22 @@ class ReaderSurfaceView @JvmOverloads constructor(
             delta > 0f -> DIRECTION_NEXT
             delta < 0f -> DIRECTION_PREVIOUS
             else -> 0
+        }
+    }
+
+    private fun shouldDispatchCancelledBoundaryLocked(dragDistance: Float): Boolean {
+        val direction = boundaryArmedDirection
+        if (direction == 0 || pages.isEmpty() || width <= 0 || height <= 0) return false
+        val minDistance = max(
+            touchSlop * BOUNDARY_CANCEL_MIN_DRAG_TOUCH_SLOP_MULTIPLIER,
+            height * BOUNDARY_CANCEL_MIN_DRAG_SCREEN_RATIO
+        )
+        if (dragDistance < minDistance) return false
+        val maxScroll = max(0f, totalHeightLocked() - height)
+        return when (direction) {
+            DIRECTION_PREVIOUS -> scrollOffset <= BOUNDARY_EPSILON_PX
+            DIRECTION_NEXT -> scrollOffset >= maxScroll - BOUNDARY_EPSILON_PX
+            else -> false
         }
     }
 
@@ -2048,7 +2178,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val BOUNDARY_EPSILON_PX = 2f
         private const val BOUNDARY_FLING_EXTEND_EPSILON_PX = 4
         private const val BOUNDARY_FLING_MIN_VELOCITY_MULTIPLIER = 2f
-        private const val PREPENDED_BOUNDARY_REVEAL_SCREEN_RATIO = 0.72f
+        private const val BOUNDARY_CANCEL_MIN_DRAG_SCREEN_RATIO = 0.08f
+        private const val BOUNDARY_CANCEL_MIN_DRAG_TOUCH_SLOP_MULTIPLIER = 4f
         private const val PROGRESS_PAGE_PROBE_SCREEN_RATIO = 0.35f
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f

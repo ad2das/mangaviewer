@@ -150,7 +150,7 @@ public final class NtkQuicFetcher {
         addForwardedHeaders(builder, requestHeaders);
         if(userAgent != null && userAgent.length() > 0)
             builder.addHeader("User-Agent", userAgent);
-        if(body != null && body.length > 0 && !hasHeader(requestHeaders, "Content-Type"))
+        if(shouldInjectSyntheticUploadContentType(requestHeaders, body))
             builder.addHeader("Content-Type", "text/plain;charset=UTF-8");
         if(!hasHeader(requestHeaders, "Accept"))
             builder.addHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
@@ -194,6 +194,14 @@ public final class NtkQuicFetcher {
                 return true;
         }
         return false;
+    }
+
+    static boolean shouldInjectSyntheticUploadContentTypeForTest(Map<String, String> requestHeaders, byte[] body) {
+        return shouldInjectSyntheticUploadContentType(requestHeaders, body);
+    }
+
+    private static boolean shouldInjectSyntheticUploadContentType(Map<String, String> requestHeaders, byte[] body) {
+        return body != null && body.length > 0 && !hasHeader(requestHeaders, "Content-Type");
     }
 
     private static boolean shouldForwardHeader(String name) {

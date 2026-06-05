@@ -63,7 +63,6 @@ import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.showErrorPopup;
 import static ml.melun.mangaview.Utils.showPopup;
 import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_COMIC_URL;
-import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_DESKTOP_DOCUMENT_UA;
 import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_WEBTOON_URL;
 
 public class CaptchaActivity extends AppCompatActivity {
@@ -93,7 +92,8 @@ public class CaptchaActivity extends AppCompatActivity {
             "try{n.focus();" +
             "var e1=new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerType:'touch',isPrimary:true,width:20,height:20,pressure:0.5});" +
             "var e2=new PointerEvent('pointerup',{bubbles:true,cancelable:true,pointerType:'touch',isPrimary:true,width:20,height:20,pressure:0});" +
-            "n.dispatchEvent(e1);n.dispatchEvent(e2);" +
+            "var e3=new MouseEvent('click',{bubbles:true,cancelable:true,view:window});" +
+            "n.dispatchEvent(e1);n.dispatchEvent(e2);n.dispatchEvent(e3);" +
             "}catch(ex){}" +
             "console.log('__TURNSTILE_CB__');" +
             "}" +
@@ -110,27 +110,47 @@ public class CaptchaActivity extends AppCompatActivity {
             "var all=document.querySelectorAll('*');" +
             "for(var i=0;i<all.length;i++){" +
             "var el=all[i];" +
-            "if(el.__sr){" +
-            "var inp=el.__sr.querySelector('input[type=\"checkbox\"]');" +
+            "var sr=el.__sr||el.shadowRoot;" +
+            "if(sr){" +
+            "var inp=sr.querySelector('input[type=\"checkbox\"]');" +
             "if(inp)return inp;" +
             "}" +
             "}" +
             "return null;" +
+            "}" +
+            "function usableTurnstileFrame(frame,rect){" +
+            "if(!rect||rect.width<=10||rect.height<=10)return false;" +
+            "var src=((frame.getAttribute('src')||frame.src||'')+'').toLowerCase();" +
+            "if(src.indexOf('feedback-reports')>=0||src.indexOf('/feedback')>=0||src.indexOf('overrunning')>=0)return false;" +
+            "if(src.indexOf('/pat/')>=0||src.indexOf('/cmg/')>=0||src.indexOf('/flow/')>=0||src.indexOf('/orchestrate/')>=0)return false;" +
+            "if(src.length===0)return true;" +
+            "if(src.indexOf('challenges.cloudflare')<0&&src.indexOf('cloudflare.com/turnstile')<0)return false;" +
+            "return src.indexOf('turnstile')>=0||src.indexOf('/challenge-platform/')>=0;" +
+            "}" +
+            "function checkboxTarget(rect){" +
+            "var w=Math.min(36,Math.max(24,rect.width*0.18));" +
+            "var h=Math.min(44,Math.max(24,rect.height*0.62));" +
+            "var x=rect.left+Math.min(Math.max(rect.width*0.14,36),rect.width*0.32);" +
+            "var y=rect.top+rect.height/2;" +
+            "return {x:x,y:y,w:w,h:h};" +
             "}" +
             "var cb=findCheckbox();" +
             "if(cb){" +
             "try{cb.focus();" +
             "var e1=new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerType:'touch',isPrimary:true,width:20,height:20,pressure:0.5});" +
             "var e2=new PointerEvent('pointerup',{bubbles:true,cancelable:true,pointerType:'touch',isPrimary:true,width:20,height:20,pressure:0});" +
-            "cb.dispatchEvent(e1);cb.dispatchEvent(e2);" +
+            "var e3=new MouseEvent('click',{bubbles:true,cancelable:true,view:window});" +
+            "cb.dispatchEvent(e1);cb.dispatchEvent(e2);cb.dispatchEvent(e3);" +
             "}catch(ex){}" +
             "return JSON.stringify({type:'jsclick'});" +
             "}" +
-            "var iframe=document.querySelector('iframe[src*=\"turnstile\"],iframe[src*=\"challenges.cloudflare\"]');" +
-            "if(iframe){" +
+            "var frames=document.querySelectorAll('iframe[src*=\"turnstile\"],iframe[src*=\"challenges.cloudflare\"]');" +
+            "for(var fi=0;fi<frames.length;fi++){" +
+            "var iframe=frames[fi];" +
             "var rect=iframe.getBoundingClientRect();" +
-            "if(rect.width>10&&rect.height>10){" +
-            "return JSON.stringify({type:'iframe',x:rect.left+rect.width/2,y:rect.top+rect.height/2,w:rect.width,h:rect.height,sig:iframe.getAttribute('src')||iframe.id||iframe.name||''});" +
+            "if(usableTurnstileFrame(iframe,rect)){" +
+            "var t=checkboxTarget(rect);" +
+            "return JSON.stringify({type:'iframe',x:t.x,y:t.y,w:t.w,h:t.h,sig:iframe.getAttribute('src')||iframe.id||iframe.name||''});" +
             "}" +
             "}" +
             "var turnstileDiv=document.querySelector('.cf-turnstile,.turnstile,[class*=\"turnstile\"]');" +
@@ -165,10 +185,9 @@ public class CaptchaActivity extends AppCompatActivity {
             "var host=wrapper.querySelector('div > div');" +
             "if(host){" +
             "var rect=host.getBoundingClientRect();" +
-            "if(rect.width>50&&rect.height>50){" +
-            "var x=rect.left+rect.width*0.22;" +
-            "var y=rect.top+rect.height/2;" +
-            "return JSON.stringify({type:'iframe',x:x,y:y,w:rect.width*0.45,h:rect.height});" +
+            "if(rect.width>50&&rect.height>50&&rect.height<180){" +
+            "var t=checkboxTarget(rect);" +
+            "return JSON.stringify({type:'iframe',x:t.x,y:t.y,w:t.w,h:t.h});" +
             "}" +
             "}" +
             "}" +
@@ -202,7 +221,9 @@ public class CaptchaActivity extends AppCompatActivity {
             "function collectHeaders(input,init){" +
             "var out={};try{var h=new Headers(input&&input.headers?input.headers:{});if(init&&init.headers){new Headers(init.headers).forEach(function(v,k){h.set(k,v);});}h.forEach(function(v,k){out[k]=v;});}catch(e){}return out;" +
             "}" +
-            "function addDefaultHeaders(h){try{if(!h['Origin']&&!h['origin'])h['Origin']=location.origin;if(!h['Referer']&&!h['referer'])h['Referer']=location.href;if(!h['Accept']&&!h['accept'])h['Accept']='*/*';}catch(e){}return h;}" +
+            "function chromeMajor(){var m=String(navigator.userAgent||'').match(/Chrome\\/(\\d+)/);return m?m[1]:'116';}" +
+            "function isMobileUa(){return /Android|Mobile/i.test(String(navigator.userAgent||''));}" +
+            "function addDefaultHeaders(h){try{if(!h['Origin']&&!h['origin'])h['Origin']=location.origin;if(!h['Referer']&&!h['referer'])h['Referer']=location.href;if(!h['Accept']&&!h['accept'])h['Accept']='*/*';if(!h['Sec-Fetch-Dest']&&!h['sec-fetch-dest'])h['Sec-Fetch-Dest']='empty';if(!h['Sec-Fetch-Mode']&&!h['sec-fetch-mode'])h['Sec-Fetch-Mode']='cors';if(!h['Sec-Fetch-Site']&&!h['sec-fetch-site'])h['Sec-Fetch-Site']='same-origin';var v=chromeMajor(),mobile=isMobileUa();if(!h['sec-ch-ua'])h['sec-ch-ua']=mobile?'\\\"Chromium\\\";v=\\\"'+v+'\\\", \\\"Android WebView\\\";v=\\\"'+v+'\\\", \\\"Not A(Brand\\\";v=\\\"24\\\"':'\\\"Chromium\\\";v=\\\"'+v+'\\\", \\\"Google Chrome\\\";v=\\\"'+v+'\\\", \\\"Not_A Brand\\\";v=\\\"24\\\"';if(!h['sec-ch-ua-mobile'])h['sec-ch-ua-mobile']=mobile?'?1':'?0';if(!h['sec-ch-ua-platform'])h['sec-ch-ua-platform']=mobile?'\\\"Android\\\"':'\\\"Windows\\\"';}catch(e){}return h;}" +
             "var nativeFetch=window.fetch;" +
             "if(nativeFetch){window.fetch=function(input,init){" +
             "var url=(typeof input==='string'||input instanceof String)?String(input):(input&&input.url)||'';" +
@@ -331,7 +352,11 @@ public class CaptchaActivity extends AppCompatActivity {
         settings.setJavaScriptCanOpenWindowsAutomatically(false);
         settings.setSupportMultipleWindows(false);
 
-        String realChromeUA = captchaUserAgent(settings.getUserAgentString(), ntkSite);
+        String userAgentOverride = ntkSite && intent.hasExtra("ntkCaptchaUserAgent")
+                ? intent.getStringExtra("ntkCaptchaUserAgent") : null;
+        String realChromeUA = userAgentOverride != null && userAgentOverride.trim().length() > 0
+                ? userAgentOverride.trim()
+                : captchaUserAgent(settings.getUserAgentString(), ntkSite);
         settings.setUserAgentString(realChromeUA);
         getHttpClient().setUserAgent(settings.getUserAgentString());
         if(ntkSite && NtkQuicFetcher.isAvailable())
@@ -603,8 +628,6 @@ public class CaptchaActivity extends AppCompatActivity {
     }
 
     private static String captchaUserAgent(String defaultUserAgent, boolean ntkSite) {
-        if(ntkSite)
-            return NTK_DESKTOP_DOCUMENT_UA;
         if(defaultUserAgent == null || defaultUserAgent.trim().length() == 0)
             return "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
         String ua = defaultUserAgent.trim()
@@ -1024,6 +1047,10 @@ public class CaptchaActivity extends AppCompatActivity {
         return isNtkProtectedHttpsUrl(url);
     }
 
+    static String ntkQuicBridgeJavascriptForTest() {
+        return NTK_QUIC_BRIDGE_JS;
+    }
+
     private static boolean isNtkProtectedHttpsUrl(String url) {
         try {
             URI uri = URI.create(url);
@@ -1356,6 +1383,29 @@ public class CaptchaActivity extends AppCompatActivity {
     static long nextTurnstileCheckDelayForTest(boolean firstAttempt, String signature,
                                                int touchCount, long now, long lastTouchAt) {
         return nextTurnstileCheckDelayForState(firstAttempt, signature, touchCount, now, lastTouchAt);
+    }
+
+    static boolean shouldUseTurnstileIframeForTest(String src, double width, double height) {
+        return shouldUseTurnstileIframe(src, width, height);
+    }
+
+    private static boolean shouldUseTurnstileIframe(String src, double width, double height) {
+        if(width <= 10d || height <= 10d)
+            return false;
+        String lower = src == null ? "" : src.toLowerCase(java.util.Locale.ROOT);
+        if(lower.contains("feedback-reports") || lower.contains("/feedback") || lower.contains("overrunning"))
+            return false;
+        if(lower.contains("/pat/") || lower.contains("/cmg/") || lower.contains("/flow/") || lower.contains("/orchestrate/"))
+            return false;
+        if(lower.length() == 0)
+            return true;
+        if(!lower.contains("challenges.cloudflare") && !lower.contains("cloudflare.com/turnstile"))
+            return false;
+        return lower.contains("turnstile") || lower.contains("/challenge-platform/");
+    }
+
+    static boolean shouldUseTurnstileFallbackContainerForTest(double width, double height) {
+        return width > 50d && height > 50d && height < 180d;
     }
 
     private void simulateTouch(View view, float centerX, float centerY, float width, float height) {

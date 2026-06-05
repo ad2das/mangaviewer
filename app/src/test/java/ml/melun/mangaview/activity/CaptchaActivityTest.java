@@ -88,14 +88,16 @@ public class CaptchaActivityTest {
     }
 
     @Test
-    public void ntkCaptchaUserAgentUsesDesktopChromeShape() {
+    public void ntkCaptchaUserAgentUsesWebViewChromeShapeWithoutWvMarker() {
         String ua = CaptchaActivity.ntkCaptchaUserAgentForTest(
                 "Mozilla/5.0 (Linux; Android 15; sdk_gphone64_x86_64 Build/AE3A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/124.0.6367.219 Mobile Safari/537.36");
 
-        assertTrue(ua.contains("Windows NT"));
-        assertTrue(ua.contains("Chrome/148.0.0.0"));
-        assertFalse(ua.contains("Mobile Safari"));
+        assertTrue(ua.contains("Android 15"));
+        assertTrue(ua.contains("Chrome/124.0.6367.219"));
+        assertTrue(ua.contains("Mobile Safari"));
+        assertFalse(ua.contains("Windows NT"));
         assertFalse(ua.contains("; wv"));
+        assertFalse(ua.contains("Version/4.0"));
     }
 
     @Test
@@ -151,6 +153,37 @@ public class CaptchaActivityTest {
     }
 
     @Test
+    public void turnstileIframeSelectionIgnoresFeedbackReports() {
+        assertTrue(CaptchaActivity.shouldUseTurnstileIframeForTest(
+                "https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/g/turnstile/f/ov2/normal",
+                162.5, 68.8));
+        assertTrue(CaptchaActivity.shouldUseTurnstileIframeForTest(
+                "", 162.5, 68.8));
+        assertFalse(CaptchaActivity.shouldUseTurnstileIframeForTest(
+                "https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/g/feedback-reports/rhwaj/en-us/light/overrunning",
+                393.0, 600.0));
+        assertFalse(CaptchaActivity.shouldUseTurnstileIframeForTest(
+                "https://sbxh4.com/cdn-cgi/challenge-platform/h/g/flow/ov1/token",
+                393.0, 600.0));
+        assertFalse(CaptchaActivity.shouldUseTurnstileIframeForTest(
+                "https://example.com/not-turnstile", 162.5, 68.8));
+    }
+
+    @Test
+    public void turnstileFallbackContainerRejectsLargeFeedbackPanels() {
+        assertTrue(CaptchaActivity.shouldUseTurnstileFallbackContainerForTest(360.0, 68.0));
+        assertFalse(CaptchaActivity.shouldUseTurnstileFallbackContainerForTest(393.0, 600.0));
+        assertFalse(CaptchaActivity.shouldUseTurnstileFallbackContainerForTest(42.0, 68.0));
+    }
+
+    @Test
+    public void turnstileAutoScriptChecksExistingOpenShadowRoots() {
+        assertTrue(CaptchaActivity.TURNSTILE_AUTO_JS.contains("el.__sr||el.shadowRoot"));
+        assertTrue(CaptchaActivity.TURNSTILE_AUTO_JS.contains("new MouseEvent('click'"));
+        assertTrue(CaptchaActivity.SHADOW_HOOK_JS.contains("new MouseEvent('click'"));
+    }
+
+    @Test
     public void ntkQuicInterceptOnlyRunsInsideQuicHtmlFallback() {
         String root = CustomHttpClient.NTK_WEBTOON_URL;
         String imgRoot = root.replace("https://", "https://img.");
@@ -168,5 +201,18 @@ public class CaptchaActivityTest {
                 true, true, "GET", root + "/", false));
         assertFalse(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
                 false, true, "GET", root + "/", true));
+    }
+
+    @Test
+    public void ntkCaptchaBridgeReplaysChallengePostsWithBrowserFetchHeaders() {
+        String script = CaptchaActivity.ntkQuicBridgeJavascriptForTest();
+
+        assertTrue(script.contains("if(x.pathname.indexOf('/cdn-cgi/challenge-platform/')!==0)return false;return String(m||'GET').toUpperCase()!=='GET';"));
+        assertTrue(script.contains("Sec-Fetch-Dest"));
+        assertTrue(script.contains("Sec-Fetch-Mode"));
+        assertTrue(script.contains("Sec-Fetch-Site"));
+        assertTrue(script.contains("sec-ch-ua"));
+        assertTrue(script.contains("navigator.userAgent"));
+        assertFalse(script.contains("if(x.pathname.indexOf('/cdn-cgi/challenge-platform/')!==0)return false;return false;"));
     }
 }

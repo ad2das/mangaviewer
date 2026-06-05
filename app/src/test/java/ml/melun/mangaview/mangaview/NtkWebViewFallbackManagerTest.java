@@ -17,7 +17,20 @@ public class NtkWebViewFallbackManagerTest {
     public void documentFallbackNavigatesViewerPagesDirectly() {
         assertTrue(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/manhwa/1"));
         assertTrue(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/webtoon/1/2"));
+        assertTrue(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/ing?page=2"));
+        assertTrue(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/end?sort=hot"));
+        assertTrue(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/manhwa?page=2"));
+        assertTrue(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/manhwa-end?g=%EC%95%A1%EC%85%98"));
         assertFalse(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/api/manhwa-list"));
+    }
+
+    @Test
+    public void documentFallbackResetsWebViewAfterHtmlCapture() {
+        assertTrue(NtkWebViewFallbackManager.shouldResetWebViewAfterFetchForTest("/manhwa/1", 200));
+        assertTrue(NtkWebViewFallbackManager.shouldResetWebViewAfterFetchForTest("/manhwa?page=2", 200));
+        assertTrue(NtkWebViewFallbackManager.shouldResetWebViewAfterFetchForTest("/webtoon/1/2", 200));
+        assertTrue(NtkWebViewFallbackManager.shouldResetWebViewAfterFetchForTest("/api/manhwa-list", 0));
+        assertFalse(NtkWebViewFallbackManager.shouldResetWebViewAfterFetchForTest("/api/manhwa-list", 200));
     }
 
     @Test
@@ -43,10 +56,22 @@ public class NtkWebViewFallbackManagerTest {
     public void documentFallbackLeavesTimeForWebViewStartupAndRenderedHtmlExtraction() {
         assertTrue(NtkWebViewFallbackManager.webViewLoadTimeoutMsForTest() >= 22_000L);
         assertTrue(NtkWebViewFallbackManager.documentReadyWaitMsForTest() >= 18_000L);
+        assertTrue(NtkWebViewFallbackManager.hiddenChallengeWaitMsForTest()
+                < NtkWebViewFallbackManager.documentReadyWaitMsForTest());
         assertTrue(NtkWebViewFallbackManager.webViewLoadTimeoutMsForTest()
                 > NtkWebViewFallbackManager.documentReadyWaitMsForTest());
         assertTrue(NtkWebViewFallbackManager.callerWaitTimeoutMsForTest()
                 > NtkWebViewFallbackManager.webViewLoadTimeoutMsForTest());
+    }
+
+    @Test
+    public void hiddenDocumentFallbackRecognizesTerminalBlockedPages() {
+        assertTrue(NtkWebViewFallbackManager.isBlockedNtkDocumentBodyForTest(
+                "<html><body>Verifying you are human. Cloudflare security service.</body></html>"));
+        assertTrue(NtkWebViewFallbackManager.isBlockedNtkDocumentBodyForTest(
+                "<html><head><title>개발자 도구 차단</title></head></html>"));
+        assertFalse(NtkWebViewFallbackManager.isBlockedNtkDocumentBodyForTest(
+                "<html><body><img src=\"/webtoon_uploads/1.jpg\"></body></html>"));
     }
 
     @Test
@@ -57,5 +82,13 @@ public class NtkWebViewFallbackManagerTest {
                 < NtkWebViewFallbackManager.webViewLoadTimeoutMsForTest());
         assertEquals(NtkWebViewFallbackManager.documentReadyWaitMsForTest(),
                 NtkWebViewFallbackManager.documentReadyWaitMsForTest(false, true));
+    }
+
+    @Test
+    public void viewerQuicBridgeDoesNotHijackCloudflareChallengePosts() {
+        String script = NtkWebViewFallbackManager.ntkQuicBridgeJavascriptForTest();
+
+        assertTrue(script.contains("if(x.pathname.indexOf('/cdn-cgi/challenge-platform/')===0)return false;"));
+        assertTrue(script.contains("return String(m||'GET').toUpperCase()!=='GET';"));
     }
 }

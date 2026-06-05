@@ -195,7 +195,7 @@ public class Title extends MTitle {
                         segment, titleKey, baseMode);
                 if(payloadOnly.episodes.size() > 0) {
                     eps = payloadOnly.episodes;
-                    Log.d(TAG, "ntk_episode_parse reason=rsc_first_slug,id=" + id
+                    Log.d(TAG, "ntk_episode_parse reason=rsc_first,id=" + id
                             + ",segment=" + segment
                             + ",path=" + titlePath
                             + ",episodes=" + eps.size());

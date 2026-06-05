@@ -11,6 +11,8 @@ import android.graphics.Color;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.util.Log;
+import android.view.InputDevice;
+import android.view.MotionEvent;
 import android.view.View;
 
 import androidx.test.core.app.ApplicationProvider;
@@ -21,15 +23,19 @@ import androidx.test.uiautomator.Until;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
-import org.jsoup.Jsoup;
+import org.junit.Assume;
 import org.junit.Test;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Random;
 
+import ml.melun.mangaview.ClassificationDbStore;
+import ml.melun.mangaview.ClassificationDbUpdater;
 import ml.melun.mangaview.LiveNetworkAssume;
 import ml.melun.mangaview.MainApplication;
 import ml.melun.mangaview.Utils;
@@ -48,6 +54,31 @@ public class NtkRandomStressInstrumentedTest {
     private static final String[] MODES = new String[]{"generated", "native-ack", "api-fallback"};
 
     @Test
+    public void dumpNtkRscListPayloadWhenRequested() throws Exception {
+        LiveNetworkAssume.assumeEnabled();
+        Bundle args = InstrumentationRegistry.getArguments();
+        String path = arg(args, "ntkDumpRscPath", "");
+        Assume.assumeTrue("Pass -e ntkDumpRscPath /path to dump a live NTK RSC list payload",
+                path.trim().length() > 0);
+        int baseMode = parsePositiveInt(arg(args, "ntkDumpBaseMode", "1"), MTitle.base_comic);
+        Context context = ApplicationProvider.getApplicationContext();
+        MainApplication.p.setNtkSitePreset(arg(args, "ntkSiteRoot", CustomHttpClient.NTK_WEBTOON_URL));
+        MainApplication.p.setBaseMode(baseMode);
+        CustomHttpClient.PageResponse page = MainApplication.getHttpClient().mgetNtkRscPage(path, 0);
+        String body = page == null || page.body == null ? "" : page.body;
+        ArrayList<Title> parsed = MainPageWebtoon.parseNtkTitleListPayload(body, baseMode, PAGE_SIZE);
+        File out = new File(context.getCacheDir(), "ntk-rsc-dump.txt");
+        try(FileOutputStream stream = new FileOutputStream(out, false)) {
+            stream.write(body.getBytes(StandardCharsets.UTF_8));
+        }
+        Log.d(TAG, "ntk_rsc_dump path=" + path
+                + ",code=" + (page == null ? 0 : page.code)
+                + ",bodyLen=" + body.length()
+                + ",parsed=" + parsed.size()
+                + ",file=" + out.getAbsolutePath());
+    }
+
+    @Test
     public void randomNtkEpisodesOpenAndScroll() throws Exception {
         LiveNetworkAssume.assumeEnabled();
         Context context = ApplicationProvider.getApplicationContext();
@@ -59,6 +90,9 @@ public class NtkRandomStressInstrumentedTest {
         int appendSteps = parsePositiveInt(arg(args, "ntkAppendSteps", "60"), 60);
         long seed = parseLong(arg(args, "ntkRandomSeed", ""), SystemClock.elapsedRealtime());
         Random random = new Random(seed);
+        Random modeRandom = new Random(seed ^ 0x5a17c3e2L);
+        boolean cycleModes = Boolean.parseBoolean(arg(args, "ntkCycleModes", "true"));
+        int modeOffset = modeRandom.nextInt(MODES.length);
         CustomHttpClient client = MainApplication.getHttpClient();
         MainApplication.p.setNtkSitePreset(arg(args, "ntkSiteRoot", CustomHttpClient.NTK_WEBTOON_URL));
         String customUserAgent = arg(args, "ntkUserAgent", "");
@@ -71,15 +105,18 @@ public class NtkRandomStressInstrumentedTest {
                 + ",seed=" + seed
                 + ",scrollSteps=" + scrollSteps
                 + ",appendProbe=" + appendProbe
-                + ",appendSteps=" + appendSteps);
+                + ",appendSteps=" + appendSteps
+                + ",cycleModes=" + cycleModes
+                + ",modeOffset=" + modeOffset);
         for(int run = 0; run < runs; run++) {
             int baseMode = random.nextBoolean() ? MTitle.base_comic : MTitle.base_webtoon;
             MainApplication.p.setBaseMode(baseMode);
             Title title = null;
             int fetchResult = Title.LOAD_ERROR;
             for(int titleAttempt = 0; titleAttempt < 6; titleAttempt++) {
-                Title candidate = pickRandomTitle(client, random, baseMode);
-                fetchResult = candidate.fetchEps(client);
+                Title candidate = pickRandomTitle(context, client, random, baseMode);
+                fetchResult = candidate.getEps() != null && candidate.getEps().size() > 0
+                        ? Title.LOAD_OK : candidate.fetchEps(client);
                 if(fetchResult == Title.LOAD_OK && candidate.getEps() != null && candidate.getEps().size() > 0) {
                     title = candidate;
                     break;
@@ -99,13 +136,16 @@ public class NtkRandomStressInstrumentedTest {
                             + " title=" + title.getName()
                             + " episode=" + episode.getName(),
                     episode.getNtkEpisodePath().length() > 0);
-            String mode = MODES[random.nextInt(MODES.length)];
+            String mode = cycleModes
+                    ? MODES[(modeOffset + run) % MODES.length]
+                    : MODES[random.nextInt(MODES.length)];
             runReaderCase(context, device, run, mode, title, episode,
                     scrollSteps, appendProbe, appendSteps);
         }
     }
 
-    private static Title pickRandomTitle(CustomHttpClient client, Random random, int baseMode) throws Exception {
+    private static Title pickRandomTitle(Context context, CustomHttpClient client,
+                                         Random random, int baseMode) throws Exception {
         Exception apiError = null;
         try {
             return pickRandomTitleFromApi(client, random, baseMode);
@@ -118,12 +158,103 @@ public class NtkRandomStressInstrumentedTest {
         Title htmlTitle = pickRandomTitleFromHtmlSections(client, random, baseMode);
         if(htmlTitle != null)
             return htmlTitle;
+        Title dbTitle = pickRandomTitleFromClassificationDb(context, random, baseMode);
+        if(dbTitle != null)
+            return dbTitle;
+        Title numericTitle = pickRandomTitleFromNumericProbe(client, random, baseMode);
+        if(numericTitle != null)
+            return numericTitle;
         if(apiError != null)
             throw new AssertionError("Unable to pick random NTK title after API and HTML discovery failures"
                     + " baseMode=" + baseMode
                     + " apiType=" + apiError.getClass().getSimpleName()
                     + " apiMessage=" + apiError.getMessage(), apiError);
         throw new AssertionError("Unable to pick random NTK title baseMode=" + baseMode);
+    }
+
+    private static Title pickRandomTitleFromClassificationDb(Context context, Random random, int baseMode) {
+        Title title = pickRandomTitleFromClassificationDbOnce(context, random, baseMode);
+        if(title == null) {
+            long startedAt = SystemClock.elapsedRealtime();
+            ClassificationDbUpdater.updateInBackground(context);
+            Log.d(TAG, "ntk_true_random_db_update_ms=" + (SystemClock.elapsedRealtime() - startedAt));
+            title = pickRandomTitleFromClassificationDbOnce(context, random, baseMode);
+        }
+        if(title != null) {
+            title.setSourceSite("ntk");
+            Log.d(TAG, "ntk_true_random_title_db baseMode=" + baseMode
+                    + ",id=" + title.getId()
+                    + ",path=" + title.getPath()
+                    + ",name=" + title.getName());
+        }
+        return title;
+    }
+
+    private static Title pickRandomTitleFromClassificationDbOnce(Context context, Random random, int baseMode) {
+        boolean comic = baseMode == MTitle.base_comic;
+        int total = ClassificationDbStore.getTitleCount(context, comic, "ntk");
+        if(total <= 0)
+            return null;
+        for(int attempt = 0; attempt < 8; attempt++) {
+            int offset = random.nextInt(total);
+            ArrayList<Title> titles = ClassificationDbStore.getTitles(context, comic, "ntk", offset, 1);
+            if(titles.size() == 0)
+                continue;
+            Title title = titles.get(0);
+            if(title == null || title.getPath() == null || title.getPath().trim().length() == 0)
+                continue;
+            String expected = comic ? "/manhwa/" : "/webtoon/";
+            if(!title.getPath().startsWith(expected))
+                continue;
+            return title;
+        }
+        return null;
+    }
+
+    private static Title pickRandomTitleFromNumericProbe(CustomHttpClient client, Random random, int baseMode) {
+        if(client.hasRecentCloudflareChallenge()
+                && !client.hasNtkAccessProof()
+                && !client.hasRecentNtkAccessVerification()) {
+            Log.d(TAG, "ntk_true_random_numeric_probe_after_challenge baseMode=" + baseMode
+                    + ",reason=recent_challenge_without_access_proof");
+        }
+        String segment = baseMode == MTitle.base_webtoon ? "webtoon" : "manhwa";
+        for(int attempt = 0; attempt < 28; attempt++) {
+            int id = randomNtkNumericTitleId(random, baseMode);
+            Title title = new Title("ntk-" + segment + "-" + id, "", "",
+                    new ArrayList<>(), "", id, baseMode);
+            title.setSourceSite("ntk");
+            title.setPath("/" + segment + "/" + id);
+            long startedAt = SystemClock.elapsedRealtime();
+            int result = title.fetchEps(client);
+            int episodes = title.getEps() == null ? 0 : title.getEps().size();
+            Log.d(TAG, "ntk_true_random_numeric_probe baseMode=" + baseMode
+                    + ",attempt=" + attempt
+                    + ",id=" + id
+                    + ",path=" + title.getPath()
+                    + ",result=" + result
+                    + ",episodes=" + episodes
+                    + ",ms=" + (SystemClock.elapsedRealtime() - startedAt));
+            if(result == Title.LOAD_OK && episodes > 0)
+                return title;
+            if(Thread.currentThread().isInterrupted())
+                return null;
+        }
+        return null;
+    }
+
+    private static int randomNtkNumericTitleId(Random random, int baseMode) {
+        int roll = random.nextInt(100);
+        if(baseMode == MTitle.base_webtoon) {
+            if(roll < 82)
+                return 1 + random.nextInt(24_000);
+            if(roll < 95)
+                return 24_001 + random.nextInt(16_000);
+            return 800_000 + random.nextInt(120_000);
+        }
+        if(roll < 86)
+            return 1 + random.nextInt(28_000);
+        return 28_001 + random.nextInt(12_000);
     }
 
     private static Title pickRandomTitleFromApi(CustomHttpClient client, Random random, int baseMode) throws Exception {
@@ -162,7 +293,6 @@ public class NtkRandomStressInstrumentedTest {
         String[][] sections = MainPageWebtoon.getSections(baseMode, true);
         if(sections == null || sections.length == 0)
             return null;
-        int blockedAttempts = 0;
         for(int attempt = 0; attempt < 18; attempt++) {
             String[] section = sections[random.nextInt(sections.length)];
             if(section == null || section.length < 2 || section[1] == null || section[1].length() == 0)
@@ -180,49 +310,31 @@ public class NtkRandomStressInstrumentedTest {
                             + ",name=" + title.getName());
                     return title;
                 }
-                CustomHttpClient.PageResponse page = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
-                ArrayList<Title> parsed = MainPageWebtoon.parseWolfTitles(
-                        Jsoup.parse(page.body == null ? "" : page.body), baseMode, PAGE_SIZE);
-                ArrayList<Title> candidates = new ArrayList<>();
-                for(Title title : parsed) {
-                    if(title == null || title.getPath() == null || title.getPath().length() == 0)
-                        continue;
-                    title.setSourceSite("ntk");
-                    candidates.add(title);
-                }
-                Log.d(TAG, "ntk_true_random_html_title_source baseMode=" + baseMode
+                Log.d(TAG, "ntk_true_random_rsc_title_empty baseMode=" + baseMode
                         + ",attempt=" + attempt
-                        + ",path=" + path
-                        + ",code=" + page.code
-                        + ",bodyLen=" + (page.body == null ? 0 : page.body.length())
-                        + ",parsed=" + parsed.size()
-                        + ",candidates=" + candidates.size());
-                if(candidates.size() == 0)
-                    continue;
-                Title title = candidates.get(random.nextInt(candidates.size()));
-                Log.d(TAG, "ntk_true_random_title_html baseMode=" + baseMode
-                        + ",path=" + path
-                        + ",id=" + title.getId()
-                        + ",titlePath=" + title.getPath()
-                        + ",name=" + title.getName());
-                return title;
+                        + ",path=" + path);
             } catch (Exception e) {
                 Log.d(TAG, "ntk_true_random_html_title_skip baseMode=" + baseMode
                         + ",attempt=" + attempt
                         + ",path=" + path
                         + ",type=" + e.getClass().getSimpleName()
                         + ",message=" + e.getMessage());
-                if(isCloudflareFailure(e) && ++blockedAttempts >= 2)
-                    break;
             }
         }
         return null;
     }
 
-    private static ArrayList<Title> pickRandomTitleCandidatesFromRsc(CustomHttpClient client, String path, int baseMode) {
+    private static ArrayList<Title> pickRandomTitleCandidatesFromRsc(CustomHttpClient client, String path, int baseMode) throws Exception {
         ArrayList<Title> candidates = new ArrayList<>();
         try {
             CustomHttpClient.PageResponse rsc = client.mgetNtkRscPage(path, PAGE_CACHE_TTL_MS);
+            if(rsc != null && client.isCloudflareChallengeResponse(rsc.code, rsc.body)) {
+                Log.d(TAG, "ntk_true_random_rsc_title_blocked baseMode=" + baseMode
+                        + ",path=" + path
+                        + ",code=" + rsc.code
+                        + ",bodyLen=" + (rsc.body == null ? 0 : rsc.body.length()));
+                throw new Exception("Cloudflare challenge RSC code=" + rsc.code + " path=" + path);
+            }
             ArrayList<Title> parsed = MainPageWebtoon.parseNtkTitleListPayload(
                     rsc == null ? "" : rsc.body, baseMode, PAGE_SIZE);
             for(Title title : parsed) {
@@ -242,6 +354,7 @@ public class NtkRandomStressInstrumentedTest {
                     + ",path=" + path
                     + ",type=" + e.getClass().getSimpleName()
                     + ",message=" + e.getMessage());
+            throw e;
         }
         return candidates;
     }
@@ -347,7 +460,7 @@ public class NtkRandomStressInstrumentedTest {
                     + " elapsedMs=" + firstMs, ready);
             ReaderV2Activity reader = activity instanceof ReaderV2Activity ? (ReaderV2Activity) activity : null;
             int initialPageCount = reader == null ? -1 : readPageCount(reader);
-            probeScrollContinuity(context, device, run, mode, episode, scrollSteps);
+            probeScrollContinuity(context, device, reader, run, mode, episode, scrollSteps);
             if(appendProbe && reader != null)
                 probeNextAppend(device, reader, run, mode, episode, nextEpisode,
                         initialPageCount, appendSteps);
@@ -438,29 +551,37 @@ public class NtkRandomStressInstrumentedTest {
         return ready[0];
     }
 
-    private static void probeScrollContinuity(Context context, UiDevice device, int run,
+    private static void probeScrollContinuity(Context context, UiDevice device, ReaderV2Activity reader, int run,
                                               String mode, Manga episode, int steps) {
         File screenshot = new File(context.getExternalCacheDir(), "ntk-random-scroll-" + run + ".png");
-        int width = Math.max(1, device.getDisplayWidth());
-        int height = Math.max(1, device.getDisplayHeight());
-        int startX = width / 2;
-        int startY = (int)(height * 0.82f);
-        int endY = (int)(height * 0.24f);
         for(int step = 0; step < steps; step++) {
             long before = SystemClock.elapsedRealtime();
-            device.swipe(startX, startY, startX, endY, 36);
+            long dispatchMs = swipeReader(device, reader, 0.82f, 0.24f, 36);
             long swipeAt = SystemClock.elapsedRealtime();
             device.waitForIdle(450L);
             long idleAt = SystemClock.elapsedRealtime();
+            long screenshotStart = SystemClock.elapsedRealtime();
             boolean captured = device.takeScreenshot(screenshot);
+            long screenshotAt = SystemClock.elapsedRealtime();
             String stats = captured ? screenshotStats(screenshot) : "screenshot=false";
+            long statsAt = SystemClock.elapsedRealtime();
+            ReaderSurfaceView.VisibleCoverageSnapshot coverage = readVisibleCoverage(reader);
             Log.d(TAG, "ntk_true_random_scroll run=" + run
                     + ",mode=" + mode
                     + ",step=" + step
-                    + ",elapsedMs=" + (SystemClock.elapsedRealtime() - before)
+                    + ",elapsedMs=" + (statsAt - before)
+                    + ",dispatchMs=" + dispatchMs
+                    + ",postSwipeMs=" + (swipeAt - before - dispatchMs)
                     + ",idleMs=" + (idleAt - swipeAt)
+                    + ",screenshotMs=" + (screenshotAt - screenshotStart)
+                    + ",statsMs=" + (statsAt - screenshotAt)
                     + ",path=" + episode.getNtkEpisodePath()
+                    + ",coverage=" + formatCoverage(coverage)
                     + "," + stats);
+            assertVisibleViewportReady("scroll run=" + run
+                    + " mode=" + mode
+                    + " step=" + step
+                    + " path=" + episode.getNtkEpisodePath(), coverage);
         }
     }
 
@@ -474,34 +595,32 @@ public class NtkRandomStressInstrumentedTest {
             return;
         }
         int before = initialPageCount > 0 ? initialPageCount : readPageCount(reader);
-        if(readPageCount(reader) > before) {
+        if(readPageCount(reader) > before || hasLoadedEpisode(reader, nextEpisode)) {
             Log.d(TAG, "ntk_true_random_append_next run=" + run
                     + ",mode=" + mode
                     + ",expected=true,success=true,alreadyAppended=true"
+                    + ",alreadyLoaded=" + hasLoadedEpisode(reader, nextEpisode)
                     + ",before=" + before
                     + ",after=" + readPageCount(reader)
                     + ",path=" + episode.getNtkEpisodePath()
                     + ",nextPath=" + nextEpisode.getNtkEpisodePath());
             return;
         }
-        int width = Math.max(1, device.getDisplayWidth());
-        int height = Math.max(1, device.getDisplayHeight());
-        int startX = width / 2;
-        int startY = (int)(height * 0.84f);
-        int endY = (int)(height * 0.16f);
         boolean reachedBoundary = false;
         for(int step = 0; step < maxSteps; step++) {
-            device.swipe(startX, startY, startX, endY, 38);
+            swipeReader(device, reader, 0.84f, 0.16f, 38);
             device.waitForIdle(550L);
             int after = readPageCount(reader);
             int current = readCurrentPage(reader);
-            if(after > before) {
+            if(after > before || hasLoadedEpisode(reader, nextEpisode)) {
                 Log.d(TAG, "ntk_true_random_append_next run=" + run
                         + ",mode=" + mode
                         + ",expected=true,success=true,step=" + step
+                        + ",alreadyLoaded=" + hasLoadedEpisode(reader, nextEpisode)
                         + ",before=" + before
                         + ",after=" + after
                         + ",currentPage=" + current
+                        + ",progress=" + readProgress(reader)
                         + ",path=" + episode.getNtkEpisodePath()
                         + ",nextPath=" + nextEpisode.getNtkEpisodePath());
                 return;
@@ -518,6 +637,7 @@ public class NtkRandomStressInstrumentedTest {
                 + ",before=" + before
                 + ",after=" + after
                 + ",currentPage=" + current
+                + ",progress=" + readProgress(reader)
                 + ",path=" + episode.getNtkEpisodePath()
                 + ",nextPath=" + nextEpisode.getNtkEpisodePath());
         assertTrue("Reached next boundary without append run=" + run
@@ -526,7 +646,8 @@ public class NtkRandomStressInstrumentedTest {
                 + " next=" + nextEpisode.getNtkEpisodePath()
                 + " before=" + before
                 + " after=" + after
-                + " currentPage=" + current,
+                + " currentPage=" + current
+                + " progress=" + readProgress(reader),
                 !reachedBoundary);
     }
 
@@ -534,13 +655,8 @@ public class NtkRandomStressInstrumentedTest {
                                                String mode, Manga episode, Manga previousEpisode,
                                                int maxSteps) {
         int before = readPageCount(reader);
-        int width = Math.max(1, device.getDisplayWidth());
-        int height = Math.max(1, device.getDisplayHeight());
-        int startX = width / 2;
-        int startY = (int)(height * 0.22f);
-        int endY = (int)(height * 0.84f);
         for(int step = 0; step < maxSteps; step++) {
-            device.swipe(startX, startY, startX, endY, 36);
+            swipeReader(device, reader, 0.22f, 0.84f, 36);
             device.waitForIdle(650L);
             int after = readPageCount(reader);
             int current = readCurrentPage(reader);
@@ -551,9 +667,21 @@ public class NtkRandomStressInstrumentedTest {
                         + ",before=" + before
                         + ",after=" + after
                         + ",currentPage=" + current
+                        + ",progress=" + readProgress(reader)
                         + ",path=" + episode.getNtkEpisodePath()
                         + ",previousPath=" + previousEpisode.getNtkEpisodePath());
                 return true;
+            }
+            if(step == 0 || step == maxSteps - 1) {
+                Log.d(TAG, "ntk_true_random_append_previous_probe run=" + run
+                        + ",mode=" + mode
+                        + ",step=" + step
+                        + ",before=" + before
+                        + ",after=" + after
+                        + ",currentPage=" + current
+                        + ",progress=" + readProgress(reader)
+                        + ",path=" + episode.getNtkEpisodePath()
+                        + ",previousPath=" + previousEpisode.getNtkEpisodePath());
             }
         }
         Log.d(TAG, "ntk_true_random_append_previous run=" + run
@@ -562,6 +690,7 @@ public class NtkRandomStressInstrumentedTest {
                 + ",before=" + before
                 + ",after=" + readPageCount(reader)
                 + ",currentPage=" + readCurrentPage(reader)
+                + ",progress=" + readProgress(reader)
                 + ",path=" + episode.getNtkEpisodePath()
                 + ",previousPath=" + previousEpisode.getNtkEpisodePath());
         return false;
@@ -577,6 +706,99 @@ public class NtkRandomStressInstrumentedTest {
         final int[] value = new int[]{-1};
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> value[0] = activity.testCurrentPage());
         return value[0];
+    }
+
+    private static boolean hasLoadedEpisode(ReaderV2Activity activity, Manga episode) {
+        final boolean[] value = new boolean[]{false};
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(
+                () -> value[0] = activity.testHasLoadedEpisode(episode));
+        return value[0];
+    }
+
+    private static String readProgress(ReaderV2Activity activity) {
+        final String[] value = new String[]{"null"};
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            ReaderSurfaceView.ProgressPosition progress = activity.testCurrentProgressPosition();
+            value[0] = progress == null ? "null" : progress.getPage() + ":" + progress.getOffset();
+        });
+        return value[0];
+    }
+
+    private static ReaderSurfaceView.VisibleCoverageSnapshot readVisibleCoverage(ReaderV2Activity activity) {
+        final ReaderSurfaceView.VisibleCoverageSnapshot[] value =
+                new ReaderSurfaceView.VisibleCoverageSnapshot[]{null};
+        if(activity == null)
+            return null;
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(
+                () -> value[0] = activity.testVisibleCoverageSnapshot());
+        return value[0];
+    }
+
+    private static void assertVisibleViewportReady(String label,
+                                                   ReaderSurfaceView.VisibleCoverageSnapshot coverage) {
+        assertTrue("Expected visible viewport with no loading " + label
+                        + " coverage=" + formatCoverage(coverage),
+                coverage != null
+                        && coverage.getMissingPx() <= 2
+                        && coverage.getPlaceholderPx() == 0
+                        && coverage.getVisibleLoading() == 0
+                        && coverage.getVisibleErrors() == 0
+                        && coverage.getDrawablePx() >= Math.max(1, coverage.getViewportPx() - 2));
+    }
+
+    private static String formatCoverage(ReaderSurfaceView.VisibleCoverageSnapshot coverage) {
+        if(coverage == null)
+            return "null";
+        return "viewportPx=" + coverage.getViewportPx()
+                + ";drawablePx=" + coverage.getDrawablePx()
+                + ";missingPx=" + coverage.getMissingPx()
+                + ";placeholderPx=" + coverage.getPlaceholderPx()
+                + ";drawableItems=" + coverage.getDrawableItems()
+                + ";items=" + coverage.getTotalItems()
+                + ";loading=" + coverage.getVisibleLoading()
+                + ";errors=" + coverage.getVisibleErrors()
+                + ";cards=" + coverage.getVisibleCards()
+                + ";busy=" + coverage.getBusy()
+                + ";pages=" + coverage.getPageCount();
+    }
+
+    private static long swipeReader(UiDevice device, ReaderV2Activity reader,
+                                    float startYRatio, float endYRatio, int steps) {
+        if(reader == null)
+            return 0L;
+        final int[] bounds = new int[4];
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            View view = reader.findViewById(ml.melun.mangaview.R.id.strip);
+            if(view == null)
+                view = reader.getWindow().getDecorView();
+            int[] location = new int[2];
+            view.getLocationOnScreen(location);
+            bounds[0] = location[0];
+            bounds[1] = location[1];
+            bounds[2] = Math.max(1, view.getWidth());
+            bounds[3] = Math.max(1, view.getHeight());
+        });
+        int x = bounds[0] + bounds[2] / 2;
+        float startY = bounds[1] + bounds[3] * startYRatio;
+        float endY = bounds[1] + bounds[3] * endYRatio;
+        long startedAt = SystemClock.elapsedRealtime();
+        boolean swiped = device.swipe(x, Math.round(startY), x, Math.round(endY), Math.max(1, steps));
+        assertTrue("Expected reader swipe to be injected", swiped);
+        return SystemClock.elapsedRealtime() - startedAt;
+    }
+
+    private static void dispatchTouch(ReaderV2Activity reader, long downTime, long eventTime,
+                                      int action, float x, float y) {
+        MotionEvent event = MotionEvent.obtain(downTime, eventTime, action, x, y, 0);
+        event.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        try {
+            boolean injected = InstrumentationRegistry.getInstrumentation()
+                    .getUiAutomation()
+                    .injectInputEvent(event, true);
+            assertTrue("Expected injected touch event action=" + action, injected);
+        } finally {
+            event.recycle();
+        }
     }
 
     private static String screenshotStats(File screenshot) {

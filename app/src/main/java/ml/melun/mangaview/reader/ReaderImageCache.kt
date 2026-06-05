@@ -295,30 +295,37 @@ object ReaderImageCache {
         foreground: Boolean = false
     ): okhttp3.Response {
         val foregroundApiFallbackTask: FutureTask<List<String>?>? = null
+        var initialFailure: IOException? = null
         val response = try {
             requestForForegroundMode(context, manga, image, foreground)
         } catch (e: IOException) {
             if (!shouldTryNtkGeneratedExtensionFallback(image)) throw e
+            initialFailure = e
             null
         }
         if (response != null && (response.isSuccessful || !shouldTryNtkGeneratedExtensionFallback(image))) return response
         if (response == null && !shouldTryNtkGeneratedExtensionFallback(image)) {
             throw IOException("Generated image request failed before fallback: $image")
         }
-        val failedCode = response?.code ?: 0
+        val failedCode = response?.code ?: imageFailureCode(initialFailure)
+        var generated404 = failedCode == 404
         if (failedCode == 404 && isLikelyPastGeneratedTail(manga, image)) {
             throw IOException("Generated image past tail: $image")
         }
         response?.close()
-        val apiFallbackTask = foregroundApiFallbackTask ?: if (failedCode == 404) {
-            ntkGeneratedTarget(image)?.let { startNtkApiFallbackImages(context, manga, it) }
-        } else {
-            null
-        }
+        val target = ntkGeneratedTarget(image)
+        var apiFallbackTask = foregroundApiFallbackTask ?: if (generated404) target?.let {
+            startNtkApiFallbackImages(context, manga, it)
+        } else null
         for (candidate in ntkGeneratedExtensionFallbacks(image)) {
             val fallback = try {
                 requestForForegroundMode(context, manga, candidate, foreground)
             } catch (e: IOException) {
+                if (imageFailureCode(e) == 404) {
+                    generated404 = true
+                    if (apiFallbackTask == null)
+                        apiFallbackTask = target?.let { startNtkApiFallbackImages(context, manga, it) }
+                }
                 continue
             }
             if (fallback.isSuccessful) return fallback
@@ -326,9 +333,14 @@ object ReaderImageCache {
                 fallback.close()
                 throw IOException("Generated image past tail: $candidate")
             }
+            if (fallback.code == 404) {
+                generated404 = true
+                if (apiFallbackTask == null)
+                    apiFallbackTask = target?.let { startNtkApiFallbackImages(context, manga, it) }
+            }
             fallback.close()
         }
-        if (failedCode == 404) {
+        if (generated404) {
             retryNtkGeneratedViaApiFallback(context, manga, image, foreground, apiFallbackTask)?.let { return it }
             retryNtkGeneratedAfterNativeAck(context, manga, image, foreground)?.let { return it }
             return requestForForegroundMode(context, manga, image, foreground)
@@ -336,6 +348,19 @@ object ReaderImageCache {
         retryNtkGeneratedAfterNativeAck(context, manga, image, foreground)?.let { return it }
         retryNtkGeneratedViaApiFallback(context, manga, image, foreground)?.let { return it }
         return requestForForegroundMode(context, manga, image, foreground)
+    }
+
+    private fun imageFailureCode(error: Throwable?): Int {
+        var current = error
+        while (current != null) {
+            Regex("Image request failed: (\\d+)").find(current.message.orEmpty())
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toIntOrNull()
+                ?.let { return it }
+            current = current.cause
+        }
+        return 0
     }
 
     private fun isLikelyPastGeneratedTail(manga: Manga, image: String): Boolean {

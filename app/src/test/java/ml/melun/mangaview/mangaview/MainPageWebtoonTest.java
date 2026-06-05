@@ -383,6 +383,25 @@ public class MainPageWebtoonTest {
     }
 
     @Test
+    public void parseNtkTitleListPayloadReadsRscInitialWorks() {
+        String rscPayload = "5:[\"$L2d\",[\"$\",\"main\",null,{\"children\":["
+                + "[\"$\",\"$L30\",null,{\"initialWorks\":["
+                + "{\"sourceWorkId\":\"3723\",\"title\":\"H2\",\"thumbnailUrl\":\"https://11toon8.com/data/toon_category/3723.webp\",\"genre\":\"sports,anime\",\"ep\":\"338\"},"
+                + "{\"sourceWorkId\":\"u-slug-id\",\"title\":\"Slug Work\",\"thumbnailUrl\":\"/cover.webp\",\"latestEpisodeNumber\":12}"
+                + "],\"initialHasMore\":true}]]}]]";
+
+        ArrayList<Title> titles = MainPageWebtoon.parseNtkTitleListPayload(rscPayload, base_comic, 10);
+
+        assertEquals(2, titles.size());
+        assertEquals("H2", titles.get(0).getName());
+        assertEquals("/manhwa/3723", titles.get(0).getPath());
+        assertEquals("ntk", titles.get(0).getSourceSite());
+        assertEquals("338", titles.get(0).getRelease());
+        assertEquals("Slug Work", titles.get(1).getName());
+        assertEquals("/manhwa/u-slug-id", titles.get(1).getPath());
+    }
+
+    @Test
     public void parseWolfTitlesCanPreserveNtkSourceForFallbackSections() {
         ArrayList<Title> titles = MainPageWebtoon.parseWolfTitles(
                 Jsoup.parse("<a class=\"card\" href=\"/manhwa/11117\">"

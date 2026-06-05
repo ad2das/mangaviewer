@@ -135,7 +135,7 @@ public class TitleTest {
     }
 
     @Test
-    public void ntkRscTitlePayloadIsPreferredForNumericAndSlugTitlePaths() {
+    public void ntkRscTitlePayloadIsPreferredForTitlePaths() {
         assertTrue(Title.shouldPreferNtkRscTitlePayloadForTest("/webtoon/840894"));
         assertTrue(Title.shouldPreferNtkRscTitlePayloadForTest("/webtoon/u-mp9vqiuy-y68e"));
         assertFalse(Title.shouldPreferNtkRscTitlePayloadForTest("/webtoon/840894/1073395"));

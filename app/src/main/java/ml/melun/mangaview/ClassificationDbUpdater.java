@@ -3,6 +3,7 @@ package ml.melun.mangaview;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.database.sqlite.SQLiteDatabase;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.work.ExistingWorkPolicy;
@@ -35,6 +36,7 @@ import okhttp3.Response;
 import okhttp3.ResponseBody;
 
 public final class ClassificationDbUpdater extends Worker {
+    private static final String TAG = "ViewerPerf";
     private static final long CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L;
     private static final long FAILURE_RETRY_MS = 60 * 60 * 1000L;
     private static final int MAX_PATCH_CHAIN = 8;
@@ -101,16 +103,25 @@ public final class ClassificationDbUpdater extends Worker {
             ClassificationDbStore.cleanupLegacyFiles(context);
             long now = System.currentTimeMillis();
             long lastChecked = pref.getLong("checkedAt", 0);
-            if(now - lastChecked < CHECK_INTERVAL_MS)
+            File currentDb = ClassificationDbStore.dbFile(context);
+            boolean missingDatabase = currentDb == null || !currentDb.exists() || currentDb.length() <= 0;
+            if(!missingDatabase && now - lastChecked < CHECK_INTERVAL_MS) {
+                Log.d(TAG, "classification_db_skip_recent version=" + ClassificationDbStore.installedVersion(context));
                 return;
+            }
             SharedPreferences.Editor editor = pref.edit().putLong("checkedAt", now);
             try {
                 Manifest manifest = fetchManifest();
                 if(manifest == null || manifest.version.length() == 0) {
+                    Log.d(TAG, "classification_db_manifest_empty missing=" + missingDatabase);
                     editor.apply();
                     return;
                 }
                 String currentVersion = ClassificationDbStore.installedVersion(context);
+                Log.d(TAG, "classification_db_manifest version=" + manifest.version
+                        + ",current=" + currentVersion
+                        + ",missing=" + missingDatabase
+                        + ",base=" + manifest.baseUrl);
                 if(manifest.version.equals(currentVersion)) {
                     editor.putString("version", currentVersion).apply();
                     return;
@@ -122,17 +133,23 @@ public final class ClassificationDbUpdater extends Worker {
                 if(!updated)
                     updated = installBase(manifest);
                 if(updated) {
+                    Log.d(TAG, "classification_db_updated version=" + manifest.version);
                     editor.putString("version", manifest.version);
                     ClassificationDbStore.invalidate();
                 } else {
+                    Log.d(TAG, "classification_db_update_failed version=" + manifest.version);
                     long retryCheckedAt = System.currentTimeMillis() - CHECK_INTERVAL_MS + FAILURE_RETRY_MS;
                     editor.putLong("checkedAt", retryCheckedAt);
                 }
                 editor.apply();
             } catch (IOException e) {
+                Log.d(TAG, "classification_db_io_error " + e.getClass().getSimpleName()
+                        + ": " + e.getMessage());
                 long retryCheckedAt = System.currentTimeMillis() - CHECK_INTERVAL_MS + FAILURE_RETRY_MS;
                 editor.putLong("checkedAt", retryCheckedAt).apply();
             } catch (Exception e) {
+                Log.d(TAG, "classification_db_error " + e.getClass().getSimpleName()
+                        + ": " + e.getMessage());
                 CrashReporter.record(e);
                 editor.apply();
             }
@@ -145,8 +162,10 @@ public final class ClassificationDbUpdater extends Worker {
                     .header("Cache-Control", "no-cache")
                     .build();
             try(Response response = CLIENT.newCall(request).execute()) {
-                if(!response.isSuccessful() || response.body() == null)
+                if(!response.isSuccessful() || response.body() == null) {
+                    Log.d(TAG, "classification_db_manifest_http code=" + response.code());
                     return null;
+                }
                 JSONObject json = new JSONObject(response.body().string());
                 Manifest manifest = new Manifest();
                 manifest.version = json.optString("version", "");
@@ -172,26 +191,38 @@ public final class ClassificationDbUpdater extends Worker {
         }
 
         private boolean installBase(Manifest manifest) {
-            if(manifest.baseUrl.length() == 0 || manifest.baseSha256.length() == 0)
+            if(manifest.baseUrl.length() == 0 || manifest.baseSha256.length() == 0) {
+                Log.d(TAG, "classification_db_base_missing_url_or_sha");
                 return false;
+            }
             File dir = ClassificationDbStore.dbDir(context);
-            if(dir == null || (!dir.exists() && !dir.mkdirs()))
+            if(dir == null || (!dir.exists() && !dir.mkdirs())) {
+                Log.d(TAG, "classification_db_base_dir_failed");
                 return false;
+            }
             File target = ClassificationDbStore.dbFile(context);
             File tmp = new File(dir, ClassificationDbStore.DB_FILE_NAME + ".download");
             deleteIfExists(tmp);
             try {
                 String sha = downloadGzipToFile(manifest.baseUrl, tmp);
                 if(!manifest.baseSha256.equalsIgnoreCase(sha)) {
+                    Log.d(TAG, "classification_db_base_sha_mismatch expected=" + manifest.baseSha256
+                            + ",actual=" + sha);
                     deleteIfExists(tmp);
                     return false;
                 }
                 if(!validateDatabase(tmp, manifest.version)) {
+                    Log.d(TAG, "classification_db_base_validate_failed version=" + manifest.version);
                     deleteIfExists(tmp);
                     return false;
                 }
-                return replaceAtomically(target, tmp);
+                boolean replaced = replaceAtomically(target, tmp);
+                Log.d(TAG, "classification_db_base_replace result=" + replaced
+                        + ",bytes=" + (target == null || !target.exists() ? 0 : target.length()));
+                return replaced;
             } catch (Exception e) {
+                Log.d(TAG, "classification_db_base_error " + e.getClass().getSimpleName()
+                        + ": " + e.getMessage());
                 CrashReporter.record(e);
                 deleteIfExists(tmp);
                 return false;

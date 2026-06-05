@@ -162,7 +162,7 @@ public final class ClassificationDbStore {
         ArrayList<Title> result = new ArrayList<>();
         Cursor cursor = null;
         try {
-            String sql = "SELECT t.id,t.name,t.thumb,t.release "
+            String sql = "SELECT t.id,t.path,t.name,t.thumb,t.release "
                     + "FROM classification_title_tags g "
                     + "JOIN classification_titles t ON t.kind=g.kind AND t.source_site=g.source_site AND t.id=g.id "
                     + "WHERE g.kind=? AND g.source_site=? AND g.normalized_tag=? "
@@ -173,9 +173,8 @@ public final class ClassificationDbStore {
             while(cursor.moveToNext()) {
                 int id = cursor.getInt(0);
                 ArrayList<String> tags = readTags(db, kind, site, id);
-                Title title = new Title(cursor.getString(1), cursor.getString(2), "", tags, cursor.getString(3), id, baseMode);
-                title.setSourceSite(site);
-                result.add(title);
+                result.add(titleFromClassificationRow(baseMode, site, id, cursor.getString(1),
+                        cursor.getString(2), cursor.getString(3), cursor.getString(4), tags));
             }
         } catch (Exception e) {
             result.clear();
@@ -194,6 +193,10 @@ public final class ClassificationDbStore {
     }
 
     public static ArrayList<Title> getTitles(Context context, boolean comic, String sourceSite, int limit) {
+        return getTitles(context, comic, sourceSite, 0, limit);
+    }
+
+    public static ArrayList<Title> getTitles(Context context, boolean comic, String sourceSite, int offset, int limit) {
         SQLiteDatabase db = openReadOnly(context);
         if(db == null)
             return new ArrayList<>();
@@ -203,14 +206,15 @@ public final class ClassificationDbStore {
         String site = normalizeSourceSite(sourceSite);
         try {
             cursor = db.rawQuery(
-                    "SELECT id,name,thumb,release FROM classification_titles WHERE kind=? AND source_site=? ORDER BY id LIMIT ?",
-                    new String[]{kind, site, String.valueOf(limit > 0 ? limit : 1000000)});
+                "SELECT id,path,name,thumb,release FROM classification_titles WHERE kind=? AND source_site=? ORDER BY id LIMIT ? OFFSET ?",
+                    new String[]{kind, site, String.valueOf(limit > 0 ? limit : 1000000),
+                            String.valueOf(Math.max(0, offset))});
             int baseMode = comic ? base_comic : base_webtoon;
             while(cursor.moveToNext()) {
                 int id = cursor.getInt(0);
-                Title title = new Title(cursor.getString(1), cursor.getString(2), "", readTags(db, kind, site, id), cursor.getString(3), id, baseMode);
-                title.setSourceSite(site);
-                result.add(title);
+                result.add(titleFromClassificationRow(baseMode, site, id, cursor.getString(1),
+                        cursor.getString(2), cursor.getString(3), cursor.getString(4),
+                        readTags(db, kind, site, id)));
             }
         } catch (Exception e) {
             result.clear();
@@ -219,6 +223,24 @@ public final class ClassificationDbStore {
                 cursor.close();
         }
         return result;
+    }
+
+    public static int getTitleCount(Context context, boolean comic, String sourceSite) {
+        SQLiteDatabase db = openReadOnly(context);
+        if(db == null)
+            return 0;
+        Cursor cursor = null;
+        try {
+            cursor = db.rawQuery(
+                    "SELECT COUNT(*) FROM classification_titles WHERE kind=? AND source_site=?",
+                    new String[]{kind(comic), normalizeSourceSite(sourceSite)});
+            return cursor.moveToFirst() ? cursor.getInt(0) : 0;
+        } catch (Exception e) {
+            return 0;
+        } finally {
+            if(cursor != null)
+                cursor.close();
+        }
     }
 
     public static int getGenreCount(Context context, boolean comic, String genre) {
@@ -390,6 +412,15 @@ public final class ClassificationDbStore {
         String sourceSite = cursor.getColumnCount() > 4 ? cursor.getString(4) : site;
         String path = cursor.getColumnCount() > 5 ? cursor.getString(5) : "";
         return new Entry(id, sourceSite, path, cursor.getString(1), cursor.getString(2), cursor.getString(3), readTags(db, kind, sourceSite, id));
+    }
+
+    private static Title titleFromClassificationRow(int baseMode, String sourceSite, int id, String path,
+                                                    String name, String thumb, String release,
+                                                    List<String> tags) {
+        Title title = new Title(name, thumb, "", tags, release, id, baseMode);
+        title.setSourceSite(sourceSite);
+        title.setPath(path);
+        return title;
     }
 
     private static ArrayList<String> readTags(SQLiteDatabase db, String kind, String sourceSite, int id) {

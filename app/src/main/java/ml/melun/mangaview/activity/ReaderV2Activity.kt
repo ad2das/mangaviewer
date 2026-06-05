@@ -92,6 +92,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var pendingBoundaryStatus = false
     private var pendingBoundaryCaptchaRetry = false
     private var pendingPrependRevealRequests = 0
+    private var pendingPrependRevealInsertedCount = 0
+    private var pendingPrependRevealFirstDrawableIndex = -1
+    private var pendingPrependRevealLastDrawableIndex = -1
     private var readerWindowBusy = false
     private var deferredBoundaryDirection = 0
     private var deferredBoundaryAnchor = -1
@@ -114,6 +117,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var viewerLaunchSourceSite = ""
     private var firstDrawableMetricLogged = false
     private val launchDrawableMetricPages = HashSet<Int>()
+    private val pendingPageBitmaps = LinkedHashMap<Int, Bitmap>()
+    private val pendingPageTiles = LinkedHashMap<Int, PendingPageTiles>()
+    private val pendingPageCards = LinkedHashMap<Int, String>()
+    private val pendingPageErrors = LinkedHashMap<Int, String>()
     private val initialDrawGateTimeoutRunnable = Runnable {
         if (!pagesReady && !destroyed && !isFinishing) {
             initialStatusPending = false
@@ -153,6 +160,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             flushDeferredBoundaryAppend()
         }
     }
+
+    private data class PendingPageTiles(
+        val pageWidth: Int,
+        val pageHeight: Int,
+        val tiles: List<ReaderTile>
+    )
 
     private data class AdjacentResolution(
         val target: Manga?,
@@ -292,7 +305,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             pageView
         )
         setContentView(root)
-        installInitialDrawGate(root)
         val title = Gson().fromJson<Title?>(intent.getStringExtra("title"), object : TypeToken<Title?>() {}.type)
         val manga = Gson().fromJson<Manga?>(intent.getStringExtra("manga"), object : TypeToken<Manga?>() {}.type)
         if (manga == null) {
@@ -424,6 +436,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         deferredBoundaryAnchor = -1
         renderView.setWindowListener(null)
         renderView.stopRenderingAndClearPages()
+        clearPendingPageCallbacks()
         session?.cancel()
         session = null
         super.onDestroy()
@@ -431,12 +444,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPagesReady(count: Int) {
         pagesReady = true
+        clearDeferredPrependReveal()
         initialStatusPending = false
         statusHandler.removeCallbacks(showInitialStatusRunnable)
         hideBoundaryStatus()
         pageCount = count
         renderView.setPageCount(count)
         updateCurrentEpisode(currentPage)
+        flushPendingPageCallbacks()
     }
 
     override fun onPagesAppended(count: Int) {
@@ -453,23 +468,37 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPagesPrepended(count: Int, insertedCount: Int) {
         if (pagesReady) {
-            val revealPrependedBoundary = consumePrependedBoundaryReveal(insertedCount)
+            val revealPrependedBoundary = false
+            val shouldRevealWhenReady = consumePrependedBoundaryReveal(insertedCount)
             pendingBoundaryStartInteractionMs = 0L
             hideBoundaryStatus()
             pageCount = count
             currentPage += insertedCount
             if (pendingInitialRestorePage >= 0) pendingInitialRestorePage += insertedCount
             renderView.prependPageCount(count, insertedCount, revealPrependedBoundary)
+            if (shouldRevealWhenReady) {
+                pendingPrependRevealInsertedCount = insertedCount
+                pendingPrependRevealFirstDrawableIndex = (insertedCount - 3).coerceAtLeast(0)
+                pendingPrependRevealLastDrawableIndex = (insertedCount - 2).coerceAtLeast(0)
+                renderView.holdPrependedBoundaryReveal(currentPage)
+            } else {
+                clearDeferredPrependReveal()
+            }
             if (revealPrependedBoundary) {
                 currentPage = (insertedCount - 1).coerceIn(0, count - 1)
             }
-            Log.d(TAG, "pages_prepended total=$count inserted=$insertedCount reveal=$revealPrependedBoundary currentPage=$currentPage")
+            Log.d(
+                TAG,
+                "pages_prepended total=$count inserted=$insertedCount reveal=$revealPrependedBoundary " +
+                    "deferredReveal=$shouldRevealWhenReady currentPage=$currentPage"
+            )
             updateCurrentEpisode(currentPage)
         }
     }
 
     override fun onPagesRemoved(startIndex: Int, removedCount: Int, totalCount: Int) {
         if (pagesReady) {
+            clearDeferredPrependReveal()
             hideBoundaryStatus()
             pageCount = totalCount
             currentPage = when {
@@ -496,13 +525,24 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (pagesReady) {
             currentPage = index
             val initialManga = restoreBookmarkManga(session?.pageInfo(index)?.manga ?: currentManga)
-            pendingInitialRestorePage = index
-            pendingInitialRestoreOffset = p?.getViewerBookmarkOffset(initialManga) ?: 0
-            renderView.holdInitialRestoreRender(index)
-            renderView.lockRestoredPageOffset(index, pendingInitialRestoreOffset)
-            updateCurrentEpisode(index, pendingInitialRestoreOffset, saveProgress = false)
-            applyPendingInitialRestoreIfReady()
+            val offset = p?.getViewerBookmarkOffset(initialManga) ?: 0
+            if (needsInitialRestorePosition(index, offset)) {
+                pendingInitialRestorePage = index
+                pendingInitialRestoreOffset = offset
+                renderView.holdInitialRestoreRender(index)
+                renderView.lockRestoredPageOffset(index, offset)
+                updateCurrentEpisode(index, offset, saveProgress = false)
+                applyPendingInitialRestoreIfReady()
+            } else {
+                pendingInitialRestorePage = -1
+                pendingInitialRestoreOffset = 0
+                updateCurrentEpisode(index, 0, saveProgress = false)
+            }
         }
+    }
+
+    private fun needsInitialRestorePosition(index: Int, offset: Int): Boolean {
+        return index > 0 || offset > 0
     }
 
     private fun restoreBookmarkManga(manga: Manga?): Manga? {
@@ -528,13 +568,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     override fun onPageReady(index: Int, bitmap: Bitmap) {
         MainThreadStallMonitor.trace("reader_on_page_ready") {
             if (pagesReady) {
-                hideBoundaryStatus()
-                renderView.setPageBitmap(index, bitmap)
-                val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
-                logLaunchDrawableMetric(index, "bitmap")
-                if (visibleInitialDrawable) logFirstDrawableMetric(index, "bitmap")
-                if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
-                if (visibleInitialDrawable) releaseInitialDrawGate("page")
+                applyPageBitmap(index, bitmap)
+            } else {
+                rememberPendingPageBitmap(index, bitmap)
             }
         }
     }
@@ -542,13 +578,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     override fun onPageTilesReady(index: Int, pageWidth: Int, pageHeight: Int, tiles: List<ReaderTile>) {
         MainThreadStallMonitor.trace("reader_on_page_tiles_ready") {
             if (pagesReady) {
-                hideBoundaryStatus()
-                renderView.setPageTiles(index, pageWidth, pageHeight, tiles)
-                val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
-                logLaunchDrawableMetric(index, "tiles")
-                if (visibleInitialDrawable) logFirstDrawableMetric(index, "tiles")
-                if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
-                if (visibleInitialDrawable) releaseInitialDrawGate("tiles")
+                applyPageTiles(index, pageWidth, pageHeight, tiles)
+            } else {
+                rememberPendingPageTiles(index, pageWidth, pageHeight, tiles)
             }
         }
     }
@@ -556,9 +588,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     override fun onPageCard(index: Int, title: String) {
         MainThreadStallMonitor.trace("reader_on_page_card") {
             if (pagesReady) {
-                hideBoundaryStatus()
-                renderView.setPageCard(index, title)
-                releaseInitialDrawGate("card")
+                applyPageCard(index, title)
+            } else {
+                rememberPendingPageCard(index, title)
             }
         }
     }
@@ -566,17 +598,118 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     override fun onPageError(index: Int, message: String) {
         MainThreadStallMonitor.trace("reader_on_page_error") {
             if (pagesReady) {
-                hideBoundaryStatus()
-                Log.d(TAG, "page_error_visible index=$index currentPage=$currentPage message=$message")
-                renderView.setPageError(index, message)
-                val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
-                if (visibleInitialDrawable) releaseInitialDrawGate("error")
+                applyPageError(index, message)
+            } else {
+                rememberPendingPageError(index, message)
             }
         }
     }
 
     override fun onPageCleared(index: Int) {
         if (pagesReady) renderView.clearPageBitmap(index)
+    }
+
+    private fun rememberPendingPageBitmap(index: Int, bitmap: Bitmap) {
+        pendingPageTiles.remove(index)
+        pendingPageCards.remove(index)
+        pendingPageErrors.remove(index)
+        pendingPageBitmaps[index] = bitmap
+        Log.d(TAG, "page_ready_deferred index=$index kind=bitmap")
+    }
+
+    private fun rememberPendingPageTiles(index: Int, pageWidth: Int, pageHeight: Int, tiles: List<ReaderTile>) {
+        pendingPageBitmaps.remove(index)
+        pendingPageCards.remove(index)
+        pendingPageErrors.remove(index)
+        pendingPageTiles[index] = PendingPageTiles(pageWidth, pageHeight, tiles)
+        Log.d(TAG, "page_ready_deferred index=$index kind=tiles")
+    }
+
+    private fun rememberPendingPageCard(index: Int, title: String) {
+        pendingPageBitmaps.remove(index)
+        pendingPageTiles.remove(index)
+        pendingPageErrors.remove(index)
+        pendingPageCards[index] = title
+        Log.d(TAG, "page_ready_deferred index=$index kind=card")
+    }
+
+    private fun rememberPendingPageError(index: Int, message: String) {
+        pendingPageBitmaps.remove(index)
+        pendingPageTiles.remove(index)
+        pendingPageCards.remove(index)
+        pendingPageErrors[index] = message
+        Log.d(TAG, "page_ready_deferred index=$index kind=error")
+    }
+
+    private fun flushPendingPageCallbacks() {
+        if (!pagesReady) return
+        if (
+            pendingPageBitmaps.isEmpty() &&
+            pendingPageTiles.isEmpty() &&
+            pendingPageCards.isEmpty() &&
+            pendingPageErrors.isEmpty()
+        ) return
+        val bitmaps = LinkedHashMap(pendingPageBitmaps)
+        val tiles = LinkedHashMap(pendingPageTiles)
+        val cards = LinkedHashMap(pendingPageCards)
+        val errors = LinkedHashMap(pendingPageErrors)
+        clearPendingPageCallbacks()
+        val indexes = (bitmaps.keys + tiles.keys + cards.keys + errors.keys).distinct().sorted()
+        Log.d(TAG, "page_ready_deferred_flush count=${indexes.size} bitmaps=${bitmaps.size} tiles=${tiles.size} cards=${cards.size} errors=${errors.size}")
+        for (index in indexes) {
+            when {
+                errors.containsKey(index) -> applyPageError(index, errors.getValue(index))
+                cards.containsKey(index) -> applyPageCard(index, cards.getValue(index))
+                tiles.containsKey(index) -> {
+                    val pending = tiles.getValue(index)
+                    applyPageTiles(index, pending.pageWidth, pending.pageHeight, pending.tiles)
+                }
+                bitmaps.containsKey(index) -> applyPageBitmap(index, bitmaps.getValue(index))
+            }
+        }
+    }
+
+    private fun clearPendingPageCallbacks() {
+        pendingPageBitmaps.clear()
+        pendingPageTiles.clear()
+        pendingPageCards.clear()
+        pendingPageErrors.clear()
+    }
+
+    private fun applyPageBitmap(index: Int, bitmap: Bitmap) {
+        hideBoundaryStatus()
+        renderView.setPageBitmap(index, bitmap)
+        applyDeferredPrependRevealIfReady(index)
+        val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
+        logLaunchDrawableMetric(index, "bitmap")
+        if (visibleInitialDrawable) logFirstDrawableMetric(index, "bitmap")
+        if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
+        if (visibleInitialDrawable) releaseInitialDrawGate("page")
+    }
+
+    private fun applyPageTiles(index: Int, pageWidth: Int, pageHeight: Int, tiles: List<ReaderTile>) {
+        hideBoundaryStatus()
+        renderView.setPageTiles(index, pageWidth, pageHeight, tiles)
+        applyDeferredPrependRevealIfReady(index)
+        val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
+        logLaunchDrawableMetric(index, "tiles")
+        if (visibleInitialDrawable) logFirstDrawableMetric(index, "tiles")
+        if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
+        if (visibleInitialDrawable) releaseInitialDrawGate("tiles")
+    }
+
+    private fun applyPageCard(index: Int, title: String) {
+        hideBoundaryStatus()
+        renderView.setPageCard(index, title)
+        releaseInitialDrawGate("card")
+    }
+
+    private fun applyPageError(index: Int, message: String) {
+        hideBoundaryStatus()
+        Log.d(TAG, "page_error_visible index=$index currentPage=$currentPage message=$message")
+        renderView.setPageError(index, message)
+        val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
+        if (visibleInitialDrawable) releaseInitialDrawGate("error")
     }
 
     private fun applyPendingInitialRestoreIfReady() {
@@ -982,6 +1115,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingProgressOffset = 0
         progressSaveArmed = false
         progressMovedInGesture = false
+        clearPendingPageCallbacks()
         progressHandler.removeCallbacks(saveProgressRunnable)
         lastSavedEpisodeId = -1
         lastSavedPage = -1
@@ -1000,6 +1134,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             manga,
             title,
             readerWidthPx(),
+            readerHeightPx(),
             autoCut,
             p?.getReverse() == true,
             preparedKey,
@@ -1055,6 +1190,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun readerWidthPx(): Int {
         return maxOf(1, renderView.width, resources.displayMetrics.widthPixels)
+    }
+
+    private fun readerHeightPx(): Int {
+        return maxOf(1, renderView.height, resources.displayMetrics.heightPixels)
     }
 
     private fun roundedBackground(fill: Int, stroke: Int, radius: Int): GradientDrawable {
@@ -1451,6 +1590,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingCaptchaRetryAnchor = -1
     }
 
+    private fun clearDeferredPrependReveal() {
+        pendingPrependRevealInsertedCount = 0
+        pendingPrependRevealFirstDrawableIndex = -1
+        pendingPrependRevealLastDrawableIndex = -1
+    }
+
     private fun markPrependRevealRequest(direction: Int, startResult: ReaderSession.AppendStartResult?) {
         if (direction == ReaderSurfaceView.DIRECTION_PREVIOUS && startResult == ReaderSession.AppendStartResult.STARTED) {
             pendingPrependRevealRequests++
@@ -1461,6 +1606,23 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val reveal = shouldRevealPrependedBoundary(pendingPrependRevealRequests, insertedCount)
         if (pendingPrependRevealRequests > 0) pendingPrependRevealRequests--
         return reveal
+    }
+
+    private fun applyDeferredPrependRevealIfReady(index: Int) {
+        val insertedCount = pendingPrependRevealInsertedCount
+        val firstDrawable = pendingPrependRevealFirstDrawableIndex
+        val lastDrawable = pendingPrependRevealLastDrawableIndex
+        if (insertedCount <= 0 || firstDrawable < 0 || lastDrawable < firstDrawable || index !in firstDrawable..lastDrawable) return
+        val targetPage = (insertedCount - 1).coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+        if (!renderView.revealPrependedBoundary(insertedCount, firstDrawable, lastDrawable)) return
+        clearDeferredPrependReveal()
+        currentPage = targetPage
+        Log.d(
+            TAG,
+            "pages_prepended_reveal_ready inserted=$insertedCount drawableRange=$firstDrawable..$lastDrawable " +
+                "triggerIndex=$index currentPage=$currentPage"
+        )
+        updateCurrentEpisode(currentPage)
     }
 
     private fun installInitialDrawGate(root: View) {
@@ -1533,12 +1695,20 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         return renderView.currentProgressPosition()
     }
 
+    fun testVisibleCoverageSnapshot(): ReaderSurfaceView.VisibleCoverageSnapshot? {
+        return renderView.visibleCoverageSnapshot()
+    }
+
     fun testPageCount(): Int {
         return pageCount
     }
 
     fun testCurrentPage(): Int {
         return currentPage
+    }
+
+    fun testHasLoadedEpisode(episode: Manga?): Boolean {
+        return episode != null && session?.containsEpisodeForTest(episode) == true
     }
 
     private fun findTestEpisode(predicate: (Manga) -> Boolean): Manga? {

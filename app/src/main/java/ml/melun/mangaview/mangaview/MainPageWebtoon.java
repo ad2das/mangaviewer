@@ -276,7 +276,10 @@ public class MainPageWebtoon {
     }
 
     public static ArrayList<Title> parseNtkTitleListPayload(String body, int baseMode, int limit) {
-        ArrayList<Title> titles = parseWolfSearchHtmlFast(body, baseMode, limit, "ntk");
+        ArrayList<Title> titles = parseNtkInitialWorksPayload(body, baseMode, limit);
+        if(titles.size() > 0)
+            return titles;
+        titles = parseWolfSearchHtmlFast(body, baseMode, limit, "ntk");
         if(titles.size() > 0)
             return titles;
         titles = parseWolfTitles(Jsoup.parse(body == null ? "" : body), baseMode, limit, "ntk");
@@ -284,6 +287,61 @@ public class MainPageWebtoon {
             return titles;
         return parseWolfTitles(Jsoup.parse("<script>" + (body == null ? "" : body) + "</script>"),
                 baseMode, limit, "ntk");
+    }
+
+    private static ArrayList<Title> parseNtkInitialWorksPayload(String body, int baseMode, int limit) {
+        ArrayList<Title> titles = new ArrayList<>();
+        String works = extractJsonArrayAfterKey(body, "\"initialWorks\"");
+        if(works.length() == 0)
+            return titles;
+        try {
+            return Search.parseNtkApiTitles("{\"works\":" + works + "}", baseMode, limit);
+        } catch (Exception ignored) {
+            return titles;
+        }
+    }
+
+    private static String extractJsonArrayAfterKey(String body, String quotedKey) {
+        if(body == null || body.length() == 0 || quotedKey == null || quotedKey.length() == 0)
+            return "";
+        int key = body.indexOf(quotedKey);
+        if(key < 0)
+            return "";
+        int colon = body.indexOf(':', key + quotedKey.length());
+        if(colon < 0)
+            return "";
+        int start = colon + 1;
+        while(start < body.length() && Character.isWhitespace(body.charAt(start)))
+            start++;
+        if(start >= body.length() || body.charAt(start) != '[')
+            return "";
+        boolean inString = false;
+        boolean escaping = false;
+        int depth = 0;
+        for(int i = start; i < body.length(); i++) {
+            char c = body.charAt(i);
+            if(escaping) {
+                escaping = false;
+                continue;
+            }
+            if(inString) {
+                if(c == '\\')
+                    escaping = true;
+                else if(c == '"')
+                    inString = false;
+                continue;
+            }
+            if(c == '"') {
+                inString = true;
+            } else if(c == '[') {
+                depth++;
+            } else if(c == ']') {
+                depth--;
+                if(depth == 0)
+                    return body.substring(start, i + 1);
+            }
+        }
+        return "";
     }
 
     private static String normalizePathForClient(CustomHttpClient client, String path) {

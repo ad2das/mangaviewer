@@ -97,11 +97,12 @@ public class NtkCaptchaLiveInstrumentedTest {
             long closeDeadline = System.currentTimeMillis() + 30000L;
             while(System.currentTimeMillis() < closeDeadline
                     && activity != null
+                    && !activity.isFinishing()
                     && !activity.isDestroyed()) {
                 Thread.sleep(500L);
             }
             assertTrue("Expected CaptchaActivity to close after verified NTK clearance",
-                    activity == null || activity.isDestroyed());
+                    activity == null || activity.isFinishing() || activity.isDestroyed());
         } finally {
             if(activity != null && !activity.isDestroyed()) {
                 CaptchaActivity toFinish = activity;
@@ -121,6 +122,9 @@ public class NtkCaptchaLiveInstrumentedTest {
 
         Intent intent = new Intent(context, CaptchaActivity.class);
         intent.putExtra("url", siteRoot + "/");
+        String userAgent = InstrumentationRegistry.getArguments().getString("ntkCaptchaUserAgent", "");
+        if(userAgent != null && userAgent.trim().length() > 0)
+            intent.putExtra("ntkCaptchaUserAgent", userAgent.trim());
         return intent;
     }
 
