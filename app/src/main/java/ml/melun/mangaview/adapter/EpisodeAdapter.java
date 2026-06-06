@@ -52,6 +52,9 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     private static final Object PAYLOAD_SELECTION = "selection";
     private static final long HEADER_THUMBNAIL_DELAY_MS = 0L;
     private static final long TAG_BIND_DELAY_MS = 220L;
+    private static final String CONFIRMED_EMPTY_EPISODE_TITLE = "\uD68C\uCC28\uAC00 \uC544\uC9C1 \uC5C6\uC2B5\uB2C8\uB2E4";
+    private static final String CONFIRMED_EMPTY_EPISODE_MESSAGE =
+            "NTK\uAC00 \uC774 \uC791\uD488\uC758 \uD68C\uCC28 \uBAA9\uB85D\uC744 0\uAC1C\uB85C \uC751\uB2F5\uD588\uC2B5\uB2C8\uB2E4. \uC5C5\uB370\uC774\uD2B8\uB418\uBA74 \uB2E4\uC2DC \uD45C\uC2DC\uB429\uB2C8\uB2E4.";
     //title is in index 0
     Title title;
     TagAdapter ta;
@@ -286,6 +289,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     private void clearEpisodeRow(ViewHolder holder, int position) {
         setTextIfChanged(holder.episode, "");
         setTextIfChanged(holder.date, "");
+        holder.date.setMaxLines(1);
         setVisibilityIfChanged(holder.newBadge, View.GONE);
         setVisibilityIfChanged(holder.action, View.GONE);
         holder.boundKey = "null:" + position;
@@ -296,14 +300,16 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
 
     private void bindNormalEpisodeRowStyle(ViewHolder holder) {
         holder.itemView.setEnabled(true);
+        holder.date.setMaxLines(1);
         if(holder.cardContent != null)
             holder.cardContent.setBackgroundColor(ContextCompat.getColor(mainContext,
                     dark ? R.color.colorDarkSurface : R.color.appCard));
     }
 
     private void bindConfirmedEmptyEpisodeRow(ViewHolder holder, int position) {
-        setTextIfChanged(holder.episode, "\uD68C\uCC28\uAC00 \uC544\uC9C1 \uC5C6\uC2B5\uB2C8\uB2E4");
-        setTextIfChanged(holder.date, "NTK\uAC00 \uC774 \uC791\uD488\uC758 \uD68C\uCC28 \uBAA9\uB85D\uC744 0\uAC1C\uB85C \uC751\uB2F5\uD588\uC2B5\uB2C8\uB2E4. \uC5C5\uB370\uC774\uD2B8\uB418\uBA74 \uB2E4\uC2DC \uD45C\uC2DC\uB429\uB2C8\uB2E4.");
+        setTextIfChanged(holder.episode, CONFIRMED_EMPTY_EPISODE_TITLE);
+        setTextIfChanged(holder.date, CONFIRMED_EMPTY_EPISODE_MESSAGE);
+        holder.date.setMaxLines(3);
         setVisibilityIfChanged(holder.newBadge, View.GONE);
         setVisibilityIfChanged(holder.action, View.GONE);
         holder.boundKey = "ntk-empty:" + position;
@@ -564,9 +570,15 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     }
 
     private String overviewText(String release) {
+        if(shouldShowConfirmedEmptyEpisodeRow())
+            return CONFIRMED_EMPTY_EPISODE_TITLE + "\n" + CONFIRMED_EMPTY_EPISODE_MESSAGE;
         if(release != null && release.trim().length() > 0)
             return release.trim();
         return "등록된 소개가 없습니다.";
+    }
+
+    static String confirmedEmptyEpisodeOverviewForTest() {
+        return CONFIRMED_EMPTY_EPISODE_TITLE + "\n" + CONFIRMED_EMPTY_EPISODE_MESSAGE;
     }
 
     private String infoText() {

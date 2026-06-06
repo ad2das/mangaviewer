@@ -9,6 +9,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.SystemClock;
 import android.util.Log;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.TextView;
 
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.test.core.app.ApplicationProvider;
@@ -115,6 +118,8 @@ public class NtkEmptyEpisodeActivityInstrumentedTest {
                     + ",confirmedEmpty=" + (activity.title != null && activity.title.isNtkEpisodeListConfirmedEmpty())
                     + ",adapterItems=" + adapterItemCount(activity));
             assertTrue("Expected searched NTK episode list to render without error fallback", rendered);
+            assertTrue("Expected confirmed empty NTK episode message to be visible",
+                    waitForVisibleText(instrumentation, activity, "\uD68C\uCC28\uAC00 \uC544\uC9C1 \uC5C6\uC2B5\uB2C8\uB2E4", 5000L));
         } finally {
             activity.finish();
         }
@@ -168,6 +173,42 @@ public class NtkEmptyEpisodeActivityInstrumentedTest {
                     : -1;
         });
         return count[0];
+    }
+
+    private static boolean waitForVisibleText(Instrumentation instrumentation,
+                                              EpisodeActivity activity,
+                                              String expected,
+                                              long timeoutMs) {
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+        while(SystemClock.elapsedRealtime() < deadline) {
+            final boolean[] found = {false};
+            instrumentation.runOnMainSync(() -> {
+                View root = activity == null ? null : activity.getWindow().getDecorView();
+                found[0] = containsVisibleText(root, expected);
+            });
+            if(found[0])
+                return true;
+            SystemClock.sleep(100L);
+        }
+        return false;
+    }
+
+    private static boolean containsVisibleText(View view, String expected) {
+        if(view == null || view.getVisibility() != View.VISIBLE)
+            return false;
+        if(view instanceof TextView) {
+            CharSequence text = ((TextView) view).getText();
+            if(text != null && text.toString().contains(expected))
+                return true;
+        }
+        if(view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for(int i = 0; i < group.getChildCount(); i++) {
+                if(containsVisibleText(group.getChildAt(i), expected))
+                    return true;
+            }
+        }
+        return false;
     }
 
     private static void forceNtkWebtoonMode() {

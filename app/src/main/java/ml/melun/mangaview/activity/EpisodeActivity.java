@@ -380,6 +380,13 @@ public class EpisodeActivity extends AppCompatActivity {
         }
         episodeAdapter.setFavorite(p.findFavorite(title)>-1);
         episodeList.setAdapter(episodeAdapter);
+        if(title != null && title.isNtkEpisodeListConfirmedEmpty()
+                && episodeAdapter != null && episodeAdapter.getItemCount() > 1) {
+            episodeList.post(() -> {
+                if(episodeList != null)
+                    episodeList.scrollToPosition(1);
+            });
+        }
         if(bookmarkIndex>8) {
             episodeList.scrollToPosition(bookmarkIndex);
         }

@@ -51,4 +51,13 @@ public class EpisodeAdapterTest {
 
         assertEquals("1183화", EpisodeAdapter.displayReleaseForNtkForTest("ntk", "1293화", episodes));
     }
+
+    @Test
+    public void confirmedEmptyEpisodeOverviewExplainsZeroNtkEpisodes() {
+        String overview = EpisodeAdapter.confirmedEmptyEpisodeOverviewForTest();
+
+        assertTrue(overview.contains("\uD68C\uCC28\uAC00 \uC544\uC9C1 \uC5C6\uC2B5\uB2C8\uB2E4"));
+        assertTrue(overview.contains("NTK"));
+        assertTrue(overview.contains("0\uAC1C"));
+    }
 }
