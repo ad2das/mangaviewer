@@ -426,9 +426,10 @@ final class NtkEpisodeParser {
     private static int imageCountNearEpisodeId(String html, String idPattern) {
         Matcher idMatcher = Pattern.compile(idPattern).matcher(html);
         while(idMatcher.find()) {
+            int start = Math.max(0, idMatcher.start() - 900);
             int end = Math.min(html.length(), idMatcher.end() + 900);
             Matcher countMatcher = Pattern.compile("\"imageCount\"\\s*:\\s*(\\d{1,4})")
-                    .matcher(html.substring(idMatcher.start(), end));
+                    .matcher(html.substring(start, end));
             if(countMatcher.find()) {
                 int count = parsePositiveInt(countMatcher.group(1));
                 if(count > 0)

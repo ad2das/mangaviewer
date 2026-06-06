@@ -369,6 +369,22 @@ public class TitleTest {
     }
 
     @Test
+    public void ntkEpisodeParserKeepsImageCountBeforeEpisodeId() {
+        List<Manga> episodes = Title.parseNtkEpisodesForTest(
+                "<main>"
+                        + ntkEpisodeRow("webtoon", 13425, 1185827, "14")
+                        + "</main>"
+                        + "<script>{\"imageCount\":202,\"sourceEpisodeId\":\"1185827\"}</script>",
+                "webtoon",
+                "13425",
+                MTitle.base_webtoon);
+
+        assertEquals(1, episodes.size());
+        assertEquals("/webtoon/13425/1185827", episodes.get(0).getNtkEpisodePath());
+        assertEquals(202, episodes.get(0).getNtkImageCount());
+    }
+
+    @Test
     public void ntkEpisodeParserKeepsEpisodesFromNextAllEpisodesMetadata() {
         List<Manga> episodes = Title.parseNtkEpisodesForTest(
                 "<html><body><script>self.__next_f.push([1,\"{\\\"allEpisodes\\\":["
