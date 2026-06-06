@@ -25,6 +25,7 @@ import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.View;
 import android.widget.PopupMenu;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import com.google.gson.Gson;
@@ -74,11 +75,17 @@ public class EpisodeActivity extends AppCompatActivity {
     private static final long VIEWER_PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final long EPISODE_REFRESH_AFTER_CACHE_PROBE_MS = EpisodeWarmupPolicy.REFRESH_AFTER_CACHE_PROBE_MS;
     private static final long INITIAL_VIEWER_TARGET_WARMUP_DELAY_MS = EpisodeWarmupPolicy.INITIAL_VIEWER_TARGET_DELAY_MS;
+    private static final String CONFIRMED_EMPTY_EPISODE_TITLE = "\uD68C\uCC28\uAC00 \uC544\uC9C1 \uC5C6\uC2B5\uB2C8\uB2E4";
+    private static final String CONFIRMED_EMPTY_EPISODE_MESSAGE =
+            "NTK\uAC00 \uC774 \uC791\uD488\uC758 \uD68C\uCC28 \uBAA9\uB85D\uC744 0\uAC1C\uB85C \uC751\uB2F5\uD588\uC2B5\uB2C8\uB2E4. \uC5C5\uB370\uC774\uD2B8\uB418\uBA74 \uB2E4\uC2DC \uD45C\uC2DC\uB429\uB2C8\uB2E4.";
     //global variables
     Title title;
     EpisodeAdapter episodeAdapter;
     Context context = this;
     RecyclerView episodeList;
+    View episodeEmptyState;
+    TextView episodeEmptyTitle;
+    TextView episodeEmptyMessage;
     boolean favoriteResult = false;
     boolean recentResult = false;
     int position;
@@ -275,6 +282,9 @@ public class EpisodeActivity extends AppCompatActivity {
         favoriteResult = intent.getBooleanExtra("favorite",false);
         recentResult = intent.getBooleanExtra("recent",false);
         episodeList = this.findViewById(R.id.EpisodeList);
+        episodeEmptyState = this.findViewById(R.id.episode_empty_state);
+        episodeEmptyTitle = this.findViewById(R.id.episode_empty_title);
+        episodeEmptyMessage = this.findViewById(R.id.episode_empty_message);
         applyEpisodeWindowChrome();
         episodeList.setLayoutManager(new NpaLinearLayoutManager(this));
         episodeList.setHasFixedSize(true);
@@ -693,6 +703,7 @@ public class EpisodeActivity extends AppCompatActivity {
             ntkLoadTimeoutHandled = true;
             cancelNtkEpisodeLoadWatchdog();
             hideProgress();
+            showConfirmedEmptyEpisodeState(false);
             if(hasRenderedEpisodes())
                 return;
             handleLoadErrorWithCacheFallback();
@@ -703,6 +714,7 @@ public class EpisodeActivity extends AppCompatActivity {
         EpisodeLoadResult result = ((UiState.Content<EpisodeLoadResult>) state).getValue();
         if(result == null) {
             hideProgress();
+            showConfirmedEmptyEpisodeState(false);
             return;
         }
         Log.d("EpisodeActivity", "episode load result code=" + result.getResultCode()
@@ -744,6 +756,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
                 afterLoad();
                 hideProgress();
+                showConfirmedEmptyEpisodeState(true);
                 loaded = true;
                 ntkCaptchaRetryAfterVerifiedAttempted = false;
                 fab_container.setVisibility(View.GONE);
@@ -764,6 +777,7 @@ public class EpisodeActivity extends AppCompatActivity {
             return;
         }
         cancelNtkEpisodeLoadWatchdog();
+        showConfirmedEmptyEpisodeState(false);
         if(sameEpisodeIdentityList(episodes, loadedEpisodes) && hasRenderedEpisodes()) {
             ntkLoadTimeoutHandled = true;
             mergeFreshEpisodeMetadata(episodes, loadedEpisodes);
@@ -786,6 +800,18 @@ public class EpisodeActivity extends AppCompatActivity {
         ntkCaptchaRetryAfterVerifiedAttempted = false;
         fab_container.setVisibility(View.GONE);
         invalidateOptionsMenu();
+    }
+
+    private void showConfirmedEmptyEpisodeState(boolean show) {
+        if(episodeEmptyState == null)
+            return;
+        episodeEmptyState.setVisibility(show ? View.VISIBLE : View.GONE);
+        if(!show)
+            return;
+        if(episodeEmptyTitle != null)
+            episodeEmptyTitle.setText(CONFIRMED_EMPTY_EPISODE_TITLE);
+        if(episodeEmptyMessage != null)
+            episodeEmptyMessage.setText(CONFIRMED_EMPTY_EPISODE_MESSAGE);
     }
 
     private boolean retryNtkEpisodeLoadAfterRecentCaptcha() {
@@ -1011,6 +1037,7 @@ public class EpisodeActivity extends AppCompatActivity {
         if(episodes.size() == 0)
             return false;
         attachLoadedEpisodesToTitle(episodes);
+        showConfirmedEmptyEpisodeState(false);
         warmupInitialViewerTargets();
         episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
         afterLoad();
@@ -1330,6 +1357,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 attachLoadedEpisodesToTitle(episodes);
                 mode = offlineEpisodes.mode;
                 episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
+                showConfirmedEmptyEpisodeState(false);
                 afterLoad();
             });
         });
