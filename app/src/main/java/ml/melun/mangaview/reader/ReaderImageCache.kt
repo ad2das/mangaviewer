@@ -206,11 +206,34 @@ object ReaderImageCache {
             }
             val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
             val decodedAt = SystemClock.elapsedRealtime()
+            cacheForegroundBytes(appContext, manga, image, bytes)
             ViewerWarmupManager.logMetric("reader_foreground_stream_headers_ms", headersAt - startedAt)
             ViewerWarmupManager.logMetric("reader_foreground_stream_body_ms", bytesAt - headersAt)
             ViewerWarmupManager.logMetric("reader_foreground_stream_decode_ms", decodedAt - bytesAt)
             ViewerWarmupManager.logMetric("reader_foreground_stream_bytes", if (contentLength >= 0L) contentLength else bytes.size.toLong())
             return bitmap
+        }
+    }
+
+    private fun cacheForegroundBytes(context: Context, manga: Manga, image: String, bytes: ByteArray) {
+        if (bytes.isEmpty()) return
+        val finalFile = File(cacheDir(context), "${key(manga.baseMode, image)}.img")
+        if (isUsableImage(finalFile)) return
+        val tmp = File(finalFile.parentFile, "${finalFile.name}.fg.${System.nanoTime()}")
+        try {
+            FileOutputStream(tmp).use { it.write(bytes) }
+            if (!isUsableImage(tmp)) {
+                tmp.delete()
+                return
+            }
+            replace(tmp, finalFile)
+            finalFile.setLastModified(System.currentTimeMillis())
+            logCacheEvent("foreground_cached", manga, image, true, "bytes=${finalFile.length()}")
+            ViewerWarmupManager.logMetric("reader_foreground_stream_cached", 1L)
+            scheduleTrim(context)
+        } catch (e: Exception) {
+            tmp.delete()
+            logCacheEvent("foreground_cache_error", manga, image, true, "error=${e.javaClass.simpleName}")
         }
     }
 
@@ -251,10 +274,13 @@ object ReaderImageCache {
         val finalFile = File(cacheDir(appContext), "$key.img")
         if (isUsableImage(finalFile)) {
             finalFile.setLastModified(System.currentTimeMillis())
+            logCacheEvent("disk_hit", manga, image, foreground, "bytes=${finalFile.length()}")
+            ViewerWarmupManager.logMetric("reader_image_cache_disk_hit", 1L)
             return finalFile
         }
         if (foreground && flights[key] != null) {
             ViewerWarmupManager.logMetric("reader_foreground_bypass_warmup_fetch", 1L)
+            logCacheEvent("foreground_bypass", manga, image, true, "activeFlight=true")
             return downloadAtomically(appContext, manga, image, finalFile, foreground, cancellation)
         }
         val task = FutureTask {
@@ -263,7 +289,15 @@ object ReaderImageCache {
         val existing = flights.putIfAbsent(key, task)
         if (foreground && existing != null) {
             ViewerWarmupManager.logMetric("reader_foreground_bypass_warmup_fetch", 1L)
+            logCacheEvent("foreground_bypass", manga, image, true, "activeFlight=true")
             return downloadAtomically(appContext, manga, image, finalFile, foreground, cancellation)
+        }
+        if (existing != null) {
+            logCacheEvent("flight_join", manga, image, foreground, "activeFlight=true")
+            ViewerWarmupManager.logMetric("reader_image_cache_flight_join", 1L)
+        } else {
+            logCacheEvent("download_start", manga, image, foreground, "activeFlight=false")
+            ViewerWarmupManager.logMetric("reader_image_cache_download_start", 1L)
         }
         val running = existing ?: task.also { it.run() }
         return try {
@@ -294,6 +328,14 @@ object ReaderImageCache {
         return digest.joinToString("") { "%02x".format(it) }
     }
 
+    private fun logCacheEvent(stage: String, manga: Manga, image: String, foreground: Boolean, detail: String) {
+        if (!foreground && !stage.contains("error", ignoreCase = true)) return
+        val path = manga.ntkEpisodePath?.trim().orEmpty()
+        if (!path.startsWith("/webtoon/") && !path.startsWith("/manhwa/")) return
+        val imageName = image.substringAfterLast('/').takeLast(48)
+        Log.d(TAG, "reader_image_cache_event stage=$stage,foreground=$foreground,path=$path,image=$imageName,$detail")
+    }
+
     private fun downloadAtomically(
         context: Context,
         manga: Manga,
@@ -303,12 +345,12 @@ object ReaderImageCache {
         cancellation: Cancellation? = null
     ): File {
         val tmp = File(finalFile.parentFile, "${finalFile.name}.part.${System.nanoTime()}")
-        val startedAt = if (foreground) SystemClock.elapsedRealtime() else 0L
+        val startedAt = SystemClock.elapsedRealtime()
         try {
             cancellation?.throwIfCancelled()
             val requestUrl = Utils.viewerImageRequestUrl(image, manga.baseMode)
             requestWithNtkGeneratedFallback(context, manga, image, foreground, cancellation).use { response ->
-                val headersAt = if (foreground) SystemClock.elapsedRealtime() else 0L
+                val headersAt = SystemClock.elapsedRealtime()
                 if (!response.isSuccessful) throw java.io.IOException("Image request failed: ${response.code} url=$requestUrl")
                 val body = response.body ?: throw java.io.IOException("Empty image body")
                 val contentLength = body.contentLength()
@@ -319,6 +361,13 @@ object ReaderImageCache {
                     ViewerWarmupManager.logMetric("reader_foreground_image_copy_ms", copiedAt - headersAt)
                     ViewerWarmupManager.logMetric("reader_foreground_image_bytes", contentLength)
                 }
+                logCacheEvent(
+                    "download_body",
+                    manga,
+                    image,
+                    foreground,
+                    "headersMs=${headersAt - startedAt},bytes=$contentLength"
+                )
             }
             if (!isUsableImage(tmp) && !replaceWithImageExtractedFromHtml(context, manga, image, tmp)) {
                 throw java.io.IOException("Invalid image cache file")
@@ -328,6 +377,14 @@ object ReaderImageCache {
             }
             replace(tmp, finalFile)
             finalFile.setLastModified(System.currentTimeMillis())
+            logCacheEvent(
+                "download_done",
+                manga,
+                image,
+                foreground,
+                "ms=${SystemClock.elapsedRealtime() - startedAt},bytes=${finalFile.length()}"
+            )
+            ViewerWarmupManager.logMetric("reader_image_cache_download_done", 1L)
             scheduleTrim(context)
             return finalFile
         } catch (t: Throwable) {

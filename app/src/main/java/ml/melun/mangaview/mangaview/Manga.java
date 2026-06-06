@@ -576,7 +576,8 @@ public class Manga {
             if(apiFirstWebtoonEpisode || skipGeneratedForSlugEpisode || apiFirstCanonicalWebtoonEpisode) {
                 startNativeAckIfNeeded.run();
                 startDirectPageFetchIfNeeded.run();
-                if(apiFirstWebtoonEpisode || skipGeneratedForSlugEpisode)
+                if(skipGeneratedForSlugEpisode && !apiFirstWebtoonEpisode
+                        && !isNtkKpWebtoonEpisodePath(path))
                     startPageFetchIfNeeded.run();
             }
             boolean apiOptimisticGeneratedCandidate = apiFallbackMode
@@ -585,7 +586,9 @@ public class Manga {
             if(apiFallbackMode && !apiOptimisticGeneratedCandidate) {
                 startNativeAckIfNeeded.run();
                 startDirectPageFetchIfNeeded.run();
-                if(!strictApiFallbackMode)
+                if(!strictApiFallbackMode
+                        && !apiFirstWebtoonEpisode
+                        && !isNtkKpWebtoonEpisodePath(path))
                     startPageFetchIfNeeded.run();
             }
             boolean nativeAckCompleted = false;
@@ -623,7 +626,7 @@ public class Manga {
                         ignoreDirectPageFetchForFirstFrame = true;
                         startPageFetchIfNeeded.run();
                         CustomHttpClient.PageResponse earlyPage =
-                                awaitFastNtkApiPageFetch(null, pageFetchRef[0], NTK_STRICT_ACK_FAILED_PAGE_FAST_PATH_MS);
+                                awaitFastNtkApiPageFetch(null, pageFetchRef[0], path, NTK_STRICT_ACK_FAILED_PAGE_FAST_PATH_MS);
                         if(isUsableNtkApiPage(earlyPage)
                                 && addNtkApiViewerImageCandidates(client, earlyPage.body, path, seenImages, false)) {
                             logNtkViewerParse("api-after-strict-ack-failed", earlyPage, path, 0, 0);
@@ -658,7 +661,7 @@ public class Manga {
                     if(apiFirstCanonicalWebtoonEpisode) {
                         CustomHttpClient.PageResponse earlyPage =
                                 awaitFastNtkApiPageFetch(directPageFetchRef[0], null,
-                                        NTK_API_FALLBACK_ACK_FAST_PATH_WAIT_MS);
+                                        path, NTK_API_FALLBACK_ACK_FAST_PATH_WAIT_MS);
                         if(addFastNtkApiPageImageCandidates(client, earlyPage, path, seenImages, false)) {
                             logNtkViewerParse("api-first-canonical-webtoon", earlyPage, path, 0, 0);
                             restoreBetterEpisodeList(previousEpisodes);
@@ -684,7 +687,7 @@ public class Manga {
                         return LOAD_OK;
                     }
                     CustomHttpClient.PageResponse earlyPage =
-                            awaitFastNtkApiPageFetch(directPageFetchRef[0], pageFetchRef[0], 0L);
+                            awaitFastNtkApiPageFetch(directPageFetchRef[0], pageFetchRef[0], path, 0L);
                     if(addFastNtkApiPageImageCandidates(client, earlyPage, path, seenImages, false)) {
                         logNtkViewerParse("api-missing", earlyPage, path, 0, 0);
                         restoreBetterEpisodeList(previousEpisodes);
@@ -749,7 +752,7 @@ public class Manga {
                 if(generatedPrimaryValidationMiss[0]) {
                     CustomHttpClient.PageResponse earlyPage =
                             awaitFastNtkApiPageFetch(directPageFetchRef[0], pageFetchRef[0],
-                                    NTK_GENERATED_MISS_PAGE_FAST_PATH_MS);
+                                    path, NTK_GENERATED_MISS_PAGE_FAST_PATH_MS);
                     if(addFastNtkApiPageImageCandidates(client, earlyPage, path, seenImages,
                             !generatedCandidatesChecked && !apiFallbackMode, true)) {
                         logNtkViewerParse("api-missing", earlyPage, path, 0, 0);
@@ -1019,14 +1022,14 @@ public class Manga {
         while(System.currentTimeMillis() < deadline) {
             if(direct == null)
                 direct = completedNtkPageFetch(directFetch, false);
-            if(isUsableNtkApiPage(direct)) {
+            if(isUsableNtkFastPage(direct, path)) {
                 cancelAsyncNtkPageFetch(fallbackFetch);
                 logNtkViewerParse("api-direct-page", direct, path, 0, 0);
                 return direct;
             }
             if(fallback == null)
                 fallback = completedNtkPageFetch(fallbackFetch, true);
-            if(isUsableNtkApiPage(fallback)) {
+            if(isUsableNtkFastPage(fallback, path)) {
                 cancelAsyncNtkPageFetch(directFetch);
                 return fallback;
             }
@@ -1042,14 +1045,14 @@ public class Manga {
         }
         if(direct == null)
             direct = completedNtkPageFetch(directFetch, false);
-        if(isUsableNtkApiPage(direct)) {
+        if(isUsableNtkFastPage(direct, path)) {
             cancelAsyncNtkPageFetch(fallbackFetch);
             logNtkViewerParse("api-direct-page", direct, path, 0, 0);
             return direct;
         }
         if(fallback == null)
             fallback = completedNtkPageFetch(fallbackFetch, true);
-        if(isUsableNtkApiPage(fallback)) {
+        if(isUsableNtkFastPage(fallback, path)) {
             cancelAsyncNtkPageFetch(directFetch);
             return fallback;
         }
@@ -1060,6 +1063,7 @@ public class Manga {
 
     private CustomHttpClient.PageResponse awaitFastNtkApiPageFetch(AsyncNtkPageFetch directFetch,
                                                                    AsyncNtkPageFetch fallbackFetch,
+                                                                   String path,
                                                                    long timeoutMs) throws Exception {
         long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMs);
         CustomHttpClient.PageResponse direct = null;
@@ -1067,13 +1071,13 @@ public class Manga {
         while(System.currentTimeMillis() < deadline) {
             if(direct == null)
                 direct = completedNtkPageFetch(directFetch, false);
-            if(isUsableNtkApiPage(direct)) {
+            if(isUsableNtkFastPage(direct, path)) {
                 cancelAsyncNtkPageFetch(fallbackFetch);
                 return direct;
             }
             if(fallback == null)
                 fallback = completedNtkPageFetch(fallbackFetch, false);
-            if(isUsableNtkApiPage(fallback)) {
+            if(isUsableNtkFastPage(fallback, path)) {
                 cancelAsyncNtkPageFetch(directFetch);
                 return fallback;
             }
@@ -1089,13 +1093,13 @@ public class Manga {
         }
         if(direct == null)
             direct = completedNtkPageFetch(directFetch, false);
-        if(isUsableNtkApiPage(direct)) {
+        if(isUsableNtkFastPage(direct, path)) {
             cancelAsyncNtkPageFetch(fallbackFetch);
             return direct;
         }
         if(fallback == null)
             fallback = completedNtkPageFetch(fallbackFetch, false);
-        if(isUsableNtkApiPage(fallback)) {
+        if(isUsableNtkFastPage(fallback, path)) {
             cancelAsyncNtkPageFetch(directFetch);
             return fallback;
         }
@@ -1144,6 +1148,10 @@ public class Manga {
     private static boolean isUsableNtkApiPage(CustomHttpClient.PageResponse page) {
         return page != null && page.code >= 200 && page.code < 400
                 && hasNtkViewerImageApiPayload(page.body);
+    }
+
+    private static boolean isUsableNtkFastPage(CustomHttpClient.PageResponse page, String path) {
+        return isUsableNtkApiPage(page) || isUsableNtkKpDirectPage(page, path);
     }
 
     private AsyncNtkNativeAck startAsyncNtkNativeAck(CustomHttpClient client, String path) {
@@ -1268,6 +1276,15 @@ public class Manga {
         compactNtkImageCandidates(normalized, seenImages);
     }
 
+    private boolean addNtkDirectTextImageCandidates(CustomHttpClient client, String body,
+                                                    String path, Set<String> seenImages) {
+        if(body == null || body.length() == 0 || seenImages == null)
+            return false;
+        int before = imgs == null ? 0 : imgs.size();
+        addNtkTextImageCandidates(client, body, seenImages, new LinkedHashSet<>());
+        return imgs != null && imgs.size() > before;
+    }
+
     private void addNtkTextImageMatches(CustomHttpClient client, String source, Pattern pattern, boolean percentEncoded,
                                         Set<String> seenImages, Set<String> fallbackBoardImages) {
         Matcher matcher = pattern.matcher(source);
@@ -1298,6 +1315,10 @@ public class Manga {
         String normalized = normalizeNtkViewerPayloadText(body);
         String lower = normalized.toLowerCase(Locale.ROOT);
         if(!lower.contains("\"imagestoken\"") || !lower.contains("\"imagemetas\""))
+            return false;
+        if(shouldPreferNtkApiForCanonicalWebtoonPath(path))
+            return false;
+        if(isNtkKpWebtoonEpisodePath(path))
             return false;
         if(shouldSkipNtkGeneratedForEpisodePath(path))
             return addNtkSlugViewerMetaImageCandidates(client, normalized, path, seenImages);
@@ -1374,9 +1395,13 @@ public class Manga {
                                                      String path, Set<String> seenImages,
                                                      boolean tryGeneratedMetaFirst,
                                                      boolean preferApiPayload) {
-        if(!isUsableNtkApiPage(page))
-            return false;
+        if(!isUsableNtkApiPage(page)) {
+            if(!isUsableNtkKpDirectPage(page, path))
+                return false;
+        }
         boolean webtoonApiFirst = isNtkWebtoonEpisodePath(path);
+        if(isNtkKpWebtoonEpisodePath(path) && addNtkDirectTextImageCandidates(client, page.body, path, seenImages))
+            return true;
         if((preferApiPayload || webtoonApiFirst)
                 && hasNtkViewerImageApiPayload(page.body)
                 && addNtkApiViewerImageCandidates(client, page.body, path, seenImages,
@@ -1388,10 +1413,23 @@ public class Manga {
                 !webtoonApiFirst && tryGeneratedMetaFirst);
     }
 
+    private static boolean isUsableNtkKpDirectPage(CustomHttpClient.PageResponse page, String path) {
+        return isNtkKpWebtoonEpisodePath(path)
+                && page != null
+                && page.code >= 200
+                && page.code < 400
+                && page.body != null
+                && page.body.length() > 0;
+    }
+
     private boolean addNtkViewerShellGeneratedImageCandidates(CustomHttpClient client, String body,
                                                              String path, Set<String> seenImages,
                                                              boolean validateInitialPages) {
         if(client == null || body == null || path == null || seenImages == null)
+            return false;
+        if(isNtkKpWebtoonEpisodePath(path))
+            return false;
+        if(shouldPreferNtkApiForCanonicalWebtoonPath(path))
             return false;
         Matcher pathMatcher = Pattern.compile("^/webtoon/(\\d{6,})/([^/?#]+)").matcher(path);
         if(!pathMatcher.find())
@@ -1751,6 +1789,8 @@ public class Manga {
         if(!pathMatcher.find())
             return false;
         String episodeId = pathMatcher.group(2);
+        if(isNtkKpEpisodeId(episodeId))
+            return false;
         String slug = ntkCanonicalWebtoonSlugCandidate(title == null ? "" : title.getPath(),
                 title == null ? "" : title.getName());
         if(slug.length() == 0)
@@ -2209,6 +2249,17 @@ public class Manga {
             return false;
         String episodePathId = matcher.group(1);
         return !episodePathId.matches("\\d+");
+    }
+
+    private static boolean isNtkKpWebtoonEpisodePath(String path) {
+        if(path == null || path.length() == 0)
+            return false;
+        Matcher matcher = Pattern.compile("^/webtoon/[^/?#]+/([^/?#]+)").matcher(path);
+        return matcher.find() && isNtkKpEpisodeId(matcher.group(1));
+    }
+
+    private static boolean isNtkKpEpisodeId(String episodeId) {
+        return episodeId != null && episodeId.toLowerCase(Locale.ROOT).startsWith("kp-");
     }
 
     private String generatedPageCountSource() {

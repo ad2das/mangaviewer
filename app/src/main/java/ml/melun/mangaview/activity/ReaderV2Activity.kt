@@ -118,6 +118,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var viewerLaunchSourceSite = ""
     private var firstDrawableMetricLogged = false
     private var drawableReadyDescriptionPosted = false
+    private var initialStartAtFirstPage = false
     private val launchDrawableMetricPages = HashSet<Int>()
     private val pendingPageBitmaps = LinkedHashMap<Int, Bitmap>()
     private val pendingPageTiles = LinkedHashMap<Int, PendingPageTiles>()
@@ -742,14 +743,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun logFirstDrawableMetric(index: Int, kind: String) {
         if (firstDrawableMetricLogged || viewerLaunchStartedAtMs <= 0L) return
         firstDrawableMetricLogged = true
-        scheduleDrawableReadyDescription()
+        scheduleDrawableReadyDescription(index)
         val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
         Log.d("ViewerPerf", "reader_open_to_first_drawable source=$viewerLaunchSourceSite kind=$kind page=$index ms=$elapsed")
     }
 
-    private fun scheduleDrawableReadyDescription() {
+    private fun scheduleDrawableReadyDescription(index: Int) {
         if (drawableReadyDescriptionPosted) return
         statusHandler.removeCallbacks(drawableReadyDescriptionRunnable)
+        if (initialStartAtFirstPage && index == 0) {
+            postDrawableReadyDescription()
+            return
+        }
         drawableReadyDescriptionRunnable.run()
     }
 
@@ -797,6 +802,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun shouldMarkFirstDrawable(index: Int, currentPage: Int): Boolean {
+        if (!firstDrawableMetricLogged && initialStartAtFirstPage && index == 0) return true
         return shouldMarkFirstDrawableForTest(index, currentPage)
     }
 
@@ -1158,6 +1164,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pagesReady = false
         pageCount = 0
         currentPage = 0
+        initialStartAtFirstPage = startAtFirstPage
         lastDisplayedPageText = ""
         pendingBoundaryStatus = false
         clearPendingBoundaryCaptchaRetry()

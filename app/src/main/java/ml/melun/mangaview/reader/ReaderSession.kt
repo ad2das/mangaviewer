@@ -1806,11 +1806,14 @@ class ReaderSession(
         if (!bytePrefetching.add(index)) return
         try {
             network.execute {
+                val startedAt = SystemClock.elapsedRealtime()
                 try {
                     if (!shouldSkipStalePage(index, generation, false)) {
                         prefetchImageFile(index, page)
+                        logNtkPagePerf(index, "byte_prefetch_done", "ms=${SystemClock.elapsedRealtime() - startedAt}")
                     }
                 } catch (e: Exception) {
+                    logNtkPagePerf(index, "byte_prefetch_error", "ms=${SystemClock.elapsedRealtime() - startedAt},error=${e.javaClass.simpleName}")
                     recordIfUnexpected(e)
                 } finally {
                     bytePrefetching.remove(index)
@@ -2869,7 +2872,10 @@ class ReaderSession(
             primeNtkNearPagesAfterAnchorDecode(currentDelivery.index)
         }
         logNtkPagePerf(currentDelivery.index, "decode_ready", "ms=${SystemClock.elapsedRealtime() - currentDelivery.startedAt},width=${currentDelivery.result.width},retain=${currentDelivery.retainWhenBusy}")
-        prepareDecodeResultForDraw(currentDelivery.result)
+        val deliverInitialAnchorNow = shouldDeliverInitialAnchorImmediately(currentDelivery)
+        if (!deliverInitialAnchorNow) {
+            prepareDecodeResultForDraw(currentDelivery.result)
+        }
         pendingDeliveryWidths.merge(currentDelivery.index, currentDelivery.result.width, ::max)
         if (shouldHoldInitialNtkDelivery(currentDelivery)) {
             if (!storeInitialHeldDelivery(currentDelivery)) return
@@ -2881,7 +2887,7 @@ class ReaderSession(
             scheduleInitialDeliveryFallback()
             return
         }
-        if (shouldDeliverInitialAnchorImmediately(currentDelivery)) {
+        if (deliverInitialAnchorNow) {
             ViewerWarmupManager.logMetric("reader_anchor_delivery_direct", currentDelivery.index.toLong())
             val deliverAnchor = Runnable {
                 if (cancelled.get()) {
@@ -3113,14 +3119,24 @@ class ReaderSession(
         if (!page.manga.isOnline) return false
         if (anchor || index == currentStartPage()) return true
         val current = currentStartPage()
-        if (isNtkSource(page.manga, title) && index > current + NTK_FOREGROUND_STREAM_AHEAD_PAGES) {
+        val ntk = isNtkSource(page.manga, title)
+        if (ntk && index > current + NTK_FOREGROUND_STREAM_AHEAD_PAGES) {
+            return false
+        }
+        val image = page.image
+        if (
+            ntk &&
+            generation == FOREGROUND_PRIME_WARM_GENERATION &&
+            image != null &&
+            ReaderImageCache.hasActiveFetch(page.manga, image)
+        ) {
             return false
         }
         if (urgent) return true
-        if (generation == FOREGROUND_PRIME_WARM_GENERATION && isNtkSource(page.manga, title)) return true
+        if (generation == FOREGROUND_PRIME_WARM_GENERATION && ntk) return true
         if (!urgent && (!busy || generation == PRIME_WARM_GENERATION)) return false
-        val image = page.image ?: return false
-        return !ReaderImageCache.hasActiveFetch(page.manga, image)
+        val requestImage = image ?: return false
+        return !ReaderImageCache.hasActiveFetch(page.manga, requestImage)
     }
 
     private fun hasDeliveredAtLeast(delivery: Delivery, width: Int): Boolean {
