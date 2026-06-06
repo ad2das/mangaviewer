@@ -61,11 +61,17 @@ public final class NtkQuicFetcher {
                             .build())
                     .addQuicHint(host, 443, 443)
                     .build();
+            ExecutorService executor = Executors.newSingleThreadExecutor();
             try {
-                return fetchWithEngine(engine, url, userAgent, cookieHeader, requestHeaders,
+                return fetchWithEngine(engine, executor, url, userAgent, cookieHeader, requestHeaders,
                         method, body, timeoutMs);
             } finally {
-                engine.shutdown();
+                try {
+                    engine.shutdown();
+                } finally {
+                    executor.shutdown();
+                    executor.awaitTermination(2_500, TimeUnit.MILLISECONDS);
+                }
             }
         } catch (Throwable throwable) {
             return Result.error(throwable);

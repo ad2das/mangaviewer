@@ -460,6 +460,7 @@ class ReaderSession(
         if (!hasActiveOrDeliveredPage(anchor)) {
             requestPage(anchor, busy = true, anchor = true, generation = FOREGROUND_PRIME_WARM_GENERATION)
         }
+        prefetchNtkInitialNextBytes(anchor, count)
         for (offset in 1..NTK_INITIAL_BOOT_PRIORITY_PAGES) {
             val ahead = anchor + offset
             if (ahead < count) {
@@ -482,6 +483,21 @@ class ReaderSession(
                 requestPage(index, busy = false, anchor = false, generation = PRIME_WARM_GENERATION)
             }
         }
+    }
+
+    private fun prefetchNtkInitialNextBytes(anchor: Int, count: Int) {
+        if (!isNtkSource(manga, title)) return
+        if (MainApplication.p?.getDataSave() == true) return
+        val last = minOf(count - 1, anchor + NTK_INITIAL_BYTE_PREFETCH_AHEAD_PAGES)
+        if (last <= anchor) return
+        val generation = FOREGROUND_PRIME_WARM_GENERATION
+        for (index in (anchor + 1)..last) {
+            val page = pageRef(index) ?: continue
+            if (page.transitionTitle != null) continue
+            prefetchBusyPage(index, page, generation)
+        }
+        Log.d(TAG, "reader_ntk_initial_next_byte_prefetch anchor=$anchor count=${last - anchor}")
+        ViewerWarmupManager.logMetric("reader_ntk_initial_next_byte_prefetch", (last - anchor).toLong())
     }
 
     private fun hasActiveOrDeliveredPage(index: Int): Boolean {
@@ -3652,16 +3668,17 @@ class ReaderSession(
         private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 0
         private const val NTK_INITIAL_BOOT_URGENT_PAGES = 1
         private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 0
+        private const val NTK_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 3
         private const val NTK_INITIAL_PRIORITY_PAGES = 4
         private const val NTK_FOREGROUND_STREAM_AHEAD_PAGES = 1
         private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 2
-        private const val NTK_INITIAL_DECODE_AHEAD_PAGES = 6
+        private const val NTK_INITIAL_DECODE_AHEAD_PAGES = 8
         private const val NTK_WEBTOON_INITIAL_NEAR_DECODE_AHEAD_PAGES = 2
-        private const val NTK_WEBTOON_INITIAL_DECODE_AHEAD_PAGES = 6
+        private const val NTK_WEBTOON_INITIAL_DECODE_AHEAD_PAGES = 8
         private const val NTK_WEBTOON_WINDOW_AFTER = 28
         private const val NTK_WEBTOON_BUSY_DIRECTIONAL_DECODE_AHEAD = 6
         private const val NTK_INITIAL_SECONDARY_WARM_DELAY_MS = 240L
-        private const val NTK_INITIAL_FAR_WARM_DELAY_MS = 1800L
+        private const val NTK_INITIAL_FAR_WARM_DELAY_MS = 350L
         private const val NTK_INITIAL_SOURCE_PREFETCH_AFTER_FIRST_BITMAP_DELAY_MS = 250L
         private const val NTK_EPISODE_METADATA_AFTER_FIRST_BITMAP_DELAY_MS = 300L
         private const val NTK_INITIAL_DELIVERY_HOLD_FALLBACK_MS = 1200L
