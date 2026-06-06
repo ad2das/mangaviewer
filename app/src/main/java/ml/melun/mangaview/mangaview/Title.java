@@ -28,6 +28,7 @@ import static ml.melun.mangaview.MainApplication.p;
 public class Title extends MTitle {
     private static final String TAG = "ViewerPerf";
     private List<Manga> eps = null;
+    private boolean ntkEpisodeListConfirmedEmpty = false;
     int bookmark = 0;
     Boolean bookmarked = false;
     String bookmarkLink = "";
@@ -78,6 +79,10 @@ public class Title extends MTitle {
 
     public List<Manga> getEps(){
         return eps;
+    }
+
+    public boolean isNtkEpisodeListConfirmedEmpty() {
+        return ntkEpisodeListConfirmedEmpty;
     }
 
     public Boolean getBookmarked() {
@@ -181,6 +186,7 @@ public class Title extends MTitle {
 
     private int fetchNtkEps(CustomHttpClient client, boolean allowPathRefresh) {
         try {
+            ntkEpisodeListConfirmedEmpty = false;
             String segment = ntkSegment();
             String titlePath = ntkTitlePath(segment);
             if(allowPathRefresh && shouldRefreshNtkTitlePath(client, titlePath)) {
@@ -202,6 +208,7 @@ public class Title extends MTitle {
                     return LOAD_OK;
                 }
                 if(payloadOnly.definitiveEmptyEpisodeList) {
+                    ntkEpisodeListConfirmedEmpty = true;
                     eps = payloadOnly.episodes;
                     Log.d(TAG, "ntk_episode_parse reason=rsc_empty_confirmed,id=" + id
                             + ",segment=" + segment
@@ -246,6 +253,7 @@ public class Title extends MTitle {
                     return LOAD_OK;
                 }
                 if(payloadOnly.definitiveEmptyEpisodeList) {
+                    ntkEpisodeListConfirmedEmpty = true;
                     eps = payloadOnly.episodes;
                     Log.d(TAG, "ntk_episode_parse reason=rsc_empty_confirmed_after_page_failure,id=" + id
                             + ",segment=" + segment
@@ -281,6 +289,7 @@ public class Title extends MTitle {
                     return LOAD_OK;
                 }
                 if(payloadOnly.definitiveEmptyEpisodeList) {
+                    ntkEpisodeListConfirmedEmpty = true;
                     eps = payloadOnly.episodes;
                     Log.d(TAG, "ntk_episode_parse reason=rsc_empty_confirmed_after_error,id=" + id
                             + ",segment=" + segment
@@ -309,6 +318,7 @@ public class Title extends MTitle {
                     return LOAD_OK;
                 }
                 if(payloadOnly.definitiveEmptyEpisodeList) {
+                    ntkEpisodeListConfirmedEmpty = true;
                     eps = payloadOnly.episodes;
                     Log.d(TAG, "ntk_episode_parse reason=rsc_empty_confirmed_after_missing,id=" + id
                             + ",segment=" + segment
@@ -360,6 +370,7 @@ public class Title extends MTitle {
                     return LOAD_OK;
                 }
                 if(chunkParsed.definitiveEmptyEpisodeList) {
+                    ntkEpisodeListConfirmedEmpty = true;
                     eps = chunkParsed.episodes;
                     Log.d(TAG, "ntk_episode_parse reason=next_chunk_empty_confirmed,id=" + id
                             + ",segment=" + segment
@@ -1167,6 +1178,8 @@ public class Title extends MTitle {
 
     public void setEps(List<Manga> list){
         eps = orderedEpisodeSnapshot(list);
+        if(eps != null && eps.size() > 0)
+            ntkEpisodeListConfirmedEmpty = false;
     }
 
     public static ArrayList<Manga> orderedEpisodeSnapshot(List<Manga> list) {

@@ -729,6 +729,21 @@ public class EpisodeActivity extends AppCompatActivity {
         }
         ArrayList<Manga> loadedEpisodes = normalizeEpisodeSnapshot(result.getEpisodes(), title);
         if(loadedEpisodes.size()==0){
+            if(title != null && title.isNtkEpisodeListConfirmedEmpty()) {
+                episodes = loadedEpisodes;
+                ntkLoadTimeoutHandled = true;
+                cancelNtkEpisodeLoadWatchdog();
+                attachLoadedEpisodesToTitle(episodes);
+                episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
+                afterLoad();
+                hideProgress();
+                loaded = true;
+                ntkCaptchaRetryAfterVerifiedAttempted = false;
+                fab_container.setVisibility(View.GONE);
+                invalidateOptionsMenu();
+                Log.d("EpisodeActivity", "empty NTK episode list rendered titleUrl=" + title.getUrl());
+                return;
+            }
             if(this.episodes == null || this.episodes.size() == 0) {
                 ntkLoadTimeoutHandled = true;
                 cancelNtkEpisodeLoadWatchdog();
