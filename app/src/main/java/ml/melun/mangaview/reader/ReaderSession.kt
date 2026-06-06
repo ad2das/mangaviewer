@@ -1953,8 +1953,12 @@ class ReaderSession(
                         logNtkPagePerf(index, "byte_prefetch_done", "ms=${SystemClock.elapsedRealtime() - startedAt}")
                     }
                 } catch (e: Exception) {
-                    logNtkPagePerf(index, "byte_prefetch_error", "ms=${SystemClock.elapsedRealtime() - startedAt},error=${e.javaClass.simpleName}")
-                    recordIfUnexpected(e)
+                    if (isExpectedCancellation(e)) {
+                        logNtkPagePerf(index, "byte_prefetch_cancelled", "ms=${SystemClock.elapsedRealtime() - startedAt}")
+                    } else {
+                        logNtkPagePerf(index, "byte_prefetch_error", "ms=${SystemClock.elapsedRealtime() - startedAt},error=${e.javaClass.simpleName}")
+                        recordIfUnexpected(e)
+                    }
                 } finally {
                     bytePrefetching.remove(index)
                 }

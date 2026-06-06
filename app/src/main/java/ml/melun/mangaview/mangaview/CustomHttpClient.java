@@ -5698,9 +5698,15 @@ public class CustomHttpClient {
             }
             return ackSuccess;
         } catch(Exception e) {
-            Log.d(TAG, "ntk_native_ack_bypass_exception=" + e
-                    + ",totalMs=" + (System.currentTimeMillis() - startedMs)
-                    + ",path=" + path);
+            if(isInterruptedRequest(e)) {
+                Log.d(TAG, "ntk_native_ack_bypass_cancelled totalMs="
+                        + (System.currentTimeMillis() - startedMs)
+                        + ",path=" + path);
+            } else {
+                Log.d(TAG, "ntk_native_ack_bypass_exception=" + e
+                        + ",totalMs=" + (System.currentTimeMillis() - startedMs)
+                        + ",path=" + path);
+            }
             return false;
         }
     }
@@ -6486,7 +6492,8 @@ public class CustomHttpClient {
     }
 
     private static boolean isInterruptedRequest(Exception e) {
-        return e instanceof InterruptedIOException
+        return e instanceof InterruptedException
+                || e instanceof InterruptedIOException
                 || Thread.currentThread().isInterrupted()
                 || "Canceled".equals(e.getMessage());
     }

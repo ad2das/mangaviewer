@@ -2,6 +2,7 @@ package ml.melun.mangaview.mangaview;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.nio.charset.StandardCharsets;
 import java.net.URLDecoder;
 import java.util.ArrayList;
@@ -997,11 +998,18 @@ public class Manga {
                         + ",path=" + path);
             } catch (Exception e) {
                 fetch.error = e;
-                Log.d(TAG, "ntk_page_fetch_error mode="
-                        + (fetchMode == CustomHttpClient.FetchMode.DIRECT_ONLY ? "direct" : "allow")
-                        + ",ms=" + (System.currentTimeMillis() - startedAt)
-                        + ",path=" + path
-                        + "," + e);
+                if(isExpectedFetchCancellation(e)) {
+                    Log.d(TAG, "ntk_page_fetch_cancelled mode="
+                            + (fetchMode == CustomHttpClient.FetchMode.DIRECT_ONLY ? "direct" : "allow")
+                            + ",ms=" + (System.currentTimeMillis() - startedAt)
+                            + ",path=" + path);
+                } else {
+                    Log.d(TAG, "ntk_page_fetch_error mode="
+                            + (fetchMode == CustomHttpClient.FetchMode.DIRECT_ONLY ? "direct" : "allow")
+                            + ",ms=" + (System.currentTimeMillis() - startedAt)
+                            + ",path=" + path
+                            + "," + e);
+                }
             } finally {
                 if(parentGroup != null)
                     parentGroup.removeChild(requestGroup);
@@ -1012,6 +1020,21 @@ public class Manga {
         thread.setDaemon(true);
         thread.start();
         return fetch;
+    }
+
+    private static boolean isExpectedFetchCancellation(Throwable t) {
+        while(t != null) {
+            if(t instanceof InterruptedException || t instanceof InterruptedIOException)
+                return true;
+            String message = t.getMessage();
+            if("Canceled".equals(message) || "cancelled".equalsIgnoreCase(message))
+                return true;
+            Throwable cause = t.getCause();
+            if(cause == t)
+                return false;
+            t = cause;
+        }
+        return Thread.currentThread().isInterrupted();
     }
 
     private CustomHttpClient.PageResponse awaitAsyncNtkPageFetch(AsyncNtkPageFetch fetch,
