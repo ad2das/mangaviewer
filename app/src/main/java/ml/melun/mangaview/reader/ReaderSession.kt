@@ -412,9 +412,11 @@ class ReaderSession(
         }
         val startPage = displayStartPage(requestedStartPage, requestedStartSide(), refs)
         resolvedInitialStartPage.set(startPage)
-        main.post {
-            if (!cancelled.get()) {
-                deliverInitialPagesReadyIfNeeded(refs.size, startPage, notifyInitialPage)
+        if (!isNtkSource(manga, title)) {
+            main.post {
+                if (!cancelled.get()) {
+                    deliverInitialPagesReadyIfNeeded(refs.size, startPage, notifyInitialPage)
+                }
             }
         }
         if (!autoCut && !isNtkSource(manga, title) && timelinePrimeRequested.compareAndSet(false, true)) {
