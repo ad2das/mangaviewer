@@ -132,6 +132,7 @@ public class CustomHttpClient {
     private static final boolean DUMP_NTK_ACK_DEBUG_ARTIFACTS = false;
     private static final long NTK_ACK_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final long NTK_VIEWER_IMAGE_URL_CACHE_TTL_MS = 5 * 60 * 1000L;
+    private static final long NTK_VIEWER_IMAGE_URL_MISS_CACHE_TTL_MS = 30 * 1000L;
     private static final long NTK_WASM_WARM_CACHE_TTL_MS = 30 * 60 * 1000L;
     private static final int NTK_ACK_REQUEST_ATTEMPTS = 3;
     private static final int NTK_ACK_CHALLENGE_RACE_REQUESTS = 2;
@@ -980,6 +981,7 @@ public class CustomHttpClient {
     private final Map<String, Long> ntkWasmWarmCache = new HashMap<>();
     private final Object ntkViewerImageUrlCacheLock = new Object();
     private final Map<String, CachedViewerImages> ntkViewerImageUrlCache = new HashMap<>();
+    private final Map<String, Long> ntkViewerImageUrlMissCache = new HashMap<>();
     private final Map<String, FutureTask<List<String>>> ntkViewerImageUrlFlights = new java.util.concurrent.ConcurrentHashMap<>();
     public String agent = "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36";
 
@@ -4861,6 +4863,31 @@ public class CustomHttpClient {
             return;
         synchronized (ntkViewerImageUrlCacheLock) {
             ntkViewerImageUrlCache.remove(key);
+            ntkViewerImageUrlMissCache.remove(key);
+        }
+    }
+
+    private boolean hasFreshNtkViewerImageUrlMiss(String key) {
+        if(key == null || key.length() == 0)
+            return false;
+        long now = System.currentTimeMillis();
+        synchronized (ntkViewerImageUrlCacheLock) {
+            Long missedAt = ntkViewerImageUrlMissCache.get(key);
+            if(missedAt == null)
+                return false;
+            if(now - missedAt >= NTK_VIEWER_IMAGE_URL_MISS_CACHE_TTL_MS) {
+                ntkViewerImageUrlMissCache.remove(key);
+                return false;
+            }
+            return true;
+        }
+    }
+
+    private void cacheNtkViewerImageUrlMiss(String key) {
+        if(key == null || key.length() == 0)
+            return;
+        synchronized (ntkViewerImageUrlCacheLock) {
+            ntkViewerImageUrlMissCache.put(key, System.currentTimeMillis());
         }
     }
 
@@ -4905,6 +4932,10 @@ public class CustomHttpClient {
             invalidateCachedNtkViewerImageUrls(cacheKey);
             NtkWebViewFallbackManager.get(context).dropCachedViewerImageUrls(kind, workId, episodeId, path);
             Log.d(TAG, "ntk_images_api_cache_invalid path=" + path + ",count=" + cachedUrls.size());
+        }
+        if(hasFreshNtkViewerImageUrlMiss(cacheKey)) {
+            Log.d(TAG, "ntk_images_api_miss_cache_hit path=" + path);
+            return urls;
         }
         FutureTask<List<String>> task = new FutureTask<>(() ->
                 fetchNtkViewerImageUrlsUncached(kind, endpoint, baseUrl, path, cookiePath, segment,
@@ -5146,6 +5177,8 @@ public class CustomHttpClient {
                 NtkWebViewFallbackManager.get(context).dropCachedViewerImageUrls(kind, workId, episodeId, path);
                 urls.clear();
             }
+            if(hardForbidden && urls.size() == 0)
+                cacheNtkViewerImageUrlMiss(cacheKey);
 
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
@@ -5244,11 +5277,11 @@ public class CustomHttpClient {
     }
 
     private static boolean ntkViewerImagesNeedsAckRefresh(NtkQuicFetcher.Result result) {
-        return ntkViewerImagesAckRequired(result) || result != null && result.code == 403;
+        return ntkViewerImagesAckRequired(result);
     }
 
     static boolean ntkViewerImagesNeedsAckRefreshForTest(int code, String body) {
-        return ntkViewerImagesAckRequired(body) || code == 403;
+        return ntkViewerImagesAckRequired(body);
     }
 
     private boolean shouldTryNtkViewerImagesBeforeAck(String kind, String baseUrl, String path, String cookiePath) {

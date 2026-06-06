@@ -329,7 +329,7 @@ public class CustomHttpClientTest {
 
     @Test
     public void ntkViewerImageForbiddenRefreshesAckBeforeWebViewFallback() {
-        assertTrue(CustomHttpClient.ntkViewerImagesNeedsAckRefreshForTest(403, "{\"ok\":false}"));
+        assertFalse(CustomHttpClient.ntkViewerImagesNeedsAckRefreshForTest(403, "{\"ok\":false}"));
         assertTrue(CustomHttpClient.ntkViewerImagesNeedsAckRefreshForTest(200, "{\"ad_ack_required\":true}"));
         assertTrue(CustomHttpClient.ntkViewerImagesNeedsAckRefreshForTest(200, "{\"error\":\"ad_ack_required\"}"));
         assertFalse(CustomHttpClient.ntkViewerImagesNeedsAckRefreshForTest(200, "{\"ok\":false}"));

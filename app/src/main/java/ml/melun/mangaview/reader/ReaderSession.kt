@@ -924,10 +924,6 @@ class ReaderSession(
     }
 
     fun prepareAdjacentEpisode(anchor: Int, direction: Int) {
-        if (isNtkSource(manga, title) && direction == ReaderSurfaceView.DIRECTION_NEXT) {
-            appendAdjacentEpisode(anchor, direction, silentMissing = true)
-            return
-        }
         val quietMs = ntkBackgroundPrepareQuietRemainingMs()
         if (quietMs > 0L) {
             scheduleDeferredAdjacentPrepare(anchor, direction, quietMs)
@@ -1204,24 +1200,33 @@ class ReaderSession(
                 "titleId=${currentTitle.id} path=${target.ntkEpisodePath}"
         )
         return try {
-            withRepositoryCancellation(userVisible = true) { cancellation ->
-                val initialResult = imageRepository.fetchViewerInitial(target, cancellation)
-                val initialImages = imageRepository.imageUrls(target, appContext).size
-                if ((initialResult == Title.LOAD_OK && initialImages > 0) ||
-                    initialResult == Title.LOAD_CAPTCHA ||
-                    cancellation.isCancelled()
-                ) {
-                    initialResult
+            val preferApiFirst = isNtkSource(target, currentTitle) &&
+                target.baseMode == ml.melun.mangaview.mangaview.MTitle.base_webtoon
+            val initialResult = withRepositoryCancellation(userVisible = true) { cancellation ->
+                if (preferApiFirst) {
+                    imageRepository.fetchViewerInitialWithMode(target, cancellation, "api-strict")
                 } else {
-                    restoreNtkEpisodeSnapshotIfNeeded(currentTitle, target)
-                    val retryMode = "api-strict"
-                    Log.d(
-                        TAG,
-                        "append_adjacent_verified_fetch_retry direction=$direction targetId=${target.id} " +
-                            "initialResult=$initialResult initialImages=$initialImages retryMode=$retryMode " +
-                            "path=${target.ntkEpisodePath}"
-                    )
-                    imageRepository.fetchViewerInitialWithMode(target, cancellation, retryMode)
+                    imageRepository.fetchViewerInitial(target, cancellation)
+                }
+            }
+            val initialImages = imageRepository.imageUrls(target, appContext).size
+            if ((initialResult == Title.LOAD_OK && initialImages > 0) ||
+                initialResult == Title.LOAD_CAPTCHA ||
+                cancelled.get()
+            ) {
+                initialResult
+            } else {
+                restoreNtkEpisodeSnapshotIfNeeded(currentTitle, target)
+                target.setImgs(null)
+                val retryMode = "api-strict"
+                Log.d(
+                    TAG,
+                    "append_adjacent_verified_fetch_retry direction=$direction targetId=${target.id} " +
+                        "initialResult=$initialResult initialImages=$initialImages retryMode=$retryMode " +
+                        "path=${target.ntkEpisodePath}"
+                )
+                withRepositoryCancellation(userVisible = true) { retryCancellation ->
+                    imageRepository.fetchViewerInitialWithMode(target, retryCancellation, retryMode)
                 }
             }.also {
                 Log.d(

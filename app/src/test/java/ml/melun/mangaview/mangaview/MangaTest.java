@@ -297,8 +297,8 @@ public class MangaTest {
     }
 
     @Test
-    public void ntkGeneratedFastPathDoesNotTrimPagesBeforeFirstFrame() {
-        assertTrue(!Manga.shouldTrimNtkGeneratedPagesBeforeFirstFrameForTest());
+    public void ntkGeneratedFastPathTrimsPagesBeforeFirstFrame() {
+        assertTrue(Manga.shouldTrimNtkGeneratedPagesBeforeFirstFrameForTest());
     }
 
     @Test
@@ -382,6 +382,56 @@ public class MangaTest {
         assertEquals("232965", Manga.ntkApiEpisodeIdForTest("232965"));
         assertEquals("lz-beasts_that_cross_the_line-7021779758750226",
                 Manga.ntkApiEpisodeIdForTest("lz-beasts_that_cross_the_line-7021779758750226"));
+    }
+
+    @Test
+    public void ntkViewerImageApiUsesEmbeddedEpisodeIdWhenPathIdDiffers() {
+        String body = "2f:[\"$\",\"$L31\",null,{\"domain\":\"webtoon\",\"episodeId\":\"1089010\"}]"
+                + ",\"episodePath\":\"/webtoon/slug/854725\"";
+
+        assertEquals("1089010", Manga.ntkViewerEmbeddedImageEpisodeIdForTest(body, "854725"));
+    }
+
+    @Test
+    public void ntkViewerImageApiReadsEscapedEmbeddedEpisodeId() {
+        String body = "{\\\"domain\\\":\\\"webtoon\\\",\\\"episodeId\\\":\\\"1089010\\\"}"
+                + "{\\\"episodePath\\\":\\\"/webtoon/slug/854725\\\"}";
+
+        assertEquals("1089010", Manga.ntkViewerEmbeddedImageEpisodeIdForTest(body, "854725"));
+    }
+
+    @Test
+    public void ntkViewerImageApiPrefersTokenEpisodeOverViewPingEpisode() {
+        assertEquals("1542544", Manga.ntkViewerApiImageEpisodeIdForTest(
+                "1542544", "", "1542544", "140318"));
+        assertEquals("1542544", Manga.ntkViewerApiImageEpisodeIdForTest(
+                "", "", "1542544", "140318"));
+        assertEquals("140318", Manga.ntkViewerApiImageEpisodeIdForTest(
+                "", "", "", "140318"));
+    }
+
+    @Test
+    public void ntkViewerEmptyImageMetasAreConfirmedEmpty() {
+        String body = "{\"imageMetas\":[],\"imagesToken\":\"viewer-token\",\"page\":1}";
+
+        assertTrue(Manga.isNtkViewerImageMetasExplicitlyEmptyForTest(body));
+        assertTrue(Manga.isNtkViewerConfirmedEmptyPayloadForTest(body, "/webtoon/slug/1"));
+    }
+
+    @Test
+    public void ntkViewerNonEmptyImageMetasStillUseApi() {
+        String body = "{\"imageMetas\":[{\"page\":1,\"width\":720}],\"imagesToken\":\"viewer-token\"}";
+
+        org.junit.Assert.assertFalse(Manga.isNtkViewerImageMetasExplicitlyEmptyForTest(body));
+        org.junit.Assert.assertFalse(Manga.isNtkViewerConfirmedEmptyPayloadForTest(body, "/webtoon/slug/1"));
+    }
+
+    @Test
+    public void ntkViewerCommentOnlyPayloadIsConfirmedEmptyForEpisode() {
+        String body = "{\"episodePath\":\"/webtoon/slug/854725\",\"page\":1,\"totalPages\":1,"
+                + "\"totalRoots\":0,\"initial\":[],\"bestInitial\":[]}";
+
+        assertTrue(Manga.isNtkViewerConfirmedEmptyPayloadForTest(body, "/webtoon/slug/854725"));
     }
 
     @Test
