@@ -1419,7 +1419,7 @@ class ReaderSession(
         val total: Int
         if (direction < 0) {
             synchronized(pagesLock) {
-                if (containsEpisodeFastLocked(target)) return
+                if (containsEpisodeForAppendLocked(target)) return
                 for (page in pages) page.pageIndex += inserted
                 refs.forEachIndexed { index, page -> page.pageIndex = index }
                 pages.addAll(0, refs)
@@ -1436,7 +1436,7 @@ class ReaderSession(
         } else {
             val cardIndex: Int
             synchronized(pagesLock) {
-                if (containsEpisodeLocked(target)) return
+                if (containsEpisodeForAppendLocked(target)) return
                 cardIndex = pages.size
                 refs.forEachIndexed { offset, page -> page.pageIndex = cardIndex + offset }
                 pages.addAll(refs)
@@ -1532,7 +1532,7 @@ class ReaderSession(
     }
 
     private fun hasEpisode(target: Manga): Boolean = synchronized(pagesLock) {
-        containsEpisodeLocked(target)
+        containsEpisodeForAppendLocked(target)
     }
 
     private fun hasEpisodeFast(target: Manga): Boolean = synchronized(pagesLock) {
@@ -1640,14 +1640,30 @@ class ReaderSession(
         return pages.any { Manga.sameEpisodeIdentity(it.manga, target) }
     }
 
+    private fun containsEpisodeForAppendLocked(target: Manga): Boolean {
+        val key = episodeAppendKey(target)
+        if (key.isNotEmpty())
+            return pages.any { episodeAppendKey(it.manga) == key }
+        return containsEpisodeLocked(target)
+    }
+
     private fun appendableNewEpisodeRefsLocked(refs: List<PageRef>): List<PageRef> {
         if (refs.isEmpty()) return emptyList()
         val accepted = ArrayList<PageRef>(refs.size)
         val acceptedMangas = ArrayList<Manga>()
+        val existingKeys = HashSet<String>()
+        for (page in pages) {
+            val key = episodeAppendKey(page.manga)
+            if (key.isNotEmpty()) existingKeys.add(key)
+        }
+        val acceptedKeys = HashSet<String>()
         for (ref in refs) {
-            val existing = containsEpisodeLocked(ref.manga)
-            val alreadyAccepted = acceptedMangas.any { sameEpisode(it, ref.manga) }
-            if (!existing && !alreadyAccepted) acceptedMangas.add(ref.manga)
+            val key = episodeAppendKey(ref.manga)
+            val existing = if (key.isNotEmpty()) existingKeys.contains(key) else containsEpisodeLocked(ref.manga)
+            val alreadyAccepted = if (key.isNotEmpty()) acceptedKeys.contains(key) else acceptedMangas.any { sameEpisode(it, ref.manga) }
+            if (!existing && !alreadyAccepted) {
+                if (key.isNotEmpty()) acceptedKeys.add(key) else acceptedMangas.add(ref.manga)
+            }
             if (!existing || alreadyAccepted) accepted.add(ref)
         }
         return accepted
@@ -2966,7 +2982,7 @@ class ReaderSession(
     }
 
     fun containsEpisodeForTest(target: Manga): Boolean = synchronized(pagesLock) {
-        containsEpisodeLocked(target) || containsEpisodeFastLocked(target)
+        containsEpisodeForAppendLocked(target) || containsEpisodeFastLocked(target)
     }
 
     private fun sourcePageIndex(page: PageRef): Int {
@@ -2999,6 +3015,16 @@ class ReaderSession(
         val first = imageRepository.imageUrls(a, appContext)
         val second = imageRepository.imageUrls(b, appContext)
         return !first.isNullOrEmpty() && first == second
+    }
+
+    private fun episodeAppendKey(target: Manga?): String {
+        if (target == null) return ""
+        val path = target.ntkEpisodePath?.trim().orEmpty()
+        if (path.isNotEmpty()) return "ntk:${target.baseMode}:$path"
+        val titleId = target.titleId
+        if (target.id > 0 && titleId > 0) return "id:${target.baseMode}:$titleId:${target.id}"
+        if (target.id > 0) return "id:${target.baseMode}:${target.id}"
+        return ""
     }
 
     private fun trackDeliveredBitmap(index: Int, bitmap: Bitmap, owned: Boolean) {

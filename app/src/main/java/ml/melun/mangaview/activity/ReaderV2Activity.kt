@@ -1201,7 +1201,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             return
         }
         val previous = if (manga == null) null else adjacentEpisodeFast(manga, false)
-        val next = if (manga == null) null else adjacentEpisode(manga, true)
+        val next = if (manga == null) null else adjacentEpisodeFast(manga, true)
         cachedPreviousEpisode = previous
         cachedNextEpisode = next
         primeAdjacentLaunchWindow(title, next)
