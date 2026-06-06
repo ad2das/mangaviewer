@@ -20,6 +20,7 @@ import ml.melun.mangaview.LiveNetworkAssume;
 import ml.melun.mangaview.MainApplication;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
+import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.mangaview.Title;
@@ -31,7 +32,7 @@ public class NtkEmptyEpisodeActivityInstrumentedTest {
     public void confirmedEmptyEpisodeListRendersWithoutErrorFallback() throws Exception {
         LiveNetworkAssume.assumeEnabled();
         Context context = ApplicationProvider.getApplicationContext();
-        MainApplication.p.setBaseMode(MTitle.base_webtoon);
+        forceNtkWebtoonMode();
         MainApplication.getHttpClient().clearPageCache();
         Search.clearNtkResultCaches();
 
@@ -72,7 +73,7 @@ public class NtkEmptyEpisodeActivityInstrumentedTest {
     public void searchedDuljjaeEpisodeListRendersWithoutErrorFallback() throws Exception {
         LiveNetworkAssume.assumeEnabled();
         Context context = ApplicationProvider.getApplicationContext();
-        MainApplication.p.setBaseMode(MTitle.base_webtoon);
+        forceNtkWebtoonMode();
         MainApplication.getHttpClient().clearPageCache();
         Search.clearNtkResultCaches();
 
@@ -167,5 +168,12 @@ public class NtkEmptyEpisodeActivityInstrumentedTest {
                     : -1;
         });
         return count[0];
+    }
+
+    private static void forceNtkWebtoonMode() {
+        String siteRoot = InstrumentationRegistry.getArguments()
+                .getString("ntkSiteRoot", CustomHttpClient.NTK_WEBTOON_URL);
+        MainApplication.p.setNtkSitePreset(siteRoot);
+        MainApplication.p.setBaseMode(MTitle.base_webtoon);
     }
 }

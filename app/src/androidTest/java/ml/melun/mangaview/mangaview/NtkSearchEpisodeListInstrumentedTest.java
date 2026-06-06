@@ -28,6 +28,9 @@ public class NtkSearchEpisodeListInstrumentedTest {
                 InstrumentationRegistry.getArguments().getString("ntkAllowEmptyEpisodes", "false"));
         boolean dumpRsc = Boolean.parseBoolean(
                 InstrumentationRegistry.getArguments().getString("ntkDumpRsc", "false"));
+        String siteRoot = InstrumentationRegistry.getArguments()
+                .getString("ntkSiteRoot", CustomHttpClient.NTK_WEBTOON_URL);
+        MainApplication.p.setNtkSitePreset(siteRoot);
         MainApplication.p.setBaseMode(MTitle.base_webtoon);
         MainApplication.getHttpClient().clearPageCache();
         Search.clearNtkResultCaches();
