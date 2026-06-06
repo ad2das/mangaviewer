@@ -4752,10 +4752,9 @@ public class CustomHttpClient {
                 executor = ntkQuicExecutors.remove(host);
                 ntkWasmWarmCache.remove(host);
             }
-            if(executor != null)
-                executor.shutdownNow();
             if(engine != null)
                 engine.shutdown();
+            shutdownNtkQuicExecutor(executor);
         } catch (Exception ignored) {
         }
     }
@@ -4770,17 +4769,25 @@ public class CustomHttpClient {
             ntkQuicExecutors.clear();
             ntkWasmWarmCache.clear();
         }
-        for(ExecutorService executor : executors) {
-            try {
-                executor.shutdownNow();
-            } catch (Exception ignored) {
-            }
-        }
         for(HttpEngine engine : engines) {
             try {
                 engine.shutdown();
             } catch (Exception ignored) {
             }
+        }
+        for(ExecutorService executor : executors)
+            shutdownNtkQuicExecutor(executor);
+    }
+
+    private void shutdownNtkQuicExecutor(ExecutorService executor) {
+        if(executor == null)
+            return;
+        try {
+            executor.shutdown();
+            executor.awaitTermination(2_500L, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (Exception ignored) {
         }
     }
 

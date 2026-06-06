@@ -1943,7 +1943,8 @@ public class Manga {
             return false;
         if(hasCachedReachableNtkGeneratedImageExtension(path))
             return true;
-        return shouldProbeKnownGeneratedBeforeApiFallback(path, getNtkImageCount());
+        return shouldProbeKnownGeneratedBeforeApiFallback(path, getNtkImageCount())
+                || isNumericNtkGeneratedEpisodePath(path);
     }
 
     private boolean shouldUseOptimisticNtkGeneratedFastPath(String path) {
@@ -1957,7 +1958,13 @@ public class Manga {
     }
 
     private static boolean shouldProbeKnownGeneratedBeforeApiFallback(String path, int imageCount) {
-        if(imageCount <= 0 || path == null || shouldSkipNtkGeneratedForEpisodePath(path))
+        if(imageCount <= 0)
+            return false;
+        return isNumericNtkGeneratedEpisodePath(path);
+    }
+
+    private static boolean isNumericNtkGeneratedEpisodePath(String path) {
+        if(path == null || shouldSkipNtkGeneratedForEpisodePath(path))
             return false;
         return Pattern.compile("^/(?:manhwa|webtoon)/\\d+/\\d+(?:[/?#].*)?$").matcher(path).find();
     }
@@ -1966,14 +1973,60 @@ public class Manga {
                                                String episodeId, String extension, int pageCount) {
         if(pageCount <= 1)
             return pageCount;
-        if(isNtkGeneratedImageReachable(client, ntkGeneratedImageUrl(segment, workId, episodeId, pageCount, extension)))
-            return pageCount;
         int low = 1;
-        int high = pageCount - 1;
+        int high = pageCount;
+        if(pageCount >= 16) {
+            int[] probes = uniqueNtkPageCountProbes(pageCount);
+            boolean[] completed = new boolean[probes.length];
+            boolean[] reachable = new boolean[probes.length];
+            CountDownLatch done = new CountDownLatch(probes.length);
+            for(int i = 0; i < probes.length; i++) {
+                final int index = i;
+                Thread thread = new Thread(() -> {
+                    try {
+                        reachable[index] = isNtkGeneratedImageReachable(client,
+                                ntkGeneratedImageUrl(segment, workId, episodeId, probes[index], extension), false);
+                        completed[index] = true;
+                    } finally {
+                        done.countDown();
+                    }
+                }, "ntk-generated-page-probe");
+                thread.setDaemon(true);
+                thread.start();
+            }
+            try {
+                done.await(4_000L, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            int bestReachable = 1;
+            int firstUnreachable = pageCount + 1;
+            for(int i = 0; i < probes.length; i++) {
+                if(!completed[i])
+                    continue;
+                if(reachable[i])
+                    bestReachable = Math.max(bestReachable, probes[i]);
+                else
+                    firstUnreachable = Math.min(firstUnreachable, probes[i]);
+            }
+            if(bestReachable >= pageCount)
+                return pageCount;
+            if(firstUnreachable <= pageCount) {
+                low = bestReachable + 1;
+                high = firstUnreachable - 1;
+            } else {
+                low = bestReachable + 1;
+                high = pageCount;
+            }
+        } else if(isNtkGeneratedImageReachable(client, ntkGeneratedImageUrl(segment, workId, episodeId, pageCount, extension))) {
+            return pageCount;
+        } else {
+            high = pageCount - 1;
+        }
         int best = 1;
         while(low <= high) {
             int mid = low + (high - low) / 2;
-            if(isNtkGeneratedImageReachable(client, ntkGeneratedImageUrl(segment, workId, episodeId, mid, extension))) {
+            if(isNtkGeneratedImageReachable(client, ntkGeneratedImageUrl(segment, workId, episodeId, mid, extension), false)) {
                 best = mid;
                 low = mid + 1;
             } else {
@@ -1985,7 +2038,30 @@ public class Manga {
         return best;
     }
 
+    private static int[] uniqueNtkPageCountProbes(int pageCount) {
+        int[] raw = new int[]{
+                Math.max(2, pageCount / 4),
+                Math.max(2, pageCount / 2),
+                Math.max(2, (pageCount * 3) / 4),
+                pageCount
+        };
+        ArrayList<Integer> unique = new ArrayList<>();
+        for(int value : raw) {
+            int clamped = Math.max(2, Math.min(pageCount, value));
+            if(!unique.contains(clamped))
+                unique.add(clamped);
+        }
+        int[] result = new int[unique.size()];
+        for(int i = 0; i < unique.size(); i++)
+            result[i] = unique.get(i);
+        return result;
+    }
+
     private boolean isNtkGeneratedImageReachable(CustomHttpClient client, String src) {
+        return isNtkGeneratedImageReachable(client, src, true);
+    }
+
+    private boolean isNtkGeneratedImageReachable(CustomHttpClient client, String src, boolean logMiss) {
         if(client == null || src == null || src.length() == 0)
             return false;
         Response response = null;
@@ -2020,12 +2096,13 @@ public class Manga {
                         ? "" : String.valueOf(response.body().contentType()).toLowerCase(Locale.ROOT);
                 ok = (code >= 200 && code < 300 || code == 206) && contentType.startsWith("image/");
             }
-            if(!ok)
+            if(!ok && logMiss)
                 logNtkViewerParse("generated-unreachable-" + code + "-" + generatedImageDebugSuffix(src),
                         null, getNtkEpisodePath(), 0, 0);
             return ok;
         } catch(Exception e) {
-            logNtkViewerParse("generated-unreachable-error", null, getNtkEpisodePath(), 0, 0);
+            if(logMiss)
+                logNtkViewerParse("generated-unreachable-error", null, getNtkEpisodePath(), 0, 0);
             return false;
         } finally {
             if(response != null)

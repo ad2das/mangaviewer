@@ -81,8 +81,7 @@ public final class NtkQuicFetcher {
                     method, body, timeoutMs);
         } finally {
             executor.shutdown();
-            if(!executor.awaitTermination(750, TimeUnit.MILLISECONDS))
-                executor.shutdownNow();
+            executor.awaitTermination(2_500, TimeUnit.MILLISECONDS);
         }
     }
 

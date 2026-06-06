@@ -1074,11 +1074,6 @@ class ReaderSession(
     }
 
     private fun fetchGeneratedNtkAppendUrls(target: Manga, currentTitle: Title, direction: Int): Int {
-        if (direction >= 0) {
-            return withRepositoryCancellation(userVisible = true) {
-                imageRepository.fetchViewerInitial(target, it)
-            }
-        }
         val startedAt = SystemClock.elapsedRealtime()
         Log.d(
             TAG,
@@ -1087,16 +1082,31 @@ class ReaderSession(
         )
         return try {
             withRepositoryCancellation(userVisible = true) { cancellation ->
-                val strictResult = imageRepository.fetchViewerInitialWithMode(target, cancellation, "api-strict")
-                if (strictResult == Title.LOAD_OK || cancellation.isCancelled()) {
-                    strictResult
+                val initialResult = if (direction >= 0) {
+                    imageRepository.fetchViewerInitial(target, cancellation)
                 } else {
+                    imageRepository.fetchViewerInitialWithMode(target, cancellation, "api-strict")
+                }
+                val initialImages = imageRepository.imageUrls(target, appContext).size
+                if ((initialResult == Title.LOAD_OK && initialImages > 0) ||
+                    initialResult == Title.LOAD_CAPTCHA ||
+                    cancellation.isCancelled()
+                ) {
+                    initialResult
+                } else {
+                    restoreNtkEpisodeSnapshotIfNeeded(currentTitle, target)
+                    val retryMode = if (direction >= 0) "api-strict" else "default"
                     Log.d(
                         TAG,
-                        "append_adjacent_verified_fetch_fallback direction=$direction targetId=${target.id} " +
-                            "strictResult=$strictResult path=${target.ntkEpisodePath}"
+                        "append_adjacent_verified_fetch_retry direction=$direction targetId=${target.id} " +
+                            "initialResult=$initialResult initialImages=$initialImages retryMode=$retryMode " +
+                            "path=${target.ntkEpisodePath}"
                     )
-                    imageRepository.fetchViewerInitial(target, cancellation)
+                    if (direction >= 0) {
+                        imageRepository.fetchViewerInitialWithMode(target, cancellation, retryMode)
+                    } else {
+                        imageRepository.fetchViewerInitial(target, cancellation)
+                    }
                 }
             }.also {
                 Log.d(
