@@ -1668,6 +1668,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (applyPendingPageResolveLocked(index)) appliedAny = true
         }
         if (appliedAny) {
+            structuralScrollAdjustUntilMs = max(
+                structuralScrollAdjustUntilMs,
+                SystemClock.uptimeMillis() + RESTORE_POSITION_LOCK_MS
+            )
             if (shouldRestoreAnchorAfterPendingResolves(
                     lastBusy = lastBusy,
                     pointerDown = pointerDown,
@@ -1774,6 +1778,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
          * A stale delta can make later pages overlap the current page, which looks like
          * the top of the image is pinned while only the lower part scrolls.
          */
+        structuralScrollAdjustUntilMs = max(
+            structuralScrollAdjustUntilMs,
+            SystemClock.uptimeMillis() + RESTORE_POSITION_LOCK_MS
+        )
         layoutDirty = true
     }
 
@@ -2204,7 +2212,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val RESTORE_POSITION_EPSILON_PX = 2f
         private const val INITIAL_RENDER_HOLD_MS = 700L
         private const val SCROLL_JUMP_LOG_SCREEN_RATIO = 0.75f
-        private const val HEIGHT_CHANGE_SCROLL_ADJUST_QUIET_MS = 2200L
+        private const val HEIGHT_CHANGE_SCROLL_ADJUST_QUIET_MS = 6500L
         private const val HEIGHT_CHANGE_EPSILON_PX = 0.01f
         private const val BUSY_RESOLVE_RENDER_EXTRA_PAGES = 2
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
