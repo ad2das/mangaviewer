@@ -342,7 +342,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             title.eps?.let { manga.setEps(it) }
         }
         titleView.text = displayEpisodeTitle(manga, title)
-        updateAdjacentButtons()
         status.text = displayEpisodeTitle(manga, title)
         startReaderSession(
             manga,
@@ -350,6 +349,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             intent.getStringExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY),
             intent.getBooleanExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, false)
         )
+        updateAdjacentButtons()
         updateResultEpisode(manga)
         if (!manga.isOnline) p?.removeViewerBookmark(manga)
     }

@@ -144,6 +144,18 @@ public class NtkRandomStressInstrumentedTest {
                     ensureNtkAccessAfterChallenge(context, client, baseMode);
                     fetchResult = candidate.fetchEps(client);
                 }
+                if(fetchResult == Title.LOAD_CAPTCHA
+                        || (fetchResult == Title.LOAD_ERROR
+                        && client.hasRecentCloudflareChallenge()
+                        && !client.hasNtkAccessProof())) {
+                    Log.d(TAG, "ntk_true_random_title_access_blocked run=" + run
+                            + ",attempt=" + titleAttempt
+                            + ",title=" + candidate.getName()
+                            + ",id=" + candidate.getId()
+                            + ",path=" + candidate.getPath()
+                            + ",result=" + fetchResult);
+                    break;
+                }
                 if(fetchResult == Title.LOAD_OK && candidate.getEps() != null && candidate.getEps().size() > 0) {
                     title = candidate;
                     break;
@@ -222,12 +234,6 @@ public class NtkRandomStressInstrumentedTest {
                     + ",type=" + e.getClass().getSimpleName()
                     + ",message=" + e.getMessage());
             if(isCloudflareFailure(e)) {
-                Title dbTitle = pickRandomTitleFromClassificationDb(context, random, baseMode);
-                if(dbTitle != null)
-                    return dbTitle;
-                Title numericTitle = pickRandomTitleFromNumericProbe(client, random, baseMode);
-                if(numericTitle != null)
-                    return numericTitle;
                 ensureNtkAccessAfterChallenge(context, client, baseMode);
                 try {
                     return pickRandomTitleFromApi(client, random, baseMode);
@@ -237,7 +243,25 @@ public class NtkRandomStressInstrumentedTest {
                             + ",type=" + retry.getClass().getSimpleName()
                             + ",message=" + retry.getMessage());
                 }
+                if(client.hasRecentCloudflareChallenge() && !client.hasNtkAccessProof()) {
+                    throw new AssertionError("Unable to verify NTK access before random title fallback"
+                            + " baseMode=" + baseMode
+                            + " apiType=" + apiError.getClass().getSimpleName()
+                            + " apiMessage=" + apiError.getMessage(), apiError);
+                }
+                Title dbTitle = pickRandomTitleFromClassificationDb(context, random, baseMode);
+                if(dbTitle != null)
+                    return dbTitle;
+                Title numericTitle = pickRandomTitleFromNumericProbe(client, random, baseMode);
+                if(numericTitle != null)
+                    return numericTitle;
             }
+        }
+        if(client.hasRecentCloudflareChallenge() && !client.hasNtkAccessProof()) {
+            throw new AssertionError("Unable to verify NTK access before non-API random title fallback"
+                    + " baseMode=" + baseMode
+                    + (apiError == null ? "" : " apiType=" + apiError.getClass().getSimpleName()
+                    + " apiMessage=" + apiError.getMessage()), apiError);
         }
         Title htmlTitle = pickRandomTitleFromHtmlSections(client, random, baseMode);
         if(htmlTitle != null)
@@ -296,11 +320,10 @@ public class NtkRandomStressInstrumentedTest {
     }
 
     private static Title pickRandomTitleFromNumericProbe(CustomHttpClient client, Random random, int baseMode) {
-        if(client.hasRecentCloudflareChallenge()
-                && !client.hasNtkAccessProof()
-                && !client.hasRecentNtkAccessVerification()) {
+        if(client.hasRecentCloudflareChallenge() && !client.hasNtkAccessProof()) {
             Log.d(TAG, "ntk_true_random_numeric_probe_after_challenge baseMode=" + baseMode
                     + ",reason=recent_challenge_without_access_proof");
+            return null;
         }
         String segment = baseMode == MTitle.base_webtoon ? "webtoon" : "manhwa";
         for(int attempt = 0; attempt < 28; attempt++) {

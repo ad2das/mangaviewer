@@ -490,6 +490,7 @@ class ReaderSession(
 
     private fun prefetchNtkInitialNextBytes(anchor: Int, count: Int) {
         if (!isNtkSource(manga, title)) return
+        if (!firstBitmapLogged.get()) return
         if (MainApplication.p?.getDataSave() == true) return
         val last = minOf(count - 1, anchor + NTK_INITIAL_BYTE_PREFETCH_AHEAD_PAGES)
         if (last <= anchor) return
