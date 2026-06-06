@@ -369,7 +369,13 @@ object ReaderImageCache {
                     "headersMs=${headersAt - startedAt},bytes=$contentLength"
                 )
             }
-            if (!isUsableImage(tmp) && !replaceWithImageExtractedFromHtml(context, manga, image, tmp)) {
+            if (!isUsableImage(tmp) &&
+                !replaceWithImageExtractedFromHtml(context, manga, image, tmp) &&
+                !replaceInvalidNtkGeneratedImageWithFallback(context, manga, image, tmp, foreground, cancellation)
+            ) {
+                if (isLikelyInvalidGeneratedTail(manga, image)) {
+                    throw java.io.IOException("Generated image past tail: $image")
+                }
                 throw java.io.IOException("Invalid image cache file")
             }
             if (foreground) {
@@ -498,6 +504,13 @@ object ReaderImageCache {
         val target = ntkGeneratedTarget(image) ?: return false
         val knownCount = manga.ntkImageCount
         if (knownCount > 0) return target.page > knownCount
+        return target.page >= 18
+    }
+
+    private fun isLikelyInvalidGeneratedTail(manga: Manga, image: String): Boolean {
+        val target = ntkGeneratedTarget(image) ?: return false
+        val knownCount = manga.ntkImageCount
+        if (knownCount > 0) return target.page >= max(18, knownCount - 4)
         return target.page >= 18
     }
 
@@ -857,6 +870,48 @@ object ReaderImageCache {
                 }
             } catch (_: Exception) {
                 // Try the next extracted candidate.
+            } finally {
+                if (candidateFile.exists()) candidateFile.delete()
+            }
+        }
+        return false
+    }
+
+    private fun replaceInvalidNtkGeneratedImageWithFallback(
+        context: Context,
+        manga: Manga,
+        image: String,
+        targetFile: File,
+        foreground: Boolean,
+        cancellation: Cancellation?
+    ): Boolean {
+        if (!shouldTryNtkGeneratedExtensionFallback(image)) return false
+        val candidates = ntkGeneratedExtensionFallbacks(image)
+        if (candidates.isEmpty()) return false
+        for (candidate in candidates) {
+            cancellation?.throwIfCancelled()
+            val candidateFile = File(targetFile.parentFile, "${targetFile.name}.fallback.${System.nanoTime()}")
+            try {
+                requestForForegroundMode(context, manga, candidate, foreground, cancellation).use { response ->
+                    if (!response.isSuccessful) return@use
+                    val body = response.body ?: return@use
+                    FileOutputStream(candidateFile).use { out -> body.byteStream().copyTo(out) }
+                }
+                if (isUsableImage(candidateFile)) {
+                    if (targetFile.exists()) targetFile.delete()
+                    replace(candidateFile, targetFile)
+                    logCacheEvent(
+                        "invalid_generated_fallback",
+                        manga,
+                        candidate,
+                        foreground,
+                        "source=${image.substringAfterLast('/').takeLast(48)}"
+                    )
+                    ViewerWarmupManager.logMetric("ntk_generated_invalid_extension_fallback", 1L)
+                    return true
+                }
+            } catch (_: Exception) {
+                // Try the next extension candidate.
             } finally {
                 if (candidateFile.exists()) candidateFile.delete()
             }

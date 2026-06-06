@@ -46,6 +46,22 @@ public class ReaderPipelinePolicyTest {
     }
 
     @Test
+    public void pendingResolveAnchorRestoreOnlyWhenReaderIsIdle() {
+        assertTrue(ReaderSurfaceView.shouldRestoreAnchorAfterPendingResolvesForTest(
+                false, false, false, true, false));
+        assertFalse(ReaderSurfaceView.shouldRestoreAnchorAfterPendingResolvesForTest(
+                true, false, false, true, false));
+        assertFalse(ReaderSurfaceView.shouldRestoreAnchorAfterPendingResolvesForTest(
+                false, true, false, true, false));
+        assertFalse(ReaderSurfaceView.shouldRestoreAnchorAfterPendingResolvesForTest(
+                false, false, true, true, false));
+        assertFalse(ReaderSurfaceView.shouldRestoreAnchorAfterPendingResolvesForTest(
+                false, false, false, false, false));
+        assertFalse(ReaderSurfaceView.shouldRestoreAnchorAfterPendingResolvesForTest(
+                false, false, false, true, true));
+    }
+
+    @Test
     public void preparedAutoCutOnlySplitsWideSpreadPages() {
         assertFalse(ReaderSession.shouldSplitPreparedBitmapForTest(true, true, 720, 1600));
         assertFalse(ReaderSession.shouldSplitPreparedBitmapForTest(true, false, 1600, 1200));

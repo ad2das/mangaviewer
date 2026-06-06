@@ -1103,11 +1103,7 @@ class ReaderSession(
         )
         return try {
             withRepositoryCancellation(userVisible = true) { cancellation ->
-                val initialResult = if (direction >= 0) {
-                    imageRepository.fetchViewerInitial(target, cancellation)
-                } else {
-                    imageRepository.fetchViewerInitialWithMode(target, cancellation, "api-strict")
-                }
+                val initialResult = imageRepository.fetchViewerInitial(target, cancellation)
                 val initialImages = imageRepository.imageUrls(target, appContext).size
                 if ((initialResult == Title.LOAD_OK && initialImages > 0) ||
                     initialResult == Title.LOAD_CAPTCHA ||
@@ -1116,18 +1112,14 @@ class ReaderSession(
                     initialResult
                 } else {
                     restoreNtkEpisodeSnapshotIfNeeded(currentTitle, target)
-                    val retryMode = if (direction >= 0) "api-strict" else "default"
+                    val retryMode = "api-strict"
                     Log.d(
                         TAG,
                         "append_adjacent_verified_fetch_retry direction=$direction targetId=${target.id} " +
                             "initialResult=$initialResult initialImages=$initialImages retryMode=$retryMode " +
                             "path=${target.ntkEpisodePath}"
                     )
-                    if (direction >= 0) {
-                        imageRepository.fetchViewerInitialWithMode(target, cancellation, retryMode)
-                    } else {
-                        imageRepository.fetchViewerInitial(target, cancellation)
-                    }
+                    imageRepository.fetchViewerInitialWithMode(target, cancellation, retryMode)
                 }
             }.also {
                 Log.d(
@@ -2901,7 +2893,7 @@ class ReaderSession(
                 }
                 deliverDecodeResultOnMain(currentDelivery, false)
             }
-            if (!main.postAtFrontOfQueue(deliverAnchor)) {
+            if (!main.post(deliverAnchor)) {
                 pendingDeliveryWidths.remove(currentDelivery.index)
                 recycleDecodeResult(currentDelivery.result)
             }
@@ -3750,7 +3742,7 @@ class ReaderSession(
         private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 0
         private const val NTK_INITIAL_BOOT_URGENT_PAGES = 1
         private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 0
-        private const val NTK_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 3
+        private const val NTK_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 1
         private const val NTK_INITIAL_ANCHOR_DECODE_PRIME_PAGES = 3
         private const val NTK_INITIAL_PRIORITY_PAGES = 4
         private const val NTK_FOREGROUND_STREAM_AHEAD_PAGES = 1

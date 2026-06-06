@@ -1684,12 +1684,24 @@ class ReaderSurfaceView @JvmOverloads constructor(
         rebuildLayoutLocked()
         val anchorPage = firstVisiblePageLocked(scrollOffset + 1f).coerceIn(0, pages.lastIndex)
         val anchorOffset = pageOffsetLocked(anchorPage)
+        val now = SystemClock.uptimeMillis()
+        val recentScrollSettling = lastScrollInteractionMs > 0L &&
+            now - lastScrollInteractionMs <= HEIGHT_CHANGE_SCROLL_ADJUST_QUIET_MS
         var appliedAny = false
         for (index in pages.indices) {
             if (applyPendingPageResolveLocked(index)) appliedAny = true
         }
         if (appliedAny) {
-            setScrollOffsetLocked(pageTopOrElseLocked(anchorPage, 0f) - anchorOffset)
+            if (shouldRestoreAnchorAfterPendingResolves(
+                    lastBusy = lastBusy,
+                    pointerDown = pointerDown,
+                    dragging = dragging,
+                    scrollerFinished = scroller.isFinished,
+                    recentScrollSettling = recentScrollSettling
+                )
+            ) {
+                setScrollOffsetLocked(pageTopOrElseLocked(anchorPage, 0f) - anchorOffset)
+            }
             clampScrollLocked()
         }
     }
@@ -1847,16 +1859,20 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun setScrollOffsetLocked(next: Float) {
         if (height > 0) {
             val delta = next - scrollOffset
+            val now = SystemClock.uptimeMillis()
             val lockedRestoreActive = lockedRestorePage >= 0 &&
-                SystemClock.uptimeMillis() <= lockedRestoreUntilMs
-            val structuralAdjustActive = SystemClock.uptimeMillis() <= structuralScrollAdjustUntilMs
+                now <= lockedRestoreUntilMs
+            val structuralAdjustActive = now <= structuralScrollAdjustUntilMs
+            val recentUserScrollActive = lastScrollInteractionMs > 0L &&
+                now - lastScrollInteractionMs <= HEIGHT_CHANGE_SCROLL_ADJUST_QUIET_MS
             if (
                 abs(delta) >= height * SCROLL_JUMP_LOG_SCREEN_RATIO &&
                 !pointerDown &&
                 !dragging &&
                 scroller.isFinished &&
                 !lockedRestoreActive &&
-                !structuralAdjustActive
+                !structuralAdjustActive &&
+                !recentUserScrollActive
             ) {
                 Log.w(
                     TAG,
@@ -2236,6 +2252,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
             return !lastBusy && !pointerDown && !dragging && scrollerFinished && !recentScrollSettling
         }
 
+        private fun shouldRestoreAnchorAfterPendingResolves(
+            lastBusy: Boolean,
+            pointerDown: Boolean,
+            dragging: Boolean,
+            scrollerFinished: Boolean,
+            recentScrollSettling: Boolean
+        ): Boolean {
+            return !lastBusy && !pointerDown && !dragging && scrollerFinished && !recentScrollSettling
+        }
+
         @JvmStatic
         fun shouldAdjustScrollForChangedPageHeightForTest(
             lastBusy: Boolean,
@@ -2254,6 +2280,23 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 recentScrollSettling,
                 oldBottom,
                 scrollOffset
+            )
+        }
+
+        @JvmStatic
+        fun shouldRestoreAnchorAfterPendingResolvesForTest(
+            lastBusy: Boolean,
+            pointerDown: Boolean,
+            dragging: Boolean,
+            scrollerFinished: Boolean,
+            recentScrollSettling: Boolean
+        ): Boolean {
+            return shouldRestoreAnchorAfterPendingResolves(
+                lastBusy,
+                pointerDown,
+                dragging,
+                scrollerFinished,
+                recentScrollSettling
             )
         }
     }
