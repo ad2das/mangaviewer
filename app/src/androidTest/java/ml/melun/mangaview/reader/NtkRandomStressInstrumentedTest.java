@@ -808,12 +808,16 @@ public class NtkRandomStressInstrumentedTest {
                                                    ReaderSurfaceView.VisibleCoverageSnapshot coverage) {
         assertTrue("Expected visible viewport with no loading " + label
                         + " coverage=" + formatCoverage(coverage),
-                coverage != null
-                        && coverage.getMissingPx() <= 2
-                        && coverage.getPlaceholderPx() == 0
-                        && coverage.getVisibleLoading() == 0
-                        && coverage.getVisibleErrors() == 0
-                        && coverage.getDrawablePx() >= Math.max(1, coverage.getViewportPx() - 2));
+                isVisibleViewportReady(coverage));
+    }
+
+    private static boolean isVisibleViewportReady(ReaderSurfaceView.VisibleCoverageSnapshot coverage) {
+        return coverage != null
+                && coverage.getMissingPx() <= 2
+                && coverage.getPlaceholderPx() == 0
+                && coverage.getVisibleLoading() == 0
+                && coverage.getVisibleErrors() == 0
+                && coverage.getDrawablePx() >= Math.max(1, coverage.getViewportPx() - 2);
     }
 
     private static String formatCoverage(ReaderSurfaceView.VisibleCoverageSnapshot coverage) {
@@ -852,19 +856,34 @@ public class NtkRandomStressInstrumentedTest {
         float startY = bounds[1] + bounds[3] * startYRatio;
         float endY = bounds[1] + bounds[3] * endYRatio;
         long startedAt = SystemClock.elapsedRealtime();
-        boolean swiped = device.swipe(x, Math.round(startY), x, Math.round(endY), Math.max(1, steps));
-        assertTrue("Expected reader swipe to be injected", swiped);
+        long downTime = SystemClock.uptimeMillis();
+        int safeSteps = Math.max(1, Math.min(steps, 12));
+        dispatchTouch(reader, downTime, downTime, MotionEvent.ACTION_DOWN, x, startY);
+        for(int step = 1; step < safeSteps; step++) {
+            float fraction = step / (float)safeSteps;
+            long eventTime = downTime + step * 18L;
+            float y = startY + (endY - startY) * fraction;
+            dispatchTouch(reader, downTime, eventTime, MotionEvent.ACTION_MOVE, x, y, false);
+            SystemClock.sleep(12L);
+        }
+        dispatchTouch(reader, downTime, downTime + safeSteps * 18L,
+                MotionEvent.ACTION_UP, x, endY);
         return SystemClock.elapsedRealtime() - startedAt;
     }
 
     private static void dispatchTouch(ReaderV2Activity reader, long downTime, long eventTime,
                                       int action, float x, float y) {
+        dispatchTouch(reader, downTime, eventTime, action, x, y, true);
+    }
+
+    private static void dispatchTouch(ReaderV2Activity reader, long downTime, long eventTime,
+                                      int action, float x, float y, boolean sync) {
         MotionEvent event = MotionEvent.obtain(downTime, eventTime, action, x, y, 0);
         event.setSource(InputDevice.SOURCE_TOUCHSCREEN);
         try {
             boolean injected = InstrumentationRegistry.getInstrumentation()
                     .getUiAutomation()
-                    .injectInputEvent(event, true);
+                    .injectInputEvent(event, sync);
             assertTrue("Expected injected touch event action=" + action, injected);
         } finally {
             event.recycle();

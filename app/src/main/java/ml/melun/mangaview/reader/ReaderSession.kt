@@ -168,6 +168,14 @@ class ReaderSession(
     private val anchorDecode = Executors.newSingleThreadExecutor(
         readerThreadFactory("ReaderAnchorDecode", Process.THREAD_PRIORITY_DEFAULT)
     )
+    private val urgentNetwork = Executors.newFixedThreadPool(
+        URGENT_VISIBLE_PIPELINE_PARALLELISM,
+        readerThreadFactory("ReaderUrgentNetwork", Process.THREAD_PRIORITY_BACKGROUND)
+    )
+    private val urgentDecode = Executors.newFixedThreadPool(
+        URGENT_VISIBLE_PIPELINE_PARALLELISM,
+        readerThreadFactory("ReaderUrgentDecode", Process.THREAD_PRIORITY_DEFAULT)
+    )
     private val primeNetwork = Executors.newFixedThreadPool(
         PRIME_PIPELINE_PARALLELISM,
         readerThreadFactory("ReaderPrimeNetwork", Process.THREAD_PRIORITY_BACKGROUND)
@@ -423,7 +431,8 @@ class ReaderSession(
 
     private fun requestInitialFanout(startPage: Int) {
         if (isNtkSource(manga, title) && !firstBitmapLogged.get()) {
-            ViewerWarmupManager.logMetric("reader_ntk_initial_fanout_deferred", startPage.toLong())
+            ViewerWarmupManager.logMetric("reader_ntk_initial_fanout_eager", startPage.toLong())
+            warmNtkInitialPages(startPage)
             return
         }
         if (shouldDeferInitialFanoutUntilAnchor()) {
@@ -663,7 +672,7 @@ class ReaderSession(
             first <= windowAnchor
         if (isNtkSource(manga, title) && !firstBitmapLogged.get()) {
             windowFirstInput = windowAnchor
-            windowLastInput = windowAnchor
+            windowLastInput = minOf(count - 1, windowAnchor + NTK_INITIAL_BOOT_PRIORITY_PAGES)
         } else if (ntkInitialAnchorWindow) {
             val initialAhead = if (ntkWebtoon) NTK_WEBTOON_INITIAL_DECODE_AHEAD_PAGES else NTK_INITIAL_DECODE_AHEAD_PAGES
             windowFirstInput = first
@@ -767,6 +776,8 @@ class ReaderSession(
         decode.shutdownNow()
         anchorNetwork.shutdownNow()
         anchorDecode.shutdownNow()
+        urgentNetwork.shutdownNow()
+        urgentDecode.shutdownNow()
         primeNetwork.shutdownNow()
         primeDecode.shutdownNow()
         cleanup.shutdown()
@@ -1588,6 +1599,7 @@ class ReaderSession(
             (busy || anchor) &&
             !hasDeliveredBitmap(index) &&
             urgentLoading.add(index)
+        val visiblePriority = (busy || anchor) && !hasDeliveredBitmap(index)
         if (!ownsLoading && !urgent) {
             if (targetWidth > activeWidth)
                 ViewerWarmupManager.logMetric("busy_to_idle_upgrade_pending", targetWidth.toLong())
@@ -1601,7 +1613,7 @@ class ReaderSession(
         if (ownsLoading) {
             main.post { if (!cancelled.get()) listener.onPageLoading(index) }
         }
-        if (urgent) ViewerWarmupManager.logMetric("reader_urgent_visible_decode", index.toLong())
+        if (visiblePriority) ViewerWarmupManager.logMetric("reader_urgent_visible_decode", index.toLong())
         val foregroundPrime = generation == FOREGROUND_PRIME_WARM_GENERATION
         val primeWarm = generation == PRIME_WARM_GENERATION
         if (foregroundPrime && ownsLoading && shouldHedgeForegroundPrime(index)) {
@@ -1609,12 +1621,14 @@ class ReaderSession(
         }
         val retainWhenBusy = generation == PRIME_WARM_GENERATION || foregroundPrime
         val networkExecutor = when {
-            anchor || urgent -> anchorNetwork
+            anchor -> anchorNetwork
+            visiblePriority -> urgentNetwork
             foregroundPrime || primeWarm -> primeNetwork
             else -> network
         }
         val decodeExecutor = when {
-            anchor || urgent -> anchorDecode
+            anchor -> anchorDecode
+            visiblePriority -> urgentDecode
             foregroundPrime || primeWarm -> primeDecode
             else -> decode
         }
@@ -1644,7 +1658,14 @@ class ReaderSession(
                         acquired = true
                         if (cancelled.get() || shouldSkipStalePage(index, generation, anchor)) return@execute
                         val startedAt = SystemClock.elapsedRealtime()
-                        val foregroundFetch = shouldUseForegroundFetch(index, originalPage, anchor, urgent, busy, generation)
+                        val foregroundFetch = shouldUseForegroundFetch(
+                            index,
+                            originalPage,
+                            anchor,
+                            urgent || visiblePriority,
+                            busy,
+                            generation
+                        )
                         val result = decodePageWithLease(index, originalPage, targetWidth, foregroundFetch, allowPreviewCache)
                         if (
                             cancelled.get() ||
@@ -2291,6 +2312,7 @@ class ReaderSession(
         val decodeTargetWidth = decodeTargetWidth(raw.width, raw.height, targetWidth, page.allowAutoSplit)
         val decoded = Decoder(page.manga.seed, page.manga.id).decode(raw, decodeTargetWidth, Glide.get(appContext).bitmapPool)
         if (decoded !== raw && !raw.isRecycled) raw.recycle()
+        deliverAutoSplitSiblingFromDecoded(index, page, decoded)
         val transformedAt = SystemClock.elapsedRealtime()
         val bitmap = ViewerBitmapTrim.trimBlankVerticalEdges(
             applyAutoSplit(decoded, page.side, page.allowAutoSplit),
@@ -2376,6 +2398,7 @@ class ReaderSession(
         }
         val decoded = Decoder(page.manga.seed, page.manga.id).decode(raw, decodeTargetWidth, Glide.get(appContext).bitmapPool)
         if (decoded !== raw && !raw.isRecycled) raw.recycle()
+        deliverAutoSplitSiblingFromDecoded(index, page, decoded)
         val transformedAt = if (metric) SystemClock.elapsedRealtime() else 0L
         val bitmap = ViewerBitmapTrim.trimBlankVerticalEdges(
             applyAutoSplit(decoded, page.side, page.allowAutoSplit),
@@ -2469,6 +2492,58 @@ class ReaderSession(
         )
         if (!bitmap.isRecycled) bitmap.recycle()
         return displayBitmap
+    }
+
+    private fun deliverAutoSplitSiblingFromDecoded(index: Int, page: PageRef, decoded: Bitmap) {
+        if (!autoCut || !page.allowAutoSplit || decoded.isRecycled) return
+        val sibling = autoSplitSiblingPage(index, page) ?: return
+        if (hasDeliveredBitmap(sibling.first)) return
+        if ((pendingDeliveryWidths[sibling.first] ?: 0) > 0) return
+        val siblingBitmap = copyAutoSplitBitmap(decoded, sibling.second.side, sibling.second.allowAutoSplit)
+            ?: return
+        val trimmed = ViewerBitmapTrim.trimBlankVerticalEdges(siblingBitmap, true)
+        postPageBounds(sibling.first, sibling.second, trimmed.width, trimmed.height)
+        deliverPreparedBitmap(sibling.first, trimmed, true)
+        ViewerWarmupManager.logMetric("reader_autosplit_sibling_delivered", sibling.first.toLong())
+    }
+
+    private fun autoSplitSiblingPage(index: Int, page: PageRef): Pair<Int, PageRef>? {
+        val image = page.image ?: return null
+        val siblingSide = if (page.side == PAGE_SIDE_FIRST) PAGE_SIDE_SECOND else PAGE_SIDE_FIRST
+        return synchronized(pagesLock) {
+            pages.withIndex().firstOrNull { entry ->
+                entry.index != index &&
+                    entry.value.image == image &&
+                    entry.value.sourceIndex == page.sourceIndex &&
+                    entry.value.side == siblingSide
+            }?.let { it.index to it.value }
+        }
+    }
+
+    private fun copyAutoSplitBitmap(bitmap: Bitmap, side: Int, allowSplit: Boolean): Bitmap? {
+        if (!autoCut || !allowSplit || bitmap.isRecycled) return null
+        val decodedWidth = bitmap.width
+        val decodedHeight = bitmap.height
+        if (!shouldAutoSplit(decodedWidth, decodedHeight)) {
+            if (side != PAGE_SIDE_SECOND) return bitmap.copy(displayConfig(bitmap), false)
+            return Bitmap.createBitmap(max(1, decodedWidth), 1, displayConfig(bitmap)).apply {
+                eraseColor(Color.TRANSPARENT)
+            }
+        }
+        val cropWidth = max(1, decodedWidth / 2)
+        val cropX = if (side == PAGE_SIDE_FIRST) {
+            if (reverse) 0 else decodedWidth - cropWidth
+        } else {
+            if (reverse) decodedWidth - cropWidth else 0
+        }
+        return Bitmap.createBitmap(cropWidth, decodedHeight, displayConfig(bitmap)).also { displayBitmap ->
+            Canvas(displayBitmap).drawBitmap(
+                bitmap,
+                Rect(cropX, 0, cropX + cropWidth, decodedHeight),
+                Rect(0, 0, cropWidth, decodedHeight),
+                null
+            )
+        }
     }
 
     private fun displayConfig(bitmap: Bitmap): Bitmap.Config {
@@ -3489,6 +3564,7 @@ class ReaderSession(
         private const val PREPARED_BITMAP_RELEASE_DELAY_MS = 12000L
         private const val PRIME_WARM_GENERATION = Int.MIN_VALUE
         private const val FOREGROUND_PRIME_WARM_GENERATION = Int.MIN_VALUE + 1
+        private const val URGENT_VISIBLE_PIPELINE_PARALLELISM = 5
         private const val PRIME_PIPELINE_PARALLELISM = 2
         private const val NTK_FOREGROUND_PRIME_HEDGE_DELAY_MS = 1400L
         private const val PRIME_FORWARD_EPISODES = 8
@@ -3504,9 +3580,9 @@ class ReaderSession(
         private const val NTK_PREPENDED_EPISODE_BYTE_AHEAD_PAGES = 18
         private const val NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD = 64
         private const val NTK_INITIAL_PRIORITY_START_OFFSET = 1
-        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 2
+        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 8
         private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 1
-        private const val NTK_INITIAL_PRIORITY_PAGES = 4
+        private const val NTK_INITIAL_PRIORITY_PAGES = 8
         private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 6
         private const val NTK_INITIAL_DECODE_AHEAD_PAGES = 8
         private const val NTK_WEBTOON_INITIAL_NEAR_DECODE_AHEAD_PAGES = 12
