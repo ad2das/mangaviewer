@@ -68,6 +68,11 @@ public class Title extends MTitle {
         setNtkStatusLabel(title.getNtkStatusLabel());
         setResumeNtkEpisodePath(title.getResumeNtkEpisodePath());
         setReadingProgress(title.getBookmarkEpisodeId(), title.getBookmarkEpisodeIndex(), title.getEpisodeCount());
+        if(title instanceof Title) {
+            ntkEpisodeListConfirmedEmpty = ((Title) title).isNtkEpisodeListConfirmedEmpty();
+            if(ntkEpisodeListConfirmedEmpty)
+                eps = new ArrayList<>();
+        }
         bookmark = title.getBookmarkEpisodeId();
     }
 
@@ -83,6 +88,12 @@ public class Title extends MTitle {
 
     public boolean isNtkEpisodeListConfirmedEmpty() {
         return ntkEpisodeListConfirmedEmpty;
+    }
+
+    public void setNtkEpisodeListConfirmedEmpty(boolean confirmedEmpty) {
+        ntkEpisodeListConfirmedEmpty = confirmedEmpty;
+        if(confirmedEmpty && eps == null)
+            eps = new ArrayList<>();
     }
 
     public Boolean getBookmarked() {
@@ -1248,6 +1259,7 @@ public class Title extends MTitle {
         copy.bookmarked = bookmarked;
         copy.bookmarkLink = bookmarkLink;
         copy.rc = rc;
+        copy.ntkEpisodeListConfirmedEmpty = ntkEpisodeListConfirmedEmpty;
         return copy;
     }
 
@@ -1260,7 +1272,7 @@ public class Title extends MTitle {
     }
 
     public MTitle minimize(){
-        MTitle title = new MTitle(name, id, thumb, author, tags, release, baseMode);
+        Title title = new Title(name, thumb, author, tags, release, id, baseMode);
         int progressEpisodeId = getBookmark();
         if(progressEpisodeId <= 0)
             progressEpisodeId = getBookmarkEpisodeId();
@@ -1273,6 +1285,9 @@ public class Title extends MTitle {
         title.setReadingProgress(progressEpisodeId, progressIndex, progressCount);
         title.setPath(getPath());
         title.setSourceSite(getSourceSite());
+        title.setNtkStatusLabel(getNtkStatusLabel());
+        title.setResumeNtkEpisodePath(getResumeNtkEpisodePath());
+        title.ntkEpisodeListConfirmedEmpty = ntkEpisodeListConfirmedEmpty;
         return title;
     }
 

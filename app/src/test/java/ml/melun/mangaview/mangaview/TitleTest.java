@@ -456,6 +456,22 @@ public class TitleTest {
         assertEquals(42, Title.legacyRecommendCountForTest("<table class=\"table\"><tr><td><button class=\"btn-red\"><b>42</b></button></td></tr></table>"));
     }
 
+    @Test
+    public void ntkConfirmedEmptyEpisodeStateSurvivesTitleCopies() {
+        Title source = new Title("Empty NTK", "", "", null, "", 845711, MTitle.base_webtoon);
+        source.setSourceSite("ntk");
+        source.setPath("/webtoon/845711");
+        source.setNtkEpisodeListConfirmedEmpty(true);
+
+        Title constructorCopy = new Title(source);
+        Title minimizedCopy = new Title(source.minimize());
+
+        assertTrue(constructorCopy.isNtkEpisodeListConfirmedEmpty());
+        assertTrue(minimizedCopy.isNtkEpisodeListConfirmedEmpty());
+        assertTrue(constructorCopy.getEps() != null);
+        assertTrue(minimizedCopy.getEps() != null);
+    }
+
     private static String wolfEpisodeRow(int num, String title) {
         return "<li><a href=\"/cv?toon=10017&num=" + num + "&title=" + title + "\" class=\"view_open\">"
                 + "<div class=\"list-box\"><div class=\"subject\">" + title + "</div></div></a></li>";

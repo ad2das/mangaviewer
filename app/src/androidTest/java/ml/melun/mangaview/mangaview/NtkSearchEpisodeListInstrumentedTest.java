@@ -74,11 +74,15 @@ public class NtkSearchEpisodeListInstrumentedTest {
                 + ",titleId=" + target.getId()
                 + ",name=" + target.getName()
                 + ",path=" + target.getPath()
-                + ",eps=" + epsCount);
+                + ",eps=" + epsCount
+                + ",confirmedEmpty=" + target.isNtkEpisodeListConfirmedEmpty());
         assertEquals(Title.LOAD_OK, epsStatus);
         assertNotNull(target.getEps());
-        if(!allowEmptyEpisodes)
+        if(!allowEmptyEpisodes && !target.isNtkEpisodeListConfirmedEmpty())
             assertTrue("Expected fetched episodes for " + target.getName(), epsCount > 0);
+        if(epsCount == 0)
+            assertTrue("Expected empty NTK episode list to be confirmed for " + target.getName(),
+                    target.isNtkEpisodeListConfirmedEmpty());
     }
 
     private static void dumpRscPayload(Title target) {
