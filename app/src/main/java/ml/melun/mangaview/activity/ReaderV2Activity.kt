@@ -1059,8 +1059,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         updateResultEpisode(target)
         adjacentNavigationInFlight = false
         setAdjacentButtonState(false, false)
-        cachedPreviousEpisode = adjacentEpisodeFast(target, false)
-        cachedNextEpisode = adjacentEpisodeFast(target, true)
+        val episodes = ViewerEpisodeResolver.episodeListFor(target, null, currentTitle)
+        attachEpisodeList(currentTitle, target, episodes)
+        cachedPreviousEpisode = adjacentEpisodeFastPrepared(target, currentTitle, episodes, false)
+        cachedNextEpisode = adjacentEpisodeFastPrepared(target, currentTitle, episodes, true)
         startReaderSession(
             target,
             currentTitle,
@@ -1199,8 +1201,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             setAdjacentButtonState(false, false)
             return
         }
-        if (manga != null) attachEpisodeList(title, manga)
         val episodes = if (manga == null) null else ViewerEpisodeResolver.episodeListFor(manga, null, title)
+        if (manga != null) attachEpisodeList(title, manga, episodes)
         val previous = if (manga == null) null else adjacentEpisodeFastPrepared(manga, title, episodes, false)
         val next = if (manga == null) null else adjacentEpisodeFastPrepared(manga, title, episodes, true)
         cachedPreviousEpisode = previous
@@ -1327,8 +1329,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun adjacentEpisodeFast(manga: Manga, next: Boolean): Manga? {
         val title = currentTitle ?: manga.title
         restoreTitleEpisodes(title, manga)
-        attachEpisodeList(title, manga)
-        return adjacentEpisodeFastPrepared(manga, title, ViewerEpisodeResolver.episodeListFor(manga, null, title), next)
+        val episodes = ViewerEpisodeResolver.episodeListFor(manga, null, title)
+        attachEpisodeList(title, manga, episodes)
+        return adjacentEpisodeFastPrepared(manga, title, episodes, next)
     }
 
     private fun adjacentEpisodeFastPrepared(
@@ -1385,9 +1388,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun attachEpisodeList(title: Title?, target: Manga?) {
+        attachEpisodeList(title, target, null)
+    }
+
+    private fun attachEpisodeList(title: Title?, target: Manga?, preparedEpisodes: List<Manga>?) {
         if (title == null || target == null) return
         title.ensureProgressEpisodes(target)
-        val episodes = Utils.snapshotEpisodes(title)
+        val episodes = preparedEpisodes ?: Utils.snapshotEpisodes(title)
         for (episode in episodes) {
             episode?.let {
                 it.title = title
@@ -1397,8 +1404,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         target.title = title
         target.titleId = title.id
         if (episodes.isNotEmpty() && containsEpisode(episodes, target)) {
-            val targetEpisodes = Utils.snapshotEpisodes(target)
-            if (targetEpisodes.isEmpty() || episodes.size >= targetEpisodes.size) target.setEps(episodes)
+            val targetEpisodeCount = target.eps?.size ?: 0
+            if (targetEpisodeCount == 0 || episodes.size >= targetEpisodeCount) target.setEps(episodes)
         }
         currentTitle = title
     }
