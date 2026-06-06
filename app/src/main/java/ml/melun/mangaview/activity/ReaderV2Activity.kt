@@ -1195,13 +1195,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun updateAdjacentButtons() {
         val manga = currentManga
         val title = currentTitle ?: manga?.title
-        if (manga != null) attachEpisodeList(title, manga)
         if (adjacentNavigationInFlight) {
             setAdjacentButtonState(false, false)
             return
         }
-        val previous = if (manga == null) null else adjacentEpisodeFast(manga, false)
-        val next = if (manga == null) null else adjacentEpisodeFast(manga, true)
+        if (manga != null) attachEpisodeList(title, manga)
+        val previous = if (manga == null) null else adjacentEpisodeFastPrepared(manga, title, false)
+        val next = if (manga == null) null else adjacentEpisodeFastPrepared(manga, title, true)
         cachedPreviousEpisode = previous
         cachedNextEpisode = next
         primeAdjacentLaunchWindow(title, next)
@@ -1327,6 +1327,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val title = currentTitle ?: manga.title
         restoreTitleEpisodes(title, manga)
         attachEpisodeList(title, manga)
+        return adjacentEpisodeFastPrepared(manga, title, next)
+    }
+
+    private fun adjacentEpisodeFastPrepared(manga: Manga, title: Title?, next: Boolean): Manga? {
         return if (next) {
             ViewerEpisodeResolver.nextCandidate(manga, null, title, this::sameMangaFast)
         } else {
@@ -1418,8 +1422,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             val displayTitle = if (!episodeChanged && lastDisplayedEpisodeKey == displayKey) {
                 lastDisplayedEpisodeTitle
             } else {
-                displayEpisodeTitle(info.manga, currentTitle).takeIf { it.isNotBlank() }
-                    ?: info.title.takeIf { it.isNotBlank() }
+                info.title.takeIf { it.isNotBlank() }
+                    ?: displayEpisodeTitle(info.manga, currentTitle).takeIf { it.isNotBlank() }
                     ?: "회차"
             }
             if (episodeChanged || titleView.text.toString() != displayTitle) {
