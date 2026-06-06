@@ -43,6 +43,7 @@ object ReaderImageCache {
     private const val FOREGROUND_RACE_ATTEMPTS = 2
     private const val MAX_DIRECT_STREAM_DECODE_BYTES = 16L * 1024L * 1024L
     private val flights = ConcurrentHashMap<String, FutureTask<File>>()
+    private val foregroundStreams = ConcurrentHashMap<String, FutureTask<ByteArray?>>()
     private val ntkApiFallbackFlights = ConcurrentHashMap<String, FutureTask<List<String>?>>()
     private val ntkApiFallbackImages = ConcurrentHashMap<String, List<String>>()
     private val activeReads = ConcurrentHashMap<String, AtomicInteger>()
@@ -187,15 +188,34 @@ object ReaderImageCache {
         cancellation?.throwIfCancelled()
         val appContext = context.applicationContext
         if (cachedFile(appContext, manga, image) != null) return null
+        val key = key(manga.baseMode, image)
         val startedAt = SystemClock.elapsedRealtime()
-        requestWithNtkGeneratedFallback(appContext, manga, image, foreground = true, cancellation = cancellation).use { response ->
-            val headersAt = SystemClock.elapsedRealtime()
-            if (!response.isSuccessful) return null
-            val body = response.body ?: return null
-            val contentLength = body.contentLength()
-            if (contentLength > MAX_DIRECT_STREAM_DECODE_BYTES) return null
-            val bytes = body.bytes()
-            if (bytes.size > MAX_DIRECT_STREAM_DECODE_BYTES) return null
+        val task = FutureTask<ByteArray?> {
+            requestWithNtkGeneratedFallback(appContext, manga, image, foreground = true, cancellation = cancellation).use { response ->
+                val headersAt = SystemClock.elapsedRealtime()
+                if (!response.isSuccessful) return@FutureTask null
+                val body = response.body ?: return@FutureTask null
+                val contentLength = body.contentLength()
+                if (contentLength > MAX_DIRECT_STREAM_DECODE_BYTES) return@FutureTask null
+                val bytes = body.bytes()
+                if (bytes.size > MAX_DIRECT_STREAM_DECODE_BYTES) return@FutureTask null
+                val bytesAt = SystemClock.elapsedRealtime()
+                cacheForegroundBytes(appContext, manga, image, bytes)
+                ViewerWarmupManager.logMetric("reader_foreground_stream_headers_ms", headersAt - startedAt)
+                ViewerWarmupManager.logMetric("reader_foreground_stream_body_ms", bytesAt - headersAt)
+                ViewerWarmupManager.logMetric("reader_foreground_stream_bytes", if (contentLength >= 0L) contentLength else bytes.size.toLong())
+                bytes
+            }
+        }
+        val existing = foregroundStreams.putIfAbsent(key, task)
+        if (existing != null) {
+            ViewerWarmupManager.logMetric("reader_foreground_stream_join", 1L)
+            logCacheEvent("foreground_stream_join", manga, image, true, "activeStream=true")
+            return null
+        }
+        try {
+            task.run()
+            val bytes = task.get() ?: return null
             val bytesAt = SystemClock.elapsedRealtime()
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
@@ -206,12 +226,15 @@ object ReaderImageCache {
             }
             val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
             val decodedAt = SystemClock.elapsedRealtime()
-            cacheForegroundBytes(appContext, manga, image, bytes)
-            ViewerWarmupManager.logMetric("reader_foreground_stream_headers_ms", headersAt - startedAt)
-            ViewerWarmupManager.logMetric("reader_foreground_stream_body_ms", bytesAt - headersAt)
             ViewerWarmupManager.logMetric("reader_foreground_stream_decode_ms", decodedAt - bytesAt)
-            ViewerWarmupManager.logMetric("reader_foreground_stream_bytes", if (contentLength >= 0L) contentLength else bytes.size.toLong())
             return bitmap
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return null
+        } catch (e: ExecutionException) {
+            return null
+        } finally {
+            foregroundStreams.remove(key, task)
         }
     }
 
@@ -278,6 +301,7 @@ object ReaderImageCache {
             ViewerWarmupManager.logMetric("reader_image_cache_disk_hit", 1L)
             return finalFile
         }
+        awaitForegroundStreamFile(key, finalFile, manga, image, foreground)?.let { return it }
         if (foreground && flights[key] != null) {
             ViewerWarmupManager.logMetric("reader_foreground_bypass_warmup_fetch", 1L)
             logCacheEvent("foreground_bypass", manga, image, true, "activeFlight=true")
@@ -315,6 +339,31 @@ object ReaderImageCache {
         } finally {
             flights.remove(key, running)
         }
+    }
+
+    private fun awaitForegroundStreamFile(
+        key: String,
+        finalFile: File,
+        manga: Manga,
+        image: String,
+        foreground: Boolean
+    ): File? {
+        val stream = foregroundStreams[key] ?: return null
+        logCacheEvent("foreground_stream_wait", manga, image, foreground, "activeStream=true")
+        ViewerWarmupManager.logMetric("reader_foreground_stream_wait", 1L)
+        try {
+            stream.get()
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return null
+        } catch (_: ExecutionException) {
+            return null
+        }
+        if (!isUsableImage(finalFile)) return null
+        finalFile.setLastModified(System.currentTimeMillis())
+        logCacheEvent("foreground_stream_wait_hit", manga, image, foreground, "bytes=${finalFile.length()}")
+        ViewerWarmupManager.logMetric("reader_foreground_stream_wait_hit", 1L)
+        return finalFile
     }
 
     private fun cacheDir(context: Context): File {
