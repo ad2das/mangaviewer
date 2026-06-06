@@ -532,11 +532,12 @@ public class Manga {
             boolean nativeAckMode = isNtkNativeAckModeOverride();
             boolean apiFallbackMode = isNtkApiFallbackModeOverride();
             boolean strictApiFallbackMode = isNtkStrictApiFallbackModeOverride();
+            final boolean apiFirstNtkEpisode = isNtkViewerEpisodePath(path);
             final boolean apiFirstWebtoonEpisode = isNtkWebtoonEpisodePath(path);
-            boolean allowGeneratedImages = !apiFirstWebtoonEpisode && !nativeAckMode && !apiFallbackMode;
+            boolean allowGeneratedImages = !apiFirstNtkEpisode && !nativeAckMode && !apiFallbackMode;
             final boolean skipGeneratedForSlugEpisode = shouldSkipNtkGeneratedForEpisodePath(path);
             final boolean apiFirstCanonicalWebtoonEpisode = shouldPreferNtkApiForCanonicalWebtoonPath(path);
-            if(allowGeneratedImages && !apiFirstWebtoonEpisode
+            if(allowGeneratedImages && !apiFirstNtkEpisode
                     && (apiFirstCanonicalWebtoonEpisode || skipGeneratedForSlugEpisode)
                     && addNtkSlugWebtoonGeneratedImageCandidates(client, path, seenImages,
                     ntkGeneratedImageCandidateCount(), true)) {
@@ -573,10 +574,10 @@ public class Manga {
                 startNativeAckIfNeeded.run();
                 startDirectPageFetchIfNeeded.run();
             };
-            if(apiFirstWebtoonEpisode || skipGeneratedForSlugEpisode || apiFirstCanonicalWebtoonEpisode) {
+            if(apiFirstNtkEpisode || skipGeneratedForSlugEpisode || apiFirstCanonicalWebtoonEpisode) {
                 startNativeAckIfNeeded.run();
                 startDirectPageFetchIfNeeded.run();
-                if(skipGeneratedForSlugEpisode && !apiFirstWebtoonEpisode
+                if(skipGeneratedForSlugEpisode && !apiFirstNtkEpisode
                         && !isNtkKpWebtoonEpisodePath(path))
                     startPageFetchIfNeeded.run();
             }
@@ -587,7 +588,7 @@ public class Manga {
                 startNativeAckIfNeeded.run();
                 startDirectPageFetchIfNeeded.run();
                 if(!strictApiFallbackMode
-                        && !apiFirstWebtoonEpisode
+                        && !apiFirstNtkEpisode
                         && !isNtkKpWebtoonEpisodePath(path))
                     startPageFetchIfNeeded.run();
             }
@@ -885,9 +886,9 @@ public class Manga {
                 addNtkTextImageCandidates(client, page.body, seenImages, fallbackBoardImages);
                 if(allowGeneratedImages && !generatedCandidatesChecked)
                     addNtkViewerMetaImageCandidates(client, page.body, path, seenImages);
-                if(apiFirstWebtoonEpisode)
+                if(apiFirstNtkEpisode)
                     addNtkApiViewerImageCandidates(client, page.body, path, seenImages, false);
-                if(!apiFirstWebtoonEpisode)
+                if(!apiFirstNtkEpisode)
                     addNtkViewerShellGeneratedImageCandidates(client, page.body, path, seenImages, true);
                 compactNtkImageCandidates(page.body, seenImages);
                 if(shouldFetchNtkApiViewerImagesForSparseParse(page.body, path, pageImages.size()))
@@ -1399,18 +1400,19 @@ public class Manga {
             if(!isUsableNtkKpDirectPage(page, path))
                 return false;
         }
+        boolean apiFirstNtkEpisode = isNtkViewerEpisodePath(path);
         boolean webtoonApiFirst = isNtkWebtoonEpisodePath(path);
         if(isNtkKpWebtoonEpisodePath(path) && addNtkDirectTextImageCandidates(client, page.body, path, seenImages))
             return true;
-        if((preferApiPayload || webtoonApiFirst)
+        if((preferApiPayload || apiFirstNtkEpisode)
                 && hasNtkViewerImageApiPayload(page.body)
                 && addNtkApiViewerImageCandidates(client, page.body, path, seenImages,
-                !webtoonApiFirst && tryGeneratedMetaFirst))
+                !apiFirstNtkEpisode && tryGeneratedMetaFirst))
             return true;
-        if(!webtoonApiFirst && addNtkViewerShellGeneratedImageCandidates(client, page.body, path, seenImages, false))
+        if(!apiFirstNtkEpisode && addNtkViewerShellGeneratedImageCandidates(client, page.body, path, seenImages, false))
             return true;
         return addNtkApiViewerImageCandidates(client, page.body, path, seenImages,
-                !webtoonApiFirst && tryGeneratedMetaFirst);
+                !apiFirstNtkEpisode && tryGeneratedMetaFirst);
     }
 
     private static boolean isUsableNtkKpDirectPage(CustomHttpClient.PageResponse page, String path) {
@@ -1495,7 +1497,7 @@ public class Manga {
             return false;
         }
         int before = imgs == null ? 0 : imgs.size();
-        if(!isNtkWebtoonEpisodePath(path)
+        if(!isNtkViewerEpisodePath(path)
                 && !shouldPreferNtkApiForCanonicalWebtoonPath(path)
                 && (tryGeneratedMetaFirst || shouldSkipNtkGeneratedForEpisodePath(path))) {
             addNtkViewerMetaImageCandidates(client, normalized, path, seenImages);
@@ -2201,6 +2203,10 @@ public class Manga {
 
     private static boolean isNtkWebtoonEpisodePath(String path) {
         return path != null && path.matches("^/webtoon/[^/?#]+/[^/?#]+.*");
+    }
+
+    private static boolean isNtkViewerEpisodePath(String path) {
+        return path != null && path.matches("^/(?:manhwa|webtoon)/[^/?#]+/[^/?#]+.*");
     }
 
     private static boolean shouldPreferNtkApiForCanonicalWebtoonPath(String path) {

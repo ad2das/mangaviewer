@@ -385,6 +385,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val first = firstDrawableIndex.coerceAtLeast(0)
             val last = lastDrawableIndex.coerceAtMost(pages.lastIndex)
             if (first > last) return false
+            val cardIndex = (insertedCount - 1).coerceIn(0, pages.lastIndex)
+            lockedRestorePage = cardIndex
+            lockedRestoreOffset = 0
+            lockedRestoreUntilMs = SystemClock.uptimeMillis() + RESTORE_POSITION_LOCK_MS
+            structuralScrollAdjustUntilMs = lockedRestoreUntilMs
             for (index in first..last) {
                 if (!pageHasDrawableContentLocked(index)) {
                     applyPendingPageResolveLocked(index)
@@ -394,12 +399,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 if (!pageHasDrawableContentLocked(index)) return false
             }
             prependedRevealHoldPage = -1
-            val cardIndex = (insertedCount - 1).coerceIn(0, pages.lastIndex)
             val boundaryCardTop = pageTopOrElseLocked(cardIndex, 0f)
-            lockedRestorePage = cardIndex
-            lockedRestoreOffset = 0
-            lockedRestoreUntilMs = SystemClock.uptimeMillis() + RESTORE_POSITION_LOCK_MS
-            structuralScrollAdjustUntilMs = lockedRestoreUntilMs
             setScrollOffsetLocked(max(0f, boundaryCardTop))
             if (!scroller.isFinished) scroller.forceFinished(true)
             activeScrollerOffsetShift = 0f
@@ -2211,7 +2211,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val RESTORE_POSITION_EPSILON_PX = 2f
         private const val INITIAL_RENDER_HOLD_MS = 700L
         private const val SCROLL_JUMP_LOG_SCREEN_RATIO = 0.75f
-        private const val HEIGHT_CHANGE_SCROLL_ADJUST_QUIET_MS = 900L
+        private const val HEIGHT_CHANGE_SCROLL_ADJUST_QUIET_MS = 2200L
         private const val HEIGHT_CHANGE_EPSILON_PX = 0.01f
         private const val BUSY_RESOLVE_RENDER_EXTRA_PAGES = 2
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L

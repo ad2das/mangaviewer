@@ -1030,7 +1030,9 @@ class ReaderSession(
                         "targetTitleId=${target.titleId} targetPath=${target.ntkEpisodePath} targetName=${target.name}"
                 )
                 var urls = imageRepository.imageUrls(target, appContext)
-                if (!urls.isNullOrEmpty() &&
+                val preferVerifiedApiAppend = direction < 0 ||
+                    (isNtkSource(target, currentTitle) && target.baseMode == ml.melun.mangaview.mangaview.MTitle.base_webtoon)
+                if (!preferVerifiedApiAppend && !urls.isNullOrEmpty() &&
                     isNtkSource(target, currentTitle) &&
                     shouldRefreshNtkGeneratedAppendUrls(urls)
                 ) {
@@ -1053,7 +1055,8 @@ class ReaderSession(
                     }
                     urls = imageRepository.imageUrls(target, appContext)
                 }
-                if (urls.isNullOrEmpty()) {
+                if (urls.isNullOrEmpty() || preferVerifiedApiAppend) {
+                    if (preferVerifiedApiAppend) target.setImgs(null)
                     val result = fetchGeneratedNtkAppendUrls(target, currentTitle, direction)
                     if (cancelled.get()) return@execute
                     Log.d(TAG, "append_adjacent_fetch direction=$direction targetId=${target.id} result=$result")
