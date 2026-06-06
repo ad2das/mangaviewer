@@ -201,6 +201,13 @@ public class Title extends MTitle {
                             + ",episodes=" + eps.size());
                     return LOAD_OK;
                 }
+                if(payloadOnly.definitiveEmptyEpisodeList) {
+                    eps = payloadOnly.episodes;
+                    Log.d(TAG, "ntk_episode_parse reason=rsc_empty_confirmed,id=" + id
+                            + ",segment=" + segment
+                            + ",path=" + titlePath);
+                    return LOAD_OK;
+                }
                 if(client != null && client.hasRecentCloudflareChallenge()
                         && shouldOpenNtkCaptchaForLoadFailure(client))
                     return LOAD_CAPTCHA;
@@ -238,6 +245,13 @@ public class Title extends MTitle {
                             + ",episodes=" + eps.size());
                     return LOAD_OK;
                 }
+                if(payloadOnly.definitiveEmptyEpisodeList) {
+                    eps = payloadOnly.episodes;
+                    Log.d(TAG, "ntk_episode_parse reason=rsc_empty_confirmed_after_page_failure,id=" + id
+                            + ",segment=" + segment
+                            + ",path=" + titlePath);
+                    return LOAD_OK;
+                }
                 if(allowPathRefresh && shouldRefreshNtkTitlePathAfterMissing(client, titlePath)) {
                     NtkPathRefreshResult refresh = refreshNtkTitlePathFromApi(client, segment, titlePath);
                     if(refresh.refreshed)
@@ -266,6 +280,13 @@ public class Title extends MTitle {
                             + ",episodes=" + eps.size());
                     return LOAD_OK;
                 }
+                if(payloadOnly.definitiveEmptyEpisodeList) {
+                    eps = payloadOnly.episodes;
+                    Log.d(TAG, "ntk_episode_parse reason=rsc_empty_confirmed_after_error,id=" + id
+                            + ",segment=" + segment
+                            + ",path=" + titlePath);
+                    return LOAD_OK;
+                }
                 if(allowPathRefresh && shouldRefreshNtkTitlePath(client, titlePath)) {
                     NtkPathRefreshResult refresh = refreshNtkTitlePathFromApi(client, segment, titlePath);
                     if(refresh.refreshed)
@@ -285,6 +306,13 @@ public class Title extends MTitle {
                             + ",segment=" + segment
                             + ",path=" + titlePath
                             + ",episodes=" + eps.size());
+                    return LOAD_OK;
+                }
+                if(payloadOnly.definitiveEmptyEpisodeList) {
+                    eps = payloadOnly.episodes;
+                    Log.d(TAG, "ntk_episode_parse reason=rsc_empty_confirmed_after_missing,id=" + id
+                            + ",segment=" + segment
+                            + ",path=" + titlePath);
                     return LOAD_OK;
                 }
                 if(allowPathRefresh && shouldRefreshNtkTitlePathAfterMissing(client, titlePath)) {
@@ -329,6 +357,13 @@ public class Title extends MTitle {
                             + ",segment=" + segment
                             + ",path=" + titlePath
                             + ",episodes=" + eps.size());
+                    return LOAD_OK;
+                }
+                if(chunkParsed.definitiveEmptyEpisodeList) {
+                    eps = chunkParsed.episodes;
+                    Log.d(TAG, "ntk_episode_parse reason=next_chunk_empty_confirmed,id=" + id
+                            + ",segment=" + segment
+                            + ",path=" + titlePath);
                     return LOAD_OK;
                 }
                 logNtkEpisodeParse("empty", page, segment, parsed.matchedEpisodeLinks, episodeLinks.size());
@@ -393,7 +428,7 @@ public class Title extends MTitle {
             if(body != null && body.length() > 0) {
                 NtkEpisodeParser.ParseResult parsed = NtkEpisodeParser.parse(Jsoup.parse(safeHtml + "<script>" + body + "</script>"),
                         segment, titleKey, baseMode, this);
-                if(parsed.episodes.size() > 0)
+                if(parsed.episodes.size() > 0 || parsed.definitiveEmptyEpisodeList)
                     return parsed;
             }
         } catch(Exception e) {

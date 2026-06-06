@@ -2888,19 +2888,20 @@ class ReaderSession(
         }
         if (deliverInitialAnchorNow) {
             ViewerWarmupManager.logMetric("reader_anchor_delivery_direct", currentDelivery.index.toLong())
+            val queuedAt = SystemClock.elapsedRealtime()
             val deliverAnchor = Runnable {
                 if (cancelled.get()) {
                     pendingDeliveryWidths.remove(currentDelivery.index)
                     recycleDecodeResult(currentDelivery.result)
                     return@Runnable
                 }
+                val queueMs = SystemClock.elapsedRealtime() - queuedAt
+                if (queueMs > 120L) {
+                    Log.d(TAG, "reader_anchor_delivery_queue_delay page=${currentDelivery.index},ms=$queueMs,pagesReady=${initialPagesReadyDelivered.get()}")
+                }
                 deliverDecodeResultOnMain(currentDelivery, false)
             }
-            val posted = if (initialPagesReadyDelivered.get()) {
-                main.postAtFrontOfQueue(deliverAnchor)
-            } else {
-                main.post(deliverAnchor)
-            }
+            val posted = main.postAtFrontOfQueue(deliverAnchor)
             if (!posted) {
                 pendingDeliveryWidths.remove(currentDelivery.index)
                 recycleDecodeResult(currentDelivery.result)
@@ -3764,9 +3765,9 @@ class ReaderSession(
         private const val NTK_PREPENDED_EPISODE_BYTE_AHEAD_PAGES = 6
         private const val NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD = 64
         private const val NTK_INITIAL_PRIORITY_START_OFFSET = 1
-        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 0
-        private const val NTK_INITIAL_BOOT_URGENT_PAGES = 1
-        private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 0
+        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 3
+        private const val NTK_INITIAL_BOOT_URGENT_PAGES = 3
+        private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 6
         private const val NTK_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 1
         private const val NTK_INITIAL_ANCHOR_DECODE_PRIME_PAGES = 3
         private const val NTK_INITIAL_PRIORITY_PAGES = 4

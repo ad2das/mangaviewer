@@ -23,6 +23,7 @@ final class NtkEpisodeParser {
             return result;
         int titleId = title == null ? parsePositiveInt(titleKey) : title.getId();
         String imageCountMetadata = normalizeEmbeddedText(document.html());
+        result.definitiveEmptyEpisodeList = looksLikeDefinitiveEmptyEpisodeList(imageCountMetadata);
         Set<String> seenEpisodePaths = new HashSet<>();
         for(Element link : document.select("a[href]")) {
             if(link.hasClass("cta"))
@@ -131,6 +132,16 @@ final class NtkEpisodeParser {
             return false;
         return lowerBody.contains("ep-row-v2-link")
                 || lowerBody.matches("(?s).*/(?:manhwa|webtoon)/[^\"'<>\\s]+/[^\"'<>\\s]+.*");
+    }
+
+    private static boolean looksLikeDefinitiveEmptyEpisodeList(String html) {
+        if(html == null || html.length() == 0)
+            return false;
+        String lower = html.toLowerCase(java.util.Locale.ROOT);
+        return lower.contains("ep-empty")
+                && (html.contains("\uD68C\uCC28 \uC815\uBCF4\uAC00 \uC544\uC9C1 \uC218\uC9D1\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4")
+                || html.contains("\uACE7 \uD68C\uCC28 \uBAA9\uB85D\uC774 \uC5C5\uB370\uC774\uD2B8\uB429\uB2C8\uB2E4")
+                || lower.contains("episode list is not available"));
     }
 
     private static String cleanEpisodeTitle(Element link) {
@@ -466,5 +477,6 @@ final class NtkEpisodeParser {
     static final class ParseResult {
         final ArrayList<Manga> episodes = new ArrayList<>();
         int matchedEpisodeLinks;
+        boolean definitiveEmptyEpisodeList;
     }
 }
