@@ -150,6 +150,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             h.h_overview.setText(overviewText(release));
             h.h_info.setText(infoText());
             h.selectTab(HeaderHolder.TAB_INTRO);
+            bindHeaderPrimaryAction(h);
             if(favorite) h.h_star_icon.setImageResource(R.drawable.ic_favorite);
             else h.h_star_icon.setImageResource(R.drawable.ic_favorite_border);
             h.h_bookmark.setVisibility(View.GONE);
@@ -184,6 +185,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
                 clearEpisodeRow(h, position);
                 return;
             }
+            bindNormalEpisodeRowStyle(h);
             int Dposition = position-1;
             Manga episode = mData.get(Dposition);
             if(episode == null) {
@@ -288,17 +290,42 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         setVisibilityIfChanged(holder.action, View.GONE);
         holder.boundKey = "null:" + position;
         bindEmptyThumbnail(holder.thumb, true);
+        holder.itemView.setEnabled(false);
         bindSelection(holder, position);
     }
 
+    private void bindNormalEpisodeRowStyle(ViewHolder holder) {
+        holder.itemView.setEnabled(true);
+        if(holder.cardContent != null)
+            holder.cardContent.setBackgroundColor(ContextCompat.getColor(mainContext,
+                    dark ? R.color.colorDarkSurface : R.color.appCard));
+    }
+
     private void bindConfirmedEmptyEpisodeRow(ViewHolder holder, int position) {
-        setTextIfChanged(holder.episode, "\uD68C\uCC28 \uC815\uBCF4\uAC00 \uC544\uC9C1 \uC218\uC9D1\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4");
-        setTextIfChanged(holder.date, "\uACE7 \uD68C\uCC28 \uBAA9\uB85D\uC774 \uC5C5\uB370\uC774\uD2B8\uB429\uB2C8\uB2E4.");
+        setTextIfChanged(holder.episode, "\uD45C\uC2DC\uD560 \uD68C\uCC28\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4");
+        setTextIfChanged(holder.date, "\uC6D0\uBCF8 \uC0AC\uC774\uD2B8\uC5D0\uC11C \uD68C\uCC28\uAC00 \uC218\uC9D1\uB418\uBA74 \uC790\uB3D9\uC73C\uB85C \uD45C\uC2DC\uB429\uB2C8\uB2E4.");
         setVisibilityIfChanged(holder.newBadge, View.GONE);
         setVisibilityIfChanged(holder.action, View.GONE);
         holder.boundKey = "ntk-empty:" + position;
         bindEmptyThumbnail(holder.thumb, true);
-        bindSelection(holder, position);
+        if(holder.card != null)
+            holder.card.setCardBackgroundColor(ContextCompat.getColor(mainContext,
+                    dark ? R.color.colorDarkSurfaceElevated : R.color.appMutedSurface));
+        if(holder.cardContent != null)
+            holder.cardContent.setBackgroundColor(ContextCompat.getColor(mainContext,
+                    dark ? R.color.colorDarkSurfaceElevated : R.color.appMutedSurface));
+        holder.itemView.setEnabled(false);
+    }
+
+    private void bindHeaderPrimaryAction(HeaderHolder holder) {
+        if(holder == null || holder.h_first == null)
+            return;
+        boolean empty = shouldShowConfirmedEmptyEpisodeRow();
+        holder.h_first.setEnabled(!empty);
+        holder.h_first.setAlpha(empty ? 0.55f : 1f);
+        holder.h_first.setText(empty
+                ? "\uD68C\uCC28 \uC900\uBE44 \uC911"
+                : "\uBC14\uB85C \uC77D\uAE30");
     }
 
     private void setTextIfChanged(TextView view, CharSequence text) {

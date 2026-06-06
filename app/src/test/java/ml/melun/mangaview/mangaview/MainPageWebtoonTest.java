@@ -144,6 +144,18 @@ public class MainPageWebtoonTest {
     }
 
     @Test
+    public void parseWolfSearchHtmlFastReadsNtkFlightHrefObjects() {
+        ArrayList<Title> titles = MainPageWebtoon.parseWolfSearchHtmlFast(
+                "<script>self.__next_f.push([1,\"30:[\\\"$\\\",\\\"$L37\\\",null,{\\\"children\\\":\\\"둘째에게\\\",\\\"href\\\":\\\"\\/webtoon\\/845711\\\"}]\\n\"])</script>",
+                base_webtoon, 0, "ntk");
+
+        assertEquals(1, titles.size());
+        assertEquals("둘째에게", titles.get(0).getName());
+        assertEquals(845711, titles.get(0).getId());
+        assertEquals("/webtoon/845711", titles.get(0).getPath());
+    }
+
+    @Test
     public void parseWolfSearchHtmlFastSkipsNtkPlatformThumbFallback() {
         MainPageWebtoon.clearClassificationDbForTest();
         try {

@@ -36,6 +36,8 @@ public class MainPageWebtoon {
     private static final int MAIN_SECTION_LIMIT = 10;
     private static final long PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final Pattern FAST_TITLE_LINK_PATTERN = Pattern.compile("(?is)<a\\b[^>]*href\\s*=\\s*(['\"])(.*?)\\1[^>]*>(.*?)</a>");
+    private static final Pattern FAST_FLIGHT_HREF_PATTERN = Pattern.compile("(?is)(?:\\\\?\"href\\\\?\"\\s*:\\s*\\\\?\")((?:\\\\/|/)(?:webtoon|manhwa)(?:\\\\/|/)[^\\\\\"?#\\s]+)");
+    private static final Pattern FAST_FLIGHT_TEXT_PATTERN = Pattern.compile("(?is)\\\\?\"(?:children|alt|title|name)\\\\?\"\\s*:\\s*\\\\?\"([^\\\\\"]{1,120})\\\\?\"");
     private static final Pattern FAST_TITLE_TEXT_PATTERN = Pattern.compile("(?is)<([a-z0-9]+)\\b(?=[^>]*\\bclass\\s*=\\s*(['\"])[^'\"]*\\b(?:subject|wr-subject|searchDetailTitle|search-title|post-title|episode-title|title|name)\\b[^'\"]*\\2)[^>]*>(.*?)</\\1>");
     private static final Pattern FAST_HEADING_PATTERN = Pattern.compile("(?is)<h[1-6]\\b[^>]*>(.*?)</h[1-6]>");
     private static final Pattern FAST_IMG_PATTERN = Pattern.compile("(?is)<img\\b([^>]*)>");
@@ -786,7 +788,50 @@ public class MainPageWebtoon {
             } catch (Exception ignored) {
             }
         }
+        appendFastFlightTitles(body, titles, seenTitleKeys, baseMode, limit, sourceSite);
         return titles;
+    }
+
+    private static void appendFastFlightTitles(String body, ArrayList<Title> titles, java.util.HashSet<String> seenTitleKeys,
+                                               int baseMode, int limit, String sourceSite) {
+        if(body == null || body.length() == 0)
+            return;
+        Matcher matcher = FAST_FLIGHT_HREF_PATTERN.matcher(body);
+        while(matcher.find()) {
+            try {
+                String href = unescapeJsonString(matcher.group(1));
+                int detectedBaseMode = detectWolfBaseMode(href);
+                if(detectedBaseMode != 0 && detectedBaseMode != baseMode)
+                    continue;
+                int id = titleIdFromHref(href, baseMode);
+                if(id <= 0)
+                    continue;
+                String path = ntkTitlePathFromHref(href, baseMode);
+                if(path.length() == 0)
+                    continue;
+                String seenKey = baseMode + ":" + id;
+                if(!seenTitleKeys.add(seenKey))
+                    continue;
+                int start = Math.max(0, matcher.start() - 1600);
+                int end = Math.min(body.length(), matcher.end() + 1600);
+                String context = body.substring(start, end);
+                String name = firstFastFlightTitleText(context);
+                if(name.length() == 0) {
+                    seenTitleKeys.remove(seenKey);
+                    continue;
+                }
+                Title parsed = new Title(name, resolveFastSearchThumb(name, id, "", baseMode, sourceSite),
+                        "", new ArrayList<>(), "", id, baseMode);
+                if(sourceSite != null && sourceSite.trim().length() > 0)
+                    parsed.setSourceSite(sourceSite.trim());
+                parsed.setPath(path);
+                applyInferredSearchTagsIfLoaded(parsed);
+                titles.add(parsed);
+                if(limit > 0 && titles.size() >= limit)
+                    break;
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     private static ArrayList<Title> parseWolfTitleElements(Elements candidates, int baseMode, int limit,
@@ -1097,6 +1142,54 @@ public class MainPageWebtoon {
         return "";
     }
 
+    private static String firstFastFlightTitleText(String context) {
+        if(context == null || context.length() == 0)
+            return "";
+        Matcher matcher = FAST_FLIGHT_TEXT_PATTERN.matcher(context);
+        String fallback = "";
+        while(matcher.find()) {
+            String text = cleanNtkListText(unescapeJsonString(matcher.group(1)));
+            if(!looksLikeSearchTitleText(text))
+                continue;
+            if(containsHangul(text))
+                return text;
+            if(fallback.length() == 0)
+                fallback = text;
+        }
+        return fallback;
+    }
+
+    private static boolean looksLikeSearchTitleText(String text) {
+        if(text == null)
+            return false;
+        String value = text.trim();
+        if(value.length() < 2 || value.length() > 80)
+            return false;
+        String lower = value.toLowerCase(Locale.ROOT);
+        if(lower.startsWith("/") || lower.startsWith("http"))
+            return false;
+        String[] blocked = {
+                "홈", "웹툰", "완결웹툰", "만화", "소설", "애니", "랭킹", "게임", "커뮤니티",
+                "북마크", "최근본작품", "로그인", "회원가입", "검색", "뉴토끼", "통합 검색",
+                "업데이트", "완결만화", "동인지/망가", "공지사항", "패치노트"
+        };
+        for(String item : blocked)
+            if(value.equals(item))
+                return false;
+        return true;
+    }
+
+    private static boolean containsHangul(String text) {
+        if(text == null)
+            return false;
+        for(int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if(c >= '\uAC00' && c <= '\uD7A3')
+                return true;
+        }
+        return false;
+    }
+
     private static String firstFastThumb(String html) {
         if(html == null)
             return "";
@@ -1179,6 +1272,47 @@ public class MainPageWebtoon {
                 .replace("&apos;", "'")
                 .replace("&lt;", "<")
                 .replace("&gt;", ">");
+    }
+
+    private static String unescapeJsonString(String value) {
+        if(value == null || value.length() == 0)
+            return "";
+        StringBuilder builder = new StringBuilder(value.length());
+        for(int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if(c != '\\' || i + 1 >= value.length()) {
+                builder.append(c);
+                continue;
+            }
+            char next = value.charAt(++i);
+            switch(next) {
+                case 'n':
+                    builder.append('\n');
+                    break;
+                case 'r':
+                    builder.append('\r');
+                    break;
+                case 't':
+                    builder.append('\t');
+                    break;
+                case 'u':
+                    if(i + 4 < value.length()) {
+                        String hex = value.substring(i + 1, i + 5);
+                        try {
+                            builder.append((char) Integer.parseInt(hex, 16));
+                            i += 4;
+                            break;
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    builder.append(next);
+                    break;
+                default:
+                    builder.append(next);
+                    break;
+            }
+        }
+        return decodeHtml(builder.toString()).trim();
     }
 
     private static String firstImageAttr(Element img) {
