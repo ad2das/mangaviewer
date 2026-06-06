@@ -323,7 +323,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             materializeLayoutDeltasLocked()
             val oldFirstTop = pageTopOrElseLocked(0, 0f)
-            repeat(insertedCount) { pages.add(0, newPageLocked()) }
+            val insertedPlaceholderRatio = representativeResolvedPageRatioLocked()
+            repeat(insertedCount) { pages.add(0, newPageLocked(insertedPlaceholderRatio)) }
             if (revealPrependedBoundary) {
                 pages.getOrNull(insertedCount - 1)?.let { page ->
                     page.width = width
@@ -360,59 +361,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             windowRequestLocked(lastBusy)
         }
         dispatchWindowRequest(request)
-    }
-
-    fun holdPrependedBoundaryReveal(currentPageAfterInsert: Int) {
-        val request = synchronized(stateLock) {
-            if (currentPageAfterInsert !in pages.indices) return
-            prependedRevealHoldPage = currentPageAfterInsert
-            rebuildLayoutLocked()
-            clampScrollLocked()
-            if (!scroller.isFinished) scroller.forceFinished(true)
-            activeScrollerOffsetShift = 0f
-            renderRequested = true
-            scheduleFrameLocked()
-            stateLock.notifyAll()
-            windowRequestLocked(lastBusy)
-        }
-        dispatchWindowRequest(request)
-    }
-
-    fun revealPrependedBoundary(insertedCount: Int, firstDrawableIndex: Int, lastDrawableIndex: Int): Boolean {
-        val request = synchronized(stateLock) {
-            rebuildLayoutLocked()
-            if (insertedCount <= 0 || pages.isEmpty()) return false
-            val first = firstDrawableIndex.coerceAtLeast(0)
-            val last = lastDrawableIndex.coerceAtMost(pages.lastIndex)
-            if (first > last) return false
-            val cardIndex = (insertedCount - 1).coerceIn(0, pages.lastIndex)
-            lockedRestorePage = cardIndex
-            lockedRestoreOffset = 0
-            lockedRestoreUntilMs = SystemClock.uptimeMillis() + RESTORE_POSITION_LOCK_MS
-            structuralScrollAdjustUntilMs = lockedRestoreUntilMs
-            for (index in first..last) {
-                if (!pageHasDrawableContentLocked(index)) {
-                    applyPendingPageResolveLocked(index)
-                }
-            }
-            for (index in first..last) {
-                if (!pageHasDrawableContentLocked(index)) return false
-            }
-            prependedRevealHoldPage = -1
-            val boundaryCardTop = pageTopOrElseLocked(cardIndex, 0f)
-            setScrollOffsetLocked(max(0f, boundaryCardTop))
-            if (!scroller.isFinished) scroller.forceFinished(true)
-            activeScrollerOffsetShift = 0f
-            boundaryArmedDirection = 0
-            boundaryDispatchInFlight = false
-            clampScrollLocked()
-            renderRequested = true
-            scheduleFrameLocked()
-            stateLock.notifyAll()
-            windowRequestLocked(lastBusy)
-        }
-        dispatchWindowRequest(request)
-        return true
     }
 
     fun removePageRange(startIndex: Int, removedCount: Int) {
@@ -1635,13 +1583,41 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return max(1f, viewWidth * page.placeholderRatio)
     }
 
-    private fun newPageLocked(): Page {
+    private fun newPageLocked(placeholderRatio: Float = placeholderPageHeightRatio): Page {
         return Page(
-            placeholderRatio = placeholderPageHeightRatio.coerceIn(
+            placeholderRatio = placeholderRatio.coerceIn(
                 MIN_PLACEHOLDER_PAGE_HEIGHT_RATIO,
                 MAX_PLACEHOLDER_PAGE_HEIGHT_RATIO
             )
         )
+    }
+
+    private fun representativeResolvedPageRatioLocked(): Float {
+        if (pages.isEmpty()) {
+            return placeholderPageHeightRatio.coerceIn(
+                MIN_PLACEHOLDER_PAGE_HEIGHT_RATIO,
+                MAX_PLACEHOLDER_PAGE_HEIGHT_RATIO
+            )
+        }
+        val ratios = ArrayList<Float>(pages.size)
+        for (page in pages) {
+            if (page.cardText != null || page.errorText != null) continue
+            if (page.width <= 0 || page.height <= 0) continue
+            ratios.add(
+                (page.height / page.width.toFloat()).coerceIn(
+                    MIN_PLACEHOLDER_PAGE_HEIGHT_RATIO,
+                    MAX_PLACEHOLDER_PAGE_HEIGHT_RATIO
+                )
+            )
+        }
+        if (ratios.isEmpty()) {
+            return placeholderPageHeightRatio.coerceIn(
+                MIN_PLACEHOLDER_PAGE_HEIGHT_RATIO,
+                MAX_PLACEHOLDER_PAGE_HEIGHT_RATIO
+            )
+        }
+        ratios.sort()
+        return ratios[ratios.size / 2]
     }
 
     private fun resolvedPageDrawHeightLocked(pageWidth: Int, pageHeight: Int): Float {
@@ -1776,9 +1752,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun appendEmptyPagesLocked(additionalCount: Int) {
         if (additionalCount <= 0) return
         materializeLayoutDeltasLocked()
+        val appendedPlaceholderRatio = representativeResolvedPageRatioLocked()
         var top = if (pages.isEmpty()) 0f else contentHeight + pageGapPx
         repeat(additionalCount) {
-            val page = newPageLocked()
+            val page = newPageLocked(appendedPlaceholderRatio)
             pages.add(page)
             if (pageTops.size != pages.size) pageTops = pageTops.copyWithSize(pages.size)
             if (pageTopDeltas.size != pages.size) pageTopDeltas = pageTopDeltas.copyWithSize(pages.size)
@@ -2204,8 +2181,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val TRANSITION_CARD_BODY_HEIGHT_PX = 144f
         private const val DEFAULT_PLACEHOLDER_PAGE_HEIGHT_RATIO = 1.45f
         private const val MIN_PLACEHOLDER_PAGE_HEIGHT_RATIO = 0.85f
-        private const val MAX_PLACEHOLDER_PAGE_HEIGHT_RATIO = 2.35f
-        private const val PLACEHOLDER_RATIO_LEARNING_RATE = 0.25f
+        private const val MAX_PLACEHOLDER_PAGE_HEIGHT_RATIO = 3.8f
+        private const val PLACEHOLDER_RATIO_LEARNING_RATE = 0.4f
         private const val NEAR_BOUNDARY_SCREENFULS = 10
         private const val NEAR_BOUNDARY_PAGE_THRESHOLD = 16
         private const val BUSY_WINDOW_ANCHOR_STEP = 2

@@ -93,9 +93,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var pendingBoundaryStatus = false
     private var pendingBoundaryCaptchaRetry = false
     private var pendingPrependRevealRequests = 0
-    private var pendingPrependRevealInsertedCount = 0
-    private var pendingPrependRevealFirstDrawableIndex = -1
-    private var pendingPrependRevealLastDrawableIndex = -1
     private var readerWindowBusy = false
     private var deferredBoundaryDirection = 0
     private var deferredBoundaryAnchor = -1
@@ -458,7 +455,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPagesReady(count: Int) {
         pagesReady = true
-        clearDeferredPrependReveal()
         initialStatusPending = false
         statusHandler.removeCallbacks(showInitialStatusRunnable)
         hideBoundaryStatus()
@@ -482,29 +478,20 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPagesPrepended(count: Int, insertedCount: Int) {
         if (pagesReady) {
-            val revealPrependedBoundary = false
-            val shouldRevealWhenReady = consumePrependedBoundaryReveal(insertedCount)
+            val revealPrependedBoundary = consumePrependedBoundaryReveal(insertedCount)
             pendingBoundaryStartInteractionMs = 0L
             hideBoundaryStatus()
             pageCount = count
             currentPage += insertedCount
             if (pendingInitialRestorePage >= 0) pendingInitialRestorePage += insertedCount
             renderView.prependPageCount(count, insertedCount, revealPrependedBoundary)
-            if (shouldRevealWhenReady) {
-                pendingPrependRevealInsertedCount = insertedCount
-                pendingPrependRevealFirstDrawableIndex = (insertedCount - 3).coerceAtLeast(0)
-                pendingPrependRevealLastDrawableIndex = (insertedCount - 2).coerceAtLeast(0)
-                renderView.holdPrependedBoundaryReveal(currentPage)
-            } else {
-                clearDeferredPrependReveal()
-            }
             if (revealPrependedBoundary) {
                 currentPage = (insertedCount - 1).coerceIn(0, count - 1)
             }
             Log.d(
                 TAG,
                 "pages_prepended total=$count inserted=$insertedCount reveal=$revealPrependedBoundary " +
-                    "deferredReveal=$shouldRevealWhenReady currentPage=$currentPage"
+                    "deferredReveal=false currentPage=$currentPage"
             )
             updateCurrentEpisode(currentPage)
         }
@@ -512,7 +499,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPagesRemoved(startIndex: Int, removedCount: Int, totalCount: Int) {
         if (pagesReady) {
-            clearDeferredPrependReveal()
             hideBoundaryStatus()
             pageCount = totalCount
             currentPage = when {
@@ -693,7 +679,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun applyPageBitmap(index: Int, bitmap: Bitmap) {
         hideBoundaryStatus()
         renderView.setPageBitmap(index, bitmap)
-        applyDeferredPrependRevealIfReady(index)
         val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
         logLaunchDrawableMetric(index, "bitmap")
         if (visibleInitialDrawable) logFirstDrawableMetric(index, "bitmap")
@@ -704,7 +689,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun applyPageTiles(index: Int, pageWidth: Int, pageHeight: Int, tiles: List<ReaderTile>) {
         hideBoundaryStatus()
         renderView.setPageTiles(index, pageWidth, pageHeight, tiles)
-        applyDeferredPrependRevealIfReady(index)
         val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
         logLaunchDrawableMetric(index, "tiles")
         if (visibleInitialDrawable) logFirstDrawableMetric(index, "tiles")
@@ -1651,12 +1635,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingCaptchaRetryAnchor = -1
     }
 
-    private fun clearDeferredPrependReveal() {
-        pendingPrependRevealInsertedCount = 0
-        pendingPrependRevealFirstDrawableIndex = -1
-        pendingPrependRevealLastDrawableIndex = -1
-    }
-
     private fun markPrependRevealRequest(direction: Int, startResult: ReaderSession.AppendStartResult?) {
         if (direction == ReaderSurfaceView.DIRECTION_PREVIOUS && startResult == ReaderSession.AppendStartResult.STARTED) {
             pendingPrependRevealRequests++
@@ -1667,23 +1645,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val reveal = shouldRevealPrependedBoundary(pendingPrependRevealRequests, insertedCount)
         if (pendingPrependRevealRequests > 0) pendingPrependRevealRequests--
         return reveal
-    }
-
-    private fun applyDeferredPrependRevealIfReady(index: Int) {
-        val insertedCount = pendingPrependRevealInsertedCount
-        val firstDrawable = pendingPrependRevealFirstDrawableIndex
-        val lastDrawable = pendingPrependRevealLastDrawableIndex
-        if (insertedCount <= 0 || firstDrawable < 0 || lastDrawable < firstDrawable || index !in firstDrawable..lastDrawable) return
-        val targetPage = (insertedCount - 1).coerceIn(0, (pageCount - 1).coerceAtLeast(0))
-        if (!renderView.revealPrependedBoundary(insertedCount, firstDrawable, lastDrawable)) return
-        clearDeferredPrependReveal()
-        currentPage = targetPage
-        Log.d(
-            TAG,
-            "pages_prepended_reveal_ready inserted=$insertedCount drawableRange=$firstDrawable..$lastDrawable " +
-                "triggerIndex=$index currentPage=$currentPage"
-        )
-        updateCurrentEpisode(currentPage)
     }
 
     private fun installInitialDrawGate(root: View) {
