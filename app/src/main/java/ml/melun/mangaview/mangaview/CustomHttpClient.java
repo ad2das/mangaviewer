@@ -3541,6 +3541,10 @@ public class CustomHttpClient {
             Map<String, String> headers = requestHeadersMap(request);
             boolean foregroundPriority = "1".equals(headerValue(headers, "X-MangaViewer-Foreground"));
             removeHeaderIgnoreCase(headers, "X-MangaViewer-Foreground");
+            if(foregroundPriority) {
+                ViewerWarmupManager.logMetric("ntk_quic_image_foreground_skip", 1L);
+                return chain.proceed(request);
+            }
             if(headerValue(headers, "Cookie") == null)
                 headers.put("Cookie", getCookieHeader());
             if(headerValue(headers, "User-Agent") == null)
@@ -4050,7 +4054,7 @@ public class CustomHttpClient {
                                                                  int code, String path, FetchMode fetchMode) {
         if(!ntkUrl || path == null || fetchMode == FetchMode.CACHE_ONLY)
             return false;
-        if(!isNtkWebViewFetchPath(path) || path.startsWith("/api/ad/"))
+        if(!isNtkEpisodeDocumentPath(path) || path.startsWith("/api/ad/"))
             return false;
         return missingResponse || code == 403 || code >= 500;
     }
@@ -4533,6 +4537,8 @@ public class CustomHttpClient {
     private static boolean hasRenderedNtkEpisodeViewerContent(String lowerBody) {
         if(lowerBody == null || lowerBody.length() == 0)
             return false;
+        if(hasNtkViewerShellData(lowerBody))
+            return true;
         if(lowerBody.contains("imagestoken") && lowerBody.contains("imagemetas"))
             return true;
         if(lowerBody.contains("vw-main") || lowerBody.contains("vw-imgs")
@@ -5923,17 +5929,12 @@ public class CustomHttpClient {
                                                    String baseUrl, String refererPath) {
         if(urls == null)
             return false;
-        int before = urls.size();
         if(!appendNtkViewerImages(urls, result))
             return false;
-        if(areInitialNtkViewerImageUrlsReachable(urls, baseUrl, refererPath))
-            return true;
-        while(urls.size() > before)
-            urls.remove(urls.size() - 1);
-        Log.d(TAG, "ntk_images_api_unreachable_result path=" + refererPath
+        Log.d(TAG, "ntk_images_api_trusted_result path=" + refererPath
                 + ",code=" + (result == null ? 0 : result.code)
                 + ",count=" + (result == null ? 0 : ntkViewerImagesCount(result)));
-        return false;
+        return true;
     }
 
     private boolean areInitialNtkViewerImageUrlsReachable(List<String> urls, String baseUrl, String refererPath) {

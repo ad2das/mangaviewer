@@ -754,7 +754,13 @@ class ReaderSession(
                 max(safeFirst, windowAnchor - BUSY_VISIBLE_DECODE_RADIUS)
             }
             val visibleLast = if (direction >= 0) {
-                val decodeAhead = if (ntkWebtoon) NTK_WEBTOON_BUSY_DIRECTIONAL_DECODE_AHEAD else BUSY_DIRECTIONAL_DECODE_AHEAD
+                val decodeAhead = if (isNtkSource(manga, title) && !firstBitmapLogged.get()) {
+                    NTK_INITIAL_BOOT_PRIORITY_PAGES
+                } else if (ntkWebtoon) {
+                    NTK_WEBTOON_BUSY_DIRECTIONAL_DECODE_AHEAD
+                } else {
+                    BUSY_DIRECTIONAL_DECODE_AHEAD
+                }
                 minOf(safeLast, windowAnchor + decodeAhead)
             } else {
                 minOf(safeLast, windowAnchor + BUSY_VISIBLE_DECODE_RADIUS)
@@ -3192,21 +3198,13 @@ class ReaderSession(
         if (anchor || index == currentStartPage()) return true
         val current = currentStartPage()
         val ntk = isNtkSource(page.manga, title)
+        if (urgent) return true
+        if (generation == FOREGROUND_PRIME_WARM_GENERATION && ntk) return true
         if (ntk && index > current + NTK_FOREGROUND_STREAM_AHEAD_PAGES) {
             return false
         }
-        val image = page.image
-        if (
-            ntk &&
-            generation == FOREGROUND_PRIME_WARM_GENERATION &&
-            image != null &&
-            ReaderImageCache.hasActiveFetch(page.manga, image)
-        ) {
-            return false
-        }
-        if (urgent) return true
-        if (generation == FOREGROUND_PRIME_WARM_GENERATION && ntk) return true
         if (!urgent && (!busy || generation == PRIME_WARM_GENERATION)) return false
+        val image = page.image
         val requestImage = image ?: return false
         return !ReaderImageCache.hasActiveFetch(page.manga, requestImage)
     }
@@ -3831,11 +3829,11 @@ class ReaderSession(
         private const val NTK_PREPENDED_EPISODE_BYTE_AHEAD_PAGES = 6
         private const val NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD = 64
         private const val NTK_INITIAL_PRIORITY_START_OFFSET = 1
-        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 3
-        private const val NTK_INITIAL_BOOT_URGENT_PAGES = 3
-        private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 6
+        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 8
+        private const val NTK_INITIAL_BOOT_URGENT_PAGES = 8
+        private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 12
         private const val NTK_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 1
-        private const val NTK_INITIAL_ANCHOR_DECODE_PRIME_PAGES = 3
+        private const val NTK_INITIAL_ANCHOR_DECODE_PRIME_PAGES = 8
         private const val NTK_INITIAL_PRIORITY_PAGES = 4
         private const val NTK_FOREGROUND_STREAM_AHEAD_PAGES = 1
         private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 2
