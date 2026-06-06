@@ -181,6 +181,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var lockedRestorePage = -1
     private var lockedRestoreOffset = 0
     private var lockedRestoreUntilMs = 0L
+    private var structuralScrollAdjustUntilMs = 0L
     private var prependedRevealHoldPage = -1
     private var initialRenderHoldPage = -1
     private var initialRenderHoldUntilMs = 0L
@@ -272,6 +273,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             hasDrawnContentFrame = false
             deferInitialEmptyDraw = false
             initialViewportHoldUntilMs = 0L
+            structuralScrollAdjustUntilMs = 0L
             lastVisibleCoverageSnapshot = null
             layoutDirty = true
             renderRequested = true
@@ -341,8 +343,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 applyLockedRestorePositionLocked()
             } else if (revealPrependedBoundary) {
                 val boundaryCardTop = pageTopOrElseLocked(insertedCount - 1, shiftedFirstTop)
+                structuralScrollAdjustUntilMs = SystemClock.uptimeMillis() + RESTORE_POSITION_LOCK_MS
                 setScrollOffsetLocked(max(0f, boundaryCardTop))
             } else {
+                structuralScrollAdjustUntilMs = SystemClock.uptimeMillis() + RESTORE_POSITION_LOCK_MS
                 setScrollOffsetLocked(scrollOffset + shiftedFirstTop - oldFirstTop)
             }
             if (!scroller.isFinished) scroller.forceFinished(true)
@@ -392,6 +396,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
             prependedRevealHoldPage = -1
             val cardIndex = (insertedCount - 1).coerceIn(0, pages.lastIndex)
             val boundaryCardTop = pageTopOrElseLocked(cardIndex, 0f)
+            lockedRestorePage = cardIndex
+            lockedRestoreOffset = 0
+            lockedRestoreUntilMs = SystemClock.uptimeMillis() + RESTORE_POSITION_LOCK_MS
+            structuralScrollAdjustUntilMs = lockedRestoreUntilMs
             setScrollOffsetLocked(max(0f, boundaryCardTop))
             if (!scroller.isFinished) scroller.forceFinished(true)
             activeScrollerOffsetShift = 0f
@@ -1841,12 +1849,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val delta = next - scrollOffset
             val lockedRestoreActive = lockedRestorePage >= 0 &&
                 SystemClock.uptimeMillis() <= lockedRestoreUntilMs
+            val structuralAdjustActive = SystemClock.uptimeMillis() <= structuralScrollAdjustUntilMs
             if (
                 abs(delta) >= height * SCROLL_JUMP_LOG_SCREEN_RATIO &&
                 !pointerDown &&
                 !dragging &&
                 scroller.isFinished &&
-                !lockedRestoreActive
+                !lockedRestoreActive &&
+                !structuralAdjustActive
             ) {
                 Log.w(
                     TAG,

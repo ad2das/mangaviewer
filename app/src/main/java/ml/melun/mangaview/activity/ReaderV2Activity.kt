@@ -1750,6 +1750,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         launchAdjacent(source, episode, currentTitle ?: episode.title)
     }
 
+    fun testStartBoundaryAppend(direction: Int, anchorPage: Int): ReaderSession.AppendStartResult? {
+        val anchor = anchorPage.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+        val startResult = session?.appendAdjacentEpisode(anchor, direction)
+        markPrependRevealRequest(direction, startResult)
+        return startResult
+    }
+
     fun testCurrentProgressPosition(): ReaderSurfaceView.ProgressPosition? {
         return renderView.currentProgressPosition()
     }

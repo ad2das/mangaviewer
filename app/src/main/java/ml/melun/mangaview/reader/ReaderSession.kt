@@ -924,7 +924,8 @@ class ReaderSession(
         if (isNtkSource(manga, title) && !firstBitmapLogged.get()) return AppendStartResult.CANCELLED
         if (loadingFlag.getAndSet(true)) return AppendStartResult.BUSY
         try {
-            network.execute {
+            val appendExecutor = if (isNtkSource(manga, title)) anchorNetwork else network
+            appendExecutor.execute {
             var captchaRequired = false
             var suppressedCaptcha = false
             try {
@@ -3739,8 +3740,8 @@ class ReaderSession(
         private const val NTK_PRIMED_EPISODE_BYTE_AHEAD_PAGES = 18
         private const val NTK_LIGHT_PRIMED_EPISODE_DECODE_AHEAD_PAGES = 8
         private const val NTK_LIGHT_PRIMED_EPISODE_BYTE_AHEAD_PAGES = 12
-        private const val NTK_PREPENDED_EPISODE_DECODE_AHEAD_PAGES = 10
-        private const val NTK_PREPENDED_EPISODE_BYTE_AHEAD_PAGES = 18
+        private const val NTK_PREPENDED_EPISODE_DECODE_AHEAD_PAGES = 2
+        private const val NTK_PREPENDED_EPISODE_BYTE_AHEAD_PAGES = 6
         private const val NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD = 64
         private const val NTK_INITIAL_PRIORITY_START_OFFSET = 1
         private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 0

@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Random;
+import java.util.concurrent.atomic.AtomicReference;
 
 import ml.melun.mangaview.ClassificationDbStore;
 import ml.melun.mangaview.ClassificationDbUpdater;
@@ -791,16 +792,18 @@ public class NtkRandomStressInstrumentedTest {
                     + ",nextPath=" + nextEpisode.getNtkEpisodePath());
             return;
         }
-        boolean reachedBoundary = false;
-        for(int step = 0; step < maxSteps; step++) {
-            swipeReader(device, reader, 0.84f, 0.16f, 38);
-            device.waitForIdle(550L);
+        ReaderSession.AppendStartResult start = startAppend(reader, ReaderSurfaceView.DIRECTION_NEXT, before - 1);
+        int polls = Math.max(1, maxSteps);
+        for(int step = 0; step < polls; step++) {
+            SystemClock.sleep(350L);
+            device.waitForIdle(120L);
             int after = readPageCount(reader);
             int current = readCurrentPage(reader);
             if(after > before || hasLoadedEpisode(reader, nextEpisode)) {
                 Log.d(TAG, "ntk_true_random_append_next run=" + run
                         + ",mode=" + mode
                         + ",expected=true,success=true,step=" + step
+                        + ",start=" + start
                         + ",alreadyLoaded=" + hasLoadedEpisode(reader, nextEpisode)
                         + ",before=" + before
                         + ",after=" + after
@@ -810,45 +813,49 @@ public class NtkRandomStressInstrumentedTest {
                         + ",nextPath=" + nextEpisode.getNtkEpisodePath());
                 return;
             }
-            if(current >= before - 1)
-                reachedBoundary = true;
         }
         int after = readPageCount(reader);
         int current = readCurrentPage(reader);
         Log.d(TAG, "ntk_true_random_append_next run=" + run
                 + ",mode=" + mode
                 + ",expected=true,success=false"
-                + ",reachedBoundary=" + reachedBoundary
+                + ",start=" + start
                 + ",before=" + before
                 + ",after=" + after
                 + ",currentPage=" + current
                 + ",progress=" + readProgress(reader)
                 + ",path=" + episode.getNtkEpisodePath()
                 + ",nextPath=" + nextEpisode.getNtkEpisodePath());
-        assertTrue("Reached next boundary without append run=" + run
+        assertTrue("Next append did not load adjacent episode run=" + run
                 + " mode=" + mode
                 + " path=" + episode.getNtkEpisodePath()
                 + " next=" + nextEpisode.getNtkEpisodePath()
+                + " start=" + start
                 + " before=" + before
                 + " after=" + after
                 + " currentPage=" + current
                 + " progress=" + readProgress(reader),
-                !reachedBoundary);
+                start != ReaderSession.AppendStartResult.STARTED
+                        || after > before
+                        || hasLoadedEpisode(reader, nextEpisode));
     }
 
     private static boolean probePreviousAppend(UiDevice device, ReaderV2Activity reader, int run,
                                                String mode, Manga episode, Manga previousEpisode,
                                                int maxSteps) {
         int before = readPageCount(reader);
-        for(int step = 0; step < maxSteps; step++) {
-            swipeReader(device, reader, 0.22f, 0.84f, 36);
-            device.waitForIdle(650L);
+        ReaderSession.AppendStartResult start = startAppend(reader, ReaderSurfaceView.DIRECTION_PREVIOUS, 0);
+        int polls = Math.max(1, maxSteps);
+        for(int step = 0; step < polls; step++) {
+            SystemClock.sleep(350L);
+            device.waitForIdle(120L);
             int after = readPageCount(reader);
             int current = readCurrentPage(reader);
             if(after > before) {
                 Log.d(TAG, "ntk_true_random_append_previous run=" + run
                         + ",mode=" + mode
                         + ",expected=true,success=true,step=" + step
+                        + ",start=" + start
                         + ",before=" + before
                         + ",after=" + after
                         + ",currentPage=" + current
@@ -861,6 +868,7 @@ public class NtkRandomStressInstrumentedTest {
                 Log.d(TAG, "ntk_true_random_append_previous_probe run=" + run
                         + ",mode=" + mode
                         + ",step=" + step
+                        + ",start=" + start
                         + ",before=" + before
                         + ",after=" + after
                         + ",currentPage=" + current
@@ -872,6 +880,7 @@ public class NtkRandomStressInstrumentedTest {
         Log.d(TAG, "ntk_true_random_append_previous run=" + run
                 + ",mode=" + mode
                 + ",expected=true,success=false"
+                + ",start=" + start
                 + ",before=" + before
                 + ",after=" + readPageCount(reader)
                 + ",currentPage=" + readCurrentPage(reader)
@@ -879,6 +888,13 @@ public class NtkRandomStressInstrumentedTest {
                 + ",path=" + episode.getNtkEpisodePath()
                 + ",previousPath=" + previousEpisode.getNtkEpisodePath());
         return false;
+    }
+
+    private static ReaderSession.AppendStartResult startAppend(ReaderV2Activity reader, int direction, int anchor) {
+        AtomicReference<ReaderSession.AppendStartResult> result = new AtomicReference<>();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(
+                () -> result.set(reader.testStartBoundaryAppend(direction, anchor)));
+        return result.get();
     }
 
     private static int readPageCount(ReaderV2Activity activity) {
