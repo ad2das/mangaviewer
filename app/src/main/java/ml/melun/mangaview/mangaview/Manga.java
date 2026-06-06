@@ -2,6 +2,7 @@ package ml.melun.mangaview.mangaview;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.net.URLDecoder;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -36,6 +37,7 @@ import static ml.melun.mangaview.mangaview.Title.LOAD_ERROR;
 import static ml.melun.mangaview.mangaview.Title.LOAD_OK;
 
 import android.content.Context;
+import android.util.Base64;
 import android.util.Log;
 
 import androidx.documentfile.provider.DocumentFile;
@@ -530,10 +532,12 @@ public class Manga {
             boolean nativeAckMode = isNtkNativeAckModeOverride();
             boolean apiFallbackMode = isNtkApiFallbackModeOverride();
             boolean strictApiFallbackMode = isNtkStrictApiFallbackModeOverride();
-            boolean allowGeneratedImages = !nativeAckMode && !apiFallbackMode;
+            final boolean apiFirstWebtoonEpisode = isNtkWebtoonEpisodePath(path);
+            boolean allowGeneratedImages = !apiFirstWebtoonEpisode && !nativeAckMode && !apiFallbackMode;
             final boolean skipGeneratedForSlugEpisode = shouldSkipNtkGeneratedForEpisodePath(path);
             final boolean apiFirstCanonicalWebtoonEpisode = shouldPreferNtkApiForCanonicalWebtoonPath(path);
-            if(allowGeneratedImages && (apiFirstCanonicalWebtoonEpisode || skipGeneratedForSlugEpisode)
+            if(allowGeneratedImages && !apiFirstWebtoonEpisode
+                    && (apiFirstCanonicalWebtoonEpisode || skipGeneratedForSlugEpisode)
                     && addNtkSlugWebtoonGeneratedImageCandidates(client, path, seenImages,
                     ntkGeneratedImageCandidateCount(), true)) {
                 logNtkViewerParse("generated-wt-slug", null, path, 0, 0);
@@ -569,10 +573,10 @@ public class Manga {
                 startNativeAckIfNeeded.run();
                 startDirectPageFetchIfNeeded.run();
             };
-            if(skipGeneratedForSlugEpisode || apiFirstCanonicalWebtoonEpisode) {
+            if(apiFirstWebtoonEpisode || skipGeneratedForSlugEpisode || apiFirstCanonicalWebtoonEpisode) {
                 startNativeAckIfNeeded.run();
                 startDirectPageFetchIfNeeded.run();
-                if(skipGeneratedForSlugEpisode)
+                if(apiFirstWebtoonEpisode || skipGeneratedForSlugEpisode)
                     startPageFetchIfNeeded.run();
             }
             boolean apiOptimisticGeneratedCandidate = apiFallbackMode
@@ -878,7 +882,10 @@ public class Manga {
                 addNtkTextImageCandidates(client, page.body, seenImages, fallbackBoardImages);
                 if(allowGeneratedImages && !generatedCandidatesChecked)
                     addNtkViewerMetaImageCandidates(client, page.body, path, seenImages);
-                addNtkViewerShellGeneratedImageCandidates(client, page.body, path, seenImages, true);
+                if(apiFirstWebtoonEpisode)
+                    addNtkApiViewerImageCandidates(client, page.body, path, seenImages, false);
+                if(!apiFirstWebtoonEpisode)
+                    addNtkViewerShellGeneratedImageCandidates(client, page.body, path, seenImages, true);
                 compactNtkImageCandidates(page.body, seenImages);
                 if(shouldFetchNtkApiViewerImagesForSparseParse(page.body, path, pageImages.size()))
                     addNtkApiViewerImageCandidates(client, page.body, path, seenImages);
@@ -1369,12 +1376,16 @@ public class Manga {
                                                      boolean preferApiPayload) {
         if(!isUsableNtkApiPage(page))
             return false;
-        if(hasNtkViewerImageApiPayload(page.body)
-                && addNtkApiViewerImageCandidates(client, page.body, path, seenImages, tryGeneratedMetaFirst))
+        boolean webtoonApiFirst = isNtkWebtoonEpisodePath(path);
+        if((preferApiPayload || webtoonApiFirst)
+                && hasNtkViewerImageApiPayload(page.body)
+                && addNtkApiViewerImageCandidates(client, page.body, path, seenImages,
+                !webtoonApiFirst && tryGeneratedMetaFirst))
             return true;
-        if(addNtkViewerShellGeneratedImageCandidates(client, page.body, path, seenImages, false))
+        if(!webtoonApiFirst && addNtkViewerShellGeneratedImageCandidates(client, page.body, path, seenImages, false))
             return true;
-        return addNtkApiViewerImageCandidates(client, page.body, path, seenImages, tryGeneratedMetaFirst);
+        return addNtkApiViewerImageCandidates(client, page.body, path, seenImages,
+                !webtoonApiFirst && tryGeneratedMetaFirst);
     }
 
     private boolean addNtkViewerShellGeneratedImageCandidates(CustomHttpClient client, String body,
@@ -1446,7 +1457,8 @@ public class Manga {
             return false;
         }
         int before = imgs == null ? 0 : imgs.size();
-        if(!shouldPreferNtkApiForCanonicalWebtoonPath(path)
+        if(!isNtkWebtoonEpisodePath(path)
+                && !shouldPreferNtkApiForCanonicalWebtoonPath(path)
                 && (tryGeneratedMetaFirst || shouldSkipNtkGeneratedForEpisodePath(path))) {
             addNtkViewerMetaImageCandidates(client, normalized, path, seenImages);
             if(imgs != null && imgs.size() > before)
@@ -1467,13 +1479,19 @@ public class Manga {
                 && shouldPreAckBeforeNtkViewerImageApi(path)
                 && awaitCachedNtkViewerImageApiCandidates(client, path, seenImages, 650L))
             return true;
+        String tokenWorkId = ntkViewerImagesTokenField(token, "w");
+        String tokenEpisodeId = ntkViewerImagesTokenField(token, "e");
         String pathEpisodeId = pathMatcher.group(3);
-        String imageEpisodeId = ntkApiEpisodeIdForPath(getNtkImageEpisodeId());
+        String imageEpisodeId = ntkApiEpisodeIdForPath(tokenEpisodeId);
+        if(imageEpisodeId.length() == 0)
+            imageEpisodeId = ntkApiEpisodeIdForPath(getNtkImageEpisodeId());
         if(imageEpisodeId.length() == 0)
             imageEpisodeId = ntkApiEpisodeIdForPath(pathEpisodeId);
         String viewerBodyForImageFetch = preferNativeApiImageFetch ? null : normalized;
         String segment = pathMatcher.group(1);
-        String workId = pathMatcher.group(2);
+        String workId = ntkApiEpisodeIdForPath(tokenWorkId);
+        if(workId.length() == 0)
+            workId = pathMatcher.group(2);
         List<String> urls = client.fetchNtkViewerImageUrls(segment, workId, imageEpisodeId,
                 token, viewerBodyForImageFetch, path, path);
         if(urls.isEmpty() && titleId > 0 && !isNumericNtkId(workId)) {
@@ -2138,10 +2156,11 @@ public class Manga {
     }
 
     private static boolean shouldUseImmediateNtkGeneratedFastPath(int baseMode, String path, int imageCount) {
-        return baseMode == MTitle.base_webtoon
-                && imageCount > 0
-                && !shouldPreferNtkApiForCanonicalWebtoonPath(path)
-                && !shouldSkipNtkGeneratedForEpisodePath(path);
+        return false;
+    }
+
+    private static boolean isNtkWebtoonEpisodePath(String path) {
+        return path != null && path.matches("^/webtoon/[^/?#]+/[^/?#]+.*");
     }
 
     private static boolean shouldPreferNtkApiForCanonicalWebtoonPath(String path) {
@@ -2218,6 +2237,26 @@ public class Manga {
             return matcher.group(1);
         matcher = Pattern.compile("\\\\\"imagesToken\\\\\"\\s*:\\s*\\\\\"([^\\\\\"]+)\\\\\"").matcher(body);
         return matcher.find() ? matcher.group(1) : "";
+    }
+
+    private static String ntkViewerImagesTokenField(String token, String field) {
+        if(token == null || token.length() == 0 || field == null || field.length() == 0)
+            return "";
+        try {
+            String[] parts = token.split("\\.");
+            if(parts.length < 1)
+                return "";
+            String payload = parts[0];
+            int padding = (4 - payload.length() % 4) % 4;
+            StringBuilder padded = new StringBuilder(payload);
+            for(int i = 0; i < padding; i++)
+                padded.append('=');
+            byte[] decoded = Base64.decode(padded.toString(), Base64.URL_SAFE | Base64.NO_WRAP);
+            JSONObject json = new JSONObject(new String(decoded, StandardCharsets.UTF_8));
+            return json.optString(field, "");
+        } catch(Exception ignored) {
+            return "";
+        }
     }
 
     private static boolean isNumericNtkId(String value) {

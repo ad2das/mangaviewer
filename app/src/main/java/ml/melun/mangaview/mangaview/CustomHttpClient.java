@@ -5063,11 +5063,9 @@ public class CustomHttpClient {
             }
             if(ntkViewerImagesCount(result) > 0)
                 return urls;
-            if(hardForbidden) {
+            if(hardForbidden)
                 Log.d(TAG, "ntk_images_api_hard_forbidden path=" + path
                         + ",code=" + (result == null ? 0 : result.code));
-                return urls;
-            }
             if(ntkViewerImagesNeedsAckRefresh(result)) {
                 Log.d(TAG, "ntk_images_api_ack_refresh path=" + path
                         + ",code=" + (result == null ? 0 : result.code)
