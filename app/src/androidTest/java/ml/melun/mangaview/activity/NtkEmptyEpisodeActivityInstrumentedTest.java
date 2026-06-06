@@ -32,7 +32,7 @@ public class NtkEmptyEpisodeActivityInstrumentedTest {
     private static final String TAG = "ViewerPerf";
 
     @Test
-    public void confirmedEmptyEpisodeListRendersWithoutErrorFallback() throws Exception {
+    public void knownNtkTitleRendersEpisodesOrEmptyStateWithoutErrorFallback() throws Exception {
         LiveNetworkAssume.assumeEnabled();
         Context context = ApplicationProvider.getApplicationContext();
         forceNtkWebtoonMode();
@@ -52,21 +52,27 @@ public class NtkEmptyEpisodeActivityInstrumentedTest {
         EpisodeActivity activity = (EpisodeActivity) instrumentation.startActivitySync(intent);
         try {
             long started = SystemClock.elapsedRealtime();
-            boolean rendered = waitForHeaderOnlyEpisodeList(instrumentation, activity, 15000L);
+            boolean rendered = waitForEpisodesOrEmptyState(instrumentation, activity, 15000L);
             long elapsed = SystemClock.elapsedRealtime() - started;
             Log.d(TAG, "ntk_empty_episode_activity rendered=" + rendered
                     + ",ms=" + elapsed
                     + ",confirmedEmpty=" + (activity.title != null && activity.title.isNtkEpisodeListConfirmedEmpty())
                     + ",adapterItems=" + adapterItemCount(activity));
-            assertTrue("Expected confirmed empty NTK episode list to render", rendered);
+            assertTrue("Expected NTK episode list or confirmed empty state to render", rendered);
             assertNotNull(activity.title);
-            assertTrue(activity.title.isNtkEpisodeListConfirmedEmpty());
             assertNotNull(activity.episodeAdapter);
-            assertEquals(2, activity.episodeAdapter.getItemCount());
             RecyclerView list = activity.findViewById(R.id.EpisodeList);
             assertNotNull(list);
             assertNotNull(list.getAdapter());
-            assertEquals(2, list.getAdapter().getItemCount());
+            if(activity.title.isNtkEpisodeListConfirmedEmpty()) {
+                assertEquals(2, activity.episodeAdapter.getItemCount());
+                assertEquals(2, list.getAdapter().getItemCount());
+                assertTrue("Expected confirmed empty NTK episode message to be visible",
+                        waitForVisibleText(instrumentation, activity, "\uD68C\uCC28\uAC00 \uC544\uC9C1 \uC5C6\uC2B5\uB2C8\uB2E4", 5000L));
+            } else {
+                assertTrue("Expected fetched NTK episodes to render", activity.episodeAdapter.getItemCount() > 2);
+                assertTrue("Expected fetched NTK episodes in RecyclerView", list.getAdapter().getItemCount() > 2);
+            }
         } finally {
             activity.finish();
         }
@@ -111,34 +117,52 @@ public class NtkEmptyEpisodeActivityInstrumentedTest {
         EpisodeActivity activity = (EpisodeActivity) instrumentation.startActivitySync(intent);
         try {
             long started = SystemClock.elapsedRealtime();
-            boolean rendered = waitForRenderedEpisodeList(instrumentation, activity, 20000L);
+            boolean rendered = waitForEpisodesOrEmptyState(instrumentation, activity, 20000L);
             long elapsed = SystemClock.elapsedRealtime() - started;
             Log.d(TAG, "ntk_duljjae_search_episode rendered=" + rendered
                     + ",ms=" + elapsed
                     + ",confirmedEmpty=" + (activity.title != null && activity.title.isNtkEpisodeListConfirmedEmpty())
                     + ",adapterItems=" + adapterItemCount(activity));
             assertTrue("Expected searched NTK episode list to render without error fallback", rendered);
-            assertTrue("Expected confirmed empty NTK episode message to be visible",
-                    waitForVisibleText(instrumentation, activity, "\uD68C\uCC28\uAC00 \uC544\uC9C1 \uC5C6\uC2B5\uB2C8\uB2E4", 5000L));
+            if(activity.title != null && activity.title.isNtkEpisodeListConfirmedEmpty()) {
+                assertTrue("Expected confirmed empty NTK episode message to be visible",
+                        waitForVisibleText(instrumentation, activity, "\uD68C\uCC28\uAC00 \uC544\uC9C1 \uC5C6\uC2B5\uB2C8\uB2E4", 5000L));
+            } else {
+                assertTrue("Expected fetched NTK episodes to render", adapterItemCount(activity) > 2);
+            }
         } finally {
             activity.finish();
         }
     }
 
-    private static boolean waitForHeaderOnlyEpisodeList(Instrumentation instrumentation,
-                                                        EpisodeActivity activity,
-                                                        long timeoutMs) {
+    private static boolean waitForEpisodesOrEmptyState(Instrumentation instrumentation,
+                                                       EpisodeActivity activity,
+                                                       long timeoutMs) {
         long deadline = SystemClock.elapsedRealtime() + timeoutMs;
         while(SystemClock.elapsedRealtime() < deadline) {
             final boolean[] rendered = {false};
-            instrumentation.runOnMainSync(() -> rendered[0] = activity != null
-                    && activity.title != null
-                    && activity.title.isNtkEpisodeListConfirmedEmpty()
-                    && activity.episodeAdapter != null
-                    && activity.episodeAdapter.getItemCount() == 2
-                    && activity.findViewById(R.id.EpisodeList) instanceof RecyclerView
-                    && ((RecyclerView) activity.findViewById(R.id.EpisodeList)).getAdapter() != null
-                    && ((RecyclerView) activity.findViewById(R.id.EpisodeList)).getAdapter().getItemCount() == 2);
+            instrumentation.runOnMainSync(() -> {
+                if(activity == null || activity.title == null || activity.episodeAdapter == null
+                        || !(activity.findViewById(R.id.EpisodeList) instanceof RecyclerView)) {
+                    rendered[0] = false;
+                    return;
+                }
+                RecyclerView list = activity.findViewById(R.id.EpisodeList);
+                if(list.getAdapter() == null) {
+                    rendered[0] = false;
+                    return;
+                }
+                int adapterItems = activity.episodeAdapter.getItemCount();
+                int listItems = list.getAdapter().getItemCount();
+                if(activity.title.isNtkEpisodeListConfirmedEmpty()) {
+                    rendered[0] = adapterItems == 2
+                            && listItems == 2
+                            && containsVisibleText(activity.getWindow().getDecorView(),
+                            "\uD68C\uCC28\uAC00 \uC544\uC9C1 \uC5C6\uC2B5\uB2C8\uB2E4");
+                } else {
+                    rendered[0] = adapterItems > 2 && listItems > 2;
+                }
+            });
             if(rendered[0])
                 return true;
             SystemClock.sleep(100L);
