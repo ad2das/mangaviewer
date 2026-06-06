@@ -185,6 +185,7 @@ class ReaderSession(
     private val busyDecodeGate = Semaphore(ReaderPipelinePolicy.BUSY_DECODE_PARALLELISM)
     private val idleDecodeGate = Semaphore(ReaderPipelinePolicy.IDLE_DECODE_PARALLELISM)
     private val cancelled = AtomicBoolean(false)
+    private val imageCancellation = ReaderImageCache.Cancellation()
     private val pages = ArrayList<PageRef>()
     private val pagesLock = Object()
     private val loading = ConcurrentHashMap.newKeySet<Int>()
@@ -662,7 +663,7 @@ class ReaderSession(
             first <= windowAnchor
         if (isNtkSource(manga, title) && !firstBitmapLogged.get()) {
             windowFirstInput = windowAnchor
-            windowLastInput = minOf(count - 1, windowAnchor + NTK_INITIAL_BOOT_PRIORITY_PAGES)
+            windowLastInput = windowAnchor
         } else if (ntkInitialAnchorWindow) {
             val initialAhead = if (ntkWebtoon) NTK_WEBTOON_INITIAL_DECODE_AHEAD_PAGES else NTK_INITIAL_DECODE_AHEAD_PAGES
             windowFirstInput = first
@@ -755,6 +756,7 @@ class ReaderSession(
         for (cancellation in repositoryCancellations.toList()) {
             cancellation.cancel()
         }
+        imageCancellation.cancel()
         repositoryCancellations.clear()
         main.removeCallbacks(clearPreparedBitmapsRunnable)
         main.removeCallbacks(deliveryDrainRunnable)
@@ -1063,7 +1065,19 @@ class ReaderSession(
                 "titleId=${currentTitle.id} path=${target.ntkEpisodePath}"
         )
         return try {
-            Manga.fetchWithTemporaryNtkViewerFetchMode(target, MainApplication.getHttpClient(), "api-strict").also {
+            withRepositoryCancellation(userVisible = true) { cancellation ->
+                val strictResult = imageRepository.fetchViewerInitialWithMode(target, cancellation, "api-strict")
+                if (strictResult == Title.LOAD_OK || cancellation.isCancelled()) {
+                    strictResult
+                } else {
+                    Log.d(
+                        TAG,
+                        "append_adjacent_verified_fetch_fallback direction=$direction targetId=${target.id} " +
+                            "strictResult=$strictResult path=${target.ntkEpisodePath}"
+                    )
+                    imageRepository.fetchViewerInitial(target, cancellation)
+                }
+            }.also {
                 Log.d(
                     TAG,
                     "append_adjacent_verified_fetch direction=$direction targetId=${target.id} " +
@@ -2005,16 +2019,16 @@ class ReaderSession(
 
     private fun leaseImageFile(index: Int, page: PageRef, foreground: Boolean): ReaderImageCache.FileLease {
         val image = page.image ?: throw java.io.IOException("Missing image for page $index")
-        return ReaderImageCache.leaseFile(appContext, page.manga, image, foreground)
+        return ReaderImageCache.leaseFile(appContext, page.manga, image, foreground, imageCancellation)
     }
 
     private fun prefetchImageFile(index: Int, page: PageRef, foreground: Boolean = false) {
         val image = page.image ?: return
         if (page.manga.isOnline) {
             if (foreground) {
-                ReaderImageCache.getOrFetchFileForeground(appContext, page.manga, image)
+                ReaderImageCache.getOrFetchFileForeground(appContext, page.manga, image, imageCancellation)
             } else {
-                ReaderImageCache.getOrFetchFile(appContext, page.manga, image)
+                ReaderImageCache.getOrFetchFile(appContext, page.manga, image, imageCancellation)
             }
         } else {
             File(image)
@@ -2268,7 +2282,7 @@ class ReaderSession(
         val image = page.image ?: return null
         val metric = SystemClock.elapsedRealtime()
         val raw = try {
-            ReaderImageCache.decodeForegroundBitmap(appContext, page.manga, image, targetWidth, autoCut, page.allowAutoSplit)
+            ReaderImageCache.decodeForegroundBitmap(appContext, page.manga, image, targetWidth, autoCut, page.allowAutoSplit, imageCancellation)
         } catch (e: Exception) {
             recordIfUnexpected(e)
             null

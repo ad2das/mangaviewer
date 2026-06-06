@@ -77,12 +77,50 @@ object ReaderImageCache {
         }
     }
 
+    class Cancellation {
+        private val cancelled = AtomicBoolean(false)
+        private val calls = ConcurrentHashMap.newKeySet<Call>()
+
+        fun cancel() {
+            if (!cancelled.compareAndSet(false, true)) return
+            for (call in calls) call.cancel()
+        }
+
+        fun throwIfCancelled() {
+            if (cancelled.get()) throw java.io.InterruptedIOException("Reader image request cancelled")
+        }
+
+        fun track(call: Call) {
+            if (cancelled.get()) {
+                call.cancel()
+                throw java.io.InterruptedIOException("Reader image request cancelled")
+            }
+            calls.add(call)
+            if (cancelled.get()) call.cancel()
+        }
+
+        fun untrack(call: Call) {
+            calls.remove(call)
+        }
+    }
+
     fun leaseFile(context: Context, manga: Manga, image: String, foreground: Boolean = true): FileLease {
+        return leaseFile(context, manga, image, foreground, null)
+    }
+
+    fun leaseFile(
+        context: Context,
+        manga: Manga,
+        image: String,
+        foreground: Boolean = true,
+        cancellation: Cancellation?
+    ): FileLease {
         if (!manga.isOnline) return FileLease(File(image), null)
+        cancellation?.throwIfCancelled()
         val key = key(manga.baseMode, image)
         retainActiveRead(key)
         return try {
-            val file = getOrFetch(context, manga, image, foreground = foreground)
+            val file = getOrFetch(context, manga, image, foreground = foreground, cancellation = cancellation)
             file.setLastModified(System.currentTimeMillis())
             FileLease(file, key)
         } catch (t: Throwable) {
@@ -104,13 +142,23 @@ object ReaderImageCache {
     }
 
     fun getOrFetchFile(context: Context, manga: Manga, image: String): File {
+        return getOrFetchFile(context, manga, image, null)
+    }
+
+    fun getOrFetchFile(context: Context, manga: Manga, image: String, cancellation: Cancellation?): File {
         if (!manga.isOnline) return File(image)
-        return getOrFetch(context, manga, image)
+        cancellation?.throwIfCancelled()
+        return getOrFetch(context, manga, image, cancellation = cancellation)
     }
 
     fun getOrFetchFileForeground(context: Context, manga: Manga, image: String): File {
+        return getOrFetchFileForeground(context, manga, image, null)
+    }
+
+    fun getOrFetchFileForeground(context: Context, manga: Manga, image: String, cancellation: Cancellation?): File {
         if (!manga.isOnline) return File(image)
-        return getOrFetch(context, manga, image, foreground = true)
+        cancellation?.throwIfCancelled()
+        return getOrFetch(context, manga, image, foreground = true, cancellation = cancellation)
     }
 
     fun cachedFile(context: Context, manga: Manga, image: String): File? {
@@ -131,13 +179,15 @@ object ReaderImageCache {
         image: String,
         targetWidth: Int,
         autoCut: Boolean,
-        allowSplit: Boolean
+        allowSplit: Boolean,
+        cancellation: Cancellation? = null
     ): Bitmap? {
         if (!manga.isOnline) return null
+        cancellation?.throwIfCancelled()
         val appContext = context.applicationContext
         if (cachedFile(appContext, manga, image) != null) return null
         val startedAt = SystemClock.elapsedRealtime()
-        requestWithNtkGeneratedFallback(appContext, manga, image, foreground = true).use { response ->
+        requestWithNtkGeneratedFallback(appContext, manga, image, foreground = true, cancellation = cancellation).use { response ->
             val headersAt = SystemClock.elapsedRealtime()
             if (!response.isSuccessful) return null
             val body = response.body ?: return null
@@ -187,8 +237,15 @@ object ReaderImageCache {
         return max(1, sample)
     }
 
-    private fun getOrFetch(context: Context, manga: Manga, image: String, foreground: Boolean = false): File {
+    private fun getOrFetch(
+        context: Context,
+        manga: Manga,
+        image: String,
+        foreground: Boolean = false,
+        cancellation: Cancellation? = null
+    ): File {
         val appContext = context.applicationContext
+        cancellation?.throwIfCancelled()
         val key = key(manga.baseMode, image)
         val finalFile = File(cacheDir(appContext), "$key.img")
         if (isUsableImage(finalFile)) {
@@ -197,15 +254,15 @@ object ReaderImageCache {
         }
         if (foreground && flights[key] != null) {
             ViewerWarmupManager.logMetric("reader_foreground_bypass_warmup_fetch", 1L)
-            return downloadAtomically(appContext, manga, image, finalFile, foreground)
+            return downloadAtomically(appContext, manga, image, finalFile, foreground, cancellation)
         }
         val task = FutureTask {
-            downloadAtomically(appContext, manga, image, finalFile, foreground)
+            downloadAtomically(appContext, manga, image, finalFile, foreground, cancellation)
         }
         val existing = flights.putIfAbsent(key, task)
         if (foreground && existing != null) {
             ViewerWarmupManager.logMetric("reader_foreground_bypass_warmup_fetch", 1L)
-            return downloadAtomically(appContext, manga, image, finalFile, foreground)
+            return downloadAtomically(appContext, manga, image, finalFile, foreground, cancellation)
         }
         val running = existing ?: task.also { it.run() }
         return try {
@@ -241,13 +298,15 @@ object ReaderImageCache {
         manga: Manga,
         image: String,
         finalFile: File,
-        foreground: Boolean = false
+        foreground: Boolean = false,
+        cancellation: Cancellation? = null
     ): File {
         val tmp = File(finalFile.parentFile, "${finalFile.name}.part.${System.nanoTime()}")
         val startedAt = if (foreground) SystemClock.elapsedRealtime() else 0L
         try {
+            cancellation?.throwIfCancelled()
             val requestUrl = Utils.viewerImageRequestUrl(image, manga.baseMode)
-            requestWithNtkGeneratedFallback(context, manga, image, foreground).use { response ->
+            requestWithNtkGeneratedFallback(context, manga, image, foreground, cancellation).use { response ->
                 val headersAt = if (foreground) SystemClock.elapsedRealtime() else 0L
                 if (!response.isSuccessful) throw java.io.IOException("Image request failed: ${response.code} url=$requestUrl")
                 val body = response.body ?: throw java.io.IOException("Empty image body")
@@ -276,8 +335,15 @@ object ReaderImageCache {
         }
     }
 
-    private fun request(context: Context, manga: Manga, image: String): okhttp3.Response {
-        return getHttpClient().imageClient.newCall(requestFor(manga, image)).execute()
+    private fun request(context: Context, manga: Manga, image: String, cancellation: Cancellation? = null): okhttp3.Response {
+        cancellation?.throwIfCancelled()
+        val call = getHttpClient().imageClient.newCall(requestFor(manga, image))
+        cancellation?.track(call)
+        return try {
+            call.execute()
+        } finally {
+            cancellation?.untrack(call)
+        }
     }
 
     private fun requestFor(manga: Manga, image: String): Request {
@@ -292,12 +358,13 @@ object ReaderImageCache {
         context: Context,
         manga: Manga,
         image: String,
-        foreground: Boolean = false
+        foreground: Boolean = false,
+        cancellation: Cancellation? = null
     ): okhttp3.Response {
         val foregroundApiFallbackTask: FutureTask<List<String>?>? = null
         var initialFailure: IOException? = null
         val response = try {
-            requestForForegroundMode(context, manga, image, foreground)
+            requestForForegroundMode(context, manga, image, foreground, cancellation)
         } catch (e: IOException) {
             if (!shouldTryNtkGeneratedExtensionFallback(image)) throw e
             initialFailure = e
@@ -319,7 +386,7 @@ object ReaderImageCache {
         } else null
         for (candidate in ntkGeneratedExtensionFallbacks(image)) {
             val fallback = try {
-                requestForForegroundMode(context, manga, candidate, foreground)
+                requestForForegroundMode(context, manga, candidate, foreground, cancellation)
             } catch (e: IOException) {
                 if (imageFailureCode(e) == 404) {
                     generated404 = true
@@ -341,13 +408,13 @@ object ReaderImageCache {
             fallback.close()
         }
         if (generated404) {
-            retryNtkGeneratedViaApiFallback(context, manga, image, foreground, apiFallbackTask)?.let { return it }
-            retryNtkGeneratedAfterNativeAck(context, manga, image, foreground)?.let { return it }
-            return requestForForegroundMode(context, manga, image, foreground)
+            retryNtkGeneratedViaApiFallback(context, manga, image, foreground, apiFallbackTask, cancellation)?.let { return it }
+            retryNtkGeneratedAfterNativeAck(context, manga, image, foreground, cancellation)?.let { return it }
+            return requestForForegroundMode(context, manga, image, foreground, cancellation)
         }
-        retryNtkGeneratedAfterNativeAck(context, manga, image, foreground)?.let { return it }
-        retryNtkGeneratedViaApiFallback(context, manga, image, foreground)?.let { return it }
-        return requestForForegroundMode(context, manga, image, foreground)
+        retryNtkGeneratedAfterNativeAck(context, manga, image, foreground, cancellation)?.let { return it }
+        retryNtkGeneratedViaApiFallback(context, manga, image, foreground, cancellation = cancellation)?.let { return it }
+        return requestForForegroundMode(context, manga, image, foreground, cancellation)
     }
 
     private fun imageFailureCode(error: Throwable?): Int {
@@ -454,9 +521,11 @@ object ReaderImageCache {
         context: Context,
         manga: Manga,
         image: String,
-        foreground: Boolean
+        foreground: Boolean,
+        cancellation: Cancellation? = null
     ): okhttp3.Response? {
         val target = ntkGeneratedTarget(image) ?: return null
+        cancellation?.throwIfCancelled()
         val acked = try {
             getHttpClient().performNtkNativeAckBypass(target.baseUrl, ntkFallbackKeyPath(manga, target))
         } catch (_: Exception) {
@@ -465,7 +534,7 @@ object ReaderImageCache {
         if (!acked) return null
         ViewerWarmupManager.logMetric("ntk_generated_image_native_ack_retry", target.page.toLong())
         val retry = try {
-            requestForForegroundMode(context, manga, image, foreground)
+            requestForForegroundMode(context, manga, image, foreground, cancellation)
         } catch (_: IOException) {
             null
         }
@@ -479,14 +548,16 @@ object ReaderImageCache {
         manga: Manga,
         image: String,
         foreground: Boolean,
-        runningTask: FutureTask<List<String>?>? = null
+        runningTask: FutureTask<List<String>?>? = null,
+        cancellation: Cancellation? = null
     ): okhttp3.Response? {
         val target = ntkGeneratedTarget(image) ?: return null
+        cancellation?.throwIfCancelled()
         val images = fetchNtkApiFallbackImages(context, manga, target, runningTask) ?: return null
         val replacement = images.getOrNull(target.page - 1) ?: image
         ViewerWarmupManager.logMetric("ntk_generated_image_api_fallback_retry", target.page.toLong())
         val retry = try {
-            requestForForegroundMode(context, manga, replacement, foreground)
+            requestForForegroundMode(context, manga, replacement, foreground, cancellation)
         } catch (_: IOException) {
             null
         }
@@ -573,10 +644,11 @@ object ReaderImageCache {
         context: Context,
         manga: Manga,
         image: String,
-        foreground: Boolean
+        foreground: Boolean,
+        cancellation: Cancellation? = null
     ): okhttp3.Response {
-        if (!foreground) return request(context, manga, image)
-        return if (shouldRaceForegroundImage(image)) requestForegroundRace(manga, image) else request(context, manga, image)
+        if (!foreground) return request(context, manga, image, cancellation)
+        return if (shouldRaceForegroundImage(image)) requestForegroundRace(manga, image, cancellation) else request(context, manga, image, cancellation)
     }
 
     private fun shouldRaceForegroundImage(image: String): Boolean {
@@ -585,7 +657,7 @@ object ReaderImageCache {
         return true
     }
 
-    private fun requestForegroundRace(manga: Manga, image: String): okhttp3.Response {
+    private fun requestForegroundRace(manga: Manga, image: String, cancellation: Cancellation? = null): okhttp3.Response {
         val request = requestFor(manga, image)
         val client = getHttpClient().imageClient
         val calls = Collections.synchronizedList(ArrayList<Call>())
@@ -594,10 +666,16 @@ object ReaderImageCache {
         fun submit(delayMs: Long) {
             completion.submit(Callable {
                 if (delayMs > 0L) Thread.sleep(delayMs)
+                cancellation?.throwIfCancelled()
                 if (completed.get()) throw IOException("Foreground image race already completed")
                 val call = client.newCall(request)
+                cancellation?.track(call)
                 calls.add(call)
-                ForegroundRaceResult(call, call.execute())
+                try {
+                    ForegroundRaceResult(call, call.execute())
+                } finally {
+                    cancellation?.untrack(call)
+                }
             })
         }
         submit(0L)

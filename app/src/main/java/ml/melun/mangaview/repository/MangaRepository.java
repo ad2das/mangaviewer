@@ -243,6 +243,19 @@ public final class MangaRepository {
         return fetchViewerInitial(manga, group(cancellation));
     }
 
+    public static int fetchViewerInitialWithMode(Manga manga, Cancellation cancellation, String mode) throws Exception {
+        CustomHttpClient.RequestGroup requestGroup = group(cancellation);
+        if(manga == null)
+            return Title.LOAD_ERROR;
+        if(requestGroup != null && requestGroup.isCancelled())
+            return Title.LOAD_ERROR;
+        CustomHttpClient client = getHttpClient();
+        if(requestGroup == null)
+            return Manga.fetchWithTemporaryNtkViewerFetchMode(manga, client, mode);
+        return client.runWithRequestGroup(requestGroup,
+                () -> Manga.fetchWithTemporaryNtkViewerFetchMode(manga, client, mode));
+    }
+
     public static int fetchViewerInitial(Manga manga, CustomHttpClient.RequestGroup requestGroup) throws Exception {
         return fetchViewerSingleFlight(manga, requestGroup, true);
     }

@@ -19,6 +19,14 @@ class ReaderImageRepositoryTest {
                 return 0
             }
 
+            override fun fetchViewerInitialWithMode(
+                manga: Manga,
+                cancellation: MangaRepository.Cancellation,
+                mode: String
+            ): Int {
+                return 0
+            }
+
             override fun fetchEpisodesForeground(title: Title, cancellation: MangaRepository.Cancellation): Int {
                 return 0
             }

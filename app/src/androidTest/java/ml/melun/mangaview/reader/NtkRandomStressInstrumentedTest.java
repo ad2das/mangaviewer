@@ -39,6 +39,7 @@ import ml.melun.mangaview.ClassificationDbUpdater;
 import ml.melun.mangaview.LiveNetworkAssume;
 import ml.melun.mangaview.MainApplication;
 import ml.melun.mangaview.Utils;
+import ml.melun.mangaview.activity.CaptchaActivity;
 import ml.melun.mangaview.activity.ReaderV2Activity;
 import ml.melun.mangaview.activity.ViewerIntentContract;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
@@ -116,9 +117,14 @@ public class NtkRandomStressInstrumentedTest {
             Title title = null;
             int fetchResult = Title.LOAD_ERROR;
             for(int titleAttempt = 0; titleAttempt < 6; titleAttempt++) {
+                ensureNtkAccessAfterChallenge(context, client, baseMode);
                 Title candidate = pickRandomTitle(context, client, random, baseMode);
                 fetchResult = candidate.getEps() != null && candidate.getEps().size() > 0
                         ? Title.LOAD_OK : candidate.fetchEps(client);
+                if(fetchResult != Title.LOAD_OK || candidate.getEps() == null || candidate.getEps().size() == 0) {
+                    ensureNtkAccessAfterChallenge(context, client, baseMode);
+                    fetchResult = candidate.fetchEps(client);
+                }
                 if(fetchResult == Title.LOAD_OK && candidate.getEps() != null && candidate.getEps().size() > 0) {
                     title = candidate;
                     break;
@@ -146,6 +152,48 @@ public class NtkRandomStressInstrumentedTest {
         }
     }
 
+    private static void ensureNtkAccessAfterChallenge(Context context, CustomHttpClient client, int baseMode) {
+        if(client == null || !client.hasRecentCloudflareChallenge() || client.hasNtkAccessProof())
+            return;
+        if(context == null)
+            context = ApplicationProvider.getApplicationContext();
+        long startedAt = SystemClock.elapsedRealtime();
+        String webtoonRoot = MainApplication.p == null
+                ? CustomHttpClient.NTK_WEBTOON_URL : MainApplication.p.getWebtoonUrl();
+        String url = client.getLastCloudflareChallengeUrl();
+        if(url == null || url.length() == 0 || url.startsWith("/api/"))
+            url = webtoonRoot + "/";
+        else if(url.startsWith("/"))
+            url = webtoonRoot + url;
+        Log.d(TAG, "ntk_true_random_captcha_start baseMode=" + baseMode + ",url=" + url);
+        Intent intent = new Intent(context, CaptchaActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        intent.putExtra("url", url);
+        Activity activity = null;
+        try {
+            activity = InstrumentationRegistry.getInstrumentation().startActivitySync(intent);
+            long deadline = SystemClock.elapsedRealtime() + 90_000L;
+            while(SystemClock.elapsedRealtime() < deadline) {
+                client.syncCookiesFromWebView(webtoonRoot, true);
+                client.syncCookiesFromWebView(client.getUrl(), true);
+                if(client.hasNtkAccessProof())
+                    break;
+                SystemClock.sleep(1000L);
+            }
+        } finally {
+            Activity toFinish = activity;
+            if(toFinish != null && !toFinish.isDestroyed()) {
+                InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+                    if(!toFinish.isFinishing())
+                        toFinish.finish();
+                });
+            }
+            Log.d(TAG, "ntk_true_random_captcha_done baseMode=" + baseMode
+                    + ",clearance=" + client.hasNtkAccessProof()
+                    + ",ms=" + (SystemClock.elapsedRealtime() - startedAt));
+        }
+    }
+
     private static Title pickRandomTitle(Context context, CustomHttpClient client,
                                          Random random, int baseMode) throws Exception {
         Exception apiError = null;
@@ -156,6 +204,17 @@ public class NtkRandomStressInstrumentedTest {
             Log.d(TAG, "ntk_true_random_api_title_unavailable baseMode=" + baseMode
                     + ",type=" + e.getClass().getSimpleName()
                     + ",message=" + e.getMessage());
+            if(isCloudflareFailure(e)) {
+                ensureNtkAccessAfterChallenge(context, client, baseMode);
+                try {
+                    return pickRandomTitleFromApi(client, random, baseMode);
+                } catch (Exception retry) {
+                    apiError = retry;
+                    Log.d(TAG, "ntk_true_random_api_title_retry_unavailable baseMode=" + baseMode
+                            + ",type=" + retry.getClass().getSimpleName()
+                            + ",message=" + retry.getMessage());
+                }
+            }
         }
         Title htmlTitle = pickRandomTitleFromHtmlSections(client, random, baseMode);
         if(htmlTitle != null)
@@ -321,6 +380,8 @@ public class NtkRandomStressInstrumentedTest {
                         + ",path=" + path
                         + ",type=" + e.getClass().getSimpleName()
                         + ",message=" + e.getMessage());
+                if(isCloudflareFailure(e))
+                    ensureNtkAccessAfterChallenge(null, client, baseMode);
             }
         }
         return null;
@@ -361,7 +422,7 @@ public class NtkRandomStressInstrumentedTest {
         return candidates;
     }
 
-    private static boolean isCloudflareFailure(Exception e) {
+    private static boolean isCloudflareFailure(Throwable e) {
         String message = e == null ? null : e.getMessage();
         if(message == null)
             return false;
