@@ -998,11 +998,17 @@ public class Manga {
                         + ",path=" + path);
             } catch (Exception e) {
                 fetch.error = e;
-                if(isExpectedFetchCancellation(e)) {
+                if(isExpectedFetchCancellation(e) || isCancelledRequestGroup(requestGroup)) {
                     Log.d(TAG, "ntk_page_fetch_cancelled mode="
                             + (fetchMode == CustomHttpClient.FetchMode.DIRECT_ONLY ? "direct" : "allow")
                             + ",ms=" + (System.currentTimeMillis() - startedAt)
                             + ",path=" + path);
+                } else if(fetchMode != CustomHttpClient.FetchMode.DIRECT_ONLY
+                        && isNtkPageFetchRequestFailed(e, path)) {
+                    Log.d(TAG, "ntk_page_fetch_superseded mode=allow"
+                            + ",ms=" + (System.currentTimeMillis() - startedAt)
+                            + ",path=" + path
+                            + "," + e);
                 } else {
                     Log.d(TAG, "ntk_page_fetch_error mode="
                             + (fetchMode == CustomHttpClient.FetchMode.DIRECT_ONLY ? "direct" : "allow")
@@ -1035,6 +1041,25 @@ public class Manga {
             t = cause;
         }
         return Thread.currentThread().isInterrupted();
+    }
+
+    private static boolean isCancelledRequestGroup(CustomHttpClient.RequestGroup requestGroup) {
+        return requestGroup != null && requestGroup.isCancelled();
+    }
+
+    private static boolean isNtkPageFetchRequestFailed(Throwable t, String path) {
+        if(path == null || path.length() == 0)
+            return false;
+        String expected = "Request failed: " + path;
+        while(t != null) {
+            if(expected.equals(t.getMessage()))
+                return true;
+            Throwable cause = t.getCause();
+            if(cause == t)
+                return false;
+            t = cause;
+        }
+        return false;
     }
 
     private CustomHttpClient.PageResponse awaitAsyncNtkPageFetch(AsyncNtkPageFetch fetch,
