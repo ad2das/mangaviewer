@@ -94,7 +94,7 @@ class ReaderSession(
 
     private data class PageRef(
         val manga: Manga,
-        val image: String?,
+        var image: String?,
         val transitionTitle: String? = null,
         val sourceIndex: Int = 0,
         var pageIndex: Int = -1,
@@ -772,6 +772,18 @@ class ReaderSession(
             }
             trimDecodedWidth(windowAnchor, true)
             maybePrefetchNtkSourceAround(windowAnchor, true)
+            return
+        }
+        if (ntkWebtoon) {
+            val visibleFirst = first.coerceIn(safeFirst, safeLast)
+            val visibleLast = last.coerceIn(visibleFirst, safeLast)
+            val visible = windowOrder(visibleFirst, visibleLast, windowAnchor, direction)
+            for (i in visible) requestPage(i, busy = true, anchor = i == windowAnchor, generation)
+            for (i in requestList) {
+                if (!visible.contains(i)) requestPage(i, busy = false, anchor = i == windowAnchor, generation)
+            }
+            trimDecodedWidth(windowAnchor, busy)
+            maybePrefetchNtkSourceAround(windowAnchor, busy)
             return
         }
         for (i in requestList) requestPage(i, busy, i == windowAnchor, generation)
@@ -2201,6 +2213,8 @@ class ReaderSession(
 
     private fun postPageError(index: Int, page: PageRef, e: Exception) {
         if (trimNtkGeneratedTail(index, page, e)) return
+        if (refreshNtkGeneratedPageImage(index, page, e)) return
+        if (removeInvalidNtkGeneratedPage(index, page, e)) return
         if (pageRef(index) != page) return
         if (cancelled.get() || isExpectedCancellation(e) || !failedPages.add(index)) return
         Log.d(
@@ -2279,6 +2293,100 @@ class ReaderSession(
             )
         }
         return true
+    }
+
+    private fun refreshNtkGeneratedPageImage(index: Int, page: PageRef, e: Exception): Boolean {
+        if (!isNtkSource(page.manga, title)) return false
+        val originalImage = page.image ?: return false
+        if (!isNtkGeneratedImageUrl(originalImage)) return false
+        if (!isImageNotFoundError(e)) return false
+        val replacement = imageRepository.imageUrls(page.manga, appContext).getOrNull(page.sourceIndex)
+            ?.takeIf { it.isNotBlank() && it != originalImage }
+            ?: return false
+        synchronized(pagesLock) {
+            if (index !in pages.indices || pages[index] != page) return false
+            for (ref in pages) {
+                if (
+                    ref.transitionTitle == null &&
+                    ref.sourceIndex == page.sourceIndex &&
+                    ref.image == originalImage &&
+                    Manga.sameEpisodeIdentity(ref.manga, page.manga)
+                ) {
+                    ref.image = replacement
+                }
+            }
+        }
+        failedPages.remove(index)
+        decodedWidths.remove(index)
+        desiredWidths.remove(index)
+        pendingDeliveryWidths.remove(index)
+        sourceWidths.remove(index)
+        achievableWidths.remove(index)
+        inFlightWidths.remove(index)
+        Log.d(
+            TAG,
+            "refresh_generated_page_image index=$index,source=${page.sourceIndex},path=${page.manga.ntkEpisodePath}," +
+                "from=$originalImage,to=$replacement"
+        )
+        requestPage(index, busy = true, anchor = false, generation = FOREGROUND_PRIME_WARM_GENERATION)
+        return true
+    }
+
+    private fun removeInvalidNtkGeneratedPage(index: Int, page: PageRef, e: Exception): Boolean {
+        if (!isNtkSource(page.manga, title)) return false
+        val image = page.image ?: return false
+        if (!isNtkGeneratedImageUrl(image)) return false
+        if (!isImageNotFoundError(e)) return false
+        val removeIndex: Int
+        val total: Int
+        val displayTotalPages: Int
+        synchronized(pagesLock) {
+            if (index !in pages.indices || pages[index] != page) return false
+            removeIndex = index
+            pages.removeAt(removeIndex)
+            pages.forEachIndexed { pageIndex, ref -> ref.pageIndex = pageIndex }
+            displayTotalPages = pages.count { ref ->
+                ref.transitionTitle == null && Manga.sameEpisodeIdentity(ref.manga, page.manga)
+            }
+            if (displayTotalPages > 0) {
+                pages.forEach { ref ->
+                    if (ref.transitionTitle == null && Manga.sameEpisodeIdentity(ref.manga, page.manga)) {
+                        ref.totalPages = displayTotalPages
+                    }
+                }
+            }
+            removePageStateRange(removeIndex, 1)
+            total = pages.size
+        }
+        main.post {
+            if (!cancelled.get()) listener.onPagesRemoved(removeIndex, 1, total)
+        }
+        Log.d(
+            TAG,
+            "remove_invalid_generated_page index=$removeIndex,source=${page.sourceIndex},displayTotal=$displayTotalPages," +
+                "path=${page.manga.ntkEpisodePath},image=$image,error=${e.message}"
+        )
+        return true
+    }
+
+    private fun isImageNotFoundError(e: Exception): Boolean {
+        var current: Throwable? = e
+        while (current != null) {
+            val message = current.message.orEmpty()
+            if (message.contains("Image request failed: 404") || message.contains(" code=404")) return true
+            current = current.cause
+        }
+        return false
+    }
+
+    private fun isNtkGeneratedImageUrl(image: String): Boolean {
+        val lower = image.lowercase()
+        return lower.contains("://i.toonflix.app/") &&
+            (
+                Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
+                    Regex("/blacktoon/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
+                    Regex("/wt/episodes/[^/?#]+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower)
+                )
     }
 
     private fun removePageStateRange(rangeStart: Int, removedCount: Int) {
