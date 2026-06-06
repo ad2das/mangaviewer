@@ -1200,8 +1200,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             return
         }
         if (manga != null) attachEpisodeList(title, manga)
-        val previous = if (manga == null) null else adjacentEpisodeFastPrepared(manga, title, false)
-        val next = if (manga == null) null else adjacentEpisodeFastPrepared(manga, title, true)
+        val episodes = if (manga == null) null else ViewerEpisodeResolver.episodeListFor(manga, null, title)
+        val previous = if (manga == null) null else adjacentEpisodeFastPrepared(manga, title, episodes, false)
+        val next = if (manga == null) null else adjacentEpisodeFastPrepared(manga, title, episodes, true)
         cachedPreviousEpisode = previous
         cachedNextEpisode = next
         primeAdjacentLaunchWindow(title, next)
@@ -1327,14 +1328,19 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val title = currentTitle ?: manga.title
         restoreTitleEpisodes(title, manga)
         attachEpisodeList(title, manga)
-        return adjacentEpisodeFastPrepared(manga, title, next)
+        return adjacentEpisodeFastPrepared(manga, title, ViewerEpisodeResolver.episodeListFor(manga, null, title), next)
     }
 
-    private fun adjacentEpisodeFastPrepared(manga: Manga, title: Title?, next: Boolean): Manga? {
+    private fun adjacentEpisodeFastPrepared(
+        manga: Manga,
+        title: Title?,
+        episodes: List<Manga>?,
+        next: Boolean
+    ): Manga? {
         return if (next) {
-            ViewerEpisodeResolver.nextCandidate(manga, null, title, this::sameMangaFast)
+            ViewerEpisodeResolver.nextCandidateFromList(manga, episodes, null, title, this::sameMangaFast)
         } else {
-            ViewerEpisodeResolver.previousCandidate(manga, null, title, this::sameMangaFast)
+            ViewerEpisodeResolver.previousCandidateFromList(manga, episodes, null, title, this::sameMangaFast)
         }
     }
 

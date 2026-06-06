@@ -44,6 +44,23 @@ public class ViewerEpisodeResolverTest {
         assertEquals(newEpisodes.get(0), next);
     }
 
+    @Test
+    public void preparedEpisodeListCandidateMatchesNormalResolution() {
+        Title title = title(3, "ntk");
+        List<Manga> episodes = episodes(title, 4);
+        Manga current = episodes.get(2);
+
+        Manga normalNext = ViewerEpisodeResolver.nextCandidate(current, null, title, Manga::sameEpisodeIdentity);
+        Manga preparedNext = ViewerEpisodeResolver.nextCandidateFromList(current, episodes, null, title, Manga::sameEpisodeIdentity);
+        Manga normalPrevious = ViewerEpisodeResolver.previousCandidate(current, null, title, Manga::sameEpisodeIdentity);
+        Manga preparedPrevious = ViewerEpisodeResolver.previousCandidateFromList(current, episodes, null, title, Manga::sameEpisodeIdentity);
+
+        assertEquals(normalNext, preparedNext);
+        assertEquals(normalPrevious, preparedPrevious);
+        assertEquals(episodes, preparedNext.getEps());
+        assertEquals(episodes, preparedPrevious.getEps());
+    }
+
     private static Title title(int id, String source) {
         Title title = new Title("작품" + id, "", "", new ArrayList<>(), "", id, MTitle.base_comic);
         title.setSourceSite(source);

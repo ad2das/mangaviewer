@@ -33,16 +33,24 @@ final class ViewerEpisodeResolver {
         if(current == null)
             return null;
         List<Manga> data = episodeListFor(current, viewerEpisodes, title);
+        return nextCandidateFromList(current, data, viewerEpisodes, title, matcher);
+    }
+
+    static Manga nextCandidateFromList(Manga current, List<Manga> data, List<Manga> viewerEpisodes,
+                                       Title title, EpisodeMatcher matcher) {
+        if(current == null)
+            return null;
         int index = findEpisodeIndex(data, current, matcher);
         Manga adjacent = null;
         for(int i = index - 1; i >= 0; i--) {
-            Manga candidate = prepareCandidate(Utils.safeGet(data, i), current, viewerEpisodes, title);
+            Manga candidate = prepareCandidate(Utils.safeGet(data, i), current, viewerEpisodes, title, data);
             if(candidate != null && !matcher.sameEpisode(candidate, current)) {
                 adjacent = candidate;
                 break;
             }
         }
-        Manga candidate = prepareCandidate(Manga.preferCloserVisibleEpisode(data, current, adjacent, true), current, viewerEpisodes, title);
+        Manga candidate = prepareCandidate(Manga.preferCloserVisibleEpisode(data, current, adjacent, true),
+                current, viewerEpisodes, title, data);
         if(candidate != null && !matcher.sameEpisode(candidate, current))
             return candidate;
         candidate = current.nextEp();
@@ -58,18 +66,26 @@ final class ViewerEpisodeResolver {
         if(current == null)
             return null;
         List<Manga> data = episodeListFor(current, viewerEpisodes, title);
+        return previousCandidateFromList(current, data, viewerEpisodes, title, matcher);
+    }
+
+    static Manga previousCandidateFromList(Manga current, List<Manga> data, List<Manga> viewerEpisodes,
+                                           Title title, EpisodeMatcher matcher) {
+        if(current == null)
+            return null;
         int index = findEpisodeIndex(data, current, matcher);
         Manga adjacent = null;
         if(data != null && index >= 0) {
             for(int i = index + 1; i < data.size(); i++) {
-                Manga candidate = prepareCandidate(Utils.safeGet(data, i), current, viewerEpisodes, title);
+                Manga candidate = prepareCandidate(Utils.safeGet(data, i), current, viewerEpisodes, title, data);
                 if(candidate != null && !matcher.sameEpisode(candidate, current)) {
                     adjacent = candidate;
                     break;
                 }
             }
         }
-        Manga candidate = prepareCandidate(Manga.preferCloserVisibleEpisode(data, current, adjacent, false), current, viewerEpisodes, title);
+        Manga candidate = prepareCandidate(Manga.preferCloserVisibleEpisode(data, current, adjacent, false),
+                current, viewerEpisodes, title, data);
         if(candidate != null && !matcher.sameEpisode(candidate, current))
             return candidate;
         candidate = current.prevEp();
@@ -82,13 +98,18 @@ final class ViewerEpisodeResolver {
     }
 
     static Manga prepareCandidate(Manga candidate, Manga source, List<Manga> viewerEpisodes, Title title) {
+        return prepareCandidate(candidate, source, viewerEpisodes, title, null);
+    }
+
+    private static Manga prepareCandidate(Manga candidate, Manga source, List<Manga> viewerEpisodes,
+                                          Title title, List<Manga> preparedEpisodes) {
         if(candidate == null)
             return null;
         Title currentTitle = title != null ? title : (source == null ? null : source.getTitle());
         if(currentTitle != null) {
             candidate.setTitle(currentTitle);
             candidate.setTitleId(currentTitle.getId());
-            List<Manga> episodes = episodeListFor(source, viewerEpisodes, title);
+            List<Manga> episodes = preparedEpisodes != null ? preparedEpisodes : episodeListFor(source, viewerEpisodes, title);
             if(episodes != null && episodes.size() > 0)
                 candidate.setEps(episodes);
         }
