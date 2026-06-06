@@ -914,6 +914,13 @@ public class Manga {
             cancelAsyncNtkPageFetch(pageFetchRef[0]);
             cancelAsyncNtkPageFetch(directPageFetchRef[0]);
         }
+        if(imgs == null || imgs.size() == 0) {
+            Log.d(TAG, "ntk_viewer_parse_empty_final path=" + getNtkEpisodePath()
+                    + ",mode=" + getNtkViewerParseReason());
+            restoreBetterEpisodeList(previousEpisodes);
+            attachEpisodeSeriesMetadata();
+            return LOAD_ERROR;
+        }
         restoreBetterEpisodeList(previousEpisodes);
         attachEpisodeSeriesMetadata();
         return LOAD_OK;

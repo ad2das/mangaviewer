@@ -3742,7 +3742,7 @@ class ReaderSession(
         private const val NTK_WEBTOON_BUSY_DIRECTIONAL_DECODE_AHEAD = 6
         private const val NTK_INITIAL_SECONDARY_WARM_DELAY_MS = 240L
         private const val NTK_INITIAL_FAR_WARM_DELAY_MS = 350L
-        private const val NTK_INITIAL_SOURCE_PREFETCH_AFTER_FIRST_BITMAP_DELAY_MS = 250L
+        private const val NTK_INITIAL_SOURCE_PREFETCH_AFTER_FIRST_BITMAP_DELAY_MS = 900L
         private const val NTK_EPISODE_METADATA_AFTER_FIRST_BITMAP_DELAY_MS = 300L
         private const val NTK_INITIAL_DELIVERY_HOLD_FALLBACK_MS = 1200L
         private const val NTK_TRACE_AHEAD_PAGES = 8
