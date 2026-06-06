@@ -808,6 +808,7 @@ public class EpisodeActivity extends AppCompatActivity {
         episodeEmptyState.setVisibility(show ? View.VISIBLE : View.GONE);
         if(!show)
             return;
+        episodeEmptyState.bringToFront();
         if(episodeEmptyTitle != null)
             episodeEmptyTitle.setText(CONFIRMED_EMPTY_EPISODE_TITLE);
         if(episodeEmptyMessage != null)

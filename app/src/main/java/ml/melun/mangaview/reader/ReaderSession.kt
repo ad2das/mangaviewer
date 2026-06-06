@@ -222,6 +222,7 @@ class ReaderSession(
     private val initialDeliveryFallbackPosted = AtomicBoolean(false)
     private val initialDeliveryFlushInProgress = AtomicBoolean(false)
     private val initialPagesReadyDelivered = AtomicBoolean(false)
+    private val structurePublishPending = AtomicInteger(0)
     private val viewportBusy = AtomicBoolean(false)
     private val deliveryResumeAtMs = AtomicLong(0L)
     private val lastUserInteractionMs = AtomicLong(0L)
@@ -695,6 +696,7 @@ class ReaderSession(
         } else if (wasBusy) {
             deliveryResumeAtMs.set(SystemClock.uptimeMillis() + IDLE_DELIVERY_RESUME_DELAY_MS)
         }
+        if (isStructurePublishPending()) return
         val count = synchronized(pagesLock) { pages.size }
         if (count <= 0) return
         val windowAnchor = anchor.coerceIn(0, count - 1)
@@ -789,6 +791,21 @@ class ReaderSession(
         for (i in requestList) requestPage(i, busy, i == windowAnchor, generation)
         trimDecodedWidth(windowAnchor, busy)
         maybePrefetchNtkSourceAround(windowAnchor, busy)
+    }
+
+    private fun beginStructurePublish() {
+        structurePublishPending.incrementAndGet()
+    }
+
+    private fun finishStructurePublish() {
+        val remaining = structurePublishPending.updateAndGet { pending ->
+            if (pending > 0) pending - 1 else 0
+        }
+        if (remaining == 0 && deliveryQueue.isNotEmpty()) scheduleDeliveryDrain()
+    }
+
+    private fun isStructurePublishPending(): Boolean {
+        return structurePublishPending.get() > 0
     }
 
     private fun maybePrefetchNtkSourceAround(anchor: Int, busy: Boolean) {
@@ -1353,6 +1370,7 @@ class ReaderSession(
         synchronized(pagesLock) {
             val appendable = appendableNewEpisodeRefsLocked(refs)
             if (appendable.isEmpty()) return
+            beginStructurePublish()
             startIndex = pages.size
             appendable.forEachIndexed { offset, page -> page.pageIndex = startIndex + offset }
             pages.addAll(appendable)
@@ -1365,15 +1383,22 @@ class ReaderSession(
                 }
             }
         }
-        main.post {
-            if (!cancelled.get()) {
-                listener.onPagesAppended(total)
-                for ((index, title) in appendedCards) {
-                    listener.onPageCard(index, title)
+        val posted = main.post {
+            var shouldWarm = false
+            try {
+                if (!cancelled.get()) {
+                    listener.onPagesAppended(total)
+                    for ((index, title) in appendedCards) {
+                        listener.onPageCard(index, title)
+                    }
+                    shouldWarm = true
                 }
+            } finally {
+                finishStructurePublish()
             }
+            if (shouldWarm) warmPrimedForwardRefs(appendedCards.map { it.first }, total, lightWarm)
         }
-        warmPrimedForwardRefs(appendedCards.map { it.first }, total, lightWarm)
+        if (!posted) finishStructurePublish()
     }
 
     private fun warmPrimedForwardRefs(cardIndexes: List<Int>, total: Int, lightWarm: Boolean = false) {
@@ -1420,35 +1445,51 @@ class ReaderSession(
         if (direction < 0) {
             synchronized(pagesLock) {
                 if (containsEpisodeForAppendLocked(target)) return
+                beginStructurePublish()
                 for (page in pages) page.pageIndex += inserted
                 refs.forEachIndexed { index, page -> page.pageIndex = index }
                 pages.addAll(0, refs)
                 total = pages.size
                 shiftPageStateForPrepend(inserted)
             }
-            main.post {
-                if (!cancelled.get()) {
-                    listener.onPagesPrepended(total, inserted)
-                    if (cardOffset >= 0) listener.onPageCard(cardOffset, transitionTitle)
-                    if (warm) warmPrependedEpisode(inserted)
+            val posted = main.post {
+                var shouldWarm = false
+                try {
+                    if (!cancelled.get()) {
+                        listener.onPagesPrepended(total, inserted)
+                        if (cardOffset >= 0) listener.onPageCard(cardOffset, transitionTitle)
+                        shouldWarm = warm
+                    }
+                } finally {
+                    finishStructurePublish()
                 }
+                if (shouldWarm) warmPrependedEpisode(inserted)
             }
+            if (!posted) finishStructurePublish()
         } else {
             val cardIndex: Int
             synchronized(pagesLock) {
                 if (containsEpisodeForAppendLocked(target)) return
+                beginStructurePublish()
                 cardIndex = pages.size
                 refs.forEachIndexed { offset, page -> page.pageIndex = cardIndex + offset }
                 pages.addAll(refs)
                 total = pages.size
             }
-            main.post {
-                if (!cancelled.get()) {
-                    listener.onPagesAppended(total)
-                    if (cardOffset >= 0) listener.onPageCard(cardIndex + cardOffset, transitionTitle)
+            val posted = main.post {
+                var shouldWarm = false
+                try {
+                    if (!cancelled.get()) {
+                        listener.onPagesAppended(total)
+                        if (cardOffset >= 0) listener.onPageCard(cardIndex + cardOffset, transitionTitle)
+                        shouldWarm = warm
+                    }
+                } finally {
+                    finishStructurePublish()
                 }
+                if (shouldWarm) warmAppendedEpisode(cardIndex, total)
             }
-            if (warm) warmAppendedEpisode(cardIndex, total)
+            if (!posted) finishStructurePublish()
         }
     }
 
@@ -1720,6 +1761,7 @@ class ReaderSession(
 
     private fun requestPage(index: Int, busy: Boolean, anchor: Boolean, generation: Int = windowGeneration.get()) {
         if (cancelled.get()) return
+        if (isStructurePublishPending()) return
         val page = pageRef(index) ?: return
         failedPages.remove(index)
         if (page.transitionTitle != null) {
@@ -2266,6 +2308,7 @@ class ReaderSession(
                 }
                 .map { it.index }
             if (removeIndexes.isEmpty()) return false
+            beginStructurePublish()
             var start = removeIndexes.first()
             var previous = start
             for (i in 1 until removeIndexes.size) {
@@ -2308,6 +2351,7 @@ class ReaderSession(
                     "errorPage=$index,total=$total,displayTotal=$displayTotalPages"
             )
         }
+        if (!main.post { finishStructurePublish() }) finishStructurePublish()
         return true
     }
 
@@ -2358,6 +2402,7 @@ class ReaderSession(
         val displayTotalPages: Int
         synchronized(pagesLock) {
             if (index !in pages.indices || pages[index] != page) return false
+            beginStructurePublish()
             removeIndex = index
             pages.removeAt(removeIndex)
             pages.forEachIndexed { pageIndex, ref -> ref.pageIndex = pageIndex }
@@ -2374,9 +2419,14 @@ class ReaderSession(
             removePageStateRange(removeIndex, 1)
             total = pages.size
         }
-        main.post {
-            if (!cancelled.get()) listener.onPagesRemoved(removeIndex, 1, total)
+        val posted = main.post {
+            try {
+                if (!cancelled.get()) listener.onPagesRemoved(removeIndex, 1, total)
+            } finally {
+                finishStructurePublish()
+            }
         }
+        if (!posted) finishStructurePublish()
         Log.d(
             TAG,
             "remove_invalid_generated_page index=$removeIndex,source=${page.sourceIndex},displayTotal=$displayTotalPages," +
@@ -3077,6 +3127,11 @@ class ReaderSession(
             recycleDecodeResult(delivery.result)
             return
         }
+        if (isStructurePublishPending()) {
+            deliveryQueue.add(currentDelivery)
+            scheduleDeliveryDrain()
+            return
+        }
         logNtkPagePerf(currentDelivery.index, "decode_ready", "ms=${SystemClock.elapsedRealtime() - currentDelivery.startedAt},width=${currentDelivery.result.width},retain=${currentDelivery.retainWhenBusy}")
         val deliverInitialAnchorNow = shouldDeliverInitialAnchorImmediately(currentDelivery)
         val primeNearAfterInitialAnchorDelivery = deliverInitialAnchorNow &&
@@ -3393,6 +3448,12 @@ class ReaderSession(
                 recycleQueuedDeliveries()
                 return@trace
             }
+            if (isStructurePublishPending()) {
+                if (deliveryQueue.isNotEmpty() && deliveryDrainPosted.compareAndSet(false, true)) {
+                    main.postDelayed(deliveryDrainRunnable, STRUCTURE_PUBLISH_DRAIN_DELAY_MS)
+                }
+                return@trace
+            }
             enqueueRetainedPrimedDeliveries()
             val busy = viewportBusy.get()
             if (busy) {
@@ -3512,6 +3573,11 @@ class ReaderSession(
         if (cancelled.get()) {
             pendingDeliveryWidths.remove(currentDelivery.index)
             recycleDecodeResult(currentDelivery.result)
+            return
+        }
+        if (isStructurePublishPending()) {
+            deliveryQueue.add(currentDelivery)
+            scheduleDeliveryDrain()
             return
         }
         val retainedFirst: Int
@@ -3966,6 +4032,7 @@ class ReaderSession(
         private const val URGENT_VISIBLE_PIPELINE_PARALLELISM = 8
         private const val PRIME_PIPELINE_PARALLELISM = 8
         private const val NTK_FOREGROUND_PRIME_HEDGE_DELAY_MS = 1400L
+        private const val STRUCTURE_PUBLISH_DRAIN_DELAY_MS = 16L
         private const val PRIME_FORWARD_EPISODES = 8
         private const val NTK_PRIME_FORWARD_EPISODES = 0
         private const val NTK_GENERATED_FORWARD_PRIME_AFTER_FIRST_BITMAP_DELAY_MS = 700L
