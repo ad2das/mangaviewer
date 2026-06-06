@@ -58,11 +58,11 @@ public class NtkEmptyEpisodeActivityInstrumentedTest {
             assertNotNull(activity.title);
             assertTrue(activity.title.isNtkEpisodeListConfirmedEmpty());
             assertNotNull(activity.episodeAdapter);
-            assertEquals(1, activity.episodeAdapter.getItemCount());
+            assertEquals(2, activity.episodeAdapter.getItemCount());
             RecyclerView list = activity.findViewById(R.id.EpisodeList);
             assertNotNull(list);
             assertNotNull(list.getAdapter());
-            assertEquals(1, list.getAdapter().getItemCount());
+            assertEquals(2, list.getAdapter().getItemCount());
         } finally {
             activity.finish();
         }
@@ -78,10 +78,10 @@ public class NtkEmptyEpisodeActivityInstrumentedTest {
                     && activity.title != null
                     && activity.title.isNtkEpisodeListConfirmedEmpty()
                     && activity.episodeAdapter != null
-                    && activity.episodeAdapter.getItemCount() == 1
+                    && activity.episodeAdapter.getItemCount() == 2
                     && activity.findViewById(R.id.EpisodeList) instanceof RecyclerView
                     && ((RecyclerView) activity.findViewById(R.id.EpisodeList)).getAdapter() != null
-                    && ((RecyclerView) activity.findViewById(R.id.EpisodeList)).getAdapter().getItemCount() == 1);
+                    && ((RecyclerView) activity.findViewById(R.id.EpisodeList)).getAdapter().getItemCount() == 2);
             if(rendered[0])
                 return true;
             SystemClock.sleep(100L);

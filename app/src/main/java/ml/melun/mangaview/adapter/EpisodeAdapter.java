@@ -176,6 +176,10 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
 
         }else {
             ViewHolder h = (ViewHolder) holder;
+            if(isConfirmedEmptyEpisodePlaceholder(position)) {
+                bindConfirmedEmptyEpisodeRow(h, position);
+                return;
+            }
             if(!isValidEpisodePosition(mData, position)) {
                 clearEpisodeRow(h, position);
                 return;
@@ -287,6 +291,16 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         bindSelection(holder, position);
     }
 
+    private void bindConfirmedEmptyEpisodeRow(ViewHolder holder, int position) {
+        setTextIfChanged(holder.episode, "\uD68C\uCC28 \uC815\uBCF4\uAC00 \uC544\uC9C1 \uC218\uC9D1\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4");
+        setTextIfChanged(holder.date, "\uACE7 \uD68C\uCC28 \uBAA9\uB85D\uC774 \uC5C5\uB370\uC774\uD2B8\uB429\uB2C8\uB2E4.");
+        setVisibilityIfChanged(holder.newBadge, View.GONE);
+        setVisibilityIfChanged(holder.action, View.GONE);
+        holder.boundKey = "ntk-empty:" + position;
+        bindEmptyThumbnail(holder.thumb, true);
+        bindSelection(holder, position);
+    }
+
     private void setTextIfChanged(TextView view, CharSequence text) {
         CharSequence next = text == null ? "" : text;
         if(!android.text.TextUtils.equals(view.getText(), next))
@@ -305,7 +319,17 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     // total number of rows
     @Override
     public int getItemCount() {
-        return (mData == null ? 0 : mData.size())+1;
+        return (mData == null ? 0 : mData.size()) + 1 + (shouldShowConfirmedEmptyEpisodeRow() ? 1 : 0);
+    }
+
+    private boolean shouldShowConfirmedEmptyEpisodeRow() {
+        return title != null
+                && title.isNtkEpisodeListConfirmedEmpty()
+                && (mData == null || mData.size() == 0);
+    }
+
+    private boolean isConfirmedEmptyEpisodePlaceholder(int position) {
+        return shouldShowConfirmedEmptyEpisodeRow() && position == 1;
     }
 
     public class ViewHolder extends RecyclerView.ViewHolder{
