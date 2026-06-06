@@ -196,6 +196,20 @@ public class MangaTest {
     }
 
     @Test
+    public void ntkKpDirectShellRequiresActualImages() {
+        String shellOnly = "<html><body><div id=\"__next\"></div>"
+                + "<script>self.__next_f.push([1,\"{\\\"sourceWorkId\\\":\\\"17247\\\"}\"])</script>"
+                + "</body></html>";
+        org.junit.Assert.assertFalse(Manga.isUsableNtkKpDirectPageForTest(
+                "/webtoon/68630031/kp-68630031-69262979", 200, shellOnly));
+
+        String withImage = shellOnly
+                + "<script>self.__next_f.push([1,\"https:\\/\\/i.toonflix.app\\/webtoon_uploads\\/page001.webp\"])</script>";
+        assertTrue(Manga.isUsableNtkKpDirectPageForTest(
+                "/webtoon/68630031/kp-68630031-69262979", 200, withImage));
+    }
+
+    @Test
     public void ntkMissingPageDetectedBeforeImageParsing() {
         assertTrue(Manga.looksLikeNtkMissingPageForTest(
                 "<html id=\"__next_error__\"><script>self.__next_f.push([\"NEXT_HTTP_ERROR_FALLBACK\",404])</script></html>"));

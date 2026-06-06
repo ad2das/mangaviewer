@@ -216,6 +216,7 @@ class ReaderSession(
     private val deliveryDrainPosted = AtomicBoolean(false)
     private val initialDeliveryFallbackPosted = AtomicBoolean(false)
     private val initialDeliveryFlushInProgress = AtomicBoolean(false)
+    private val initialPagesReadyDelivered = AtomicBoolean(false)
     private val viewportBusy = AtomicBoolean(false)
     private val deliveryResumeAtMs = AtomicLong(0L)
     private val lastUserInteractionMs = AtomicLong(0L)
@@ -409,6 +410,7 @@ class ReaderSession(
         main.post {
             if (!cancelled.get()) {
                 listener.onPagesReady(refs.size)
+                initialPagesReadyDelivered.set(true)
                 if (notifyInitialPage) listener.onInitialPage(startPage)
             }
         }
@@ -2893,7 +2895,12 @@ class ReaderSession(
                 }
                 deliverDecodeResultOnMain(currentDelivery, false)
             }
-            if (!main.post(deliverAnchor)) {
+            val posted = if (initialPagesReadyDelivered.get()) {
+                main.postAtFrontOfQueue(deliverAnchor)
+            } else {
+                main.post(deliverAnchor)
+            }
+            if (!posted) {
                 pendingDeliveryWidths.remove(currentDelivery.index)
                 recycleDecodeResult(currentDelivery.result)
             }

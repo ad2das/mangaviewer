@@ -577,8 +577,7 @@ public class Manga {
             if(apiFirstNtkEpisode || skipGeneratedForSlugEpisode || apiFirstCanonicalWebtoonEpisode) {
                 startNativeAckIfNeeded.run();
                 startDirectPageFetchIfNeeded.run();
-                if(skipGeneratedForSlugEpisode && !apiFirstNtkEpisode
-                        && !isNtkKpWebtoonEpisodePath(path))
+                if(skipGeneratedForSlugEpisode && !apiFirstNtkEpisode)
                     startPageFetchIfNeeded.run();
             }
             boolean apiOptimisticGeneratedCandidate = apiFallbackMode
@@ -588,8 +587,7 @@ public class Manga {
                 startNativeAckIfNeeded.run();
                 startDirectPageFetchIfNeeded.run();
                 if(!strictApiFallbackMode
-                        && !apiFirstNtkEpisode
-                        && !isNtkKpWebtoonEpisodePath(path))
+                        && !apiFirstNtkEpisode)
                     startPageFetchIfNeeded.run();
             }
             boolean nativeAckCompleted = false;
@@ -1421,7 +1419,12 @@ public class Manga {
                 && page.code >= 200
                 && page.code < 400
                 && page.body != null
-                && page.body.length() > 0;
+                && page.body.length() > 0
+                && hasNtkPageImageInText(page.body);
+    }
+
+    static boolean isUsableNtkKpDirectPageForTest(String path, int code, String body) {
+        return isUsableNtkKpDirectPage(new CustomHttpClient.PageResponse(code, body, false), path);
     }
 
     private boolean addNtkViewerShellGeneratedImageCandidates(CustomHttpClient client, String body,
@@ -2198,7 +2201,10 @@ public class Manga {
     }
 
     private static boolean shouldUseImmediateNtkGeneratedFastPath(int baseMode, String path, int imageCount) {
-        return false;
+        return baseMode == MTitle.base_webtoon
+                && imageCount > 0
+                && isNumericNtkGeneratedEpisodePath(path)
+                && !shouldPreferNtkApiForCanonicalWebtoonPath(path);
     }
 
     private static boolean isNtkWebtoonEpisodePath(String path) {
