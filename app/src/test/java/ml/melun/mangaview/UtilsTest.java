@@ -241,6 +241,29 @@ public class UtilsTest {
     }
 
     @Test
+    public void readerTitleJsonWindowsLargeEpisodeListsForBinder() {
+        Title title = new Title("Long NTK", "/webtoon/400739", "", new ArrayList<>(), "", 400739, MTitle.base_webtoon);
+        title.setSourceSite("ntk");
+        ArrayList<Manga> episodes = new ArrayList<>();
+        for(int i = 0; i < 700; i++) {
+            Manga episode = new Manga(900000 + i, "Long NTK " + i,
+                    "2026-06-05-" + i + "-".repeat(256), MTitle.base_webtoon);
+            episode.setTitleId(title.getId());
+            episode.setNtkEpisodePath("/webtoon/400739/" + (1000000 + i));
+            episodes.add(episode);
+        }
+        title.setEps(episodes);
+        Manga anchor = episodes.get(300);
+
+        Title copy = new Gson().fromJson(Utils.toViewerTitleJsonForReader(title, anchor, true), Title.class);
+
+        ArrayList<Manga> window = Utils.snapshotEpisodes(copy);
+        assertEquals(17, window.size());
+        assertEquals(episodes.get(296).getId(), window.get(0).getId());
+        assertEquals(episodes.get(312).getId(), window.get(16).getId());
+    }
+
+    @Test
     public void viewerLaunchDebounceRejectsRapidDuplicateStarts() {
         assertFalse(Utils.shouldAllowViewerLaunchForTest(1_400L, 1_000L));
         assertTrue(Utils.shouldAllowViewerLaunchForTest(1_450L, 1_000L));

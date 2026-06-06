@@ -421,6 +421,10 @@ class ReaderSession(
     }
 
     private fun requestInitialFanout(startPage: Int) {
+        if (isNtkSource(manga, title) && !firstBitmapLogged.get()) {
+            ViewerWarmupManager.logMetric("reader_ntk_initial_fanout_deferred", startPage.toLong())
+            return
+        }
         if (shouldDeferInitialFanoutUntilAnchor()) {
             pendingInitialFanoutPage.set(startPage)
             prefetchImageFilesAround(startPage)

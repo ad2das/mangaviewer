@@ -88,6 +88,7 @@ public class NtkRandomStressInstrumentedTest {
         int scrollSteps = parsePositiveInt(arg(args, "ntkScrollSteps", "8"), 8);
         boolean appendProbe = Boolean.parseBoolean(arg(args, "ntkAppendProbe", "true"));
         int appendSteps = parsePositiveInt(arg(args, "ntkAppendSteps", "60"), 60);
+        int screenshotEvery = parseNonNegativeInt(arg(args, "ntkScreenshotEvery", "0"), 0);
         long seed = parseLong(arg(args, "ntkRandomSeed", ""), SystemClock.elapsedRealtime());
         Random random = new Random(seed);
         Random modeRandom = new Random(seed ^ 0x5a17c3e2L);
@@ -106,6 +107,7 @@ public class NtkRandomStressInstrumentedTest {
                 + ",scrollSteps=" + scrollSteps
                 + ",appendProbe=" + appendProbe
                 + ",appendSteps=" + appendSteps
+                + ",screenshotEvery=" + screenshotEvery
                 + ",cycleModes=" + cycleModes
                 + ",modeOffset=" + modeOffset);
         for(int run = 0; run < runs; run++) {
@@ -140,7 +142,7 @@ public class NtkRandomStressInstrumentedTest {
                     ? MODES[(modeOffset + run) % MODES.length]
                     : MODES[random.nextInt(MODES.length)];
             runReaderCase(context, device, run, mode, title, episode,
-                    scrollSteps, appendProbe, appendSteps);
+                    scrollSteps, appendProbe, appendSteps, screenshotEvery);
         }
     }
 
@@ -423,7 +425,7 @@ public class NtkRandomStressInstrumentedTest {
 
     private static void runReaderCase(Context context, UiDevice device, int run, String mode,
                                       Title title, Manga episode, int scrollSteps,
-                                      boolean appendProbe, int appendSteps) {
+                                      boolean appendProbe, int appendSteps, int screenshotEvery) {
         Activity activity = null;
         long startedAt = SystemClock.elapsedRealtime();
         Manga nextEpisode = null;
@@ -460,7 +462,8 @@ public class NtkRandomStressInstrumentedTest {
                     + " elapsedMs=" + firstMs, ready);
             ReaderV2Activity reader = activity instanceof ReaderV2Activity ? (ReaderV2Activity) activity : null;
             int initialPageCount = reader == null ? -1 : readPageCount(reader);
-            probeScrollContinuity(context, device, reader, run, mode, episode, scrollSteps);
+            probeScrollContinuity(context, device, reader, run, mode, episode,
+                    scrollSteps, screenshotEvery);
             if(appendProbe && reader != null)
                 probeNextAppend(device, reader, run, mode, episode, nextEpisode,
                         initialPageCount, appendSteps);
@@ -515,8 +518,8 @@ public class NtkRandomStressInstrumentedTest {
     private static Intent viewerIntent(Context context, Title title, Manga episode) {
         Intent intent = new Intent(context, ReaderV2Activity.class);
         intent.putExtra("online", true);
-        intent.putExtra("title", Utils.toViewerTitleJson(title, true));
-        intent.putExtra("manga", Utils.toViewerMangaJson(episode, title));
+        intent.putExtra("title", Utils.toViewerTitleJsonForReader(title, episode, true));
+        intent.putExtra("manga", Utils.toViewerMangaJson(episode, title, false));
         intent.putExtra(ViewerIntentContract.EXTRA_EXACT_EPISODE, true);
         intent.putExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, true);
         intent.putExtra("viewerLaunchStartedAtMs", SystemClock.elapsedRealtime());
@@ -552,7 +555,7 @@ public class NtkRandomStressInstrumentedTest {
     }
 
     private static void probeScrollContinuity(Context context, UiDevice device, ReaderV2Activity reader, int run,
-                                              String mode, Manga episode, int steps) {
+                                              String mode, Manga episode, int steps, int screenshotEvery) {
         File screenshot = new File(context.getExternalCacheDir(), "ntk-random-scroll-" + run + ".png");
         for(int step = 0; step < steps; step++) {
             long before = SystemClock.elapsedRealtime();
@@ -561,9 +564,11 @@ public class NtkRandomStressInstrumentedTest {
             device.waitForIdle(450L);
             long idleAt = SystemClock.elapsedRealtime();
             long screenshotStart = SystemClock.elapsedRealtime();
-            boolean captured = device.takeScreenshot(screenshot);
+            boolean captureScreenshot = shouldCaptureScrollScreenshot(step, screenshotEvery);
+            boolean captured = captureScreenshot && device.takeScreenshot(screenshot);
             long screenshotAt = SystemClock.elapsedRealtime();
-            String stats = captured ? screenshotStats(screenshot) : "screenshot=false";
+            String stats = captured ? screenshotStats(screenshot)
+                    : captureScreenshot ? "screenshot=false" : "screenshot=skipped";
             long statsAt = SystemClock.elapsedRealtime();
             ReaderSurfaceView.VisibleCoverageSnapshot coverage = readVisibleCoverage(reader);
             Log.d(TAG, "ntk_true_random_scroll run=" + run
@@ -583,6 +588,10 @@ public class NtkRandomStressInstrumentedTest {
                     + " step=" + step
                     + " path=" + episode.getNtkEpisodePath(), coverage);
         }
+    }
+
+    private static boolean shouldCaptureScrollScreenshot(int step, int screenshotEvery) {
+        return screenshotEvery > 0 && step % screenshotEvery == 0;
     }
 
     private static void probeNextAppend(UiDevice device, ReaderV2Activity reader, int run,
@@ -854,6 +863,15 @@ public class NtkRandomStressInstrumentedTest {
         try {
             int parsed = Integer.parseInt(value == null ? "" : value);
             return parsed > 0 ? parsed : fallback;
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
+    private static int parseNonNegativeInt(String value, int fallback) {
+        try {
+            int parsed = Integer.parseInt(value == null ? "" : value);
+            return parsed >= 0 ? parsed : fallback;
         } catch (Exception ignored) {
             return fallback;
         }

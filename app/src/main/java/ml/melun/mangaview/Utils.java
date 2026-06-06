@@ -92,6 +92,9 @@ public class Utils {
     private static final Map<Activity, Long> focusedDestinationLaunchTimes = new WeakHashMap<>();
     private static int viewerLaunchSequence = 0;
     private static final long VIEWER_LAUNCH_DEBOUNCE_MS = 450L;
+    private static final int VIEWER_TITLE_EPISODE_WINDOW_BEFORE = 4;
+    private static final int VIEWER_TITLE_EPISODE_WINDOW_AFTER = 12;
+    private static final int VIEWER_TITLE_JSON_SOFT_LIMIT_CHARS = 180 * 1024;
     private static final String MANGA_STATE_V2 = "manga_state_v2";
     private static final String MANGA_ID = "manga_id";
     private static final String MANGA_NAME = "manga_name";
@@ -224,9 +227,9 @@ public class Utils {
                                        boolean includeTitleEpisodes){
         Intent viewer = new Intent(context, ml.melun.mangaview.activity.ReaderV2Activity.class);
         Title title = manga == null ? null : manga.getTitle();
-        viewer.putExtra("manga", toViewerMangaJson(manga, title, includeMangaEpisodes));
+        viewer.putExtra("manga", toViewerMangaJson(manga, title, includeMangaEpisodes && title == null));
         if(includeViewerTitle)
-            viewer.putExtra("title", toViewerTitleJson(title, includeTitleEpisodes));
+            viewer.putExtra("title", toViewerTitleJsonForReader(title, manga, includeTitleEpisodes));
         return viewer;
     }
 
@@ -627,9 +630,7 @@ public class Utils {
         if(returnToEpisodes)
             viewer.putExtra("returnToEpisodes", true);
         if(launchTitle != null)
-            viewer.putExtra("title", includeTitleEpisodes
-                    ? toViewerTitleJson(launchTitle, true)
-                    : toViewerTitleJsonAround(launchTitle, manga, 4, 12));
+            viewer.putExtra("title", toViewerTitleJsonForReader(launchTitle, manga, includeTitleEpisodes));
         if(recent)
             viewer.putExtra("recent", true);
         viewer.putExtra("viewerLaunchStartedAtMs", SystemClock.elapsedRealtime());
@@ -898,6 +899,24 @@ public class Utils {
         if(includeEpisodes)
             copy.setEps(viewerEpisodeCopies(snapshotEpisodes(title)));
         return new Gson().toJson(copy);
+    }
+
+    public static String toViewerTitleJsonForReader(Title title, Manga anchor, boolean includeEpisodes) {
+        if(title == null)
+            return null;
+        if(!includeEpisodes)
+            return toViewerTitleJsonAround(title, anchor,
+                    VIEWER_TITLE_EPISODE_WINDOW_BEFORE, VIEWER_TITLE_EPISODE_WINDOW_AFTER);
+        String full = toViewerTitleJson(title, true);
+        if(full == null || full.length() <= VIEWER_TITLE_JSON_SOFT_LIMIT_CHARS)
+            return full;
+        try {
+            ViewerWarmupManager.logMetric("viewer_title_json_windowed_for_binder", snapshotEpisodes(title).size());
+        } catch (RuntimeException ignored) {
+            // Plain JVM unit tests do not provide android.util.Log; logging is not part of this contract.
+        }
+        return toViewerTitleJsonAround(title, anchor,
+                VIEWER_TITLE_EPISODE_WINDOW_BEFORE, VIEWER_TITLE_EPISODE_WINDOW_AFTER);
     }
 
     public static String toViewerTitleJsonAround(Title title, Manga anchor, int before, int after) {

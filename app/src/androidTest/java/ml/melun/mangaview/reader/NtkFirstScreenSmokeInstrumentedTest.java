@@ -312,8 +312,8 @@ public class NtkFirstScreenSmokeInstrumentedTest {
 
         Intent intent = new Intent(context, ReaderV2Activity.class);
         intent.putExtra("online", true);
-        intent.putExtra("title", Utils.toViewerTitleJson(title, true));
-        intent.putExtra("manga", Utils.toViewerMangaJson(episode, title));
+        intent.putExtra("title", Utils.toViewerTitleJsonForReader(title, episode, true));
+        intent.putExtra("manga", Utils.toViewerMangaJson(episode, title, false));
         intent.putExtra(ViewerIntentContract.EXTRA_EXACT_EPISODE, true);
         intent.putExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, true);
         intent.putExtra("viewerLaunchStartedAtMs", SystemClock.elapsedRealtime());

@@ -174,6 +174,30 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkTokenizedViewerPayloadIsUsableEvenInsideNextShell() {
+        String body = "<html><body><div id=\"__next\"></div>"
+                + "<script src=\"/_next/static/chunks/app/webtoon/%5BsourceWorkId%5D/%5BviewId%5D/page-abcd.js\"></script>"
+                + "<script>self.__next_f.push([1,\"{\\\"imagesToken\\\":\\\"abc123\\\",\\\"imageMetas\\\":[{\\\"page\\\":1}]}\" ])</script>"
+                + "<title>媛쒕컻???꾧뎄 李⑤떒</title>"
+                + "<next-route-announcer></next-route-announcer></body></html>";
+
+        assertFalse(CustomHttpClient.looksLikeUnrenderedNtkDocumentForTest("/webtoon/12756/1135174", 200, body));
+        assertFalse(CustomHttpClient.shouldRejectNtkPageResponseForTest("/webtoon/12756/1135174", 200, body));
+    }
+
+    @Test
+    public void ntkViewerShellDataIsNotRejectedAsDevtoolsBlocker() {
+        String body = "<html><body><div id=\"__next\"></div>"
+                + "<script src=\"/_next/static/chunks/app/webtoon/%5BsourceWorkId%5D/%5BviewId%5D/page-abcd.js\"></script>"
+                + "<script>self.__next_f.push([1,\"{\\\"sourceWorkId\\\":\\\"17247\\\",\\\"thumbnailUrl\\\":\\\"/thumbs/17247.jpg\\\"}\"])</script>"
+                + "<title>媛쒕컻???꾧뎄 李⑤떒</title>"
+                + "<next-route-announcer></next-route-announcer></body></html>";
+
+        assertFalse(CustomHttpClient.looksLikeUnrenderedNtkDocumentForTest("/webtoon/68630031/kp-68630031-69262979", 200, body));
+        assertFalse(CustomHttpClient.shouldRejectNtkPageResponseForTest("/webtoon/68630031/kp-68630031-69262979", 200, body));
+    }
+
+    @Test
     public void ntkNextErrorFallbackCanUseWebViewForEpisode() {
         String body = "<html><body><div id=\"__next\"></div>"
                 + "<script src=\"/_next/static/chunks/app/manhwa/%5BsourceWorkId%5D/%5BviewId%5D/page-abcd.js\"></script>"

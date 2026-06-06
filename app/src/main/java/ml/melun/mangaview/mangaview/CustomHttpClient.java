@@ -45,6 +45,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -126,6 +127,7 @@ public class CustomHttpClient {
     private static final int MAX_HTTP_REQUESTS_PER_HOST = 4;
     private static final int MAX_IMAGE_HTTP_REQUESTS = 32;
     private static final int MAX_IMAGE_HTTP_REQUESTS_PER_HOST = 12;
+    private static final int NTK_QUIC_CALLBACK_THREADS_PER_HOST = MAX_IMAGE_HTTP_REQUESTS_PER_HOST;
     private static final boolean DUMP_NTK_ACK_DEBUG_ARTIFACTS = false;
     private static final long NTK_ACK_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final long NTK_VIEWER_IMAGE_URL_CACHE_TTL_MS = 5 * 60 * 1000L;
@@ -973,6 +975,7 @@ public class CustomHttpClient {
     private final Object ntkQuicEngineLock = new Object();
     private final Map<String, HttpEngine> ntkQuicEngines = new HashMap<>();
     private final Map<String, ExecutorService> ntkQuicExecutors = new HashMap<>();
+    private final Map<String, FutureTask<NtkQuicFetcher.Result>> ntkQuicImageFlights = new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<String, Long> ntkWasmWarmCache = new HashMap<>();
     private final Object ntkViewerImageUrlCacheLock = new Object();
     private final Map<String, CachedViewerImages> ntkViewerImageUrlCache = new HashMap<>();
@@ -2854,6 +2857,9 @@ public class CustomHttpClient {
         if(!isNtkWebViewFetchPath(path))
             return false;
         String lower = body.toLowerCase(Locale.ROOT);
+        if(isNtkTokenizedViewerPath(path)
+                && (isUsableNtkViewerPayload(body) || hasNtkViewerShellData(lower)))
+            return false;
         return lower.contains("<title>document moved</title>")
                 || lower.contains("<h1>object moved</h1>")
                 || isCloudflareChallenge(code, body)
@@ -3474,8 +3480,7 @@ public class CustomHttpClient {
                 headers.put("Cookie", getCookieHeader());
             if(headerValue(headers, "User-Agent") == null)
                 headers.put("User-Agent", agent);
-            NtkQuicFetcher.Result result = fetchNtkQuic(baseUrl, url,
-                    headerValue(headers, "Cookie"), headers, "GET", null, NTK_QUIC_IMAGE_TIMEOUT_MS);
+            NtkQuicFetcher.Result result = fetchNtkQuicImage(baseUrl, url, headers);
             if(isUsableNtkQuicGetResult(result)) {
                 applySetCookieHeaders(result.headers, baseUrl);
                 if(isCloudflareChallenge(result.code, result.body))
@@ -3494,6 +3499,39 @@ public class CustomHttpClient {
                 Log.d(TAG, "ntk_quic_image_failed url=" + safeLogUrl(url), e);
         }
         return chain.proceed(request);
+    }
+
+    private NtkQuicFetcher.Result fetchNtkQuicImage(String baseUrl, String url,
+                                                    Map<String, String> headers) throws Exception {
+        String cookieHeader = headerValue(headers, "Cookie");
+        String key = ntkQuicImageFlightKey(url, cookieHeader);
+        FutureTask<NtkQuicFetcher.Result> task = new FutureTask<>(() ->
+                fetchNtkQuic(baseUrl, url, cookieHeader, headers, "GET", null, NTK_QUIC_IMAGE_TIMEOUT_MS));
+        FutureTask<NtkQuicFetcher.Result> running = ntkQuicImageFlights.putIfAbsent(key, task);
+        if(running == null) {
+            running = task;
+            task.run();
+        } else {
+            ViewerWarmupManager.logMetric("ntk_quic_image_inflight_join", 1L);
+        }
+        try {
+            return running.get();
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if(cause instanceof InterruptedException)
+                throw (InterruptedException) cause;
+            if(cause instanceof Exception)
+                throw (Exception) cause;
+            if(cause instanceof Error)
+                throw (Error) cause;
+            throw new IOException("NTK QUIC image fetch failed", cause);
+        } finally {
+            ntkQuicImageFlights.remove(key, running);
+        }
+    }
+
+    private static String ntkQuicImageFlightKey(String url, String cookieHeader) {
+        return (url == null ? "" : url) + "\n" + (cookieHeader == null ? "" : cookieHeader);
     }
 
     private static boolean shouldUseNtkQuicPrimaryUrl(String url) {
@@ -4347,9 +4385,24 @@ public class CustomHttpClient {
         return looksLikeNtkNextShell(lowerBody) && !hasRenderedNtkDocumentContent(lowerBody);
     }
 
+    private static boolean hasNtkViewerShellData(String lowerBody) {
+        if(lowerBody == null || lowerBody.length() == 0)
+            return false;
+        return lowerBody.contains("\"sourceworkid\"")
+                || lowerBody.contains("\\\"sourceworkid\\\"")
+                || lowerBody.contains("\"thumbnailurl\"")
+                || lowerBody.contains("\\\"thumbnailurl\\\"")
+                || lowerBody.contains("/blacktoon/episodes/")
+                || lowerBody.contains("/wt/episodes/");
+    }
+
     private static boolean hasRenderedNtkDocumentContent(String lowerBody) {
         if(lowerBody == null || lowerBody.length() == 0)
             return false;
+        if(hasNtkViewerShellData(lowerBody))
+            return true;
+        if(lowerBody.contains("imagestoken") && lowerBody.contains("imagemetas"))
+            return true;
         if(lowerBody.contains("vw-main") || lowerBody.contains("vw-imgs")
                 || lowerBody.contains("viewer-content") || lowerBody.contains("toon-view")
                 || lowerBody.contains("image-view") || lowerBody.contains("webtoon-body"))
@@ -4571,7 +4624,7 @@ public class CustomHttpClient {
                 ExecutorService cached = ntkQuicExecutors.get(host);
                 if(cached != null && !cached.isShutdown())
                     return cached;
-                ExecutorService created = Executors.newCachedThreadPool();
+                ExecutorService created = Executors.newFixedThreadPool(NTK_QUIC_CALLBACK_THREADS_PER_HOST);
                 ntkQuicExecutors.put(host, created);
                 return created;
             }
