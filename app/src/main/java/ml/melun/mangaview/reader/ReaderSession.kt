@@ -104,6 +104,11 @@ class ReaderSession(
         val allowAutoSplit: Boolean = true
     )
 
+    private data class AppendUrlLoad(
+        val result: Int,
+        val urls: List<String>
+    )
+
     private data class BitmapRelease(
         val index: Int,
         val bitmap: Bitmap?,
@@ -1083,6 +1088,7 @@ class ReaderSession(
                     return@execute
                 }
                 appendResolvedEpisode(target, urls, direction)
+                appendNtkForwardLookahead(target, currentTitle, episodes, direction)
             } catch (e: Exception) {
                 recordIfUnexpected(e)
             } finally {
@@ -1095,6 +1101,64 @@ class ReaderSession(
             return AppendStartResult.CANCELLED
         }
         return AppendStartResult.STARTED
+    }
+
+    private fun loadLookaheadAppendUrls(target: Manga, currentTitle: Title, direction: Int): AppendUrlLoad {
+        var urls = imageRepository.imageUrls(target, appContext)
+        val preferVerifiedApiAppend = direction < 0 ||
+            (isNtkSource(target, currentTitle) && target.baseMode == ml.melun.mangaview.mangaview.MTitle.base_webtoon)
+        if (!preferVerifiedApiAppend && !urls.isNullOrEmpty() &&
+            isNtkSource(target, currentTitle) &&
+            shouldRefreshNtkGeneratedAppendUrls(urls)
+        ) {
+            target.setImgs(null)
+            val result = fetchGeneratedNtkAppendUrls(target, currentTitle, direction)
+            if (result != Title.LOAD_OK) return AppendUrlLoad(result, emptyList())
+            urls = imageRepository.imageUrls(target, appContext)
+        }
+        if (urls.isNullOrEmpty() || preferVerifiedApiAppend) {
+            if (preferVerifiedApiAppend) target.setImgs(null)
+            val result = fetchGeneratedNtkAppendUrls(target, currentTitle, direction)
+            if (result != Title.LOAD_OK) return AppendUrlLoad(result, emptyList())
+            urls = imageRepository.imageUrls(target, appContext)
+        }
+        return AppendUrlLoad(Title.LOAD_OK, urls ?: emptyList())
+    }
+
+    private fun appendNtkForwardLookahead(
+        source: Manga,
+        currentTitle: Title,
+        episodes: List<Manga>,
+        direction: Int
+    ) {
+        if (direction <= 0 || cancelled.get() || !isNtkSource(source, currentTitle)) return
+        val target = nextUnloadedAdjacentEpisode(source, currentTitle, episodes, ReaderSurfaceView.DIRECTION_NEXT)
+        if (target == null) {
+            Log.d(
+                TAG,
+                "append_adjacent_lookahead_missing sourceId=${source.id} " +
+                    "sourcePath=${source.ntkEpisodePath} episodes=${episodes.size}"
+            )
+            return
+        }
+        target.title = currentTitle
+        target.titleId = currentTitle.id
+        target.mode = source.mode
+        if (episodes.isNotEmpty()) target.setEps(episodes)
+        Log.d(
+            TAG,
+            "append_adjacent_lookahead_start sourceId=${source.id} targetId=${target.id} " +
+                "targetPath=${target.ntkEpisodePath} targetName=${target.name}"
+        )
+        val appendUrls = loadLookaheadAppendUrls(target, currentTitle, ReaderSurfaceView.DIRECTION_NEXT)
+        if (cancelled.get()) return
+        Log.d(
+            TAG,
+            "append_adjacent_lookahead_fetch targetId=${target.id} result=${appendUrls.result} " +
+                "images=${appendUrls.urls.size}"
+        )
+        if (appendUrls.result != Title.LOAD_OK || appendUrls.urls.isEmpty()) return
+        appendResolvedEpisode(target, appendUrls.urls, ReaderSurfaceView.DIRECTION_NEXT)
     }
 
     private fun fetchGeneratedNtkAppendUrls(target: Manga, currentTitle: Title, direction: Int): Int {
@@ -1211,6 +1275,7 @@ class ReaderSession(
         val episodeName = target.name ?: title?.name ?: "회차"
         val transitionTitle = if (direction < 0) "이전 회차: $episodeName" else "다음 회차: $episodeName"
         val pageRefs = pageRefsForImages(target, urls)
+        if (isNtkSource(target, target.title ?: title)) return pageRefs
         val totalPages = pageRefs.size
         return ArrayList<PageRef>(pageRefs.size + 1).apply {
             if (direction < 0) {

@@ -68,6 +68,57 @@ public class NtkEmptyEpisodeActivityInstrumentedTest {
         }
     }
 
+    @Test
+    public void searchedDuljjaeEpisodeListRendersWithoutErrorFallback() throws Exception {
+        LiveNetworkAssume.assumeEnabled();
+        Context context = ApplicationProvider.getApplicationContext();
+        MainApplication.p.setBaseMode(MTitle.base_webtoon);
+        MainApplication.getHttpClient().clearPageCache();
+        Search.clearNtkResultCaches();
+
+        Search search = new Search("\uB458\uC9F8\uC5D0\uAC8C", 0, MTitle.base_webtoon);
+        int status = search.fetch(MainApplication.getHttpClient());
+        Log.d(TAG, "ntk_duljjae_search status=" + status
+                + ",count=" + (search.getResult() == null ? 0 : search.getResult().size()));
+        assertEquals(0, status);
+        assertNotNull(search.getResult());
+        assertTrue("Expected NTK search result for \uB458\uC9F8\uC5D0\uAC8C", search.getResult().size() > 0);
+
+        Title title = null;
+        for(Title result : search.getResult()) {
+            Log.d(TAG, "ntk_duljjae_search_result id=" + result.getId()
+                    + ",name=" + result.getName()
+                    + ",path=" + result.getPath()
+                    + ",url=" + result.getUrl()
+                    + ",source=" + result.getSourceSite());
+            if(result.getName() != null && result.getName().contains("\uB458\uC9F8\uC5D0\uAC8C")) {
+                title = result;
+                break;
+            }
+        }
+        assertNotNull("Expected matching NTK title for \uB458\uC9F8\uC5D0\uAC8C", title);
+
+        Intent intent = new Intent(context, EpisodeActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        intent.putExtra("title", Utils.toViewerTitleJson(title, false));
+        intent.putExtra("online", true);
+
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        EpisodeActivity activity = (EpisodeActivity) instrumentation.startActivitySync(intent);
+        try {
+            long started = SystemClock.elapsedRealtime();
+            boolean rendered = waitForRenderedEpisodeList(instrumentation, activity, 20000L);
+            long elapsed = SystemClock.elapsedRealtime() - started;
+            Log.d(TAG, "ntk_duljjae_search_episode rendered=" + rendered
+                    + ",ms=" + elapsed
+                    + ",confirmedEmpty=" + (activity.title != null && activity.title.isNtkEpisodeListConfirmedEmpty())
+                    + ",adapterItems=" + adapterItemCount(activity));
+            assertTrue("Expected searched NTK episode list to render without error fallback", rendered);
+        } finally {
+            activity.finish();
+        }
+    }
+
     private static boolean waitForHeaderOnlyEpisodeList(Instrumentation instrumentation,
                                                         EpisodeActivity activity,
                                                         long timeoutMs) {
@@ -82,6 +133,25 @@ public class NtkEmptyEpisodeActivityInstrumentedTest {
                     && activity.findViewById(R.id.EpisodeList) instanceof RecyclerView
                     && ((RecyclerView) activity.findViewById(R.id.EpisodeList)).getAdapter() != null
                     && ((RecyclerView) activity.findViewById(R.id.EpisodeList)).getAdapter().getItemCount() == 2);
+            if(rendered[0])
+                return true;
+            SystemClock.sleep(100L);
+        }
+        return false;
+    }
+
+    private static boolean waitForRenderedEpisodeList(Instrumentation instrumentation,
+                                                      EpisodeActivity activity,
+                                                      long timeoutMs) {
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+        while(SystemClock.elapsedRealtime() < deadline) {
+            final boolean[] rendered = {false};
+            instrumentation.runOnMainSync(() -> rendered[0] = activity != null
+                    && activity.episodeAdapter != null
+                    && activity.episodeAdapter.getItemCount() >= 2
+                    && activity.findViewById(R.id.EpisodeList) instanceof RecyclerView
+                    && ((RecyclerView) activity.findViewById(R.id.EpisodeList)).getAdapter() != null
+                    && ((RecyclerView) activity.findViewById(R.id.EpisodeList)).getAdapter().getItemCount() >= 2);
             if(rendered[0])
                 return true;
             SystemClock.sleep(100L);
