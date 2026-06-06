@@ -228,6 +228,7 @@ class ReaderSession(
     private var retainedAnchorPage = 0
     private val firstBitmapLogged = AtomicBoolean(false)
     private val initialFanoutStarted = AtomicBoolean(false)
+    private val initialNearAfterAnchorDecodeStarted = AtomicBoolean(false)
     private val pendingInitialFanoutPage = AtomicInteger(-1)
     private val resolvedInitialStartPage = AtomicInteger(-1)
     private val windowGeneration = AtomicInteger(0)
@@ -1695,6 +1696,7 @@ class ReaderSession(
                 val originalPage = page
                 val allowPreviewCache = shouldUsePreviewDecodedCache(index, targetWidth)
                 cachedDecodedResult(originalPage, targetWidth, allowPreviewCache)?.let { cached ->
+                    logNtkPagePerf(index, "cache_hit", "target=$targetWidth,width=${cached.width}")
                     clearPageLoadState(index, page, ownsLoading, urgent)
                     postDecodeResult(Delivery(index, originalPage, cached, SystemClock.elapsedRealtime(), targetWidth, retainWhenBusy))
                     ViewerWarmupManager.logMetric("reader_decoded_cache_hit", index.toLong())
@@ -2338,17 +2340,40 @@ class ReaderSession(
         foregroundFetch: Boolean,
         allowPreviewCache: Boolean
     ): PageDecodeResult {
-        cachedDecodedResult(page, targetWidth, allowPreviewCache)?.let { return it }
-        decodeForegroundStream(index, page, targetWidth, foregroundFetch)?.let { return it }
+        cachedDecodedResult(page, targetWidth, allowPreviewCache)?.let {
+            logNtkPagePerf(index, "cache_hit_decode", "target=$targetWidth,width=${it.width}")
+            return it
+        }
+        decodeForegroundStream(index, page, targetWidth, foregroundFetch)?.let {
+            logNtkPagePerf(index, "foreground_stream_hit", "target=$targetWidth,width=${it.width}")
+            return it
+        }
         val startPage = currentStartPage()
-        val leaseStart = if (index == startPage && page.manga.isOnline) SystemClock.elapsedRealtime() else 0L
+        val trace = shouldTraceNtkPage(index, page)
+        val leaseStart = if (page.manga.isOnline && (index == startPage || trace)) SystemClock.elapsedRealtime() else 0L
         leaseImageFile(index, page, foregroundFetch || index == startPage).use { lease ->
-            if (leaseStart > 0L) ViewerWarmupManager.logMetric(
-                "reader_first_fetch_wait_ms",
-                SystemClock.elapsedRealtime() - leaseStart
-            )
+            if (leaseStart > 0L) {
+                val leaseMs = SystemClock.elapsedRealtime() - leaseStart
+                if (index == startPage) ViewerWarmupManager.logMetric("reader_first_fetch_wait_ms", leaseMs)
+                val image = page.image
+                val cached = image != null && ReaderImageCache.cachedFile(appContext, page.manga, image) != null
+                logNtkPagePerf(index, "file_lease", "ms=$leaseMs,foreground=$foregroundFetch,cached=$cached")
+            }
             return decodePage(index, page, lease.file, targetWidth)
         }
+    }
+
+    private fun shouldTraceNtkPage(index: Int, page: PageRef): Boolean {
+        if (!isNtkSource(page.manga, title)) return false
+        val start = currentStartPage()
+        return index in max(0, start - 1)..minOf(start + NTK_TRACE_AHEAD_PAGES, start + 12)
+    }
+
+    private fun logNtkPagePerf(index: Int, stage: String, detail: String) {
+        if (!isNtkSource(manga, title)) return
+        val start = currentStartPage()
+        if (index !in max(0, start - 1)..minOf(start + NTK_TRACE_AHEAD_PAGES, start + 12)) return
+        Log.d(TAG, "reader_ntk_page_perf page=$index,rel=${index - start},stage=$stage,$detail")
     }
 
     private fun decodeForegroundStream(index: Int, page: PageRef, targetWidth: Int, foregroundFetch: Boolean): PageDecodeResult? {
@@ -2376,6 +2401,7 @@ class ReaderSession(
         ViewerWarmupManager.logMetric("reader_first_stream_raw_ms", rawAt - metric)
         ViewerWarmupManager.logMetric("reader_first_stream_transform_ms", transformedAt - rawAt)
         ViewerWarmupManager.logMetric("reader_first_decode_total_ms", SystemClock.elapsedRealtime() - metric)
+        logNtkPagePerf(index, "foreground_stream_decode", "rawMs=${rawAt - metric},transformMs=${transformedAt - rawAt},totalMs=${SystemClock.elapsedRealtime() - metric},width=${result.width}")
         return result
     }
 
@@ -2415,18 +2441,23 @@ class ReaderSession(
 
     private fun decodePage(index: Int, page: PageRef, file: File, targetWidth: Int): PageDecodeResult {
         val metric = index == currentStartPage() && page.manga.isOnline
-        val startedAt = if (metric) SystemClock.elapsedRealtime() else 0L
+        val trace = shouldTraceNtkPage(index, page)
+        val startedAt = if (metric || trace) SystemClock.elapsedRealtime() else 0L
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         if (page.manga.isOnline || file.exists()) {
             BitmapFactory.decodeFile(file.absolutePath, bounds)
         } else {
             decodeLocal(page.image ?: "", bounds)
         }
-        val boundsAt = if (metric) SystemClock.elapsedRealtime() else 0L
+        val boundsAt = if (metric || trace) SystemClock.elapsedRealtime() else 0L
         if (!autoCut && shouldDecodeTiles(page, file, bounds)) {
             val displayBounds = displayBounds(bounds.outWidth, bounds.outHeight, page.side, page.allowAutoSplit)
             postPageBounds(index, page, displayBounds.width(), displayBounds.height())
-            return decodePageTiles(file, bounds, targetWidth)
+            val result = decodePageTiles(file, bounds, targetWidth)
+            if (trace) {
+                logNtkPagePerf(index, "decode_tiles", "boundsMs=${boundsAt - startedAt},totalMs=${SystemClock.elapsedRealtime() - startedAt},target=$targetWidth,width=${result.width}")
+            }
+            return result
         }
         val decodeTargetWidth = decodeTargetWidth(bounds.outWidth, bounds.outHeight, targetWidth, page.allowAutoSplit)
         val sample = sampleSize(bounds.outWidth, decodeTargetWidth)
@@ -2440,19 +2471,23 @@ class ReaderSession(
             decodeLocal(page.image ?: "", options)
         }
             ?: throw java.io.IOException("Bitmap decode failed")
-        val rawAt = if (metric) SystemClock.elapsedRealtime() else 0L
+        val rawAt = if (metric || trace) SystemClock.elapsedRealtime() else 0L
         if (!page.manga.isOnline) {
             val bitmap = ViewerBitmapTrim.trimBlankVerticalEdges(
                 applyAutoSplit(raw, page.side, page.allowAutoSplit),
                 true
             )
             postPageBounds(index, page, bitmap.width, bitmap.height)
-            return drawableResult(bitmap)
+            val result = drawableResult(bitmap)
+            if (trace) {
+                logNtkPagePerf(index, "decode_local", "boundsMs=${boundsAt - startedAt},rawMs=${rawAt - boundsAt},totalMs=${SystemClock.elapsedRealtime() - startedAt},target=$targetWidth,width=${result.width}")
+            }
+            return result
         }
         val decoded = Decoder(page.manga.seed, page.manga.id).decode(raw, decodeTargetWidth, Glide.get(appContext).bitmapPool)
         if (decoded !== raw && !raw.isRecycled) raw.recycle()
         deliverAutoSplitSiblingFromDecoded(index, page, decoded)
-        val transformedAt = if (metric) SystemClock.elapsedRealtime() else 0L
+        val transformedAt = if (metric || trace) SystemClock.elapsedRealtime() else 0L
         val bitmap = ViewerBitmapTrim.trimBlankVerticalEdges(
             applyAutoSplit(decoded, page.side, page.allowAutoSplit),
             true
@@ -2465,6 +2500,10 @@ class ReaderSession(
             ViewerWarmupManager.logMetric("reader_first_raw_decode_ms", rawAt - boundsAt)
             ViewerWarmupManager.logMetric("reader_first_transform_ms", transformedAt - rawAt)
             ViewerWarmupManager.logMetric("reader_first_decode_total_ms", finishedAt - startedAt)
+        }
+        if (trace) {
+            val finishedAt = SystemClock.elapsedRealtime()
+            logNtkPagePerf(index, "decode_file", "boundsMs=${boundsAt - startedAt},rawMs=${rawAt - boundsAt},transformMs=${transformedAt - rawAt},totalMs=${finishedAt - startedAt},target=$targetWidth,width=${result.width}")
         }
         return result
     }
@@ -2826,6 +2865,10 @@ class ReaderSession(
             recycleDecodeResult(delivery.result)
             return
         }
+        if (shouldPrimeNtkNearPagesAfterAnchorDecode(currentDelivery)) {
+            primeNtkNearPagesAfterAnchorDecode(currentDelivery.index)
+        }
+        logNtkPagePerf(currentDelivery.index, "decode_ready", "ms=${SystemClock.elapsedRealtime() - currentDelivery.startedAt},width=${currentDelivery.result.width},retain=${currentDelivery.retainWhenBusy}")
         prepareDecodeResultForDraw(currentDelivery.result)
         pendingDeliveryWidths.merge(currentDelivery.index, currentDelivery.result.width, ::max)
         if (shouldHoldInitialNtkDelivery(currentDelivery)) {
@@ -2877,6 +2920,25 @@ class ReaderSession(
     private fun shouldDeliverInitialAnchorImmediately(delivery: Delivery): Boolean {
         if (firstBitmapLogged.get()) return false
         return delivery.index == currentStartPage()
+    }
+
+    private fun shouldPrimeNtkNearPagesAfterAnchorDecode(delivery: Delivery): Boolean {
+        if (firstBitmapLogged.get()) return false
+        if (delivery.index != currentStartPage()) return false
+        if (!isNtkSource(delivery.page.manga, title)) return false
+        return initialNearAfterAnchorDecodeStarted.compareAndSet(false, true)
+    }
+
+    private fun primeNtkNearPagesAfterAnchorDecode(anchor: Int) {
+        val count = synchronized(pagesLock) { pages.size }
+        if (count <= 0) return
+        val last = minOf(count - 1, anchor + NTK_INITIAL_ANCHOR_DECODE_PRIME_PAGES)
+        if (last <= anchor) return
+        for (index in (anchor + 1)..last) {
+            requestPage(index, busy = true, anchor = false, generation = FOREGROUND_PRIME_WARM_GENERATION)
+        }
+        Log.d(TAG, "reader_ntk_anchor_decode_prime anchor=$anchor count=${last - anchor}")
+        ViewerWarmupManager.logMetric("reader_ntk_anchor_decode_prime", (last - anchor).toLong())
     }
 
     private fun shouldDeliverRetainedImmediately(delivery: Delivery): Boolean {
@@ -3669,6 +3731,7 @@ class ReaderSession(
         private const val NTK_INITIAL_BOOT_URGENT_PAGES = 1
         private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 0
         private const val NTK_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 3
+        private const val NTK_INITIAL_ANCHOR_DECODE_PRIME_PAGES = 3
         private const val NTK_INITIAL_PRIORITY_PAGES = 4
         private const val NTK_FOREGROUND_STREAM_AHEAD_PAGES = 1
         private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 2
@@ -3682,6 +3745,7 @@ class ReaderSession(
         private const val NTK_INITIAL_SOURCE_PREFETCH_AFTER_FIRST_BITMAP_DELAY_MS = 250L
         private const val NTK_EPISODE_METADATA_AFTER_FIRST_BITMAP_DELAY_MS = 300L
         private const val NTK_INITIAL_DELIVERY_HOLD_FALLBACK_MS = 1200L
+        private const val NTK_TRACE_AHEAD_PAGES = 8
         private const val NTK_BACKGROUND_PREPARE_QUIET_MS = 900L
         private const val BOUNDARY_DECODE_AHEAD_PAGES = 8
         private const val BOUNDARY_BYTE_AHEAD_PAGES = 32
