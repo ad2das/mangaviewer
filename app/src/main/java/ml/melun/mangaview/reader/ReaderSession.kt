@@ -414,9 +414,7 @@ class ReaderSession(
         resolvedInitialStartPage.set(startPage)
         main.post {
             if (!cancelled.get()) {
-                listener.onPagesReady(refs.size)
-                initialPagesReadyDelivered.set(true)
-                if (notifyInitialPage) listener.onInitialPage(startPage)
+                deliverInitialPagesReadyIfNeeded(refs.size, startPage, notifyInitialPage)
             }
         }
         if (!autoCut && !isNtkSource(manga, title) && timelinePrimeRequested.compareAndSet(false, true)) {
@@ -3082,6 +3080,11 @@ class ReaderSession(
                 if (queueMs > 120L) {
                     Log.d(TAG, "reader_anchor_delivery_queue_delay page=${currentDelivery.index},ms=$queueMs,pagesReady=${initialPagesReadyDelivered.get()}")
                 }
+                deliverInitialPagesReadyIfNeeded(
+                    synchronized(pagesLock) { pages.size },
+                    currentStartPage(),
+                    true
+                )
                 deliverDecodeResultOnMain(currentDelivery, false)
                 if (primeNearAfterInitialAnchorDelivery) {
                     primeNtkNearPagesAfterAnchorDecode(currentDelivery.index)
@@ -3905,12 +3908,17 @@ class ReaderSession(
         resolvedInitialStartPage.set(0)
         main.post {
             if (!cancelled.get()) {
-                listener.onPagesReady(1)
-                initialPagesReadyDelivered.set(true)
-                listener.onInitialPage(0)
+                deliverInitialPagesReadyIfNeeded(1, 0, true)
                 listener.onPageError(0, message)
             }
         }
+    }
+
+    private fun deliverInitialPagesReadyIfNeeded(count: Int, startPage: Int, notifyInitialPage: Boolean) {
+        if (count <= 0 || cancelled.get()) return
+        if (!initialPagesReadyDelivered.compareAndSet(false, true)) return
+        listener.onPagesReady(count)
+        if (notifyInitialPage && startPage >= 0) listener.onInitialPage(startPage)
     }
 
     private fun postCaptchaRequired(target: Manga) {
