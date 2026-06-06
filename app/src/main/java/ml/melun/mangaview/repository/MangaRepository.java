@@ -495,6 +495,7 @@ public final class MangaRepository {
         snapshot.setTitle(source.getTitle());
         snapshot.setTitleId(source.getTitleId());
         snapshot.setNtkEpisodePath(source.getNtkEpisodePath());
+        snapshot.setNtkImageEpisodeId(source.getNtkImageEpisodeId());
         snapshot.setNtkImageCount(source.getNtkImageCount());
         snapshot.copyViewerStateFrom(source);
         return snapshot;

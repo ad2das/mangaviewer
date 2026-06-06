@@ -532,6 +532,9 @@ public class Manga {
             boolean nativeAckMode = isNtkNativeAckModeOverride();
             boolean apiFallbackMode = isNtkApiFallbackModeOverride();
             boolean strictApiFallbackMode = isNtkStrictApiFallbackModeOverride();
+            final boolean kpApiDirectOnlyEpisode = isNtkKpWebtoonEpisodePath(path)
+                    && !nativeAckMode
+                    && !apiFallbackMode;
             if(isNtkGeneratedModeOverride()
                     && !nativeAckMode
                     && !apiFallbackMode
@@ -586,10 +589,12 @@ public class Manga {
                 startDirectPageFetchIfNeeded.run();
             };
             if(apiFirstNtkEpisode || skipGeneratedForSlugEpisode || apiFirstCanonicalWebtoonEpisode) {
-                startNativeAckIfNeeded.run();
+                if(!kpApiDirectOnlyEpisode)
+                    startNativeAckIfNeeded.run();
                 startDirectPageFetchIfNeeded.run();
                 if(apiFirstNtkEpisode || (skipGeneratedForSlugEpisode && !apiFirstNtkEpisode))
-                    startPageFetchIfNeeded.run();
+                    if(!kpApiDirectOnlyEpisode)
+                        startPageFetchIfNeeded.run();
             }
             boolean apiOptimisticGeneratedCandidate = apiFallbackMode
                     && !strictApiFallbackMode
@@ -1658,6 +1663,8 @@ public class Manga {
     }
 
     private boolean shouldPreAckBeforeNtkViewerImageApi(String path) {
+        if(isNtkKpWebtoonEpisodePath(path))
+            return false;
         return shouldSkipNtkGeneratedForEpisodePath(path)
                 || shouldPreferNtkApiForCanonicalWebtoonPath(path)
                 || isNtkApiFallbackModeOverride()
@@ -3067,6 +3074,10 @@ public class Manga {
 
     static boolean shouldProbeKnownGeneratedBeforeApiFallbackForTest(String path, int imageCount) {
         return shouldProbeKnownGeneratedBeforeApiFallback(path, imageCount);
+    }
+
+    static boolean shouldSkipNtkGeneratedForEpisodePathForTest(String path) {
+        return shouldSkipNtkGeneratedForEpisodePath(path);
     }
 
     private boolean hasWolfBlockedAncestor(Element img) {

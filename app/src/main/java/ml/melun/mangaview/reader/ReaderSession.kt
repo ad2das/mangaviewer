@@ -2034,6 +2034,7 @@ class ReaderSession(
             item.mode = episode.mode
             item.titleId = episode.titleId
             item.setNtkEpisodePath(episode.ntkEpisodePath)
+            item.ntkImageEpisodeId = episode.ntkImageEpisodeId
             item.setNtkImageCount(episode.ntkImageCount)
             item.offlinePath = episode.offlinePath
             copy.add(item)

@@ -481,6 +481,34 @@ public class MangaTest {
     }
 
     @Test
+    public void ntkKpWebtoonEpisodesUseApiImagesWithoutGeneratedProbe() {
+        assertTrue(Manga.shouldSkipNtkGeneratedForEpisodePathForTest(
+                "/webtoon/61393986/kp-61393986-64942327"));
+        assertFalse(Manga.shouldProbeKnownGeneratedBeforeApiFallbackForTest(
+                "/webtoon/61393986/kp-61393986-64942327", 67));
+
+        assertTrue(Manga.shouldSkipNtkGeneratedForEpisodePathForTest(
+                "/webtoon/56792335/u-slug-1196612"));
+    }
+
+    @Test
+    public void ntkEpisodeParserKeepsKpImageEpisodeMetadata() {
+        List<Manga> episodes = NtkEpisodeParser.parseForTest(
+                "<html><head>"
+                        + "<link rel=\"preload\" href=\"https://i.toonflix.app/blacktoon/thumbs/13385.png?v2\" as=\"image\"/>"
+                        + "</head><body>"
+                        + "<a href=\"/webtoon/61393986/kp-61393986-64942327\">68화</a>"
+                        + "<script>{\"id\":\"1377023\",\"sourceEpisodeId\":\"kp-61393986-64942327\","
+                        + "\"imageCount\":67,\"sourceWorkId\":\"61393986\"}</script>"
+                        + "</body></html>",
+                "webtoon", "61393986", MTitle.base_webtoon);
+
+        assertEquals(1, episodes.size());
+        assertEquals("1377023", episodes.get(0).getNtkImageEpisodeId());
+        assertEquals(67, episodes.get(0).getNtkImageCount());
+    }
+
+    @Test
     public void ntkEpisodePathIsNotGuessedFromNumericIdentity() {
         Title title = new Title("one piece", "", "", null, "", 2, MTitle.base_comic);
         title.setSourceSite("ntk");

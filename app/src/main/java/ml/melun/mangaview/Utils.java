@@ -989,6 +989,7 @@ public class Utils {
         copy.setMode(source.getMode());
         copy.setTitleId(source.getTitleId());
         copy.setNtkEpisodePath(source.hasExplicitNtkEpisodePath() ? source.getNtkEpisodePath() : "");
+        copy.setNtkImageEpisodeId(source.getNtkImageEpisodeId());
         copy.setNtkImageCount(source.getNtkImageCount());
         copy.setOfflinePath(source.getOfflinePath());
         if(includeImages) {

@@ -2066,6 +2066,7 @@ public class ViewerWarmupManager {
             Manga copy = new Manga(episodeId, name, target.getDate(), baseMode);
             copy.setTitleId(titleId);
             copy.setNtkEpisodePath(episodePath);
+            copy.setNtkImageEpisodeId(target.getNtkImageEpisodeId());
             copy.setNtkImageCount(target.getNtkImageCount());
             copy.setSeed(seed);
             copy.setImgs(images);
@@ -2078,6 +2079,7 @@ public class ViewerWarmupManager {
             Manga copy = new Manga(episodeId, name, fallback == null ? "" : fallback.getDate(), baseMode);
             copy.setTitleId(titleId);
             copy.setNtkEpisodePath(episodePath);
+            copy.setNtkImageEpisodeId(fallback == null ? "" : fallback.getNtkImageEpisodeId());
             copy.setNtkImageCount(fallback == null ? 0 : fallback.getNtkImageCount());
             copy.setSeed(seed);
             copy.setImgs(images);
@@ -2127,6 +2129,7 @@ public class ViewerWarmupManager {
                 copy.setMode(episode.getMode());
                 copy.setTitleId(episode.getTitleId());
                 copy.setNtkEpisodePath(episode.getNtkEpisodePath());
+                copy.setNtkImageEpisodeId(episode.getNtkImageEpisodeId());
                 copy.setNtkImageCount(episode.getNtkImageCount());
                 copies.add(copy);
             }
