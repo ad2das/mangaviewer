@@ -3,6 +3,7 @@ package ml.melun.mangaview.mangaview;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.net.Uri;
 import android.net.http.HttpEngine;
 import android.net.http.QuicOptions;
 import android.util.Base64;
@@ -1050,6 +1051,12 @@ public class CustomHttpClient {
             persistCookies();
             return;
         }
+        if(isNtkAckCookieName(k) && isExpiredNtkAckCookie(v)) {
+            cookies.remove(k);
+            invalidateCookieHeaderCache();
+            persistCookies();
+            return;
+        }
         cookies.put(k, v);
         invalidateCookieHeaderCache();
         persistCookies();
@@ -1100,7 +1107,7 @@ public class CustomHttpClient {
     }
 
     public synchronized boolean hasNtkAccessProof() {
-        return hasCloudflareClearance();
+        return hasCloudflareClearance() && hasRecentNtkAccessVerification();
     }
 
     public String getLastCloudflareChallengeUrl() {
@@ -1384,6 +1391,12 @@ public class CustomHttpClient {
                 boolean clearanceChanged = false;
                 for(String key : webViewCookies.keySet()) {
                     String value = webViewCookies.get(key);
+                    if(isNtkAckCookieName(key) && isExpiredNtkAckCookie(value)) {
+                        if(cookies.remove(key) != null)
+                            changed = true;
+                        expireWebViewCookie(url, key);
+                        continue;
+                    }
                     if("cf_clearance".equalsIgnoreCase(key) && !canAcceptWebViewClearance(value))
                         continue;
                     if(!value.equals(cookies.get(key))) {
@@ -1410,6 +1423,22 @@ public class CustomHttpClient {
 
     static Map<String, String> parseCookieHeaderForTest(String cookieStr) {
         return parseCookieHeader(cookieStr);
+    }
+
+    private void expireWebViewCookie(String url, String key) {
+        if(url == null || url.length() == 0 || key == null || key.length() == 0)
+            return;
+        try {
+            CookieManager manager = CookieManager.getInstance();
+            manager.setCookie(url, key + "=; Max-Age=0; Path=/");
+            String host = Uri.parse(url).getHost();
+            if(host != null && host.length() > 0)
+                manager.setCookie(url, key + "=; Max-Age=0; Path=/; Domain=" + host);
+            manager.flush();
+        } catch(Exception e) {
+            if(Log.isLoggable(TAG, Log.DEBUG))
+                Log.d(TAG, "ntk_cookie_expire_webview_error=" + e);
+        }
     }
 
     private static Map<String, String> parseCookieHeader(String cookieStr) {
@@ -1458,6 +1487,8 @@ public class CustomHttpClient {
                 String k = it.next();
                 cookies.put(k, obj.getString(k));
             }
+            if(removeExpiredNtkAckCookiesLocked())
+                persistCookies();
             invalidateCookieHeaderCache();
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
@@ -1503,6 +1534,11 @@ public class CustomHttpClient {
                 semi = c.length();
             String key = c.substring(0, eq);
             String value = c.substring(eq + 1, semi);
+            if(isNtkAckCookieName(key) && isExpiredNtkAckCookie(value)) {
+                if(cookies.remove(key) != null)
+                    changed = true;
+                continue;
+            }
             if(!value.equals(cookies.get(key))) {
                 cookies.put(key, value);
                 changed = true;
@@ -1523,6 +1559,8 @@ public class CustomHttpClient {
     }
 
     public synchronized String getCookieHeader() {
+        if(removeExpiredNtkAckCookiesLocked())
+            persistCookies();
         if(cookieHeaderCache != null)
             return cookieHeaderCache;
         StringBuilder builder = new StringBuilder();
@@ -1536,14 +1574,33 @@ public class CustomHttpClient {
     }
 
     private synchronized String getCookieHeaderForNtkPath(String path) {
+        if(removeExpiredNtkAckCookiesLocked())
+            persistCookies();
         StringBuilder builder = new StringBuilder();
         for(String key : cookies.keySet()) {
             String value = cookies.get(key);
-            if("ad_ack".equals(key) && !ntkAdAckCookieMatchesPath(value, path))
+            if(isNtkAckCookieName(key) && !ntkAckCookieUsableForPath(key, value, path))
                 continue;
             if(builder.length() > 0)
                 builder.append("; ");
             builder.append(key).append('=').append(value);
+        }
+        return builder.toString();
+    }
+
+    private synchronized String getCookieHeaderForNtkPath(String path, Map<String, String> customCookie) {
+        StringBuilder builder = new StringBuilder(getCookieHeaderForNtkPath(path));
+        if(customCookie != null) {
+            for(String key : customCookie.keySet()) {
+                if(key == null || key.length() == 0)
+                    continue;
+                String value = customCookie.get(key);
+                if(value == null)
+                    continue;
+                if(builder.length() > 0)
+                    builder.append("; ");
+                builder.append(key).append('=').append(value);
+            }
         }
         return builder.toString();
     }
@@ -3296,6 +3353,7 @@ public class CustomHttpClient {
         applyNtkApiHeaders(headers, baseUrl, url);
 
         boolean ntkBaseUrl = isNtkUrl(baseUrl);
+        applyNtkScopedCookieHeader(headers, ntkBaseUrl, url, useDefaultCookies, customCookie);
         boolean fastNtkPageDirect = shouldUseFastNtkPageDirect(ntkBaseUrl, url, fetchMode);
         boolean wolfWebViewFallbackAllowed = allowsWolfWebViewFallback();
         RequestGroup requestGroup = currentRequestGroup.get();
@@ -3336,6 +3394,7 @@ public class CustomHttpClient {
             ntkBaseUrl = isNtkUrl(baseUrl);
             headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
             applyNtkApiHeaders(headers, baseUrl, url);
+            applyNtkScopedCookieHeader(headers, ntkBaseUrl, url, useDefaultCookies, customCookie);
             fastNtkPageDirect = shouldUseFastNtkPageDirect(ntkBaseUrl, url, fetchMode);
             response = get(baseUrl + url, headers, fastNtkPageDirect);
         }
@@ -3346,15 +3405,18 @@ public class CustomHttpClient {
                 response.close();
             }
             long ackStartedAt = System.currentTimeMillis();
-            boolean nativeAckCompleted = performNtkNativeAckBypass(baseUrl, url);
+            String ackPath = ntkNativeAckProbePath(url);
+            boolean nativeAckCompleted = performNtkNativeAckBypass(baseUrl, ackPath, url);
             Log.d(TAG, "ntk_page_native_ack_recover path=" + url
                     + ",mode=" + fetchMode
                     + ",success=" + nativeAckCompleted
+                    + ",ackPath=" + ackPath
                     + ",ms=" + (System.currentTimeMillis() - ackStartedAt));
             response = null;
             if(nativeAckCompleted) {
                 headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
                 applyNtkApiHeaders(headers, baseUrl, url);
+                applyNtkScopedCookieHeader(headers, ntkBaseUrl, url, useDefaultCookies, customCookie);
                 fastNtkPageDirect = shouldUseFastNtkPageDirect(ntkBaseUrl, url, fetchMode);
                 response = get(baseUrl + url, headers, fastNtkPageDirect);
             }
@@ -3413,6 +3475,7 @@ public class CustomHttpClient {
             ntkBaseUrl = isNtkUrl(baseUrl);
             headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
             applyNtkApiHeaders(headers, baseUrl, url);
+            applyNtkScopedCookieHeader(headers, ntkBaseUrl, url, useDefaultCookies, customCookie);
             fastNtkPageDirect = shouldUseFastNtkPageDirect(ntkBaseUrl, url, fetchMode);
             response = get(baseUrl + url, headers, fastNtkPageDirect);
         }
@@ -3756,7 +3819,7 @@ public class CustomHttpClient {
             if(isCloudflareChallenge(code, body)) {
                 lastCloudflareChallengeUrl = (baseUrl == null ? "" : baseUrl) + (path == null ? "" : path);
                 lastCloudflareChallengeAt = System.currentTimeMillis();
-                if(code == 403)
+                if(code == 403 && !isNtkWebViewFetchPath(path))
                     clearCloudflareCookies();
             }
         } catch (Exception ignored) {
@@ -3966,7 +4029,7 @@ public class CustomHttpClient {
                                                                  int code, String path, FetchMode fetchMode) {
         if(!ntkUrl || path == null || fetchMode == FetchMode.CACHE_ONLY)
             return false;
-        if(!isNtkEpisodeDocumentPath(path) || path.startsWith("/api/ad/"))
+        if(!isNtkWebViewFetchPath(path) || path.startsWith("/api/ad/"))
             return false;
         return missingResponse || code == 403 || code >= 500;
     }
@@ -4024,6 +4087,18 @@ public class CustomHttpClient {
 
     private static boolean isNtkSearchPath(String path) {
         return HttpDocumentPolicy.isNtkSearchPath(path);
+    }
+
+    private static String ntkNativeAckProbePath(String path) {
+        if(path == null || path.length() == 0)
+            return "/";
+        if(path.startsWith("/api/manhwa-list"))
+            return "/manhwa";
+        if(path.startsWith("/api/works") || path.startsWith("/api/webtoon"))
+            return "/webtoon";
+        if(path.startsWith("/api/"))
+            return "/manhwa";
+        return path;
     }
 
     static boolean shouldUseSharedWebViewFallbackForTest(boolean ntkUrl, boolean missingResponse, String path, FetchMode fetchMode) {
@@ -4088,6 +4163,8 @@ public class CustomHttpClient {
             if(!shouldSkipWebViewCookieSync(baseUrl))
                 syncCookiesFromWebView(baseUrl);
             synchronized (this) {
+                if(removeExpiredNtkAckCookiesLocked())
+                    persistCookies();
                 cookie.putAll(this.cookies);
             }
         }
@@ -4155,6 +4232,13 @@ public class CustomHttpClient {
         headers.put("Sec-Fetch-Site", "same-origin");
         headers.remove("Upgrade-Insecure-Requests");
         headers.remove("Sec-Fetch-User");
+    }
+
+    private void applyNtkScopedCookieHeader(Map<String, String> headers, boolean ntkBaseUrl, String path,
+                                            Boolean useDefaultCookies, Map<String, String> customCookie) {
+        if(headers == null || !ntkBaseUrl || !Boolean.TRUE.equals(useDefaultCookies))
+            return;
+        headers.put("Cookie", getCookieHeaderForNtkPath(path, customCookie));
     }
 
     private void putClientHintHeaders(Map<String, String> headers) {
@@ -5704,27 +5788,87 @@ public class CustomHttpClient {
         return ntkAdAckCookieMatchesPath(cookies.get("ad_ack"), path);
     }
 
-    private static boolean ntkAdAckCookieMatchesPath(String value, String path) {
-        if(value == null || value.length() == 0 || path == null || path.length() == 0)
+    private synchronized boolean removeExpiredNtkAckCookiesLocked() {
+        boolean changed = false;
+        for(String key : new String[]{"ad_ack", "ad_ack_c"}) {
+            String value = cookies.get(key);
+            if(value != null && isExpiredNtkAckCookie(value)) {
+                cookies.remove(key);
+                changed = true;
+            }
+        }
+        if(changed)
+            invalidateCookieHeaderCache();
+        if(changed)
+            clearNtkAccessVerification();
+        return changed;
+    }
+
+    private static boolean isNtkAckCookieName(String key) {
+        return "ad_ack".equals(key) || "ad_ack_c".equals(key);
+    }
+
+    private static boolean ntkAckCookieUsableForPath(String key, String value, String path) {
+        if(value == null || value.length() == 0)
             return false;
+        if(isExpiredNtkAckCookie(value))
+            return false;
+        if("ad_ack".equals(key))
+            return ntkAdAckCookieMatchesPath(value, path);
+        if("ad_ack_c".equals(key))
+            return true;
+        return true;
+    }
+
+    private static boolean isExpiredNtkAckCookie(String value) {
+        long exp = ntkAckCookieExpiryMs(value);
+        return exp > 0L && exp < System.currentTimeMillis();
+    }
+
+    private static String ntkAckCookieScope(String value) {
+        JSONObject payload = ntkAckCookiePayload(value);
+        return payload == null ? "" : payload.optString("scope", "");
+    }
+
+    private static long ntkAckCookieExpiryMs(String value) {
+        JSONObject payload = ntkAckCookiePayload(value);
+        if(payload == null)
+            return 0L;
+        long exp = payload.optLong("exp", 0L);
+        if(exp <= 0L)
+            return 0L;
+        return exp < 100_000_000_000L ? exp * 1000L : exp;
+    }
+
+    private static JSONObject ntkAckCookiePayload(String value) {
+        if(value == null || value.length() == 0)
+            return null;
         try {
             String[] parts = value.split("\\.");
             if(parts.length < 1)
-                return false;
+                return null;
             String payload = parts[0];
             int padding = (4 - (payload.length() % 4)) % 4;
             StringBuilder padded = new StringBuilder(payload);
             for(int i = 0; i < padding; i++)
                 padded.append('=');
             byte[] decoded = Base64.decode(padded.toString(), Base64.URL_SAFE | Base64.NO_WRAP);
-            JSONObject json = new JSONObject(new String(decoded, StandardCharsets.UTF_8));
+            return new JSONObject(new String(decoded, StandardCharsets.UTF_8));
+        } catch(Exception ignored) {
+            return null;
+        }
+    }
+
+    private static boolean ntkAdAckCookieMatchesPath(String value, String path) {
+        if(value == null || value.length() == 0 || path == null || path.length() == 0)
+            return false;
+        try {
+            JSONObject json = ntkAckCookiePayload(value);
+            if(json == null)
+                return false;
             String scope = json.optString("scope", "");
-            long exp = json.optLong("exp", 0L);
-            if(exp > 0L) {
-                long expMs = exp < 100_000_000_000L ? exp * 1000L : exp;
-                if(expMs < System.currentTimeMillis())
-                    return false;
-            }
+            if(isExpiredNtkAckCookie(value))
+                return false;
             return ntkPathScopesEqual(scope, path);
         } catch(Exception ignored) {
             return false;
@@ -6198,6 +6342,12 @@ public class CustomHttpClient {
                 int end = value.indexOf(';', eq + 1);
                 String name = value.substring(0, eq).trim();
                 String cookieValue = value.substring(eq + 1, end >= 0 ? end : value.length()).trim();
+                if(isNtkAckCookieName(name) && isExpiredNtkAckCookie(cookieValue)) {
+                    if(cookies.remove(name) != null)
+                        changed = true;
+                    expireWebViewCookie(url, name);
+                    continue;
+                }
                 if(name.length() > 0 && cookieValue.length() > 0 && !cookieValue.equals(cookies.get(name))) {
                     cookies.put(name, cookieValue);
                     changed = true;
