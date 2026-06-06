@@ -302,8 +302,8 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     }
 
     private void bindConfirmedEmptyEpisodeRow(ViewHolder holder, int position) {
-        setTextIfChanged(holder.episode, "\uD68C\uCC28 \uBAA9\uB85D\uC744 \uBC1B\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4");
-        setTextIfChanged(holder.date, "\uC6D0\uBCF8 \uC778\uC99D\uC774 \uD544\uC694\uD558\uAC70\uB098 NTK\uC5D0 \uD68C\uCC28\uAC00 \uC544\uC9C1 \uC218\uC9D1\uB418\uC9C0 \uC54A\uC740 \uC0C1\uD0DC\uC785\uB2C8\uB2E4.");
+        setTextIfChanged(holder.episode, "\uD68C\uCC28\uAC00 \uC544\uC9C1 \uC5C6\uC2B5\uB2C8\uB2E4");
+        setTextIfChanged(holder.date, "NTK\uAC00 \uC774 \uC791\uD488\uC758 \uD68C\uCC28 \uBAA9\uB85D\uC744 0\uAC1C\uB85C \uC751\uB2F5\uD588\uC2B5\uB2C8\uB2E4. \uC5C5\uB370\uC774\uD2B8\uB418\uBA74 \uB2E4\uC2DC \uD45C\uC2DC\uB429\uB2C8\uB2E4.");
         setVisibilityIfChanged(holder.newBadge, View.GONE);
         setVisibilityIfChanged(holder.action, View.GONE);
         holder.boundKey = "ntk-empty:" + position;
@@ -324,7 +324,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         holder.h_first.setEnabled(!empty);
         holder.h_first.setAlpha(empty ? 0.55f : 1f);
         holder.h_first.setText(empty
-                ? "\uD68C\uCC28 \uC900\uBE44 \uC911"
+                ? "\uC5C5\uB370\uC774\uD2B8 \uB300\uAE30"
                 : "\uBC14\uB85C \uC77D\uAE30");
     }
 

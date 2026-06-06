@@ -232,6 +232,11 @@ public class MangaTest {
         org.junit.Assert.assertFalse(Manga.looksLikeNtkMissingPageForTest(
                 "404: This page could not be found. {\"imageMetas\":[{\"page\":1},{\"page\":2}],"
                         + "\"imagesToken\":\"viewer-token\"}"));
+
+        org.junit.Assert.assertFalse(Manga.looksLikeNtkMissingPageForTest(
+                "<html><script>self.__next_f.push([\"NEXT_HTTP_ERROR_FALLBACK\",404])</script>"
+                        + "<script>self.__next_f.push([1,\"{\\\"sourceWorkId\\\":\\\"19353\\\","
+                        + "\\\"imageCount\\\":2}\"])</script></html>"));
     }
 
     @Test
