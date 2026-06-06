@@ -33,6 +33,7 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.webkit.RenderProcessGoneDetail;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -68,6 +69,7 @@ import static ml.melun.mangaview.mangaview.CustomHttpClient.NTK_WEBTOON_URL;
 public class CaptchaActivity extends AppCompatActivity {
     WebView webView;
     private TextView infoText;
+    private ProgressBar progressBar;
     public static final int RESULT_CAPTCHA = 15;
     public static final int REQUEST_CAPTCHA = 32;
     String domain;
@@ -150,14 +152,14 @@ public class CaptchaActivity extends AppCompatActivity {
             "var rect=iframe.getBoundingClientRect();" +
             "if(usableTurnstileFrame(iframe,rect)){" +
             "var t=checkboxTarget(rect);" +
-            "return JSON.stringify({type:'iframe',x:t.x,y:t.y,w:t.w,h:t.h,sig:iframe.getAttribute('src')||iframe.id||iframe.name||''});" +
+            "return JSON.stringify({type:'iframe',x:t.x,y:t.y,w:t.w,h:t.h,vw:window.innerWidth||document.documentElement.clientWidth||0,vh:window.innerHeight||document.documentElement.clientHeight||0,sig:iframe.getAttribute('src')||iframe.id||iframe.name||''});" +
             "}" +
             "}" +
             "var turnstileDiv=document.querySelector('.cf-turnstile,.turnstile,[class*=\"turnstile\"]');" +
             "if(turnstileDiv){" +
             "var rect=turnstileDiv.getBoundingClientRect();" +
             "if(rect.width>10&&rect.height>10){" +
-            "return JSON.stringify({type:'div',x:rect.left+rect.width/2,y:rect.top+rect.height/2,w:rect.width,h:rect.height,sig:turnstileDiv.id||turnstileDiv.className||turnstileDiv.getAttribute('data-sitekey')||''});" +
+            "return JSON.stringify({type:'div',x:rect.left+rect.width/2,y:rect.top+rect.height/2,w:rect.width,h:rect.height,vw:window.innerWidth||document.documentElement.clientWidth||0,vh:window.innerHeight||document.documentElement.clientHeight||0,sig:turnstileDiv.id||turnstileDiv.className||turnstileDiv.getAttribute('data-sitekey')||''});" +
             "}" +
             "}" +
             "var host=(location.hostname||'').toLowerCase();" +
@@ -187,7 +189,7 @@ public class CaptchaActivity extends AppCompatActivity {
             "var rect=host.getBoundingClientRect();" +
             "if(rect.width>50&&rect.height>50&&rect.height<180){" +
             "var t=checkboxTarget(rect);" +
-            "return JSON.stringify({type:'iframe',x:t.x,y:t.y,w:t.w,h:t.h});" +
+            "return JSON.stringify({type:'iframe',x:t.x,y:t.y,w:t.w,h:t.h,vw:window.innerWidth||document.documentElement.clientWidth||0,vh:window.innerHeight||document.documentElement.clientHeight||0});" +
             "}" +
             "}" +
             "}" +
@@ -277,8 +279,8 @@ public class CaptchaActivity extends AppCompatActivity {
     private static final long RETRY_MAX_MS = 300;
     private static final long TURNSTILE_EVALUATION_MIN_INTERVAL_MS = 600L;
     private static final long TURNSTILE_IDLE_RECHECK_MS = 1_000L;
-    private static final long TURNSTILE_REPEAT_TOUCH_INTERVAL_MS = 8_000L;
-    private static final int TURNSTILE_MAX_TOUCHES_PER_WIDGET = 3;
+    private static final long TURNSTILE_REPEAT_TOUCH_INTERVAL_MS = 2_500L;
+    private static final int TURNSTILE_MAX_TOUCHES_PER_WIDGET = 6;
     private boolean isFirstAttempt = true;
     private boolean isFinishing = false;
     private Set<String> initialClearanceValues = new HashSet<>();
@@ -322,6 +324,13 @@ public class CaptchaActivity extends AppCompatActivity {
             return;
 
         infoText = this.findViewById(R.id.infoText);
+        progressBar = this.findViewById(R.id.progressBar);
+        if(progressBar != null) {
+            progressBar.setIndeterminate(false);
+            progressBar.setMax(100);
+            progressBar.setProgress(0);
+            progressBar.setVisibility(View.VISIBLE);
+        }
         try {
             URL u = new URL(purl);
             domain = u.getHost();
@@ -376,6 +385,8 @@ public class CaptchaActivity extends AppCompatActivity {
             @Override
             public boolean onConsoleMessage(android.webkit.ConsoleMessage consoleMessage) {
                 String msg = consoleMessage.message();
+                if(shouldSuppressCaptchaConsoleMessage(msg))
+                    return true;
                 android.util.Log.d("CaptchaActivity", "JS Console [" + consoleMessage.sourceId() + ":" + consoleMessage.lineNumber() + "] " + msg);
                 if(msg != null && msg.contains("__TURNSTILE_CB__")) {
                     android.util.Log.d("CaptchaActivity", "Turnstile checkbox detected via MutationObserver - triggering click");
@@ -389,6 +400,16 @@ public class CaptchaActivity extends AppCompatActivity {
                 android.util.Log.d("CaptchaActivity", "JS Alert: " + message);
                 result.confirm();
                 return true;
+            }
+
+            @Override
+            public void onProgressChanged(WebView view, int newProgress) {
+                if(progressBar != null) {
+                    progressBar.setIndeterminate(false);
+                    progressBar.setProgress(newProgress);
+                    progressBar.setVisibility(newProgress >= 100 ? View.GONE : View.VISIBLE);
+                }
+                super.onProgressChanged(view, newProgress);
             }
         });
 
@@ -411,6 +432,11 @@ public class CaptchaActivity extends AppCompatActivity {
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
                 handler.removeCallbacksAndMessages(null);
                 hideCaptchaLoadError();
+                if(progressBar != null) {
+                    progressBar.setIndeterminate(false);
+                    progressBar.setProgress(0);
+                    progressBar.setVisibility(View.VISIBLE);
+                }
                 pageFinishedTime = 0;
                 lastAttemptTime = 0;
                 lastCookieReadAt = 0;
@@ -510,6 +536,11 @@ public class CaptchaActivity extends AppCompatActivity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 if(isFinishing) return;
+                if(progressBar != null) {
+                    progressBar.setIndeterminate(false);
+                    progressBar.setProgress(100);
+                    progressBar.setVisibility(View.GONE);
+                }
                 if(readCookiesAndFinish(cookiem, purl, url))
                     return;
 
@@ -1311,24 +1342,32 @@ public class CaptchaActivity extends AppCompatActivity {
                     isFirstAttempt = false;
                 } else if("iframe".equals(type)) {
                     normalNtkPageCount = 0;
-                    final float x = (float) obj.getDouble("x");
-                    final float y = (float) obj.getDouble("y");
-                    final float w = (float) obj.optDouble("w", 60);
-                    final float h = (float) obj.optDouble("h", 60);
+                    float x = (float) obj.getDouble("x");
+                    float y = (float) obj.getDouble("y");
+                    float w = (float) obj.optDouble("w", 60);
+                    float h = (float) obj.optDouble("h", 60);
+                    float[] converted = cssViewportRectToViewPixels(obj, x, y, w, h);
+                    final float touchX = converted[0];
+                    final float touchY = converted[1];
+                    final float touchW = converted[2];
+                    final float touchH = converted[3];
                     String signature = turnstileSignature(obj, x, y, w, h);
-                    android.util.Log.d("CaptchaActivity", "Turnstile iframe found at: " + x + "," + y + " size:" + w + "x" + h);
+                    android.util.Log.d("CaptchaActivity", "Turnstile iframe found css=" + x + "," + y
+                            + " size=" + w + "x" + h
+                            + " touch=" + touchX + "," + touchY
+                            + " touchSize=" + touchW + "x" + touchH);
 
                     long now = System.currentTimeMillis();
                     if(!signature.equals(lastTurnstileClickSignature)) {
                         lastTurnstileClickSignature = signature;
                         lastTurnstileRepeatTouchAt = now;
                         turnstileRepeatTouchCount = 1;
-                        postTurnstileTouch(x, y, w, h);
+                        postTurnstileTouch(touchX, touchY, touchW, touchH);
                     } else if(shouldRetryTurnstileTouchForTest(
                             now, lastTurnstileRepeatTouchAt, turnstileRepeatTouchCount)) {
                         lastTurnstileRepeatTouchAt = now;
                         turnstileRepeatTouchCount++;
-                        postTurnstileTouch(x, y, w, h);
+                        postTurnstileTouch(touchX, touchY, touchW, touchH);
                     }
                     isFirstAttempt = false;
                 } else if("normal".equals(type)) {
@@ -1354,6 +1393,37 @@ public class CaptchaActivity extends AppCompatActivity {
                 android.util.Log.e("CaptchaActivity", "Failed to parse turnstile result", e);
             }
         });
+    }
+
+    private boolean shouldSuppressCaptchaConsoleMessage(String msg) {
+        if(msg == null)
+            return false;
+        if(msg.contains("__TURNSTILE_CB__") || msg.contains("__NTK_QUIC_"))
+            return false;
+        String lower = msg.toLowerCase(java.util.Locale.ROOT);
+        return lower.contains("font-size:0;color:transparent")
+                || lower.equals("nan")
+                || lower.contains("permissions-policy header")
+                || lower.contains("preloaded using link preload");
+    }
+
+    private float[] cssViewportRectToViewPixels(org.json.JSONObject obj, float x, float y, float w, float h) {
+        float scaleX = 1f;
+        float scaleY = 1f;
+        try {
+            double viewportWidth = obj.optDouble("vw", 0d);
+            double viewportHeight = obj.optDouble("vh", 0d);
+            if(webView != null && viewportWidth > 0d && webView.getWidth() > 0)
+                scaleX = (float) (webView.getWidth() / viewportWidth);
+            if(webView != null && viewportHeight > 0d && webView.getHeight() > 0)
+                scaleY = (float) (webView.getHeight() / viewportHeight);
+            if(scaleX <= 0f || scaleX > 8f)
+                scaleX = 1f;
+            if(scaleY <= 0f || scaleY > 8f)
+                scaleY = scaleX;
+        } catch (Exception ignored) {
+        }
+        return new float[]{x * scaleX, y * scaleY, Math.max(24f, w * scaleX), Math.max(24f, h * scaleY)};
     }
 
     private String turnstileSignature(org.json.JSONObject obj, float x, float y, float w, float h) {
@@ -1469,14 +1539,12 @@ public class CaptchaActivity extends AppCompatActivity {
     private void simulateTouchWithMove(View view, float centerX, float centerY, float width, float height) {
         if(view == null) return;
         Random random = new Random();
-        float density = getResources().getDisplayMetrics().density;
 
-        // getBoundingClientRect returns CSS pixels relative to WebView viewport
-        // dispatchTouchEvent expects view-local physical pixels (0,0 = top-left of view)
-        float baseX = centerX * density;
-        float baseY = centerY * density;
-        float physW = width * density;
-        float physH = height * density;
+        // Values passed here are already converted to WebView-local pixels.
+        float baseX = centerX;
+        float baseY = centerY;
+        float physW = width;
+        float physH = height;
 
         float targetX = baseX + (random.nextFloat() - 0.5f) * physW * 0.5f;
         float targetY = baseY + (random.nextFloat() - 0.5f) * physH * 0.5f;

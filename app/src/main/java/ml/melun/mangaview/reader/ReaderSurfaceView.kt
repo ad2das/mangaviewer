@@ -1215,6 +1215,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (top > viewHeight) break
             val bottom = top + pageHeight
             if (bottom > 0f && top < viewHeight) {
+                if (
+                    page.bitmap == null &&
+                    page.tiles.isEmpty() &&
+                    page.cardText == null &&
+                    page.errorText == null &&
+                    top >= viewHeight - COVERAGE_EDGE_PLACEHOLDER_FILL_PX &&
+                    ceil(min(viewHeight.toFloat(), bottom) - max(0f, top)).toInt() <= COVERAGE_EDGE_PLACEHOLDER_FILL_PX &&
+                    items.lastOrNull()?.let { itemHasDrawable(it) } == true
+                ) {
+                    index++
+                    continue
+                }
                 if (page.bitmap == null && page.tiles.isEmpty() && page.cardText == null && page.errorText == null) {
                     visibleLoading++
                 } else {
@@ -1227,7 +1239,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val last = items.lastOrNull()
         if (last != null && visibleLoading == 0 && itemHasDrawable(last)) {
             val bottomGap = viewHeight - ceil(last.top + last.pageHeight).toInt()
-            if (bottomGap in 1..COVERAGE_EDGE_FILL_PX) {
+            if (bottomGap in 1..COVERAGE_EDGE_PLACEHOLDER_FILL_PX) {
                 items[items.lastIndex] = last.copy(pageHeight = last.pageHeight + bottomGap)
             }
         }
@@ -2175,6 +2187,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val BUSY_COVERAGE_LOG_INTERVAL_MS = 250L
         private const val SLOW_FRAME_LOG_INTERVAL_MS = 500L
         private const val COVERAGE_EDGE_FILL_PX = 8
+        private const val COVERAGE_EDGE_PLACEHOLDER_FILL_PX = 96
         private const val BOUNDARY_EPSILON_PX = 2f
         private const val BOUNDARY_FLING_EXTEND_EPSILON_PX = 4
         private const val BOUNDARY_FLING_MIN_VELOCITY_MULTIPLIER = 2f

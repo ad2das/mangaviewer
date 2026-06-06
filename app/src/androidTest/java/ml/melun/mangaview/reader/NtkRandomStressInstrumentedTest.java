@@ -53,6 +53,7 @@ public class NtkRandomStressInstrumentedTest {
     private static final int PAGE_SIZE = 30;
     private static final long PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final String[] MODES = new String[]{"generated", "native-ack", "api-fallback"};
+    private static final long NTK_CAPTCHA_PROBE_WAIT_MS = 18_000L;
 
     @Test
     public void dumpNtkRscListPayloadWhenRequested() throws Exception {
@@ -117,7 +118,6 @@ public class NtkRandomStressInstrumentedTest {
             Title title = null;
             int fetchResult = Title.LOAD_ERROR;
             for(int titleAttempt = 0; titleAttempt < 6; titleAttempt++) {
-                ensureNtkAccessAfterChallenge(context, client, baseMode);
                 Title candidate = pickRandomTitle(context, client, random, baseMode);
                 fetchResult = candidate.getEps() != null && candidate.getEps().size() > 0
                         ? Title.LOAD_OK : candidate.fetchEps(client);
@@ -172,7 +172,7 @@ public class NtkRandomStressInstrumentedTest {
         Activity activity = null;
         try {
             activity = InstrumentationRegistry.getInstrumentation().startActivitySync(intent);
-            long deadline = SystemClock.elapsedRealtime() + 90_000L;
+            long deadline = SystemClock.elapsedRealtime() + NTK_CAPTCHA_PROBE_WAIT_MS;
             while(SystemClock.elapsedRealtime() < deadline) {
                 client.syncCookiesFromWebView(webtoonRoot, true);
                 client.syncCookiesFromWebView(client.getUrl(), true);
@@ -205,6 +205,12 @@ public class NtkRandomStressInstrumentedTest {
                     + ",type=" + e.getClass().getSimpleName()
                     + ",message=" + e.getMessage());
             if(isCloudflareFailure(e)) {
+                Title dbTitle = pickRandomTitleFromClassificationDb(context, random, baseMode);
+                if(dbTitle != null)
+                    return dbTitle;
+                Title numericTitle = pickRandomTitleFromNumericProbe(client, random, baseMode);
+                if(numericTitle != null)
+                    return numericTitle;
                 ensureNtkAccessAfterChallenge(context, client, baseMode);
                 try {
                     return pickRandomTitleFromApi(client, random, baseMode);
@@ -380,8 +386,6 @@ public class NtkRandomStressInstrumentedTest {
                         + ",path=" + path
                         + ",type=" + e.getClass().getSimpleName()
                         + ",message=" + e.getMessage());
-                if(isCloudflareFailure(e))
-                    ensureNtkAccessAfterChallenge(null, client, baseMode);
             }
         }
         return null;
@@ -427,7 +431,9 @@ public class NtkRandomStressInstrumentedTest {
         if(message == null)
             return false;
         String lower = message.toLowerCase(Locale.ROOT);
-        return lower.contains("cloudflare") || lower.contains("challenge");
+        return lower.contains("cloudflare")
+                || lower.contains("challenge")
+                || lower.contains("request failed: /api/");
     }
 
     private static String ntkCategoryPagePath(String path, int page) {

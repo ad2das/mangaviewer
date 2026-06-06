@@ -32,6 +32,7 @@ import ml.melun.mangaview.R
 import ml.melun.mangaview.Utils
 import ml.melun.mangaview.activity.CaptchaActivity.REQUEST_CAPTCHA
 import ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA
+import ml.melun.mangaview.mangaview.MTitle
 import ml.melun.mangaview.mangaview.Manga
 import ml.melun.mangaview.mangaview.Title
 import ml.melun.mangaview.reader.ReaderLaunchPreparer
@@ -116,6 +117,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var viewerLaunchStartedAtMs = 0L
     private var viewerLaunchSourceSite = ""
     private var firstDrawableMetricLogged = false
+    private var drawableReadyDescriptionPosted = false
     private val launchDrawableMetricPages = HashSet<Int>()
     private val pendingPageBitmaps = LinkedHashMap<Int, Bitmap>()
     private val pendingPageTiles = LinkedHashMap<Int, PendingPageTiles>()
@@ -133,6 +135,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private val saveProgressRunnable = Runnable {
         saveCurrentReadingProgress()
         pendingProgressInfo = null
+    }
+    private val drawableReadyDescriptionRunnable = object : Runnable {
+        override fun run() {
+            if (destroyed || isFinishing || drawableReadyDescriptionPosted) return
+            if (isVisibleViewportReady()) {
+                postDrawableReadyDescription()
+            } else {
+                statusHandler.postDelayed(this, DRAWABLE_READY_CHECK_INTERVAL_MS)
+            }
+        }
     }
     private val showInitialStatusRunnable = Runnable {
         if (initialStatusPending && !pagesReady && !destroyed && !isFinishing) {
@@ -425,6 +437,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         statusHandler.removeCallbacks(showAdjacentStatusRunnable)
         statusHandler.removeCallbacks(initialDrawGateTimeoutRunnable)
         statusHandler.removeCallbacks(deferredBoundaryAppendRunnable)
+        statusHandler.removeCallbacks(drawableReadyDescriptionRunnable)
         missingEpisodePromptState.dismiss()
         removeInitialDrawGateListener()
         saveCurrentReadingProgress()
@@ -729,10 +742,49 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun logFirstDrawableMetric(index: Int, kind: String) {
         if (firstDrawableMetricLogged || viewerLaunchStartedAtMs <= 0L) return
         firstDrawableMetricLogged = true
-        renderView.contentDescription = READER_DRAWABLE_READY_DESCRIPTION
-        renderView.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+        scheduleDrawableReadyDescription()
         val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
         Log.d("ViewerPerf", "reader_open_to_first_drawable source=$viewerLaunchSourceSite kind=$kind page=$index ms=$elapsed")
+    }
+
+    private fun scheduleDrawableReadyDescription() {
+        if (drawableReadyDescriptionPosted) return
+        statusHandler.removeCallbacks(drawableReadyDescriptionRunnable)
+        drawableReadyDescriptionRunnable.run()
+    }
+
+    private fun isVisibleViewportReady(): Boolean {
+        val snapshot = renderView.visibleCoverageSnapshot() ?: return false
+        if (
+            snapshot.drawablePx > 0 &&
+            snapshot.visibleLoading == 0 &&
+            snapshot.missingPx == 0 &&
+            snapshot.placeholderPx == 0
+        ) {
+            return isInitialContinuousScrollReady()
+        }
+        return false
+    }
+
+    private fun isInitialContinuousScrollReady(): Boolean {
+        if (pageCount <= 0) return launchDrawableMetricPages.isNotEmpty()
+        val readyAhead = if (currentManga?.baseMode == MTitle.base_webtoon) {
+            INITIAL_READY_WEBTOON_AHEAD_PAGES
+        } else {
+            INITIAL_READY_MANHWA_AHEAD_PAGES
+        }
+        val lastRequired = minOf(pageCount - 1, currentPage + readyAhead)
+        for (page in currentPage..lastRequired) {
+            if (!launchDrawableMetricPages.contains(page)) return false
+        }
+        return true
+    }
+
+    private fun postDrawableReadyDescription() {
+        if (drawableReadyDescriptionPosted) return
+        drawableReadyDescriptionPosted = true
+        renderView.contentDescription = READER_DRAWABLE_READY_DESCRIPTION
+        renderView.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
     }
 
     private fun logLaunchDrawableMetric(index: Int, kind: String) {
@@ -1748,6 +1800,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val INITIAL_DRAW_GATE_TIMEOUT_MS = 1600L
         private const val READER_LOADING_DESCRIPTION = "reader-loading"
         private const val READER_DRAWABLE_READY_DESCRIPTION = "reader-drawable-ready"
+        private const val DRAWABLE_READY_CHECK_INTERVAL_MS = 80L
+        private const val INITIAL_READY_WEBTOON_AHEAD_PAGES = 2
+        private const val INITIAL_READY_MANHWA_AHEAD_PAGES = 2
         private const val CAPTCHA_RETRY_READER = 0
         private const val CAPTCHA_RETRY_TOOLBAR_ADJACENT = 1
         private const val CAPTCHA_RETRY_BOUNDARY = 2

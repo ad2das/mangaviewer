@@ -80,7 +80,9 @@ public final class NtkQuicFetcher {
             return fetchWithEngine(engine, executor, url, userAgent, cookieHeader, requestHeaders,
                     method, body, timeoutMs);
         } finally {
-            executor.shutdownNow();
+            executor.shutdown();
+            if(!executor.awaitTermination(750, TimeUnit.MILLISECONDS))
+                executor.shutdownNow();
         }
     }
 
@@ -162,6 +164,7 @@ public final class NtkQuicFetcher {
         request.start();
         if(!done.await(Math.max(1L, timeoutMs), TimeUnit.MILLISECONDS)) {
             request.cancel();
+            done.await(750, TimeUnit.MILLISECONDS);
             return Result.error(new java.net.SocketTimeoutException("QUIC fetch timed out"));
         }
         if(state.error != null)

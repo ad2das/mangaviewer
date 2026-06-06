@@ -463,7 +463,17 @@ class ReaderSession(
         for (offset in 1..NTK_INITIAL_BOOT_PRIORITY_PAGES) {
             val ahead = anchor + offset
             if (ahead < count) {
-                requestPage(ahead, busy = true, anchor = false, generation = FOREGROUND_PRIME_WARM_GENERATION)
+                val generation = if (offset <= NTK_FOREGROUND_STREAM_AHEAD_PAGES) {
+                    FOREGROUND_PRIME_WARM_GENERATION
+                } else {
+                    PRIME_WARM_GENERATION
+                }
+                requestPage(
+                    ahead,
+                    busy = offset <= NTK_INITIAL_BOOT_URGENT_PAGES,
+                    anchor = false,
+                    generation = generation
+                )
             }
         }
         val backgroundLast = minOf(count - 1, anchor + NTK_INITIAL_BOOT_BACKGROUND_PAGES)
@@ -1335,14 +1345,32 @@ class ReaderSession(
 
     private fun warmAppendedEpisode(cardIndex: Int, total: Int) {
         if (cancelled.get() || cardIndex < 0 || total <= cardIndex) return
-        val generation = windowGeneration.get()
-        val busy = viewportBusy.get()
-        val decodeAhead = if (busy) BOUNDARY_BUSY_DECODE_AHEAD_PAGES else BOUNDARY_DECODE_AHEAD_PAGES
-        val byteAhead = if (busy) BOUNDARY_BUSY_BYTE_AHEAD_PAGES else BOUNDARY_BYTE_AHEAD_PAGES
+        val ntk = isNtkSource(manga, title)
+        val generation = if (ntk) FOREGROUND_PRIME_WARM_GENERATION else windowGeneration.get()
+        val busy = ntk || viewportBusy.get()
+        val decodeAhead = if (ntk) {
+            NTK_PRIMED_EPISODE_DECODE_AHEAD_PAGES
+        } else if (busy) {
+            BOUNDARY_BUSY_DECODE_AHEAD_PAGES
+        } else {
+            BOUNDARY_DECODE_AHEAD_PAGES
+        }
+        val byteAhead = if (ntk) {
+            NTK_PRIMED_EPISODE_BYTE_AHEAD_PAGES
+        } else if (busy) {
+            BOUNDARY_BUSY_BYTE_AHEAD_PAGES
+        } else {
+            BOUNDARY_BYTE_AHEAD_PAGES
+        }
         requestPage(cardIndex, busy = busy, anchor = false, generation = generation)
         val last = minOf(total - 1, cardIndex + decodeAhead)
         for (index in (cardIndex + 1)..last) {
-            requestPage(index, busy = busy, anchor = false, generation = generation)
+            val priorityGeneration = if (ntk && index <= cardIndex + NTK_PRIMED_EPISODE_PRIORITY_PAGES) {
+                FOREGROUND_PRIME_WARM_GENERATION
+            } else {
+                generation
+            }
+            requestPage(index, busy = busy, anchor = false, generation = priorityGeneration)
         }
         val byteLast = minOf(total - 1, cardIndex + byteAhead)
         for (index in (last + 1)..byteLast) {
@@ -1593,13 +1621,12 @@ class ReaderSession(
             return
         }
         val activeWidth = inFlightWidths[index] ?: 0
-        if (activeWidth >= effectiveTargetWidth && loading.contains(index)) return
+        val visiblePriority = (busy || anchor) && !hasDeliveredBitmap(index)
+        if (activeWidth >= effectiveTargetWidth && loading.contains(index) && !visiblePriority) return
         val ownsLoading = loading.add(index)
         val urgent = !ownsLoading &&
-            (busy || anchor) &&
-            !hasDeliveredBitmap(index) &&
+            visiblePriority &&
             urgentLoading.add(index)
-        val visiblePriority = (busy || anchor) && !hasDeliveredBitmap(index)
         if (!ownsLoading && !urgent) {
             if (targetWidth > activeWidth)
                 ViewerWarmupManager.logMetric("busy_to_idle_upgrade_pending", targetWidth.toLong())
@@ -2801,6 +2828,22 @@ class ReaderSession(
             }
             return
         }
+        if (shouldDeliverRetainedImmediately(currentDelivery)) {
+            ViewerWarmupManager.logMetric("reader_retained_delivery_direct", currentDelivery.index.toLong())
+            val deliverRetained = Runnable {
+                if (cancelled.get()) {
+                    pendingDeliveryWidths.remove(currentDelivery.index)
+                    recycleDecodeResult(currentDelivery.result)
+                    return@Runnable
+                }
+                deliverDecodeResultOnMain(currentDelivery, viewportBusy.get())
+            }
+            if (!main.postAtFrontOfQueue(deliverRetained)) {
+                pendingDeliveryWidths.remove(currentDelivery.index)
+                recycleDecodeResult(currentDelivery.result)
+            }
+            return
+        }
         deliveryQueue.add(currentDelivery)
         scheduleDeliveryDrain()
     }
@@ -2808,6 +2851,18 @@ class ReaderSession(
     private fun shouldDeliverInitialAnchorImmediately(delivery: Delivery): Boolean {
         if (firstBitmapLogged.get()) return false
         return delivery.index == currentStartPage()
+    }
+
+    private fun shouldDeliverRetainedImmediately(delivery: Delivery): Boolean {
+        if (!firstBitmapLogged.get()) return false
+        if (!isNtkSource(manga, title)) return false
+        val retainedFirst: Int
+        val retainedLast: Int
+        synchronized(deliveredBitmaps) {
+            retainedFirst = retainedFirstPage
+            retainedLast = retainedLastPage
+        }
+        return delivery.index in retainedFirst..retainedLast
     }
 
     private fun shouldHoldInitialNtkDelivery(delivery: Delivery): Boolean {
@@ -2969,6 +3024,10 @@ class ReaderSession(
     ): Boolean {
         if (!page.manga.isOnline) return false
         if (anchor || index == currentStartPage()) return true
+        val current = currentStartPage()
+        if (isNtkSource(page.manga, title) && index > current + NTK_FOREGROUND_STREAM_AHEAD_PAGES) {
+            return false
+        }
         if (urgent) return true
         if (generation == FOREGROUND_PRIME_WARM_GENERATION && isNtkSource(page.manga, title)) return true
         if (!urgent && (!busy || generation == PRIME_WARM_GENERATION)) return false
@@ -3564,8 +3623,8 @@ class ReaderSession(
         private const val PREPARED_BITMAP_RELEASE_DELAY_MS = 12000L
         private const val PRIME_WARM_GENERATION = Int.MIN_VALUE
         private const val FOREGROUND_PRIME_WARM_GENERATION = Int.MIN_VALUE + 1
-        private const val URGENT_VISIBLE_PIPELINE_PARALLELISM = 5
-        private const val PRIME_PIPELINE_PARALLELISM = 2
+        private const val URGENT_VISIBLE_PIPELINE_PARALLELISM = 8
+        private const val PRIME_PIPELINE_PARALLELISM = 8
         private const val NTK_FOREGROUND_PRIME_HEDGE_DELAY_MS = 1400L
         private const val PRIME_FORWARD_EPISODES = 8
         private const val NTK_PRIME_FORWARD_EPISODES = 0
@@ -3580,15 +3639,17 @@ class ReaderSession(
         private const val NTK_PREPENDED_EPISODE_BYTE_AHEAD_PAGES = 18
         private const val NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD = 64
         private const val NTK_INITIAL_PRIORITY_START_OFFSET = 1
-        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 8
-        private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 1
-        private const val NTK_INITIAL_PRIORITY_PAGES = 8
-        private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 6
-        private const val NTK_INITIAL_DECODE_AHEAD_PAGES = 8
-        private const val NTK_WEBTOON_INITIAL_NEAR_DECODE_AHEAD_PAGES = 12
-        private const val NTK_WEBTOON_INITIAL_DECODE_AHEAD_PAGES = 24
+        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 0
+        private const val NTK_INITIAL_BOOT_URGENT_PAGES = 1
+        private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 0
+        private const val NTK_INITIAL_PRIORITY_PAGES = 4
+        private const val NTK_FOREGROUND_STREAM_AHEAD_PAGES = 1
+        private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 2
+        private const val NTK_INITIAL_DECODE_AHEAD_PAGES = 6
+        private const val NTK_WEBTOON_INITIAL_NEAR_DECODE_AHEAD_PAGES = 2
+        private const val NTK_WEBTOON_INITIAL_DECODE_AHEAD_PAGES = 6
         private const val NTK_WEBTOON_WINDOW_AFTER = 28
-        private const val NTK_WEBTOON_BUSY_DIRECTIONAL_DECODE_AHEAD = 18
+        private const val NTK_WEBTOON_BUSY_DIRECTIONAL_DECODE_AHEAD = 6
         private const val NTK_INITIAL_SECONDARY_WARM_DELAY_MS = 240L
         private const val NTK_INITIAL_FAR_WARM_DELAY_MS = 1800L
         private const val NTK_INITIAL_SOURCE_PREFETCH_AFTER_FIRST_BITMAP_DELAY_MS = 250L
@@ -3602,9 +3663,9 @@ class ReaderSession(
         private const val BUSY_DELIVERY_SCAN_LIMIT = 64
         private const val BUSY_DIRECTIONAL_DECODE_AHEAD = 8
         private const val BUSY_VISIBLE_DECODE_RADIUS = 5
-        private const val BUSY_DELIVERY_DRAIN_LIMIT = 2
-        private const val IDLE_DELIVERY_DRAIN_LIMIT = 2
-        private const val BUSY_DELIVERY_DRAIN_DELAY_MS = 16L
+        private const val BUSY_DELIVERY_DRAIN_LIMIT = 12
+        private const val IDLE_DELIVERY_DRAIN_LIMIT = 4
+        private const val BUSY_DELIVERY_DRAIN_DELAY_MS = 0L
         private const val IDLE_DELIVERY_RESUME_DELAY_MS = 24L
         private const val IDLE_DELIVERY_FRAME_DELAY_MS = 16L
         private const val INPUT_PRIORITY_QUIET_MS = 24L

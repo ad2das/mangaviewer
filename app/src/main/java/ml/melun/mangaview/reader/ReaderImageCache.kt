@@ -39,7 +39,8 @@ object ReaderImageCache {
     private const val MAX_CACHE_BYTES = 512L * 1024L * 1024L
     private const val TARGET_CACHE_BYTES = 384L * 1024L * 1024L
     private const val TRIM_DEBOUNCE_MS = 30_000L
-    private const val FOREGROUND_RACE_DELAY_MS = 180L
+    private const val FOREGROUND_RACE_DELAY_MS = 80L
+    private const val FOREGROUND_RACE_ATTEMPTS = 2
     private const val MAX_DIRECT_STREAM_DECODE_BYTES = 16L * 1024L * 1024L
     private val flights = ConcurrentHashMap<String, FutureTask<File>>()
     private val ntkApiFallbackFlights = ConcurrentHashMap<String, FutureTask<List<String>?>>()
@@ -346,10 +347,13 @@ object ReaderImageCache {
         }
     }
 
-    private fun requestFor(manga: Manga, image: String): Request {
+    private fun requestFor(manga: Manga, image: String, foregroundPriority: Boolean = false): Request {
         val requestBuilder = Request.Builder().url(Utils.viewerImageRequestUrl(image, manga.baseMode))
         for (entry in Utils.viewerImageRequestHeaders(image, manga.baseMode).entries) {
             requestBuilder.addHeader(entry.key, entry.value)
+        }
+        if (foregroundPriority) {
+            requestBuilder.addHeader("X-MangaViewer-Foreground", "1")
         }
         return requestBuilder.build()
     }
@@ -384,6 +388,9 @@ object ReaderImageCache {
         var apiFallbackTask = foregroundApiFallbackTask ?: if (generated404) target?.let {
             startNtkApiFallbackImages(context, manga, it)
         } else null
+        if (foreground && generated404 && apiFallbackTask != null) {
+            requestForegroundGeneratedRace(context, manga, image, apiFallbackTask)?.let { return it }
+        }
         for (candidate in ntkGeneratedExtensionFallbacks(image)) {
             val fallback = try {
                 requestForForegroundMode(context, manga, candidate, foreground, cancellation)
@@ -653,12 +660,12 @@ object ReaderImageCache {
 
     private fun shouldRaceForegroundImage(image: String): Boolean {
         val ntkTarget = ntkGeneratedTarget(image)
-        if (ntkTarget != null) return ntkTarget.page <= 2
+        if (ntkTarget != null) return ntkTarget.page <= 16
         return true
     }
 
     private fun requestForegroundRace(manga: Manga, image: String, cancellation: Cancellation? = null): okhttp3.Response {
-        val request = requestFor(manga, image)
+        val request = requestFor(manga, image, foregroundPriority = true)
         val client = getHttpClient().imageClient
         val calls = Collections.synchronizedList(ArrayList<Call>())
         val completion = ExecutorCompletionService<ForegroundRaceResult>(foregroundRaceExecutor)
@@ -678,10 +685,11 @@ object ReaderImageCache {
                 }
             })
         }
-        submit(0L)
-        submit(FOREGROUND_RACE_DELAY_MS)
+        repeat(FOREGROUND_RACE_ATTEMPTS) { attempt ->
+            submit(FOREGROUND_RACE_DELAY_MS * attempt)
+        }
         var failure: Throwable? = null
-        repeat(2) {
+        repeat(FOREGROUND_RACE_ATTEMPTS) {
             try {
                 val result = completion.take().get()
                 val response = result.response

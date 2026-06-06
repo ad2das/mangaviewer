@@ -127,7 +127,7 @@ public class CustomHttpClient {
     private static final int MAX_HTTP_REQUESTS = 8;
     private static final int MAX_HTTP_REQUESTS_PER_HOST = 4;
     private static final int MAX_IMAGE_HTTP_REQUESTS = 32;
-    private static final int MAX_IMAGE_HTTP_REQUESTS_PER_HOST = 12;
+    private static final int MAX_IMAGE_HTTP_REQUESTS_PER_HOST = 24;
     private static final int NTK_QUIC_CALLBACK_THREADS_PER_HOST = MAX_IMAGE_HTTP_REQUESTS_PER_HOST;
     private static final boolean DUMP_NTK_ACK_DEBUG_ARTIFACTS = false;
     private static final long NTK_ACK_CACHE_TTL_MS = 5 * 60 * 1000L;
@@ -2878,7 +2878,7 @@ public class CustomHttpClient {
                 return new PageResponse(staleCached.code, staleCached.body, true);
             throw new Exception("Unusable NTK page: " + normalized + " code=" + code);
         }
-        if(shouldRejectWfwfPageBody(normalized, code, body)) {
+        if(!isNtk() && shouldRejectWfwfPageBody(normalized, code, body)) {
             if(staleCached != null)
                 return new PageResponse(staleCached.code, staleCached.body, true);
             throw new Exception("Unusable WFWF page: " + normalized);
@@ -3539,11 +3539,13 @@ public class CustomHttpClient {
             HttpUrl parsed = request.url();
             String baseUrl = rootFromHttpUrl(parsed);
             Map<String, String> headers = requestHeadersMap(request);
+            boolean foregroundPriority = "1".equals(headerValue(headers, "X-MangaViewer-Foreground"));
+            removeHeaderIgnoreCase(headers, "X-MangaViewer-Foreground");
             if(headerValue(headers, "Cookie") == null)
                 headers.put("Cookie", getCookieHeader());
             if(headerValue(headers, "User-Agent") == null)
                 headers.put("User-Agent", agent);
-            NtkQuicFetcher.Result result = fetchNtkQuicImage(baseUrl, url, headers);
+            NtkQuicFetcher.Result result = fetchNtkQuicImage(baseUrl, url, headers, foregroundPriority);
             if(isUsableNtkQuicGetResult(result)) {
                 applySetCookieHeaders(result.headers, baseUrl);
                 if(isCloudflareChallenge(result.code, result.body))
@@ -3565,8 +3567,13 @@ public class CustomHttpClient {
     }
 
     private NtkQuicFetcher.Result fetchNtkQuicImage(String baseUrl, String url,
-                                                    Map<String, String> headers) throws Exception {
+                                                    Map<String, String> headers,
+                                                    boolean foregroundPriority) throws Exception {
         String cookieHeader = headerValue(headers, "Cookie");
+        if(foregroundPriority) {
+            ViewerWarmupManager.logMetric("ntk_quic_image_foreground_bypass", 1L);
+            return fetchNtkQuic(baseUrl, url, cookieHeader, headers, "GET", null, NTK_QUIC_IMAGE_TIMEOUT_MS);
+        }
         String key = ntkQuicImageFlightKey(url, cookieHeader);
         FutureTask<NtkQuicFetcher.Result> task = new FutureTask<>(() ->
                 fetchNtkQuic(baseUrl, url, cookieHeader, headers, "GET", null, NTK_QUIC_IMAGE_TIMEOUT_MS));
@@ -3708,6 +3715,20 @@ public class CustomHttpClient {
                 return headers.get(key);
         }
         return null;
+    }
+
+    private static void removeHeaderIgnoreCase(Map<String, String> headers, String name) {
+        if(headers == null || name == null)
+            return;
+        String matched = null;
+        for(String key : headers.keySet()) {
+            if(name.equalsIgnoreCase(key)) {
+                matched = key;
+                break;
+            }
+        }
+        if(matched != null)
+            headers.remove(matched);
     }
 
     private static String rootFromHttpUrl(HttpUrl url) {

@@ -44,6 +44,7 @@ public final class ClassificationDbUpdater extends Worker {
     private static final String WORK_NAME = "classification-db-update";
     private static final String MANIFEST_URL = "https://github.com/ad2das/mangaviewer/releases/latest/download/classification-manifest.json";
     private static final AtomicBoolean updateQueued = new AtomicBoolean(false);
+    private static final Object updateLock = new Object();
     private static final OkHttpClient CLIENT = new OkHttpClient.Builder()
             .connectTimeout(5, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
@@ -70,7 +71,9 @@ public final class ClassificationDbUpdater extends Worker {
         if(context == null)
             return;
         try {
-            new UpdateSession(context.getApplicationContext()).run();
+            synchronized (updateLock) {
+                new UpdateSession(context.getApplicationContext()).run();
+            }
         } finally {
             updateQueued.set(false);
         }
@@ -80,7 +83,9 @@ public final class ClassificationDbUpdater extends Worker {
     @Override
     public Result doWork() {
         try {
-            new UpdateSession(getApplicationContext()).run();
+            synchronized (updateLock) {
+                new UpdateSession(getApplicationContext()).run();
+            }
             return Result.success();
         } catch (Exception e) {
             CrashReporter.record(e);
@@ -216,6 +221,7 @@ public final class ClassificationDbUpdater extends Worker {
                     deleteIfExists(tmp);
                     return false;
                 }
+                ClassificationDbStore.invalidate();
                 boolean replaced = replaceAtomically(target, tmp);
                 Log.d(TAG, "classification_db_base_replace result=" + replaced
                         + ",bytes=" + (target == null || !target.exists() ? 0 : target.length()));
@@ -249,6 +255,7 @@ public final class ClassificationDbUpdater extends Worker {
                 }
                 if(!validateDatabase(work, targetVersion))
                     return false;
+                ClassificationDbStore.invalidate();
                 return replaceAtomically(current, work);
             } catch (Exception e) {
                 CrashReporter.record(e);

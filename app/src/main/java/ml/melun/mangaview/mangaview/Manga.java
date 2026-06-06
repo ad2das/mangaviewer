@@ -590,7 +590,7 @@ public class Manga {
                     && shouldUseOptimisticNtkGeneratedFastPath(path);
             if(apiOptimisticGeneratedFastPath
                     && addNtkGeneratedPathImageCandidates(client, path, seenImages,
-                    ntkGeneratedImageCandidateCount(), true)) {
+                    ntkGeneratedImageCandidateCount(), !shouldOpenKnownNtkGeneratedPathWithoutValidation(path))) {
                 logNtkViewerParse("api-optimistic-generated-fast", null, path, 0, 0);
                 restoreBetterEpisodeList(previousEpisodes);
                 attachEpisodeSeriesMetadata();
@@ -598,7 +598,7 @@ public class Manga {
             }
             if(apiOptimisticGeneratedCandidate
                     && addNtkGeneratedPathImageCandidates(client, path, seenImages,
-                    ntkGeneratedImageCandidateCount(), true)) {
+                    ntkGeneratedImageCandidateCount(), !shouldOpenKnownNtkGeneratedPathWithoutValidation(path))) {
                 logNtkViewerParse("api-optimistic-generated", null, path, 0, 0);
                 restoreBetterEpisodeList(previousEpisodes);
                 attachEpisodeSeriesMetadata();
@@ -635,7 +635,7 @@ public class Manga {
                             && shouldUseOptimisticNtkGeneratedFastPath(path);
                     if(nativeOptimisticGeneratedFastPath
                             && addNtkGeneratedPathImageCandidates(client, path, seenImages,
-                            ntkGeneratedImageCandidateCount(), true)) {
+                            ntkGeneratedImageCandidateCount(), !shouldOpenKnownNtkGeneratedPathWithoutValidation(path))) {
                         logNtkViewerParse("native-ack-optimistic-generated-fast", null, path, 0, 0);
                         restoreBetterEpisodeList(previousEpisodes);
                         attachEpisodeSeriesMetadata();
@@ -644,7 +644,7 @@ public class Manga {
                     if(!skipGeneratedForSlugEpisode
                             && !apiFirstCanonicalWebtoonEpisode
                             && addNtkGeneratedPathImageCandidates(client, path, seenImages,
-                            ntkGeneratedImageCandidateCount(), true)) {
+                            ntkGeneratedImageCandidateCount(), !shouldOpenKnownNtkGeneratedPathWithoutValidation(path))) {
                         logNtkViewerParse("native-ack-optimistic-generated", null, path, 0, 0);
                         restoreBetterEpisodeList(previousEpisodes);
                         attachEpisodeSeriesMetadata();
@@ -726,7 +726,7 @@ public class Manga {
                 boolean optimisticGeneratedFastPath = shouldUseOptimisticNtkGeneratedFastPath(path);
                 if((isNtkGeneratedImmediateModeOverride() || optimisticGeneratedFastPath)
                         && addNtkGeneratedPathImageCandidates(client, path, seenImages,
-                        ntkGeneratedImageCandidateCount(), true)) {
+                        ntkGeneratedImageCandidateCount(), !shouldOpenKnownNtkGeneratedPathWithoutValidation(path))) {
                     logNtkViewerParse(isNtkGeneratedImmediateModeOverride()
                             ? "generated-fast" : "generated-optimistic", null, path, 0, 0);
                     restoreBetterEpisodeList(previousEpisodes);
@@ -1362,8 +1362,7 @@ public class Manga {
                                                      boolean preferApiPayload) {
         if(!isUsableNtkApiPage(page))
             return false;
-        if(preferApiPayload
-                && hasNtkViewerImageApiPayload(page.body)
+        if(hasNtkViewerImageApiPayload(page.body)
                 && addNtkApiViewerImageCandidates(client, page.body, path, seenImages, tryGeneratedMetaFirst))
             return true;
         if(addNtkViewerShellGeneratedImageCandidates(client, page.body, path, seenImages, false))
@@ -1948,6 +1947,11 @@ public class Manga {
     }
 
     private boolean shouldUseOptimisticNtkGeneratedFastPath(String path) {
+        return shouldProbeKnownGeneratedBeforeApiFallback(path, getNtkImageCount())
+                && !hasCachedUnreachableNtkGeneratedImageExtension(path);
+    }
+
+    private boolean shouldOpenKnownNtkGeneratedPathWithoutValidation(String path) {
         return shouldProbeKnownGeneratedBeforeApiFallback(path, getNtkImageCount())
                 && !hasCachedUnreachableNtkGeneratedImageExtension(path);
     }
