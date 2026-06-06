@@ -3161,9 +3161,9 @@ class ReaderSession(
         if (firstBitmapLogged.get()) return false
         if (!isNtkSource(manga, title)) return false
         val start = currentStartPage()
-        if (start <= 0) return false
         if (index == start) return false
-        return index in max(0, start - 1)..minOf(start + NTK_INITIAL_PRIORITY_PAGES, start + 12)
+        val firstHeld = if (start <= 0) start + 1 else max(0, start - 1)
+        return index in firstHeld..minOf(start + NTK_INITIAL_PRIORITY_PAGES, start + 12)
     }
 
     private fun storeInitialHeldDelivery(delivery: Delivery): Boolean {
@@ -3951,9 +3951,9 @@ class ReaderSession(
         private const val NTK_PREPENDED_EPISODE_BYTE_AHEAD_PAGES = 6
         private const val NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD = 64
         private const val NTK_INITIAL_PRIORITY_START_OFFSET = 1
-        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 8
-        private const val NTK_INITIAL_BOOT_URGENT_PAGES = 8
-        private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 12
+        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 2
+        private const val NTK_INITIAL_BOOT_URGENT_PAGES = 1
+        private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 4
         private const val NTK_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 1
         private const val NTK_INITIAL_ANCHOR_DECODE_PRIME_PAGES = 8
         private const val NTK_INITIAL_PRIORITY_PAGES = 4

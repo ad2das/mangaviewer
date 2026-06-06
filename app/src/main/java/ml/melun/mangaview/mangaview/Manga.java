@@ -942,6 +942,7 @@ public class Manga {
         } finally {
             cancelAsyncNtkPageFetch(pageFetchRef[0]);
             cancelAsyncNtkPageFetch(directPageFetchRef[0]);
+            cancelAsyncNtkNativeAck(nativeAckRef[0]);
         }
         if(imgs == null || imgs.size() == 0) {
             Log.d(TAG, "ntk_viewer_parse_empty_final path=" + getNtkEpisodePath()
@@ -1176,6 +1177,7 @@ public class Manga {
     private AsyncNtkNativeAck startAsyncNtkNativeAck(CustomHttpClient client, String path) {
         AsyncNtkNativeAck fetch = new AsyncNtkNativeAck();
         CustomHttpClient.RequestGroup requestGroup = client == null ? null : client.currentRequestGroup();
+        fetch.requestGroup = requestGroup;
         Thread thread = new Thread(() -> {
             try {
                 if(requestGroup != null) {
@@ -1191,6 +1193,7 @@ public class Manga {
             }
         }, "ntk-native-ack-prefetch");
         thread.setDaemon(true);
+        fetch.thread = thread;
         thread.start();
         return fetch;
     }
@@ -1237,6 +1240,17 @@ public class Manga {
         return fetch.completed;
     }
 
+    private void cancelAsyncNtkNativeAck(AsyncNtkNativeAck fetch) {
+        if(fetch == null)
+            return;
+        CustomHttpClient.RequestGroup group = fetch.requestGroup;
+        if(group != null)
+            group.cancel();
+        Thread thread = fetch.thread;
+        if(thread != null)
+            thread.interrupt();
+    }
+
     private static final class AsyncNtkPageFetch {
         final CountDownLatch done = new CountDownLatch(1);
         volatile CustomHttpClient.RequestGroup requestGroup;
@@ -1256,6 +1270,8 @@ public class Manga {
 
     private static final class AsyncNtkNativeAck {
         final CountDownLatch done = new CountDownLatch(1);
+        volatile CustomHttpClient.RequestGroup requestGroup;
+        volatile Thread thread;
         volatile boolean completed;
         volatile Exception error;
     }
