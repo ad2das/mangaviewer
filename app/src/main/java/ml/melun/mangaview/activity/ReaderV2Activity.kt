@@ -723,6 +723,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         Log.d(TAG, "page_error_visible index=$index currentPage=$currentPage message=$message")
         renderView.setPageError(index, message)
         val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
+        logLaunchDrawableMetric(index, "error")
+        if (visibleInitialDrawable) logFirstDrawableMetric(index, "error")
         if (visibleInitialDrawable) releaseInitialDrawGate("error")
     }
 

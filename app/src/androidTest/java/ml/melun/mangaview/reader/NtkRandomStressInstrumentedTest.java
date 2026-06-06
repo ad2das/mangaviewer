@@ -56,6 +56,7 @@ public class NtkRandomStressInstrumentedTest {
     private static final String[] MODES = new String[]{"generated", "native-ack", "api-fallback"};
     private static final long NTK_CAPTCHA_PROBE_WAIT_MS = 18_000L;
     private static final int SCROLL_BACKWARD_JUMP_TOLERANCE_PX = 240;
+    private static final int SCROLL_SETTLE_JUMP_TOLERANCE_PX = 420;
 
     @Test
     public void dumpNtkRscListPayloadWhenRequested() throws Exception {
@@ -522,11 +523,20 @@ public class NtkRandomStressInstrumentedTest {
 
     private static Manga pickRandomEpisode(List<Manga> episodes, Random random) {
         ArrayList<Manga> candidates = new ArrayList<>();
+        ArrayList<Manga> positiveImageCandidates = new ArrayList<>();
         for(Manga episode : episodes) {
-            if(episode != null && episode.getNtkEpisodePath().length() > 0)
+            if(episode != null && episode.getNtkEpisodePath().length() > 0) {
                 candidates.add(episode);
+                if(episode.getNtkImageCount() > 0)
+                    positiveImageCandidates.add(episode);
+            }
         }
         assertTrue("Expected at least one episode with NTK path", candidates.size() > 0);
+        if(positiveImageCandidates.size() > 0) {
+            Log.d(TAG, "ntk_true_random_episode_candidates total=" + candidates.size()
+                    + ",positiveImages=" + positiveImageCandidates.size());
+            return positiveImageCandidates.get(random.nextInt(positiveImageCandidates.size()));
+        }
         return candidates.get(random.nextInt(candidates.size()));
     }
 
@@ -748,6 +758,8 @@ public class NtkRandomStressInstrumentedTest {
             device.waitForIdle(450L);
             long idleAt = SystemClock.elapsedRealtime();
             ProgressSnapshot progressAfterIdle = readProgressSnapshot(reader);
+            ProgressSnapshot progressAfterQuiet = waitForReaderQuietProgress(reader, 1800L);
+            long quietAt = SystemClock.elapsedRealtime();
             SystemClock.sleep(900L);
             ProgressSnapshot progressAfterSettle = readProgressSnapshot(reader);
             long screenshotStart = SystemClock.elapsedRealtime();
@@ -765,11 +777,13 @@ public class NtkRandomStressInstrumentedTest {
                     + ",dispatchMs=" + dispatchMs
                     + ",postSwipeMs=" + (swipeAt - before - dispatchMs)
                     + ",idleMs=" + (idleAt - swipeAt)
+                    + ",quietMs=" + (quietAt - idleAt)
                     + ",screenshotMs=" + (screenshotAt - screenshotStart)
                     + ",statsMs=" + (statsAt - screenshotAt)
                     + ",path=" + episode.getNtkEpisodePath()
                     + ",progressBefore=" + progressBefore
                     + ",progressAfterIdle=" + progressAfterIdle
+                    + ",progressAfterQuiet=" + progressAfterQuiet
                     + ",progressAfterSettle=" + progressAfterSettle
                     + ",coverage=" + formatCoverage(coverage)
                     + "," + stats);
@@ -782,7 +796,12 @@ public class NtkRandomStressInstrumentedTest {
                     + " mode=" + mode
                     + " step=" + step
                     + " phase=settle"
-                    + " path=" + episode.getNtkEpisodePath(), progressAfterIdle, progressAfterSettle);
+                    + " path=" + episode.getNtkEpisodePath(), progressAfterQuiet, progressAfterSettle);
+            assertNoUnexpectedSettleJump("scroll run=" + run
+                    + " mode=" + mode
+                    + " step=" + step
+                    + " phase=quiet"
+                    + " path=" + episode.getNtkEpisodePath(), progressAfterQuiet, progressAfterSettle);
             assertVisibleViewportReady("scroll run=" + run
                     + " mode=" + mode
                     + " step=" + step
@@ -961,6 +980,19 @@ public class NtkRandomStressInstrumentedTest {
         return value[0];
     }
 
+    private static ProgressSnapshot waitForReaderQuietProgress(ReaderV2Activity activity, long timeoutMs) {
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+        ProgressSnapshot latest = readProgressSnapshot(activity);
+        while(SystemClock.elapsedRealtime() < deadline) {
+            ReaderSurfaceView.VisibleCoverageSnapshot coverage = readVisibleCoverage(activity);
+            latest = readProgressSnapshot(activity);
+            if(coverage != null && !coverage.getBusy())
+                return latest;
+            SystemClock.sleep(80L);
+        }
+        return latest;
+    }
+
     private static void assertNoBackwardScrollJump(String label, ProgressSnapshot before,
                                                    ProgressSnapshot after) {
         if(before == null || after == null || before.isNull() || after.isNull())
@@ -972,6 +1004,22 @@ public class NtkRandomStressInstrumentedTest {
                         + " before=" + before
                         + " after=" + after,
                 !backwardPage && !backwardOffset);
+    }
+
+    private static void assertNoUnexpectedSettleJump(String label, ProgressSnapshot before,
+                                                     ProgressSnapshot after) {
+        if(before == null || after == null || before.isNull() || after.isNull())
+            return;
+        int pageDelta = Math.abs(after.page - before.page);
+        int offsetDelta = Math.abs(after.offset - before.offset);
+        boolean samePageSmallMove = pageDelta == 0 && offsetDelta <= SCROLL_SETTLE_JUMP_TOLERANCE_PX;
+        boolean adjacentEdgeMove = pageDelta == 1 && offsetDelta <= SCROLL_SETTLE_JUMP_TOLERANCE_PX;
+        assertTrue(label
+                        + " before=" + before
+                        + " after=" + after
+                        + " pageDelta=" + pageDelta
+                        + " offsetDelta=" + offsetDelta,
+                samePageSmallMove || adjacentEdgeMove);
     }
 
     private static final class ProgressSnapshot {

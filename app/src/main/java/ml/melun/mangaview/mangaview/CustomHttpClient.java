@@ -4458,6 +4458,8 @@ public class CustomHttpClient {
         String lower = body.toLowerCase(Locale.ROOT);
         if(!looksLikeNtkNextShell(lower))
             return false;
+        if(isNtkEpisodeDocumentPath(path))
+            return !hasRenderedNtkEpisodeViewerContent(lower);
         return !hasRenderedNtkDocumentContent(lower);
     }
 
@@ -4526,6 +4528,22 @@ public class CustomHttpClient {
             return true;
         }
         return false;
+    }
+
+    private static boolean hasRenderedNtkEpisodeViewerContent(String lowerBody) {
+        if(lowerBody == null || lowerBody.length() == 0)
+            return false;
+        if(lowerBody.contains("imagestoken") && lowerBody.contains("imagemetas"))
+            return true;
+        if(lowerBody.contains("vw-main") || lowerBody.contains("vw-imgs")
+                || lowerBody.contains("viewer-content") || lowerBody.contains("toon-view")
+                || lowerBody.contains("image-view") || lowerBody.contains("webtoon-body"))
+            return true;
+        return lowerBody.contains("/webtoon_uploads/")
+                || lowerBody.contains("/manhwa_uploads/")
+                || lowerBody.contains("/comic_uploads/")
+                || lowerBody.contains("/blacktoon/episodes/")
+                || lowerBody.contains("/wt/episodes/");
     }
 
     private static boolean isCloudflareChallenge(int code, String body) {

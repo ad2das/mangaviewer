@@ -338,13 +338,13 @@ class ReaderSession(
                             postCaptchaRequired(manga)
                             return@execute
                         }
-                        postMessage("이미지를 불러오지 못했습니다")
+                        postInitialPageError("이미지를 불러오지 못했습니다")
                         return@execute
                     }
                     urls = imageRepository.imageUrls(manga, appContext)
                 }
                 if (urls.isNullOrEmpty()) {
-                    postMessage("표시할 이미지가 없습니다")
+                    postInitialPageError("표시할 이미지가 없습니다")
                     return@execute
                 }
                 val startPage = requestedStartPage().coerceIn(0, urls.lastIndex)
@@ -354,7 +354,7 @@ class ReaderSession(
                 requestInitialFanout(startPage)
             } catch (e: Exception) {
                 recordIfUnexpected(e)
-                if (!isExpectedCancellation(e)) postMessage("이미지를 불러오지 못했습니다")
+                if (!isExpectedCancellation(e)) postInitialPageError("이미지를 불러오지 못했습니다")
             } finally {
                 repositoryLoading.set(false)
             }
@@ -2971,6 +2971,7 @@ class ReaderSession(
         if (firstBitmapLogged.get()) return false
         if (!isNtkSource(manga, title)) return false
         val start = currentStartPage()
+        if (start <= 0) return false
         if (index == start) return false
         return index in max(0, start - 1)..minOf(start + NTK_INITIAL_PRIORITY_PAGES, start + 12)
     }
@@ -3715,6 +3716,22 @@ class ReaderSession(
 
     private fun postMessage(message: String) {
         main.post { if (!cancelled.get()) listener.onMessage(message) }
+    }
+
+    private fun postInitialPageError(message: String) {
+        if (!pagesInstalled.compareAndSet(false, true)) {
+            postMessage(message)
+            return
+        }
+        resolvedInitialStartPage.set(0)
+        main.post {
+            if (!cancelled.get()) {
+                listener.onPagesReady(1)
+                initialPagesReadyDelivered.set(true)
+                listener.onInitialPage(0)
+                listener.onPageError(0, message)
+            }
+        }
     }
 
     private fun postCaptchaRequired(target: Manga) {
