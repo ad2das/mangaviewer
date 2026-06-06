@@ -2570,7 +2570,11 @@ class ReaderSession(
         } ?: return null
         val rawAt = SystemClock.elapsedRealtime()
         val decodeTargetWidth = decodeTargetWidth(raw.width, raw.height, targetWidth, page.allowAutoSplit)
-        val decoded = Decoder(page.manga.seed, page.manga.id).decode(raw, decodeTargetWidth, Glide.get(appContext).bitmapPool)
+        val decoded = if (raw.width <= decodeTargetWidth) {
+            raw
+        } else {
+            Decoder(page.manga.seed, page.manga.id).decode(raw, decodeTargetWidth, Glide.get(appContext).bitmapPool)
+        }
         if (decoded !== raw && !raw.isRecycled) raw.recycle()
         deliverAutoSplitSiblingFromDecoded(index, page, decoded)
         val transformedAt = SystemClock.elapsedRealtime()
@@ -3047,11 +3051,10 @@ class ReaderSession(
             recycleDecodeResult(delivery.result)
             return
         }
-        if (shouldPrimeNtkNearPagesAfterAnchorDecode(currentDelivery)) {
-            primeNtkNearPagesAfterAnchorDecode(currentDelivery.index)
-        }
         logNtkPagePerf(currentDelivery.index, "decode_ready", "ms=${SystemClock.elapsedRealtime() - currentDelivery.startedAt},width=${currentDelivery.result.width},retain=${currentDelivery.retainWhenBusy}")
         val deliverInitialAnchorNow = shouldDeliverInitialAnchorImmediately(currentDelivery)
+        val primeNearAfterInitialAnchorDelivery = deliverInitialAnchorNow &&
+            shouldPrimeNtkNearPagesAfterAnchorDecode(currentDelivery)
         if (!deliverInitialAnchorNow) {
             prepareDecodeResultForDraw(currentDelivery.result)
         }
@@ -3080,6 +3083,9 @@ class ReaderSession(
                     Log.d(TAG, "reader_anchor_delivery_queue_delay page=${currentDelivery.index},ms=$queueMs,pagesReady=${initialPagesReadyDelivered.get()}")
                 }
                 deliverDecodeResultOnMain(currentDelivery, false)
+                if (primeNearAfterInitialAnchorDelivery) {
+                    primeNtkNearPagesAfterAnchorDecode(currentDelivery.index)
+                }
             }
             val posted = main.postAtFrontOfQueue(deliverAnchor)
             if (!posted) {
