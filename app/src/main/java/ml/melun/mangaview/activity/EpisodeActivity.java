@@ -424,6 +424,7 @@ public class EpisodeActivity extends AppCompatActivity {
             @Override
             public void onItemClick(int position, Manga selected) {
                 //add local images to manga
+                saveSelectedEpisodeProgress(position, selected);
                 openViewer(selected,0, true);
             }
             @Override
@@ -1276,6 +1277,62 @@ public class EpisodeActivity extends AppCompatActivity {
         if(!exactEpisode && getHttpClient().isNtk())
             ViewerWarmupManager.warmup(context, manga, title);
         openViewerPrepared(context, manga, code, false, online, true, title, !manga.isOnline(), exactEpisode);
+    }
+
+    private void saveSelectedEpisodeProgress(int adapterPosition, Manga manga) {
+        if(p == null || title == null || manga == null || episodes == null || episodes.size() == 0)
+            return;
+        int episodeIndex = selectedEpisodeIndexForProgress(adapterPosition, manga, episodes);
+        if(episodeIndex <= 0)
+            return;
+        Manga selected = safeGet(episodes, episodeIndex - 1);
+        int episodeId = selected != null && selected.getId() > 0 ? selected.getId() : manga.getId();
+        if(episodeId <= 0)
+            return;
+        if("ntk".equals(title.getSourceSite())) {
+            String ntkPath = selected == null ? null : selected.getNtkEpisodePath();
+            if(ntkPath == null || ntkPath.length() == 0)
+                ntkPath = manga.getNtkEpisodePath();
+            if(ntkPath != null && ntkPath.length() > 0)
+                title.setResumeNtkEpisodePath(ntkPath);
+        }
+        title.setBookmark(episodeId);
+        bookmarkId = episodeId;
+        bookmarkIndex = episodeIndex;
+        title.setReadingProgress(episodeId, episodeIndex, episodes.size());
+        p.updateRecentData(title);
+        p.setBookmark(title, episodeId);
+        if(episodeAdapter != null)
+            episodeAdapter.setBookmark(episodeIndex);
+    }
+
+    static int selectedEpisodeIndexForProgressForTest(int adapterPosition, Manga manga, List<Manga> episodes) {
+        return selectedEpisodeIndexForProgress(adapterPosition, manga, episodes);
+    }
+
+    private static int selectedEpisodeIndexForProgress(int adapterPosition, Manga manga, List<Manga> episodes) {
+        if(episodes == null || episodes.size() == 0)
+            return -1;
+        int fromAdapter = adapterPosition - 1;
+        if(fromAdapter >= 0 && fromAdapter < episodes.size())
+            return fromAdapter + 1;
+        if(manga == null)
+            return -1;
+        String path = manga.getNtkEpisodePath();
+        String number = Manga.visibleEpisodeNumberKey(manga.getName());
+        for(int i = 0; i < episodes.size(); i++) {
+            Manga episode = episodes.get(i);
+            if(episode == null)
+                continue;
+            if(manga.getId() > 0 && manga.getId() == episode.getId())
+                return i + 1;
+            if(path != null && path.length() > 0 && path.equals(episode.getNtkEpisodePath()))
+                return i + 1;
+            if(number != null && number.length() > 0
+                    && number.equals(Manga.visibleEpisodeNumberKey(episode.getName())))
+                return i + 1;
+        }
+        return -1;
     }
 
     private void warmupUserSelectedEpisode(Manga manga) {

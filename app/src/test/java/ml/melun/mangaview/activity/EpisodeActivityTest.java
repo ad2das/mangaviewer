@@ -44,6 +44,33 @@ public class EpisodeActivityTest {
     }
 
     @Test
+    public void selectedEpisodeProgressUsesAdapterPositionBeforeViewerLaunch() {
+        List<Manga> episodes = new ArrayList<>();
+        episodes.add(new Manga(101, "Episode 10", "", base_webtoon));
+        episodes.add(new Manga(102, "Episode 9", "", base_webtoon));
+
+        Manga selected = new Manga(999, "Different id", "", base_webtoon);
+
+        assertEquals(2, EpisodeActivity.selectedEpisodeIndexForProgressForTest(2, selected, episodes));
+    }
+
+    @Test
+    public void selectedEpisodeProgressFallsBackToPathWhenPositionMissing() {
+        List<Manga> episodes = new ArrayList<>();
+        Manga first = new Manga(101, "Episode 10", "", base_webtoon);
+        first.setNtkEpisodePath("/webtoon/1/10");
+        Manga second = new Manga(102, "Episode 9", "", base_webtoon);
+        second.setNtkEpisodePath("/webtoon/1/9");
+        episodes.add(first);
+        episodes.add(second);
+
+        Manga selected = new Manga(999, "Different id", "", base_webtoon);
+        selected.setNtkEpisodePath("/webtoon/1/9");
+
+        assertEquals(2, EpisodeActivity.selectedEpisodeIndexForProgressForTest(-1, selected, episodes));
+    }
+
+    @Test
     public void diskEpisodeCacheLoadsOnlyAfterMemoryMiss() {
         assertFalse(EpisodeActivity.shouldLoadDiskEpisodeCacheAsyncForTest(true));
         assertTrue(EpisodeActivity.shouldLoadDiskEpisodeCacheAsyncForTest(false));
