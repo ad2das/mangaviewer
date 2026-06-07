@@ -80,3 +80,19 @@ done
 
 gh api "repos/${repo}/releases/${release_id}/assets" \
   --jq ".[] | select(.name==\"${apk_name}\") | {name: .name, size: .size, updatedAt: .updated_at, url: .browser_download_url}"
+
+latest_sha="$(git ls-remote origin "refs/heads/${target_branch}" | awk '{print $1}')"
+if [ "${GITHUB_EVENT_NAME:-}" = "push" ] && [ -n "${latest_sha}" ] && [ "${latest_sha}" != "${GITHUB_SHA:-}" ]; then
+  echo "Skipping metadata sync because branch moved from ${GITHUB_SHA:-unknown} to ${latest_sha}"
+  exit 0
+fi
+
+git config user.name "github-actions[bot]"
+git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+git add -- version.json releases.html
+if git diff --cached --quiet; then
+  echo "No release metadata changes to sync"
+else
+  git commit -m "Update release metadata ${version_code} [skip ci]"
+  git push origin "HEAD:${target_branch}"
+fi
