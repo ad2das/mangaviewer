@@ -39,6 +39,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TZ: Asia/Seoul
       CI_RELEASE_PATCH_FLOOR: 1000000
+      SYNC_RELEASE_METADATA_TO_BRANCH: "false"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

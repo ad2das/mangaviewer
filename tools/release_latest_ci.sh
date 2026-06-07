@@ -114,6 +114,11 @@ done
 gh api "repos/${repo}/releases/${release_id}/assets" \
   --jq ".[] | select(.name==\"${apk_name}\") | {name: .name, size: .size, updatedAt: .updated_at, url: .browser_download_url}"
 
+if [ "${SYNC_RELEASE_METADATA_TO_BRANCH:-false}" != "true" ]; then
+  echo "Skipping branch release metadata sync; version.json is available as a ${release_tag} release asset."
+  exit 0
+fi
+
 latest_sha="$(git ls-remote origin "refs/heads/${target_branch}" | awk '{print $1}')"
 if [ "${GITHUB_EVENT_NAME:-}" = "push" ] && [ -n "${latest_sha}" ] && [ "${latest_sha}" != "${GITHUB_SHA:-}" ]; then
   echo "Skipping metadata sync because branch moved from ${GITHUB_SHA:-unknown} to ${latest_sha}"
