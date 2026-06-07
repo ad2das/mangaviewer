@@ -615,6 +615,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingPageErrors.remove(index)
         pendingPageBitmaps[index] = bitmap
         Log.d(TAG, "page_ready_deferred index=$index kind=bitmap")
+        bootstrapDeferredFirstPage(index, bitmap)
     }
 
     private fun rememberPendingPageTiles(index: Int, pageWidth: Int, pageHeight: Int, tiles: List<ReaderTile>) {
@@ -639,6 +640,17 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingPageCards.remove(index)
         pendingPageErrors[index] = message
         Log.d(TAG, "page_ready_deferred index=$index kind=error")
+    }
+
+    private fun bootstrapDeferredFirstPage(index: Int, bitmap: Bitmap) {
+        if (pagesReady || index != currentPage || bitmap.isRecycled) return
+        if (pageCount <= index) {
+            pageCount = index + 1
+            renderView.setPageCount(pageCount)
+        }
+        pendingPageBitmaps.remove(index)
+        Log.d(TAG, "page_ready_deferred_bootstrap index=$index count=$pageCount")
+        applyPageBitmap(index, bitmap)
     }
 
     private fun flushPendingPageCallbacks() {
