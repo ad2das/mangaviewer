@@ -332,16 +332,34 @@ class ReaderSession(
         network.execute {
             try {
                 attachTitle()
-                var urls = imageRepository.imageUrls(manga, appContext)
+                var activeManga = manga
+                var urls = imageRepository.imageUrls(activeManga, appContext)
                 if (urls.isNullOrEmpty()) {
                     val cancellation = repositoryCancellation(userVisible = true)
                     if (isNtkSource(manga, title)) cancellation.prioritizeWebViewFallback()
                     val result = try {
-                        imageRepository.fetchViewerInitial(manga, cancellation)
+                        imageRepository.fetchViewerInitial(activeManga, cancellation)
                     } finally {
                         releaseRepositoryCancellation(cancellation)
                     }
                     if (cancelled.get()) return@execute
+                    if (result != Title.LOAD_OK && result != Title.LOAD_CAPTCHA) {
+                        resolveInitialNtkUnavailableEpisode(activeManga)?.let { replacement ->
+                            activeManga = replacement.first
+                            urls = replacement.second
+                            Log.d(
+                                TAG,
+                                "ntk_initial_unavailable_replaced sourcePath=${manga.ntkEpisodePath} " +
+                                    "targetPath=${activeManga.ntkEpisodePath} images=${urls.size}"
+                            )
+                            val startPage = 0
+                            installImagesForManga(activeManga, urls, startPage, false)
+                            flushEarlyPreparedBitmaps()
+                            requestPageForeground(startPage)
+                            requestInitialFanout(startPage)
+                            return@execute
+                        }
+                    }
                     if (result != Title.LOAD_OK) {
                         if (result == Title.LOAD_CAPTCHA) {
                             postCaptchaRequired(manga)
@@ -350,14 +368,14 @@ class ReaderSession(
                         postInitialPageError("이미지를 불러오지 못했습니다")
                         return@execute
                     }
-                    urls = imageRepository.imageUrls(manga, appContext)
+                    urls = imageRepository.imageUrls(activeManga, appContext)
                 }
                 if (urls.isNullOrEmpty()) {
                     postInitialPageError("표시할 이미지가 없습니다")
                     return@execute
                 }
                 val startPage = requestedStartPage().coerceIn(0, urls.lastIndex)
-                installImages(urls, startPage, false)
+                installImagesForManga(activeManga, urls, startPage, false)
                 flushEarlyPreparedBitmaps()
                 requestPageForeground(startPage)
                 requestInitialFanout(startPage)
@@ -398,7 +416,69 @@ class ReaderSession(
         main.postDelayed(clearPreparedBitmapsRunnable, PREPARED_BITMAP_RELEASE_DELAY_MS)
     }
 
+    private fun resolveInitialNtkUnavailableEpisode(source: Manga): Pair<Manga, List<String>>? {
+        if (!isNtkSource(source, title)) return null
+        if (source.ntkViewerParseReason != "unavailable") return null
+        val currentTitle = title ?: source.title ?: manga.title ?: return null
+        if (syncNtkTitlePathFromEpisode(currentTitle, source)) {
+            currentTitle.removeEps()
+        }
+        restoreNtkEpisodeSnapshotIfNeeded(currentTitle, source)
+        if (currentTitle.eps == null || currentTitle.eps.size <= 1) {
+            val result = withRepositoryCancellation(userVisible = true) {
+                imageRepository.fetchEpisodesForeground(currentTitle, it)
+            }
+            if (cancelled.get() || result != Title.LOAD_OK) return null
+        }
+        attachTitle()
+        val episodes = Utils.snapshotEpisodes(currentTitle)
+        if (episodes.isNotEmpty()) {
+            manga.setEps(episodes)
+            source.setEps(episodes)
+            persistNtkEpisodeSnapshot(currentTitle, episodes)
+        }
+        source.title = currentTitle
+        source.titleId = currentTitle.id
+        for (direction in listOf(ReaderSurfaceView.DIRECTION_NEXT, ReaderSurfaceView.DIRECTION_PREVIOUS)) {
+            var checked = 0
+            for (candidate in adjacentEpisodeCandidates(source, episodes, direction)) {
+                if (checked >= ADJACENT_EXISTING_SKIP_LIMIT) break
+                candidate.title = currentTitle
+                candidate.titleId = currentTitle.id
+                candidate.mode = source.mode
+                if (episodes.isNotEmpty()) candidate.setEps(episodes)
+                val appendLoad = loadAppendUrlsForCandidate(candidate, currentTitle, direction)
+                if (cancelled.get()) return null
+                if (appendLoad.result == Title.LOAD_OK && appendLoad.urls.isNotEmpty()) {
+                    Log.d(
+                        TAG,
+                        "ntk_initial_unavailable_candidate direction=$direction sourcePath=${source.ntkEpisodePath} " +
+                            "targetPath=${candidate.ntkEpisodePath} images=${appendLoad.urls.size}"
+                    )
+                    return candidate to appendLoad.urls
+                }
+                Log.d(
+                    TAG,
+                    "ntk_initial_unavailable_candidate_skip direction=$direction sourcePath=${source.ntkEpisodePath} " +
+                        "targetPath=${candidate.ntkEpisodePath} result=${appendLoad.result} " +
+                        "reason=${candidate.ntkViewerParseReason} images=${appendLoad.urls.size}"
+                )
+                candidate.setImgs(null)
+                checked++
+            }
+        }
+        return null
+    }
+
     private fun installImages(
+        urls: List<String>,
+        requestedStartPage: Int,
+        requestInitialWindow: Boolean,
+        notifyInitialPage: Boolean = true
+    ): Int = installImagesForManga(manga, urls, requestedStartPage, requestInitialWindow, notifyInitialPage)
+
+    private fun installImagesForManga(
+        target: Manga,
         urls: List<String>,
         requestedStartPage: Int,
         requestInitialWindow: Boolean,
@@ -406,7 +486,7 @@ class ReaderSession(
     ): Int {
         if (cancelled.get() || urls.isEmpty()) return -1
         if (!pagesInstalled.compareAndSet(false, true)) return -1
-        val refs = pageRefsForImages(manga, urls)
+        val refs = pageRefsForImages(target, urls)
         synchronized(pagesLock) {
             pages.clear()
             refs.forEachIndexed { index, page ->

@@ -1146,6 +1146,10 @@ public class Manga {
         while(System.currentTimeMillis() < deadline) {
             if(direct == null)
                 direct = completedNtkPageFetch(directFetch, false);
+            if(isNtkViewerUnavailableEpisode(direct == null ? null : direct.body)) {
+                cancelAsyncNtkPageFetch(fallbackFetch);
+                return direct;
+            }
             if(isUsableNtkFastPage(direct, path)) {
                 if(kpPath && !isUsableNtkKpDirectPage(direct, path)
                         && fallbackFetch != null && fallbackFetch.done.getCount() > 0) {
@@ -1181,6 +1185,10 @@ public class Manga {
             direct = completedNtkPageFetch(directFetch, false);
         if(fallback == null)
             fallback = completedNtkPageFetch(fallbackFetch, true);
+        if(isNtkViewerUnavailableEpisode(direct == null ? null : direct.body)) {
+            cancelAsyncNtkPageFetch(fallbackFetch);
+            return direct;
+        }
         if(kpPath && isUsableNtkKpDirectPage(fallback, path)) {
             cancelAsyncNtkPageFetch(directFetch);
             return fallback;
