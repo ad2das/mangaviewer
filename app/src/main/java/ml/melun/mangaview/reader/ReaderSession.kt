@@ -8,6 +8,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Rect
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
@@ -159,6 +160,8 @@ class ReaderSession(
 
     private val appContext = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
+    private val mainImmediate =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) Handler.createAsync(Looper.getMainLooper()) else main
     private val network = Executors.newFixedThreadPool(
         ReaderPipelinePolicy.FOREGROUND_NETWORK_PARALLELISM,
         readerThreadFactory("ReaderNetwork", Process.THREAD_PRIORITY_BACKGROUND)
@@ -1059,66 +1062,56 @@ class ReaderSession(
                     }
                     return@execute
                 }
-                target.title = currentTitle
-                target.titleId = currentTitle.id
-                target.mode = anchorManga.mode
-                if (episodes.isNotEmpty()) target.setEps(episodes)
-                Log.d(
-                    TAG,
-                    "append_adjacent_target direction=$direction targetId=${target.id} " +
-                        "targetTitleId=${target.titleId} targetPath=${target.ntkEpisodePath} targetName=${target.name}"
-                )
-                var urls = imageRepository.imageUrls(target, appContext)
-                val preferVerifiedApiAppend = shouldPreferVerifiedApiAppend(target, currentTitle)
-                if (!preferVerifiedApiAppend && !urls.isNullOrEmpty() &&
-                    isNtkSource(target, currentTitle) &&
-                    shouldRefreshNtkGeneratedAppendUrls(urls)
-                ) {
-                    target.setImgs(null)
-                    val result = fetchGeneratedNtkAppendUrls(target, currentTitle, direction)
+                var resolvedTarget: Manga? = null
+                var resolvedUrls: List<String> = emptyList()
+                var checkedCandidates = 0
+                for (candidate in adjacentEpisodeCandidates(anchorManga, episodes, direction)) {
+                    if (checkedCandidates >= ADJACENT_EXISTING_SKIP_LIMIT) break
+                    candidate.title = currentTitle
+                    candidate.titleId = currentTitle.id
+                    candidate.mode = anchorManga.mode
+                    if (episodes.isNotEmpty()) candidate.setEps(episodes)
+                    val loaded = if (direction < 0) hasEpisodeFast(candidate) else hasEpisode(candidate)
+                    if (loaded) {
+                        checkedCandidates++
+                        continue
+                    }
+                    Log.d(
+                        TAG,
+                        "append_adjacent_target direction=$direction targetId=${candidate.id} " +
+                            "targetTitleId=${candidate.titleId} targetPath=${candidate.ntkEpisodePath} targetName=${candidate.name}"
+                    )
+                    val appendLoad = loadAppendUrlsForCandidate(candidate, currentTitle, direction)
                     if (cancelled.get()) return@execute
-                    Log.d(TAG, "append_adjacent_fetch direction=$direction targetId=${target.id} result=$result")
-                    if (result != Title.LOAD_OK) {
-                        if (result == Title.LOAD_CAPTCHA) {
-                            if (silentMissing) {
-                                suppressedCaptcha = true
-                                return@execute
-                            }
-                            captchaRequired = true
-                            postCaptchaRequired(target)
+                    if (appendLoad.result == Title.LOAD_CAPTCHA) {
+                        if (silentMissing) {
+                            suppressedCaptcha = true
                             return@execute
                         }
-                        postMessage(if (result == Title.LOAD_CAPTCHA) "캡차 확인이 필요합니다" else "회차를 불러오지 못했습니다")
+                        captchaRequired = true
+                        postCaptchaRequired(candidate)
                         return@execute
                     }
-                    urls = imageRepository.imageUrls(target, appContext)
-                }
-                if (urls.isNullOrEmpty() || preferVerifiedApiAppend) {
-                    if (preferVerifiedApiAppend) target.setImgs(null)
-                    val result = fetchGeneratedNtkAppendUrls(target, currentTitle, direction)
-                    if (cancelled.get()) return@execute
-                    Log.d(TAG, "append_adjacent_fetch direction=$direction targetId=${target.id} result=$result")
-                    if (result != Title.LOAD_OK) {
-                        if (result == Title.LOAD_CAPTCHA) {
-                            if (silentMissing) {
-                                suppressedCaptcha = true
-                                return@execute
-                            }
-                            captchaRequired = true
-                            postCaptchaRequired(target)
-                            return@execute
-                        }
-                        postMessage(if (result == Title.LOAD_CAPTCHA) "캡차 확인이 필요합니다" else "회차를 불러오지 못했습니다")
-                        return@execute
+                    if (appendLoad.result == Title.LOAD_OK && appendLoad.urls.isNotEmpty()) {
+                        resolvedTarget = candidate
+                        resolvedUrls = appendLoad.urls
+                        break
                     }
-                    urls = imageRepository.imageUrls(target, appContext)
+                    Log.d(
+                        TAG,
+                        "append_adjacent_candidate_skip direction=$direction targetId=${candidate.id} " +
+                            "path=${candidate.ntkEpisodePath} result=${appendLoad.result} " +
+                            "reason=${candidate.ntkViewerParseReason} images=${appendLoad.urls.size}"
+                    )
+                    candidate.setImgs(null)
+                    checkedCandidates++
                 }
-                if (urls.isNullOrEmpty()) {
-                    postMessage("표시할 이미지가 없습니다")
+                if (resolvedTarget == null || resolvedUrls.isEmpty()) {
+                    if (!silentMissing) postMessage("표시할 이미지가 없습니다")
                     return@execute
                 }
-                appendResolvedEpisode(target, urls, direction)
-                appendNtkForwardLookahead(target, currentTitle, episodes, direction)
+                appendResolvedEpisode(resolvedTarget, resolvedUrls, direction)
+                appendNtkForwardLookahead(resolvedTarget, currentTitle, episodes, direction)
             } catch (e: Exception) {
                 recordIfUnexpected(e)
             } finally {
@@ -1131,6 +1124,29 @@ class ReaderSession(
             return AppendStartResult.CANCELLED
         }
         return AppendStartResult.STARTED
+    }
+
+    private fun loadAppendUrlsForCandidate(target: Manga, currentTitle: Title, direction: Int): AppendUrlLoad {
+        var urls = imageRepository.imageUrls(target, appContext)
+        val preferVerifiedApiAppend = shouldPreferVerifiedApiAppend(target, currentTitle)
+        if (!preferVerifiedApiAppend && !urls.isNullOrEmpty() &&
+            isNtkSource(target, currentTitle) &&
+            shouldRefreshNtkGeneratedAppendUrls(urls)
+        ) {
+            target.setImgs(null)
+            val result = fetchGeneratedNtkAppendUrls(target, currentTitle, direction)
+            Log.d(TAG, "append_adjacent_fetch direction=$direction targetId=${target.id} result=$result")
+            if (result != Title.LOAD_OK) return AppendUrlLoad(result, emptyList())
+            urls = imageRepository.imageUrls(target, appContext)
+        }
+        if (urls.isNullOrEmpty() || preferVerifiedApiAppend) {
+            if (preferVerifiedApiAppend) target.setImgs(null)
+            val result = fetchGeneratedNtkAppendUrls(target, currentTitle, direction)
+            Log.d(TAG, "append_adjacent_fetch direction=$direction targetId=${target.id} result=$result")
+            if (result != Title.LOAD_OK) return AppendUrlLoad(result, emptyList())
+            urls = imageRepository.imageUrls(target, appContext)
+        }
+        return AppendUrlLoad(Title.LOAD_OK, urls ?: emptyList())
     }
 
     private fun loadLookaheadAppendUrls(target: Manga, currentTitle: Title, direction: Int): AppendUrlLoad {
@@ -1221,17 +1237,21 @@ class ReaderSession(
             ) {
                 initialResult
             } else {
-                restoreNtkEpisodeSnapshotIfNeeded(currentTitle, target)
-                target.setImgs(null)
-                val retryMode = "api-strict"
-                Log.d(
-                    TAG,
-                    "append_adjacent_verified_fetch_retry direction=$direction targetId=${target.id} " +
-                        "initialResult=$initialResult initialImages=$initialImages retryMode=$retryMode " +
-                        "path=${target.ntkEpisodePath}"
-                )
-                withRepositoryCancellation(userVisible = true) { retryCancellation ->
-                    imageRepository.fetchViewerInitialWithMode(target, retryCancellation, retryMode)
+                if (target.ntkViewerParseReason == "unavailable") {
+                    initialResult
+                } else {
+                    restoreNtkEpisodeSnapshotIfNeeded(currentTitle, target)
+                    target.setImgs(null)
+                    val retryMode = "api-strict"
+                    Log.d(
+                        TAG,
+                        "append_adjacent_verified_fetch_retry direction=$direction targetId=${target.id} " +
+                            "initialResult=$initialResult initialImages=$initialImages retryMode=$retryMode " +
+                            "path=${target.ntkEpisodePath}"
+                    )
+                    withRepositoryCancellation(userVisible = true) { retryCancellation ->
+                        imageRepository.fetchViewerInitialWithMode(target, retryCancellation, retryMode)
+                    }
                 }
             }.also {
                 Log.d(
@@ -3208,7 +3228,7 @@ class ReaderSession(
                     primeNtkNearPagesAfterAnchorDecode(currentDelivery.index)
                 }
             }
-            val posted = main.postAtFrontOfQueue(deliverAnchor)
+            val posted = mainImmediate.postAtFrontOfQueue(deliverAnchor)
             if (!posted) {
                 pendingDeliveryWidths.remove(currentDelivery.index)
                 recycleDecodeResult(currentDelivery.result)
@@ -3225,7 +3245,7 @@ class ReaderSession(
                 }
                 deliverDecodeResultOnMain(currentDelivery, viewportBusy.get())
             }
-            if (!main.postAtFrontOfQueue(deliverRetained)) {
+            if (!mainImmediate.postAtFrontOfQueue(deliverRetained)) {
                 pendingDeliveryWidths.remove(currentDelivery.index)
                 recycleDecodeResult(currentDelivery.result)
             }
@@ -3304,13 +3324,9 @@ class ReaderSession(
 
     private fun scheduleInitialDeliveryFallback() {
         if (!initialDeliveryFallbackPosted.compareAndSet(false, true)) return
-        main.postDelayed({
+        mainImmediate.postDelayed({
             initialDeliveryFallbackPosted.set(false)
             if (cancelled.get() || firstBitmapLogged.get()) return@postDelayed
-            if (isNtkSource(manga, title) && !initialDeliveryBacklog.containsKey(currentStartPage())) {
-                scheduleInitialDeliveryFallback()
-                return@postDelayed
-            }
             flushInitialHeldDeliveries("fallback")
         }, NTK_INITIAL_DELIVERY_HOLD_FALLBACK_MS)
     }
@@ -3322,7 +3338,7 @@ class ReaderSession(
         val count = synchronized(pagesLock) { pages.size }
         val next = start + 1
         if (next < count && !initialDeliveryBacklog.containsKey(next) && !hasDeliveredBitmap(next)) return
-        main.post {
+        mainImmediate.post {
             if (!cancelled.get() && !firstBitmapLogged.get()) {
                 flushInitialHeldDeliveries("viewport")
             }

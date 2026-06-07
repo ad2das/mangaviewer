@@ -834,11 +834,19 @@ public class Manga {
             CustomHttpClient.PageResponse page = (apiFallbackMode || firstFrameDirectFetch != null)
                     ? awaitBestNtkApiPageFetch(firstFrameDirectFetch, pageFetchRef[0], client, path)
                     : awaitAsyncNtkPageFetch(pageFetchRef[0], client, path);
+            if(isNtkViewerUnavailableEpisode(page == null ? null : page.body)) {
+                logNtkViewerParse("unavailable", page, path, 0, 0);
+                return LOAD_ERROR;
+            }
             if(pageFetchRef[0] == null
                     && !isUsableNtkApiPage(page)
                     && (apiFirstNtkEpisode || skipGeneratedForSlugEpisode || nativeAckMode || apiFallbackMode)) {
                 startPageFetchIfNeeded.run();
                 page = awaitBestNtkApiPageFetch(firstFrameDirectFetch, pageFetchRef[0], client, path);
+                if(isNtkViewerUnavailableEpisode(page == null ? null : page.body)) {
+                    logNtkViewerParse("unavailable", page, path, 0, 0);
+                    return LOAD_ERROR;
+                }
             }
             if(addCachedNtkViewerImageApiCandidates(client, path, seenImages)) {
                 logNtkViewerParse("api-cached-webview", page, path, 0, 0);
@@ -942,6 +950,10 @@ public class Manga {
                         addImageIfValid(client, seenImages, src);
                 }
                 compactNtkImageCandidates(page.body, seenImages);
+                if(discardLowConfidenceNtkSingleHtmlImage(d, page.body, path, seenImages)) {
+                    Log.d(TAG, "ntk_single_html_image_discarded path=" + path
+                            + ",imgTags=" + pageImages.size());
+                }
                 if(imgs.size() == 0
                         && addNtkGeneratedPathImageCandidates(client, path, seenImages,
                         ntkGeneratedImageCandidateCount(), true)) {
@@ -1944,6 +1956,13 @@ public class Manga {
         return matcher.find();
     }
 
+    private static boolean isNtkViewerUnavailableEpisode(String body) {
+        if(body == null || body.length() == 0)
+            return false;
+        return body.contains("ep_unavailable")
+                || (body.contains("ep-notice") && body.contains("이미지 오류"));
+    }
+
     private boolean shouldFetchNtkApiViewerImagesForSparseParse(String body, String path, int imgTagCount) {
         if(!hasNtkViewerImageApiPayload(body))
             return false;
@@ -1956,6 +1975,33 @@ public class Manga {
         if(knownCount > 0 && parsed < Math.min(knownCount, 3))
             return true;
         return imgTagCount >= 8 && parsed < 3;
+    }
+
+    private boolean discardLowConfidenceNtkSingleHtmlImage(Document document, String body, String path,
+                                                           Set<String> seenImages) {
+        if(!isLowConfidenceNtkSingleHtmlImage(document, body, path, imgs))
+            return false;
+        imgs.clear();
+        if(seenImages != null)
+            seenImages.clear();
+        return true;
+    }
+
+    private static boolean isLowConfidenceNtkSingleHtmlImage(Document document, String body, String path,
+                                                            List<String> images) {
+        if(images == null || images.size() != 1)
+            return false;
+        if(!isNtkWebtoonEpisodePath(path) || isNtkKpWebtoonEpisodePath(path))
+            return false;
+        String image = images.get(0);
+        if(image == null || !image.toLowerCase(Locale.ROOT).contains("/webtoon_uploads/"))
+            return false;
+        if(hasNtkViewerContent(document))
+            return false;
+        String normalized = normalizeNtkViewerPayloadText(body);
+        if(hasNtkViewerImageApiPayloadNormalized(normalized) || hasNonEmptyNtkViewerImageMetas(normalized))
+            return false;
+        return ntkViewerMetaPageCount(normalized) <= 1;
     }
 
     private boolean addNtkGeneratedPathImageCandidates(CustomHttpClient client, String path, Set<String> seenImages, int pageCount) {

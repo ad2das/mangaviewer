@@ -259,6 +259,10 @@ final class NtkEpisodeParser {
         String sourceEpisodeId = embeddedStringField(objectJson, "sourceEpisodeId");
         if(sourceEpisodeId.length() == 0)
             return;
+        int imageCount = embeddedIntField(objectJson, "imageCount");
+        int imagesStatus = embeddedIntField(objectJson, "imagesStatus");
+        if(imagesStatus > 0 && imagesStatus != 2 && imageCount <= 0)
+            return;
         String epPath = "/" + segment + "/" + titleKey + "/" + sourceEpisodeId;
         if(!seenEpisodePaths.add(epPath))
             return;
@@ -281,7 +285,6 @@ final class NtkEpisodeParser {
         manga.setNtkEpisodePath(epPath);
         String imageEpisodeId = extractImageEpisodeId(imageCountMetadata, epPath);
         manga.setNtkImageEpisodeId(imageEpisodeId.length() == 0 ? sourceEpisodeId : imageEpisodeId);
-        int imageCount = embeddedIntField(objectJson, "imageCount");
         if(imageCount <= 0)
             imageCount = extractImageCount(imageCountMetadata, epPath);
         manga.setNtkImageCount(imageCount);
