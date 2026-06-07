@@ -51,6 +51,7 @@ jobs:
             /app/
             /config/
             /gradle/
+            /tools/patch_apk_manifest_version.py
             /tools/release_latest_ci.sh
             /tools/release_latest.ps1
             /build.gradle
