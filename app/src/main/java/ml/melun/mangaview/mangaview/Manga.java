@@ -992,8 +992,7 @@ public class Manga {
                 }
             }
         } catch (Exception e) {
-            if(isCloudflareChallenge(e) || isRecentNtkCloudflareChallenge(client)
-                    || isNtkViewerChallengeFailure(client, e))
+            if(isCloudflareChallenge(e) || isNtkViewerChallengeFailure(client, e))
                 return LOAD_CAPTCHA;
             recordFetchException(e);
         } finally {
@@ -3014,12 +3013,16 @@ public class Manga {
         return message != null && message.toLowerCase(Locale.ROOT).contains("cloudflare");
     }
 
-    private static boolean isRecentNtkCloudflareChallenge(CustomHttpClient client) {
-        return client != null && client.isNtk() && client.hasRecentCloudflareChallenge();
+    private static boolean isNtkViewerChallengeFailure(CustomHttpClient client, Exception e) {
+        return client != null && client.isNtk() && isCloudflareChallenge(e);
     }
 
-    private static boolean isNtkViewerChallengeFailure(CustomHttpClient client, Exception e) {
-        return client != null && client.isNtk() && isRecoverableNetworkFetchFailure(e);
+    static boolean isNtkViewerChallengeFailureForTest(boolean ntk, Exception e) {
+        return ntk && isCloudflareChallenge(e);
+    }
+
+    static boolean isRecoverableNetworkFetchFailureForTest(Throwable e) {
+        return isRecoverableNetworkFetchFailure(e);
     }
 
     private static void recordFetchException(Exception e) {

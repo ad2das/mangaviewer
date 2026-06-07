@@ -43,6 +43,21 @@ public class MangaTest {
     }
 
     @Test
+    public void ntkViewerNetworkFailureDoesNotRequireCaptcha() {
+        Exception dnsFailure = new Exception("Request failed: net::ERR_NAME_NOT_RESOLVED");
+
+        assertTrue(Manga.isRecoverableNetworkFetchFailureForTest(dnsFailure));
+        assertFalse(Manga.isNtkViewerChallengeFailureForTest(true, dnsFailure));
+    }
+
+    @Test
+    public void ntkViewerCloudflareFailureRequiresCaptcha() {
+        Exception cloudflare = new Exception("Cloudflare challenge");
+
+        assertTrue(Manga.isNtkViewerChallengeFailureForTest(true, cloudflare));
+    }
+
+    @Test
     public void gsonSerializationIgnoresNavigationLinks() {
         Manga first = new Manga(1, "first", "", MTitle.base_comic);
         Manga second = new Manga(2, "second", "", MTitle.base_comic);

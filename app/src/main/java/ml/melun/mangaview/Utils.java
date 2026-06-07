@@ -109,6 +109,8 @@ public class Utils {
     private static long lastCaptchaActivityStartedAt = 0L;
     private static long lastNtkWebViewCookieSyncAt = 0L;
     private static final long NTK_WEBVIEW_COOKIE_SYNC_INTERVAL_MS = 60_000L;
+    private static final long CAPTCHA_ACTIVITY_MIN_INTERVAL_MS = 3_000L;
+    private static final long NTK_CAPTCHA_ACTIVITY_MIN_INTERVAL_MS = 30_000L;
     private static final int GLIDE_URL_CACHE_MAX = 512;
     private static final Map<String, GlideUrl> glideUrlCache = new LinkedHashMap<String, GlideUrl>(GLIDE_URL_CACHE_MAX, 0.75f, true) {
         @Override
@@ -1331,7 +1333,7 @@ public class Utils {
         if(getHttpClient().hasNtkAccessProof() && !getHttpClient().hasRecentCloudflareChallenge())
             return false;
         long now = System.currentTimeMillis();
-        if(now - lastAutoCloudflareCaptchaAt < 500L)
+        if(now - lastAutoCloudflareCaptchaAt < NTK_CAPTCHA_ACTIVITY_MIN_INTERVAL_MS)
             return false;
         lastAutoCloudflareCaptchaAt = now;
         return true;
@@ -1523,7 +1525,10 @@ public class Utils {
         if(shouldSkipNtkCaptchaLaunch())
             return;
         long now = System.currentTimeMillis();
-        if(now - lastCaptchaActivityStartedAt < 3000L)
+        long minInterval = getHttpClient().isNtk()
+                ? NTK_CAPTCHA_ACTIVITY_MIN_INTERVAL_MS
+                : CAPTCHA_ACTIVITY_MIN_INTERVAL_MS;
+        if(now - lastCaptchaActivityStartedAt < minInterval)
             return;
         lastCaptchaActivityStartedAt = now;
         Intent captchaIntent = new Intent(context, CaptchaActivity.class);
@@ -1549,7 +1554,10 @@ public class Utils {
         if(shouldSkipNtkCaptchaLaunch())
             return;
         long now = System.currentTimeMillis();
-        if(now - lastCaptchaActivityStartedAt < 3000L)
+        long minInterval = getHttpClient().isNtk()
+                ? NTK_CAPTCHA_ACTIVITY_MIN_INTERVAL_MS
+                : CAPTCHA_ACTIVITY_MIN_INTERVAL_MS;
+        if(now - lastCaptchaActivityStartedAt < minInterval)
             return;
         lastCaptchaActivityStartedAt = now;
         Intent captchaIntent = new Intent(context, CaptchaActivity.class);
