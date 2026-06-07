@@ -20,6 +20,8 @@ apk_name="mangaViewer_${version_code}-debug.apk"
 apk_path="app/build/outputs/apk/debug/${apk_name}"
 download_url="https://github.com/${repo}/releases/download/${release_tag}/${apk_name}"
 
+version_name="4.6-${version_code}"
+
 echo "releasePatchBase=${patch_base} ciFloor=${ci_release_patch_floor} runNumber=${run_number} releasePatch=${release_patch}"
 echo "versionCode=${version_code}"
 echo "apk=${apk_name}"
@@ -52,10 +54,41 @@ PY
 
 chmod +x ./gradlew
 ./gradlew --configuration-cache --build-cache --parallel \
-  -PreleasePatch="${release_patch}" \
-  -PreleaseDateCode="${date_code}" \
   :app:assembleDebug
 
+stable_apk="$(python3 - <<'PY'
+import json
+from pathlib import Path
+
+metadata = json.loads(Path("app/build/outputs/apk/debug/output-metadata.json").read_text(encoding="utf-8"))
+print(Path("app/build/outputs/apk/debug") / metadata["elements"][0]["outputFile"])
+PY
+)"
+
+build_tools_dir="$(find "${ANDROID_HOME:?ANDROID_HOME is required}/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+zipalign="${build_tools_dir}/zipalign"
+apksigner="${build_tools_dir}/apksigner"
+test -x "${zipalign}"
+test -x "${apksigner}"
+
+mkdir -p release-work app/build/outputs/apk/debug
+unsigned_apk="release-work/${apk_name%.apk}-unsigned.apk"
+aligned_apk="release-work/${apk_name%.apk}-aligned.apk"
+
+python3 tools/patch_apk_manifest_version.py \
+  --input "${stable_apk}" \
+  --output "${unsigned_apk}" \
+  --version-code "${version_code}" \
+  --version-name "${version_name}"
+
+"${zipalign}" -f -p 4 "${unsigned_apk}" "${aligned_apk}"
+"${apksigner}" sign \
+  --ks config/mangaviewer-debug.keystore \
+  --ks-pass pass:android \
+  --key-pass pass:android \
+  --out "${apk_path}" \
+  "${aligned_apk}"
+"${apksigner}" verify "${apk_path}"
 test -f "${apk_path}"
 
 gh release view "${release_tag}" --repo "${repo}" >/dev/null 2>&1 || \
