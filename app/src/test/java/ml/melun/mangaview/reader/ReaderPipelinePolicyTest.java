@@ -32,10 +32,10 @@ public class ReaderPipelinePolicyTest {
     }
 
     @Test
-    public void heightResolveCorrectsAfterInputStopsEvenIfRecentlyScrolling() {
-        assertTrue(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+    public void heightResolveWaitsUntilRecentScrollSettles() {
+        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
                 true, false, false, true, false, 900f, 1000f));
-        assertTrue(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
                 false, false, false, true, true, 900f, 1000f));
     }
 
@@ -53,9 +53,9 @@ public class ReaderPipelinePolicyTest {
     public void pendingResolveAnchorRestoreWaitsForStoppedInput() {
         assertTrue(ReaderSurfaceView.shouldRestoreAnchorAfterPendingResolvesForTest(
                 false, false, false, true, false));
-        assertTrue(ReaderSurfaceView.shouldRestoreAnchorAfterPendingResolvesForTest(
+        assertFalse(ReaderSurfaceView.shouldRestoreAnchorAfterPendingResolvesForTest(
                 false, false, false, true, true));
-        assertTrue(ReaderSurfaceView.shouldRestoreAnchorAfterPendingResolvesForTest(
+        assertFalse(ReaderSurfaceView.shouldRestoreAnchorAfterPendingResolvesForTest(
                 true, false, false, true, false));
         assertFalse(ReaderSurfaceView.shouldRestoreAnchorAfterPendingResolvesForTest(
                 false, true, false, true, false));
