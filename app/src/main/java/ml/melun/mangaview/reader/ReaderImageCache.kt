@@ -42,6 +42,9 @@ object ReaderImageCache {
     private const val FOREGROUND_RACE_DELAY_MS = 80L
     private const val FOREGROUND_RACE_ATTEMPTS = 2
     private const val MAX_DIRECT_STREAM_DECODE_BYTES = 16L * 1024L * 1024L
+    private const val MAX_DIRECT_STREAM_BITMAP_BYTES = 2L * 1024L * 1024L
+    private const val DIRECT_STREAM_TILE_ASPECT_RATIO = 3.0f
+    private const val DIRECT_STREAM_TILE_MIN_ESTIMATED_BYTES = 12L * 1024L * 1024L
     private val flights = ConcurrentHashMap<String, FutureTask<File>>()
     private val foregroundStreams = ConcurrentHashMap<String, FutureTask<ByteArray?>>()
     private val ntkApiFallbackFlights = ConcurrentHashMap<String, FutureTask<List<String>?>>()
@@ -219,6 +222,11 @@ object ReaderImageCache {
             val bytesAt = SystemClock.elapsedRealtime()
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            if (shouldPreferFileDecodeAfterForegroundCache(bounds, bytes.size, autoCut)) {
+                ViewerWarmupManager.logMetric("reader_foreground_stream_file_decode_preferred", bytes.size.toLong())
+                logCacheEvent("foreground_file_decode_preferred", manga, image, true, "bytes=${bytes.size}")
+                return null
+            }
             val decodeTargetWidth = foregroundDecodeTargetWidth(bounds.outWidth, bounds.outHeight, targetWidth, autoCut, allowSplit)
             val options = BitmapFactory.Options().apply {
                 inPreferredConfig = Bitmap.Config.ARGB_8888
@@ -236,6 +244,20 @@ object ReaderImageCache {
         } finally {
             foregroundStreams.remove(key, task)
         }
+    }
+
+    private fun shouldPreferFileDecodeAfterForegroundCache(
+        bounds: BitmapFactory.Options,
+        byteCount: Int,
+        autoCut: Boolean
+    ): Boolean {
+        if (autoCut || byteCount <= MAX_DIRECT_STREAM_BITMAP_BYTES) return false
+        val width = bounds.outWidth
+        val height = bounds.outHeight
+        if (width <= 0 || height <= 0) return false
+        val estimatedBytes = width.toLong() * height.toLong() * 2L
+        return height / width.toFloat() >= DIRECT_STREAM_TILE_ASPECT_RATIO ||
+            estimatedBytes >= DIRECT_STREAM_TILE_MIN_ESTIMATED_BYTES
     }
 
     private fun cacheForegroundBytes(context: Context, manga: Manga, image: String, bytes: ByteArray) {
