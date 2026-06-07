@@ -993,12 +993,19 @@ public class Preference {
                 && (existingCount <= 0 || targetCount >= existingCount);
         if(targetHasCompleteProgress)
             return;
-        int episodeId = target.getBookmarkEpisodeId() > 0
-                ? target.getBookmarkEpisodeId()
-                : existing.getBookmarkEpisodeId();
-        int episodeIndex = existing.getBookmarkEpisodeId() == episodeId
-                ? existing.getBookmarkEpisodeIndex()
-                : -1;
+        int episodeId;
+        int episodeIndex;
+        if(target.getBookmarkEpisodeIndex() <= 0 && existing.getBookmarkEpisodeIndex() > 0) {
+            episodeId = existing.getBookmarkEpisodeId();
+            episodeIndex = existing.getBookmarkEpisodeIndex();
+        } else {
+            episodeId = target.getBookmarkEpisodeId() > 0
+                    ? target.getBookmarkEpisodeId()
+                    : existing.getBookmarkEpisodeId();
+            episodeIndex = existing.getBookmarkEpisodeId() == episodeId
+                    ? existing.getBookmarkEpisodeIndex()
+                    : -1;
+        }
         target.setReadingProgress(episodeId, episodeIndex, Math.max(existingCount, targetCount));
     }
 
