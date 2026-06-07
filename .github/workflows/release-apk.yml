@@ -83,7 +83,7 @@ jobs:
         if: env.STALE_RELEASE_RUN != 'true'
         uses: gradle/actions/setup-gradle@v4
         with:
-          cache-read-only: ${{ github.event_name == 'workflow_dispatch' && !inputs.refresh_gradle_cache }}
+          cache-read-only: false
           cache-cleanup: never
           gradle-home-cache-excludes: |
             caches/journal-*
