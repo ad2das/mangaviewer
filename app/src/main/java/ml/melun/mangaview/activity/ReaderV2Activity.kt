@@ -1535,10 +1535,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             title.resumeNtkEpisodePath = ntkPath
         }
         val episodes = Utils.snapshotEpisodes(title).ifEmpty { Utils.snapshotEpisodes(info.manga) }
-        val episodeIndex = episodes.indexOfFirst { it != null && it.id == info.manga.id }
-            .takeIf { it >= 0 }
-            ?.plus(1)
-            ?: title.bookmarkEpisodeIndex
+        val episodeIndex = progressEpisodeIndex(episodes, info.manga, title.bookmarkEpisodeIndex)
         val episodeCount = episodes.size.takeIf { it > 0 } ?: title.episodeCount
         if (episodeCount > 0) {
             title.setReadingProgress(info.manga.id, episodeIndex, episodeCount)
@@ -1848,6 +1845,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             return direction != ReaderSurfaceView.DIRECTION_PREVIOUS
         }
 
+        @JvmStatic
+        fun progressEpisodeIndexForTest(
+            episodes: List<Manga>,
+            manga: Manga,
+            fallbackIndex: Int
+        ): Int {
+            return progressEpisodeIndex(episodes, manga, fallbackIndex)
+        }
+
         private fun pageGapForBaseMode(baseMode: Int): Int {
             return ReaderDisplayPolicy.pageGapForBaseMode(baseMode)
         }
@@ -1861,6 +1867,36 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             insertedCount: Int
         ): Boolean {
             return insertedCount > 0 && pendingPrependRevealRequests > 0
+        }
+
+        private fun progressEpisodeIndex(
+            episodes: List<Manga>,
+            manga: Manga,
+            fallbackIndex: Int
+        ): Int {
+            episodes.indexOfFirst { manga.id > 0 && it.id == manga.id }
+                .takeIf { it >= 0 }
+                ?.let { return it + 1 }
+            val path = manga.ntkEpisodePath ?: ""
+            if (path.isNotBlank()) {
+                episodes.indexOfFirst { path == it.ntkEpisodePath }
+                    .takeIf { it >= 0 }
+                    ?.let { return it + 1 }
+            }
+            val number = episodeNumberKey(manga.name)
+            if (number.isNotBlank()) {
+                episodes.indexOfFirst { number == episodeNumberKey(it.name) }
+                    .takeIf { it >= 0 }
+                    ?.let { return it + 1 }
+            }
+            return fallbackIndex
+        }
+
+        private fun episodeNumberKey(name: String?): String {
+            val visible = Manga.visibleEpisodeNumberKey(name)
+            if (visible.isNotBlank()) return visible
+            if (name == null) return ""
+            return Regex("""\d+(?:\.\d+)?""").findAll(name).lastOrNull()?.value ?: ""
         }
     }
 }

@@ -2,6 +2,8 @@ package ml.melun.mangaview.activity;
 
 import org.junit.Test;
 
+import java.util.Arrays;
+
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.reader.ReaderSurfaceView;
@@ -51,6 +53,29 @@ public class ReaderV2ActivityTest {
                 ReaderSurfaceView.DIRECTION_PREVIOUS));
         assertTrue(ReaderV2Activity.shouldPrepareNearBoundaryForTest(
                 ReaderSurfaceView.DIRECTION_NEXT));
+    }
+
+    @Test
+    public void progressEpisodeIndexMatchesNtkPathWhenEpisodeIdDiffers() {
+        Manga first = new Manga(101, "Episode 10", "", MTitle.base_webtoon);
+        first.setNtkEpisodePath("/webtoon/1/10");
+        Manga second = new Manga(102, "Episode 9", "", MTitle.base_webtoon);
+        second.setNtkEpisodePath("/webtoon/1/9");
+        Manga selected = new Manga(999, "Episode 9", "", MTitle.base_webtoon);
+        selected.setNtkEpisodePath("/webtoon/1/9");
+
+        assertEquals(2, ReaderV2Activity.progressEpisodeIndexForTest(
+                Arrays.asList(first, second), selected, -1));
+    }
+
+    @Test
+    public void progressEpisodeIndexMatchesVisibleNumberWhenEpisodeIdDiffers() {
+        Manga first = new Manga(101, "Episode 10", "", MTitle.base_webtoon);
+        Manga second = new Manga(102, "Episode 9", "", MTitle.base_webtoon);
+        Manga selected = new Manga(999, "Read Episode 9", "", MTitle.base_webtoon);
+
+        assertEquals(2, ReaderV2Activity.progressEpisodeIndexForTest(
+                Arrays.asList(first, second), selected, -1));
     }
 
     @Test
