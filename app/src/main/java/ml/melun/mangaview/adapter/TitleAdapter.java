@@ -632,11 +632,17 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(deferThumbnails)
             return fastInitialBindMeta(title);
         refreshClassificationTags(title);
-        String key = titleContentKey(title) + "|" + title.getBookmark() + "|" + p.getLocalDataVersion();
+        applyStoredBookmark(title);
+        String key = titleContentKey(title)
+                + "|" + title.getBookmark()
+                + "|" + title.getBookmarkEpisodeId()
+                + "|" + title.getBookmarkEpisodeIndex()
+                + "|" + title.getEpisodeCount()
+                + "|" + title.getEpsCount()
+                + "|" + p.getLocalDataVersion();
         BindMeta cached = bindMetaCache.get(key);
         if(cached != null)
             return cached;
-        applyStoredBookmark(title);
         int progressPercent = readingProgressPercent(title);
         BindMeta meta = new BindMeta(title.getBookmark(), displayTags(title), progressLabel(title), progressPercent, sourceSiteForTitle(title), title.getNtkStatusLabel());
         if(bindMetaCache.size() > 512)
@@ -782,6 +788,29 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(title == null)
             return 0;
         return title.getDisplayEpisodeCount(title.getEpsCount());
+    }
+
+    static int watchedEpisodeCountForTest(Title title) {
+        if(title == null)
+            return 0;
+        int episodeIndex = title.getBookmarkEpisodeIndex();
+        int episodeCount = title.getDisplayEpisodeCount(title.getEpsCount());
+        if(episodeIndex <= 0)
+            episodeIndex = title.getBookmarkIndex();
+        if(episodeIndex <= 0 || episodeCount <= 0)
+            return 0;
+        return Math.max(1, Math.min(episodeCount, episodeCount - episodeIndex + 1));
+    }
+
+    static int readingProgressPercentForTest(Title title) {
+        int watchedCount = watchedEpisodeCountForTest(title);
+        int episodeCount = title == null ? 0 : title.getDisplayEpisodeCount(title.getEpsCount());
+        if(watchedCount > 0 && episodeCount > 0) {
+            if(watchedCount >= episodeCount)
+                return 100;
+            return Math.max(1, Math.min(99, (int) Math.floor(watchedCount * 100f / episodeCount)));
+        }
+        return 0;
     }
 
     private static final class BindMeta {

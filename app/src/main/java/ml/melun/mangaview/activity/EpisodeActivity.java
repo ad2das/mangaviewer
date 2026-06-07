@@ -483,6 +483,7 @@ public class EpisodeActivity extends AppCompatActivity {
             return;
         int progressId = bookmarkId;
         int progressIndex = bookmarkIndex;
+        int storedIndex = title.getBookmarkEpisodeIndex();
         if(progressId <= 0)
             progressId = restoredBookmarkId(title);
         if(progressIndex <= 0 && progressId > 0) {
@@ -495,9 +496,14 @@ public class EpisodeActivity extends AppCompatActivity {
             }
         }
         if(progressIndex <= 0)
-            progressIndex = title.getBookmarkEpisodeIndex();
+            progressIndex = storedIndex;
         if(progressIndex > episodes.size())
             progressIndex = -1;
+        if(progressId <= 0 && progressIndex > 0) {
+            Manga episode = safeGet(episodes, progressIndex - 1);
+            if(episode != null)
+                progressId = episode.getId();
+        }
         if(progressId > 0)
             title.setBookmark(progressId);
         title.setReadingProgress(progressId, progressIndex, episodes.size());
