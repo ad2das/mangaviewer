@@ -864,6 +864,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         busy: Boolean
     ) {
         MainThreadStallMonitor.trace("reader_on_window_changed") {
+            Log.d(
+                TAG,
+                "window_changed first=$firstPage last=$lastPage anchor=$anchorPage " +
+                    "progress=$progressPage offset=$progressOffset busy=$busy current=$currentPage"
+            )
             currentPage = progressPage
             MainThreadStallMonitor.trace("reader_request_window_async") {
                 session?.requestWindowAsync(firstPage, lastPage, anchorPage, busy)

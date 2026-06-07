@@ -527,20 +527,38 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     fun clearPageBitmap(index: Int) {
-        synchronized(stateLock) {
+        val request = synchronized(stateLock) {
             val page = pages.getOrNull(index) ?: return
+            rebuildLayoutLocked()
+            val oldHeight = pageDrawHeightLocked(page)
+            val oldTop = pageTopOrElseLocked(index, 0f)
             page.bitmap = null
             page.tiles = emptyList()
             page.loading = false
             page.cardText = null
             page.errorText = null
             clearPendingResolveLocked(page)
+            val newHeight = pageDrawHeightLocked(page)
+            applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
+            applyLockedRestorePositionLocked()
+            clampScrollLocked()
             if (!lastBusy || isNearVisibleLocked(index, BUSY_RESOLVE_RENDER_EXTRA_PAGES)) {
                 renderRequested = true
                 scheduleFrameLocked()
                 stateLock.notifyAll()
+                if (abs(newHeight - oldHeight) > HEIGHT_CHANGE_EPSILON_PX) {
+                    Log.d(
+                        TAG,
+                        "reader_page_clear_height index=$index old=${oldHeight.toInt()} new=${newHeight.toInt()} " +
+                            "offset=${scrollOffset.toInt()} lastBusy=$lastBusy"
+                    )
+                }
+                windowRequestLocked(lastBusy)
+            } else {
+                null
             }
         }
+        dispatchWindowRequest(request)
     }
 
     fun clearAllPages() {
@@ -872,6 +890,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         val flingVelocity = (velocityY * FLING_SCROLL_MULTIPLIER)
                             .coerceIn(-maxVelocity.toFloat(), maxVelocity.toFloat())
                             .toInt()
+                        Log.d(
+                            TAG,
+                            "reader_fling_start drag=${dragDistance.toInt()} velocity=$velocityY " +
+                                "scaled=$flingVelocity minVelocity=$minVelocity touchSlop=$touchSlop " +
+                                "offset=${scrollOffset.toInt()}"
+                        )
                         boundaryArmedDirection = directionForDelta(flingVelocity.toFloat())
                         if (boundaryArmedDirection != 0) lastScrollInteractionMs = event.eventTime
                         val busyRequest = setBusyLocked(true)
@@ -891,6 +915,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         stateLock.notifyAll()
                         (busyRequest ?: windowRequestLocked(true)) to boundaryRequestLocked()
                     } else {
+                        if (wasReleased && dragDistance > touchSlop && abs(velocityY) > minVelocity) {
+                            Log.d(
+                                TAG,
+                                "reader_fling_suppressed drag=${dragDistance.toInt()} velocity=$velocityY " +
+                                    "minVelocity=$minVelocity touchSlop=$touchSlop offset=${scrollOffset.toInt()}"
+                            )
+                        }
                         val request = setBusyLocked(false)
                         val shouldDispatchBoundary = wasReleased || cancelledBoundaryDrag
                         val boundary = if (shouldDispatchBoundary) boundaryRequestLocked() else null
@@ -1663,26 +1694,35 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val now = SystemClock.uptimeMillis()
         val recentScrollSettling = lastScrollInteractionMs > 0L &&
             now - lastScrollInteractionMs <= HEIGHT_CHANGE_SCROLL_ADJUST_QUIET_MS
-        var appliedAny = false
-        for (index in pages.indices) {
-            if (applyPendingPageResolveLocked(index)) appliedAny = true
+        if (!shouldRestoreAnchorAfterPendingResolves(
+                lastBusy = lastBusy,
+                pointerDown = pointerDown,
+                dragging = dragging,
+                scrollerFinished = scroller.isFinished,
+                recentScrollSettling = recentScrollSettling
+            )
+        ) {
+            return
         }
-        if (appliedAny) {
+        var appliedCount = 0
+        for (index in pages.indices) {
+            if (applyPendingPageResolveLocked(index)) appliedCount++
+        }
+        if (appliedCount > 0) {
             structuralScrollAdjustUntilMs = max(
                 structuralScrollAdjustUntilMs,
                 SystemClock.uptimeMillis() + RESTORE_POSITION_LOCK_MS
             )
-            if (shouldRestoreAnchorAfterPendingResolves(
-                    lastBusy = lastBusy,
-                    pointerDown = pointerDown,
-                    dragging = dragging,
-                    scrollerFinished = scroller.isFinished,
-                    recentScrollSettling = recentScrollSettling
-                )
-            ) {
-                setScrollOffsetLocked(pageTopOrElseLocked(anchorPage, 0f) - anchorOffset)
-            }
+            val beforeRestore = scrollOffset
+            setScrollOffsetLocked(pageTopOrElseLocked(anchorPage, 0f) - anchorOffset)
             clampScrollLocked()
+            Log.d(
+                TAG,
+                "reader_pending_resolve_restore applied=$appliedCount anchor=$anchorPage " +
+                    "anchorOffset=${anchorOffset.toInt()} from=${beforeRestore.toInt()} to=${scrollOffset.toInt()} " +
+                    "lastBusy=$lastBusy pointerDown=$pointerDown dragging=$dragging " +
+                    "scrollerFinished=${scroller.isFinished} recentSettling=$recentScrollSettling"
+            )
         }
     }
 
@@ -2175,7 +2215,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
 
         private fun shouldStartFling(dragDistance: Float, velocityY: Int, minVelocity: Int, touchSlop: Int): Boolean {
-            return dragDistance > touchSlop * FLING_MIN_DRAG_TOUCH_SLOP_MULTIPLIER && abs(velocityY) > minVelocity
+            return dragDistance > touchSlop * FLING_MIN_DRAG_TOUCH_SLOP_MULTIPLIER &&
+                abs(velocityY) > minVelocity * FLING_MIN_VELOCITY_MULTIPLIER
         }
 
         private const val TAG = "ReaderSurfaceStats"
@@ -2208,6 +2249,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
         private const val FLING_MIN_DRAG_TOUCH_SLOP_MULTIPLIER = 1.0f
+        private const val FLING_MIN_VELOCITY_MULTIPLIER = 1
         private const val RESTORE_POSITION_LOCK_MS = 4000L
         private const val RESTORE_POSITION_EPSILON_PX = 2f
         private const val INITIAL_RENDER_HOLD_MS = 700L
@@ -2224,6 +2266,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val PENDING_SIZE = 4
         private val PAGE_PLACEHOLDER_COLOR = Color.WHITE
 
+        @Suppress("UNUSED_PARAMETER")
         private fun shouldAdjustScrollForChangedPageHeight(
             lastBusy: Boolean,
             pointerDown: Boolean,
@@ -2234,9 +2277,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
             scrollOffset: Float
         ): Boolean {
             if (oldBottom > scrollOffset) return false
-            return !lastBusy && !pointerDown && !dragging && scrollerFinished && !recentScrollSettling
+            return !pointerDown && !dragging && scrollerFinished
         }
 
+        @Suppress("UNUSED_PARAMETER")
         private fun shouldRestoreAnchorAfterPendingResolves(
             lastBusy: Boolean,
             pointerDown: Boolean,
@@ -2244,7 +2288,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             scrollerFinished: Boolean,
             recentScrollSettling: Boolean
         ): Boolean {
-            return !lastBusy && !pointerDown && !dragging && scrollerFinished && !recentScrollSettling
+            return !pointerDown && !dragging && scrollerFinished
         }
 
         @JvmStatic

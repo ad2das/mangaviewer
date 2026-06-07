@@ -32,24 +32,30 @@ public class ReaderPipelinePolicyTest {
     }
 
     @Test
-    public void heightResolveDoesNotCorrectScrollDuringOrRightAfterFling() {
-        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+    public void heightResolveCorrectsAfterInputStopsEvenIfRecentlyScrolling() {
+        assertTrue(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
                 true, false, false, true, false, 900f, 1000f));
+        assertTrue(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
+                false, false, false, true, true, 900f, 1000f));
+    }
+
+    @Test
+    public void heightResolveDoesNotCorrectScrollDuringActiveInputOrFling() {
         assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
                 false, true, false, true, false, 900f, 1000f));
         assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
                 false, false, true, true, false, 900f, 1000f));
         assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
                 false, false, false, false, false, 900f, 1000f));
-        assertFalse(ReaderSurfaceView.shouldAdjustScrollForChangedPageHeightForTest(
-                false, false, false, true, true, 900f, 1000f));
     }
 
     @Test
-    public void pendingResolveAnchorRestoreOnlyWhenReaderIsIdle() {
+    public void pendingResolveAnchorRestoreWaitsForStoppedInput() {
         assertTrue(ReaderSurfaceView.shouldRestoreAnchorAfterPendingResolvesForTest(
                 false, false, false, true, false));
-        assertFalse(ReaderSurfaceView.shouldRestoreAnchorAfterPendingResolvesForTest(
+        assertTrue(ReaderSurfaceView.shouldRestoreAnchorAfterPendingResolvesForTest(
+                false, false, false, true, true));
+        assertTrue(ReaderSurfaceView.shouldRestoreAnchorAfterPendingResolvesForTest(
                 true, false, false, true, false));
         assertFalse(ReaderSurfaceView.shouldRestoreAnchorAfterPendingResolvesForTest(
                 false, true, false, true, false));
@@ -57,8 +63,6 @@ public class ReaderPipelinePolicyTest {
                 false, false, true, true, false));
         assertFalse(ReaderSurfaceView.shouldRestoreAnchorAfterPendingResolvesForTest(
                 false, false, false, false, false));
-        assertFalse(ReaderSurfaceView.shouldRestoreAnchorAfterPendingResolvesForTest(
-                false, false, false, true, true));
     }
 
     @Test
