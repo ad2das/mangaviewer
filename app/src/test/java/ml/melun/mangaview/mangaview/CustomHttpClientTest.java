@@ -2,6 +2,7 @@ package ml.melun.mangaview.mangaview;
 
 import org.junit.Test;
 
+import java.io.InterruptedIOException;
 import java.net.ConnectException;
 import java.net.InetAddress;
 import java.util.Arrays;
@@ -16,6 +17,21 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class CustomHttpClientTest {
+    @Test
+    public void interruptedRequestsAreExpectedCancellation() {
+        assertTrue(CustomHttpClient.isInterruptedRequestForTest(new InterruptedException()));
+        assertTrue(CustomHttpClient.isInterruptedRequestForTest(new InterruptedIOException()));
+        assertTrue(CustomHttpClient.isInterruptedRequestForTest(new Exception("Canceled")));
+        assertFalse(CustomHttpClient.isInterruptedRequestForTest(new Exception("Request failed")));
+    }
+
+    @Test
+    public void ntkAckStartsProactiveCanaryWhenChallengeHasImpressions() {
+        assertFalse(CustomHttpClient.shouldStartProactiveNtkAckCanaryForTest(0));
+        assertTrue(CustomHttpClient.shouldStartProactiveNtkAckCanaryForTest(1));
+        assertTrue(CustomHttpClient.shouldStartProactiveNtkAckCanaryForTest(4));
+    }
+
     @Test
     public void activePageLoadWaitsOnlyWithoutStaleCache() {
         assertTrue(CustomHttpClient.shouldWaitForActivePageLoadForTest(false));
@@ -336,13 +352,13 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void ntkViewerImagesCanTryNumericWebtoonApiBeforeAck() {
-        assertTrue(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
+    public void ntkViewerImagesWaitForAckBeforeNumericWebtoonApi() {
+        assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
                 "webtoon", "/webtoon/840894/1073395", false, false));
 
         assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
                 "webtoon", "/webtoon/840894/1073395", true, false));
-        assertTrue(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
+        assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
                 "webtoon", "/webtoon/840894/1073395", false, true));
         assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
                 "webtoon", "/webtoon/840894/u-slug-1073395", false, false));

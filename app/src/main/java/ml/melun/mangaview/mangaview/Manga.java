@@ -540,7 +540,7 @@ public class Manga {
             if(isNtkGeneratedModeOverride()
                     && !nativeAckMode
                     && !apiFallbackMode
-                    && shouldProbeKnownGeneratedBeforeApiFallback(path, getNtkImageCount())
+                    && shouldProbeGeneratedModeBeforeApi(path, getNtkImageCount())
                     && addNtkGeneratedPathImageCandidates(client, path, seenImages,
                     ntkGeneratedImageCandidateCount(), !shouldOpenKnownNtkGeneratedPathWithoutValidation(path))) {
                 logNtkViewerParse("generated-known-fast", null, path, 0, 0);
@@ -846,6 +846,21 @@ public class Manga {
                 attachEpisodeSeriesMetadata();
                 return LOAD_OK;
             }
+            if(apiFirstCanonicalWebtoonEpisode
+                    && isUsableNtkApiPage(page)
+                    && hasNtkViewerImageApiPayload(page.body)) {
+                if(!nativeAckCompleted && nativeAckRef[0] != null)
+                    nativeAckCompleted = awaitAsyncNtkNativeAck(nativeAckRef[0],
+                            NTK_API_FALLBACK_ACK_FAST_PATH_WAIT_MS, false);
+                if(addFastNtkApiPageImageCandidates(client, page, path, seenImages, false)) {
+                    logNtkViewerParse(nativeAckCompleted
+                            ? "api-first-canonical-webtoon-acked"
+                            : "api-first-canonical-webtoon", page, path, 0, 0);
+                    restoreBetterEpisodeList(previousEpisodes);
+                    attachEpisodeSeriesMetadata();
+                    return LOAD_OK;
+                }
+            }
             if(!nativeAckCompleted && nativeAckRef[0] == null
                     && (client.isCloudflareChallengeResponse(page.code, page.body)
                     || looksLikeNtkBlockedPage(page.body))) {
@@ -1116,16 +1131,27 @@ public class Manga {
         long deadline = System.currentTimeMillis() + 14_000L;
         CustomHttpClient.PageResponse direct = null;
         CustomHttpClient.PageResponse fallback = null;
+        boolean kpPath = isNtkKpWebtoonEpisodePath(path);
         while(System.currentTimeMillis() < deadline) {
             if(direct == null)
                 direct = completedNtkPageFetch(directFetch, false);
             if(isUsableNtkFastPage(direct, path)) {
-                cancelAsyncNtkPageFetch(fallbackFetch);
-                logNtkViewerParse("api-direct-page", direct, path, 0, 0);
-                return direct;
+                if(kpPath && !isUsableNtkKpDirectPage(direct, path)
+                        && fallbackFetch != null && fallbackFetch.done.getCount() > 0) {
+                    // KP RSC often exposes only the API token; the shared WebView page can carry
+                    // direct image text a few hundred milliseconds later.
+                } else {
+                    cancelAsyncNtkPageFetch(fallbackFetch);
+                    logNtkViewerParse("api-direct-page", direct, path, 0, 0);
+                    return direct;
+                }
             }
             if(fallback == null)
                 fallback = completedNtkPageFetch(fallbackFetch, true);
+            if(kpPath && isUsableNtkKpDirectPage(fallback, path)) {
+                cancelAsyncNtkPageFetch(directFetch);
+                return fallback;
+            }
             if(isUsableNtkFastPage(fallback, path)) {
                 cancelAsyncNtkPageFetch(directFetch);
                 return fallback;
@@ -1142,13 +1168,17 @@ public class Manga {
         }
         if(direct == null)
             direct = completedNtkPageFetch(directFetch, false);
+        if(fallback == null)
+            fallback = completedNtkPageFetch(fallbackFetch, true);
+        if(kpPath && isUsableNtkKpDirectPage(fallback, path)) {
+            cancelAsyncNtkPageFetch(directFetch);
+            return fallback;
+        }
         if(isUsableNtkFastPage(direct, path)) {
             cancelAsyncNtkPageFetch(fallbackFetch);
             logNtkViewerParse("api-direct-page", direct, path, 0, 0);
             return direct;
         }
-        if(fallback == null)
-            fallback = completedNtkPageFetch(fallbackFetch, true);
         if(isUsableNtkFastPage(fallback, path)) {
             cancelAsyncNtkPageFetch(directFetch);
             return fallback;
@@ -2349,6 +2379,11 @@ public class Manga {
         return isNumericNtkGeneratedEpisodePath(path);
     }
 
+    private static boolean shouldProbeGeneratedModeBeforeApi(String path, int imageCount) {
+        return shouldProbeKnownGeneratedBeforeApiFallback(path, imageCount)
+                && !shouldPreferNtkApiForCanonicalWebtoonPath(path);
+    }
+
     private static boolean isNumericNtkGeneratedEpisodePath(String path) {
         if(path == null || shouldSkipNtkGeneratedForEpisodePath(path))
             return false;
@@ -2521,6 +2556,10 @@ public class Manga {
                 && imageCount > 0
                 && isNumericNtkGeneratedEpisodePath(path)
                 && !shouldPreferNtkApiForCanonicalWebtoonPath(path);
+    }
+
+    public static boolean shouldUseGeneratedAppendBeforeApi(int baseMode, String path, int imageCount) {
+        return shouldUseImmediateNtkGeneratedFastPath(baseMode, path, imageCount);
     }
 
     private static boolean isNtkWebtoonEpisodePath(String path) {
@@ -2920,7 +2959,7 @@ public class Manga {
 
     private static void recordFetchException(Exception e) {
         if(isExpectedFetchCancellation(e)) {
-            Log.d(TAG, "manga_fetch_cancelled " + e);
+            Log.d(TAG, "manga_fetch_cancelled expected");
             return;
         }
         if(isRecoverableNetworkFetchFailure(e)) {
@@ -3416,6 +3455,10 @@ public class Manga {
 
     static boolean shouldProbeKnownGeneratedBeforeApiFallbackForTest(String path, int imageCount) {
         return shouldProbeKnownGeneratedBeforeApiFallback(path, imageCount);
+    }
+
+    static boolean shouldProbeGeneratedModeBeforeApiForTest(String path, int imageCount) {
+        return shouldProbeGeneratedModeBeforeApi(path, imageCount);
     }
 
     static boolean shouldSkipNtkGeneratedForEpisodePathForTest(String path) {

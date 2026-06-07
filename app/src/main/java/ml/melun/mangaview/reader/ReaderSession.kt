@@ -1069,8 +1069,7 @@ class ReaderSession(
                         "targetTitleId=${target.titleId} targetPath=${target.ntkEpisodePath} targetName=${target.name}"
                 )
                 var urls = imageRepository.imageUrls(target, appContext)
-                val preferVerifiedApiAppend = direction < 0 ||
-                    (isNtkSource(target, currentTitle) && target.baseMode == ml.melun.mangaview.mangaview.MTitle.base_webtoon)
+                val preferVerifiedApiAppend = shouldPreferVerifiedApiAppend(target, currentTitle)
                 if (!preferVerifiedApiAppend && !urls.isNullOrEmpty() &&
                     isNtkSource(target, currentTitle) &&
                     shouldRefreshNtkGeneratedAppendUrls(urls)
@@ -1136,8 +1135,7 @@ class ReaderSession(
 
     private fun loadLookaheadAppendUrls(target: Manga, currentTitle: Title, direction: Int): AppendUrlLoad {
         var urls = imageRepository.imageUrls(target, appContext)
-        val preferVerifiedApiAppend = direction < 0 ||
-            (isNtkSource(target, currentTitle) && target.baseMode == ml.melun.mangaview.mangaview.MTitle.base_webtoon)
+        val preferVerifiedApiAppend = shouldPreferVerifiedApiAppend(target, currentTitle)
         if (!preferVerifiedApiAppend && !urls.isNullOrEmpty() &&
             isNtkSource(target, currentTitle) &&
             shouldRefreshNtkGeneratedAppendUrls(urls)
@@ -1200,8 +1198,7 @@ class ReaderSession(
                 "titleId=${currentTitle.id} path=${target.ntkEpisodePath}"
         )
         return try {
-            val preferApiFirst = isNtkSource(target, currentTitle) &&
-                target.baseMode == ml.melun.mangaview.mangaview.MTitle.base_webtoon
+            val preferApiFirst = shouldPreferVerifiedApiAppend(target, currentTitle)
             val initialResult = withRepositoryCancellation(userVisible = true) { cancellation ->
                 if (preferApiFirst) {
                     imageRepository.fetchViewerInitialWithMode(target, cancellation, "api-strict")
@@ -1240,6 +1237,16 @@ class ReaderSession(
             recordIfUnexpected(e)
             Title.LOAD_ERROR
         }
+    }
+
+    private fun shouldPreferVerifiedApiAppend(target: Manga, currentTitle: Title): Boolean {
+        if (!isNtkSource(target, currentTitle)) return false
+        if (target.baseMode != ml.melun.mangaview.mangaview.MTitle.base_webtoon) return false
+        return !Manga.shouldUseGeneratedAppendBeforeApi(
+            target.baseMode,
+            target.ntkEpisodePath,
+            target.ntkImageCount
+        )
     }
 
     private fun primeForwardTimeline() {
@@ -1447,9 +1454,16 @@ class ReaderSession(
         val transitionTitle = refs.getOrNull(cardOffset)?.transitionTitle ?: ""
         val inserted = refs.size
         val total: Int
+        if (inserted <= 0) {
+            Log.d(TAG, "append_adjacent_resolved_empty direction=$direction targetId=${target.id} path=${target.ntkEpisodePath} urls=${urls.size}")
+            return
+        }
         if (direction < 0) {
             synchronized(pagesLock) {
-                if (containsEpisodeForAppendLocked(target)) return
+                if (containsEpisodeForAppendLocked(target)) {
+                    Log.d(TAG, "append_adjacent_resolved_duplicate direction=$direction targetId=${target.id} path=${target.ntkEpisodePath} pages=${pages.size}")
+                    return
+                }
                 beginStructurePublish()
                 for (page in pages) page.pageIndex += inserted
                 refs.forEachIndexed { index, page -> page.pageIndex = index }
@@ -1474,13 +1488,17 @@ class ReaderSession(
         } else {
             val cardIndex: Int
             synchronized(pagesLock) {
-                if (containsEpisodeForAppendLocked(target)) return
+                if (containsEpisodeForAppendLocked(target)) {
+                    Log.d(TAG, "append_adjacent_resolved_duplicate direction=$direction targetId=${target.id} path=${target.ntkEpisodePath} pages=${pages.size}")
+                    return
+                }
                 beginStructurePublish()
                 cardIndex = pages.size
                 refs.forEachIndexed { offset, page -> page.pageIndex = cardIndex + offset }
                 pages.addAll(refs)
                 total = pages.size
             }
+            Log.d(TAG, "append_adjacent_resolved_inserted direction=$direction targetId=${target.id} path=${target.ntkEpisodePath} inserted=$inserted total=$total")
             val posted = main.post {
                 var shouldWarm = false
                 try {

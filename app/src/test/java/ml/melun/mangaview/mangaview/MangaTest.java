@@ -536,6 +536,28 @@ public class MangaTest {
     }
 
     @Test
+    public void ntkGeneratedModeUsesApiFirstForCanonicalWebtoonEpisodes() {
+        assertFalse(Manga.shouldProbeGeneratedModeBeforeApiForTest(
+                "/webtoon/68864262/1587238", 101));
+        assertTrue(Manga.shouldProbeGeneratedModeBeforeApiForTest(
+                "/webtoon/9713/916314", 43));
+        assertTrue(Manga.shouldProbeGeneratedModeBeforeApiForTest(
+                "/manhwa/36404/1801301", 34));
+    }
+
+    @Test
+    public void ntkAppendUsesGeneratedFirstOnlyForLegacyNumericWebtoons() {
+        assertTrue(Manga.shouldUseGeneratedAppendBeforeApi(
+                MTitle.base_webtoon, "/webtoon/16527/1525931", 128));
+        assertFalse(Manga.shouldUseGeneratedAppendBeforeApi(
+                MTitle.base_webtoon, "/webtoon/68864262/1587238", 101));
+        assertFalse(Manga.shouldUseGeneratedAppendBeforeApi(
+                MTitle.base_webtoon, "/webtoon/16527/u-slug-1525931", 128));
+        assertFalse(Manga.shouldUseGeneratedAppendBeforeApi(
+                MTitle.base_webtoon, "/webtoon/16527/1525931", 0));
+    }
+
+    @Test
     public void ntkKpWebtoonEpisodesUseApiImagesWithoutGeneratedProbe() {
         assertTrue(Manga.shouldSkipNtkGeneratedForEpisodePathForTest(
                 "/webtoon/61393986/kp-61393986-64942327"));
