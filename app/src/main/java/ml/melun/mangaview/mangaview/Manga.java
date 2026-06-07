@@ -1707,9 +1707,9 @@ public class Manga {
         if(workId.length() == 0)
             workId = pathMatcher.group(2);
         List<String> urls = new ArrayList<>();
-        if(titleId > 0 && !isNumericNtkId(workId) && imageEpisodeId.length() > 0) {
-            String canonicalWorkId = String.valueOf(titleId);
-            String canonicalAckPath = "/" + segment + "/" + titleId + "/" + imageEpisodeId;
+        String canonicalWorkId = ntkViewerCanonicalWorkIdForImageApi(normalized, path, titleId, workId);
+        if(canonicalWorkId.length() > 0 && imageEpisodeId.length() > 0) {
+            String canonicalAckPath = "/" + segment + "/" + canonicalWorkId + "/" + imageEpisodeId;
             Log.d(TAG, "ntk_viewer_api_canonical_ack_first path=" + path
                     + ",workId=" + canonicalWorkId
                     + ",ackPath=" + canonicalAckPath);
@@ -1732,6 +1732,25 @@ public class Manga {
         }
         compactNtkImageCandidates(normalized, seenImages);
         return imgs != null && imgs.size() > before;
+    }
+
+    private static String ntkViewerCanonicalWorkIdForImageApi(String normalized, String path,
+                                                              int titleId, String apiWorkId) {
+        if(path == null || imageApiWorkIdIsNumeric(apiWorkId))
+            return "";
+        String sourceWorkId = ntkViewerSourceWorkId(normalized);
+        if(sourceWorkId.length() > 0)
+            return sourceWorkId;
+        return "";
+    }
+
+    static String ntkViewerCanonicalWorkIdForImageApiForTest(String normalized, String path,
+                                                             int titleId, String apiWorkId) {
+        return ntkViewerCanonicalWorkIdForImageApi(normalized, path, titleId, apiWorkId);
+    }
+
+    private static boolean imageApiWorkIdIsNumeric(String apiWorkId) {
+        return apiWorkId != null && apiWorkId.matches("\\d+");
     }
 
     private boolean awaitCachedNtkViewerImageApiCandidates(CustomHttpClient client, String path,
