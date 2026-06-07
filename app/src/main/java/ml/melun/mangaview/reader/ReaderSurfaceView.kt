@@ -426,6 +426,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
+            val viewportAnchor = progressPositionLocked()
             val newHeight = resolvedPageDrawHeightLocked(bitmap.width, bitmap.height)
             val hasCurrentDrawable = page.bitmap != null || page.tiles.isNotEmpty()
             if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight, hasCurrentDrawable)) {
@@ -458,6 +459,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.errorText = null
             deferInitialEmptyDraw = false
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
+            restoreViewportAnchorLocked(viewportAnchor, "page_bitmap", index, oldHeight, newHeight)
             val nearVisible = isNearVisibleLocked(index, BUSY_RESOLVE_RENDER_EXTRA_PAGES)
             applyLockedRestorePositionLocked()
             clampScrollLocked()
@@ -479,6 +481,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
+            val viewportAnchor = progressPositionLocked()
             val newHeight = resolvedPageDrawHeightLocked(pageWidth, pageHeight)
             val hasCurrentDrawable = page.bitmap != null || page.tiles.isNotEmpty()
             if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight, hasCurrentDrawable)) {
@@ -511,6 +514,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.errorText = null
             deferInitialEmptyDraw = false
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
+            restoreViewportAnchorLocked(viewportAnchor, "page_tiles", index, oldHeight, newHeight)
             val nearVisible = isNearVisibleLocked(index, BUSY_RESOLVE_RENDER_EXTRA_PAGES)
             applyLockedRestorePositionLocked()
             clampScrollLocked()
@@ -532,6 +536,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
+            val viewportAnchor = progressPositionLocked()
             page.bitmap = null
             page.tiles = emptyList()
             page.loading = false
@@ -540,6 +545,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             clearPendingResolveLocked(page)
             val newHeight = pageDrawHeightLocked(page)
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
+            restoreViewportAnchorLocked(viewportAnchor, "page_clear", index, oldHeight, newHeight)
             applyLockedRestorePositionLocked()
             clampScrollLocked()
             if (!lastBusy || isNearVisibleLocked(index, BUSY_RESOLVE_RENDER_EXTRA_PAGES)) {
@@ -609,6 +615,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
+            val viewportAnchor = progressPositionLocked()
             val newHeight = resolvedPageDrawHeightLocked(pageWidth, pageHeight)
             if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight, false)) {
                 page.pendingResolveType = PENDING_BOUNDS
@@ -622,6 +629,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.height = pageHeight
             clearPendingResolveLocked(page)
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
+            restoreViewportAnchorLocked(viewportAnchor, "page_bounds", index, oldHeight, newHeight)
             val nearVisible = isNearVisibleLocked(index, BUSY_RESOLVE_RENDER_EXTRA_PAGES)
             applyLockedRestorePositionLocked()
             clampScrollLocked()
@@ -646,6 +654,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
+            val viewportAnchor = progressPositionLocked()
             page.bitmap = null
             page.tiles = emptyList()
             page.width = width
@@ -657,6 +666,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             deferInitialEmptyDraw = false
             val newHeight = pageDrawHeightLocked(page)
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
+            restoreViewportAnchorLocked(viewportAnchor, "page_card", index, oldHeight, newHeight)
             applyLockedRestorePositionLocked()
             clampScrollLocked()
             renderRequested = true
@@ -673,6 +683,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
+            val viewportAnchor = progressPositionLocked()
             page.bitmap = null
             page.tiles = emptyList()
             page.width = width
@@ -684,6 +695,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             deferInitialEmptyDraw = false
             val newHeight = pageDrawHeightLocked(page)
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
+            restoreViewportAnchorLocked(viewportAnchor, "page_error", index, oldHeight, newHeight)
             applyLockedRestorePositionLocked()
             clampScrollLocked()
             renderRequested = true
@@ -1572,6 +1584,42 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return ProgressPosition(page, pageOffsetLocked(page))
     }
 
+    private fun restoreViewportAnchorLocked(
+        anchor: ProgressPosition?,
+        reason: String,
+        index: Int = -1,
+        oldHeight: Float = 0f,
+        newHeight: Float = 0f
+    ) {
+        val target = anchor?.page ?: return
+        if (target !in pages.indices) return
+        val now = SystemClock.uptimeMillis()
+        val recentScrollSettling = lastScrollInteractionMs > 0L &&
+            now - lastScrollInteractionMs <= HEIGHT_CHANGE_SCROLL_ADJUST_QUIET_MS
+        if (!shouldRestoreAnchorAfterPendingResolves(
+                lastBusy = lastBusy,
+                pointerDown = pointerDown,
+                dragging = dragging,
+                scrollerFinished = scroller.isFinished,
+                recentScrollSettling = recentScrollSettling
+            )
+        ) {
+            return
+        }
+        rebuildLayoutLocked()
+        val before = scrollOffset
+        setScrollOffsetLocked(pageTopOrElseLocked(target, 0f) - anchor.offset)
+        clampScrollLocked()
+        if (abs(scrollOffset - before) > HEIGHT_CHANGE_EPSILON_PX) {
+            Log.d(
+                TAG,
+                "reader_viewport_anchor_restore reason=$reason index=$index anchor=$target " +
+                    "anchorOffset=${anchor.offset} old=${oldHeight.toInt()} new=${newHeight.toInt()} " +
+                    "from=${before.toInt()} to=${scrollOffset.toInt()} lastBusy=$lastBusy"
+            )
+        }
+    }
+
     private fun clampScrollLocked() {
         val maxScroll = max(0f, totalHeightLocked() - height)
         val minScroll = if (prependedRevealHoldPage in pages.indices) {
@@ -1689,8 +1737,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun applyPendingPageResolvesLocked() {
         if (pages.isEmpty()) return
         rebuildLayoutLocked()
-        val anchorPage = firstVisiblePageLocked(scrollOffset + 1f).coerceIn(0, pages.lastIndex)
-        val anchorOffset = pageOffsetLocked(anchorPage)
+        val viewportAnchor = progressPositionLocked() ?: return
         val now = SystemClock.uptimeMillis()
         val recentScrollSettling = lastScrollInteractionMs > 0L &&
             now - lastScrollInteractionMs <= HEIGHT_CHANGE_SCROLL_ADJUST_QUIET_MS
@@ -1714,12 +1761,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 SystemClock.uptimeMillis() + RESTORE_POSITION_LOCK_MS
             )
             val beforeRestore = scrollOffset
-            setScrollOffsetLocked(pageTopOrElseLocked(anchorPage, 0f) - anchorOffset)
-            clampScrollLocked()
+            restoreViewportAnchorLocked(viewportAnchor, "pending_resolve")
             Log.d(
                 TAG,
-                "reader_pending_resolve_restore applied=$appliedCount anchor=$anchorPage " +
-                    "anchorOffset=${anchorOffset.toInt()} from=${beforeRestore.toInt()} to=${scrollOffset.toInt()} " +
+                "reader_pending_resolve_restore applied=$appliedCount anchor=${viewportAnchor.page} " +
+                    "anchorOffset=${viewportAnchor.offset} from=${beforeRestore.toInt()} to=${scrollOffset.toInt()} " +
                     "lastBusy=$lastBusy pointerDown=$pointerDown dragging=$dragging " +
                     "scrollerFinished=${scroller.isFinished} recentSettling=$recentScrollSettling"
             )
