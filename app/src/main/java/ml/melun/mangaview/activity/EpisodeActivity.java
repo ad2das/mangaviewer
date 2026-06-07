@@ -495,6 +495,17 @@ public class EpisodeActivity extends AppCompatActivity {
                 }
             }
         }
+        if(progressIndex <= 0 && title.getResumeNtkEpisodePath().length() > 0) {
+            String resumePath = title.getResumeNtkEpisodePath();
+            for(int i = 0; i < episodes.size(); i++) {
+                Manga episode = safeGet(episodes, i);
+                if(episode != null && resumePath.equals(episode.getNtkEpisodePath())) {
+                    progressIndex = i + 1;
+                    progressId = episode.getId();
+                    break;
+                }
+            }
+        }
         if(progressIndex <= 0)
             progressIndex = storedIndex;
         if(progressIndex > episodes.size())

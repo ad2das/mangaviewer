@@ -983,7 +983,7 @@ public class Preference {
         }
     }
 
-    private void preserveMoreCompleteProgress(MTitle target, MTitle existing) {
+    private static void preserveMoreCompleteProgress(MTitle target, MTitle existing) {
         if(target == null || existing == null)
             return;
         int existingCount = existing.getEpisodeCount();
@@ -1002,6 +1002,11 @@ public class Preference {
         target.setReadingProgress(episodeId, episodeIndex, Math.max(existingCount, targetCount));
     }
 
+    static MTitle preserveMoreCompleteProgressForTest(MTitle target, MTitle existing) {
+        preserveMoreCompleteProgress(target, existing);
+        return target;
+    }
+
 
     public void updateRecentData(MTitle title){
         ensureHistoryLoaded();
@@ -1013,11 +1018,15 @@ public class Preference {
         normalizeNtkProgressFromRelease(tmp);
         int recentIndex = getIndexOf(tmp);
         if(recentIndex > -1) {
+            preserveMoreCompleteProgress(tmp, recent.get(recentIndex));
+            normalizeNtkProgressFromRelease(tmp);
             recent.set(recentIndex, tmp);
             writeRecent();
         }
         int index = findFavorite(tmp);
         if(index>-1){
+            preserveMoreCompleteProgress(tmp, favorite.get(index));
+            normalizeNtkProgressFromRelease(tmp);
             favorite.set(index,tmp);
             markHistoryIndexDirty();
             Gson gson = new Gson();
@@ -1036,11 +1045,15 @@ public class Preference {
         normalizeNtkProgressFromRelease(tmp);
         int recentIndex = getIndexOf(tmp);
         if(recentIndex > -1) {
+            preserveMoreCompleteProgress(tmp, recent.get(recentIndex));
+            normalizeNtkProgressFromRelease(tmp);
             recent.set(recentIndex, tmp);
             writeRecent();
         }
         int index = findFavorite(tmp);
         if(index>-1){
+            preserveMoreCompleteProgress(tmp, favorite.get(index));
+            normalizeNtkProgressFromRelease(tmp);
             favorite.set(index, tmp);
             markHistoryIndexDirty();
             Gson gson = new Gson();
@@ -1799,6 +1812,17 @@ public class Preference {
                     if(episode != null && episode.getId() == bookmarkId) {
                         episodeIndex = i + 1;
                         break;
+                    }
+                }
+                if(episodeIndex <= 0 && item.getResumeNtkEpisodePath().length() > 0) {
+                    String resumePath = item.getResumeNtkEpisodePath();
+                    for(int i = 0; i < episodes.size(); i++) {
+                        Manga episode = episodes.get(i);
+                        if(episode != null && resumePath.equals(episode.getNtkEpisodePath())) {
+                            bookmarkId = episode.getId();
+                            episodeIndex = i + 1;
+                            break;
+                        }
                     }
                 }
                 if(episodeIndex > 0) {

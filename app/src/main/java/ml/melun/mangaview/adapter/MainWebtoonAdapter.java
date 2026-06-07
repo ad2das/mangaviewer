@@ -2846,7 +2846,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         AppDispatchers.runUserAction(() -> {
             long versionBefore = p.getLocalDataVersion();
             try {
-                MangaRepository.backfillRecentProgress(4);
+                MangaRepository.backfillRecentProgress(6);
             } catch (Exception e) {
                 ml.melun.mangaview.report.CrashReporter.record(e);
             }
