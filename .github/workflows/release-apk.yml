@@ -85,7 +85,7 @@ jobs:
         if: env.STALE_RELEASE_RUN != 'true'
         uses: gradle/actions/setup-gradle@v4
         with:
-          cache-read-only: false
+          cache-read-only: ${{ github.event_name == 'push' || github.event.inputs.refresh_gradle_cache != 'true' }}
           cache-cleanup: never
           gradle-home-cache-excludes: |
             caches/journal-*
@@ -93,7 +93,7 @@ jobs:
 
       - name: Restore Android incremental build state
         if: env.STALE_RELEASE_RUN != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             .gradle/8.13/executionHistory
@@ -120,4 +120,15 @@ jobs:
         shell: bash
         run: |
           bash tools/release_latest_ci.sh
+
+      - name: Save Android incremental build state
+        if: env.STALE_RELEASE_RUN != 'true' && github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_gradle_cache == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .gradle/8.13/executionHistory
+            .gradle/8.13/fileHashes
+            .gradle/configuration-cache
+            app/build
+          key: release-apk-app-build-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
 

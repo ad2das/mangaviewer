@@ -155,10 +155,7 @@ def rewrite_apk(input_apk, output_apk, manifest):
         for item in zin.infolist():
             name = item.filename
             upper = name.upper()
-            if upper.startswith("META-INF/") and (
-                upper.endswith(".RSA") or upper.endswith(".DSA") or upper.endswith(".EC")
-                or upper.endswith(".SF") or upper.endswith(".MF")
-            ):
+            if upper.startswith("META-INF/"):
                 continue
             data = manifest if name == "AndroidManifest.xml" else zin.read(item)
             info = zipfile.ZipInfo(name, item.date_time)
