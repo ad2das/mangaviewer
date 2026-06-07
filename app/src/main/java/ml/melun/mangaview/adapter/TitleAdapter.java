@@ -629,10 +629,10 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     private BindMeta bindMeta(Title title) {
         if(title == null)
             return BindMeta.EMPTY;
-        if(deferThumbnails)
-            return fastInitialBindMeta(title);
         refreshClassificationTags(title);
         applyStoredBookmark(title);
+        if(deferThumbnails)
+            return fastInitialBindMeta(title);
         String key = titleContentKey(title)
                 + "|" + title.getBookmark()
                 + "|" + title.getBookmarkEpisodeId()
@@ -729,6 +729,7 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     private void applyStoredBookmark(Title title) {
         if(title == null)
             return;
+        p.applyStoredProgress(title);
         int bookmark = p.getBookmark(title);
         if(bookmark <= 0)
             bookmark = title.getBookmarkEpisodeId();
@@ -779,6 +780,9 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         int episodeCount = totalEpisodeCount(title);
         if(episodeIndex <= 0)
             episodeIndex = title.getBookmarkIndex();
+        int fallbackWatched = watchedEpisodeCountFromBookmark(title, episodeCount);
+        if(episodeIndex <= 0 && fallbackWatched > 0)
+            return fallbackWatched;
         if(episodeIndex <= 0 || episodeCount <= 0)
             return 0;
         return Math.max(1, Math.min(episodeCount, episodeCount - episodeIndex + 1));
@@ -797,9 +801,25 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         int episodeCount = title.getDisplayEpisodeCount(title.getEpsCount());
         if(episodeIndex <= 0)
             episodeIndex = title.getBookmarkIndex();
+        int fallbackWatched = watchedEpisodeCountFromBookmark(title, episodeCount);
+        if(episodeIndex <= 0 && fallbackWatched > 0)
+            return fallbackWatched;
         if(episodeIndex <= 0 || episodeCount <= 0)
             return 0;
         return Math.max(1, Math.min(episodeCount, episodeCount - episodeIndex + 1));
+    }
+
+    private static int watchedEpisodeCountFromBookmark(Title title, int episodeCount) {
+        if(title == null || episodeCount <= 0)
+            return 0;
+        if(!"ntk".equals(title.getSourceSite()) || title.getBaseMode() != MTitle.base_webtoon)
+            return 0;
+        int bookmark = title.getBookmarkEpisodeId();
+        if(bookmark <= 0)
+            bookmark = title.getBookmark();
+        if(bookmark <= 0 || bookmark > episodeCount)
+            return 0;
+        return bookmark;
     }
 
     static int readingProgressPercentForTest(Title title) {

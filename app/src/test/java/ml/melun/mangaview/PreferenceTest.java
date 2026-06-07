@@ -119,6 +119,23 @@ public class PreferenceTest {
     }
 
     @Test
+    public void progressMergeKeepsIncomingSelectedIndexWhenExistingCountIsLarger() {
+        MTitle incoming = new MTitle("화산귀환", 769209, "", "", null, "165화", MTitle.base_webtoon);
+        incoming.setSourceSite("ntk");
+        incoming.setReadingProgress(7, 165, 165);
+
+        MTitle existing = new MTitle("화산귀환", 769209, "", "", null, "171화", MTitle.base_webtoon);
+        existing.setSourceSite("ntk");
+        existing.setReadingProgress(1, 171, 171);
+
+        MTitle merged = Preference.preserveMoreCompleteProgressForTest(incoming, existing);
+
+        assertEquals(7, merged.getBookmarkEpisodeId());
+        assertEquals(165, merged.getBookmarkEpisodeIndex());
+        assertEquals(171, merged.getEpisodeCount());
+    }
+
+    @Test
     public void wfwfProgressInfersListIndexFromEpisodeNumber() {
         MTitle title = new MTitle("서머타임 렌더링", 10017, "", "", null, "", MTitle.base_comic);
         title.setSourceSite("wfwf");

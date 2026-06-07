@@ -1003,6 +1003,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         } catch (Exception ignored) {
         }
         for(Title title : titles) {
+            if(p != null)
+                p.applyStoredProgress(title);
             int bookmark = p.getBookmark(title);
             if(bookmark > 0)
                 title.setBookmark(bookmark);
@@ -1498,8 +1500,13 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 }
                 boolean continueStyle = style == STYLE_CONTINUE;
                 int progressPercent = continueStyle ? readingProgressPercent(item) : 0;
+                String progressText = continueStyle ? progressLabel(item) : "";
                 String sourceSite = continueStyle ? sourceSiteForContinueItem(item) : "";
-                String nextKey = titleContentKey(item) + ":" + continueStyle + ":" + progressPercent + ":" + sourceSite;
+                String nextKey = titleContentKey(item) + ":" + continueStyle + ":" + progressPercent
+                        + ":" + progressText + ":" + sourceSite
+                        + ":" + (item == null ? 0 : item.getBookmarkEpisodeId())
+                        + ":" + (item == null ? 0 : item.getBookmarkEpisodeIndex())
+                        + ":" + (item == null ? 0 : item.getEpisodeCount());
                 if(!nextKey.equals(boundKey)) {
                     setTextIfChanged(name, item == null ? "" : item.getName());
                     setVisibilityIfChanged(episode, continueStyle ? View.VISIBLE : View.GONE);
@@ -1507,7 +1514,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     setVisibilityIfChanged(progress, continueStyle ? View.VISIBLE : View.GONE);
                     setVisibilityIfChanged(percent, continueStyle ? View.VISIBLE : View.GONE);
                     if(continueStyle) {
-                        setTextIfChanged(episode, progressLabel(item));
+                        setTextIfChanged(episode, progressText);
                         bindContinueSiteIcon(siteIcon, sourceSite);
                         if(progress.getProgress() != progressPercent)
                             progress.setProgress(progressPercent);
@@ -1602,6 +1609,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         private Manga resolveContinueManga(Title item) {
+            applyStoredProgress(item);
             return ViewerResumeResolver.resumeManga(item);
         }
 
@@ -1631,10 +1639,14 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
 
         private int watchedEpisodeCount(Title item) {
+            applyStoredProgress(item);
             int episodeIndex = item.getBookmarkEpisodeIndex();
             int episodeCount = totalEpisodeCount(item);
             if(episodeIndex <= 0)
                 episodeIndex = item.getBookmarkIndex();
+            int fallbackWatched = watchedEpisodeCountFromBookmark(item, episodeCount);
+            if(episodeIndex <= 0 && fallbackWatched > 0)
+                return fallbackWatched;
             if(episodeIndex <= 0 || episodeCount <= 0)
                 return 0;
             return Math.max(1, Math.min(episodeCount, episodeCount - episodeIndex + 1));
@@ -1642,6 +1654,24 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
         private int totalEpisodeCount(Title item) {
             return item.getDisplayEpisodeCount(item.getEpsCount());
+        }
+
+        private void applyStoredProgress(Title item) {
+            if(item != null && p != null)
+                p.applyStoredProgress(item);
+        }
+
+        private int watchedEpisodeCountFromBookmark(Title item, int episodeCount) {
+            if(item == null || episodeCount <= 0)
+                return 0;
+            if(!"ntk".equals(item.getSourceSite()) || item.getBaseMode() != MTitle.base_webtoon)
+                return 0;
+            int bookmark = item.getBookmarkEpisodeId();
+            if(bookmark <= 0)
+                bookmark = item.getBookmark();
+            if(bookmark <= 0 || bookmark > episodeCount)
+                return 0;
+            return bookmark;
         }
 
         class RankHolder extends RecyclerView.ViewHolder {

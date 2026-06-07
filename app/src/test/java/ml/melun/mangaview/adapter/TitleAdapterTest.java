@@ -39,4 +39,15 @@ public class TitleAdapterTest {
         assertEquals(103, TitleAdapter.watchedEpisodeCountForTest(title));
         assertTrue(TitleAdapter.readingProgressPercentForTest(title) > 0);
     }
+
+    @Test
+    public void ntkWebtoonProgressFallsBackToNumericBookmarkWhenIndexMissing() {
+        Title title = new Title("화산귀환", "", "", null, "165화", 769209, MTitle.base_webtoon);
+        title.setSourceSite("ntk");
+        title.setReadingProgress(3, -1, 171);
+        title.setBookmark(3);
+
+        assertEquals(3, TitleAdapter.watchedEpisodeCountForTest(title));
+        assertTrue(TitleAdapter.readingProgressPercentForTest(title) > 0);
+    }
 }

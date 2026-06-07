@@ -995,7 +995,12 @@ public class Preference {
             return;
         int episodeId;
         int episodeIndex;
-        if(target.getBookmarkEpisodeIndex() <= 0 && existing.getBookmarkEpisodeIndex() > 0) {
+        if(target.getBookmarkEpisodeIndex() > 0) {
+            episodeId = target.getBookmarkEpisodeId() > 0
+                    ? target.getBookmarkEpisodeId()
+                    : existing.getBookmarkEpisodeId();
+            episodeIndex = target.getBookmarkEpisodeIndex();
+        } else if(existing.getBookmarkEpisodeIndex() > 0) {
             episodeId = existing.getBookmarkEpisodeId();
             episodeIndex = existing.getBookmarkEpisodeIndex();
         } else {
@@ -1762,6 +1767,44 @@ public class Preference {
         if(stored == null)
             stored = findIndexedTitle(title, favoriteByKey);
         return stored == null ? -1 : stored.getBookmarkEpisodeId();
+    }
+
+    public void applyStoredProgress(MTitle title) {
+        ensureHistoryIndex();
+        if(title == null)
+            return;
+        MTitle stored = findIndexedTitle(title, recentByKey);
+        if(stored == null)
+            stored = findIndexedTitle(title, favoriteByKey);
+        if(stored == null)
+            return;
+        int bookmark = title instanceof Title ? ((Title) title).getBookmark() : -1;
+        if(bookmark <= 0 && stored instanceof Title)
+            bookmark = ((Title) stored).getBookmark();
+        if(bookmark <= 0)
+            bookmark = title.getBookmarkEpisodeId();
+        if(bookmark <= 0)
+            bookmark = stored.getBookmarkEpisodeId();
+        if(bookmark > 0 && title instanceof Title)
+            ((Title) title).setBookmark(bookmark);
+
+        int storedIndex = stored.getBookmarkEpisodeIndex();
+        int titleIndex = title.getBookmarkEpisodeIndex();
+        int storedCount = stored.getEpisodeCount();
+        int titleCount = title.getEpisodeCount();
+        if(storedIndex > 0 && (titleIndex <= 0 || storedCount >= titleCount)) {
+            int episodeId = stored.getBookmarkEpisodeId() > 0
+                    ? stored.getBookmarkEpisodeId()
+                    : bookmark;
+            title.setReadingProgress(episodeId, storedIndex, Math.max(storedCount, titleCount));
+        } else if(storedCount > titleCount && titleIndex > 0) {
+            int episodeId = title.getBookmarkEpisodeId() > 0
+                    ? title.getBookmarkEpisodeId()
+                    : bookmark;
+            title.setReadingProgress(episodeId, titleIndex, storedCount);
+        }
+        if(title.getResumeNtkEpisodePath().length() == 0 && stored.getResumeNtkEpisodePath().length() > 0)
+            title.setResumeNtkEpisodePath(stored.getResumeNtkEpisodePath());
     }
 
     public List<MTitle> getFavorite(){
