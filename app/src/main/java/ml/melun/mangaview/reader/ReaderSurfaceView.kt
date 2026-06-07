@@ -1753,6 +1753,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
         var appliedCount = 0
         for (index in pages.indices) {
+            if (!shouldApplyPendingPageResolveLocked(index)) continue
             if (applyPendingPageResolveLocked(index)) appliedCount++
         }
         if (appliedCount > 0) {
@@ -1770,6 +1771,26 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     "scrollerFinished=${scroller.isFinished} recentSettling=$recentScrollSettling"
             )
         }
+    }
+
+    private fun shouldApplyPendingPageResolveLocked(index: Int): Boolean {
+        val page = pages.getOrNull(index) ?: return false
+        if (page.pendingResolveType == PENDING_NONE) return false
+        val pageTop = pageTopOrElseLocked(index, 0f)
+        val pageBottom = pageTop + pageDrawHeightLocked(page)
+        val viewportTop = scrollOffset
+        val viewportBottom = scrollOffset + max(1, height)
+        val intersectsViewport = pageBottom > viewportTop + COVERAGE_EDGE_FILL_PX &&
+            pageTop < viewportBottom - COVERAGE_EDGE_FILL_PX
+        if (intersectsViewport) {
+            Log.d(
+                TAG,
+                "reader_pending_resolve_visible_deferred index=$index top=${pageTop.toInt()} " +
+                    "bottom=${pageBottom.toInt()} scroll=${scrollOffset.toInt()} height=$height"
+            )
+            return false
+        }
+        return true
     }
 
     private fun applyPendingPageResolveLocked(index: Int): Boolean {
