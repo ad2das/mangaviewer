@@ -715,6 +715,7 @@ class ReaderSession(
         markFirstPreparedBitmapDelivered()
         main.post {
             if (!cancelled.get()) {
+                deliverInitialPagesReadyForCurrentPagesIfNeeded()
                 listener.onPageReady(index, bitmap)
                 main.post { releaseInitialFanoutIfAnchorReady(index) }
             }
@@ -3765,6 +3766,7 @@ class ReaderSession(
         pendingDeliveryWidths.remove(currentDelivery.index)
         failedPages.remove(currentDelivery.index)
         failedPages.remove(currentIndex)
+        deliverInitialPagesReadyForCurrentPagesIfNeeded()
         logFirstBitmapIfNeeded(currentDelivery.startedAt)
         when (val result = currentDelivery.result) {
             is PageDecodeResult.Full -> listener.onPageReady(currentIndex, result.bitmap)
@@ -4137,6 +4139,13 @@ class ReaderSession(
                 listener.onPageError(0, message)
             }
         }
+    }
+
+    private fun deliverInitialPagesReadyForCurrentPagesIfNeeded() {
+        if (initialPagesReadyDelivered.get() || cancelled.get()) return
+        val count = synchronized(pagesLock) { pages.size }
+        if (count <= 0) return
+        deliverInitialPagesReadyIfNeeded(count, currentStartPage(), true)
     }
 
     private fun deliverInitialPagesReadyIfNeeded(count: Int, startPage: Int, notifyInitialPage: Boolean) {
