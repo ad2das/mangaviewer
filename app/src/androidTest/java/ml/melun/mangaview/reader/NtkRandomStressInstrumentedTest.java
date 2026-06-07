@@ -57,6 +57,7 @@ public class NtkRandomStressInstrumentedTest {
     private static final long NTK_CAPTCHA_PROBE_WAIT_MS = 18_000L;
     private static final int SCROLL_BACKWARD_JUMP_TOLERANCE_PX = 240;
     private static final int SCROLL_SETTLE_JUMP_TOLERANCE_PX = 420;
+    private static final long DEFAULT_POST_STOP_DRIFT_SAMPLE_MS = 650L;
 
     @Test
     public void dumpNtkRscListPayloadWhenRequested() throws Exception {
@@ -94,6 +95,9 @@ public class NtkRandomStressInstrumentedTest {
         boolean appendProbe = Boolean.parseBoolean(arg(args, "ntkAppendProbe", "true"));
         int appendSteps = parsePositiveInt(arg(args, "ntkAppendSteps", "60"), 60);
         int screenshotEvery = parseNonNegativeInt(arg(args, "ntkScreenshotEvery", "0"), 0);
+        long postStopDriftMs = parseNonNegativeLong(
+                arg(args, "ntkPostStopDriftMs", Long.toString(DEFAULT_POST_STOP_DRIFT_SAMPLE_MS)),
+                DEFAULT_POST_STOP_DRIFT_SAMPLE_MS);
         long seed = parseLong(arg(args, "ntkRandomSeed", ""), SystemClock.elapsedRealtime());
         Random random = new Random(seed);
         Random modeRandom = new Random(seed ^ 0x5a17c3e2L);
@@ -117,6 +121,7 @@ public class NtkRandomStressInstrumentedTest {
                 + ",appendProbe=" + appendProbe
                 + ",appendSteps=" + appendSteps
                 + ",screenshotEvery=" + screenshotEvery
+                + ",postStopDriftMs=" + postStopDriftMs
                 + ",cycleModes=" + cycleModes
                 + ",baseMode=" + fixedBaseMode
                 + ",fixedMode=" + fixedMode
@@ -126,7 +131,7 @@ public class NtkRandomStressInstrumentedTest {
             for(int run = 0; run < runs; run++) {
                 String mode = modeForRun(fixedMode, cycleModes, random, modeOffset, run);
                 runReaderCase(context, device, run, mode, target.title, target.episode,
-                        scrollSteps, appendProbe, appendSteps, screenshotEvery);
+                        scrollSteps, appendProbe, appendSteps, screenshotEvery, postStopDriftMs);
             }
             return;
         }
@@ -178,7 +183,7 @@ public class NtkRandomStressInstrumentedTest {
                     episode.getNtkEpisodePath().length() > 0);
             String mode = modeForRun(fixedMode, cycleModes, random, modeOffset, run);
             runReaderCase(context, device, run, mode, title, episode,
-                    scrollSteps, appendProbe, appendSteps, screenshotEvery);
+                    scrollSteps, appendProbe, appendSteps, screenshotEvery, postStopDriftMs);
         }
     }
 
@@ -618,7 +623,8 @@ public class NtkRandomStressInstrumentedTest {
 
     private static void runReaderCase(Context context, UiDevice device, int run, String mode,
                                       Title title, Manga episode, int scrollSteps,
-                                      boolean appendProbe, int appendSteps, int screenshotEvery) {
+                                      boolean appendProbe, int appendSteps, int screenshotEvery,
+                                      long postStopDriftMs) {
         Activity activity = null;
         long startedAt = SystemClock.elapsedRealtime();
         Manga nextEpisode = null;
@@ -656,7 +662,7 @@ public class NtkRandomStressInstrumentedTest {
             ReaderV2Activity reader = activity instanceof ReaderV2Activity ? (ReaderV2Activity) activity : null;
             int initialPageCount = reader == null ? -1 : readPageCount(reader);
             probeScrollContinuity(context, device, reader, run, mode, episode,
-                    scrollSteps, screenshotEvery);
+                    scrollSteps, screenshotEvery, postStopDriftMs);
             if(appendProbe && reader != null)
                 probeNextAppend(device, reader, run, mode, episode, nextEpisode,
                         initialPageCount, appendSteps);
@@ -748,7 +754,8 @@ public class NtkRandomStressInstrumentedTest {
     }
 
     private static void probeScrollContinuity(Context context, UiDevice device, ReaderV2Activity reader, int run,
-                                              String mode, Manga episode, int steps, int screenshotEvery) {
+                                              String mode, Manga episode, int steps, int screenshotEvery,
+                                              long postStopDriftMs) {
         File screenshot = new File(context.getExternalCacheDir(), "ntk-random-scroll-" + run + ".png");
         for(int step = 0; step < steps; step++) {
             ProgressSnapshot progressBefore = readProgressSnapshot(reader);
@@ -762,6 +769,9 @@ public class NtkRandomStressInstrumentedTest {
             long quietAt = SystemClock.elapsedRealtime();
             SystemClock.sleep(900L);
             ProgressSnapshot progressAfterSettle = readProgressSnapshot(reader);
+            if(postStopDriftMs > 0L)
+                SystemClock.sleep(postStopDriftMs);
+            ProgressSnapshot progressAfterLateSettle = readProgressSnapshot(reader);
             long screenshotStart = SystemClock.elapsedRealtime();
             boolean captureScreenshot = shouldCaptureScrollScreenshot(step, screenshotEvery);
             boolean captured = captureScreenshot && device.takeScreenshot(screenshot);
@@ -785,6 +795,8 @@ public class NtkRandomStressInstrumentedTest {
                     + ",progressAfterIdle=" + progressAfterIdle
                     + ",progressAfterQuiet=" + progressAfterQuiet
                     + ",progressAfterSettle=" + progressAfterSettle
+                    + ",progressAfterLateSettle=" + progressAfterLateSettle
+                    + ",postStopDriftMs=" + postStopDriftMs
                     + ",coverage=" + formatCoverage(coverage)
                     + "," + stats);
             assertNoBackwardScrollJump("scroll run=" + run
@@ -802,6 +814,11 @@ public class NtkRandomStressInstrumentedTest {
                     + " step=" + step
                     + " phase=quiet"
                     + " path=" + episode.getNtkEpisodePath(), progressAfterQuiet, progressAfterSettle);
+            assertNoUnexpectedSettleJump("scroll run=" + run
+                    + " mode=" + mode
+                    + " step=" + step
+                    + " phase=post-stop"
+                    + " path=" + episode.getNtkEpisodePath(), progressAfterSettle, progressAfterLateSettle);
             assertVisibleViewportReady("scroll run=" + run
                     + " mode=" + mode
                     + " step=" + step
@@ -1219,6 +1236,15 @@ public class NtkRandomStressInstrumentedTest {
         try {
             int parsed = Integer.parseInt(value == null ? "" : value);
             return parsed >= 0 ? parsed : fallback;
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
+    private static long parseNonNegativeLong(String value, long fallback) {
+        try {
+            long parsed = Long.parseLong(value == null ? "" : value);
+            return parsed >= 0L ? parsed : fallback;
         } catch (Exception ignored) {
             return fallback;
         }
