@@ -1015,7 +1015,30 @@ public class MainSearch extends Fragment {
     }
 
     private boolean isOfflineTitle(Title title) {
-        return title != null && title.getPath() != null && title.getPath().length() > 0;
+        return isOfflineTitleForLibrary(title, offlineTitles);
+    }
+
+    static boolean isOfflineTitleForLibraryForTest(Title title, List<Title> offlineTitles) {
+        return isOfflineTitleForLibrary(title, offlineTitles);
+    }
+
+    private static boolean isOfflineTitleForLibrary(Title title, List<Title> offlineTitles) {
+        if(title == null || offlineTitles == null || offlineTitles.isEmpty())
+            return false;
+        String path = title.getPath();
+        for(Title offline : offlineTitles) {
+            if(offline == null)
+                continue;
+            String offlinePath = offline.getPath();
+            if(path != null && path.length() > 0 && path.equals(offlinePath))
+                return true;
+            if(title.getId() > 0
+                    && offline.getId() == title.getId()
+                    && offline.getBaseMode() == title.getBaseMode()
+                    && sameSourceSiteValue(title, offline))
+                return true;
+        }
+        return false;
     }
 
     private void confirmDeleteOfflineTitle(Title title) {
@@ -1205,9 +1228,7 @@ public class MainSearch extends Fragment {
     }
 
     private boolean sameSourceSite(MTitle left, MTitle right) {
-        String leftSource = sourceSiteKey(left);
-        String rightSource = sourceSiteKey(right);
-        return leftSource.equals(rightSource);
+        return sameSourceSiteValue(sourceSiteKey(left), sourceSiteKey(right));
     }
 
     private String sourceSiteKey(MTitle title) {
@@ -1217,6 +1238,18 @@ public class MainSearch extends Fragment {
         if(source == null || source.length() == 0)
             source = p.resolveKnownSourceSite(title);
         return source == null ? "" : source;
+    }
+
+    private static boolean sameSourceSiteValue(MTitle left, MTitle right) {
+        if(left == null || right == null)
+            return false;
+        return sameSourceSiteValue(left.getSourceSite(), right.getSourceSite());
+    }
+
+    private static boolean sameSourceSiteValue(String leftSource, String rightSource) {
+        String left = leftSource == null ? "" : leftSource;
+        String right = rightSource == null ? "" : rightSource;
+        return left.equals(right);
     }
 
     private boolean keyCodeIsEnter(KeyEvent event) {

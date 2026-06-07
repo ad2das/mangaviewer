@@ -59,4 +59,27 @@ public class MainSearchTest {
         assertFalse(MainSearch.shouldLoadOfflineTitlesForTest(3, false, true));
         assertFalse(MainSearch.shouldLoadOfflineTitlesForTest(1, false, false));
     }
+
+    @Test
+    public void libraryFavoriteWithStalePathIsNotTreatedAsOfflineSaved() {
+        Title favorite = new Title("Stored Path Leak", "", "", null, "", 11, base_comic);
+        favorite.setPath("/missing/offline/title");
+        favorite.setSourceSite("ntk");
+
+        assertFalse(MainSearch.isOfflineTitleForLibraryForTest(favorite, new ArrayList<>()));
+    }
+
+    @Test
+    public void libraryOfflineTitleRequiresActualOfflineMatch() {
+        Title favorite = new Title("Stored Path Leak", "", "", null, "", 11, base_comic);
+        favorite.setPath("/offline/title");
+        favorite.setSourceSite("ntk");
+
+        Title offline = new Title("Stored Path Leak", "", "", null, "", 11, base_comic);
+        offline.setPath("/offline/title");
+        offline.setSourceSite("ntk");
+
+        assertTrue(MainSearch.isOfflineTitleForLibraryForTest(
+                favorite, Collections.singletonList(offline)));
+    }
 }
