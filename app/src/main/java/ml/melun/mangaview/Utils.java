@@ -1284,8 +1284,10 @@ public class Utils {
             }
             if(showNtkTurnstileCaptchaIfNeeded(url, context, code, fragment, p))
                 return;
-            if (shouldOpenCloudflareCaptchaAutomatically()) {
-                startCaptchaActivity(context, code, fragment, url);
+            boolean autoCaptchaStarted = shouldOpenCloudflareCaptchaAutomatically()
+                    && startCaptchaActivity(context, code, fragment, url);
+            if (autoCaptchaStarted) {
+                markAutoCloudflareCaptchaStarted();
             } else if (!checkConnection(context)) {
                 //no internet
                 //showErrorPopup(context, "네트워크 연결이 없습니다.", e, force_close);
@@ -1335,8 +1337,11 @@ public class Utils {
         long now = System.currentTimeMillis();
         if(now - lastAutoCloudflareCaptchaAt < NTK_CAPTCHA_ACTIVITY_MIN_INTERVAL_MS)
             return false;
-        lastAutoCloudflareCaptchaAt = now;
         return true;
+    }
+
+    private static void markAutoCloudflareCaptchaStarted() {
+        lastAutoCloudflareCaptchaAt = System.currentTimeMillis();
     }
 
     public static boolean showNtkTurnstileCaptchaIfNeeded(String url, Context context, int code, Fragment fragment, Preference preference) {
@@ -1352,9 +1357,11 @@ public class Utils {
         if(openRecentNtkCloudflareChallenge(context, code, fragment))
             return true;
         if(shouldOpenCloudflareCaptchaAutomatically()) {
-            startCaptchaActivity(context, code, fragment, null);
-            captchaCount++;
-            return true;
+            if(startCaptchaActivity(context, code, fragment, null)) {
+                markAutoCloudflareCaptchaStarted();
+                captchaCount++;
+                return true;
+            }
         }
         return false;
     }
@@ -1370,17 +1377,26 @@ public class Utils {
             return false;
         syncNtkCloudflareCookies(preference, false);
         if(!getHttpClient().hasNtkAccessProof()) {
-            startCaptchaActivity(context, code, fragment, null);
-            captchaCount++;
-            return true;
+            if(startCaptchaActivity(context, code, fragment, null)) {
+                captchaCount++;
+                return true;
+            }
+            return false;
         }
         verifyNtkAccessAndOpenCaptchaIfNeeded(context, code, fragment, preference);
         return false;
     }
 
     private static boolean shouldSuppressNtkCaptchaAfterRecentVerification() {
-        return getHttpClient().isNtk()
-                && getHttpClient().hasNtkAccessProof();
+        CustomHttpClient client = getHttpClient();
+        return shouldSuppressNtkCaptchaAfterRecentVerificationForTest(
+                client.isNtk(), client.hasNtkAccessProof(), client.hasRecentCloudflareChallenge());
+    }
+
+    static boolean shouldSuppressNtkCaptchaAfterRecentVerificationForTest(boolean ntk,
+                                                                          boolean accessProof,
+                                                                          boolean recentChallenge) {
+        return ntk && accessProof && !recentChallenge;
     }
 
     public static boolean verifyNtkAccessAndOpenCaptchaIfNeeded(Context context, int code, Fragment fragment, Preference preference) {
@@ -1404,8 +1420,8 @@ public class Utils {
                 AppDispatchers.runOnMain(() -> {
                     if(!canUseContextForUi(context) || shouldSuppressNtkCaptchaAfterRecentVerification())
                         return;
-                    startCaptchaActivity(context, code, fragment, null);
-                    captchaCount++;
+                    if(startCaptchaActivity(context, code, fragment, null))
+                        captchaCount++;
                 });
             } else {
                 getHttpClient().markNtkAccessVerified();
@@ -1420,7 +1436,8 @@ public class Utils {
             return false;
         if(!getHttpClient().hasRecentCloudflareChallenge())
             return false;
-        startCaptchaActivity(context, code, fragment, null);
+        if(!startCaptchaActivity(context, code, fragment, null))
+            return false;
         captchaCount++;
         return true;
     }
@@ -1432,9 +1449,11 @@ public class Utils {
             return false;
         syncNtkCloudflareCookies(preference, true);
         if(!getHttpClient().hasNtkAccessProof()) {
-            startCaptchaActivity(context, code, fragment, null);
-            captchaCount++;
-            return true;
+            if(startCaptchaActivity(context, code, fragment, null)) {
+                captchaCount++;
+                return true;
+            }
+            return false;
         }
         AppDispatchers.runUserAction(() -> {
             if(shouldSuppressNtkCaptchaAfterRecentVerification())
@@ -1447,8 +1466,8 @@ public class Utils {
             AppDispatchers.runOnMain(() -> {
                 if(!canUseContextForUi(context) || shouldSuppressNtkCaptchaAfterRecentVerification())
                     return;
-                startCaptchaActivity(context, code, fragment, null);
-                captchaCount++;
+                if(startCaptchaActivity(context, code, fragment, null))
+                    captchaCount++;
             });
         });
         return true;
@@ -1515,65 +1534,80 @@ public class Utils {
         getHttpClient().syncCookiesFromWebView(source.getUrl(), true);
     }
 
-    static void startCaptchaActivity(Context context, int code, Fragment fragment, String url){
+    static boolean startCaptchaActivity(Context context, int code, Fragment fragment, String url){
         if(!canUseContextForUi(context))
-            return;
+            return false;
         if(shouldBlockCaptchaForOffline(checkConnection(context))) {
             showNoConnectionCaptchaFallback(context, false);
-            return;
+            return false;
         }
         if(shouldSkipNtkCaptchaLaunch())
-            return;
+            return false;
         long now = System.currentTimeMillis();
         long minInterval = getHttpClient().isNtk()
                 ? NTK_CAPTCHA_ACTIVITY_MIN_INTERVAL_MS
                 : CAPTCHA_ACTIVITY_MIN_INTERVAL_MS;
         if(now - lastCaptchaActivityStartedAt < minInterval)
-            return;
+            return false;
         lastCaptchaActivityStartedAt = now;
         Intent captchaIntent = new Intent(context, CaptchaActivity.class);
         url = captchaUrl(url);
         captchaIntent.putExtra("url", url);
         try {
-            if(fragment == null && context instanceof Activity)
+            if(fragment == null && context instanceof Activity) {
                 ((Activity)context).startActivityForResult(captchaIntent, code);
-            else if(fragment != null && fragment.isAdded())
+                return true;
+            } else if(fragment != null && fragment.isAdded()) {
                 fragment.startActivityForResult(captchaIntent, code);
+                return true;
+            }
         } catch (RuntimeException e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
+        return false;
     }
 
-    static void startCaptchaActivity(Context context, int code, Fragment fragment){
+    static boolean startCaptchaActivity(Context context, int code, Fragment fragment){
         if(!canUseContextForUi(context))
-            return;
+            return false;
         if(shouldBlockCaptchaForOffline(checkConnection(context))) {
             showNoConnectionCaptchaFallback(context, false);
-            return;
+            return false;
         }
         if(shouldSkipNtkCaptchaLaunch())
-            return;
+            return false;
         long now = System.currentTimeMillis();
         long minInterval = getHttpClient().isNtk()
                 ? NTK_CAPTCHA_ACTIVITY_MIN_INTERVAL_MS
                 : CAPTCHA_ACTIVITY_MIN_INTERVAL_MS;
         if(now - lastCaptchaActivityStartedAt < minInterval)
-            return;
+            return false;
         lastCaptchaActivityStartedAt = now;
         Intent captchaIntent = new Intent(context, CaptchaActivity.class);
         captchaIntent.putExtra("url", captchaUrl(null));
         try {
-            if(fragment == null && context instanceof Activity)
+            if(fragment == null && context instanceof Activity) {
                 ((Activity)context).startActivityForResult(captchaIntent, code);
-            else if(fragment != null && fragment.isAdded())
+                return true;
+            } else if(fragment != null && fragment.isAdded()) {
                 fragment.startActivityForResult(captchaIntent, code);
+                return true;
+            }
         } catch (RuntimeException e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
+        return false;
     }
 
     private static boolean shouldSkipNtkCaptchaLaunch() {
-        return getHttpClient().isNtk() && getHttpClient().hasNtkAccessProof();
+        CustomHttpClient client = getHttpClient();
+        return shouldSkipNtkCaptchaLaunchForTest(
+                client.isNtk(), client.hasNtkAccessProof(), client.hasRecentCloudflareChallenge());
+    }
+
+    static boolean shouldSkipNtkCaptchaLaunchForTest(boolean ntk, boolean accessProof,
+                                                     boolean recentChallenge) {
+        return ntk && accessProof && !recentChallenge;
     }
 
     private static String captchaUrl(String url) {

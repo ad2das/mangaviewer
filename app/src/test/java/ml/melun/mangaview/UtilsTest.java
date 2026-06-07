@@ -148,6 +148,22 @@ public class UtilsTest {
     }
 
     @Test
+    public void ntkCaptchaLaunchSkipsOnlyForProofWithoutRecentChallenge() {
+        assertTrue(Utils.shouldSkipNtkCaptchaLaunchForTest(true, true, false));
+        assertFalse(Utils.shouldSkipNtkCaptchaLaunchForTest(true, true, true));
+        assertFalse(Utils.shouldSkipNtkCaptchaLaunchForTest(true, false, true));
+        assertFalse(Utils.shouldSkipNtkCaptchaLaunchForTest(false, true, false));
+    }
+
+    @Test
+    public void ntkRecentChallengePreventsProofSuppression() {
+        assertTrue(Utils.shouldSuppressNtkCaptchaAfterRecentVerificationForTest(true, true, false));
+        assertFalse(Utils.shouldSuppressNtkCaptchaAfterRecentVerificationForTest(true, true, true));
+        assertFalse(Utils.shouldSuppressNtkCaptchaAfterRecentVerificationForTest(true, false, false));
+        assertFalse(Utils.shouldSuppressNtkCaptchaAfterRecentVerificationForTest(false, true, false));
+    }
+
+    @Test
     public void exactViewerLaunchDoesNotBlockActivityLaunchForOnlineSources() {
         assertFalse(Utils.shouldWaitForExactFirstFrameForTest("wfwf", false));
         assertFalse(Utils.shouldWaitForExactFirstFrameForTest("ntk", true));

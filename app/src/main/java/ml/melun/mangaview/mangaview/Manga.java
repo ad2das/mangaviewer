@@ -3045,11 +3045,37 @@ public class Manga {
     }
 
     private static boolean isNtkViewerChallengeFailure(CustomHttpClient client, Exception e) {
-        return client != null && client.isNtk() && isCloudflareChallenge(e);
+        return client != null
+                && isNtkViewerChallengeFailure(client.isNtk(), e, client.hasRecentCloudflareChallenge());
     }
 
     static boolean isNtkViewerChallengeFailureForTest(boolean ntk, Exception e) {
-        return ntk && isCloudflareChallenge(e);
+        return isNtkViewerChallengeFailure(ntk, e, false);
+    }
+
+    static boolean isNtkViewerChallengeFailureForTest(boolean ntk, Exception e,
+                                                      boolean recentCloudflareChallenge) {
+        return isNtkViewerChallengeFailure(ntk, e, recentCloudflareChallenge);
+    }
+
+    private static boolean isNtkViewerChallengeFailure(boolean ntk, Exception e,
+                                                       boolean recentCloudflareChallenge) {
+        if(!ntk)
+            return false;
+        if(isCloudflareChallenge(e))
+            return true;
+        return recentCloudflareChallenge && isNtkViewerPageRequestFailure(e);
+    }
+
+    private static boolean isNtkViewerPageRequestFailure(Exception e) {
+        String message = e == null ? null : e.getMessage();
+        if(message == null)
+            return false;
+        String lower = message.toLowerCase(Locale.ROOT);
+        return lower.startsWith("request failed: /webtoon/")
+                || lower.startsWith("request failed: /manhwa/")
+                || lower.startsWith("request failed: /api/works")
+                || lower.startsWith("request failed: /search?");
     }
 
     static boolean isRecoverableNetworkFetchFailureForTest(Throwable e) {

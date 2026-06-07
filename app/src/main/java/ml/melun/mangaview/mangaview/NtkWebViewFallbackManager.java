@@ -824,6 +824,8 @@ final class NtkWebViewFallbackManager {
             if(client != null) {
                 client.syncCookiesFromWebView(task.baseUrl, true);
                 client.syncCookiesFromWebView(task.baseUrl + task.path, true);
+                if(code > 0 && client.isCloudflareChallengeResponse(code, task.body))
+                    client.markCloudflareChallenge(task.baseUrl + task.path);
             }
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);

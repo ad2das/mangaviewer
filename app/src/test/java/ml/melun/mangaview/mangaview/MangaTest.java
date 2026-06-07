@@ -48,6 +48,7 @@ public class MangaTest {
 
         assertTrue(Manga.isRecoverableNetworkFetchFailureForTest(dnsFailure));
         assertFalse(Manga.isNtkViewerChallengeFailureForTest(true, dnsFailure));
+        assertFalse(Manga.isNtkViewerChallengeFailureForTest(true, dnsFailure, true));
     }
 
     @Test
@@ -55,6 +56,17 @@ public class MangaTest {
         Exception cloudflare = new Exception("Cloudflare challenge");
 
         assertTrue(Manga.isNtkViewerChallengeFailureForTest(true, cloudflare));
+    }
+
+    @Test
+    public void ntkViewerRequestFailureAfterObservedChallengeRequiresCaptcha() {
+        Exception viewerFailure = new Exception("Request failed: /webtoon/848000");
+        Exception apiFailure = new Exception("Request failed: /api/works?keyword=title");
+
+        assertTrue(Manga.isNtkViewerChallengeFailureForTest(true, viewerFailure, true));
+        assertTrue(Manga.isNtkViewerChallengeFailureForTest(true, apiFailure, true));
+        assertFalse(Manga.isNtkViewerChallengeFailureForTest(true, viewerFailure, false));
+        assertFalse(Manga.isNtkViewerChallengeFailureForTest(false, viewerFailure, true));
     }
 
     @Test

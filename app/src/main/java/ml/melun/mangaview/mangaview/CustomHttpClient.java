@@ -1139,7 +1139,12 @@ public class CustomHttpClient {
             url = getWebtoonUrl();
         lastCloudflareChallengeUrl = url;
         lastCloudflareChallengeAt = System.currentTimeMillis();
-        clearCloudflareCookies();
+        if(isNtk()) {
+            clearNtkAccessVerification();
+            clearCloudflareCookies(false);
+        } else {
+            clearCloudflareCookies();
+        }
     }
 
     public void setCloudflareCaptchaActive(boolean active) {
@@ -2700,8 +2705,10 @@ public class CustomHttpClient {
                 + ",bodyLen=" + (body == null ? 0 : body.length())
                 + ",ms=" + (System.currentTimeMillis() - startedAt)
                 + ",error=" + (error == null ? "" : error.getClass().getSimpleName()));
-        if(isCloudflareChallenge(code, body))
+        if(isCloudflareChallenge(code, body)) {
+            markCloudflareChallenge(baseUrl + normalized);
             throw new Exception(code == 403 ? "Cloudflare challenge" : "Cloudflare/server error");
+        }
         if(shouldRejectNtkPageResponse(normalized, code, body))
             throw new Exception("Unusable NTK page: " + normalized + " code=" + code);
         if(code >= 200 && code < 400 && body != null && body.length() > 0 && shouldStoreNetworkPageBody(normalized, body)) {
@@ -2868,10 +2875,7 @@ public class CustomHttpClient {
         if(code >= 500 && staleCached != null)
             return new PageResponse(staleCached.code, staleCached.body, true);
         if(isCloudflareChallenge(code, body)) {
-            lastCloudflareChallengeUrl = getBaseUrl(normalized) + normalized;
-            lastCloudflareChallengeAt = System.currentTimeMillis();
-            if(code == 403)
-                clearCloudflareCookies();
+            markCloudflareChallenge(getBaseUrl(normalized) + normalized);
             throw new Exception(code == 403 ? "Cloudflare challenge" : "Cloudflare/server error");
         }
         if(isNtk())
@@ -3646,8 +3650,10 @@ public class CustomHttpClient {
                     cookieHeader == null ? "" : cookieHeader, headers, "GET", null, 12_000L);
             if(result == null || result.code <= 0 || result.bodyBytes == null || result.bodyBytes.length == 0)
                 return null;
-            if(isCloudflareChallenge(result.code, result.body))
+            if(isCloudflareChallenge(result.code, result.body)) {
+                markCloudflareChallenge(url);
                 return null;
+            }
             if(looksLikeUnrenderedNtkDocument(path, result.code, result.body)) {
                 if(Log.isLoggable(TAG, Log.DEBUG))
                     Log.d(TAG, "ntk_quic_fallback_unrendered path=" + path
@@ -3845,10 +3851,7 @@ public class CustomHttpClient {
         try {
             String body = response.peekBody(256 * 1024L).string();
             if(isCloudflareChallenge(code, body)) {
-                lastCloudflareChallengeUrl = (baseUrl == null ? "" : baseUrl) + (path == null ? "" : path);
-                lastCloudflareChallengeAt = System.currentTimeMillis();
-                if(code == 403 && !isNtkWebViewFetchPath(path))
-                    clearCloudflareCookies();
+                markCloudflareChallenge((baseUrl == null ? "" : baseUrl) + (path == null ? "" : path));
             }
         } catch (Exception ignored) {
         }
