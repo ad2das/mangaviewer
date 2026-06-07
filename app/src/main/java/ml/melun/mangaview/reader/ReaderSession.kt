@@ -1174,6 +1174,14 @@ class ReaderSession(
         target.titleId = currentTitle.id
         target.mode = source.mode
         if (episodes.isNotEmpty()) target.setEps(episodes)
+        if (shouldPreferVerifiedApiAppend(target, currentTitle)) {
+            Log.d(
+                TAG,
+                "append_adjacent_lookahead_skip_verified_api sourceId=${source.id} targetId=${target.id} " +
+                    "targetPath=${target.ntkEpisodePath}"
+            )
+            return
+        }
         Log.d(
             TAG,
             "append_adjacent_lookahead_start sourceId=${source.id} targetId=${target.id} " +
