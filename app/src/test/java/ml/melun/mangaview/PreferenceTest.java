@@ -76,6 +76,15 @@ public class PreferenceTest {
     }
 
     @Test
+    public void ntkWebtoonProgressKeepsLoadedEpisodeCount() {
+        MTitle title = new MTitle("Long Webtoon", 36716, "", "", null, "5", MTitle.base_webtoon);
+        title.setSourceSite("ntk");
+        title.setReadingProgress(210, 18, 120);
+
+        assertEquals(120, Preference.normalizedNtkEpisodeCountForTest(title));
+    }
+
+    @Test
     public void wfwfProgressInfersListIndexFromEpisodeNumber() {
         MTitle title = new MTitle("서머타임 렌더링", 10017, "", "", null, "", MTitle.base_comic);
         title.setSourceSite("wfwf");

@@ -136,6 +136,8 @@ public class MTitle{
     public int getDisplayEpisodeCount(int fallbackEpisodeCount) {
         int count = episodeCount > 0 ? episodeCount : fallbackEpisodeCount;
         int releaseCount = getNtkReleaseEpisodeCount();
+        if(baseMode == base_webtoon && count > 0)
+            return count;
         if(releaseCount > 0 && (count <= 0 || count > releaseCount))
             return releaseCount;
         return count;

@@ -224,6 +224,15 @@ public class TitleTest {
     }
 
     @Test
+    public void displayEpisodeCountKeepsLoadedNtkWebtoonCount() {
+        Title title = new Title("Long Webtoon", "", "", null, "5", 36716, MTitle.base_webtoon);
+        title.setSourceSite("ntk");
+        title.setReadingProgress(210, 18, 120);
+
+        assertEquals(120, title.getDisplayEpisodeCount(0));
+    }
+
+    @Test
     public void ntkProgressEpisodesDoNotGeneratePathlessPlaceholders() {
         Title title = new Title("서머타임 렌더링", "", "", null, "", 7843, MTitle.base_comic);
         title.setSourceSite("ntk");

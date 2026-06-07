@@ -388,6 +388,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 bookmarkId = -1;
             }
         }
+        syncLoadedEpisodeProgress();
         episodeAdapter.setFavorite(p.findFavorite(title)>-1);
         episodeList.setAdapter(episodeAdapter);
         if(title != null && title.isNtkEpisodeListConfirmedEmpty()
@@ -475,6 +476,32 @@ public class EpisodeActivity extends AppCompatActivity {
         });
         markFirstContent();
         warmupInitialViewerTargets();
+    }
+
+    private void syncLoadedEpisodeProgress() {
+        if(p == null || title == null || episodes == null || episodes.size() == 0)
+            return;
+        int progressId = bookmarkId;
+        int progressIndex = bookmarkIndex;
+        if(progressId <= 0)
+            progressId = restoredBookmarkId(title);
+        if(progressIndex <= 0 && progressId > 0) {
+            for(int i = 0; i < episodes.size(); i++) {
+                Manga episode = safeGet(episodes, i);
+                if(episode != null && episode.getId() == progressId) {
+                    progressIndex = i + 1;
+                    break;
+                }
+            }
+        }
+        if(progressIndex <= 0)
+            progressIndex = title.getBookmarkEpisodeIndex();
+        if(progressIndex > episodes.size())
+            progressIndex = -1;
+        if(progressId > 0)
+            title.setBookmark(progressId);
+        title.setReadingProgress(progressId, progressIndex, episodes.size());
+        p.updateRecentData(title);
     }
 
     private void warmupInitialViewerTargets() {

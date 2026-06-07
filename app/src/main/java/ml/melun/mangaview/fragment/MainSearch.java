@@ -887,8 +887,6 @@ public class MainSearch extends Fragment {
     private static boolean isUsableStoredNtkTitle(Title title, MTitle stored, String normalizedName) {
         if(stored == null || stored.getId() <= 0)
             return false;
-        if(stored.getId() == title.getId())
-            return false;
         if(stored.getBaseMode() != title.getBaseMode())
             return false;
         if(!"ntk".equals(stored.getSourceSite()))

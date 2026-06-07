@@ -1156,6 +1156,8 @@ public class Preference {
     private static void normalizeNtkProgressFromRelease(MTitle title) {
         if(title == null)
             return;
+        if(title.getBaseMode() == MTitle.base_webtoon)
+            return;
         int releaseCount = title.getNtkReleaseEpisodeCount();
         if(releaseCount <= 0 || title.getEpisodeCount() <= releaseCount)
             return;

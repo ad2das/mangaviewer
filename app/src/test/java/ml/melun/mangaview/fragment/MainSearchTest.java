@@ -43,6 +43,25 @@ public class MainSearchTest {
 
         assertNull(MainSearch.chooseStoredTitleForEpisodeForTest(searched, recent, new ArrayList<>()));
     }
+
+    @Test
+    public void ntkEpisodeClickKeepsStoredProgressWhenTitleIdMatches() {
+        Title clicked = new Title("Sky Invasion", "", "", null, "5", 34, base_comic);
+        clicked.setSourceSite("ntk");
+
+        Title stored = new Title("Sky Invasion", "", "", null, "5", 34, base_comic);
+        stored.setSourceSite("ntk");
+        stored.setReadingProgress(210, 18, 120);
+
+        Title resolved = MainSearch.chooseStoredTitleForEpisodeForTest(
+                clicked, Collections.singletonList(stored), new ArrayList<>());
+
+        assertEquals(34, resolved.getId());
+        assertEquals(210, resolved.getBookmarkEpisodeId());
+        assertEquals(18, resolved.getBookmarkEpisodeIndex());
+        assertEquals(120, resolved.getEpisodeCount());
+    }
+
     @Test
     public void librarySearchHandlesNullPersistedFields() {
         Title title = new Title(null, "", null, null, null, 1, base_comic);
