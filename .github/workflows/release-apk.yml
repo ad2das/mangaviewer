@@ -83,12 +83,21 @@ jobs:
         if: env.STALE_RELEASE_RUN != 'true'
         uses: gradle/actions/setup-gradle@v4
         with:
-          cache-read-only: ${{ github.event_name != 'workflow_dispatch' || !inputs.refresh_gradle_cache }}
+          cache-read-only: ${{ github.event_name == 'workflow_dispatch' && !inputs.refresh_gradle_cache }}
           cache-cleanup: on-success
           gradle-home-cache-excludes: |
-            caches/build-cache-*
             caches/journal-*
             caches/keyrings
+
+      - name: Restore Android incremental build state
+        if: env.STALE_RELEASE_RUN != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/build
+          key: release-apk-app-build-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            release-apk-app-build-${{ runner.os }}-${{ github.ref_name }}-
 
       - name: Configure Git
         if: env.STALE_RELEASE_RUN != 'true'
