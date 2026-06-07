@@ -82,6 +82,7 @@ public class Manga {
     private static final int NTK_LAST_RESORT_GENERATED_PROBE_LIMIT = 12;
     private static final boolean NTK_GENERATED_TRIM_BEFORE_FIRST_FRAME = true;
     private static final long NTK_API_FALLBACK_ACK_FAST_PATH_WAIT_MS = 2400L;
+    private static final long NTK_API_FALLBACK_DIRECT_RACE_WAIT_MS = 560L;
     private static final long NTK_GENERATED_MISS_ACK_GRACE_MS = 650L;
     private static final long NTK_GENERATED_MISS_PAGE_FAST_PATH_MS = 2600L;
     private static final long NTK_STRICT_ACK_FAILED_PAGE_FAST_PATH_MS = 5200L;
@@ -612,6 +613,20 @@ public class Manga {
             boolean ignoreDirectPageFetchForFirstFrame = false;
             boolean apiOptimisticGeneratedFastPath = apiOptimisticGeneratedCandidate
                     && shouldUseOptimisticNtkGeneratedFastPath(path);
+            if(apiOptimisticGeneratedCandidate) {
+                startDirectPageFetchIfNeeded.run();
+                if(!strictApiFallbackMode)
+                    startPageFetchIfNeeded.run();
+                CustomHttpClient.PageResponse directApiPage =
+                        awaitFastNtkApiPageFetch(directPageFetchRef[0], pageFetchRef[0],
+                                path, NTK_API_FALLBACK_DIRECT_RACE_WAIT_MS);
+                if(addFastNtkApiPageImageCandidates(client, directApiPage, path, seenImages, false)) {
+                    logNtkViewerParse("api-optimistic-direct-before-generated", directApiPage, path, 0, 0);
+                    restoreBetterEpisodeList(previousEpisodes);
+                    attachEpisodeSeriesMetadata();
+                    return LOAD_OK;
+                }
+            }
             if(apiOptimisticGeneratedFastPath
                     && addNtkGeneratedPathImageCandidates(client, path, seenImages,
                     ntkGeneratedImageCandidateCount(), !shouldOpenKnownNtkGeneratedPathWithoutValidation(path))) {
@@ -725,6 +740,14 @@ public class Manga {
                     startPageFetchIfNeeded.run();
                 if(addCachedNtkViewerImageApiCandidates(client, path, seenImages)) {
                     logNtkViewerParse("api-cached-webview", null, path, 0, 0);
+                    restoreBetterEpisodeList(previousEpisodes);
+                    attachEpisodeSeriesMetadata();
+                    return LOAD_OK;
+                }
+                CustomHttpClient.PageResponse directApiPage =
+                        awaitFastNtkApiPageFetch(directPageFetchRef[0], null, path, 0L);
+                if(addFastNtkApiPageImageCandidates(client, directApiPage, path, seenImages, false)) {
+                    logNtkViewerParse("api-fallback-direct-before-ack", directApiPage, path, 0, 0);
                     restoreBetterEpisodeList(previousEpisodes);
                     attachEpisodeSeriesMetadata();
                     return LOAD_OK;
