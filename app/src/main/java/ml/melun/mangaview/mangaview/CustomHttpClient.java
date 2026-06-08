@@ -799,6 +799,7 @@ public class CustomHttpClient {
                 response.close();
         }
         appendNtkFragmentedApiDiagnostic(report, root, path);
+        appendNtkQuicApiDiagnostic(report, root, path);
     }
 
     private void appendWfwfHttpDiagnostic(StringBuilder report, String root) {
@@ -916,6 +917,8 @@ public class CustomHttpClient {
             return "OK: app route can reach NTK.";
         if(lower.contains("ntk_api_fragmented: code=2"))
             return "OK: app SNI bypass route can reach NTK. Raw TLS may still be blocked on this network.";
+        if(lower.contains("ntk_api_quic: code=2"))
+            return "OK: app QUIC bypass route can reach NTK. Raw TLS/SNI may still be blocked on this network.";
         if(lower.contains("ntk_api_direct: code=403") || lower.contains("challenge=true"))
             return "Cloudflare challenge/cookie issue. Open NTK captcha once.";
         String currentNtkHost = NTK_HOST.toLowerCase(Locale.ROOT);
@@ -2717,6 +2720,40 @@ public class CustomHttpClient {
         }
     }
 
+    private void appendNtkQuicApiDiagnostic(StringBuilder report, String root, String path) {
+        long startedAt = System.currentTimeMillis();
+        if(!NtkQuicFetcher.isAvailable()) {
+            appendDiagnosticLine(report, "ntk_api_quic", "unavailable");
+            return;
+        }
+        try {
+            Map<String, String> headers = buildHeaders(root, true, null);
+            applyNtkApiHeaders(headers, root, path);
+            NtkQuicFetcher.Result result = fetchNtkQuic(root, trimTrailingSlash(root) + path,
+                    headers.get("Cookie"), headers, "GET", null, 6_000L);
+            String body = result == null || result.body == null ? "" : result.body;
+            int code = result == null ? 0 : result.code;
+            boolean challenge = result != null && isCloudflareChallenge(code, body);
+            if(challenge) {
+                markCloudflareChallenge(trimTrailingSlash(root) + path);
+                appendDiagnosticLine(report, "ntk_clearance_invalidated", "true");
+            } else if(code >= 200 && code < 400) {
+                markNtkAccessVerified();
+            }
+            appendDiagnosticLine(report, "ntk_api_quic",
+                    "code=" + code
+                            + ",ms=" + (System.currentTimeMillis() - startedAt)
+                            + ",body_len=" + body.length()
+                            + ",challenge=" + challenge
+                            + ",error=" + (result == null ? "" : throwableSummary(result.error)));
+            if(body.length() > 0 && (challenge || code >= 400))
+                appendDiagnosticLine(report, "ntk_api_quic_body_head", abbreviate(body.replace('\n', ' '), 180));
+        } catch (Exception e) {
+            appendDiagnosticLine(report, "ntk_api_quic",
+                    "fail " + (System.currentTimeMillis() - startedAt) + "ms " + exceptionSummary(e));
+        }
+    }
+
     private boolean shouldPreferFragmentedNtkHttpOverQuic() {
         return shouldPreferFragmentedNtkHttpOverQuicForTest(hasConfiguredHttpsProxy(),
                 hasRecentCloudflareChallenge());
@@ -2724,7 +2761,7 @@ public class CustomHttpClient {
 
     static boolean shouldPreferFragmentedNtkHttpOverQuicForTest(boolean configuredProxy,
                                                                  boolean recentChallenge) {
-        return configuredProxy || recentChallenge;
+        return configuredProxy;
     }
 
     private static boolean hasConfiguredHttpsProxy() {

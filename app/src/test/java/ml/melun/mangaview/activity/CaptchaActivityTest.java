@@ -235,4 +235,14 @@ public class CaptchaActivityTest {
         assertTrue(script.contains("navigator.userAgent"));
         assertFalse(script.contains("if(x.pathname.indexOf('/cdn-cgi/challenge-platform/')!==0)return false;return false;"));
     }
+
+    @Test
+    public void ntkCaptchaLoadUrlRejectsContentPaths() {
+        assertTrue(CaptchaActivity.isNtkContentCaptchaUrlForTest("https://sbxh4.com/webtoon/848103/1580933"));
+        assertTrue(CaptchaActivity.isNtkContentCaptchaUrlForTest("https://sbxh4.com/manhwa/3540"));
+        assertTrue(CaptchaActivity.isNtkContentCaptchaUrlForTest("/webtoon/848103"));
+        assertFalse(CaptchaActivity.isNtkContentCaptchaUrlForTest("https://sbxh4.com/manhwa"));
+        assertFalse(CaptchaActivity.isNtkContentCaptchaUrlForTest("https://sbxh4.com/ing?tag=6"));
+        assertFalse(CaptchaActivity.isNtkContentCaptchaUrlForTest("https://sbxh4.com/cdn-cgi/challenge-platform/h/b/turnstile"));
+    }
 }

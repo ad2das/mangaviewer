@@ -1908,7 +1908,8 @@ public class CaptchaActivity extends AppCompatActivity {
 
     private String ntkCaptchaLoadUrl(String challengeUrl, String purl) {
         if(challengeUrl != null && challengeUrl.length() > 0
-                && !isNtkApiUrl(challengeUrl)) {
+                && !isNtkApiUrl(challengeUrl)
+                && !isNtkContentCaptchaUrl(challengeUrl)) {
             if(challengeUrl.startsWith("/"))
                 return getHttpClient().getUrl(challengeUrl) + challengeUrl;
             if(getHttpClient().isNtkUrl(challengeUrl))
@@ -1916,12 +1917,14 @@ public class CaptchaActivity extends AppCompatActivity {
         }
         if(purl != null && purl.length() > 0
                 && getHttpClient().isNtkUrl(purl)
-                && !isNtkApiUrl(purl))
+                && !isNtkApiUrl(purl)
+                && !isNtkContentCaptchaUrl(purl))
             return purl;
         String webtoonUrl = p == null ? null : p.getWebtoonUrl();
         if(webtoonUrl != null && webtoonUrl.length() > 0
                 && getHttpClient().isNtkUrl(webtoonUrl)
-                && !isNtkApiUrl(webtoonUrl))
+                && !isNtkApiUrl(webtoonUrl)
+                && !isNtkContentCaptchaUrl(webtoonUrl))
             return webtoonUrl;
         String root = getHttpClient().getUrl();
         if(root == null || root.length() == 0 || !getHttpClient().isNtkUrl(root))
@@ -1929,6 +1932,30 @@ public class CaptchaActivity extends AppCompatActivity {
         if(root != null && root.endsWith("/manhwa"))
             root = root.substring(0, root.length() - 7);
         return root;
+    }
+
+    private boolean isNtkContentCaptchaUrl(String url) {
+        boolean content = isNtkContentCaptchaUrlForTest(url);
+        if(content)
+            recordCaptchaEvent("captcha_content_url_ignored url=" + url);
+        return content;
+    }
+
+    static boolean isNtkContentCaptchaUrlForTest(String url) {
+        if(url == null || url.length() == 0)
+            return false;
+        try {
+            java.net.URI uri = new java.net.URI(url);
+            String path = uri.getPath();
+            if(path == null || path.length() == 0)
+                path = url.startsWith("/") ? url : "";
+            path = path.toLowerCase(java.util.Locale.ROOT);
+            return path.startsWith("/webtoon/")
+                    || path.startsWith("/manhwa/")
+                    || path.startsWith("/comic/");
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private boolean isNtkApiUrl(String url) {
