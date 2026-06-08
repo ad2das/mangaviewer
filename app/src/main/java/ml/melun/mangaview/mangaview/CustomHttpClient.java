@@ -5802,12 +5802,7 @@ public class CustomHttpClient {
                         "import(url).then(m=>{" +
                         "  moduleExports=m;" +
                         "  window.NtkWasmBridge.onVcResult('log:import_ok');" +
-                        "  if(m.initSync) {" +
-                        "    try { m.initSync(new Uint8Array(atob(wasmBase64).split('').map(c=>c.charCodeAt(0)))); window.NtkWasmBridge.onVcResult('log:initsync_ok'); }" +
-                        "    catch(e) { window.NtkWasmBridge.onVcResult('log:initsync_err:'+e); return m.default({module_or_path:'data:application/wasm;base64,'+wasmBase64}); }" +
-                        "  } else {" +
-                        "    return m.default({module_or_path:'data:application/wasm;base64,'+wasmBase64});" +
-                        "  }" +
+                        "  return m.default({module_or_path:'data:application/wasm;base64,'+wasmBase64});" +
                         "}).then(()=>{" +
                         "  window.NtkWasmBridge.onVcResult('log:wasm_ready');" +
                         "  const r=moduleExports._vc('" + token + "');" +
