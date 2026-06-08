@@ -444,11 +444,16 @@ public class CaptchaActivity extends AppCompatActivity {
 
             @Override
             public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse errorResponse) {
-                if(request != null && !request.isForMainFrame() && p != null && p.isNtkSite()) {
+                if(request != null && p != null && p.isNtkSite()) {
                     String url = request.getUrl() == null ? "" : request.getUrl().toString();
                     int code = errorResponse == null ? 0 : errorResponse.getStatusCode();
-                    android.util.Log.d("CaptchaActivity", "NTK subresource HTTP error: method="
-                            + request.getMethod() + ",code=" + code + ",url=" + url);
+                    String reason = errorResponse == null ? "" : errorResponse.getReasonPhrase();
+                    android.util.Log.d("CaptchaActivity", "NTK WebView HTTP error: mainFrame="
+                            + request.isForMainFrame()
+                            + ",method=" + request.getMethod()
+                            + ",code=" + code
+                            + ",reason=" + reason
+                            + ",url=" + url);
                 }
                 super.onReceivedHttpError(view, request, errorResponse);
             }
