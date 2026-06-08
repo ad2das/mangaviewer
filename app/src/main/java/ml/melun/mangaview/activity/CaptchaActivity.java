@@ -213,7 +213,7 @@ public class CaptchaActivity extends AppCompatActivity {
             "var h=x.hostname.toLowerCase();" +
             "var r=(location.hostname||'').toLowerCase();if(r.indexOf('www.')===0)r=r.slice(4);if(h.indexOf('www.')===0)h=h.slice(4);" +
             "if(!r||!(h===r||h.slice(-(r.length+1))==='.'+r))return false;" +
-            "if(x.pathname.indexOf('/cdn-cgi/challenge-platform/')!==0)return false;" +
+            "if(x.pathname.indexOf('/cdn-cgi/challenge-platform/')===0)return false;" +
             "return String(m||'GET').toUpperCase()!=='GET';" +
             "}" +
             "function textBase64(s){return btoa(unescape(encodeURIComponent(s||'')));}" +
@@ -227,6 +227,7 @@ public class CaptchaActivity extends AppCompatActivity {
             "return textBase64(String(b));" +
             "}catch(e){return '';}" +
             "}" +
+            "function bodyBase64Async(b){try{if(b&&window.Request&&b instanceof Request&&b.clone)return b.clone().arrayBuffer().then(function(a){return bodyBase64(a);});if(b&&window.Blob&&b instanceof Blob&&b.arrayBuffer)return b.arrayBuffer().then(function(a){return bodyBase64(a);});}catch(e){}return Promise.resolve(bodyBase64(b));}" +
             "function bytesFromBase64(b){var bin=atob(b||''),a=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i);return a;}" +
             "function collectHeaders(input,init){" +
             "var out={};try{var h=new Headers(input&&input.headers?input.headers:{});if(init&&init.headers){new Headers(init.headers).forEach(function(v,k){h.set(k,v);});}h.forEach(function(v,k){out[k]=v;});}catch(e){}return out;" +
@@ -241,10 +242,14 @@ public class CaptchaActivity extends AppCompatActivity {
             "if(!shouldBridge(url,method))return nativeFetch.apply(this,arguments);" +
             "return new Promise(function(resolve,reject){try{" +
             "var absolute=new URL(url,location.href).href;" +
-            "var raw=window.NtkQuicBridge.request(absolute,String(method),JSON.stringify(addDefaultHeaders(collectHeaders(input,init))),bodyBase64(init&&init.body));" +
+            "var hasInitBody=init&&Object.prototype.hasOwnProperty.call(init,'body');" +
+            "var bodyArg=hasInitBody?init.body:((input&&window.Request&&input instanceof Request)?input:null);" +
+            "bodyBase64Async(bodyArg).then(function(body64){try{" +
+            "var raw=window.NtkQuicBridge.request(absolute,String(method),JSON.stringify(addDefaultHeaders(collectHeaders(input,init))),body64);" +
             "var res=JSON.parse(raw||'{}');" +
             "if(!res.ok)throw new Error(res.error||'NTK QUIC bridge failed');" +
             "resolve(new Response(bytesFromBase64(res.bodyBase64||''),{status:res.status||200,statusText:res.statusText||'OK',headers:res.headers||{}}));" +
+            "}catch(e){reject(e);}},reject);" +
             "}catch(e){reject(e);}});" +
             "};}" +
             "try{console.log('__NTK_QUIC_BRIDGE_INSTALLED__');}catch(e){}" +
@@ -277,7 +282,7 @@ public class CaptchaActivity extends AppCompatActivity {
             "var nativeBeacon=navigator.sendBeacon;" +
             "if(nativeBeacon){navigator.sendBeacon=function(url,data){" +
             "if(!shouldBridge(url,'POST'))return nativeBeacon.apply(this,arguments);" +
-            "try{window.NtkQuicBridge.request(new URL(url,location.href).href,'POST','{}',bodyBase64(data));return true;}catch(e){return false;}" +
+            "try{var absolute=new URL(url,location.href).href;bodyBase64Async(data).then(function(body64){try{window.NtkQuicBridge.request(absolute,'POST','{}',body64);}catch(e){}});return true;}catch(e){return false;}" +
             "};}" +
             "})();";
     private long pageFinishedTime = 0;

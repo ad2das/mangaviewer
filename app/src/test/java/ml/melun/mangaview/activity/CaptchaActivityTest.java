@@ -227,13 +227,16 @@ public class CaptchaActivityTest {
     public void ntkCaptchaBridgeReplaysChallengePostsWithBrowserFetchHeaders() {
         String script = CaptchaActivity.ntkQuicBridgeJavascriptForTest();
 
-        assertTrue(script.contains("if(x.pathname.indexOf('/cdn-cgi/challenge-platform/')!==0)return false;return String(m||'GET').toUpperCase()!=='GET';"));
+        assertTrue(script.contains("if(x.pathname.indexOf('/cdn-cgi/challenge-platform/')===0)return false;"));
+        assertTrue(script.contains("return String(m||'GET').toUpperCase()!=='GET';"));
+        assertTrue(script.contains("bodyBase64Async(bodyArg)"));
+        assertTrue(script.contains("navigator.sendBeacon=function(url,data)"));
         assertTrue(script.contains("Sec-Fetch-Dest"));
         assertTrue(script.contains("Sec-Fetch-Mode"));
         assertTrue(script.contains("Sec-Fetch-Site"));
         assertTrue(script.contains("sec-ch-ua"));
         assertTrue(script.contains("navigator.userAgent"));
-        assertFalse(script.contains("if(x.pathname.indexOf('/cdn-cgi/challenge-platform/')!==0)return false;return false;"));
+        assertFalse(script.contains("if(x.pathname.indexOf('/cdn-cgi/challenge-platform/')!==0)return false;"));
     }
 
     @Test
